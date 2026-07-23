@@ -30,5 +30,8 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "patchedDependencies": {
+    "@opentui/core@0.4.3": "patches/@opentui%2Fcore@0.4.3.patch"
+  }
 }

@@ -1,0 +1,13 @@
+configVersion: 1
+
+providers:
+  openai:
+    type: openai
+    # Uses Lilac Codex OAuth when available, otherwise the key in auth.json.
+    catalog: models-dev
+    # Optional patches applied after catalog discovery. Unspecified fields inherit.
+    models:
+      gpt-5.6-sol:
+        limit:
+          context: 372000
+          # output: 32768

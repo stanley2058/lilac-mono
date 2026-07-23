@@ -1,0 +1,5 @@
+auth.json
+providers.yaml
+config.yaml
+mini-lilac.sqlite*
+dist/

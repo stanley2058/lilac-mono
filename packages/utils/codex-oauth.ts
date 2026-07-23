@@ -1,4 +1,4 @@
-import { chmod, mkdir } from "node:fs/promises";
+import { chmod, mkdir, open, rename, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
@@ -98,7 +98,69 @@ export function extractAccountId(tokens: {
 }
 
 async function ensureSecretDir(storagePath: string): Promise<void> {
-  await mkdir(path.dirname(storagePath), { recursive: true });
+  const directory = path.dirname(storagePath);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") await chmod(directory, 0o700);
+}
+
+async function writeSecretFile(storagePath: string, contents: string): Promise<void> {
+  const directory = path.dirname(storagePath);
+  const temporaryPath = path.join(
+    directory,
+    `.${path.basename(storagePath)}.${crypto.randomUUID()}.tmp`,
+  );
+  let handle: FileHandle | undefined;
+  let directoryHandle: FileHandle | undefined;
+  let needsCleanup = false;
+  try {
+    await ensureSecretDir(storagePath);
+    handle = await open(temporaryPath, "wx", 0o600);
+    needsCleanup = true;
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    if (process.platform !== "win32") directoryHandle = await open(directory, "r");
+    await rename(temporaryPath, storagePath);
+    needsCleanup = false;
+    if (process.platform !== "win32") await chmod(storagePath, 0o600);
+    await directoryHandle?.sync();
+    await directoryHandle?.close();
+    directoryHandle = undefined;
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    if (handle) {
+      try {
+        await handle.close();
+      } catch (closeError) {
+        cleanupErrors.push(closeError);
+      }
+    }
+    if (directoryHandle) {
+      try {
+        await directoryHandle.close();
+      } catch (closeError) {
+        cleanupErrors.push(closeError);
+      }
+    }
+    if (needsCleanup) {
+      try {
+        await unlink(temporaryPath);
+      } catch (unlinkError) {
+        cleanupErrors.push(unlinkError);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        `Failed to write Codex OAuth tokens to '${storagePath}' and clean up resources`,
+      );
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to write Codex OAuth tokens to '${storagePath}': ${message}`, {
+      cause: error,
+    });
+  }
 }
 
 export async function readCodexTokens(
@@ -116,25 +178,13 @@ export async function writeCodexTokens(
   storagePath: string = STORAGE_PATH,
 ): Promise<void> {
   const validated = codexOAuthTokensSchema.parse(tokens);
-  await ensureSecretDir(storagePath);
-  await Bun.write(storagePath, JSON.stringify(validated, null, 2));
-  try {
-    await chmod(storagePath, 0o600);
-  } catch {
-    // Windows and some filesystems do not support POSIX modes.
-  }
+  await writeSecretFile(storagePath, `${JSON.stringify(validated, null, 2)}\n`);
 }
 
 export async function clearCodexTokens(storagePath: string = STORAGE_PATH): Promise<void> {
   const file = Bun.file(storagePath);
   if (!(await file.exists())) return;
-  await ensureSecretDir(storagePath);
-  await Bun.write(storagePath, JSON.stringify({}, null, 2));
-  try {
-    await chmod(storagePath, 0o600);
-  } catch {
-    // Windows and some filesystems do not support POSIX modes.
-  }
+  await writeSecretFile(storagePath, "{}\n");
 }
 
 export type PkceCodes = {

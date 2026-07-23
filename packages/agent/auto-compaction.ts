@@ -1000,14 +1000,14 @@ export type AutoCompactionOptions = {
     | undefined
     | Promise<ModelSpecifier | null | undefined>;
 
-  /** Optional context-limit resolver. Defaults to `modelCapability.resolve(spec).limit.context`. */
+  /** Optional limit resolver. Numeric results use a conservative output-token fallback. */
   resolveContextLimit?: (params: {
     defaultModel: ModelSpecifier;
     currentModelSpecifier?: ModelSpecifier;
     currentModel: LanguageModel;
     modelCapability: ModelCapability;
     abortSignal?: AbortSignal;
-  }) => Promise<number>;
+  }) => Promise<number | { readonly context: number; readonly output: number }>;
 
   /** Optional base transform to run before compaction. */
   baseTransformMessages?: TransformMessagesFn;
@@ -1335,6 +1335,36 @@ async function resolveContextLimit(params: {
     : params.agent.state.modelSpecifier;
   const spec = resolvedSpecRaw ?? params.options.model;
 
+  if (params.options.resolveContextLimit) {
+    const explicitLimits = await params.options.resolveContextLimit({
+      defaultModel: params.options.model,
+      currentModelSpecifier: spec,
+      currentModel: params.agent.state.model,
+      modelCapability: params.options.modelCapability,
+      abortSignal: params.abortSignal,
+    });
+    const contextLimit =
+      typeof explicitLimits === "number" ? explicitLimits : explicitLimits.context;
+    if (!Number.isFinite(contextLimit) || contextLimit <= 0) {
+      return {
+        known: false,
+        spec,
+        reason: "invalid_context_limit",
+      };
+    }
+    return {
+      known: true,
+      spec,
+      contextLimit,
+      outputLimit:
+        typeof explicitLimits !== "number" &&
+        Number.isFinite(explicitLimits.output) &&
+        explicitLimits.output > 0
+          ? explicitLimits.output
+          : 0,
+    };
+  }
+
   let modelInfo:
     | {
         limit: {
@@ -1353,29 +1383,6 @@ async function resolveContextLimit(params: {
     modelResolveError = error;
   }
   const outputLimit = modelInfo?.limit.output ?? 0;
-
-  if (params.options.resolveContextLimit) {
-    const contextLimit = await params.options.resolveContextLimit({
-      defaultModel: params.options.model,
-      currentModelSpecifier: spec,
-      currentModel: params.agent.state.model,
-      modelCapability: params.options.modelCapability,
-      abortSignal: params.abortSignal,
-    });
-    if (!(typeof contextLimit === "number") || contextLimit <= 0) {
-      return {
-        known: false,
-        spec,
-        reason: "invalid_context_limit",
-      };
-    }
-    return {
-      known: true,
-      spec,
-      contextLimit,
-      outputLimit,
-    };
-  }
 
   if (!modelInfo) {
     return {
@@ -1737,6 +1744,7 @@ export const __autoCompactionInternals = {
   normalizeThresholdFraction,
   repairTranscriptForCompaction,
   renderMessagesForSummary,
+  resolveContextLimit,
   resolveCompactionBoundary,
   shrinkCompactedMessagesToBudget,
   summarizeMessagesHierarchical,

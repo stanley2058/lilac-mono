@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "types": ["bun"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+    "moduleResolution": "bundler",
+    "paths": {
+      "ai": ["./node_modules/ai"],
+      "zod": ["./node_modules/zod"],
+      "@stanley2058/lilac-agent": ["../agent/index.ts"],
+      "@stanley2058/lilac-coding-tools": ["../coding-tools/src/index.ts"],
+      "@stanley2058/lilac-fs": ["../fs/src/index.ts"],
+      "@stanley2058/mini-lilac-client": ["../mini-lilac-client/index.ts"]
+    },
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "@stanley2058/mini-lilac-runtime",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.12",
+    "@ai-sdk/groq": "^4.0.8",
+    "@ai-sdk/openai": "^4.0.11",
+    "@ai-sdk/openai-compatible": "^3.0.7",
+    "@ai-sdk/xai": "^4.0.10",
+    "@openrouter/ai-sdk-provider": "^3.0.0",
+    "@stanley2058/lilac-agent": "workspace:*",
+    "@stanley2058/lilac-coding-tools": "workspace:*",
+    "@stanley2058/lilac-utils": "workspace:*",
+    "@stanley2058/mini-lilac-client": "workspace:*",
+    "ai": "^7.0.22",
+    "htmlparser2": "^12.0.0",
+    "superjson": "^2.2.6",
+    "turndown": "^7.2.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/turndown": "^5.0.6"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
