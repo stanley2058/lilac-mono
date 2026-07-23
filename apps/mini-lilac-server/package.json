@@ -6,13 +6,10 @@
   "type": "module",
   "module": "src/server.ts",
   "exports": {
-    ".": "./src/server.ts"
-  },
-  "bin": {
-    "mini-lilac-server": "dist/index.js"
+    ".": "./src/server.ts",
+    "./cli": "./src/main.ts"
   },
   "scripts": {
-    "build": "bun build.ts && chmod +x dist/index.js",
     "test": "bun test",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit"
   },

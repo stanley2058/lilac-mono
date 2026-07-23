@@ -1,0 +1,35 @@
+{
+  "name": "@stanley2058/mini-lilac",
+  "version": "0.0.1",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stanley2058/lilac-mono.git"
+  },
+  "bin": {
+    "mini-lilac": "dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "build": "bun build.ts && chmod +x dist/main.js",
+    "prepack": "bun run build",
+    "test": "bun test",
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@opentui/core": "0.4.3"
+  },
+  "devDependencies": {
+    "@opentui/solid": "0.4.3",
+    "@stanley2058/mini-lilac-server": "workspace:*",
+    "@stanley2058/mini-lilac-tui": "workspace:*",
+    "@types/bun": "^1.3.14"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

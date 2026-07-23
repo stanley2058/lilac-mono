@@ -53,7 +53,7 @@ function testDependencies(overrides: Partial<MiniLilacAuthDependencies> = {}): {
   };
 }
 
-describe("mini-lilac-server CLI", () => {
+describe("mini-lilac server CLI", () => {
   it("keeps the existing serve invocation and parses auth actions without config", () => {
     expect(parseCliArgs(["--config", "config.yaml", "--database", "db.sqlite"])).toEqual({
       command: "serve",
@@ -77,6 +77,7 @@ describe("mini-lilac-server CLI", () => {
     });
     expect(parseCliArgs(["--help"])).toEqual({ command: "help" });
     expect(parseCliArgs([])).toEqual({ command: "serve" });
+    expect(MINI_LILAC_SERVER_HELP).toContain("mini-lilac server");
     expect(MINI_LILAC_SERVER_HELP).toContain("auth codex --status");
     expect(() => parseCliArgs(["auth", "codex", "--status", "--logout"])).toThrow("only one");
     expect(() => parseCliArgs(["auth", "openai"])).toThrow();

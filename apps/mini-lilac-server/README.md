@@ -36,8 +36,8 @@ The example is OAuth-first. Authenticate before starting the server; this does n
 config and does not read or modify `~/.codex/auth.json`:
 
 ```sh
-mini-lilac-server auth codex
-mini-lilac-server auth codex --status
+mini-lilac server auth codex
+mini-lilac server auth codex --status
 ```
 
 The command prints the authorize URL and stores owner-private Lilac tokens at
@@ -48,7 +48,7 @@ API-key authentication. For OAuth-superseded providers, the catalog includes GPT
 3 or newer models only when models.dev marks them as reasoning- and tool-capable, with text input
 and text-only output. This keeps conversational Codex models while excluding embeddings, image,
 audio, realtime, and older model families. Remove the tokens with
-`mini-lilac-server auth codex --logout`.
+`mini-lilac server auth codex --logout`.
 
 For API-key fallback, leave the same `providers.yaml` in place and put this in the owner-only
 `auth.json` instead:
@@ -74,23 +74,22 @@ Bash receives an environment with the HTTP auth-token variable removed.
 
 ## Run
 
-```sh
-bun run src/main.ts
-```
+From the repository, run `bun run src/main.ts`. The installable command exposes the same entry point
+as `mini-lilac server`.
 
 The server defaults to `$XDG_STATE_HOME/mini-lilac/config.yaml`; `--config` can still select another
 file. SQLite defaults to `$XDG_STATE_HOME/mini-lilac/mini-lilac.sqlite`. Override either path when
 needed:
 
 ```sh
-bun run src/main.ts --config ./config.yaml --database ./data/mini-lilac.sqlite
+mini-lilac server --config ./config.yaml --database ./data/mini-lilac.sqlite
 ```
 
 This port starts a new persistence lineage. Databases created by the experimental
 `expr/lilac-coding-agent` branch are not migrated; select a fresh database path before starting.
 
-Build the executable entrypoint with `bun run build`, then run `./dist/index.js`. Run
-`mini-lilac-server --help` for serve and auth usage.
+Build the unified executable from `apps/mini-lilac`. Run `mini-lilac server --help` for serve and
+auth usage.
 
 `agent.titleModel` optionally selects a `provider/model` for generated session titles. If omitted,
 the title is the normalized first 50 characters of the first prompt. Automatic and manual context

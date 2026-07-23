@@ -145,6 +145,7 @@ COPY package.json bun.lock ./
 COPY apps/core/package.json apps/core/package.json
 COPY apps/tool-bridge/package.json apps/tool-bridge/package.json
 COPY apps/acp-controller/package.json apps/acp-controller/package.json
+COPY apps/mini-lilac/package.json apps/mini-lilac/package.json
 COPY apps/mini-lilac-server/package.json apps/mini-lilac-server/package.json
 COPY apps/mini-lilac-tui/package.json apps/mini-lilac-tui/package.json
 COPY packages/agent/package.json packages/agent/package.json

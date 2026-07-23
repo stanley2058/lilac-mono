@@ -2,15 +2,14 @@
   "name": "@stanley2058/mini-lilac-tui",
   "version": "0.0.1",
   "module": "src/main.tsx",
+  "exports": {
+    ".": "./src/main.tsx"
+  },
   "type": "module",
   "private": true,
   "license": "MIT",
-  "bin": {
-    "mini-lilac": "dist/main.js"
-  },
   "scripts": {
     "start": "bun run src/main.tsx",
-    "build": "bun build.ts && chmod +x dist/main.js",
     "test": "bun test",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit"
   },

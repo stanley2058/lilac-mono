@@ -15,13 +15,15 @@ OpenTUI owns terminal input, focus, paste handling, layout, and renderer cleanup
 # from the repo root
 bun install
 
-# dev
+# develop the TUI directly
 cd apps/mini-lilac-tui
 bun run start -- --server http://127.0.0.1:8090/api/mini-lilac --token "$TOKEN"
 
-# build a standalone entry (dist/main.js)
+# build the installable unified command
+cd ../mini-lilac
 bun run build
 ./dist/main.js --help
+./dist/main.js tui --help
 ```
 
 ## CLI options

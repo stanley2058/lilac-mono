@@ -211,8 +211,8 @@ export type MiniLilacServerCliOptions =
   | z.infer<typeof helpOptionsSchema>;
 
 export const MINI_LILAC_SERVER_HELP = `Usage:
-  mini-lilac-server [--config <file>] [--database <file>]
-  mini-lilac-server auth codex [--status | --logout]
+  mini-lilac server [--config <file>] [--database <file>]
+  mini-lilac server auth codex [--status | --logout]
 
 Commands:
   auth codex           Sign in with OpenAI Codex OAuth and store Lilac-owned tokens

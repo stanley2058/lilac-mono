@@ -36,6 +36,7 @@ describe("workspace tests", () => {
     const roots = [
       "apps/core",
       "apps/acp-controller",
+      "apps/mini-lilac",
       "apps/mini-lilac-server",
       "apps/mini-lilac-tui",
       "packages/utils",

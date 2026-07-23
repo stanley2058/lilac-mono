@@ -43,12 +43,16 @@ Workspace roots are Bun workspaces (`apps/*`, `packages/*`). `ref/` contains ven
   - Build script: `apps/acp-controller/build.ts` (produces `dist/index.js`).
 
 - `apps/mini-lilac-server/`
-  - Standalone, Redis-free coding-agent HTTP/SSE server with durable local sessions.
+  - Redis-free coding-agent HTTP/SSE server with durable local sessions.
   - Entry: `apps/mini-lilac-server/src/main.ts`; API wiring: `apps/mini-lilac-server/src/server.ts`.
 
 - `apps/mini-lilac-tui/`
   - OpenTUI client for creating, resuming, steering, and inspecting Mini Lilac sessions.
   - Entry: `apps/mini-lilac-tui/src/main.tsx`.
+
+- `apps/mini-lilac/`
+  - Installable `mini-lilac` command that bundles and dispatches to Mini Lilac clients and server.
+  - Entry: `apps/mini-lilac/src/main.ts`; build: `apps/mini-lilac/build.ts`.
 
 - `packages/event-bus/`
   - The bus implementation and the canonical event spec.

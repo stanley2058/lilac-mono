@@ -86,7 +86,9 @@ export function parseCliOptions(input: ParseCliInput): CliOptions {
 
 export const HELP_TEXT = `mini-lilac — OpenTUI client for mini-lilac
 
-Usage: mini-lilac [options]
+Usage:
+  mini-lilac [options]
+  mini-lilac tui [options]
 
 Options:
   --server <url>      Mini-lilac API base URL (default: ${DEFAULT_SERVER_URL})
