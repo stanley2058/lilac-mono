@@ -12,6 +12,8 @@ import {
   createEditFileInputSchema,
   createGrepInputSchema,
   createReadFileInputSchema,
+  loadReadFileInstructions,
+  loadWorkspaceInstructions,
 } from "../src";
 
 type ToolOptions = ToolExecutionOptions<unknown>;
@@ -280,6 +282,144 @@ describe("coding tools", () => {
         options("read-symlinked-deny-root"),
       ),
     ).toMatchObject({ success: false, error: { code: "PERMISSION" } });
+  });
+
+  it("preloads workspace AGENTS.md and adds only nested instructions to read_file", async () => {
+    const packageDirectory = path.join(cwd, "packages", "widget");
+    const nestedDirectory = path.join(packageDirectory, "src");
+    await mkdir(path.join(cwd, ".git"));
+    await mkdir(nestedDirectory, { recursive: true });
+    await writeFile(path.join(cwd, "AGENTS.md"), "# Root\n\nRoot rules.\n");
+    await writeFile(path.join(packageDirectory, "AGENTS.md"), "# Package\n\nPackage rules.\n");
+    await writeFile(path.join(nestedDirectory, "AGENTS.md"), "# Nested\n\nNested rules.\n");
+    await writeFile(path.join(nestedDirectory, "file.txt"), "hello\n");
+
+    const workspace = await loadWorkspaceInstructions(packageDirectory);
+    expect(workspace?.loaded).toEqual([
+      path.join(packageDirectory, "AGENTS.md"),
+      path.join(cwd, "AGENTS.md"),
+    ]);
+    expect(workspace?.text).toContain("Package rules.");
+    expect(workspace?.text).toContain("Root rules.");
+
+    const tools = createCodingToolset({
+      cwd: packageDirectory,
+      preloadedInstructionPaths: workspace?.loaded,
+    });
+    expect(tools.read_file?.description).toContain("AGENTS.md");
+    const read = executable(tools, "read_file");
+    const first = z
+      .object({
+        success: z.literal(true),
+        loadedInstructions: z.array(z.string()),
+        instructionsText: z.string(),
+      })
+      .passthrough()
+      .parse(await read.execute({ path: "src/file.txt" }, options("read-instructions")));
+
+    expect(first.loadedInstructions).toEqual([path.join(nestedDirectory, "AGENTS.md")]);
+    expect(first.instructionsText).toContain("<system-reminder>");
+    expect(first.instructionsText).toContain("Nested rules.");
+    expect(first.instructionsText).not.toContain("Package rules.");
+
+    const repeated = await loadReadFileInstructions({
+      resolvedPath: path.join(nestedDirectory, "file.txt"),
+      cwd: packageDirectory,
+      preloadedInstructionPaths: workspace?.loaded,
+      messages: [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolName: "read_file",
+              output: { type: "json", value: first },
+            },
+          ],
+        },
+      ],
+    });
+    expect(repeated).toBeNull();
+
+    const repeatedFromContent = await loadReadFileInstructions({
+      resolvedPath: path.join(nestedDirectory, "file.txt"),
+      cwd: packageDirectory,
+      preloadedInstructionPaths: workspace?.loaded,
+      messages: [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolName: "read_file",
+              output: {
+                type: "content",
+                value: [{ type: "text", text: first.instructionsText }],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(repeatedFromContent).toBeNull();
+
+    const concurrentRead = executable(
+      createCodingToolset({
+        cwd: packageDirectory,
+        preloadedInstructionPaths: workspace?.loaded,
+      }),
+      "read_file",
+    );
+    const concurrentOptions = options("read-concurrent-1");
+    const concurrent = await Promise.all([
+      concurrentRead.execute({ path: "src/file.txt" }, concurrentOptions),
+      concurrentRead.execute(
+        { path: "src/file.txt" },
+        { ...concurrentOptions, toolCallId: "read-concurrent-2" },
+      ),
+    ]);
+    expect(
+      concurrent.filter((output) => JSON.stringify(output).includes("Nested rules.")),
+    ).toHaveLength(1);
+    expect(
+      JSON.stringify(
+        await concurrentRead.execute({ path: "src/file.txt" }, options("read-later-scope")),
+      ),
+    ).toContain("Nested rules.");
+
+    const direct = await read.execute({ path: "src/AGENTS.md" }, options("read-agents"));
+    expect(JSON.stringify(direct)).not.toContain("loadedInstructions");
+  });
+
+  it("does not load AGENTS.md symlinks outside the workspace or into denied paths", async () => {
+    const outside = await mkdtemp(path.join(tmpdir(), "lilac-instructions-outside-"));
+    try {
+      const outsideInstructions = path.join(outside, "outside.md");
+      await writeFile(outsideInstructions, "Outside secret rules.\n");
+      await symlink(outsideInstructions, path.join(cwd, "AGENTS.md"));
+      expect(await loadWorkspaceInstructions(cwd)).toBeNull();
+
+      await rm(path.join(cwd, "AGENTS.md"));
+      const protectedInstructions = path.join(cwd, "protected.txt");
+      await writeFile(protectedInstructions, "Protected secret rules.\n");
+      await symlink(protectedInstructions, path.join(cwd, "AGENTS.md"));
+      expect(
+        await loadWorkspaceInstructions(cwd, { denyPaths: [protectedInstructions] }),
+      ).toBeNull();
+
+      const nestedDirectory = path.join(cwd, "nested");
+      await mkdir(nestedDirectory);
+      const aliasedInstructions = path.join(nestedDirectory, "rules.md");
+      await writeFile(aliasedInstructions, "Aliased rules.\n");
+      await symlink(aliasedInstructions, path.join(nestedDirectory, "AGENTS.md"));
+      const direct = await executable(createCodingToolset({ cwd }), "read_file").execute(
+        { path: "nested/AGENTS.md" },
+        options("read-symlinked-agents"),
+      );
+      expect(JSON.stringify(direct)).not.toContain("loadedInstructions");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("glob returns matching local paths", async () => {

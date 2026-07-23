@@ -20,6 +20,10 @@
     "./batch": {
       "import": "./src/batch.ts",
       "types": "./src/batch.ts"
+    },
+    "./instructions": {
+      "import": "./src/instructions.ts",
+      "types": "./src/instructions.ts"
     }
   },
   "private": true,

@@ -3,6 +3,11 @@ import { tool, type ToolSet } from "ai";
 
 import { assertGuardrailBypassAllowed, assertLocalCwd } from "./guardrails";
 import {
+  createReadFileInstructionClaims,
+  loadReadFileInstructions,
+  READ_FILE_INSTRUCTION_HINT,
+} from "./instructions";
+import {
   editFileInputSchema,
   fuzzySearchInputSchema,
   globInputSchema,
@@ -15,17 +20,46 @@ export function createFilesystemTools(params: {
   cwd: string;
   fsBackend: FsBackend;
   allowGuardrailBypass?: boolean;
+  loadInstructions?: boolean;
+  preloadedInstructionPaths?: readonly string[];
+  denyPaths?: readonly string[];
 }): ToolSet {
-  const { fileSystem, cwd, fsBackend, allowGuardrailBypass = false } = params;
+  const {
+    fileSystem,
+    cwd,
+    fsBackend,
+    allowGuardrailBypass = false,
+    loadInstructions = true,
+    preloadedInstructionPaths,
+    denyPaths,
+  } = params;
+  const instructionClaims = createReadFileInstructionClaims();
   const tools: ToolSet = {
     read_file: tool({
-      description:
-        "Read a local text file. Reading records its hash so edit_file can safely edit it later.",
+      description: `Read a local text file. Reading records its hash so edit_file can safely edit it later. ${READ_FILE_INSTRUCTION_HINT}`,
       inputSchema: readFileInputSchema,
-      execute: ({ cwd: operationCwd, ...input }) => {
+      execute: async ({ cwd: operationCwd, ...input }, options) => {
         if (operationCwd) assertLocalCwd(operationCwd);
         assertGuardrailBypassAllowed(input.dangerouslyAllow, allowGuardrailBypass);
-        return fileSystem.readFile(input, operationCwd ?? cwd);
+        const effectiveCwd = operationCwd ?? cwd;
+        const output = await fileSystem.readFile(input, effectiveCwd);
+        if (!output.success || !loadInstructions) return output;
+
+        const instructions = await loadReadFileInstructions({
+          resolvedPath: output.resolvedPath,
+          requestedPath: input.path,
+          cwd: effectiveCwd,
+          messages: options.messages,
+          preloadedInstructionPaths,
+          denyPaths,
+          claimedInstructionPaths: instructionClaims.forMessages(options.messages),
+        });
+        if (!instructions) return output;
+        return {
+          ...output,
+          loadedInstructions: instructions.loaded,
+          instructionsText: instructions.text,
+        };
       },
     }),
     glob: tool({

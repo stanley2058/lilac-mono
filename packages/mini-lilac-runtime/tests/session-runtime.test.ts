@@ -738,6 +738,42 @@ describe("SessionService", () => {
     reopened.close();
   });
 
+  it("preloads workspace AGENTS.md and injects nested instructions with read_file", async () => {
+    let turn = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        turn += 1;
+        return turn === 1
+          ? textAndReadToolResult(
+              "read-nested",
+              "I will inspect the file.",
+              "packages/widget/src/file.txt",
+            )
+          : textResult("answer", "done");
+      },
+    });
+    const { directory, service, session } = await temporaryRuntime(model);
+    const packageDirectory = path.join(directory, "packages", "widget");
+    await mkdir(path.join(packageDirectory, "src"), { recursive: true });
+    await writeFile(path.join(directory, "AGENTS.md"), "# Root\n\nRoot rules.\n");
+    await writeFile(path.join(packageDirectory, "AGENTS.md"), "# Widget\n\nWidget rules.\n");
+    await writeFile(path.join(packageDirectory, "src", "file.txt"), "hello\n");
+
+    await collect((await service.startPrompt(session.id, userMessage("inspect it"))).stream);
+
+    const rootMarker = `Instructions from: ${path.join(directory, "AGENTS.md")}`;
+    const widgetMarker = `Instructions from: ${path.join(packageDirectory, "AGENTS.md")}`;
+    const firstPrompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    const secondPrompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
+    expect(firstPrompt).toContain(rootMarker);
+    expect(firstPrompt).not.toContain(widgetMarker);
+    expect(secondPrompt).toContain(widgetMarker);
+    expect(secondPrompt).toContain("<system-reminder>");
+    expect(secondPrompt.split(rootMarker)).toHaveLength(2);
+    expect(secondPrompt.split(widgetMarker)).toHaveLength(2);
+    service.close();
+  });
+
   it("atomically persists multi-field binding updates and idempotent results across restart", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-bindings-restart-"));
     temporaryDirectories.push(directory);

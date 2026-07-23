@@ -15,6 +15,11 @@ import {
 } from "@stanley2058/lilac-fs";
 import { createLogger, env } from "@stanley2058/lilac-utils";
 import {
+  createReadFileInstructionClaims,
+  loadReadFileInstructions,
+  READ_FILE_INSTRUCTION_HINT,
+} from "@stanley2058/lilac-coding-tools/instructions";
+import {
   createEditFileInputSchema,
   createGrepInputSchema,
   createReadFileInputSchema,
@@ -25,7 +30,6 @@ import {
   readFileInputSchema as sharedReadFileInputSchema,
 } from "@stanley2058/lilac-coding-tools/schemas";
 import { fileTypeFromBuffer } from "file-type";
-import fsp from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -55,126 +59,11 @@ const warningZod = z.object({
   actualLength: z.number(),
 });
 
-const INSTRUCTION_FILENAMES = ["AGENTS.md"] as const;
-const MAX_INSTRUCTION_CHARS = 20_000;
-
 const REMOTE_DENY_PATHS = ["~/.ssh", "~/.aws", "~/.gnupg"] as const;
 const FFF_CACHE_DIR = path.join(env.dataDir, ".cache", "fff");
 
 function resolveRemoteDenyPaths(dangerouslyAllow?: boolean): readonly string[] {
   return dangerouslyAllow === true ? [] : REMOTE_DENY_PATHS;
-}
-
-function isPathWithin(candidatePath: string, parentDir: string): boolean {
-  const rel = path.relative(parentDir, candidatePath);
-  if (rel === "") return true;
-  if (rel === "..") return false;
-  if (rel.startsWith(`..${path.sep}`)) return false;
-  return !path.isAbsolute(rel);
-}
-
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await fsp.stat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readTextFileBestEffort(filePath: string): Promise<string | null> {
-  try {
-    const raw = await fsp.readFile(filePath, "utf8");
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    if (trimmed.length <= MAX_INSTRUCTION_CHARS) return trimmed;
-    return trimmed.slice(0, MAX_INSTRUCTION_CHARS) + "\n... (truncated)";
-  } catch {
-    return null;
-  }
-}
-
-async function findGitRoot(startDir: string): Promise<string | null> {
-  let current = path.resolve(startDir);
-  while (true) {
-    if (await pathExists(path.join(current, ".git"))) return current;
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-}
-
-function parseInstructionPathsFromText(text: string): string[] {
-  const out: string[] = [];
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("Instructions from:")) continue;
-    const p = trimmed.slice("Instructions from:".length).trim();
-    if (p.length > 0) out.push(p);
-  }
-  return out;
-}
-
-function collectPreviouslyLoadedInstructionPaths(messages: readonly unknown[]): Set<string> {
-  const out = new Set<string>();
-
-  for (const msg of messages) {
-    if (!msg || typeof msg !== "object" || Array.isArray(msg)) continue;
-    const msgRecord = msg as Record<string, unknown>;
-    if (msgRecord["role"] !== "tool") continue;
-
-    const content = msgRecord["content"];
-    if (!Array.isArray(content)) continue;
-
-    for (const part of content) {
-      if (!part || typeof part !== "object" || Array.isArray(part)) continue;
-      const partRecord = part as Record<string, unknown>;
-      if (partRecord["type"] !== "tool-result") continue;
-      if (partRecord["toolName"] !== "read_file") continue;
-
-      const output = partRecord["output"];
-      if (!output || typeof output !== "object" || Array.isArray(output)) continue;
-      const outputRecord = output as Record<string, unknown>;
-
-      if (outputRecord["type"] === "json") {
-        const value = outputRecord["value"];
-        if (value && typeof value === "object" && !Array.isArray(value)) {
-          const valueRecord = value as Record<string, unknown>;
-          const loaded = valueRecord["loadedInstructions"];
-          if (Array.isArray(loaded)) {
-            for (const p of loaded) {
-              if (typeof p === "string" && p.length > 0) out.add(p);
-            }
-          }
-
-          const instructionsText = valueRecord["instructionsText"];
-          if (typeof instructionsText === "string") {
-            for (const p of parseInstructionPathsFromText(instructionsText)) {
-              out.add(p);
-            }
-          }
-        }
-        continue;
-      }
-
-      if (outputRecord["type"] === "content") {
-        const value = outputRecord["value"];
-        if (!Array.isArray(value)) continue;
-        for (const p of value) {
-          if (!p || typeof p !== "object" || Array.isArray(p)) continue;
-          const pRecord = p as Record<string, unknown>;
-          if (pRecord["type"] !== "text") continue;
-          const t = pRecord["text"];
-          if (typeof t !== "string") continue;
-          for (const loadedPath of parseInstructionPathsFromText(t)) {
-            out.add(loadedPath);
-          }
-        }
-      }
-    }
-  }
-
-  return out;
 }
 
 export const readFileInputZod = sharedReadFileInputSchema;
@@ -828,15 +717,16 @@ export function fsTool(
 
   const toolRootAbs = path.resolve(expandTilde(cwd));
 
+  const denyPaths = [
+    path.join(env.dataDir, "secret"),
+    path.join(env.dataDir, "tool-results"),
+    "~/.ssh",
+    "~/.aws",
+    "~/.gnupg",
+    ...(opts?.denyPaths ?? []),
+  ];
   const fileSystem = new FileSystem(cwd, {
-    denyPaths: [
-      path.join(env.dataDir, "secret"),
-      path.join(env.dataDir, "tool-results"),
-      "~/.ssh",
-      "~/.aws",
-      "~/.gnupg",
-      ...(opts?.denyPaths ?? []),
-    ],
+    denyPaths,
     fsBackend,
     fffCacheDir: FFF_CACHE_DIR,
   });
@@ -855,6 +745,7 @@ export function fsTool(
       fileHash: string;
     }
   >();
+  const instructionClaims = createReadFileInstructionClaims();
 
   function buildReadFileDescription(): string {
     const parts = [
@@ -878,6 +769,7 @@ export function fsTool(
     parts.push(
       "Use maxCharacters with either absolute offset or line/column start positions to page through text resources. Absolute offsets count Unicode characters including newlines. Reuse nextStart unchanged to continue.",
     );
+    parts.push(READ_FILE_INSTRUCTION_HINT);
     parts.push("Denylisted paths require dangerouslyAllow=true.");
     return parts.join(" ");
   }
@@ -960,63 +852,6 @@ export function fsTool(
       (o["format"] === "raw" || o["format"] === "numbered" || o["format"] === "hashline") &&
       typeof o["resolvedPath"] === "string"
     );
-  }
-
-  async function loadInstructionsForPath(params: {
-    resolvedPath: string;
-    opCwd?: string;
-    messages: readonly unknown[];
-  }): Promise<{ loaded: string[]; text?: string } | null> {
-    const targetAbs = path.resolve(params.resolvedPath);
-
-    const targetBase = path.basename(targetAbs);
-    if ((INSTRUCTION_FILENAMES as readonly string[]).includes(targetBase)) {
-      return null;
-    }
-
-    const opCwdAbs = params.opCwd ? path.resolve(expandTilde(params.opCwd)) : toolRootAbs;
-
-    const boundaryCwd = isPathWithin(targetAbs, opCwdAbs) ? opCwdAbs : null;
-    const gitRoot = boundaryCwd ? null : await findGitRoot(opCwdAbs);
-    const boundaryAbs = boundaryCwd ?? gitRoot;
-
-    if (!boundaryAbs) return null;
-    if (!isPathWithin(targetAbs, boundaryAbs)) return null;
-
-    const already = collectPreviouslyLoadedInstructionPaths(params.messages);
-    const loaded: string[] = [];
-    const snippets: string[] = [];
-
-    let current = path.dirname(targetAbs);
-    while (true) {
-      for (const name of INSTRUCTION_FILENAMES) {
-        const candidate = path.join(current, name);
-        if (candidate === targetAbs) continue;
-        if (already.has(candidate)) continue;
-        if (!(await pathExists(candidate))) continue;
-
-        const content = await readTextFileBestEffort(candidate);
-        if (!content) continue;
-
-        loaded.push(candidate);
-        already.add(candidate);
-        snippets.push(`Instructions from: ${candidate}\n${content}`);
-      }
-
-      if (current === boundaryAbs) break;
-      const parent = path.dirname(current);
-      if (parent === current) break;
-      current = parent;
-
-      if (!isPathWithin(current, boundaryAbs)) break;
-    }
-
-    if (loaded.length === 0) return null;
-
-    return {
-      loaded,
-      text: ["<system-reminder>", snippets.join("\n\n"), "</system-reminder>"].join("\n"),
-    };
   }
 
   const baseTools = {
@@ -1195,10 +1030,13 @@ export function fsTool(
                 fileHash: bytesRes.fileHash,
               });
 
-              const instructions = await loadInstructionsForPath({
+              const instructions = await loadReadFileInstructions({
                 resolvedPath,
-                opCwd,
+                requestedPath: input.path,
+                cwd: opCwd ?? toolRootAbs,
                 messages: options.messages,
+                denyPaths,
+                claimedInstructionPaths: instructionClaims.forMessages(options.messages),
               });
 
               return {
@@ -1265,10 +1103,13 @@ export function fsTool(
             return resQualified;
           }
           if (opts?.loadInstructions === false) return resQualified;
-          const instructions = await loadInstructionsForPath({
+          const instructions = await loadReadFileInstructions({
             resolvedPath: resQualified.resolvedPath,
-            opCwd,
+            requestedPath: input.path,
+            cwd: opCwd ?? toolRootAbs,
             messages: options.messages,
+            denyPaths,
+            claimedInstructionPaths: instructionClaims.forMessages(options.messages),
           });
           if (!instructions) return resQualified;
           return {

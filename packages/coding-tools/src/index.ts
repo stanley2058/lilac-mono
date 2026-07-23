@@ -14,6 +14,7 @@ export * from "./bash";
 export * from "./batch";
 export * from "./filesystem";
 export * from "./guardrails";
+export * from "./instructions";
 export * from "./schemas";
 
 export const DEFAULT_DENY_PATHS = ["~/.ssh", "~/.aws", "~/.gnupg"] as const;
@@ -34,6 +35,8 @@ export type CodingToolsetOptions = {
   enabledTools?: readonly string[];
   batchExcludedTools?: readonly string[];
   allowGuardrailBypass?: boolean;
+  loadInstructions?: boolean;
+  preloadedInstructionPaths?: readonly string[];
 };
 
 /**
@@ -67,7 +70,15 @@ export function createCodingToolset(options: CodingToolsetOptions): ToolSet {
       env: options.bashEnv,
       allowGuardrailBypass,
     }),
-    ...createFilesystemTools({ fileSystem, cwd, fsBackend, allowGuardrailBypass }),
+    ...createFilesystemTools({
+      fileSystem,
+      cwd,
+      fsBackend,
+      allowGuardrailBypass,
+      loadInstructions: options.loadInstructions,
+      preloadedInstructionPaths: options.preloadedInstructionPaths,
+      denyPaths,
+    }),
     ...createApplyPatchTool({ cwd, denyPaths, allowGuardrailBypass }),
     ...options.extraTools,
   };

@@ -286,7 +286,7 @@ There are three tool “levels”. They all serve the agent; higher levels are u
 
 1. Level 1: direct AI SDK tools (agent-local)
    - Loaded through the shared plugin runtime in `apps/core/src/plugins/manager.ts` and used inside `apps/core/src/surface/bridge/bus-agent-runner.ts` via AI SDK tool calling.
-   - Shared Level 1 names, input schemas, local adapters, patch parsing, and batch expansion/preflight live in `packages/coding-tools`. Core-specific SSH/restricted execution, artifacts, attachments, instruction loading, logging, and bus delegation adapters live under `apps/core/src/tools/*`; built-ins are exposed through `apps/core/src/plugins/builtin/*`.
+   - Shared Level 1 names, input schemas, local adapters, patch parsing, `AGENTS.md` discovery/rendering, and batch expansion/preflight live in `packages/coding-tools`. Core-specific SSH/restricted execution, artifacts, attachments, instruction result adaptation, logging, and bus delegation adapters live under `apps/core/src/tools/*`; built-ins are exposed through `apps/core/src/plugins/builtin/*`.
    - External plugins are discovered from `DATA_DIR/plugins/*`.
    - Key ones:
       - `bash` (`apps/core/src/tools/bash.ts`), guarded by `apps/core/src/tools/bash-safety/*` unless `dangerouslyAllow=true`.

@@ -12,7 +12,11 @@ import {
   type TransientModelRetryConfig,
   type TurnBoundaryDecision,
 } from "@stanley2058/lilac-agent";
-import { createCodingToolset } from "@stanley2058/lilac-coding-tools";
+import {
+  createCodingToolset,
+  DEFAULT_DENY_PATHS,
+  loadWorkspaceInstructions,
+} from "@stanley2058/lilac-coding-tools";
 import { subagentSessionNameSchema } from "@stanley2058/lilac-coding-tools/schemas";
 import {
   miniLilacCancelResultSchema,
@@ -422,11 +426,13 @@ function systemPrompt(
   config: RuntimeConfig,
   profile: AgentProfile,
   cwd: string,
+  workspaceInstructions?: string,
   skillsSection?: string | null,
 ): string {
   return [
     config.agent.systemPrompt,
     profile.promptOverlay,
+    workspaceInstructions,
     skillsSection,
     `Working directory: ${cwd}`,
   ]
@@ -798,7 +804,16 @@ class SessionActor {
       this.skillCatalog !== undefined && profileRequestsTool(profile, "skill")
         ? await this.skillCatalog.discover(this.snapshot.cwd)
         : undefined;
-    const tools = this.createTools(profile, context, modelSpecifier, skills);
+    const workspaceInstructions = await loadWorkspaceInstructions(this.snapshot.cwd, {
+      denyPaths: [...DEFAULT_DENY_PATHS, ...this.protectedToolPaths],
+    });
+    const tools = this.createTools(
+      profile,
+      context,
+      modelSpecifier,
+      skills,
+      workspaceInstructions?.loaded,
+    );
     const skillContextWindow =
       tools.skill === undefined
         ? undefined
@@ -828,6 +843,7 @@ class SessionActor {
         this.config,
         profile,
         this.snapshot.cwd,
+        workspaceInstructions?.text,
         tools.skill === undefined ? undefined : skills?.promptSection(skillContextWindow),
       ),
       model: this.resolveModel(modelSpecifier),
@@ -961,6 +977,7 @@ class SessionActor {
     context: RunContext,
     modelSpecifier: string,
     skills?: MiniLilacSkillCatalogSnapshot,
+    preloadedInstructionPaths?: readonly string[],
   ): ToolSet {
     const profileIds = Object.keys(this.config.agent.profiles);
     const profileDescriptions = profileIds
@@ -1032,6 +1049,7 @@ class SessionActor {
       bashMergeOutput: true,
       allowGuardrailBypass: false,
       denyPaths: this.protectedToolPaths,
+      preloadedInstructionPaths,
       bashEnv: Object.fromEntries(
         Object.entries(process.env).filter(([name]) => name !== this.config.server.authTokenEnv),
       ),
