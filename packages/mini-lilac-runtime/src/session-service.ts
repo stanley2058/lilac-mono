@@ -861,7 +861,7 @@ class SessionActor {
       thresholdFraction: this.config.agent.compaction.earlyCompactionPoint,
       resolveCurrentModelSpecifier: () => agent.state.modelSpecifier,
       resolveContextLimit: async ({ defaultModel, currentModelSpecifier }) =>
-        (await this.resolveModelLimits(currentModelSpecifier ?? defaultModel))?.context ?? 0,
+        (await this.resolveModelLimits(currentModelSpecifier ?? defaultModel)) ?? 0,
       baseTurnErrorHandler: transientRetryController?.handler,
       onCompactionEnd: (event) => this.queueAutomaticCompaction(event),
     });

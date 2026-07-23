@@ -1139,12 +1139,20 @@ describe("SessionService", () => {
     const model = new MockLanguageModelV4({ doStream: textResult("answer", "done") });
     const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-auto-compact-event-"));
     temporaryDirectories.push(directory);
+    let resolvedLimits: number | { readonly context: number; readonly output: number } | undefined;
     const service = new SessionService({
       config: config(),
       databasePath: path.join(directory, "runtime.sqlite"),
       modelResolver: () => model,
-      attachCompaction: async (agent, options) =>
-        agent.subscribe((event) => {
+      modelLimitsResolver: async () => ({ context: 32_000, output: 12_000 }),
+      attachCompaction: async (agent, options) => {
+        resolvedLimits = await options.resolveContextLimit?.({
+          defaultModel: options.model,
+          currentModelSpecifier: agent.state.modelSpecifier,
+          currentModel: agent.state.model,
+          modelCapability: options.modelCapability,
+        });
+        return agent.subscribe((event) => {
           if (event.type !== "agent_start") return;
           queueMicrotask(() => {
             options.onCompactionEnd?.({
@@ -1163,12 +1171,14 @@ describe("SessionService", () => {
               },
             });
           });
-        }),
+        });
+      },
     });
     const session = await service.createSession({ cwd: directory, model: "test/mock" });
     const started = await service.startPrompt(session.id, userMessage("trigger compaction"));
     const streamed = await collect(started.stream);
 
+    expect(resolvedLimits).toEqual({ context: 32_000, output: 12_000 });
     expect(streamed.filter((chunk) => chunk.type === "data-compaction")).toEqual([
       {
         type: "data-compaction",

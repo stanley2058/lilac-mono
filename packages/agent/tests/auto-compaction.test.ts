@@ -400,7 +400,7 @@ describe("auto-compaction internals", () => {
     detach();
   });
 
-  it("uses an explicit context resolver without fetching model capabilities", async () => {
+  it("uses explicit context and output limits without fetching model capabilities", async () => {
     let capabilityFetches = 0;
     const agent = new AiSdkPiAgent({
       system: "test",
@@ -408,22 +408,58 @@ describe("auto-compaction internals", () => {
       modelSpecifier: "custom/private-model",
     });
 
-    const detach = await attachAutoCompaction(agent, {
-      model: "custom/private-model",
-      modelCapability: new ModelCapability({
-        fetch: Object.assign(
-          async () => {
-            capabilityFetches += 1;
-            throw new Error("model capability fetch must not run");
-          },
-          { preconnect() {} },
-        ),
-      }),
-      resolveContextLimit: async () => 128_000,
+    const resolved = await __autoCompactionInternals.resolveContextLimit({
+      agent,
+      options: {
+        model: "custom/private-model",
+        modelCapability: new ModelCapability({
+          fetch: Object.assign(
+            async () => {
+              capabilityFetches += 1;
+              throw new Error("model capability fetch must not run");
+            },
+            { preconnect() {} },
+          ),
+        }),
+        resolveContextLimit: async () => ({ context: 32_000, output: 12_000 }),
+      },
     });
 
     expect(capabilityFetches).toBe(0);
-    detach();
+    expect(resolved).toMatchObject({
+      known: true,
+      contextLimit: 32_000,
+      outputLimit: 12_000,
+    });
+  });
+
+  it("keeps numeric explicit context resolvers compatible", async () => {
+    let capabilityFetches = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      modelSpecifier: "custom/private-model",
+    });
+
+    const resolved = await __autoCompactionInternals.resolveContextLimit({
+      agent,
+      options: {
+        model: "custom/private-model",
+        modelCapability: new ModelCapability({
+          fetch: Object.assign(
+            async () => {
+              capabilityFetches += 1;
+              throw new Error("model capability fetch must not run");
+            },
+            { preconnect() {} },
+          ),
+        }),
+        resolveContextLimit: async () => 32_000,
+      },
+    });
+
+    expect(capabilityFetches).toBe(0);
+    expect(resolved).toMatchObject({ known: true, contextLimit: 32_000, outputLimit: 0 });
   });
 
   it("repairs orphan tool results before boundary selection", () => {

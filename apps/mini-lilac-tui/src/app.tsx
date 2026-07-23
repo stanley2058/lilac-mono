@@ -41,7 +41,11 @@ import {
   type MiniLilacUIMessage,
 } from "@stanley2058/mini-lilac-client";
 
-import { readClipboardImage } from "./clipboard";
+import {
+  ClipboardImageTooLargeError,
+  MAX_CLIPBOARD_IMAGE_BYTES,
+  readClipboardImage,
+} from "./clipboard";
 import { registerCodeBlockParsers } from "./code-block-parsers";
 import { Controller, type SessionBindingUpdate, type SessionBindings } from "./controller";
 import {
@@ -93,8 +97,6 @@ import { COLORS, createMarkdownSyntaxStyle, type ThemeColors } from "./theme";
 import { createBufferedChunkOutput } from "./transcript-buffer";
 
 registerCodeBlockParsers();
-
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 const COMPOSER_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", shift: true, action: "newline" },
@@ -1065,7 +1067,7 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
       setNotice("unsupported clipboard image");
       return;
     }
-    if (bytes.length > MAX_IMAGE_BYTES) {
+    if (bytes.length > MAX_CLIPBOARD_IMAGE_BYTES) {
       setNotice("image exceeds 10 MB");
       return;
     }
@@ -1137,9 +1139,15 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
 
   async function pasteClipboardImage(): Promise<void> {
     const generation = draftGeneration;
-    const image = await readClipboardImage();
-    if (image !== undefined && generation === draftGeneration) {
-      attachImage(image.bytes, image.mediaType);
+    try {
+      const image = await readClipboardImage();
+      if (image !== undefined && generation === draftGeneration) {
+        attachImage(image.bytes, image.mediaType);
+      }
+    } catch (error) {
+      if (error instanceof ClipboardImageTooLargeError && generation === draftGeneration) {
+        setNotice("image exceeds 10 MB");
+      }
     }
   }
 

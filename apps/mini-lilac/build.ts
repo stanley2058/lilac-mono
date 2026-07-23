@@ -29,8 +29,22 @@ if (!result.success) {
   throw new Error("Bun.build failed");
 }
 
-const bundledSource = await fs.readFile("./dist/main.js", "utf8");
-if (/from\s+["']@opentui\/core(?:\/[^"']*)?["']/.test(bundledSource)) {
+const isOpenTuiCoreImport = (specifier: string | undefined) =>
+  specifier === "@opentui/core" || specifier?.startsWith("@opentui/core/") === true;
+const transpiler = new Bun.Transpiler({ loader: "js" });
+const bundledImports = (
+  await Promise.all(
+    result.outputs
+      .filter((output) => output.path.endsWith(".js"))
+      .map(async (output) =>
+        transpiler.scanImports((await output.text()).replace(/^#![^\n]*\n/u, "")),
+      ),
+  )
+).flat();
+const retainedOpenTuiCoreImport = bundledImports.some((importRecord) =>
+  isOpenTuiCoreImport(importRecord.path),
+);
+if (retainedOpenTuiCoreImport) {
   throw new Error("The published bundle still imports unpatched @opentui/core JavaScript");
 }
 

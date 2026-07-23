@@ -1000,14 +1000,14 @@ export type AutoCompactionOptions = {
     | undefined
     | Promise<ModelSpecifier | null | undefined>;
 
-  /** Optional context-limit resolver. Defaults to `modelCapability.resolve(spec).limit.context`. */
+  /** Optional limit resolver. Numeric results use a conservative output-token fallback. */
   resolveContextLimit?: (params: {
     defaultModel: ModelSpecifier;
     currentModelSpecifier?: ModelSpecifier;
     currentModel: LanguageModel;
     modelCapability: ModelCapability;
     abortSignal?: AbortSignal;
-  }) => Promise<number>;
+  }) => Promise<number | { readonly context: number; readonly output: number }>;
 
   /** Optional base transform to run before compaction. */
   baseTransformMessages?: TransformMessagesFn;
@@ -1336,14 +1336,16 @@ async function resolveContextLimit(params: {
   const spec = resolvedSpecRaw ?? params.options.model;
 
   if (params.options.resolveContextLimit) {
-    const contextLimit = await params.options.resolveContextLimit({
+    const explicitLimits = await params.options.resolveContextLimit({
       defaultModel: params.options.model,
       currentModelSpecifier: spec,
       currentModel: params.agent.state.model,
       modelCapability: params.options.modelCapability,
       abortSignal: params.abortSignal,
     });
-    if (!(typeof contextLimit === "number") || contextLimit <= 0) {
+    const contextLimit =
+      typeof explicitLimits === "number" ? explicitLimits : explicitLimits.context;
+    if (!Number.isFinite(contextLimit) || contextLimit <= 0) {
       return {
         known: false,
         spec,
@@ -1354,7 +1356,12 @@ async function resolveContextLimit(params: {
       known: true,
       spec,
       contextLimit,
-      outputLimit: 0,
+      outputLimit:
+        typeof explicitLimits !== "number" &&
+        Number.isFinite(explicitLimits.output) &&
+        explicitLimits.output > 0
+          ? explicitLimits.output
+          : 0,
     };
   }
 
@@ -1737,6 +1744,7 @@ export const __autoCompactionInternals = {
   normalizeThresholdFraction,
   repairTranscriptForCompaction,
   renderMessagesForSummary,
+  resolveContextLimit,
   resolveCompactionBoundary,
   shrinkCompactedMessagesToBudget,
   summarizeMessagesHierarchical,
