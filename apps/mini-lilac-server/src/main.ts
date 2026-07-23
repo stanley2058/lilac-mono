@@ -68,7 +68,7 @@ export async function acquireDatabaseLock(databasePath: string): Promise<MiniLil
         lockPath,
         "cat",
       ],
-      { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+      { stdin: "pipe", stdout: "pipe", stderr: "pipe", detached: true },
     );
   } catch (error) {
     throw new MiniLilacDatabaseLockError(

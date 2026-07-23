@@ -19,6 +19,7 @@ import {
 } from "../src/main";
 
 const temporaryDirectories: string[] = [];
+const databaseLockSignalFixture = path.join(import.meta.dir, "fixtures", "database-lock-signal.ts");
 
 afterEach(async () => {
   await Promise.all(
@@ -180,6 +181,43 @@ describe("mini-lilac server CLI", () => {
 });
 
 describe("mini-lilac-server database lock", () => {
+  it("releases cleanly when Ctrl+C reaches the server process group", async () => {
+    const { databasePath } = await temporaryDatabase();
+    const worker = Bun.spawn(
+      ["setsid", process.execPath, databaseLockSignalFixture, databasePath],
+      {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    let exited = false;
+
+    try {
+      const reader = worker.stdout.getReader();
+      const ready = await reader.read();
+      reader.releaseLock();
+      expect(new TextDecoder().decode(ready.value)).toBe("ready\n");
+
+      process.kill(-worker.pid, "SIGINT");
+      const [exitCode, stderr] = await Promise.all([
+        worker.exited,
+        new Response(worker.stderr).text(),
+      ]);
+      exited = true;
+      expect(stderr).toBe("");
+      expect(exitCode).toBe(0);
+
+      const lock = await acquireDatabaseLock(databasePath);
+      await lock.release();
+    } finally {
+      if (!exited) {
+        worker.kill("SIGKILL");
+        await worker.exited;
+      }
+    }
+  });
+
   it("allows exactly one owner under high contention and reacquires after release", async () => {
     const { databasePath } = await temporaryDatabase();
     const attempts = await Promise.allSettled(
