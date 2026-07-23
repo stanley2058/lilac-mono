@@ -159,9 +159,11 @@ COPY packages/remote-fs-runner/package.json packages/remote-fs-runner/package.js
 COPY packages/utils/package.json packages/utils/package.json
 COPY patches patches
 
-# Install dependencies as root and normalize Bun package modes in the same
-# stable layer so source changes cannot trigger a dependency-sized rewrite.
+# Install only the main container's workspace graph. Other app sources remain
+# available in /app, but their dependencies are not included in the image.
 RUN bun install --frozen-lockfile \
+      --filter '@stanley2058/lilac-tool-bridge' \
+      --filter '@stanley2058/lilac-remote-fs-runner' \
   && find /app ! -type l -perm /022 -exec chmod go-w {} +
 
 ############################
