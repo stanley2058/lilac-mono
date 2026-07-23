@@ -3,7 +3,7 @@ import { posix } from "node:path";
 import { getToolName, isToolUIPart, type UIMessageChunk } from "ai";
 import { z } from "zod";
 
-import { parseReasoningSummary } from "@stanley2058/lilac-utils";
+import { parseReasoningSummary } from "@stanley2058/lilac-utils/reasoning-summary";
 
 import {
   miniLilacTodoChunkSchema,
