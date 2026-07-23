@@ -272,7 +272,7 @@ export function subagentTools(params: {
   const inputSchema = createSubagentDelegateInputSchema(selectableModels);
   const description = [
     "Delegate work to a subagent profile (explore, general, self).",
-    "Deferred is the default and should be used for parallelizable work. In deferred mode the child starts immediately, this tool returns an accepted handle, the parent keeps working, and the child result is automatically inserted later as a synthetic tool result. Do not poll or manually join deferred children.",
+    "Deferred is the default and should be used for parallelizable work. In deferred mode, acceptance confirms that the child started, not that it finished. Continue any useful work that does not depend on the child. If you finish that work first, send a brief progress update saying that you are waiting for subagent results, then stop the current step; the runtime keeps the request open and resumes you automatically when results arrive. Give the final answer only after every launched deferred subagent has returned a terminal subagent_result and you have incorporated those results.",
     "Use sync only when the child result is immediately required before any meaningful next step.",
     "Prefer deferred for: repository exploration, independent evidence gathering, parallel investigations, or work whose result can be incorporated later.",
     "Prefer sync for: child answers that determine the next edit or decision, child results needed before responding, or the one blocking computation.",
