@@ -8,7 +8,6 @@
     "terminal",
     "tui"
   ],
-  "private": true,
   "license": "MIT",
   "type": "module",
   "repository": {
