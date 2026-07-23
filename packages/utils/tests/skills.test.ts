@@ -135,6 +135,67 @@ describe("skills discovery", () => {
       source: "lilac-builtin",
     });
   });
+
+  it("caps discovered skills and reports truncation", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-"));
+    const skillsRoot = path.join(tmpRoot, "skills");
+    for (const name of ["skill-one", "skill-two", "skill-three"]) {
+      await mkdirp(path.join(skillsRoot, name));
+      await fs.writeFile(
+        path.join(skillsRoot, name, "SKILL.md"),
+        `---\nname: ${name}\ndescription: ${name}\n---\n`,
+      );
+    }
+
+    const result = await discoverSkills({
+      workspaceRoot: tmpRoot,
+      dataDir: path.join(tmpRoot, "data"),
+      roots: [
+        {
+          pattern: path.join(skillsRoot, "*", "SKILL.md"),
+          source: "agent-project",
+          precedence: 1,
+        },
+      ],
+      maxSkills: 2,
+      maxScanEntries: 100,
+    });
+
+    expect(result.skills).toHaveLength(2);
+    expect(result.warnings.some((warning) => warning.message.includes("capped at 2"))).toBe(true);
+  });
+
+  it("caps filesystem scanning and does not follow skill directory symlinks", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-"));
+    const skillsRoot = path.join(tmpRoot, "skills");
+    const externalRoot = path.join(tmpRoot, "external", "linked-skill");
+    await mkdirp(skillsRoot);
+    await mkdirp(externalRoot);
+    await fs.writeFile(
+      path.join(externalRoot, "SKILL.md"),
+      "---\nname: linked-skill\ndescription: linked\n---\n",
+    );
+    await fs.symlink(externalRoot, path.join(skillsRoot, "linked-skill"));
+    await mkdirp(path.join(skillsRoot, "ordinary-directory"));
+
+    const result = await discoverSkills({
+      workspaceRoot: tmpRoot,
+      dataDir: path.join(tmpRoot, "data"),
+      roots: [
+        {
+          pattern: path.join(skillsRoot, "**", "SKILL.md"),
+          source: "agent-project",
+          precedence: 1,
+        },
+      ],
+      maxScanEntries: 1,
+    });
+
+    expect(result.skills.some((skill) => skill.name === "linked-skill")).toBe(false);
+    expect(result.warnings.some((warning) => warning.message.includes("scan capped at 1"))).toBe(
+      true,
+    );
+  });
 });
 
 describe("skills prompt formatting", () => {

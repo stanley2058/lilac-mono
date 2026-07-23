@@ -59,6 +59,50 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
+async function scanSkillPathsBounded(
+  root: SkillScanRoot,
+  baseDir: string,
+  maxEntries: number,
+): Promise<{ paths: string[]; scannedEntries: number; truncated: boolean }> {
+  const recursive = root.pattern.includes("**");
+  const maxDepth = recursive ? 6 : 1;
+  const pending = [{ directory: baseDir, depth: 0 }];
+  const paths: string[] = [];
+  let scannedEntries = 0;
+
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (current === undefined) break;
+    let directory: Awaited<ReturnType<typeof fs.opendir>>;
+    try {
+      directory = await fs.opendir(current.directory);
+    } catch {
+      continue;
+    }
+    for await (const entry of directory) {
+      scannedEntries += 1;
+      if (scannedEntries > maxEntries) {
+        return { paths, scannedEntries: maxEntries, truncated: true };
+      }
+      if (entry.isSymbolicLink()) continue;
+      const entryPath = path.join(current.directory, entry.name);
+      if (entry.isFile() && entry.name === "SKILL.md" && (recursive || current.depth === 1)) {
+        paths.push(entryPath);
+        continue;
+      }
+      if (
+        entry.isDirectory() &&
+        current.depth < maxDepth &&
+        entry.name !== ".git" &&
+        entry.name !== "node_modules"
+      ) {
+        pending.push({ directory: entryPath, depth: current.depth + 1 });
+      }
+    }
+  }
+  return { paths, scannedEntries, truncated: false };
+}
+
 async function readTextPrefix(filePath: string, maxBytes: number): Promise<string> {
   const handle = await fs.open(filePath, "r");
   try {
@@ -309,7 +353,7 @@ function truncateWithEllipsis(raw: string, maxChars: number): string {
  * Returns null when no skills are provided.
  */
 export function formatAvailableSkillsSection(
-  skills: readonly DiscoveredSkill[],
+  skills: readonly Pick<DiscoveredSkill, "name" | "description">[],
   options?: {
     maxDescriptionChars?: number;
     maxSectionChars?: number;
@@ -365,6 +409,8 @@ export async function discoverSkills(params: {
   dataDir: string;
   homeDir?: string;
   roots?: SkillScanRoot[];
+  maxSkills?: number;
+  maxScanEntries?: number;
 }): Promise<DiscoverSkillsResult> {
   const rootsInput =
     params.roots ??
@@ -388,23 +434,37 @@ export async function discoverSkills(params: {
   const warnings: SkillWarning[] = [];
   const byName = new Map<string, DiscoveredSkill>();
   const seenSkillPaths = new Set<string>();
+  let scannedEntries = 0;
 
-  for (const root of roots) {
-    const baseDir = globBaseDir(root.pattern);
+  scanRoots: for (const root of roots) {
+    const rootBaseDir = globBaseDir(root.pattern);
 
     // If the base directory doesn't exist, skip (Bun.Glob currently throws
     // in some cases when scanning missing roots).
-    if (!(await pathExists(baseDir))) {
+    if (!(await pathExists(rootBaseDir))) {
       continue;
     }
 
-    const glob = new Bun.Glob(root.pattern);
+    const boundedScan =
+      params.maxScanEntries === undefined
+        ? undefined
+        : await scanSkillPathsBounded(root, rootBaseDir, params.maxScanEntries - scannedEntries);
+    const skillPaths =
+      boundedScan?.paths ??
+      new Bun.Glob(root.pattern).scan({
+        onlyFiles: true,
+        absolute: true,
+        followSymlinks: true,
+      });
+    scannedEntries += boundedScan?.scannedEntries ?? 0;
+    if (boundedScan?.truncated) {
+      warnings.push({
+        location: rootBaseDir,
+        message: `skill filesystem scan capped at ${params.maxScanEntries} entries`,
+      });
+    }
 
-    for await (const skillPath of glob.scan({
-      onlyFiles: true,
-      absolute: true,
-      followSymlinks: true,
-    })) {
+    for await (const skillPath of skillPaths) {
       const normalizedSkillPath = path.normalize(skillPath);
       if (seenSkillPaths.has(normalizedSkillPath)) continue;
       seenSkillPaths.add(normalizedSkillPath);
@@ -450,8 +510,8 @@ export async function discoverSkills(params: {
         continue;
       }
 
-      const baseDir = path.dirname(skillPath);
-      const parentDirName = path.basename(baseDir);
+      const skillBaseDir = path.dirname(skillPath);
+      const parentDirName = path.basename(skillBaseDir);
       if (parentDirName !== parsed.name) {
         warnings.push({
           location: skillPath,
@@ -466,10 +526,18 @@ export async function discoverSkills(params: {
         name: parsed.name,
         description: parsed.description,
         location: skillPath,
-        baseDir,
+        baseDir: skillBaseDir,
         source: root.source,
       });
+      if (params.maxSkills !== undefined && byName.size >= params.maxSkills) {
+        warnings.push({
+          location: rootBaseDir,
+          message: `skill discovery capped at ${params.maxSkills} entries`,
+        });
+        break scanRoots;
+      }
     }
+    if (boundedScan?.truncated) break scanRoots;
   }
 
   const skills = Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
