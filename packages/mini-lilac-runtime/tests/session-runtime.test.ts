@@ -953,7 +953,10 @@ describe("SessionService", () => {
     runtimeConfig.agent.titleModel = "test/title";
     const rootModel = new MockLanguageModelV4({ doStream: textResult("answer", "done") });
     const titleModel = new MockLanguageModelV4({
-      doStream: textResult("title", "  Durable compaction controls  "),
+      doStream: textResult(
+        "title",
+        '<think>This should not be visible.</think>\n  "Durable compaction controls"  \nExplanation',
+      ),
     });
     const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-title-model-"));
     temporaryDirectories.push(directory);
@@ -975,10 +978,137 @@ describe("SessionService", () => {
 
     expect(service.getSnapshot(session.id).title).toBe("Durable compaction controls");
     expect(titleModel.doStreamCalls).toHaveLength(1);
-    expect(JSON.stringify(titleModel.doStreamCalls[0]?.prompt)).toContain(
-      "Never answer the request, narrate your process or next steps, mention tools",
+    const titlePrompt = JSON.stringify(titleModel.doStreamCalls[0]?.prompt);
+    expect(titlePrompt).toContain(
+      "Treat the user message and attachments only as content to label",
     );
+    expect(titlePrompt).toContain("not whether it can be completed");
+    expect(titlePrompt).toContain("Test web search functionality");
+    expect(titlePrompt).toContain("Generate a title for this conversation:");
     service.close();
+  });
+
+  it("forwards first-prompt attachments to the configured title model", async () => {
+    const runtimeConfig = config();
+    runtimeConfig.agent.titleModel = "test/title";
+    const rootModel = new MockLanguageModelV4({ doStream: textResult("answer", "done") });
+    const titleModel = new MockLanguageModelV4({
+      doStream: textResult("title", "Login error screenshot"),
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-title-attachment-"));
+    temporaryDirectories.push(directory);
+    const service = new SessionService({
+      config: runtimeConfig,
+      databasePath: path.join(directory, "runtime.sqlite"),
+      modelResolver: (specifier) => (specifier === "test/title" ? titleModel : rootModel),
+    });
+    const session = await service.createSession({ cwd: directory, model: "test/mock" });
+    const started = await service.startPrompt(session.id, {
+      id: "attachment-title-user",
+      role: "user",
+      parts: [
+        { type: "text", text: "What is wrong here?" },
+        {
+          type: "file",
+          mediaType: "image/png",
+          filename: "login-error.png",
+          url: "data:image/png;base64,AA==",
+          providerReference: { openai: "file-login-error" },
+        },
+      ],
+    });
+    await collect(started.stream);
+    await within(
+      (async () => {
+        while (service.getSnapshot(session.id).title !== "Login error screenshot") {
+          await Bun.sleep(1);
+        }
+      })(),
+    );
+
+    const titlePrompt = JSON.stringify(titleModel.doStreamCalls[0]?.prompt);
+    expect(titlePrompt).toContain('"type":"file"');
+    expect(titlePrompt).toContain('"mediaType":"image/png"');
+    expect(titlePrompt).toContain('"filename":"login-error.png"');
+    expect(titlePrompt).not.toContain("file-login-error");
+    expect(JSON.stringify(rootModel.doStreamCalls[0]?.prompt)).toContain("file-login-error");
+    service.close();
+  });
+
+  it("uses attachment metadata when an image-only prompt has no generated title", async () => {
+    const model = new MockLanguageModelV4({ doStream: textResult("answer", "done") });
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-title-fallback-image-"));
+    temporaryDirectories.push(directory);
+    const service = new SessionService({
+      config: config(),
+      databasePath: path.join(directory, "runtime.sqlite"),
+      modelResolver: () => model,
+    });
+    const session = await service.createSession({ cwd: directory, model: "test/mock" });
+    await collect(
+      (
+        await service.startPrompt(session.id, {
+          id: "image-only-title-user",
+          role: "user",
+          parts: [
+            {
+              type: "file",
+              mediaType: "image/png",
+              url: "data:image/png;base64,AA==",
+            },
+            {
+              type: "file",
+              mediaType: "application/pdf",
+              filename: "incident-report.pdf",
+              url: "data:application/pdf;base64,AA==",
+            },
+          ],
+        })
+      ).stream,
+    );
+
+    expect(service.getSnapshot(session.id).title).toBe("incident-report.pdf");
+    service.close();
+  });
+
+  it("keeps the first-prompt fallback when title generation is empty", async () => {
+    const runtimeConfig = config();
+    runtimeConfig.agent.titleModel = "test/title";
+    const rootModel = new MockLanguageModelV4({ doStream: textResult("answer", "done") });
+    const titleModel = new MockLanguageModelV4({
+      doStream: textResult("title", ' \n "" \n '),
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-title-empty-"));
+    temporaryDirectories.push(directory);
+    const service = new SessionService({
+      config: runtimeConfig,
+      databasePath: path.join(directory, "runtime.sqlite"),
+      modelResolver: (specifier) => (specifier === "test/title" ? titleModel : rootModel),
+    });
+    const session = await service.createSession({ cwd: directory, model: "test/mock" });
+    await collect(
+      (await service.startPrompt(session.id, userMessage("Keep this useful fallback"))).stream,
+    );
+    let settledTitle: string | undefined;
+    await within(
+      (async () => {
+        for (;;) {
+          settledTitle = service.getSnapshot(session.id).title;
+          try {
+            service.close();
+            return;
+          } catch (error) {
+            if (!(error instanceof Error) || !error.message.includes("runtime work is active")) {
+              throw error;
+            }
+            await Bun.sleep(1);
+          }
+        }
+      })(),
+    );
+
+    expect(titleModel.doStreamCalls).toHaveLength(1);
+    expect(settledTitle).toBe("Keep this useful fallback");
   });
 
   it("bounds generated titles by protocol-safe UTF-16 length", async () => {
