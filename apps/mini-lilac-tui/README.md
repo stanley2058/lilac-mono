@@ -31,7 +31,7 @@ bun run build
 | Option        | Default                                    | Notes                                             |
 | ------------- | ------------------------------------------ | ------------------------------------------------- |
 | `--server`    | `http://127.0.0.1:8090/api/mini-lilac`     | Mini-lilac API base URL.                          |
-| `--token`     | `MINI_LILAC_TOKEN` / `TOKEN` env           | Bearer token.                                     |
+| `--token`     | `MINI_LILAC_TOKEN` env                     | Bearer token.                                     |
 | `--model`     | last server choice / initial preflight     | Model id in `provider/model` form.                |
 | `--profile`   | last server choice / server default        | Agent profile id.                                 |
 | `--session`   | new random UUID                            | Resume/continue an existing session id.           |

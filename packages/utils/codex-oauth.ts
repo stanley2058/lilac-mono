@@ -104,28 +104,41 @@ async function ensureSecretDir(storagePath: string): Promise<void> {
 }
 
 async function writeSecretFile(storagePath: string, contents: string): Promise<void> {
-  await ensureSecretDir(storagePath);
+  const directory = path.dirname(storagePath);
   const temporaryPath = path.join(
-    path.dirname(storagePath),
+    directory,
     `.${path.basename(storagePath)}.${crypto.randomUUID()}.tmp`,
   );
   let handle: FileHandle | undefined;
+  let directoryHandle: FileHandle | undefined;
   let needsCleanup = false;
   try {
+    await ensureSecretDir(storagePath);
     handle = await open(temporaryPath, "wx", 0o600);
     needsCleanup = true;
     await handle.writeFile(contents, "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
+    if (process.platform !== "win32") directoryHandle = await open(directory, "r");
     await rename(temporaryPath, storagePath);
     needsCleanup = false;
     if (process.platform !== "win32") await chmod(storagePath, 0o600);
+    await directoryHandle?.sync();
+    await directoryHandle?.close();
+    directoryHandle = undefined;
   } catch (error) {
     const cleanupErrors: unknown[] = [];
     if (handle) {
       try {
         await handle.close();
+      } catch (closeError) {
+        cleanupErrors.push(closeError);
+      }
+    }
+    if (directoryHandle) {
+      try {
+        await directoryHandle.close();
       } catch (closeError) {
         cleanupErrors.push(closeError);
       }
@@ -140,10 +153,13 @@ async function writeSecretFile(storagePath: string, contents: string): Promise<v
     if (cleanupErrors.length > 0) {
       throw new AggregateError(
         [error, ...cleanupErrors],
-        `Failed to write Codex OAuth tokens to '${storagePath}' and clean up the temporary file`,
+        `Failed to write Codex OAuth tokens to '${storagePath}' and clean up resources`,
       );
     }
-    throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to write Codex OAuth tokens to '${storagePath}': ${message}`, {
+      cause: error,
+    });
   }
 }
 

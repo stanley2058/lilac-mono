@@ -120,6 +120,7 @@ describe("resolveStartupSession resume", () => {
 
   it("loads session/messages before catalogs and preserves stored bindings absent from catalogs", async () => {
     const calls: string[] = [];
+    const warnings: string[] = [];
     const result = await resolveStartupSession(
       transport(calls),
       options({
@@ -128,7 +129,7 @@ describe("resolveStartupSession resume", () => {
         profile: "wrong-profile",
         reasoning: "low",
       }),
-      io(),
+      { write: (message) => warnings.push(message), question: async () => "" },
     );
 
     expect(calls[0]).toBe("resume");
@@ -144,6 +145,26 @@ describe("resolveStartupSession resume", () => {
       models: [expect.objectContaining({ id: "provider/current-model" })],
       profiles: [expect.objectContaining({ id: "current-profile" })],
     });
+    expect(warnings).toEqual([
+      "Warning: --model, --profile, --reasoning ignored; resumed sessions keep their stored bindings.\n",
+    ]);
+  });
+
+  it("does not warn when explicit resume bindings match the snapshot", async () => {
+    const warnings: string[] = [];
+
+    await resolveStartupSession(
+      transport([]),
+      options({
+        session: "session-1",
+        model: snapshot.model ?? undefined,
+        profile: snapshot.profile ?? undefined,
+        reasoning: snapshot.reasoning ?? undefined,
+      }),
+      { write: (message) => warnings.push(message), question: async () => "" },
+    );
+
+    expect(warnings).toEqual([]);
   });
 
   it("rejects a resumed session bound to another canonical cwd", async () => {

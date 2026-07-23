@@ -9,8 +9,8 @@ import {
 
 export const DEFAULT_SERVER_URL = "http://127.0.0.1:8090/api/mini-lilac";
 
-/** Environment variables consulted for the bearer token, in priority order. */
-export const TOKEN_ENV_VARS = ["MINI_LILAC_TOKEN", "TOKEN"] as const;
+/** Environment variable consulted for the bearer token. */
+export const TOKEN_ENV_VARS = ["MINI_LILAC_TOKEN"] as const;
 
 export interface CliOptions {
   readonly server: string;
@@ -92,7 +92,7 @@ Usage:
 
 Options:
   --server <url>      Mini-lilac API base URL (default: ${DEFAULT_SERVER_URL})
-  --token <token>     Bearer token (or set ${TOKEN_ENV_VARS.join(" / ")})
+  --token <token>     Bearer token (or set MINI_LILAC_TOKEN)
   --model <id>        Model id in provider/model form (e.g. anthropic/claude-sonnet-4-20250514)
   --profile <id>      Agent profile id
   --session <id>      Resume an existing session id

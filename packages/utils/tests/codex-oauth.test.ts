@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -72,6 +72,30 @@ describe("Codex OAuth login", () => {
       ).toEqual([]);
       await clearCodexTokens(storagePath);
       expect(await readCodexTokens(storagePath)).toBeNull();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("adds destination context and removes temporary files when a write fails", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codex-oauth-failure-"));
+    const storagePath = path.join(directory, "codex.json");
+    await mkdir(storagePath);
+    let caught: unknown;
+    try {
+      await writeCodexTokens(
+        { type: "oauth", access: "access", refresh: "refresh", expires: 123 },
+        storagePath,
+      );
+    } catch (error) {
+      caught = error;
+    }
+    try {
+      expect(caught).toBeInstanceOf(Error);
+      if (!(caught instanceof Error)) throw new Error("Expected token write to fail");
+      expect(caught.message).toContain(storagePath);
+      expect(caught.cause).toBeDefined();
+      expect((await readdir(directory)).filter((file) => file.endsWith(".tmp"))).toEqual([]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

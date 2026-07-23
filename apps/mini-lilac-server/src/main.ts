@@ -186,12 +186,15 @@ export async function shutdownMiniLilacServer(options: MiniLilacShutdownOptions)
     !listenerSettled ||
     !cancellationsSettled ||
     options.listActiveRuns().length > 0;
-  if (force) {
-    await options.stopListener(true);
-  } else {
-    await Promise.all([gracefulStop, cancellations]);
+  try {
+    if (force) {
+      await options.stopListener(true);
+    } else {
+      await Promise.all([gracefulStop, cancellations]);
+    }
+  } finally {
+    await options.closeRuntime();
   }
-  await options.closeRuntime();
 }
 
 const serveOptionsSchema = z.object({
@@ -488,19 +491,22 @@ export async function main(
     const shutdown = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
-      await shutdownMiniLilacServer({
-        stopListener: (force) => app.stop(force).then(() => undefined),
-        listActiveRuns,
-        cancelRun: (run) =>
-          runtime
-            .cancel({
-              ...run,
-              clientCommandId: `shutdown-${crypto.randomUUID()}`,
-            })
-            .then(() => undefined),
-        closeRuntime: () => runtime.shutdown({ graceMs: SHUTDOWN_GRACE_MS }),
-      });
-      await databaseLock.release();
+      try {
+        await shutdownMiniLilacServer({
+          stopListener: (force) => app.stop(force).then(() => undefined),
+          listActiveRuns,
+          cancelRun: (run) =>
+            runtime
+              .cancel({
+                ...run,
+                clientCommandId: `shutdown-${crypto.randomUUID()}`,
+              })
+              .then(() => undefined),
+          closeRuntime: () => runtime.shutdown({ graceMs: SHUTDOWN_GRACE_MS }),
+        });
+      } finally {
+        await databaseLock.release();
+      }
     };
 
     const handleSignal = () => {

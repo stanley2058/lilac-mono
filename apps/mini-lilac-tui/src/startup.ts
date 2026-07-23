@@ -80,6 +80,24 @@ export async function resolveStartupSession(
       options.session,
       options.cwd,
     ));
+    const ignoredBindings: string[] = [];
+    if (options.model !== undefined && options.model !== (snapshot.model ?? undefined)) {
+      ignoredBindings.push("--model");
+    }
+    if (options.profile !== undefined && options.profile !== (snapshot.profile ?? undefined)) {
+      ignoredBindings.push("--profile");
+    }
+    if (
+      options.reasoning !== undefined &&
+      options.reasoning !== (snapshot.reasoning ?? undefined)
+    ) {
+      ignoredBindings.push("--reasoning");
+    }
+    if (ignoredBindings.length > 0) {
+      io.write(
+        `Warning: ${ignoredBindings.join(", ")} ignored; resumed sessions keep their stored bindings.\n`,
+      );
+    }
   }
 
   const [models, profiles] = await Promise.all([transport.listModels(), transport.listProfiles()]);

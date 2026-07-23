@@ -306,4 +306,28 @@ describe("mini-lilac-server shutdown", () => {
 
     expect(events).toEqual(["stop:false", "cancel", "stop:true", "close"]);
   });
+
+  it("closes the runtime when force-closing the listener fails", async () => {
+    const events: string[] = [];
+    let now = 0;
+
+    await expect(
+      shutdownMiniLilacServer({
+        stopListener: (force) => {
+          events.push(`stop:${force}`);
+          if (force) throw new Error("force close failed");
+          return new Promise<void>(() => {});
+        },
+        listActiveRuns: () => [],
+        cancelRun: async () => {},
+        closeRuntime: () => void events.push("close"),
+        graceMs: 10,
+        pollIntervalMs: 5,
+        now: () => now,
+        sleep: async (milliseconds) => void (now += milliseconds),
+      }),
+    ).rejects.toThrow("force close failed");
+
+    expect(events).toEqual(["stop:false", "stop:true", "close"]);
+  });
 });

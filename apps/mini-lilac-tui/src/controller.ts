@@ -573,12 +573,15 @@ export class Controller {
         }
         if (done) return terminalFinish ? "completed" : "disconnected";
         if (value.type === "finish") terminalFinish = true;
-        const cursor = miniLilacStreamCursorChunkSchema.safeParse(value);
-        if (cursor.success) this.admitRun(cursor.data.data.runId);
-        const steering = miniLilacSteeringChunkSchema.safeParse(value);
-        if (steering.success) {
-          this.appendReplayedSteering(steering.data.data);
-          continue;
+        if (value.type === "data-streamCursor") {
+          const cursor = miniLilacStreamCursorChunkSchema.safeParse(value);
+          if (cursor.success) this.admitRun(cursor.data.data.runId);
+        } else if (value.type === "data-steering") {
+          const steering = miniLilacSteeringChunkSchema.safeParse(value);
+          if (steering.success) {
+            this.appendReplayedSteering(steering.data.data);
+            continue;
+          }
         }
         this.renderer.handle(value);
       }

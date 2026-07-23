@@ -51,6 +51,7 @@ npm pack ./dist
 `bun run pack:npm` creates the npm tarball. `bun run publish:npm` publishes the staged `dist/`
 package, leaving workspace-only source, scripts, and dependencies out of the registry metadata.
 
-The client, server, and their internal workspace dependencies are bundled into `dist/main.js`.
-`@opentui/core` remains a package dependency so the package manager installs the correct native
-binary for the target platform. No other Mini Lilac workspace package is required after publishing.
+The client, server, their internal workspace dependencies, and the patched `@opentui/core`
+JavaScript are bundled into `dist/main.js`. `@opentui/core` remains a package dependency so the
+package manager installs its worker dependency and the correct native binary for the target
+platform. No other Mini Lilac workspace package is required after publishing.
