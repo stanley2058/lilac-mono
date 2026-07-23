@@ -1335,25 +1335,6 @@ async function resolveContextLimit(params: {
     : params.agent.state.modelSpecifier;
   const spec = resolvedSpecRaw ?? params.options.model;
 
-  let modelInfo:
-    | {
-        limit: {
-          context: number;
-          output: number;
-        };
-      }
-    | undefined;
-  let modelResolveError: unknown;
-  try {
-    modelInfo = await params.options.modelCapability.resolve(spec, {
-      signal: params.abortSignal,
-    });
-  } catch (error) {
-    modelInfo = undefined;
-    modelResolveError = error;
-  }
-  const outputLimit = modelInfo?.limit.output ?? 0;
-
   if (params.options.resolveContextLimit) {
     const contextLimit = await params.options.resolveContextLimit({
       defaultModel: params.options.model,
@@ -1373,9 +1354,28 @@ async function resolveContextLimit(params: {
       known: true,
       spec,
       contextLimit,
-      outputLimit,
+      outputLimit: 0,
     };
   }
+
+  let modelInfo:
+    | {
+        limit: {
+          context: number;
+          output: number;
+        };
+      }
+    | undefined;
+  let modelResolveError: unknown;
+  try {
+    modelInfo = await params.options.modelCapability.resolve(spec, {
+      signal: params.abortSignal,
+    });
+  } catch (error) {
+    modelInfo = undefined;
+    modelResolveError = error;
+  }
+  const outputLimit = modelInfo?.limit.output ?? 0;
 
   if (!modelInfo) {
     return {

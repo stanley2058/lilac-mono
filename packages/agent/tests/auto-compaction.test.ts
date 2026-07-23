@@ -400,6 +400,32 @@ describe("auto-compaction internals", () => {
     detach();
   });
 
+  it("uses an explicit context resolver without fetching model capabilities", async () => {
+    let capabilityFetches = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      modelSpecifier: "custom/private-model",
+    });
+
+    const detach = await attachAutoCompaction(agent, {
+      model: "custom/private-model",
+      modelCapability: new ModelCapability({
+        fetch: Object.assign(
+          async () => {
+            capabilityFetches += 1;
+            throw new Error("model capability fetch must not run");
+          },
+          { preconnect() {} },
+        ),
+      }),
+      resolveContextLimit: async () => 128_000,
+    });
+
+    expect(capabilityFetches).toBe(0);
+    detach();
+  });
+
   it("repairs orphan tool results before boundary selection", () => {
     const messages: ModelMessage[] = [
       {
