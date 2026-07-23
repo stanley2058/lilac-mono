@@ -40,17 +40,20 @@ describe("compact subagent progress", () => {
     return lines.map((line) => line.replaceAll("\\", ""));
   }
 
-  it("keeps detailed reasoning and progress within the shared five-line body", () => {
+  it("keeps detailed reasoning visible alongside all five action rows", () => {
     const value = buildProgressFieldValue({
-      reasoningValue: "> reason one\n> reason two\n> reason three",
-      actionsValue: "action one\naction two\nagent one",
+      reasoningValue: "> **Inspecting**\n> reasoning detail",
+      actionsValue: "action one\naction two\naction three\naction four\nagent one",
     });
 
     expect(value.split("\n")).toEqual([
-      "> reason one",
+      "> **Inspecting**",
+      "> reasoning detail",
       "",
       "action one",
       "action two",
+      "action three",
+      "action four",
       "agent one",
     ]);
   });
