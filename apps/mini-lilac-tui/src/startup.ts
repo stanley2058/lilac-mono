@@ -2,6 +2,7 @@ import type {
   MiniLilacModelSummary,
   MiniLilacProfileSummary,
   MiniLilacReasoning,
+  MiniLilacSessionResume,
   MiniLilacSessionSnapshot,
   MiniLilacTodoState,
   MiniLilacTransport,
@@ -14,7 +15,7 @@ import type { BindingPreference } from "./preferences";
 
 export type StartupTransport = Pick<
   MiniLilacTransport,
-  "getSession" | "getMessages" | "getTodos" | "listModels" | "listProfiles"
+  "getSessionResume" | "listModels" | "listProfiles" | "setReconnectCursor"
 >;
 
 export interface StartupSession {
@@ -25,6 +26,7 @@ export interface StartupSession {
   readonly snapshot: MiniLilacSessionSnapshot | undefined;
   readonly messages: MiniLilacUIMessage[];
   readonly todos: MiniLilacTodoState;
+  readonly replayCursor: MiniLilacSessionResume["replayCursor"];
   readonly models: readonly MiniLilacModelSummary[];
   readonly profiles: readonly MiniLilacProfileSummary[];
 }
@@ -44,21 +46,19 @@ export function verifySessionCwd(snapshot: MiniLilacSessionSnapshot, cwd: string
 }
 
 export async function loadExistingSession(
-  transport: Pick<MiniLilacTransport, "getSession" | "getMessages" | "getTodos">,
+  transport: Pick<MiniLilacTransport, "getSessionResume" | "setReconnectCursor">,
   sessionId: string,
   cwd: string,
 ): Promise<{
   readonly snapshot: MiniLilacSessionSnapshot;
   readonly messages: MiniLilacUIMessage[];
   readonly todos: MiniLilacTodoState;
+  readonly replayCursor: MiniLilacSessionResume["replayCursor"];
 }> {
-  const [snapshot, messages, todos] = await Promise.all([
-    transport.getSession(sessionId),
-    transport.getMessages(sessionId),
-    transport.getTodos(sessionId),
-  ]);
+  const { snapshot, messages, todos, replayCursor } = await transport.getSessionResume(sessionId);
   verifySessionCwd(snapshot, cwd);
-  return { snapshot, messages, todos };
+  transport.setReconnectCursor(sessionId, replayCursor);
+  return { snapshot, messages, todos, replayCursor };
 }
 
 /** Resolve a fresh or resumed session without creating fresh binding mismatches. */
@@ -71,10 +71,11 @@ export async function resolveStartupSession(
   let snapshot: MiniLilacSessionSnapshot | undefined;
   let messages: MiniLilacUIMessage[] = [];
   let todos: MiniLilacTodoState = { revision: 0, todos: [] };
+  let replayCursor: MiniLilacSessionResume["replayCursor"] = null;
 
   if (options.session !== undefined) {
     // Resume state and canonical transcript are loaded before catalog selection.
-    ({ snapshot, messages, todos } = await loadExistingSession(
+    ({ snapshot, messages, todos, replayCursor } = await loadExistingSession(
       transport,
       options.session,
       options.cwd,
@@ -123,6 +124,7 @@ export async function resolveStartupSession(
     snapshot,
     messages,
     todos,
+    replayCursor,
     models,
     profiles,
   };

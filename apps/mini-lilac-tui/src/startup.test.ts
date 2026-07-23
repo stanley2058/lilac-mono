@@ -62,6 +62,7 @@ const snapshot: MiniLilacSessionSnapshot = {
 function transport(
   calls: string[],
   storedSnapshot: MiniLilacSessionSnapshot = snapshot,
+  replayCursor: { runId: string; afterSeq: number } | null = null,
 ): StartupTransport {
   const models: MiniLilacModelSummary[] = [
     {
@@ -75,18 +76,11 @@ function transport(
     { id: "current-profile", label: "Current profile", subagentOnly: false, isDefault: true },
   ];
   return {
-    getSession: async () => {
-      calls.push("session");
-      return storedSnapshot;
+    getSessionResume: async () => {
+      calls.push("resume");
+      return { snapshot: storedSnapshot, messages, todos, replayCursor };
     },
-    getMessages: async () => {
-      calls.push("messages");
-      return messages;
-    },
-    getTodos: async () => {
-      calls.push("todos");
-      return todos;
-    },
+    setReconnectCursor: () => {},
     listModels: async () => {
       calls.push("models");
       return models;
@@ -101,11 +95,27 @@ function transport(
 describe("resolveStartupSession resume", () => {
   it("loads and cwd-validates a selected existing session", async () => {
     const selected = await loadExistingSession(transport([]), "session-1", cwd);
-    expect(selected).toEqual({ snapshot, messages, todos });
+    expect(selected).toEqual({ snapshot, messages, todos, replayCursor: null });
 
     await expect(
       loadExistingSession(transport([]), "session-1", canonicalCwd("/tmp")),
     ).rejects.toThrow("belongs to cwd");
+  });
+
+  it("primes reconnect from the resume projection cursor", async () => {
+    const cursors: unknown[] = [];
+    const base = transport([], snapshot, { runId: "run-active", afterSeq: 12 });
+    const selected = await loadExistingSession(
+      {
+        ...base,
+        setReconnectCursor: (_sessionId, cursor) => cursors.push(cursor),
+      },
+      "session-1",
+      cwd,
+    );
+
+    expect(selected.replayCursor).toEqual({ runId: "run-active", afterSeq: 12 });
+    expect(cursors).toEqual([{ runId: "run-active", afterSeq: 12 }]);
   });
 
   it("loads session/messages before catalogs and preserves stored bindings absent from catalogs", async () => {
@@ -121,8 +131,8 @@ describe("resolveStartupSession resume", () => {
       io(),
     );
 
-    expect(calls.slice(0, 3).sort()).toEqual(["messages", "session", "todos"]);
-    expect(calls.slice(3).sort()).toEqual(["models", "profiles"]);
+    expect(calls[0]).toBe("resume");
+    expect(calls.slice(1).sort()).toEqual(["models", "profiles"]);
     expect(result).toMatchObject({
       sessionId: "session-1",
       model: "removed-provider/removed-model",

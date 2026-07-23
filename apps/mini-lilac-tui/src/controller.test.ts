@@ -75,6 +75,10 @@ class FakeTransport extends MiniLilacTransport {
   bindingRequests: MiniLilacUpdateSessionBindingsInput[] = [];
   localBindings: Array<{ model?: string; profile?: string; reasoning?: string }> = [];
   sendAbortSignal: AbortSignal | undefined;
+  steerAbortSignals: Array<AbortSignal | undefined> = [];
+  interruptAbortSignals: Array<AbortSignal | undefined> = [];
+  interruptRequests: Array<Parameters<MiniLilacTransport["interruptQueuedSteering"]>[0]> = [];
+  cancelAbortSignals: Array<AbortSignal | undefined> = [];
   sentMessages: MiniLilacUIMessage[] = [];
   canonicalMessages: MiniLilacUIMessage[] = [];
 
@@ -85,6 +89,7 @@ class FakeTransport extends MiniLilacTransport {
       readonly admissionGate?: Promise<void>;
       readonly steerError?: Error;
       readonly steer?: (request: MiniLilacSteerRequest) => Promise<MiniLilacSteerResult>;
+      readonly interrupt?: () => Promise<MiniLilacInterruptQueuedSteeringResult>;
       readonly messagesError?: Error;
       readonly getMessages?: () => Promise<MiniLilacUIMessage[]>;
       readonly cancel?: () => Promise<MiniLilacCancelResult>;
@@ -140,21 +145,35 @@ class FakeTransport extends MiniLilacTransport {
     return Promise.resolve(this.behavior.reconnectStream?.() ?? null);
   }
 
-  override steer(request: MiniLilacSteerRequest): Promise<MiniLilacSteerResult> {
+  override steer(
+    request: MiniLilacSteerRequest,
+    options?: Parameters<MiniLilacTransport["steer"]>[1],
+  ): Promise<MiniLilacSteerResult> {
     const text = messageText(request.message);
     this.calls.push(`steer:${text}`);
+    this.steerAbortSignals.push(options?.signal);
     if (this.behavior.steer !== undefined) return this.behavior.steer(request);
     if (this.behavior.steerError !== undefined) return Promise.reject(this.behavior.steerError);
     return Promise.resolve({ status: "queued", steeringId: `steer-${text}` });
   }
 
-  override interruptQueuedSteering(): Promise<MiniLilacInterruptQueuedSteeringResult> {
+  override interruptQueuedSteering(
+    request: Parameters<MiniLilacTransport["interruptQueuedSteering"]>[0],
+    options?: Parameters<MiniLilacTransport["interruptQueuedSteering"]>[1],
+  ): Promise<MiniLilacInterruptQueuedSteeringResult> {
     this.calls.push("interrupt");
+    this.interruptRequests.push(request);
+    this.interruptAbortSignals.push(options?.signal);
+    if (this.behavior.interrupt !== undefined) return this.behavior.interrupt();
     return Promise.resolve({ status: "interrupted", steeringIds: [] });
   }
 
-  override cancel(): Promise<MiniLilacCancelResult> {
+  override cancel(
+    _request: Parameters<MiniLilacTransport["cancel"]>[0],
+    options?: Parameters<MiniLilacTransport["cancel"]>[1],
+  ): Promise<MiniLilacCancelResult> {
     this.calls.push("cancel");
+    this.cancelAbortSignals.push(options?.signal);
     if (this.behavior.cancel !== undefined) return this.behavior.cancel();
     try {
       this.streamController?.enqueue({ type: "finish", finishReason: "stop" });
@@ -1186,7 +1205,7 @@ describe("Controller effect wiring", () => {
     ).toBe("restored prompt\none\ntwo\nthree");
   });
 
-  it("serializes steers and interrupts only after admissions complete, then cancels on Esc", async () => {
+  it("interrupts pending steer admissions atomically, then cancels on Esc", async () => {
     const transport = new FakeTransport();
     const controller = new Controller({
       transport,
@@ -1204,14 +1223,15 @@ describe("Controller effect wiring", () => {
     controller.submit(); // active + empty + queued -> interrupt
     await flush();
 
-    expect(transport.calls).toEqual(["steer:one", "steer:two", "interrupt"]);
+    expect(transport.calls).toEqual(["interrupt"]);
+    expect(transport.interruptRequests[0]?.pendingSteerCommandIds).toHaveLength(2);
 
     controller.escape(); // active Esc/Ctrl-C semantic event -> explicit cancel
     expect(controller.inputState.pendingSteeringCount).toBe(0);
     expect(controller.inputState.confirmedSteeringCount).toBe(0);
     await flush();
 
-    expect(transport.calls).toEqual(["steer:one", "steer:two", "interrupt", "cancel"]);
+    expect(transport.calls).toEqual(["interrupt", "cancel"]);
   });
 
   it("orders cancel after deferred prompt and steer admission", async () => {
@@ -1235,6 +1255,112 @@ describe("Controller effect wiring", () => {
     admission.resolve(undefined);
     await flush();
     expect(transport.calls).toEqual(["steer:steer after admission", "cancel"]);
+  });
+
+  it("cancels without waiting for a stalled steer response", async () => {
+    const cancelReached = deferred<void>();
+    const transport = new FakeTransport({
+      steer: () => new Promise<MiniLilacSteerResult>(() => {}),
+      cancel: async () => {
+        cancelReached.resolve(undefined);
+        return { status: "cancelled" };
+      },
+    });
+    const controller = new Controller({
+      transport,
+      ui: silentUI(),
+      sessionId: "session-1",
+      onExit: () => {},
+    });
+    controller.start();
+    submitText(controller, "hello");
+    await flush();
+
+    submitText(controller, "stalled steer");
+    await flush();
+    controller.escape();
+    await Promise.race([
+      cancelReached.promise,
+      Bun.sleep(1_000).then(() => {
+        throw new Error("cancel did not reach the transport");
+      }),
+    ]);
+
+    expect(transport.calls).toEqual(["steer:stalled steer", "cancel"]);
+    expect(transport.steerAbortSignals[0]?.aborted).toBe(true);
+    expect(transport.cancelAbortSignals[0]?.aborted).toBe(false);
+    expect(transport.sendAbortSignal?.aborted).toBe(false);
+    expect(transport.streamCancelCount).toBe(0);
+    controller.dispose();
+  });
+
+  it("interrupts without waiting for a stalled steer response", async () => {
+    const interruptReached = deferred<void>();
+    const transport = new FakeTransport({
+      steer: () => new Promise<MiniLilacSteerResult>(() => {}),
+      interrupt: async () => {
+        interruptReached.resolve(undefined);
+        return { status: "interrupted", steeringIds: [] };
+      },
+    });
+    const controller = new Controller({
+      transport,
+      ui: silentUI(),
+      sessionId: "session-1",
+      onExit: () => {},
+    });
+    controller.start();
+    submitText(controller, "hello");
+    await flush();
+
+    submitText(controller, "stalled steer");
+    await flush();
+    controller.submit();
+    await Promise.race([
+      interruptReached.promise,
+      Bun.sleep(1_000).then(() => {
+        throw new Error("interrupt did not reach the transport");
+      }),
+    ]);
+
+    expect(transport.calls).toEqual(["steer:stalled steer", "interrupt"]);
+    expect(transport.interruptAbortSignals[0]?.aborted).toBe(false);
+    expect(transport.sendAbortSignal?.aborted).toBe(false);
+    await flush();
+    expect(controller.transcript.map((entry) => entry.text)).toEqual(["hello"]);
+    controller.dispose();
+  });
+
+  it("keeps newer steer barriers when an older interrupt reset arrives", async () => {
+    const transport = new FakeTransport({
+      steer: () => new Promise<MiniLilacSteerResult>(() => {}),
+      interrupt: async () => ({ status: "empty" }),
+    });
+    const controller = new Controller({
+      transport,
+      ui: silentUI(),
+      sessionId: "session-1",
+      onExit: () => {},
+    });
+    controller.start();
+    submitText(controller, "hello");
+    await flush();
+
+    submitText(controller, "older steer");
+    await flush();
+    controller.submit();
+    await flush();
+    expect(transport.interruptRequests[0]?.pendingSteerCommandIds).toHaveLength(1);
+
+    submitText(controller, "newer steer");
+    await flush();
+    transport.enqueue({ type: "data-transcriptReset", data: { reason: "interrupt" } });
+    await flush();
+    controller.submit();
+    await flush();
+
+    expect(transport.interruptRequests[1]?.pendingSteerCommandIds).toHaveLength(1);
+    controller.dispose();
   });
 
   it("does not cancel and removes local user output when prompt admission fails", async () => {
@@ -1516,6 +1642,31 @@ describe("Controller effect wiring", () => {
       "transcript rewound (cancel); canonical transcript will be reconciled",
     ]);
     expect(controller.inputState.phase).toBe("idle");
+  });
+
+  it("preserves admitted steering across an interrupt transcript reset", async () => {
+    const transport = new FakeTransport();
+    const controller = new Controller({
+      transport,
+      ui: silentUI(),
+      sessionId: "session-1",
+      onExit: () => {},
+    });
+    controller.start();
+    submitText(controller, "hello");
+    await flush();
+    submitText(controller, "replacement direction");
+    await flush();
+    transport.enqueue({ type: "text-start", id: "discarded" });
+    transport.enqueue({ type: "text-delta", id: "discarded", delta: "discard me" });
+    transport.enqueue({ type: "data-transcriptReset", data: { reason: "interrupt" } });
+    await flush();
+
+    expect(controller.transcript.map((entry) => entry.text)).toEqual([
+      "hello",
+      "replacement direction",
+      "transcript rewound (interrupt); canonical transcript will be reconciled",
+    ]);
   });
 
   it("shows canonical steering user messages after normal completion", async () => {
@@ -1955,6 +2106,51 @@ describe("Controller effect wiring", () => {
       "existing",
       expect.any(String),
     ]);
+  });
+
+  it("replays an admitted steering message at its original stream position", async () => {
+    const initialMessages: MiniLilacUIMessage[] = [
+      { id: "root", role: "user", parts: [{ type: "text", text: "root prompt" }] },
+    ];
+    const steering: MiniLilacUserUIMessage = {
+      id: "steer-replayed",
+      role: "user",
+      parts: [{ type: "text", text: "replayed steering" }],
+    };
+    const transport = new FakeTransport({
+      reconnectStream: () =>
+        new ReadableStream<UIMessageChunk>({
+          start(stream) {
+            stream.enqueue({ type: "data-steering", id: steering.id, data: steering });
+          },
+        }),
+    });
+    const controller = new Controller({
+      transport,
+      ui: silentUI(),
+      sessionId: "session-1",
+      initialSnapshot: {
+        ...SESSION_PRESENTATION,
+        id: "session-1",
+        activeRunId: "run-1",
+        status: "streaming",
+        cwd: process.cwd(),
+        model: "provider/model",
+        profile: "general",
+        reasoning: null,
+        queuedSteeringCount: 1,
+      },
+      initialMessages,
+      onExit: () => {},
+    });
+
+    controller.start();
+    await flush();
+    expect(controller.transcript.map((entry) => entry.text)).toEqual([
+      "root prompt",
+      "replayed steering",
+    ]);
+    controller.dispose();
   });
 
   it("publishes hydrated todos initially and admits only newer live revisions", async () => {

@@ -72,6 +72,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     profile: startup.profile,
     reasoning: startup.reasoning,
   });
+  transport.setReconnectCursor(startup.sessionId, startup.replayCursor);
 
   let resolveDestroyed: (() => void) | undefined;
   const destroyed = new Promise<void>((resolve) => {
@@ -114,7 +115,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     await render(() => {
       const [current, setCurrent] = createSignal(startup);
       const switchSession = async (sessionId: string): Promise<void> => {
-        const { snapshot, messages, todos } = await loadExistingSession(
+        const { snapshot, messages, todos, replayCursor } = await loadExistingSession(
           transport,
           sessionId,
           options.cwd,
@@ -133,6 +134,7 @@ export async function main(argv: readonly string[]): Promise<number> {
           snapshot,
           messages,
           todos,
+          replayCursor,
           models: startup.models,
           profiles: startup.profiles,
         });
@@ -151,6 +153,7 @@ export async function main(argv: readonly string[]): Promise<number> {
           snapshot: undefined,
           messages: [],
           todos: { revision: 0, todos: [] },
+          replayCursor: null,
           models: startup.models,
           profiles: startup.profiles,
         });

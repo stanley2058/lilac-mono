@@ -1,6 +1,7 @@
 import type { UIMessageChunk } from "ai";
 
 import {
+  miniLilacSteeringChunkSchema,
   miniLilacStreamCursorChunkSchema,
   type MiniLilacControlResult,
   type MiniLilacReasoning,
@@ -85,6 +86,14 @@ export class Controller {
   private todos: MiniLilacTodoState;
   private sessionExists: boolean;
   private readonly abortController = new AbortController();
+  private controlAbortController = new AbortController();
+  private controlGeneration = 0;
+  private readonly pendingSteerCommandIds = new Set<string>();
+  private readonly pendingSteerOptimistic = new Map<
+    string,
+    { readonly messageId: string; readonly remove: () => void }
+  >();
+  private readonly interruptSteerCommandIds = new Map<string, readonly string[]>();
   private runOutputBaseline: number;
   private runMessageBaseline: number;
   private runGeneration = 0;
@@ -257,6 +266,7 @@ export class Controller {
     if (this.disposed) return;
     this.disposed = true;
     this.abortController.abort();
+    this.controlAbortController.abort();
     const reader = this.activeReader;
     this.activeReader = undefined;
     if (reader !== undefined) void reader.cancel().catch(() => undefined);
@@ -565,6 +575,11 @@ export class Controller {
         if (value.type === "finish") terminalFinish = true;
         const cursor = miniLilacStreamCursorChunkSchema.safeParse(value);
         if (cursor.success) this.admitRun(cursor.data.data.runId);
+        const steering = miniLilacSteeringChunkSchema.safeParse(value);
+        if (steering.success) {
+          this.appendReplayedSteering(steering.data.data);
+          continue;
+        }
         this.renderer.handle(value);
       }
     } catch {
@@ -585,6 +600,8 @@ export class Controller {
   ): void {
     const admission = this.promptAdmission;
     const generation = this.runGeneration;
+    const controlGeneration = this.controlGeneration;
+    const signal = this.controlAbortController.signal;
     const text = expandDraftText(draftText, files, pastedTexts);
     const message: MiniLilacUserUIMessage = {
       id: crypto.randomUUID(),
@@ -592,32 +609,45 @@ export class Controller {
       parts: userParts(text, files),
     };
     const clientCommandId = crypto.randomUUID();
+    this.pendingSteerCommandIds.add(clientCommandId);
     this.messages.push(message);
     const outputIds = this.appendUserOutput(text, files);
-    const rollback = () => {
+    const removeOptimistic = () => {
       this.messages = this.messages.filter((candidate) => candidate.id !== message.id);
       outputIds.forEach((id) => this.removeOutput(id));
+    };
+    const rollback = () => {
+      removeOptimistic();
       this.restoreSubmittedDraft(draftText, files, pastedTexts, false, true);
     };
+    this.pendingSteerOptimistic.set(clientCommandId, {
+      messageId: message.id,
+      remove: removeOptimistic,
+    });
     this.steerChain = this.steerChain.then(async () => {
-      const runId = await admission;
-      if (runId === undefined || !this.isCurrentRun(generation)) {
-        rollback();
-        return;
-      }
       try {
+        const runId = await admission;
+        if (runId === undefined || !this.isCurrentControl(generation, controlGeneration)) {
+          rollback();
+          this.pendingSteerOptimistic.delete(clientCommandId);
+          return;
+        }
         const request = { sessionId: this.sessionId, runId, message, clientCommandId };
         try {
-          await this.options.transport.steer(request, { signal: this.abortController.signal });
+          await this.options.transport.steer(request, { signal });
         } catch {
-          if (this.abortController.signal.aborted) throw new Error("Steering was aborted");
-          await this.options.transport.steer(request, { signal: this.abortController.signal });
+          if (!this.isCurrentControl(generation, controlGeneration) || signal.aborted) return;
+          await this.options.transport.steer(request, { signal });
         }
+        this.pendingSteerOptimistic.delete(clientCommandId);
       } catch (error) {
+        if (!this.isCurrentControl(generation, controlGeneration)) return;
         rollback();
-        if (!this.isCurrentRun(generation)) return;
+        this.pendingSteerOptimistic.delete(clientCommandId);
         this.dispatch({ type: "steer-failed" });
         this.commitError(error);
+      } finally {
+        this.pendingSteerCommandIds.delete(clientCommandId);
       }
     });
   }
@@ -626,28 +656,31 @@ export class Controller {
     const admission = this.promptAdmission;
     const generation = this.runGeneration;
     const clientCommandId = crypto.randomUUID();
-    // Chained after pending steers so admissions complete before interrupting.
-    this.steerChain = this.steerChain.then(async () => {
+    const pendingSteerCommandIds = [...this.pendingSteerCommandIds];
+    this.interruptSteerCommandIds.set(clientCommandId, pendingSteerCommandIds);
+    const signal = this.abortPendingControls();
+    void (async () => {
       const runId = await admission;
       if (runId === undefined || !this.isCurrentRun(generation)) return;
       try {
         await this.options.transport.interruptQueuedSteering(
-          { sessionId: this.sessionId, runId, clientCommandId },
-          { signal: this.abortController.signal },
+          { sessionId: this.sessionId, runId, clientCommandId, pendingSteerCommandIds },
+          { signal },
         );
+        this.confirmInterrupt(clientCommandId);
       } catch (error) {
         if (!this.isCurrentRun(generation)) return;
         this.commitError(error);
       }
-    });
+    })();
   }
 
   private enqueueCancel(): void {
     const admission = this.promptAdmission;
     const generation = this.runGeneration;
     const clientCommandId = crypto.randomUUID();
-    // Cancellation follows prompt and steering admission so it cannot overtake them.
-    this.steerChain = this.steerChain.then(async () => {
+    const pendingSteers = this.steerChain;
+    void (async () => {
       let runId = await admission;
       if (!this.isCurrentRun(generation)) return;
       if (runId === undefined && this.state.phase === "disconnected") {
@@ -663,10 +696,15 @@ export class Controller {
         }
       }
       if (runId === undefined) return;
+      // Let already-queued steers dispatch, but do not wait for their HTTP responses.
+      await Promise.race([pendingSteers, Bun.sleep(0)]);
+      if (!this.isCurrentRun(generation)) return;
+      // A fresh control generation aborts pending controls without touching the SSE stream.
+      const signal = this.abortPendingControls();
       try {
         await this.options.transport.cancel(
           { sessionId: this.sessionId, runId, clientCommandId },
-          { signal: this.abortController.signal },
+          { signal },
         );
         if (!this.isCurrentRun(generation)) return;
         if (this.state.phase === "disconnected") {
@@ -676,7 +714,7 @@ export class Controller {
         if (!this.isCurrentRun(generation)) return;
         this.commitError(error);
       }
-    });
+    })();
   }
 
   private onSnapshot(snapshot: MiniLilacSessionSnapshot): void {
@@ -699,6 +737,7 @@ export class Controller {
 
   private onControl(result: MiniLilacControlResult): void {
     if (result.status === "queued") this.dispatch({ type: "steer-confirmed" });
+    else if (result.clientCommandId) this.confirmInterrupt(result.clientCommandId);
   }
 
   private onTodos(todos: MiniLilacTodoState): void {
@@ -713,9 +752,23 @@ export class Controller {
     this.resolvePromptAdmission = undefined;
   }
 
-  private onTranscriptReset(_reset: MiniLilacTranscriptReset): void {
-    this.messages = this.messages.slice(0, this.runMessageBaseline);
-    this.output = this.output.slice(0, this.runOutputBaseline);
+  private onTranscriptReset(reset: MiniLilacTranscriptReset): void {
+    const preservedSteering =
+      reset.reason === "interrupt"
+        ? this.messages
+            .slice(this.runMessageBaseline)
+            .filter((message): message is MiniLilacUserUIMessage => message.role === "user")
+        : [];
+    this.messages = [...this.messages.slice(0, this.runMessageBaseline), ...preservedSteering];
+    if (reset.reason === "cancel") {
+      this.pendingSteerOptimistic.clear();
+      this.pendingSteerCommandIds.clear();
+      this.interruptSteerCommandIds.clear();
+    }
+    this.output = [
+      ...this.output.slice(0, this.runOutputBaseline),
+      ...renderInitialMessages(preservedSteering),
+    ];
     this.notifyOutput();
   }
 
@@ -890,6 +943,42 @@ export class Controller {
     return ids;
   }
 
+  private appendReplayedSteering(message: MiniLilacUserUIMessage): void {
+    for (const [commandId, pending] of this.pendingSteerOptimistic) {
+      if (pending.messageId !== message.id) continue;
+      this.pendingSteerOptimistic.delete(commandId);
+      this.pendingSteerCommandIds.delete(commandId);
+      break;
+    }
+    if (this.messages.some((candidate) => candidate.id === message.id)) return;
+    this.messages.push(message);
+    const text = message.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
+    if (text.length > 0) this.appendOutput({ kind: "user", tone: "accent", text });
+    message.parts
+      .filter((part) => part.type === "file")
+      .forEach((file) =>
+        this.appendOutput({
+          kind: "file",
+          tone: "muted",
+          text: file.filename ? `Image: ${file.filename}` : "Image attached",
+        }),
+      );
+  }
+
+  private confirmInterrupt(clientCommandId: string): void {
+    const commandIds = this.interruptSteerCommandIds.get(clientCommandId);
+    if (!commandIds) return;
+    commandIds.forEach((commandId) => {
+      this.pendingSteerOptimistic.get(commandId)?.remove();
+      this.pendingSteerOptimistic.delete(commandId);
+      this.pendingSteerCommandIds.delete(commandId);
+    });
+    this.interruptSteerCommandIds.delete(clientCommandId);
+  }
+
   private restoreDraft(
     message: MiniLilacUserUIMessage,
     finishOperation = false,
@@ -1001,8 +1090,21 @@ export class Controller {
   }
 
   private nextRunGeneration(): number {
+    this.abortPendingControls();
     this.runGeneration += 1;
     return this.runGeneration;
+  }
+
+  private abortPendingControls(): AbortSignal {
+    this.controlAbortController.abort();
+    this.controlAbortController = new AbortController();
+    this.controlGeneration += 1;
+    this.steerChain = Promise.resolve();
+    return this.controlAbortController.signal;
+  }
+
+  private isCurrentControl(generation: number, controlGeneration: number): boolean {
+    return this.isCurrentRun(generation) && controlGeneration === this.controlGeneration;
   }
 
   private isCurrentRun(generation: number): boolean {
