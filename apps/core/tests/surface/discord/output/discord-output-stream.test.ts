@@ -981,27 +981,27 @@ describe("reasoning display helpers", () => {
     };
   }
 
-  it("shows a detailed title-only summary without an empty detail block", () => {
+  it("keeps the working indicator and shows a detailed title-only summary", () => {
     const presentation = getReasoningPresentation("detailed", "**Inspecting the stream**");
 
-    expect(presentation.title).toContain("Inspecting the stream");
-    expect(presentation.detail).toBeNull();
+    expect(presentation.title).toContain("Working");
+    expect(presentation.detail).toBe("> **Inspecting the stream**");
   });
 
-  it("shows a detailed summary title in the heading and blockquotes only its body", () => {
+  it("keeps the working indicator and blockquotes the full detailed summary", () => {
     const presentation = getReasoningPresentation(
       "detailed",
       "**Inspecting the stream**\n\nChecking event ordering.",
     );
 
-    expect(presentation.title).toContain("Inspecting the stream");
-    expect(presentation.detail).toBe("> Checking event ordering.");
+    expect(presentation.title).toContain("Working");
+    expect(presentation.detail).toBe("> **Inspecting the stream**\n> \n> Checking event ordering.");
   });
 
-  it("shows a simple summary title without a detail body", () => {
+  it("keeps the working indicator and hides the detail body in simple mode", () => {
     const presentation = getReasoningPresentation("simple", "**Inspecting the stream**");
 
-    expect(presentation.title).toContain("Inspecting the stream");
+    expect(presentation.title).toContain("Working");
     expect(presentation.detail).toBeNull();
   });
 

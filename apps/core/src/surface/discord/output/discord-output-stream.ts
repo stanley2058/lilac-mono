@@ -11,7 +11,6 @@ import {
   type MessageCreateOptions,
   type TextBasedChannel,
 } from "discord.js";
-import { parseReasoningSummary } from "@stanley2058/lilac-utils";
 
 import type {
   StartOutputOpts,
@@ -749,10 +748,9 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (!this.shouldShowProgressTitle()) return null;
 
     const nowMs = Date.now();
-    const summary = parseReasoningSummary(this.reasoningDetailText);
-    const indicator = summary.title
-      ? clampWithEllipsis(summary.title, PROGRESS_LINE_MAX_CHARS)
-      : this.getWorkingIndicator(nowMs);
+    // Discord's progress title is intentionally a rotating product indicator.
+    // Provider reasoning summaries belong in the detailed block below, not here.
+    const indicator = this.getWorkingIndicator(nowMs);
     return buildWorkingTitle({
       nowMs,
       startedAtMs: this.requestStartedAtMs,
@@ -763,8 +761,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private getReasoningValue(): string | null {
     if (this.deps.reasoningDisplayMode !== "detailed") return null;
 
-    const summary = parseReasoningSummary(this.reasoningDetailText);
-    const clamped = clampReasoningDetail(summary.body, PROGRESS_REASONING_MAX_CHARS);
+    const clamped = clampReasoningDetail(this.reasoningDetailText, PROGRESS_REASONING_MAX_CHARS);
     if (!clamped) return null;
 
     return clampWithEllipsis(formatReasoningAsBlockquote(clamped), PROGRESS_REASONING_MAX_CHARS);
