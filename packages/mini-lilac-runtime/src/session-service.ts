@@ -17,6 +17,7 @@ import { subagentSessionNameSchema } from "@stanley2058/lilac-coding-tools/schem
 import {
   miniLilacCancelResultSchema,
   miniLilacCompactResultSchema,
+  miniLilacInterruptQueuedSteeringRequestSchema,
   miniLilacInterruptQueuedSteeringResultSchema,
   miniLilacLanguageModelUsageSchema,
   miniLilacProviderMetadataSchema,
@@ -36,6 +37,7 @@ import {
   type MiniLilacCompactResult,
   type MiniLilacControlResult,
   type MiniLilacInterruptQueuedSteeringRequest,
+  type MiniLilacInterruptQueuedSteeringInput,
   type MiniLilacInterruptQueuedSteeringResult,
   type MiniLilacLanguageModelUsage,
   type MiniLilacReasoning,
@@ -87,6 +89,7 @@ import {
   MiniLilacSqliteStore,
   type StoredCommandRequest,
   type StoredRunChunk,
+  type StoredSessionResume,
   type StoredUIMessageChunk,
   type StoredUserCheckpoint,
 } from "./sqlite-store";
@@ -127,7 +130,14 @@ export type SessionServiceOptions = {
   skillCatalog?: MiniLilacSkillCatalog;
   webSearchProviderResolver?: WebSearchProviderResolver;
   protectedToolPaths?: readonly string[];
+  shutdownGraceMs?: number;
 };
+
+export type SessionServiceShutdownOptions = {
+  graceMs?: number;
+};
+
+export type SessionResumeProjection = StoredSessionResume;
 
 function parseSessionConfig(config: RuntimeConfig | LoadedRuntimeConfig): RuntimeConfig {
   if (!("configFile" in config)) return runtimeConfigSchema.parse(config);
@@ -467,7 +477,9 @@ async function assistantMessageFromChunks(
   const segment = runChunks.filter((entry) => entry.seq > afterSeq);
   const throughSeq = segment.at(-1)?.seq ?? afterSeq;
   if (segment.length === 0) return { message: null, throughSeq };
-  const segmentChunks = segment.map((entry) => entry.chunk);
+  const segmentChunks = segment
+    .map((entry) => entry.chunk)
+    .filter((chunk) => chunk.type !== "data-steering");
   const originalStart = runChunks.find((entry) => entry.chunk.type === "start")?.chunk;
   const firstSegmentSeq = segment[0]?.seq;
   const chunks =
@@ -501,12 +513,14 @@ class SessionActor {
   private active: ActiveRootRun | undefined;
   private readonly subscribers = new Map<string, Set<Subscriber>>();
   private readonly delegatedCancels = new Map<string, () => void>();
+  private readonly titleControllers = new Map<string, AbortController>();
   private readonly steeringEntries: Array<{
     id: string;
     message: MiniLilacUserUIMessage;
     modelMessage: ModelMessage;
     state: "queued" | "consumed";
   }> = [];
+  private readonly interruptedSteerCommandIds = new Set<string>();
   private deferredCompletionOrder = 0;
   private serial: Promise<void> = Promise.resolve();
 
@@ -529,6 +543,8 @@ class SessionActor {
     private readonly skillCatalog: MiniLilacSkillCatalog | undefined,
     private readonly resolveWebSearchProvider: WebSearchProviderResolver,
     private readonly protectedToolPaths: readonly string[],
+    private readonly trackExecution: (task: Promise<void>) => Promise<void>,
+    private readonly acceptsAdmissions: () => boolean,
   ) {}
 
   private withLock<T>(operation: () => Promise<T> | T): Promise<T> {
@@ -556,6 +572,42 @@ class SessionActor {
 
   getMessages(): MiniLilacUIMessage[] {
     return this.store.getUiMessages(this.snapshot.id);
+  }
+
+  getSessionResume(): Promise<SessionResumeProjection> {
+    return this.withLock(async () => {
+      const active = this.active;
+      if (active !== undefined) await active.eventQueue;
+      return this.store.getSessionResume(this.snapshot.id);
+    });
+  }
+
+  isQuiescent(): boolean {
+    return (
+      this.active === undefined &&
+      this.delegatedCancels.size === 0 &&
+      this.titleControllers.size === 0
+    );
+  }
+
+  requestShutdown(): Promise<void> {
+    for (const controller of this.titleControllers.values()) controller.abort();
+    return this.withLock(() => {
+      const active = this.active;
+      if (active === undefined) return;
+      active.cancelRequested = true;
+      this.steeringEntries.length = 0;
+      if (active.phase === "accepting-controls") {
+        this.snapshot = this.store.updateSessionState(
+          this.snapshot.id,
+          "cancelling",
+          0,
+          active.runId,
+        );
+      }
+      active.agent.cancel();
+      for (const cancel of this.delegatedCancels.values()) cancel();
+    });
   }
 
   streamRun(runId: string, afterSeq = 0): ReadableStream<MiniLilacRuntimeChunk> {
@@ -589,6 +641,9 @@ class SessionActor {
     options: StartPromptOptions = {},
   ): Promise<StartedSessionRun> {
     return this.withLock(async () => {
+      if (!this.acceptsAdmissions()) {
+        throw new Error("SessionService is shutting down and is not accepting admissions");
+      }
       const parsedMessage = miniLilacUIMessageSchema.parse(userMessageValue);
       if (parsedMessage.role !== "user") throw new Error("startPrompt requires a user UI message");
       const userMessage = miniLilacUserUIMessageSchema.parse(parsedMessage);
@@ -674,12 +729,26 @@ class SessionActor {
         });
 
         if (isFirstPrompt && this.config.agent.titleModel !== undefined) {
-          void this.generateSessionTitle(runId, initialTitle ?? "Mini Lilac", userMessage);
+          const controller = new AbortController();
+          this.titleControllers.set(runId, controller);
+          const titleTask = this.generateSessionTitle(
+            runId,
+            initialTitle ?? "Mini Lilac",
+            userMessage,
+            controller.signal,
+          ).finally(() => {
+            if (this.titleControllers.get(runId) === controller) {
+              this.titleControllers.delete(runId);
+            }
+          });
+          void this.trackExecution(titleTask);
         }
 
-        queueMicrotask(() => {
-          void this.executeTopLevelRun(agent, context, userModelMessage);
-        });
+        const execution = Promise.resolve().then(() =>
+          this.executeTopLevelRun(agent, context, userModelMessage),
+        );
+        const trackedExecution = this.trackExecution(execution);
+        void trackedExecution.finally(() => this.closeSubscribers(runId));
         return { runId, stream: this.streamRun(runId) };
       } catch (error) {
         if (!admitted) {
@@ -791,6 +860,8 @@ class SessionActor {
           : this.resolveModel(configuredSummaryModel),
       thresholdFraction: this.config.agent.compaction.earlyCompactionPoint,
       resolveCurrentModelSpecifier: () => agent.state.modelSpecifier,
+      resolveContextLimit: async ({ defaultModel, currentModelSpecifier }) =>
+        (await this.resolveModelLimits(currentModelSpecifier ?? defaultModel))?.context ?? 0,
       baseTurnErrorHandler: transientRetryController?.handler,
       onCompactionEnd: (event) => this.queueAutomaticCompaction(event),
     });
@@ -825,6 +896,7 @@ class SessionActor {
     runId: string,
     fallbackTitle: string,
     message: MiniLilacUserUIMessage,
+    abortSignal: AbortSignal,
   ): Promise<void> {
     const titleModel = this.config.agent.titleModel;
     if (titleModel === undefined) return;
@@ -842,8 +914,22 @@ class SessionActor {
         prompt,
         maxOutputTokens: usesCodexOAuth ? undefined : 64,
         providerOptions: usesCodexOAuth ? { openai: { store: false } } : undefined,
+        abortSignal,
       });
-      const title = normalizeSessionTitle(await result.text);
+      let rejectAbort: (reason: DOMException) => void = () => {};
+      const aborted = new Promise<never>((_resolve, reject) => {
+        rejectAbort = reject;
+      });
+      const onAbort = () => rejectAbort(new DOMException("Title generation aborted", "AbortError"));
+      if (abortSignal.aborted) onAbort();
+      else abortSignal.addEventListener("abort", onAbort, { once: true });
+      let titleText: string;
+      try {
+        titleText = await Promise.race([result.text, aborted]);
+      } finally {
+        abortSignal.removeEventListener("abort", onAbort);
+      }
+      const title = normalizeSessionTitle(titleText);
       await this.withLock(async () => {
         this.snapshot = this.store.updateSessionTitle(this.snapshot.id, fallbackTitle, title);
         const active = this.active;
@@ -855,6 +941,7 @@ class SessionActor {
         await operation;
       });
     } catch (error) {
+      if (abortSignal.aborted) return;
       const messageValue = error instanceof Error ? error.message : String(error);
       console.warn(`Mini Lilac title generation failed: ${messageValue}`);
     }
@@ -1325,7 +1412,7 @@ class SessionActor {
       }
     } finally {
       this.active = undefined;
-      this.closeSubscribers(context.runId);
+      this.interruptedSteerCommandIds.clear();
     }
   }
 
@@ -1334,7 +1421,9 @@ class SessionActor {
     if (projection === undefined) return;
     const active = this.active?.runId === runId ? this.active : undefined;
     if (event.type === "agent_end" && active !== undefined) active.phase = "finalizing";
-    let consumedSteeringCheckpoints: Array<Omit<StoredUserCheckpoint, "uiPrefix">> = [];
+    let consumedSteeringCheckpoints: Array<
+      Omit<StoredUserCheckpoint, "uiPrefix" | "replayAfterSeq">
+    > = [];
     if (active !== undefined && event.type === "message_start" && event.message.role === "user") {
       if (!active.initialUserSeen) {
         active.initialUserSeen = true;
@@ -1385,7 +1474,10 @@ class SessionActor {
   private async handleAgentEvent(
     projection: RunProjection,
     event: AiSdkPiAgentEvent<ToolSet>,
-    consumedSteeringCheckpoints: readonly Omit<StoredUserCheckpoint, "uiPrefix">[],
+    consumedSteeringCheckpoints: readonly Omit<
+      StoredUserCheckpoint,
+      "uiPrefix" | "replayAfterSeq"
+    >[],
   ): Promise<void> {
     const { runId } = projection;
     const active = this.active?.runId === runId ? this.active : undefined;
@@ -1456,6 +1548,7 @@ class SessionActor {
             const storedCheckpoint: StoredUserCheckpoint = {
               ...checkpoint,
               uiPrefix: [...chronologicalUiPrefix],
+              replayAfterSeq: segment.throughSeq,
             };
             chronologicalUiPrefix.push(checkpoint.message);
             return storedCheckpoint;
@@ -1768,6 +1861,18 @@ class SessionActor {
     return operation;
   }
 
+  private queueSteeringChunk(runId: string, message: MiniLilacUserUIMessage): Promise<void> {
+    const active = this.active;
+    if (!active || active.runId !== runId) return Promise.resolve();
+    const operation = active.eventQueue.then(() =>
+      this.appendChunk(runId, { type: "data-steering", id: message.id, data: message }),
+    );
+    active.eventQueue = operation.catch((error) => {
+      this.reportEventFailure(runId, error);
+    });
+    return operation;
+  }
+
   private queueSubagentStatus(parentRunId: string, status: MiniLilacSubagentStatus): void {
     const projection = this.projection(parentRunId);
     if (projection === undefined) return;
@@ -1821,6 +1926,9 @@ class SessionActor {
   steer(request: MiniLilacSteerRequest): Promise<MiniLilacSteerResult> {
     return this.withLock(async () => {
       const id = commandId(request.clientCommandId);
+      if (this.interruptedSteerCommandIds.has(id)) {
+        throw new Error(`Steering command '${id}' was interrupted before admission`);
+      }
       const command = controlCommandRequest("steer", request.runId, {
         message: request.message,
       });
@@ -1856,6 +1964,7 @@ class SessionActor {
         modelMessage: userModelMessage,
         state: "queued",
       });
+      await this.queueSteeringChunk(active.runId, request.message);
       this.snapshot = this.store.updateSessionState(
         this.snapshot.id,
         this.snapshot.status,
@@ -1877,7 +1986,9 @@ class SessionActor {
   ): Promise<MiniLilacInterruptQueuedSteeringResult> {
     return this.withLock(async () => {
       const id = commandId(request.clientCommandId);
-      const command = controlCommandRequest("interrupt", request.runId, {});
+      const command = controlCommandRequest("interrupt", request.runId, {
+        pendingSteerCommandIds: request.pendingSteerCommandIds,
+      });
       const stored = this.store.getCommandResult(this.snapshot.id, id, command);
       if (stored !== undefined) return miniLilacInterruptQueuedSteeringResultSchema.parse(stored);
       const active = this.active;
@@ -1893,6 +2004,9 @@ class SessionActor {
       }
       this.store.reserveCommand(this.snapshot.id, id, command);
       this.beginCommandSideEffect(id, command);
+      request.pendingSteerCommandIds.forEach((commandIdValue) =>
+        this.interruptedSteerCommandIds.add(commandIdValue),
+      );
       const interrupted = active.agent.interruptQueuedSteering();
       if (interrupted.status === "interrupted") {
         for (const cancel of this.delegatedCancels.values()) cancel();
@@ -2129,7 +2243,11 @@ export class SessionService {
   private readonly supersededProviderIds: ReadonlySet<string>;
   private readonly resolveWebSearchProvider: WebSearchProviderResolver;
   private readonly protectedToolPaths: readonly string[];
+  private readonly activeTasks = new Set<Promise<void>>();
   private concurrentSubagents = 0;
+  private acceptingAdmissions = true;
+  private closed = false;
+  private shutdownAttempt: Promise<void> | undefined;
 
   constructor(options: SessionServiceOptions) {
     this.options = { ...options, config: parseSessionConfig(options.config) };
@@ -2196,7 +2314,14 @@ export class SessionService {
     };
   }
 
-  async createSession(input: CreateSessionInput): Promise<MiniLilacSessionSnapshot> {
+  createSession(input: CreateSessionInput): Promise<MiniLilacSessionSnapshot> {
+    this.assertAcceptingAdmissions();
+    return this.trackOperation(this.createSessionInternal(input));
+  }
+
+  private async createSessionInternal(
+    input: CreateSessionInput,
+  ): Promise<MiniLilacSessionSnapshot> {
     if (input.id?.startsWith("sub:")) {
       throw new Error("Session ids beginning with 'sub:' are reserved for delegated sessions");
     }
@@ -2220,24 +2345,7 @@ export class SessionService {
       reasoning: input.reasoning ?? "provider-default",
       contextWindow: limits?.context,
     });
-    this.actors.set(
-      snapshot.id,
-      new SessionActor(
-        snapshot,
-        this.options.config,
-        this.store,
-        this.resolveModel,
-        this.modelCapability,
-        this.resolveModelLimits,
-        this.attachCompaction,
-        this.subagentCapacity,
-        (request) => this.promptDelegatedSession(request),
-        this.supersededProviderIds,
-        this.options.skillCatalog,
-        this.resolveWebSearchProvider,
-        this.protectedToolPaths,
-      ),
-    );
+    this.actors.set(snapshot.id, this.createActor(snapshot));
     return snapshot;
   }
 
@@ -2252,6 +2360,10 @@ export class SessionService {
 
   getMessages(sessionId: string): MiniLilacUIMessage[] {
     return this.actor(sessionId).getMessages();
+  }
+
+  getSessionResume(sessionId: string): Promise<SessionResumeProjection> {
+    return this.trackOperation(this.actor(sessionId).getSessionResume());
   }
 
   getTodos(sessionId: string): MiniLilacTodoState {
@@ -2279,7 +2391,8 @@ export class SessionService {
     userMessage: MiniLilacUIMessage,
     clientCommandId?: string,
   ): Promise<StartedSessionRun> {
-    return this.actor(sessionId).startPrompt(userMessage, clientCommandId);
+    this.assertAcceptingAdmissions();
+    return this.trackOperation(this.actor(sessionId).startPrompt(userMessage, clientCommandId));
   }
 
   private promptDelegatedSession(
@@ -2416,42 +2529,80 @@ export class SessionService {
   }
 
   steer(request: MiniLilacSteerRequest): Promise<MiniLilacSteerResult> {
-    return this.actor(request.sessionId).steer(request);
+    this.assertAcceptingAdmissions();
+    return this.trackOperation(this.actor(request.sessionId).steer(request));
   }
 
   interruptQueuedSteering(
-    request: MiniLilacInterruptQueuedSteeringRequest,
+    request: MiniLilacInterruptQueuedSteeringInput,
   ): Promise<MiniLilacInterruptQueuedSteeringResult> {
-    return this.actor(request.sessionId).interruptQueuedSteering(request);
+    this.assertAcceptingAdmissions();
+    const parsed = miniLilacInterruptQueuedSteeringRequestSchema.parse(request);
+    return this.trackOperation(this.actor(parsed.sessionId).interruptQueuedSteering(parsed));
   }
 
   cancel(request: MiniLilacCancelRequest): Promise<MiniLilacCancelResult> {
-    return this.actor(request.sessionId).cancel(request);
+    this.assertAcceptingAdmissions();
+    return this.trackOperation(this.actor(request.sessionId).cancel(request));
   }
 
   undo(request: MiniLilacUndoRequest): Promise<MiniLilacUndoResult> {
-    return this.actor(request.sessionId).undo(request);
+    this.assertAcceptingAdmissions();
+    return this.trackOperation(this.actor(request.sessionId).undo(request));
   }
 
   compact(request: MiniLilacCompactRequest): Promise<MiniLilacCompactResult> {
-    return this.actor(request.sessionId).compact(request);
+    this.assertAcceptingAdmissions();
+    return this.trackOperation(this.actor(request.sessionId).compact(request));
   }
 
   updateSessionBindings(
     request: MiniLilacUpdateSessionBindingsRequest,
   ): Promise<MiniLilacSessionSnapshot> {
-    return this.actor(request.sessionId).updateBindings(request);
+    this.assertAcceptingAdmissions();
+    return this.trackOperation(this.actor(request.sessionId).updateBindings(request));
   }
 
   close(): void {
+    if (this.closed) return;
+    if (
+      this.activeTasks.size > 0 ||
+      this.delegatedSessionLocks.size > 0 ||
+      [...this.actors.values()].some((actor) => !actor.isQuiescent())
+    ) {
+      throw new Error("Cannot close SessionService while runtime work is active; use shutdown()");
+    }
+    this.acceptingAdmissions = false;
     this.store.close();
+    this.closed = true;
+  }
+
+  shutdown(options: SessionServiceShutdownOptions = {}): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.acceptingAdmissions = false;
+    if (this.shutdownAttempt !== undefined) return this.shutdownAttempt;
+    const graceMs = options.graceMs ?? this.options.shutdownGraceMs ?? 5_000;
+    if (!Number.isFinite(graceMs) || graceMs < 0) {
+      return Promise.reject(new Error("SessionService shutdown graceMs must be non-negative"));
+    }
+    const attempt = this.performShutdown(graceMs).finally(() => {
+      if (this.shutdownAttempt === attempt) this.shutdownAttempt = undefined;
+    });
+    this.shutdownAttempt = attempt;
+    return attempt;
   }
 
   private actor(sessionId: string): SessionActor {
     const existing = this.actors.get(sessionId);
     if (existing) return existing;
     const snapshot = this.store.getSession(sessionId);
-    const actor = new SessionActor(
+    const actor = this.createActor(snapshot);
+    this.actors.set(sessionId, actor);
+    return actor;
+  }
+
+  private createActor(snapshot: MiniLilacSessionSnapshot): SessionActor {
+    return new SessionActor(
       snapshot,
       this.options.config,
       this.store,
@@ -2465,8 +2616,88 @@ export class SessionService {
       this.options.skillCatalog,
       this.resolveWebSearchProvider,
       this.protectedToolPaths,
+      (task) => this.trackTask(task),
+      () => this.acceptingAdmissions,
     );
-    this.actors.set(sessionId, actor);
-    return actor;
+  }
+
+  private assertAcceptingAdmissions(): void {
+    if (!this.acceptingAdmissions || this.closed) {
+      throw new Error("SessionService is shutting down and is not accepting admissions");
+    }
+  }
+
+  private trackOperation<T>(operation: Promise<T>): Promise<T> {
+    const releaseStore = this.store.acquireCloseBlocker();
+    let completion: Promise<void>;
+    const tracked = operation.finally(() => {
+      releaseStore();
+      this.activeTasks.delete(completion);
+    });
+    completion = tracked.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.activeTasks.add(completion);
+    return tracked;
+  }
+
+  private trackTask(task: Promise<void>): Promise<void> {
+    const releaseStore = this.store.acquireCloseBlocker();
+    let completion: Promise<void>;
+    const tracked = task.finally(() => {
+      releaseStore();
+      this.activeTasks.delete(completion);
+    });
+    completion = tracked.then(
+      () => undefined,
+      (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("tracked runtime task failed", { error: message });
+      },
+    );
+    this.activeTasks.add(completion);
+    return completion;
+  }
+
+  private async performShutdown(graceMs: number): Promise<void> {
+    const deadline = Date.now() + graceMs;
+    const requestedActors = new Set<SessionActor>();
+    for (;;) {
+      const newActors = [...this.actors.values()].filter((actor) => !requestedActors.has(actor));
+      newActors.forEach((actor) => requestedActors.add(actor));
+      if (newActors.length > 0) {
+        await this.waitWithinGrace(
+          Promise.all(newActors.map((actor) => actor.requestShutdown())).then(() => undefined),
+          deadline,
+        );
+      }
+
+      const tasks = [...this.activeTasks];
+      const quiescent =
+        tasks.length === 0 &&
+        this.delegatedSessionLocks.size === 0 &&
+        [...this.actors.values()].every((actor) => actor.isQuiescent());
+      if (quiescent) break;
+      await this.waitWithinGrace(
+        tasks.length > 0 ? Promise.all(tasks).then(() => undefined) : Bun.sleep(1),
+        deadline,
+      );
+    }
+    this.store.close();
+    this.closed = true;
+  }
+
+  private async waitWithinGrace(task: Promise<void>, deadline: number): Promise<void> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error("SessionService shutdown grace period elapsed with active runtime work");
+    }
+    await Promise.race([
+      task,
+      Bun.sleep(remaining).then(() => {
+        throw new Error("SessionService shutdown grace period elapsed with active runtime work");
+      }),
+    ]);
   }
 }

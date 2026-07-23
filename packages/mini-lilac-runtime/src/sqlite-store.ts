@@ -20,6 +20,7 @@ import {
   miniLilacMessagesSchema,
   miniLilacProviderMetadataSchema,
   miniLilacSessionSnapshotSchema,
+  miniLilacSteeringChunkSchema,
   miniLilacSubagentStatusSchema,
   miniLilacTodoChunkSchema,
   miniLilacTodoStateSchema,
@@ -36,7 +37,7 @@ import { z } from "zod";
 
 const sessionStatusSchema = z.enum(["idle", "streaming", "cancelling", "error"]);
 const runStatusSchema = z.enum(["active", "completed", "cancelled", "error"]);
-export const MINI_LILAC_DATABASE_SCHEMA_VERSION = 1;
+export const MINI_LILAC_DATABASE_SCHEMA_VERSION = 2;
 
 export class MiniLilacDatabaseVersionError extends Error {
   constructor(
@@ -94,6 +95,7 @@ const checkpointRowSchema = z.object({
   model_prefix_json: z.string(),
   ui_prefix_json: z.string(),
   root_run_id: z.string(),
+  replay_after_seq: z.number().int().nonnegative(),
 });
 const commandRowSchema = z.object({
   kind: z.string(),
@@ -253,6 +255,7 @@ const standardChunkSchema = z.discriminatedUnion("type", [
     data: miniLilacCompactionEventSchema,
   }),
   miniLilacTodoChunkSchema,
+  miniLilacSteeringChunkSchema,
 ]);
 
 export type StoredUIMessageChunk = z.infer<typeof standardChunkSchema>;
@@ -340,6 +343,13 @@ export type StoredUserCheckpoint = {
   message: MiniLilacUserUIMessage;
   modelPrefix: readonly ModelMessage[];
   uiPrefix: readonly MiniLilacUIMessage[];
+  replayAfterSeq: number;
+};
+
+export type StoredSessionResume = {
+  snapshot: MiniLilacSessionSnapshot;
+  messages: MiniLilacUIMessage[];
+  replayCursor: { runId: string; afterSeq: number } | null;
 };
 
 export type ReplaceTodosForRun = {
@@ -420,6 +430,8 @@ function toRun(rowValue: unknown): StoredRun {
 export class MiniLilacSqliteStore {
   readonly database: Database;
   readonly filename: string;
+  private closeBlockers = 0;
+  private closed = false;
 
   constructor(filename: string) {
     this.filename = filename === ":memory:" ? filename : path.resolve(filename);
@@ -530,6 +542,7 @@ export class MiniLilacSqliteStore {
           model_prefix_json TEXT NOT NULL,
           ui_prefix_json TEXT NOT NULL,
           root_run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+          replay_after_seq INTEGER NOT NULL CHECK(replay_after_seq >= 0),
           PRIMARY KEY(session_id, ui_position)
         );
         CREATE TABLE session_todos (
@@ -566,7 +579,25 @@ export class MiniLilacSqliteStore {
   }
 
   close(): void {
+    if (this.closed) return;
+    if (this.closeBlockers > 0) {
+      throw new Error(
+        `Cannot close Mini Lilac database while ${this.closeBlockers} runtime task(s) are active`,
+      );
+    }
     this.database.close();
+    this.closed = true;
+  }
+
+  acquireCloseBlocker(): () => void {
+    if (this.closed) throw new Error("Mini Lilac database is closed");
+    this.closeBlockers += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.closeBlockers = Math.max(0, this.closeBlockers - 1);
+    };
   }
 
   createSession(input: CreateStoredSession): MiniLilacSessionSnapshot {
@@ -737,6 +768,7 @@ export class MiniLilacSqliteStore {
         input.modelMessages.slice(0, -1),
         input.uiMessages.slice(0, -1),
         input.run.id,
+        0,
       );
       this.database
         .query(
@@ -1048,6 +1080,7 @@ export class MiniLilacSqliteStore {
       miniLilacUserUIMessageSchema.parse(checkpoint.message);
       modelMessagesSchema.parse(checkpoint.modelPrefix);
       miniLilacMessagesSchema.parse(checkpoint.uiPrefix);
+      z.number().int().nonnegative().parse(checkpoint.replayAfterSeq);
     });
     this.database.transaction(() => {
       const checkpointPosition = z
@@ -1068,6 +1101,7 @@ export class MiniLilacSqliteStore {
           checkpoint.modelPrefix,
           checkpoint.uiPrefix,
           rootRunId,
+          checkpoint.replayAfterSeq,
         );
         uiMessages.push(checkpoint.message);
       });
@@ -1139,7 +1173,7 @@ export class MiniLilacSqliteStore {
       }
       const checkpointValue = this.database
         .query(
-          `SELECT user_message_json, model_prefix_json, ui_prefix_json, root_run_id
+          `SELECT user_message_json, model_prefix_json, ui_prefix_json, root_run_id, replay_after_seq
            FROM user_checkpoints
            WHERE session_id = ? AND user_message_json = ?
            ORDER BY ui_position DESC LIMIT 1`,
@@ -1239,12 +1273,13 @@ export class MiniLilacSqliteStore {
     modelPrefix: readonly ModelMessage[],
     uiPrefix: readonly MiniLilacUIMessage[],
     rootRunId: string,
+    replayAfterSeq: number,
   ): void {
     this.database
       .query(
         `INSERT INTO user_checkpoints
-          (session_id, ui_position, user_message_json, model_prefix_json, ui_prefix_json, root_run_id)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+          (session_id, ui_position, user_message_json, model_prefix_json, ui_prefix_json, root_run_id, replay_after_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         sessionId,
@@ -1253,6 +1288,7 @@ export class MiniLilacSqliteStore {
         serialize(modelPrefix),
         serialize(uiPrefix),
         rootRunId,
+        replayAfterSeq,
       );
   }
 
@@ -1270,6 +1306,37 @@ export class MiniLilacSqliteStore {
       .all(sessionId)
       .map((value) => deserialize(jsonRowSchema.parse(value).value_json));
     return miniLilacMessagesSchema.parse(values);
+  }
+
+  getSessionResume(sessionId: string): StoredSessionResume {
+    return this.database.transaction(() => {
+      const snapshot = this.getSession(sessionId);
+      if (snapshot.activeRunId === null) {
+        return { snapshot, messages: this.getUiMessages(sessionId), replayCursor: null };
+      }
+      const value = this.database
+        .query(
+          `SELECT user_message_json, model_prefix_json, ui_prefix_json, root_run_id, replay_after_seq
+           FROM user_checkpoints
+           WHERE session_id = ? AND root_run_id = ?
+           ORDER BY ui_position DESC LIMIT 1`,
+        )
+        .get(sessionId, snapshot.activeRunId);
+      if (!value) {
+        throw new Error(`Active run '${snapshot.activeRunId}' has no durable resume checkpoint`);
+      }
+      const checkpoint = checkpointRowSchema.parse(value);
+      const message = miniLilacUserUIMessageSchema.parse(deserialize(checkpoint.user_message_json));
+      const uiPrefix = miniLilacMessagesSchema.parse(deserialize(checkpoint.ui_prefix_json));
+      return {
+        snapshot,
+        messages: [...uiPrefix, message],
+        replayCursor: {
+          runId: checkpoint.root_run_id,
+          afterSeq: checkpoint.replay_after_seq,
+        },
+      };
+    })();
   }
 
   getCommandResult(

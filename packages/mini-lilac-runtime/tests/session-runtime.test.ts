@@ -520,6 +520,149 @@ describe("SessionService", () => {
     service.close();
   });
 
+  it("cancels and awaits an active root before closing during shutdown", async () => {
+    let rootStarted = () => {};
+    const startedRoot = new Promise<void>((resolve) => {
+      rootStarted = resolve;
+    });
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        rootStarted();
+        await new Promise<void>((_resolve, reject) => {
+          const abort = () => reject(new DOMException("shutdown", "AbortError"));
+          options.abortSignal?.addEventListener("abort", abort, { once: true });
+          if (options.abortSignal?.aborted) abort();
+        });
+        return textResult("unreachable", "unreachable");
+      },
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-root-shutdown-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "runtime.sqlite");
+    const service = new SessionService({
+      config: config(),
+      databasePath,
+      modelResolver: () => model,
+    });
+    const session = await service.createSession({ cwd: directory, model: "test/mock" });
+    const run = await service.startPrompt(session.id, userMessage("remain active"));
+    const completion = collect(run.stream);
+    await within(startedRoot);
+
+    expect(() => service.close()).toThrow("use shutdown()");
+    expect(() => service.store.close()).toThrow("runtime task(s) are active");
+    const shutdown = service.shutdown({ graceMs: 1_000 });
+    expect(() => service.startPrompt(session.id, userMessage("too late"))).toThrow(
+      "not accepting admissions",
+    );
+    await within(shutdown);
+    await within(completion);
+
+    const reopened = new MiniLilacSqliteStore(databasePath);
+    expect(reopened.getRun(run.runId).status).toBe("cancelled");
+    expect(reopened.getSession(session.id)).toMatchObject({ status: "idle", activeRunId: null });
+    reopened.close();
+  });
+
+  it("cancels a deferred delegated child before shutdown closes SQLite", async () => {
+    let childStarted = () => {};
+    const startedChild = new Promise<void>((resolve) => {
+      childStarted = resolve;
+    });
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        const latestUser = JSON.stringify(
+          options.prompt.filter((message) => message.role === "user").at(-1),
+        );
+        if (latestUser.includes("deferred child")) {
+          childStarted();
+          await new Promise<void>((_resolve, reject) => {
+            const abort = () => reject(new DOMException("shutdown", "AbortError"));
+            options.abortSignal?.addEventListener("abort", abort, { once: true });
+            if (options.abortSignal?.aborted) abort();
+          });
+        }
+        if (model.doStreamCalls.length === 1) {
+          return delegateResult("deferred", "deferred child");
+        }
+        return textResult("root-working", "waiting for deferred child");
+      },
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-child-shutdown-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "runtime.sqlite");
+    const service = new SessionService({
+      config: config(),
+      databasePath,
+      modelResolver: () => model,
+    });
+    const session = await service.createSession({
+      cwd: directory,
+      model: "test/mock",
+      profile: "delegate",
+    });
+    const root = await service.startPrompt(session.id, userMessage("launch deferred work"));
+    const completion = collect(root.stream);
+    await within(startedChild);
+    const child = delegatedRuns(service, session.id)[0];
+    if (child === undefined) throw new Error("deferred child did not start");
+
+    await within(service.shutdown({ graceMs: 1_000 }));
+    await within(completion);
+
+    const reopened = new MiniLilacSqliteStore(databasePath);
+    expect(reopened.getRun(root.runId).status).toBe("cancelled");
+    expect(reopened.getRun(child.id).status).toBe("cancelled");
+    reopened.close();
+  });
+
+  it("settles shutdown when title providers ignore cancellation", async () => {
+    const runtimeConfig = config();
+    runtimeConfig.agent.titleModel = "test/title";
+    let titleStarted = () => {};
+    const startedTitle = new Promise<void>((resolve) => {
+      titleStarted = resolve;
+    });
+    let titleAborted = () => {};
+    const abortedTitle = new Promise<void>((resolve) => {
+      titleAborted = resolve;
+    });
+    let releaseTitle = () => {};
+    const titleGate = new Promise<void>((resolve) => {
+      releaseTitle = resolve;
+    });
+    const rootModel = new MockLanguageModelV4({ doStream: textResult("root", "done") });
+    const titleModel = new MockLanguageModelV4({
+      doStream: async (options) => {
+        titleStarted();
+        options.abortSignal?.addEventListener("abort", titleAborted, { once: true });
+        if (options.abortSignal?.aborted) titleAborted();
+        await titleGate;
+        return textResult("title", "late title");
+      },
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-title-shutdown-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "runtime.sqlite");
+    const service = new SessionService({
+      config: runtimeConfig,
+      databasePath,
+      modelResolver: (specifier) => (specifier === "test/title" ? titleModel : rootModel),
+    });
+    const session = await service.createSession({ cwd: directory, model: "test/mock" });
+    await collect((await service.startPrompt(session.id, userMessage("fallback title"))).stream);
+    await within(startedTitle);
+
+    const shutdown = service.shutdown({ graceMs: 100 });
+    await within(abortedTitle);
+    await within(shutdown);
+    releaseTitle();
+    await Bun.sleep(0);
+    const reopened = new MiniLilacSqliteStore(databasePath);
+    expect(reopened.getSession(session.id).title).toBe("fallback title");
+    reopened.close();
+  });
+
   it("binds cwd/model/profile and persists canonical messages and replayable chunks", async () => {
     const model = new MockLanguageModelV4({ doStream: textResult("answer", "hello") });
     const { directory, service, session } = await temporaryRuntime(model);
@@ -2845,6 +2988,24 @@ describe("SessionService", () => {
       clientCommandId: "first-separate-steer",
       message: firstSteer,
     });
+    const queuedResume = await service.getSessionResume(session.id);
+    expect(queuedResume.messages.filter((message) => message.role === "user")).toEqual([rootUser]);
+    expect(queuedResume.replayCursor).toEqual({
+      runId: started.runId,
+      afterSeq: expect.any(Number),
+    });
+    if (queuedResume.replayCursor === null) throw new Error("active run had no replay cursor");
+    const queuedReplay = await collect(
+      service.replayRun(queuedResume.replayCursor.runId, {
+        afterSeq: queuedResume.replayCursor.afterSeq,
+        tail: false,
+      }),
+    );
+    expect(queuedReplay).toContainEqual({
+      type: "data-steering",
+      id: firstSteer.id,
+      data: firstSteer,
+    });
     releaseFirst();
     await within(secondStart);
     await within(
@@ -2858,6 +3019,32 @@ describe("SessionService", () => {
     expect(activeCanonicalUi).toEqual([rootUser, firstSteer]);
     expect(JSON.stringify(activeCanonicalUi)).not.toContain("before first steer");
     expect(JSON.stringify(activeCanonicalUi)).not.toContain("first tool output");
+    const resume = await service.getSessionResume(session.id);
+    expect(resume.snapshot.activeRunId).toBe(started.runId);
+    expect(resume.messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(resume.messages[0]).toEqual(rootUser);
+    expect(resume.messages[2]).toEqual(firstSteer);
+    expect(JSON.stringify(resume.messages[1])).toContain("before first steer");
+    expect(JSON.stringify(resume.messages[1])).toContain("first tool output");
+    expect(resume.replayCursor).toEqual({
+      runId: started.runId,
+      afterSeq: expect.any(Number),
+    });
+    if (resume.replayCursor === null) throw new Error("active run had no replay cursor");
+    const replayCursor = resume.replayCursor;
+    const replayedAfterPrefix = await collect(
+      service.replayRun(replayCursor.runId, {
+        afterSeq: replayCursor.afterSeq,
+        tail: false,
+      }),
+    );
+    expect(
+      replayedAfterPrefix
+        .filter((chunk) => chunk.type === "data-streamCursor")
+        .every((chunk) => chunk.data.seq > replayCursor.afterSeq),
+    ).toBe(true);
+    expect(JSON.stringify(replayedAfterPrefix)).not.toContain("before first steer");
+    expect(JSON.stringify(replayedAfterPrefix)).not.toContain("first tool output");
     const replayedAtBoundary = await collect(service.replayRun(started.runId, { tail: false }));
     expect(JSON.stringify(replayedAtBoundary)).toContain("before first steer");
     expect(JSON.stringify(replayedAtBoundary)).toContain("first tool output");
@@ -3796,6 +3983,48 @@ describe("SessionService", () => {
         .slice(1),
     ).toEqual([older, newer]);
     expect(service.getSnapshot(session.id).queuedSteeringCount).toBe(0);
+    service.close();
+  });
+
+  it("rejects a steer that arrives after its interrupt barrier", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start", id: "active" },
+            { type: "text-delta", id: "active", delta: "working" },
+            { type: "text-end", id: "active" },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: "stop" },
+              usage: zeroUsage(),
+            },
+          ],
+          chunkDelayInMs: 50,
+        }),
+      },
+    });
+    const { service, session } = await temporaryRuntime(model);
+    const started = await service.startPrompt(session.id, userMessage("start"));
+    const completion = collect(started.stream);
+
+    await service.interruptQueuedSteering({
+      sessionId: session.id,
+      runId: started.runId,
+      clientCommandId: "interrupt-before-admission",
+      pendingSteerCommandIds: ["late-steer"],
+    });
+    await expect(
+      service.steer({
+        sessionId: session.id,
+        runId: started.runId,
+        clientCommandId: "late-steer",
+        message: steeringMessage("must not be admitted"),
+      }),
+    ).rejects.toThrow("interrupted before admission");
+
+    await completion;
+    expect(JSON.stringify(service.getMessages(session.id))).not.toContain("must not be admitted");
     service.close();
   });
 

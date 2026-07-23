@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { ModelCapability } from "@stanley2058/lilac-utils";
 
@@ -26,6 +29,15 @@ const auth: ProviderAuth = {
   primary: { type: "api-key", key: "openai-key" },
   local: { type: "api-key", key: "local-key" },
 };
+
+function modelsDevResponse(modelId: string) {
+  return {
+    openai: {
+      id: "openai",
+      models: { [modelId]: { id: modelId } },
+    },
+  };
+}
 
 describe("model catalog", () => {
   it("normalizes configured models.dev and /v1/models providers", async () => {
@@ -278,6 +290,196 @@ describe("model catalog", () => {
     ]);
   });
 
+  it("times out a stalled request and surfaces a warning", async () => {
+    const catalog = new ModelCatalog(
+      {
+        configVersion: 1,
+        providers: { local: config.providers.local! },
+      },
+      { local: auth.local! },
+      {
+        requestTimeoutMs: 20,
+        fetch: async (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("cancelled", "AbortError")),
+              { once: true },
+            );
+          }),
+      },
+    );
+
+    const snapshot = await catalog.get();
+
+    expect(snapshot.models).toEqual([]);
+    expect(snapshot.warnings).toHaveLength(1);
+    expect(snapshot.warnings[0]).toMatchObject({
+      code: "source-fetch-failed",
+      providerId: "local",
+    });
+    expect(snapshot.warnings[0]?.message).toContain("timed out after 20ms");
+  });
+
+  it("bounds models.dev and /v1/models response bytes", async () => {
+    const catalog = new ModelCatalog(config, auth, {
+      maxResponseBytes: 32,
+      fetch: async () => new Response("x".repeat(33)),
+    });
+
+    const snapshot = await catalog.get();
+
+    expect(snapshot.models).toEqual([]);
+    expect(snapshot.warnings).toHaveLength(2);
+    expect(snapshot.warnings.map((warning) => warning.providerId).sort()).toEqual([
+      "local",
+      "primary",
+    ]);
+    expect(
+      snapshot.warnings.every((warning) => warning.message.includes("exceeded 32 bytes")),
+    ).toBe(true);
+  });
+
+  it("returns a valid disk cache while refreshing in the background", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-model-cache-"));
+    const cacheFile = path.join(directory, "models-dev.json");
+    const cacheSource = `${JSON.stringify({
+      version: 1,
+      fetchedAt: 100,
+      registry: modelsDevResponse("cached-model"),
+    })}\n`;
+    await writeFile(cacheFile, cacheSource);
+    let rejectRefresh = (_error: Error) => {};
+    const refreshGate = new Promise<Response>((_resolve, reject) => {
+      rejectRefresh = reject;
+    });
+    const warnings: string[] = [];
+
+    try {
+      const catalog = new ModelCatalog(
+        {
+          configVersion: 1,
+          providers: { primary: config.providers.primary! },
+        },
+        { primary: auth.primary! },
+        {
+          cacheFilePath: cacheFile,
+          cacheTtlMs: 1_000,
+          now: () => 100,
+          onWarning: (warning) => warnings.push(warning.code),
+          fetch: async () => refreshGate,
+        },
+      );
+
+      const cached = await catalog.get({ backgroundRefresh: true });
+      expect(cached.models.map((model) => model.ref.value)).toEqual(["primary/cached-model"]);
+      expect(cached.stale).toBe(false);
+
+      rejectRefresh(new Error("offline"));
+      const stale = await catalog.get({ forceRefresh: true });
+      expect(stale.models.map((model) => model.ref.value)).toEqual(["primary/cached-model"]);
+      expect(stale.stale).toBe(true);
+      expect(warnings).toEqual(["source-fetch-failed", "stale-cache"]);
+      expect(await readFile(cacheFile, "utf8")).toBe(cacheSource);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores an invalid disk cache and surfaces its warning", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-model-cache-"));
+    const cacheFile = path.join(directory, "models-dev.json");
+    await writeFile(cacheFile, '{"version":1,"fetchedAt":"invalid","registry":{}}\n');
+    const observedWarnings: string[] = [];
+
+    try {
+      const catalog = new ModelCatalog(
+        {
+          configVersion: 1,
+          providers: { primary: config.providers.primary! },
+        },
+        { primary: auth.primary! },
+        {
+          cacheFilePath: cacheFile,
+          onWarning: (warning) => observedWarnings.push(warning.code),
+          fetch: async () => Response.json(modelsDevResponse("network-model")),
+        },
+      );
+
+      const initial = await catalog.get({ backgroundRefresh: true });
+      expect(initial.models).toEqual([]);
+      expect(initial.stale).toBe(true);
+      expect(initial.warnings.map((warning) => warning.code)).toEqual(["cache-invalid"]);
+
+      const snapshot = await catalog.get({ forceRefresh: true });
+      expect(snapshot.models.map((model) => model.ref.value)).toEqual(["primary/network-model"]);
+      expect(snapshot.warnings.map((warning) => warning.code)).toEqual(["cache-invalid"]);
+      expect(observedWarnings).toEqual(["cache-invalid"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a disk cache larger than the response limit before reading it", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-model-cache-"));
+    const cacheFile = path.join(directory, "models-dev.json");
+    await writeFile(cacheFile, "x".repeat(257));
+
+    try {
+      const catalog = new ModelCatalog(
+        { configVersion: 1, providers: { primary: config.providers.primary! } },
+        { primary: auth.primary! },
+        {
+          cacheFilePath: cacheFile,
+          maxResponseBytes: 256,
+          fetch: async () => Response.json(modelsDevResponse("network-model")),
+        },
+      );
+
+      const initial = await catalog.get({ backgroundRefresh: true });
+      expect(initial.models).toEqual([]);
+      expect(initial.warnings.map((warning) => warning.code)).toEqual(["cache-read-failed"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("atomically replaces the cache with owner-only permissions", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-model-cache-"));
+    const cacheFile = path.join(directory, "models-dev.json");
+    await chmod(directory, 0o750);
+    await writeFile(cacheFile, "old cache", { mode: 0o644 });
+
+    try {
+      const catalog = new ModelCatalog(
+        {
+          configVersion: 1,
+          providers: { primary: config.providers.primary! },
+        },
+        { primary: auth.primary! },
+        {
+          cacheFilePath: cacheFile,
+          now: () => 123,
+          fetch: async () => Response.json(modelsDevResponse("fresh-model")),
+        },
+      );
+
+      const snapshot = await catalog.get();
+      const written: unknown = JSON.parse(await readFile(cacheFile, "utf8"));
+      expect(snapshot.models.map((model) => model.ref.value)).toEqual(["primary/fresh-model"]);
+      expect(written).toEqual({
+        version: 1,
+        fetchedAt: 123,
+        registry: modelsDevResponse("fresh-model"),
+      });
+      expect((await stat(cacheFile)).mode & 0o777).toBe(0o600);
+      expect((await stat(directory)).mode & 0o777).toBe(0o750);
+      expect(await readdir(directory)).toEqual(["models-dev.json"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("propagates AbortError without replacing the cached snapshot", async () => {
     let abortNext = false;
     const v1Only: ProviderConfig = {
@@ -288,23 +490,33 @@ describe("model catalog", () => {
       v1Only,
       { local: auth.local! },
       {
-        fetch: async () => {
-          if (abortNext) throw new DOMException("cancelled", "AbortError");
+        fetch: async (_input, init) => {
+          if (abortNext) {
+            return new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener(
+                "abort",
+                () => reject(new DOMException("cancelled", "AbortError")),
+                { once: true },
+              );
+            });
+          }
           return Response.json({ data: [{ id: "cached-model" }] });
         },
       },
     );
     const cached = await catalog.get();
     abortNext = true;
+    const controller = new AbortController();
+    const aborted = catalog.get({ forceRefresh: true, signal: controller.signal });
+    controller.abort();
 
-    await expect(
-      catalog.get({ forceRefresh: true, signal: new AbortController().signal }),
-    ).rejects.toMatchObject({ name: "AbortError" });
+    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
     expect(await catalog.get()).toBe(cached);
   });
 
   it("isolates a signalled refresh from a shared refresh", async () => {
     let releaseShared = () => {};
+    let requests = 0;
     const sharedGate = new Promise<void>((resolve) => {
       releaseShared = resolve;
     });
@@ -317,9 +529,10 @@ describe("model catalog", () => {
       { local: auth.local! },
       {
         fetch: async (_input, init) => {
-          if (init?.signal) {
+          requests += 1;
+          if (requests === 2) {
             await new Promise<void>((_resolve, reject) => {
-              init.signal?.addEventListener(
+              init?.signal?.addEventListener(
                 "abort",
                 () => reject(new DOMException("cancelled", "AbortError")),
                 { once: true },

@@ -51,7 +51,9 @@ export {
   type CreateSessionInput,
   type MiniLilacRuntimeChunk,
   type ModelResolver,
+  type SessionResumeProjection,
   type SessionServiceOptions,
+  type SessionServiceShutdownOptions,
   type StartedSessionRun,
 } from "./session-service";
 export {
@@ -65,6 +67,7 @@ export {
   type StoredRunChunk,
   type StoredRun,
   type StoredSessionBindingUpdate,
+  type StoredSessionResume,
   type StoredUserCheckpoint,
 } from "./sqlite-store";
 export {
