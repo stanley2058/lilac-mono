@@ -51,6 +51,12 @@ npm pack ./dist
 `bun run pack:npm` creates the npm tarball. `bun run publish:npm` publishes the staged `dist/`
 package, leaving workspace-only source, scripts, and dependencies out of the registry metadata.
 
+To build, pack, and globally reinstall the current checkout in one step:
+
+```sh
+bun run install:local
+```
+
 The client, server, their internal workspace dependencies, and the patched `@opentui/core`
 JavaScript are bundled into `dist/main.js`. `@opentui/core` remains a package dependency so the
 package manager installs its worker dependency and the correct native binary for the target

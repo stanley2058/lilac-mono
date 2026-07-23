@@ -28,6 +28,7 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "build": "bun build.ts && chmod +x dist/main.js",
+    "install:local": "bun install-local.ts",
     "pack:npm": "bun run build && npm pack --workspaces=false ./dist",
     "publish:npm": "bun run build && npm publish --workspaces=false ./dist",
     "test": "bun test",
