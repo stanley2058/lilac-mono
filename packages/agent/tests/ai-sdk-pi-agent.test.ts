@@ -1124,6 +1124,54 @@ describe("AiSdkPiAgent queued steering and cancellation", () => {
     ]);
     expect(agent.state.messages).toEqual([{ role: "user", content: "cancel during approval" }]);
   });
+
+  it("closes a streaming tool iterator when cancellation interrupts its output", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            {
+              type: "tool-call",
+              toolCallId: "cancel-streaming-tool",
+              toolName: "streaming",
+              input: "{}",
+            },
+            {
+              type: "finish",
+              finishReason: { unified: "tool-calls", raw: "tool-calls" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      },
+    });
+    let cleanedUp = false;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        streaming: tool({
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          execute: async function* () {
+            try {
+              yield "first";
+              yield "unexpected";
+            } finally {
+              cleanedUp = true;
+            }
+          },
+        }),
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "tool_execution_update") agent.cancel();
+    });
+
+    await agent.prompt("cancel streaming tool");
+
+    expect(cleanedUp).toBe(true);
+    expect(agent.state.messages).toEqual([{ role: "user", content: "cancel streaming tool" }]);
+  });
 });
 
 describe("AiSdkPiAgent turn boundaries", () => {

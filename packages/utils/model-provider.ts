@@ -52,6 +52,11 @@ const CODEX_RESPONSES_REQUEST_KEYS = new Set([
   "client_metadata",
 ]);
 const CODEX_REASONING_INCLUDE = "reasoning.encrypted_content";
+const CODEX_OAUTH_REFRESH_SKEW_MS = 30_000;
+
+export function shouldRefreshCodexOAuthTokens(tokens: CodexOAuthTokens, now = Date.now()): boolean {
+  return !tokens.access || tokens.expires <= now + CODEX_OAUTH_REFRESH_SKEW_MS;
+}
 
 function decodeCodexRequestBody(body: unknown): string | undefined {
   if (typeof body === "string") return body;
@@ -233,7 +238,7 @@ export function createCodexOAuthProvider(options: CreateCodexOAuthProviderOption
       }
 
       const refreshIfNeeded = async () => {
-        if (auth && auth.access && auth.expires > Date.now() + 30_000) return;
+        if (auth && !shouldRefreshCodexOAuthTokens(auth)) return;
         if (!refreshInFlight) {
           refreshInFlight = (async () => {
             const latest = await readTokens();
@@ -242,7 +247,7 @@ export function createCodexOAuthProvider(options: CreateCodexOAuthProviderOption
                 "Codex OAuth not configured. Complete a Codex OAuth login to authenticate.",
               );
             }
-            if (latest.access && latest.expires > Date.now() + 30_000) {
+            if (!shouldRefreshCodexOAuthTokens(latest)) {
               auth = latest;
               return;
             }
@@ -255,7 +260,7 @@ export function createCodexOAuthProvider(options: CreateCodexOAuthProviderOption
         await refreshInFlight;
       };
 
-      if (!auth.access || auth.expires <= now) {
+      if (shouldRefreshCodexOAuthTokens(auth, now)) {
         await refreshIfNeeded();
         auth = await readTokens();
         if (!auth?.access) {

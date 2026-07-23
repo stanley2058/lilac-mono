@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test";
 
 import { CODEX_BASE_INSTRUCTIONS } from "../codex-instructions";
 import type { CodexOAuthTokens } from "../codex-oauth";
-import { normalizeCodexResponsesRequestRecord, refreshCodexOAuthTokens } from "../model-provider";
+import {
+  normalizeCodexResponsesRequestRecord,
+  refreshCodexOAuthTokens,
+  shouldRefreshCodexOAuthTokens,
+} from "../model-provider";
 
 function jwt(claims: Record<string, unknown>): string {
   return `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
@@ -132,6 +136,18 @@ describe("normalizeCodexResponsesRequestRecord", () => {
 });
 
 describe("refreshCodexOAuthTokens", () => {
+  it("refreshes tokens within the thirty-second expiry skew", () => {
+    const tokens: CodexOAuthTokens = {
+      type: "oauth",
+      access: "access",
+      refresh: "refresh",
+      expires: 31_000,
+    };
+
+    expect(shouldRefreshCodexOAuthTokens(tokens, 1_000)).toBe(true);
+    expect(shouldRefreshCodexOAuthTokens({ ...tokens, expires: 31_001 }, 1_000)).toBe(false);
+  });
+
   it("persists a new access token while preserving omitted rotated tokens", async () => {
     const current: CodexOAuthTokens = {
       type: "oauth",

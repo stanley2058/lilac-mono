@@ -64,18 +64,22 @@ async function scanSkillPathsBounded(
   baseDir: string,
   maxEntries: number,
 ): Promise<{ paths: string[]; scannedEntries: number; truncated: boolean }> {
-  const recursive = root.pattern.includes("**");
-  const maxDepth = recursive ? 6 : 1;
-  const pending = [{ directory: baseDir, depth: 0 }];
+  const absoluteBaseDir = path.resolve(baseDir);
+  const relativePattern = path
+    .relative(absoluteBaseDir, path.resolve(root.pattern))
+    .split(path.sep)
+    .join("/");
+  const matcher = new Bun.Glob(relativePattern);
+  const pending = [absoluteBaseDir];
   const paths: string[] = [];
   let scannedEntries = 0;
 
   while (pending.length > 0) {
-    const current = pending.shift();
-    if (current === undefined) break;
+    const currentDirectory = pending.shift();
+    if (currentDirectory === undefined) break;
     let directory: Awaited<ReturnType<typeof fs.opendir>>;
     try {
-      directory = await fs.opendir(current.directory);
+      directory = await fs.opendir(currentDirectory);
     } catch {
       continue;
     }
@@ -85,18 +89,14 @@ async function scanSkillPathsBounded(
         return { paths, scannedEntries: maxEntries, truncated: true };
       }
       if (entry.isSymbolicLink()) continue;
-      const entryPath = path.join(current.directory, entry.name);
-      if (entry.isFile() && entry.name === "SKILL.md" && (recursive || current.depth === 1)) {
+      const entryPath = path.join(currentDirectory, entry.name);
+      const relativeEntryPath = path.relative(absoluteBaseDir, entryPath).split(path.sep).join("/");
+      if (entry.isFile() && matcher.match(relativeEntryPath)) {
         paths.push(entryPath);
         continue;
       }
-      if (
-        entry.isDirectory() &&
-        current.depth < maxDepth &&
-        entry.name !== ".git" &&
-        entry.name !== "node_modules"
-      ) {
-        pending.push({ directory: entryPath, depth: current.depth + 1 });
+      if (entry.isDirectory() && entry.name !== "node_modules" && !entry.name.startsWith(".")) {
+        pending.push(entryPath);
       }
     }
   }

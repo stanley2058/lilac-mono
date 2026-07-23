@@ -3,7 +3,16 @@ import { createHash } from "node:crypto";
 import { createReadStream, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, dirname, resolve, isAbsolute, sep, relative, matchesGlob } from "node:path";
+import {
+  basename,
+  join,
+  dirname,
+  resolve,
+  isAbsolute,
+  sep,
+  relative,
+  matchesGlob,
+} from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import {
@@ -496,6 +505,34 @@ export class FileSystem {
     throw err;
   }
 
+  private async canonicalizeAsFarAsExists(resolvedPath: string): Promise<string> {
+    let current = resolve(resolvedPath);
+    const missingSegments: string[] = [];
+
+    while (true) {
+      try {
+        return resolve(await fs.realpath(current), ...missingSegments);
+      } catch (error: unknown) {
+        const code = getErrorCode(error);
+        if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+
+        const stats = await fs.lstat(current).catch(() => undefined);
+        if (stats?.isSymbolicLink()) {
+          const linkTarget = await fs.readlink(current);
+          current = isAbsolute(linkTarget)
+            ? resolve(linkTarget)
+            : resolve(dirname(current), linkTarget);
+          continue;
+        }
+
+        const parent = dirname(current);
+        if (parent === current) return resolve(current, ...missingSegments);
+        missingSegments.unshift(basename(current));
+        current = parent;
+      }
+    }
+  }
+
   private resolvePath(inputPath: string, cwd?: string) {
     const expandedInput = expandTilde(inputPath);
     if (isAbsolute(expandedInput)) return resolve(expandedInput);
@@ -880,12 +917,14 @@ export class FileSystem {
 
     try {
       this.assertAllowed(resolvedPath, "writeFile");
+      const canonicalPath = await this.canonicalizeAsFarAsExists(resolvedPath);
+      this.assertAllowed(canonicalPath, "writeFile");
 
       let existed = true;
       let currentHash: string | undefined;
 
       try {
-        const existing = await fs.readFile(resolvedPath, "utf-8");
+        const existing = await fs.readFile(canonicalPath, "utf-8");
         currentHash = this.hash(existing);
       } catch (e) {
         const code = getErrorCode(e);
@@ -934,10 +973,10 @@ export class FileSystem {
       }
 
       if (createParents) {
-        await fs.mkdir(dirname(resolvedPath), { recursive: true });
+        await fs.mkdir(dirname(canonicalPath), { recursive: true });
       }
 
-      await fs.writeFile(resolvedPath, content);
+      await fs.writeFile(canonicalPath, content);
       const fileHash = this.hash(content);
 
       this.fileAccessRecord.set(resolvedPath, {
@@ -982,6 +1021,8 @@ export class FileSystem {
 
     try {
       this.assertAllowed(resolvedPath, "deleteFile");
+      const canonicalParent = await fs.realpath(dirname(resolvedPath));
+      this.assertAllowed(resolve(canonicalParent, basename(resolvedPath)), "deleteFile");
 
       await fs.unlink(resolvedPath);
       this.fileAccessRecord.delete(resolvedPath);
@@ -1022,9 +1063,11 @@ export class FileSystem {
 
     try {
       this.assertAllowed(resolvedPath, "editFile", dangerouslyAllow);
+      const canonicalPath = await fs.realpath(resolvedPath);
+      this.assertAllowed(canonicalPath, "editFile", dangerouslyAllow);
 
       const lastAccess = this.fileAccessRecord.get(resolvedPath);
-      const file = await fs.readFile(resolvedPath, "utf-8");
+      const file = await fs.readFile(canonicalPath, "utf-8");
 
       const oldHash = this.hash(file);
       if (expectedHash) {
@@ -1369,7 +1412,7 @@ export class FileSystem {
       const changesMade = newHash !== oldHash;
 
       if (changesMade) {
-        await fs.writeFile(resolvedPath, nextContent);
+        await fs.writeFile(canonicalPath, nextContent);
       }
 
       this.fileAccessRecord.set(resolvedPath, {
@@ -1429,9 +1472,11 @@ export class FileSystem {
 
     try {
       this.assertAllowed(resolvedPath, "editFile", dangerouslyAllow);
+      const canonicalPath = await fs.realpath(resolvedPath);
+      this.assertAllowed(canonicalPath, "editFile", dangerouslyAllow);
 
       const lastAccess = this.fileAccessRecord.get(resolvedPath);
-      const file = await fs.readFile(resolvedPath, "utf-8");
+      const file = await fs.readFile(canonicalPath, "utf-8");
       const oldHash = this.hash(file);
 
       if (expectedHash) {
@@ -1477,7 +1522,7 @@ export class FileSystem {
       const changesMade = newHash !== oldHash;
 
       if (changesMade) {
-        await fs.writeFile(resolvedPath, applied.content);
+        await fs.writeFile(canonicalPath, applied.content);
       }
 
       this.fileAccessRecord.set(resolvedPath, {
@@ -1537,6 +1582,8 @@ export class FileSystem {
       const resolvedBaseDir = this.resolvePath(baseDir);
 
       this.assertAllowed(resolvedBaseDir, "glob", dangerouslyAllow);
+      const canonicalBaseDir = await fs.realpath(resolvedBaseDir);
+      this.assertAllowed(canonicalBaseDir, "glob", dangerouslyAllow);
 
       const includes: string[] = [];
       const excludes: string[] = [];
@@ -1570,7 +1617,7 @@ export class FileSystem {
       if (this.fsBackend === "fff") {
         const normalizedPatterns = [...includes, ...excludes.map((pattern) => `!${pattern}`)];
         const fffResult = await getSearchBackend("fff").glob({
-          cwd: resolvedBaseDir,
+          cwd: canonicalBaseDir,
           patterns: normalizedPatterns,
           maxEntries,
           denyPaths: this.denyPaths,
@@ -1590,7 +1637,7 @@ export class FileSystem {
 
           const entries: GlobEntry[] = [];
           for (const entry of fffResult.paths) {
-            const stats = await fs.stat(join(resolvedBaseDir, entry));
+            const stats = await fs.stat(join(canonicalBaseDir, entry));
             entries.push({
               path: entry,
               type: this.getFileTypeFromStats(stats),
@@ -1608,7 +1655,7 @@ export class FileSystem {
       }
 
       const { paths, entries, truncated } = await this.collectGlobMatches({
-        resolvedBaseDir,
+        resolvedBaseDir: canonicalBaseDir,
         includes,
         excludes,
         maxEntries,
@@ -1655,6 +1702,8 @@ export class FileSystem {
       const resolvedBaseDir = this.resolvePath(baseDir);
 
       this.assertAllowed(resolvedBaseDir, "fuzzySearch", dangerouslyAllow);
+      const canonicalBaseDir = await fs.realpath(resolvedBaseDir);
+      this.assertAllowed(canonicalBaseDir, "fuzzySearch", dangerouslyAllow);
 
       if (this.fsBackend !== "fff") {
         return {
@@ -1667,7 +1716,7 @@ export class FileSystem {
       }
 
       const result = await fuzzyFileSearch({
-        cwd: resolvedBaseDir,
+        cwd: canonicalBaseDir,
         query,
         maxResults,
         denyPaths: this.denyPaths,
@@ -1713,13 +1762,15 @@ export class FileSystem {
       const resolvedBaseDir = this.resolvePath(baseDir);
 
       this.assertAllowed(resolvedBaseDir, "grep", dangerouslyAllow);
+      const canonicalBaseDir = await fs.realpath(resolvedBaseDir);
+      this.assertAllowed(canonicalBaseDir, "grep", dangerouslyAllow);
 
       const globs = fileExtensions.map((ext) => `**/*.${ext.replace(/^\./, "")}`);
 
       if (!dangerouslyAllow) {
         // Ensure ripgrep doesn't traverse blocked paths when searching from broad base dirs (e.g. "/").
         for (const denyAbs of this.denyPaths) {
-          const rel = relative(resolvedBaseDir, denyAbs);
+          const rel = relative(canonicalBaseDir, denyAbs);
           if (rel.length === 0) continue;
           if (rel.startsWith("..") || rel.startsWith(sep)) continue;
           globs.push(`!${rel}`);
@@ -1735,7 +1786,7 @@ export class FileSystem {
       const ripgrepResult = await getSearchBackend(this.fsBackend).grep({
         pattern,
         regex,
-        cwd: resolvedBaseDir,
+        cwd: canonicalBaseDir,
         maxMatches: maxResults,
         globs: globs.length > 0 ? globs : undefined,
         extraArgs,

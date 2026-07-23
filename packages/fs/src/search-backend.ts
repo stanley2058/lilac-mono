@@ -180,20 +180,24 @@ export async function prewarmFffFinders(params: {
 }): Promise<FffPrewarmResult[]> {
   const results: FffPrewarmResult[] = [];
   const seen = new Set<string>();
+  const canonicalDenyPaths = await Promise.all(
+    params.denyPaths.map(async (denyPath) => await fs.realpath(denyPath).catch(() => denyPath)),
+  );
 
   for (const basePath of params.basePaths) {
     if (seen.has(basePath)) continue;
     seen.add(basePath);
+    const canonicalBasePath = await fs.realpath(basePath).catch(() => basePath);
 
-    if (!(await isDirectory(basePath))) {
+    if (!(await isDirectory(canonicalBasePath))) {
       results.push({ basePath, ok: false, skipped: "not-directory" });
       continue;
     }
 
     if (
       shouldFallbackForDenyPaths({
-        cwd: basePath,
-        denyPaths: params.denyPaths,
+        cwd: canonicalBasePath,
+        denyPaths: canonicalDenyPaths,
         dangerouslyAllow: false,
       })
     ) {
@@ -201,7 +205,7 @@ export async function prewarmFffFinders(params: {
       continue;
     }
 
-    const finder = await getFffFinder(basePath, params.cacheDir);
+    const finder = await getFffFinder(canonicalBasePath, params.cacheDir);
     results.push(finder ? { basePath, ok: true } : { basePath, ok: false, skipped: "unavailable" });
   }
 

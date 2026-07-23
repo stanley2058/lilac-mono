@@ -1844,22 +1844,28 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             if (isAsyncIterable(raw)) {
               let last: unknown = undefined;
               const iterator = raw[Symbol.asyncIterator]();
-              while (true) {
-                const next = await iterator.next();
-                if (next.done) {
-                  rawResult = next.value === undefined ? last : next.value;
-                  break;
+              let completed = false;
+              try {
+                while (true) {
+                  const next = await iterator.next();
+                  if (next.done) {
+                    completed = true;
+                    rawResult = next.value === undefined ? last : next.value;
+                    break;
+                  }
+                  assertNotAborted();
+                  last = next.value;
+                  this.emit({
+                    type: "tool_execution_update",
+                    toolCallId: call.toolCallId,
+                    toolName: call.toolName,
+                    args: call.input,
+                    partialResult: next.value,
+                  });
+                  assertNotAborted();
                 }
-                assertNotAborted();
-                last = next.value;
-                this.emit({
-                  type: "tool_execution_update",
-                  toolCallId: call.toolCallId,
-                  toolName: call.toolName,
-                  args: call.input,
-                  partialResult: next.value,
-                });
-                assertNotAborted();
+              } finally {
+                if (!completed) await iterator.return?.();
               }
             } else {
               rawResult = await raw;
