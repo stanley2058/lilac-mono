@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -63,6 +63,13 @@ describe("Codex OAuth login", () => {
     try {
       await writeCodexTokens(tokens, storagePath);
       expect(await readCodexTokens(storagePath)).toEqual(tokens);
+      if (process.platform !== "win32") {
+        expect((await stat(path.dirname(storagePath))).mode & 0o077).toBe(0);
+        expect((await stat(storagePath)).mode & 0o077).toBe(0);
+      }
+      expect(
+        (await readdir(path.dirname(storagePath))).filter((file) => file.endsWith(".tmp")),
+      ).toEqual([]);
       await clearCodexTokens(storagePath);
       expect(await readCodexTokens(storagePath)).toBeNull();
     } finally {
