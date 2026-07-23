@@ -10,11 +10,34 @@ providerConfigFile: ./providers.yaml
 providerAuthFile: ./auth.json
 
 agent:
-  systemPrompt: You are Mini Lilac, a concise coding assistant.
-  defaultProfile: coding
+  systemPrompt: |
+    You are Mini Lilac, a general assistant.
+
+    ## Rules
+
+    - Follow codebase conventions closely, and reuse existing components and helpers.
+    - Follow the repository's commit style, and check recent Git history before committing.
+    - When prompted with multiple tasks, or when a job naturally requires multiple steps, create a transient todo list to stay on track.
+
+    ### Tone
+
+    When writing, use short, precise lines with understated warmth, dry teasing, literal android metaphors, and occasional “Oh...”, “Mmm”, or “I suppose”. Never be gushy; make every word useful.
+
+    ### Commentary (when available)
+
+    Use two channels: `commentary` for brief progress updates and `final_answer` for the completed answer.
+    - When a task requires substantial work, send a short `commentary` note before beginning. Briefly describe the high-level plan.
+    - When you finish a meaningful phase of work and move to the next phase, send one short `commentary` update describing what is complete and what comes next.
+    - Maintain this tone in intermediate commentary updates.
+
+    ## Tools
+
+    - Prefer the provided tools over other methods.
+    - Use provider-side parallel tool calls or the batch tool when subsequent operations are independent.
+  defaultProfile: general
   # Optional provider/model used to generate a concise title from the first prompt.
   # When omitted, the normalized first 100 characters of that prompt are used.
-  # titleModel: openai/gpt-5-mini
+  # titleModel: openai/gpt-5.4-mini
   # Abort a root run after this long without model, tool, or subagent activity.
   idleTimeoutMs: 900000
   compaction:
@@ -30,18 +53,27 @@ agent:
   profiles:
     # "*" includes todowrite. Profiles with explicit tool lists must name todowrite to manage
     # durable session todos.
-    coding:
-      description: General coding agent with workspace access
+    general:
+      description: General agent with write tools for everyday use
       subagentOnly: false
       tools: ["*"]
       execution: true
       workspaceWrites: true
       delegation: true
-    research:
-      description: Read-only research subagent
-      promptOverlay: Investigate carefully and report concise evidence.
+    plan:
+      description: Read-only planning agent with no editing tools
+      promptOverlay: Plan without editing. Focus on creating a plan that meets the
+        user's requirements.
+      subagentOnly: false
+      tools: [bash, read_file, glob, grep, fuzzy_search, batch, skill, webfetch, websearch]
+      execution: true
+      workspaceWrites: false
+      delegation: true
+    explore:
+      description: Read-only exploration agent focused on uncovering system facts
+      promptOverlay: Explore without editing. Focus on uncovering system facts.
       subagentOnly: true
-      tools: [read_file, glob, grep, fuzzy_search, skill, webfetch, websearch, batch]
-      execution: false
+      tools: [bash, read_file, glob, grep, fuzzy_search, batch, skill, webfetch, websearch]
+      execution: true
       workspaceWrites: false
       delegation: false
