@@ -1,0 +1,47 @@
+configVersion: 1
+
+server:
+  host: 127.0.0.1
+  port: 8090
+  # Set this when binding outside loopback, then export the named variable.
+  # authTokenEnv: MINI_LILAC_AUTH_TOKEN
+
+providerConfigFile: ./providers.yaml
+providerAuthFile: ./auth.json
+
+agent:
+  systemPrompt: You are Mini Lilac, a concise coding assistant.
+  defaultProfile: coding
+  # Optional provider/model used to generate a concise title from the first prompt.
+  # When omitted, the normalized first 100 characters of that prompt are used.
+  # titleModel: openai/gpt-5-mini
+  # Abort a root run after this long without model, tool, or subagent activity.
+  idleTimeoutMs: 900000
+  compaction:
+    # "inherit" uses the active root/child model; provider/model overrides it.
+    model: inherit
+    earlyCompactionPoint: 0.8
+  subagents:
+    enabled: true
+    maxDepth: 2
+    maxChildrenPerRun: 8
+    maxConcurrent: 4
+    idleTimeoutMs: 360000
+  profiles:
+    # "*" includes todowrite. Profiles with explicit tool lists must name todowrite to manage
+    # durable session todos.
+    coding:
+      description: General coding agent with workspace access
+      subagentOnly: false
+      tools: ["*"]
+      execution: true
+      workspaceWrites: true
+      delegation: true
+    research:
+      description: Read-only research subagent
+      promptOverlay: Investigate carefully and report concise evidence.
+      subagentOnly: true
+      tools: [read_file, glob, grep, fuzzy_search, skill, webfetch, websearch, batch]
+      execution: false
+      workspaceWrites: false
+      delegation: false
