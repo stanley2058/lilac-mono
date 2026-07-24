@@ -31,6 +31,7 @@
   "dependencies": {
     "@stanley2058/lilac-agent": "workspace:*",
     "@stanley2058/lilac-fs": "workspace:*",
+    "@stanley2058/lilac-tool-results": "workspace:*",
     "ai": "^7.0.22",
     "zod": "^4.3.6"
   },

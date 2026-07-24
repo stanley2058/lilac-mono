@@ -1,6 +1,11 @@
 import { FileSystem, type FsBackend } from "@stanley2058/lilac-fs";
+import {
+  TOOL_RESULT_URI_PREFIX,
+  TOOL_RESULT_UNAVAILABLE_MESSAGE,
+} from "@stanley2058/lilac-tool-results";
 import { tool, type ToolSet } from "ai";
 
+import type { CodingToolArtifactIntegration } from "./artifact-integration";
 import { assertGuardrailBypassAllowed, assertLocalCwd } from "./guardrails";
 import {
   createReadFileInstructionClaims,
@@ -23,6 +28,7 @@ export function createFilesystemTools(params: {
   loadInstructions?: boolean;
   preloadedInstructionPaths?: readonly string[];
   denyPaths?: readonly string[];
+  artifactIntegration?: CodingToolArtifactIntegration;
 }): ToolSet {
   const {
     fileSystem,
@@ -32,13 +38,48 @@ export function createFilesystemTools(params: {
     loadInstructions = true,
     preloadedInstructionPaths,
     denyPaths,
+    artifactIntegration,
   } = params;
   const instructionClaims = createReadFileInstructionClaims();
   const tools: ToolSet = {
     read_file: tool({
-      description: `Read a local text file. Reading records its hash so edit_file can safely edit it later. ${READ_FILE_INSTRUCTION_HINT}`,
+      description: `Read a local text file or a transient tool-result:// URI. Artifact URIs ignore cwd and support start/maxCharacters/maxLines paging; reuse nextStart unchanged while hasMore is true. Reading a local file records its hash so edit_file can safely edit it later. ${READ_FILE_INSTRUCTION_HINT}`,
       inputSchema: readFileInputSchema,
       execute: async ({ cwd: operationCwd, ...input }, options) => {
+        if (input.path.startsWith(TOOL_RESULT_URI_PREFIX)) {
+          const artifact = artifactIntegration
+            ? await artifactIntegration.artifacts.readWindow(
+                input.path,
+                artifactIntegration.scopeId,
+                {
+                  start: input.start ?? { type: "offset", offset: 0 },
+                  maxCharacters: Math.max(1, input.maxCharacters ?? 10_000),
+                  maxLines: Math.max(1, input.maxLines ?? 2_000),
+                },
+              )
+            : { ok: false as const };
+          if (!artifact.ok) {
+            return {
+              success: false as const,
+              resolvedPath: input.path,
+              error: {
+                code: "UNKNOWN" as const,
+                message: TOOL_RESULT_UNAVAILABLE_MESSAGE,
+              },
+            };
+          }
+          return {
+            success: true as const,
+            kind: "artifact" as const,
+            resolvedPath: input.path,
+            content: artifact.content,
+            startOffset: artifact.startOffset,
+            endOffset: artifact.endOffset,
+            totalCharacters: artifact.totalCharacters,
+            ...(artifact.nextStart ? { nextStart: artifact.nextStart } : {}),
+            hasMore: artifact.hasMore,
+          };
+        }
         if (operationCwd) assertLocalCwd(operationCwd);
         assertGuardrailBypassAllowed(input.dangerouslyAllow, allowGuardrailBypass);
         const effectiveCwd = operationCwd ?? cwd;

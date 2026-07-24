@@ -4,12 +4,14 @@ import { FileSystem, expandTilde, type FsBackend } from "@stanley2058/lilac-fs";
 import type { ToolSet } from "ai";
 
 import { createApplyPatchTool } from "./apply-patch";
+import type { CodingToolArtifactIntegration } from "./artifact-integration";
 import { createBashTool } from "./bash";
 import { createBatchTool } from "./batch";
 import { createFilesystemTools } from "./filesystem";
 import { assertLocalCwd } from "./guardrails";
 
 export * from "./apply-patch";
+export * from "./artifact-integration";
 export * from "./bash";
 export * from "./batch";
 export * from "./filesystem";
@@ -37,6 +39,8 @@ export type CodingToolsetOptions = {
   allowGuardrailBypass?: boolean;
   loadInstructions?: boolean;
   preloadedInstructionPaths?: readonly string[];
+  /** Fixed artifact authority for recoverable Bash output and tool-result:// reads. */
+  artifactIntegration?: CodingToolArtifactIntegration;
 };
 
 /**
@@ -47,6 +51,12 @@ export type CodingToolsetOptions = {
  */
 export function createCodingToolset(options: CodingToolsetOptions): ToolSet {
   assertLocalCwd(options.cwd);
+  if (options.artifactIntegration?.scopeId.trim().length === 0) {
+    throw new Error("artifactIntegration.scopeId must not be empty");
+  }
+  if (options.artifactIntegration?.requestId.trim().length === 0) {
+    throw new Error("artifactIntegration.requestId must not be empty");
+  }
   const cwd = path.resolve(expandTilde(options.cwd));
   const fsBackend = options.fsBackend ?? "node-rg";
   const denyPaths = [...DEFAULT_DENY_PATHS, ...(options.denyPaths ?? [])];
@@ -54,6 +64,9 @@ export function createCodingToolset(options: CodingToolsetOptions): ToolSet {
   const allToolsEnabled = enabledTools === undefined || enabledTools.includes("*");
   const isEnabled = (name: string) => allToolsEnabled || enabledTools?.includes(name) === true;
   const allowGuardrailBypass = options.allowGuardrailBypass ?? false;
+  const artifactIntegration = options.artifactIntegration
+    ? { ...options.artifactIntegration }
+    : undefined;
   const fileSystem = new FileSystem(cwd, {
     denyPaths,
     fsBackend,
@@ -69,6 +82,7 @@ export function createCodingToolset(options: CodingToolsetOptions): ToolSet {
       mergeOutput: options.bashMergeOutput,
       env: options.bashEnv,
       allowGuardrailBypass,
+      artifactIntegration,
     }),
     ...createFilesystemTools({
       fileSystem,
@@ -78,6 +92,7 @@ export function createCodingToolset(options: CodingToolsetOptions): ToolSet {
       loadInstructions: options.loadInstructions,
       preloadedInstructionPaths: options.preloadedInstructionPaths,
       denyPaths,
+      artifactIntegration,
     }),
     ...createApplyPatchTool({ cwd, denyPaths, allowGuardrailBypass }),
     ...options.extraTools,

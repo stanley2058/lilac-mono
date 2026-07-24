@@ -20,6 +20,7 @@
     "@openrouter/ai-sdk-provider": "^3.0.0",
     "@stanley2058/lilac-agent": "workspace:*",
     "@stanley2058/lilac-coding-tools": "workspace:*",
+    "@stanley2058/lilac-tool-results": "workspace:*",
     "@stanley2058/lilac-utils": "workspace:*",
     "@stanley2058/mini-lilac-client": "workspace:*",
     "ai": "^7.0.22",

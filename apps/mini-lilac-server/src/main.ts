@@ -10,6 +10,7 @@ import {
   MiniLilacSkillCatalog,
   SessionService,
 } from "@stanley2058/mini-lilac-runtime";
+import { createToolResultArtifactStore } from "@stanley2058/lilac-tool-results";
 import {
   clearCodexTokens,
   createCodexOAuthProvider,
@@ -299,6 +300,7 @@ export type MiniLilacStatePaths = {
   readonly databaseFile: string;
   readonly codexOAuthFile: string;
   readonly modelsDevCacheFile: string;
+  readonly toolResultsDirectory: string;
 };
 
 export function miniLilacStatePaths(
@@ -314,6 +316,7 @@ export function miniLilacStatePaths(
     databaseFile: path.join(directory, "mini-lilac.sqlite"),
     codexOAuthFile: path.join(directory, "codex.json"),
     modelsDevCacheFile: path.join(directory, "models-dev.json"),
+    toolResultsDirectory: path.join(directory, "tool-results"),
   };
 }
 
@@ -450,6 +453,8 @@ export async function main(
       onWarning: (warning) => console.warn(`Model catalog warning: ${warning.message}`),
     });
     await modelCatalog.get({ backgroundRefresh: true });
+    const toolResultArtifacts = createToolResultArtifactStore(statePaths.toolResultsDirectory);
+    await toolResultArtifacts.init();
 
     const runtime = new SessionService({
       config,
@@ -466,7 +471,8 @@ export async function main(
         onWarning: (warning) =>
           console.warn(`Skill warning (${warning.location}): ${warning.message}`),
       }),
-      protectedToolPaths: [statePaths.codexOAuthFile],
+      protectedToolPaths: [statePaths.codexOAuthFile, statePaths.toolResultsDirectory],
+      toolResultArtifacts,
     });
     sessionService = runtime;
     const authToken = config.server.authTokenEnv

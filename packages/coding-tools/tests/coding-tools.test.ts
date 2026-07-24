@@ -1,9 +1,14 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { isToolExpansion } from "@stanley2058/lilac-agent";
+import {
+  createToolResultArtifactStore,
+  TOOL_RESULT_UNAVAILABLE_MESSAGE,
+  type ToolResultArtifactStore,
+} from "@stanley2058/lilac-tool-results";
 import { asSchema, tool, type ToolExecutionOptions, type ToolSet } from "ai";
 import { z } from "zod";
 
@@ -15,6 +20,7 @@ import {
   loadReadFileInstructions,
   loadWorkspaceInstructions,
 } from "../src";
+import { createBashOutputSanitizer } from "../src/bash-output-sanitizer";
 
 type ToolOptions = ToolExecutionOptions<unknown>;
 
@@ -37,6 +43,12 @@ function options(toolCallId: string, abortSignal?: AbortSignal): ToolOptions {
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
   return value !== null && typeof value === "object" && Symbol.asyncIterator in value;
+}
+
+async function bashSpoolDirectories(): Promise<Set<string>> {
+  return new Set(
+    (await readdir(tmpdir())).filter((entry) => entry.startsWith("lilac-coding-bash-")),
+  );
 }
 
 describe("coding tools", () => {
@@ -179,6 +191,199 @@ describe("coding tools", () => {
     });
   });
 
+  it("retains sanitized complete Bash output behind a bounded head/tail preview", async () => {
+    const artifacts = createToolResultArtifactStore(path.join(cwd, "artifacts"));
+    await artifacts.init();
+    const artifactIntegration = {
+      artifacts,
+      scopeId: "scope-a",
+      requestId: "request-a",
+      ttlMs: 60_000,
+      maxBytesPerScope: 1024 * 1024,
+      maxSpoolBytes: 1024 * 1024,
+    } as const;
+    const tools = createCodingToolset({
+      cwd,
+      bashMaxOutputBytes: 160,
+      artifactIntegration,
+    });
+    const result = z
+      .object({
+        stdout: z.string(),
+        stderr: z.string(),
+        exitCode: z.number(),
+        truncation: z.object({
+          artifactUri: z.string(),
+          artifactBytes: z.number(),
+          originalStdoutBytes: z.number(),
+          originalStderrBytes: z.number(),
+          previewBytes: z.number(),
+          completeOutputRetained: z.literal(true),
+          retentionStatus: z.literal("retained"),
+        }),
+      })
+      .passthrough()
+      .parse(
+        await executable(tools, "bash").execute(
+          {
+            command:
+              "printf '\\x1b[31mSTART\\x1b[0m'; printf 'x%.0s' {1..300}; printf ' API_TO'; sleep 0.02; printf 'KEN=very-secret-value END'; { printf 'ERR_START'; printf 'y%.0s' {1..200}; printf 'ERR_END'; } >&2",
+          },
+          options("bash-artifact"),
+        ),
+      );
+
+    expect(result.stdout).toStartWith("START");
+    expect(result.stdout).toEndWith("END");
+    expect(result.stderr).toStartWith("ERR_START");
+    expect(result.stderr).toEndWith("ERR_END");
+    expect(result.stdout).toContain("middle output omitted");
+    expect(result.truncation.previewBytes).toBeLessThanOrEqual(160);
+    expect(result.truncation.originalStdoutBytes).toBeGreaterThan(300);
+    expect(result.truncation.originalStderrBytes).toBeGreaterThan(200);
+
+    const read = executable(tools, "read_file");
+    const pages: string[] = [];
+    let start: { type: "offset"; offset: number } = { type: "offset", offset: 0 };
+    for (let page = 0; page < 100; page += 1) {
+      const window = z
+        .object({
+          success: z.literal(true),
+          kind: z.literal("artifact"),
+          content: z.string(),
+          hasMore: z.boolean(),
+          nextStart: z.object({ type: z.literal("offset"), offset: z.number() }).optional(),
+        })
+        .parse(
+          await read.execute(
+            { path: result.truncation.artifactUri, start, maxCharacters: 47, maxLines: 2_000 },
+            options(`read-bash-artifact-${page}`),
+          ),
+        );
+      pages.push(window.content);
+      if (!window.hasMore || !window.nextStart) break;
+      start = window.nextStart;
+    }
+    const complete = pages.join("");
+    expect(complete).toContain("<bash_tool_full_output>");
+    expect(complete).toContain("--- stdout ---");
+    expect(complete).toContain("--- stderr ---");
+    expect(complete).toContain("API_TOKEN=<redacted> END");
+    expect(complete).not.toContain("very-secret-value");
+    expect(complete).not.toContain("\u001b");
+    expect(complete).toContain("ERR_END");
+  });
+
+  it("sanitizes terminal controls and secrets split across chunks", () => {
+    const sanitizer = createBashOutputSanitizer(["literal-secret-value"]);
+    const sanitized =
+      sanitizer.write(Buffer.from("\u001b[")) +
+      sanitizer.write(Buffer.from("31mAPI_TO")) +
+      sanitizer.write(Buffer.from("KEN=split-secret-value\nAuthorization: Bear")) +
+      sanitizer.write(Buffer.from("er credential-value\nliteral-")) +
+      sanitizer.write(Buffer.from("secret-value END\u001b")) +
+      sanitizer.write(Buffer.from("[0m")) +
+      sanitizer.end();
+
+    expect(sanitized).toContain("API_TOKEN=<redacted>");
+    expect(sanitized).toContain("Authorization: <redacted>");
+    expect(sanitized).toContain("<redacted> END");
+    expect(sanitized).not.toContain("split-secret-value");
+    expect(sanitized).not.toContain("credential-value");
+    expect(sanitized).not.toContain("literal-secret-value");
+    expect(sanitized).not.toContain("\u001b");
+  });
+
+  it("drains Bash after the hard spool cap and reports that complete output was not retained", async () => {
+    const artifacts = createToolResultArtifactStore(path.join(cwd, "capped-artifacts"));
+    await artifacts.init();
+    const before = await bashSpoolDirectories();
+    const result = await executable(
+      createCodingToolset({
+        cwd,
+        bashMaxOutputBytes: 64,
+        artifactIntegration: {
+          artifacts,
+          scopeId: "scope-cap",
+          requestId: "request-cap",
+          maxSpoolBytes: 100,
+        },
+      }),
+      "bash",
+    ).execute(
+      { command: "printf START; head -c 10000 /dev/zero | tr '\\0' z; printf END" },
+      options("bash-spool-cap"),
+    );
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdoutTruncated: true,
+      truncation: {
+        completeOutputRetained: false,
+        retentionStatus: "spool-limit-exceeded",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("artifactUri");
+    expect(await readdir(artifacts.rootDir)).toEqual([]);
+    expect(await bashSpoolDirectories()).toEqual(before);
+  });
+
+  it("cleans Bash spools after timeout, abort, and artifact persistence failure", async () => {
+    const artifacts = createToolResultArtifactStore(path.join(cwd, "cleanup-artifacts"));
+    await artifacts.init();
+    const before = await bashSpoolDirectories();
+    const integration = {
+      artifacts,
+      scopeId: "scope-cleanup",
+      requestId: "request-cleanup",
+      maxSpoolBytes: 1024 * 1024,
+    } as const;
+    const bash = executable(
+      createCodingToolset({ cwd, bashMaxOutputBytes: 32, artifactIntegration: integration }),
+      "bash",
+    );
+    const timeout = await bash.execute(
+      { command: "printf '%0100d' 0; sleep 5", timeoutMs: 20 },
+      options("bash-artifact-timeout"),
+    );
+    expect(timeout).toMatchObject({ executionError: { type: "timeout" } });
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+    const aborted = await bash.execute(
+      { command: "printf '%0100d' 0; sleep 5" },
+      options("bash-artifact-abort", controller.signal),
+    );
+    expect(aborted).toMatchObject({ executionError: { type: "aborted" } });
+
+    const failingArtifacts: ToolResultArtifactStore = {
+      ...artifacts,
+      async createFromStream() {
+        throw new Error("intentional artifact failure");
+      },
+    };
+    const failedPersistence = await executable(
+      createCodingToolset({
+        cwd,
+        bashMaxOutputBytes: 32,
+        artifactIntegration: {
+          ...integration,
+          artifacts: failingArtifacts,
+          requestId: "request-failure",
+        },
+      }),
+      "bash",
+    ).execute({ command: "printf '%0100d' 0" }, options("bash-artifact-failure"));
+    expect(failedPersistence).toMatchObject({
+      exitCode: 0,
+      truncation: {
+        completeOutputRetained: false,
+        retentionStatus: "artifact-write-failed",
+      },
+    });
+    expect(await bashSpoolDirectories()).toEqual(before);
+  });
+
   it("rejects SSH cwd targets at the local adapter boundary", async () => {
     expect(() => createCodingToolset({ cwd: "host:/repo" })).toThrow(
       "local coding-tools adapter does not support SSH cwd target",
@@ -282,6 +487,81 @@ describe("coding tools", () => {
         options("read-symlinked-deny-root"),
       ),
     ).toMatchObject({ success: false, error: { code: "PERMISSION" } });
+  });
+
+  it("pages scoped artifact URIs before cwd checks or instruction loading", async () => {
+    await writeFile(path.join(cwd, "AGENTS.md"), "instructions that must not load\n");
+    const artifacts = createToolResultArtifactStore(path.join(cwd, "read-artifacts"));
+    await artifacts.init();
+    const created = await artifacts.create({
+      scopeId: "scope-read",
+      requestId: "request-read",
+      toolCallId: "producer",
+      toolName: "bash",
+      content: "ab😀cd\nsecond",
+      ttlMs: 60_000,
+      maxBytesPerScope: 1024,
+    });
+    const read = executable(
+      createCodingToolset({
+        cwd,
+        artifactIntegration: {
+          artifacts,
+          scopeId: "scope-read",
+          requestId: "request-read",
+        },
+      }),
+      "read_file",
+    );
+    const first = await read.execute(
+      {
+        path: created.uri,
+        cwd: "ignored-host:/not-a-local-path",
+        start: { type: "offset", offset: 2 },
+        maxCharacters: 3,
+        maxLines: 10,
+      },
+      options("read-artifact-page"),
+    );
+    expect(first).toEqual({
+      success: true,
+      kind: "artifact",
+      resolvedPath: created.uri,
+      content: "😀cd",
+      startOffset: 2,
+      endOffset: 5,
+      totalCharacters: 12,
+      nextStart: { type: "offset", offset: 5 },
+      hasMore: true,
+    });
+    expect(JSON.stringify(first)).not.toContain("loadedInstructions");
+    expect(JSON.stringify(first)).not.toContain("instructions that must not load");
+
+    const foreign = await executable(
+      createCodingToolset({
+        cwd,
+        artifactIntegration: {
+          artifacts,
+          scopeId: "scope-foreign",
+          requestId: "request-foreign",
+        },
+      }),
+      "read_file",
+    ).execute({ path: created.uri }, options("read-artifact-foreign"));
+    expect(foreign).toMatchObject({
+      success: false,
+      resolvedPath: created.uri,
+      error: { code: "UNKNOWN", message: TOOL_RESULT_UNAVAILABLE_MESSAGE },
+    });
+
+    const unavailable = await executable(createCodingToolset({ cwd }), "read_file").execute(
+      { path: created.uri },
+      options("read-artifact-no-authority"),
+    );
+    expect(unavailable).toMatchObject({
+      success: false,
+      error: { code: "UNKNOWN", message: TOOL_RESULT_UNAVAILABLE_MESSAGE },
+    });
   });
 
   it("preloads workspace AGENTS.md and adds only nested instructions to read_file", async () => {

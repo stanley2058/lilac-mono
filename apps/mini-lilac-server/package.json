@@ -16,6 +16,7 @@
   "dependencies": {
     "@stanley2058/mini-lilac-client": "workspace:*",
     "@stanley2058/mini-lilac-runtime": "workspace:*",
+    "@stanley2058/lilac-tool-results": "workspace:*",
     "@stanley2058/lilac-utils": "workspace:*",
     "ai": "^7.0.22",
     "elysia": "^1.4.28",

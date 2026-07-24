@@ -9,6 +9,7 @@ import type {
   MiniLilacTodoState,
   MiniLilacUIMessage,
 } from "@stanley2058/mini-lilac-client";
+import { createToolResultArtifactStore } from "@stanley2058/lilac-tool-results";
 import { readUIMessageStream, type LanguageModel, type UIMessageChunk } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { getCodexAuthStoragePath } from "@stanley2058/lilac-utils";
@@ -169,6 +170,26 @@ function bashToolResult(command: string) {
           toolCallId: "silent-bash",
           toolName: "bash",
           input: JSON.stringify({ command }),
+        },
+        {
+          type: "finish" as const,
+          finishReason: { unified: "tool-calls" as const, raw: "tool-calls" },
+          usage: zeroUsage(),
+        },
+      ],
+    }),
+  };
+}
+
+function grepToolResult(pattern: string) {
+  return {
+    stream: simulateReadableStream({
+      chunks: [
+        {
+          type: "tool-call" as const,
+          toolCallId: "oversized-grep",
+          toolName: "grep",
+          input: JSON.stringify({ pattern }),
         },
         {
           type: "finish" as const,
@@ -510,6 +531,111 @@ describe("MiniLilacSqliteStore", () => {
 });
 
 describe("SessionService", () => {
+  it("stores oversized grep output out of line before the next model turn and UI persistence", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-tool-overflow-"));
+    temporaryDirectories.push(directory);
+    const longLine = `needle:${"x".repeat(8_000)}\n`;
+    await writeFile(path.join(directory, "large.txt"), longLine);
+    const runtimeConfig = config();
+    runtimeConfig.agent.profiles.reader!.tools = ["grep", "read_file"];
+    const artifacts = createToolResultArtifactStore(path.join(directory, "tool-results"));
+    await artifacts.init();
+    const model = new MockLanguageModelV4({
+      doStream: [grepToolResult("needle"), textResult("answer", "inspected")],
+    });
+    const service = new SessionService({
+      config: runtimeConfig,
+      databasePath: path.join(directory, "runtime.sqlite"),
+      modelResolver: () => model,
+      toolResultArtifacts: artifacts,
+      toolResultOutputConfig: {
+        maxInlineBytes: 512,
+        artifactTtlMs: 60_000,
+        maxArtifactBytesPerScope: 1024 * 1024,
+        maxArtifactBytes: 1024 * 1024,
+      },
+    });
+    const session = await service.createSession({ cwd: directory, model: "test/mock" });
+    const chunks = await collect(
+      (await service.startPrompt(session.id, userMessage("find it"))).stream,
+    );
+
+    const secondPrompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
+    expect(secondPrompt).toContain("[tool result overflow]");
+    expect(secondPrompt).toContain("tool-result://");
+    expect(secondPrompt).not.toContain("x".repeat(1_000));
+    expect(JSON.stringify(chunks)).not.toContain("x".repeat(1_000));
+    expect(chunks).toContainEqual(
+      expect.objectContaining({
+        type: "tool-output-error",
+        toolCallId: "oversized-grep",
+      }),
+    );
+
+    const transcript = service.store.getModelMessages(session.id);
+    const serializedTranscript = JSON.stringify(transcript);
+    const uri = /tool-result:\/\/[0-9a-f-]{36}/u.exec(serializedTranscript)?.[0];
+    if (uri === undefined) throw new Error("overflow artifact URI was not persisted");
+    expect(serializedTranscript).not.toContain("x".repeat(1_000));
+    const artifact = await artifacts.read(uri, session.id);
+    expect(artifact.ok).toBe(true);
+    if (artifact.ok) expect(artifact.content).toContain(longLine.trim());
+    service.close();
+  });
+
+  it("shares artifact authority between a root session and delegated children", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-child-artifacts-"));
+    temporaryDirectories.push(directory);
+    await writeFile(path.join(directory, "large.txt"), `needle:${"y".repeat(8_000)}\n`);
+    const runtimeConfig = config();
+    runtimeConfig.agent.profiles.child!.tools = ["grep"];
+    const artifacts = createToolResultArtifactStore(path.join(directory, "tool-results"));
+    await artifacts.init();
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        const prompt = JSON.stringify(options.prompt);
+        const latestUser = JSON.stringify(
+          options.prompt.filter((message) => message.role === "user").at(-1),
+        );
+        if (prompt.includes("child complete")) return textResult("root", "root complete");
+        if (latestUser.includes("investigate") && prompt.includes("tool result overflow")) {
+          return textResult("child", "child complete");
+        }
+        if (latestUser.includes("investigate")) return grepToolResult("needle");
+        return delegateResult("sync", "investigate");
+      },
+    });
+    const service = new SessionService({
+      config: runtimeConfig,
+      databasePath: path.join(directory, "runtime.sqlite"),
+      modelResolver: () => model,
+      toolResultArtifacts: artifacts,
+      toolResultOutputConfig: {
+        maxInlineBytes: 512,
+        artifactTtlMs: 60_000,
+        maxArtifactBytesPerScope: 1024 * 1024,
+        maxArtifactBytes: 1024 * 1024,
+      },
+    });
+    const root = await service.createSession({
+      cwd: directory,
+      model: "test/mock",
+      profile: "delegate",
+    });
+    await collect((await service.startPrompt(root.id, userMessage("delegate overflow"))).stream);
+
+    const child = service.store
+      .listSessions()
+      .find((session) => session.id.startsWith(`sub:${root.id}:named:`));
+    if (child === undefined) throw new Error("delegated child was not created");
+    const childTranscript = JSON.stringify(service.store.getModelMessages(child.id));
+    const uri = /tool-result:\/\/[0-9a-f-]{36}/u.exec(childTranscript)?.[0];
+    if (uri === undefined) throw new Error("child overflow artifact URI was not persisted");
+    expect((await artifacts.read(uri, root.id)).ok).toBe(true);
+    expect((await artifacts.read(uri, child.id)).ok).toBe(false);
+    service.close();
+  });
+
   it("accepts a loaded runtime config with its resolved configFile metadata", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-loaded-config-"));
     temporaryDirectories.push(directory);
@@ -2771,6 +2897,51 @@ describe("SessionService", () => {
       output: { stdout: "firstwarningsecond", stderr: "", exitCode: 0 },
     });
     expect(service.store.getRun(started.runId).status).toBe("completed");
+    service.close();
+  });
+
+  it("keeps bounded Bash output inline and retains the complete output as an artifact", async () => {
+    const runtimeConfig = config();
+    const readerProfile = runtimeConfig.agent.profiles.reader;
+    if (!readerProfile) throw new Error("reader profile missing");
+    readerProfile.tools = ["bash", "read_file"];
+    readerProfile.execution = true;
+    readerProfile.workspaceWrites = true;
+    const model = new MockLanguageModelV4({
+      doStream: [
+        bashToolResult("printf 'start-'; printf 'z%.0s' {1..50000}; printf -- '-end'"),
+        textResult("answer", "done"),
+      ],
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-bash-artifact-"));
+    temporaryDirectories.push(directory);
+    const artifacts = createToolResultArtifactStore(path.join(directory, "tool-results"));
+    await artifacts.init();
+    const service = new SessionService({
+      config: runtimeConfig,
+      databasePath: path.join(directory, "runtime.sqlite"),
+      modelResolver: () => model,
+      toolResultArtifacts: artifacts,
+    });
+    const session = await service.createSession({
+      cwd: directory,
+      model: "test/mock",
+      profile: "reader",
+    });
+    await collect((await service.startPrompt(session.id, userMessage("run large command"))).stream);
+
+    const secondPrompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
+    const uri = /tool-result:\/\/[0-9a-f-]{36}/u.exec(secondPrompt)?.[0];
+    if (uri === undefined) throw new Error("Bash artifact URI was not sent to the model");
+    expect(secondPrompt).toContain("middle output omitted");
+    expect(secondPrompt).toContain('"completeOutputRetained":true');
+    const artifact = await artifacts.read(uri, session.id);
+    expect(artifact.ok).toBe(true);
+    if (artifact.ok) {
+      expect(artifact.content).toContain("start-");
+      expect(artifact.content).toContain("-end");
+      expect(artifact.content).toContain("z".repeat(40_000));
+    }
     service.close();
   });
 

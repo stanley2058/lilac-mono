@@ -8,7 +8,8 @@ import {
   createToolResultArtifactStore,
   TOOL_RESULT_MAX_PAGE_CHARACTERS,
   TOOL_RESULT_UNAVAILABLE_MESSAGE,
-} from "../../src/artifacts/tool-result-artifact-store";
+  ToolResultArtifactTooLargeError,
+} from "../src/tool-result-artifact-store";
 
 describe("tool result artifact store", () => {
   let baseDir: string;
@@ -92,13 +93,13 @@ describe("tool result artifact store", () => {
     const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
     await store.init();
     const created = await store.createFromStream({
-      sessionId: "session-a",
+      scopeId: "session-a",
       requestId: "request-a",
       toolCallId: "tool-a",
       toolName: "bash",
       source: Readable.from(["streamed-", "producer"]),
       ttlMs: 1000,
-      maxBytesPerSession: 100,
+      maxBytesPerScope: 100,
     });
 
     expect(created.bytes).toBe(Buffer.byteLength("streamed-producer"));
@@ -106,6 +107,37 @@ describe("tool result artifact store", () => {
       ok: true,
       content: "streamed-producer",
     });
+  });
+
+  it("rejects strings, files, and streams above the hard artifact limit without residue", async () => {
+    const store = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    await store.init();
+    const sourcePath = path.join(baseDir, "oversized.txt");
+    await writeFile(sourcePath, "123456");
+    const common = {
+      scopeId: "scope-a",
+      requestId: "request-a",
+      toolCallId: "tool-a",
+      toolName: "plugin-tool",
+      ttlMs: 1000,
+      maxBytesPerScope: 100,
+      maxArtifactBytes: 5,
+    };
+
+    await expect(store.create({ ...common, content: "123456" })).rejects.toBeInstanceOf(
+      ToolResultArtifactTooLargeError,
+    );
+    expect(await readdir(store.rootDir)).toEqual([]);
+
+    await expect(store.createFromFile({ ...common, sourcePath })).rejects.toBeInstanceOf(
+      ToolResultArtifactTooLargeError,
+    );
+    expect(await readdir(store.rootDir)).toEqual([]);
+
+    await expect(
+      store.createFromStream({ ...common, source: Readable.from(["123", "456"]) }),
+    ).rejects.toBeInstanceOf(ToolResultArtifactTooLargeError);
+    expect(await readdir(store.rootDir)).toEqual([]);
   });
 
   it("expires artifacts without extending lifetime on read", async () => {

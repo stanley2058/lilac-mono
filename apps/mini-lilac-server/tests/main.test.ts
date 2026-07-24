@@ -97,6 +97,7 @@ describe("mini-lilac server CLI", () => {
       databaseFile: path.join("/state", "mini-lilac", "mini-lilac.sqlite"),
       codexOAuthFile: path.join("/state", "mini-lilac", "codex.json"),
       modelsDevCacheFile: path.join("/state", "mini-lilac", "models-dev.json"),
+      toolResultsDirectory: path.join("/state", "mini-lilac", "tool-results"),
     });
     expect(createMiniLilacAuthDependencies(paths).storagePath()).toBe(
       path.join("/state", "mini-lilac", "codex.json"),

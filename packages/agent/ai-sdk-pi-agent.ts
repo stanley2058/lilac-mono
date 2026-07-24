@@ -1065,6 +1065,44 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     this.emit({ type: "message_end", message: cloneMessage(normalizedMessage) });
   }
 
+  private async normalizeToolOutput(
+    output: ToolResultOutput,
+    context: Parameters<NormalizeToolResultOutputFn>[1],
+  ): Promise<ToolResultOutput> {
+    if (!this.normalizeToolResultOutput) return output;
+
+    try {
+      return await this.normalizeToolResultOutput(output, context);
+    } catch (error) {
+      logger.warn("tool result normalization failed", {
+        toolCallId: context.toolCallId,
+        toolName: context.toolName,
+        error: errorMessage(error),
+      });
+      return { type: "error-text", value: UNSERIALIZABLE_TOOL_RESULT };
+    }
+  }
+
+  private async normalizeNewToolMessage(message: ToolModelMessage): Promise<ToolModelMessage> {
+    if (!this.normalizeToolResultOutput) return message;
+
+    const content: ToolModelMessage["content"] = [];
+    for (const part of message.content) {
+      if (part.type !== "tool-result") {
+        content.push(part);
+        continue;
+      }
+      content.push({
+        ...part,
+        output: await this.normalizeToolOutput(part.output, {
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+        }),
+      });
+    }
+    return { ...message, content };
+  }
+
   private resetMessagesAfterAbort(reason: "cancel" | "interrupt") {
     const truncated = truncateToLastValidBoundary(this.state.messages);
     this.state.messages = truncated.messages;
@@ -1746,7 +1784,12 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       });
     }
 
-    const newMessages: ModelMessage[] = normalizeReplayMessages(response.messages);
+    const newMessages: ModelMessage[] = [];
+    for (const message of normalizeReplayMessages(response.messages)) {
+      newMessages.push(
+        message.role === "tool" ? await this.normalizeNewToolMessage(message) : message,
+      );
+    }
     const toolCalls = extractToolCallsFromMessages(newMessages);
 
     // Emit message_end for assistant message (first assistant in response.messages)
@@ -1808,7 +1851,13 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     });
     assertNotAborted();
 
-    const appended = decision.append ?? [];
+    const appended: ModelMessage[] = [];
+    for (const message of decision.append ?? []) {
+      appended.push(
+        message.role === "tool" ? await this.normalizeNewToolMessage(message) : message,
+      );
+    }
+    assertNotAborted();
     for (const message of appended) this.appendMessage(message);
     return {
       requiresNextTurn: appended.length > 0 || decision.forceNextTurn === true,
@@ -1988,31 +2037,12 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
       }
 
       assertNotAborted();
-      if (this.normalizeToolResultOutput) {
-        try {
-          toolOutput = await this.normalizeToolResultOutput(toolOutput, {
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            bypassGenericOutputNormalizer: this.genericOutputNormalizerBypassTools.has(
-              call.toolName,
-            ),
-          });
-          assertNotAborted();
-        } catch (error) {
-          if (error instanceof TurnAbortedError) throw error;
-          assertNotAborted();
-          logger.warn("tool result normalization failed", {
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            error: errorMessage(error),
-          });
-          if (toolOutput.type === "json") {
-            toolOutput = { type: "text", value: UNSERIALIZABLE_TOOL_RESULT };
-          } else if (toolOutput.type === "error-json") {
-            toolOutput = { type: "error-text", value: UNSERIALIZABLE_TOOL_RESULT };
-          }
-        }
-      }
+      toolOutput = await this.normalizeToolOutput(toolOutput, {
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        bypassGenericOutputNormalizer: this.genericOutputNormalizerBypassTools.has(call.toolName),
+      });
+      assertNotAborted();
 
       this.state.pendingToolCalls.delete(call.toolCallId);
       this.emit({

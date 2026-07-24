@@ -69,6 +69,15 @@ execution and can write outside filesystem-tool guardrails. This runtime does no
 sandbox. Filesystem tools deny the configured provider/auth files and common credential paths;
 Bash receives an environment with the HTTP auth-token variable removed.
 
+Model-facing tool results are limited to 40 KiB. When a non-Bash tool completes with a larger
+materialized result, Mini Lilac stores the complete sanitized result under the transient,
+session-scoped `tool-result://` artifact referenced by the replacement tool error. Use `read_file`
+with that URI and its returned `nextStart` to page the result instead of rerunning the original
+tool. Bash keeps a bounded head-and-tail preview and includes the artifact URI in its structured
+truncation metadata. Encrypted artifact files live under `$XDG_STATE_HOME/mini-lilac/tool-results`,
+are invalidated when the server restarts, and never include results omitted by native query limits
+such as `maxResults` or `maxCharacters`.
+
 ## Run
 
 From the repository, run `bun run src/main.ts`. The installable command exposes the same entry point

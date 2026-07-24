@@ -311,6 +311,49 @@ describe("AiSdkPiAgent model spec tracking", () => {
     expect(part.input).toEqual({ path: "note.txt" });
   });
 
+  it("does not normalize constructor history or replacement input", () => {
+    const constructorToolMessage: ToolModelMessage = {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "constructor-call",
+          toolName: "history_tool",
+          output: { type: "text", value: "constructor output" },
+        },
+      ],
+    };
+    const replacementToolMessage: ToolModelMessage = {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "replacement-call",
+          toolName: "history_tool",
+          output: { type: "text", value: "replacement output" },
+        },
+      ],
+    };
+    let normalizations = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      messages: [constructorToolMessage],
+      normalizeToolResultOutput: () => {
+        normalizations += 1;
+        return { type: "text", value: "normalized" };
+      },
+    });
+
+    expect(agent.state.messages).toEqual([constructorToolMessage]);
+    expect(normalizations).toBe(0);
+
+    agent.replaceMessages([replacementToolMessage]);
+
+    expect(agent.state.messages).toEqual([replacementToolMessage]);
+    expect(normalizations).toBe(0);
+  });
+
   it("continues after the SDK produces a tool result for invalid input", async () => {
     const model = new MockLanguageModelV4({
       doStream: [
@@ -476,7 +519,7 @@ describe("AiSdkPiAgent model spec tracking", () => {
     const output =
       toolMessage?.content[0]?.type === "tool-result" ? toolMessage.content[0].output : undefined;
 
-    expect(output).toEqual({ type: "text", value: "[tool result is not JSON-serializable]" });
+    expect(output).toEqual({ type: "error-text", value: "[tool result is not JSON-serializable]" });
   });
 
   it("serializes non-finite successful tool outputs through JSON fallback", async () => {
@@ -627,6 +670,121 @@ describe("AiSdkPiAgent provider stream parts", () => {
       ["reasoning_file", "reasoning-file"],
     ]);
     expect(updates.every((update) => update.providerMetadata === providerMetadata)).toBe(true);
+  });
+
+  it("normalizes response tool messages before events and the next model call", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call",
+                toolCallId: "provider-1",
+                toolName: "provider_one",
+                input: "{}",
+              },
+              {
+                type: "tool-call",
+                toolCallId: "provider-2",
+                toolName: "provider_two",
+                input: "{}",
+              },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const normalizationContexts: Array<{
+      toolCallId: string;
+      toolName: string;
+      bypassGenericOutputNormalizer?: boolean;
+    }> = [];
+    const toolEvents: ToolModelMessage[] = [];
+    let executions = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        provider_one: tool({
+          inputSchema: jsonSchema(
+            { type: "object", additionalProperties: false },
+            {
+              validate: () => ({ success: false, error: new Error("raw provider one") }),
+            },
+          ),
+          execute: () => {
+            executions += 1;
+            return "must not execute";
+          },
+        }),
+        provider_two: tool({
+          inputSchema: jsonSchema(
+            { type: "object", additionalProperties: false },
+            {
+              validate: () => ({ success: false, error: new Error("raw provider two") }),
+            },
+          ),
+          execute: () => {
+            executions += 1;
+            return "must not execute";
+          },
+        }),
+      },
+      genericOutputNormalizerBypassTools: new Set(["provider_one", "provider_two"]),
+      normalizeToolResultOutput: (_output, context) => {
+        normalizationContexts.push(context);
+        return { type: "text", value: `normalized:${context.toolCallId}` };
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "message_end" && event.message.role === "tool") {
+        toolEvents.push(event.message);
+      }
+    });
+
+    await agent.prompt("use provider outputs");
+
+    expect(executions).toBe(0);
+    expect(normalizationContexts).toEqual([
+      { toolCallId: "provider-1", toolName: "provider_one" },
+      { toolCallId: "provider-2", toolName: "provider_two" },
+    ]);
+    expect(toolEvents).toHaveLength(1);
+    expect(
+      toolEvents[0]?.content.map((part) => (part.type === "tool-result" ? part.output : part)),
+    ).toEqual([
+      { type: "text", value: "normalized:provider-1" },
+      { type: "text", value: "normalized:provider-2" },
+    ]);
+    expect(
+      agent.state.messages.find(
+        (message) =>
+          message.role === "tool" &&
+          message.content.some(
+            (part) => part.type === "tool-result" && part.toolCallId === "provider-1",
+          ),
+      ),
+    ).toEqual(toolEvents[0]);
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain("normalized:provider-1");
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain("normalized:provider-2");
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).not.toContain("raw provider one");
   });
 });
 
@@ -1538,6 +1696,184 @@ describe("AiSdkPiAgent turn boundaries", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("normalizes boundary tool messages before insertion, events, and the next model call", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const historyToolMessage: ToolModelMessage = {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "history-call",
+          toolName: "history_tool",
+          output: { type: "text", value: "existing history" },
+        },
+      ],
+    };
+    const boundaryToolMessage: ToolModelMessage = {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "boundary-1",
+          toolName: "boundary_one",
+          output: { type: "text", value: "raw boundary one" },
+        },
+        {
+          type: "tool-approval-response",
+          approvalId: "boundary-approval",
+          approved: true,
+          providerExecuted: true,
+        },
+        {
+          type: "tool-result",
+          toolCallId: "boundary-2",
+          toolName: "boundary_two",
+          output: { type: "text", value: "raw boundary two" },
+        },
+      ],
+    };
+    const normalizationContexts: Array<{
+      toolCallId: string;
+      toolName: string;
+      bypassGenericOutputNormalizer?: boolean;
+    }> = [];
+    const toolEvents: ToolModelMessage[] = [];
+    let boundaries = 0;
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "history-call",
+              toolName: "history_tool",
+              input: {},
+            },
+          ],
+        },
+        historyToolMessage,
+      ],
+      genericOutputNormalizerBypassTools: new Set(["history_tool", "boundary_one", "boundary_two"]),
+      normalizeToolResultOutput: (_output, context) => {
+        normalizationContexts.push(context);
+        return { type: "text", value: `normalized:${context.toolCallId}` };
+      },
+      turnBoundaryHandler: () => {
+        boundaries += 1;
+        if (boundaries !== 1) return {};
+        return {
+          append: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolCallId: "boundary-1",
+                  toolName: "boundary_one",
+                  input: {},
+                  providerExecuted: true,
+                },
+                {
+                  type: "tool-approval-request",
+                  approvalId: "boundary-approval",
+                  toolCallId: "boundary-1",
+                },
+                {
+                  type: "tool-call",
+                  toolCallId: "boundary-2",
+                  toolName: "boundary_two",
+                  input: {},
+                  providerExecuted: true,
+                },
+              ],
+            },
+            boundaryToolMessage,
+          ],
+        };
+      },
+    });
+    agent.subscribe((event) => {
+      if (
+        event.type === "message_end" &&
+        event.message.role === "tool" &&
+        event.message.content.some(
+          (part) => part.type === "tool-result" && part.toolCallId === "boundary-1",
+        )
+      ) {
+        toolEvents.push(event.message);
+      }
+    });
+
+    await agent.prompt("use boundary outputs");
+
+    expect(normalizationContexts).toEqual([
+      { toolCallId: "boundary-1", toolName: "boundary_one" },
+      { toolCallId: "boundary-2", toolName: "boundary_two" },
+    ]);
+    expect(toolEvents).toHaveLength(1);
+    expect(toolEvents[0]?.content).toEqual([
+      {
+        type: "tool-result",
+        toolCallId: "boundary-1",
+        toolName: "boundary_one",
+        output: { type: "text", value: "normalized:boundary-1" },
+      },
+      {
+        type: "tool-approval-response",
+        approvalId: "boundary-approval",
+        approved: true,
+        providerExecuted: true,
+      },
+      {
+        type: "tool-result",
+        toolCallId: "boundary-2",
+        toolName: "boundary_two",
+        output: { type: "text", value: "normalized:boundary-2" },
+      },
+    ]);
+    expect(agent.state.messages[1]).toEqual(historyToolMessage);
+    expect(
+      agent.state.messages.find(
+        (message) =>
+          message.role === "tool" &&
+          message.content.some(
+            (part) => part.type === "tool-result" && part.toolCallId === "boundary-1",
+          ),
+      ),
+    ).toEqual(toolEvents[0]);
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain("normalized:boundary-1");
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain("normalized:boundary-2");
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).not.toContain("raw boundary one");
   });
 
   it("forces another model turn when a stop boundary injects a result", async () => {
