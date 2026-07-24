@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { cloneDefaultDiscordWorkingIndicators } from "../discord-working-indicators";
+import { cloneDefaultWorkingIndicators } from "../working-indicators";
 
 import { collectUnknownConfigKeyPaths } from "./unknown-keys";
 
@@ -209,7 +209,7 @@ const discordSurfaceSchema = z
     workingIndicators: z
       .array(z.string().trim().min(1))
       .min(1)
-      .default(cloneDefaultDiscordWorkingIndicators()),
+      .default(cloneDefaultWorkingIndicators()),
 
     /** Experimental Discord-only output features. */
     experimental: discordExperimentalSchema,
@@ -221,7 +221,7 @@ const discordSurfaceSchema = z
     botName: "lilac",
     outputMode: "inline",
     previewFinalOutputStyle: "embed",
-    workingIndicators: cloneDefaultDiscordWorkingIndicators(),
+    workingIndicators: cloneDefaultWorkingIndicators(),
     experimental: {
       markdownTableRender: {
         enabled: false,
@@ -546,7 +546,7 @@ export const coreConfigInputSchemaV1 = z.object({
         botName: "lilac",
         outputMode: "inline",
         previewFinalOutputStyle: "embed",
-        workingIndicators: cloneDefaultDiscordWorkingIndicators(),
+        workingIndicators: cloneDefaultWorkingIndicators(),
         experimental: {
           markdownTableRender: {
             enabled: false,

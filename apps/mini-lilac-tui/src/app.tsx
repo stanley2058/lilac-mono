@@ -29,6 +29,10 @@ import {
 } from "solid-js";
 
 import {
+  DEFAULT_WORKING_INDICATORS,
+  createWorkingIndicatorQueue,
+} from "@stanley2058/lilac-utils/working-indicators";
+import {
   miniLilacReasoningSchema,
   type MiniLilacModelSummary,
   type MiniLilacProfileSummary,
@@ -78,10 +82,11 @@ import {
   isShellTranscriptCollapsible,
   explorationTranscriptText,
   renderInitialMessages,
-  shellTranscriptText,
+  shellTranscriptOutput,
   type EditOperation,
   type EditTranscript,
   type ExplorationTranscript,
+  type ShellTranscript,
   type SubagentTranscript,
   type TranscriptEntry,
   type TranscriptTone,
@@ -97,6 +102,21 @@ import { COLORS, createMarkdownSyntaxStyle, type ThemeColors } from "./theme";
 import { createBufferedChunkOutput } from "./transcript-buffer";
 
 registerCodeBlockParsers();
+
+const WORKING_INDICATOR_ROTATE_MIN_MS = 10_000;
+const WORKING_INDICATOR_ROTATE_MAX_MS = 30_000;
+const WORKING_STATUS_TICK_MS = 220;
+const PULSING_SQUARE_FRAMES = [
+  { glyph: "·", color: "border" },
+  { glyph: "▪", color: "muted" },
+  { glyph: "■", color: "accent" },
+  { glyph: "▣", color: "success" },
+  { glyph: "■", color: "accent" },
+  { glyph: "▪", color: "muted" },
+] as const satisfies readonly {
+  readonly glyph: string;
+  readonly color: keyof Pick<ThemeColors, "border" | "muted" | "accent" | "success">;
+}[];
 
 const COMPOSER_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", shift: true, action: "newline" },
@@ -157,19 +177,104 @@ function truncateStart(value: string, width: number): string {
   return `...${characters.slice(-(width - 3)).join("")}`;
 }
 
-function entryPrefix(kind: TranscriptEntry["kind"]): string {
-  if (kind === "compaction") return "COMPACTION / ";
-  if (kind === "shell" || kind === "exploration" || kind === "edit") return "";
-  if (kind === "tool" || kind === "reasoning") return "* ";
-  if (kind === "error") return "! ";
-  if (kind === "status") return "- ";
-  if (kind === "file") return "+ ";
+function entryPrefix(entry: TranscriptEntry): string {
+  if (entry.kind === "compaction") return "COMPACTION / ";
+  if (entry.kind === "shell" || entry.kind === "exploration" || entry.kind === "edit") return "";
+  if (entry.kind === "tool") {
+    if (entry.running === true) return "● ";
+    if (entry.tone === "warning") return "! ";
+    if (entry.tone === "danger") return "× ";
+    return "✓ ";
+  }
+  if (entry.kind === "reasoning") return "* ";
+  if (entry.kind === "error") return "! ";
+  if (entry.kind === "status") return "- ";
+  if (entry.kind === "file") return "+ ";
   return "";
+}
+
+function shellPreviewRows(narrow: boolean): number {
+  return narrow ? 4 : 8;
+}
+
+export function formatRunDuration(durationMs: number): string {
+  const totalSeconds = Math.floor(Math.max(0, durationMs) / 1_000);
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function ShellView(props: {
+  readonly shell: ShellTranscript;
+  readonly running: boolean;
+  readonly tone: TranscriptTone;
+  readonly expanded: boolean;
+  readonly narrow: boolean;
+  readonly width: number;
+  readonly colors: ThemeColors;
+}) {
+  const previewRows = createMemo(() => shellPreviewRows(props.narrow));
+  const characterLimit = createMemo(() => previewRows() * Math.max(20, props.width));
+  const collapsible = createMemo(() =>
+    isShellTranscriptCollapsible(props.shell, previewRows(), characterLimit()),
+  );
+  const output = createMemo(() =>
+    shellTranscriptOutput(props.shell, props.expanded, previewRows(), characterLimit()),
+  );
+  const statusColor = createMemo(() => {
+    if (props.running) return props.colors.accent;
+    if (props.tone === "danger") return props.colors.danger;
+    if (props.tone === "warning") return props.colors.warning;
+    return props.colors.success;
+  });
+  const statusGlyph = createMemo(() => {
+    if (props.running) return "●";
+    if (props.tone === "danger") return "×";
+    if (props.tone === "warning") return "!";
+    return "✓";
+  });
+
+  return (
+    <box width="100%">
+      <Show when={props.shell.cwd !== undefined}>
+        <text width="100%" wrapMode="word" fg={props.colors.muted} selectable={true}>
+          {`# Running in ${props.shell.cwd ?? ""}`}
+        </text>
+      </Show>
+      <box width="100%" flexDirection="row" paddingTop={props.shell.cwd === undefined ? 0 : 1}>
+        <text flexShrink={0} fg={statusColor()}>{`${statusGlyph()} `}</text>
+        <text flexGrow={1} minWidth={0} wrapMode="word" fg={props.colors.text} selectable={true}>
+          {`$ ${props.shell.command}`}
+        </text>
+      </box>
+      <Show when={output() !== undefined}>
+        <text
+          width="100%"
+          maxHeight={!props.expanded && collapsible() ? previewRows() : undefined}
+          overflow={!props.expanded && collapsible() ? "hidden" : undefined}
+          paddingTop={1}
+          wrapMode="word"
+          fg={props.colors.text}
+          selectable={true}
+        >
+          {output() ?? ""}
+        </text>
+      </Show>
+      <Show when={collapsible()}>
+        <text paddingTop={1} fg={props.colors.muted} selectable={false}>
+          {props.expanded ? "Click to collapse" : "Click to expand"}
+        </text>
+      </Show>
+    </box>
+  );
 }
 
 function ExplorationView(props: {
   readonly exploration: ExplorationTranscript;
-  readonly latest: boolean;
+  readonly running: boolean;
   readonly expanded: boolean;
   readonly narrow: boolean;
   readonly colors: ThemeColors;
@@ -188,11 +293,11 @@ function ExplorationView(props: {
   return (
     <box width="100%">
       <box width="100%" flexDirection="row">
-        <text flexShrink={0} fg={props.latest ? props.colors.accent : props.colors.muted}>
-          {props.latest ? "◆ " : "◇ "}
+        <text flexShrink={0} fg={props.running ? props.colors.accent : props.colors.muted}>
+          {props.running ? "◆ " : "◇ "}
         </text>
         <text flexShrink={0} fg={props.colors.text}>
-          {props.latest ? "Exploring" : "Explored"}
+          {props.running ? "Exploring" : "Explored"}
         </text>
         <text flexShrink={0} fg={props.colors.muted}>{` · ${counts().join(", ")}`}</text>
         <Show when={props.exploration.failures > 0}>
@@ -446,6 +551,7 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
   const terminalRenderer = useRenderer();
   const narrow = createMemo(() => dimensions().width < 64);
   const [state, setState] = createSignal(initialInputState());
+  const active = createMemo(() => state().phase === "active");
   const [entries, setEntries] = createSignal<readonly TranscriptEntry[]>([]);
   const [subagentView, setSubagentView] = createSignal<SubagentView | undefined>();
   const displayEntries = createMemo(() => groupNearbyEdits(subagentView()?.entries ?? entries()));
@@ -468,6 +574,10 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
   );
   const [bindingBusy, setBindingBusy] = createSignal(false);
   const [expandedEntries, setExpandedEntries] = createSignal<ReadonlySet<string>>(new Set());
+  const [workingNowMs, setWorkingNowMs] = createSignal(Date.now());
+  const [workingStartedAtMs, setWorkingStartedAtMs] = createSignal(Date.now());
+  const [workingIndicator, setWorkingIndicator] = createSignal("Working");
+  const [lastRunDurationMs, setLastRunDurationMs] = createSignal<number | undefined>();
   let composer: TextareaRenderable | undefined;
   let transcript: ScrollBoxRenderable | undefined;
   let todoViewport: ScrollBoxRenderable | undefined;
@@ -527,15 +637,12 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
     const current = state();
     if (notice() !== undefined) return notice() ?? "";
     if (current.exitArmed) return "ctrl+c again to exit";
-    if (current.phase === "active" && current.queuedSteeringCount > 0) {
-      return `working / ${current.queuedSteeringCount} queued`;
-    }
-    if (current.phase === "active") return "working / esc interrupt";
+    if (current.phase === "active") return "";
     if (current.phase === "submitting") return "submitting";
     if (current.phase === "disconnected") return "disconnected / esc cancel";
     return props.profiles.filter((profile) => !profile.subagentOnly).length > 1
       ? "tab profile"
-      : "ready";
+      : "";
   });
 
   const phaseColor = createMemo(() => {
@@ -543,6 +650,55 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
     if (state().phase === "active") return colors.success;
     if (state().phase === "submitting") return colors.warning;
     return colors.muted;
+  });
+
+  const workingStatus = createMemo(() => {
+    if (active()) {
+      const elapsedSeconds = Math.floor(Math.max(0, workingNowMs() - workingStartedAtMs()) / 1_000);
+      return `${workingIndicator()}... ${elapsedSeconds}s`;
+    }
+    const durationMs = lastRunDurationMs();
+    return durationMs === undefined ? "Ready" : `Ready · Ran for ${formatRunDuration(durationMs)}`;
+  });
+  const workingStatusFrame = createMemo(() => {
+    if (!active()) return { glyph: "▣", color: colors.accent };
+    const elapsedMs = Math.max(0, workingNowMs() - workingStartedAtMs());
+    const index = Math.floor(elapsedMs / WORKING_STATUS_TICK_MS) % PULSING_SQUARE_FRAMES.length;
+    const frame = PULSING_SQUARE_FRAMES[index] ?? PULSING_SQUARE_FRAMES[0];
+    return { glyph: frame.glyph, color: colors[frame.color] };
+  });
+  const workingHint = createMemo(() => {
+    const queued = state().queuedSteeringCount;
+    return queued > 0 ? `${queued} queued / esc interrupt` : "esc interrupt";
+  });
+
+  createEffect(() => {
+    if (!active()) return;
+
+    const queue = createWorkingIndicatorQueue(DEFAULT_WORKING_INDICATORS);
+    const startedAtMs = Date.now();
+    let nextRotationAtMs = startedAtMs;
+    const rotate = (nowMs: number) => {
+      const next = queue.shift() ?? "Working";
+      queue.push(next);
+      setWorkingIndicator(next);
+      const spread = WORKING_INDICATOR_ROTATE_MAX_MS - WORKING_INDICATOR_ROTATE_MIN_MS;
+      nextRotationAtMs = nowMs + WORKING_INDICATOR_ROTATE_MIN_MS + Math.random() * spread;
+    };
+
+    setWorkingStartedAtMs(startedAtMs);
+    setWorkingNowMs(startedAtMs);
+    setLastRunDurationMs(undefined);
+    rotate(startedAtMs);
+    const interval = setInterval(() => {
+      const nowMs = Date.now();
+      setWorkingNowMs(nowMs);
+      if (nowMs >= nextRotationAtMs) rotate(nowMs);
+    }, WORKING_STATUS_TICK_MS);
+    onCleanup(() => {
+      clearInterval(interval);
+      setLastRunDurationMs(Date.now() - startedAtMs);
+    });
   });
 
   const profileLabel = createMemo(() => bindings().profile ?? "default");
@@ -628,6 +784,13 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
     return toneColors[entry.tone];
   }
 
+  function toolStateColor(entry: TranscriptEntry): string {
+    if (entry.running === true) return colors.accent;
+    if (entry.tone === "danger") return colors.danger;
+    if (entry.tone === "warning") return colors.warning;
+    return colors.success;
+  }
+
   function openPalette(kind: PaletteKind): void {
     const items =
       kind === "models"
@@ -687,10 +850,12 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
       void openSubagent(entry.subagent);
       return;
     }
-    const shellCharacterLimit = 8 * Math.max(20, dimensions().width - (narrow() ? 4 : 10));
+    const previewRows = shellPreviewRows(narrow());
+    const shellCharacterLimit =
+      previewRows * Math.max(20, dimensions().width - (narrow() ? 4 : 10));
     const togglesShell =
       entry.shell !== undefined &&
-      isShellTranscriptCollapsible(entry.shell, 8, shellCharacterLimit);
+      isShellTranscriptCollapsible(entry.shell, previewRows, shellCharacterLimit);
     const togglesExploration =
       entry.exploration !== undefined && entry.exploration.operations.length > 0;
     const togglesEdit = entry.edit !== undefined && entry.edit.operations.length > 1;
@@ -836,18 +1001,10 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
     queueMicrotask(() => composer?.focus());
   }
 
-  function entryText(entry: TranscriptEntry, index: number): string {
+  function entryText(entry: TranscriptEntry): string {
     const expanded = expandedEntries().has(entry.id);
-    if (entry.kind === "shell" && entry.shell !== undefined) {
-      const characterLimit = 8 * Math.max(20, dimensions().width - (narrow() ? 4 : 10));
-      return shellTranscriptText(entry.shell, expanded, 8, characterLimit);
-    }
     if (entry.kind === "exploration" && entry.exploration !== undefined) {
-      return explorationTranscriptText(
-        entry.exploration,
-        index === displayEntries().length - 1,
-        expanded,
-      );
+      return explorationTranscriptText(entry.exploration, entry.running === true, expanded);
     }
     return entry.text;
   }
@@ -1350,7 +1507,7 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
           gap={1}
         >
           <Index each={displayEntries()}>
-            {(entry, index) => (
+            {(entry) => (
               <Show
                 when={entry().kind === "assistant"}
                 fallback={
@@ -1386,9 +1543,9 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
                       entry().kind === "compaction"
                         ? colors.warning
                         : entry().kind === "shell"
-                          ? colors.border
+                          ? toolStateColor(entry())
                           : entry().kind === "tool"
-                            ? transcriptEntryColor(entry())
+                            ? toolStateColor(entry())
                             : entry().kind === "subagent"
                               ? transcriptEntryColor(entry())
                               : entry().kind === "exploration"
@@ -1421,47 +1578,58 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
                     onMouseUp={(event: MouseEvent) => toggleTranscriptEntry(event, entry())}
                   >
                     <Show
-                      when={entry().exploration}
+                      when={entry().shell}
                       fallback={
                         <Show
-                          when={entry().edit}
+                          when={entry().exploration}
                           fallback={
-                            <text
-                              width="100%"
-                              wrapMode={
-                                entry().singleLine
-                                  ? "none"
-                                  : entry().kind === "shell"
-                                    ? "word"
-                                    : undefined
+                            <Show
+                              when={entry().edit}
+                              fallback={
+                                <text
+                                  width="100%"
+                                  wrapMode={entry().singleLine ? "none" : undefined}
+                                  truncate={entry().singleLine === true}
+                                  fg={transcriptEntryColor(entry())}
+                                  selectable={true}
+                                >
+                                  {entryPrefix(entry())}
+                                  {entryText(entry())}
+                                </text>
                               }
-                              truncate={entry().singleLine === true}
-                              fg={transcriptEntryColor(entry())}
-                              selectable={true}
                             >
-                              {entryPrefix(entry().kind)}
-                              {entryText(entry(), index)}
-                            </text>
+                              {(edit) => (
+                                <EditView
+                                  edit={edit()}
+                                  expanded={expandedEntries().has(entry().id)}
+                                  width={Math.max(1, dimensions().width - (narrow() ? 1 : 6))}
+                                  toneColors={toneColors}
+                                  colors={colors}
+                                />
+                              )}
+                            </Show>
                           }
                         >
-                          {(edit) => (
-                            <EditView
-                              edit={edit()}
+                          {(exploration) => (
+                            <ExplorationView
+                              exploration={exploration()}
+                              running={entry().running === true}
                               expanded={expandedEntries().has(entry().id)}
-                              width={Math.max(1, dimensions().width - (narrow() ? 1 : 6))}
-                              toneColors={toneColors}
+                              narrow={narrow()}
                               colors={colors}
                             />
                           )}
                         </Show>
                       }
                     >
-                      {(exploration) => (
-                        <ExplorationView
-                          exploration={exploration()}
-                          latest={index === displayEntries().length - 1}
+                      {(shell) => (
+                        <ShellView
+                          shell={shell()}
+                          running={entry().running === true}
+                          tone={entry().tone}
                           expanded={expandedEntries().has(entry().id)}
                           narrow={narrow()}
+                          width={Math.max(1, dimensions().width - (narrow() ? 4 : 10))}
                           colors={colors}
                         />
                       )}
@@ -1598,6 +1766,35 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
               />
             </box>
           )}
+        </Show>
+        <Show when={subagentView() === undefined}>
+          <box
+            id="session-status"
+            width="100%"
+            height={1}
+            flexDirection="row"
+            paddingLeft={1}
+            paddingRight={1}
+          >
+            <text flexShrink={0} width={2} wrapMode="none" fg={workingStatusFrame().color}>
+              {workingStatusFrame().glyph}
+            </text>
+            <text
+              flexGrow={1}
+              flexShrink={1}
+              minWidth={0}
+              wrapMode="none"
+              truncate={true}
+              fg={colors.text}
+            >
+              {workingStatus()}
+            </text>
+            <Show when={active()}>
+              <text flexShrink={0} wrapMode="none" fg={colors.success}>
+                {` ${workingHint()}`}
+              </text>
+            </Show>
+          </box>
         </Show>
         <Show when={subagentView() === undefined}>
           <box

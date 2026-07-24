@@ -20,3 +20,4 @@ export * from "./friendly-units";
 export * from "./ai-error";
 export * from "./subagent-profile";
 export * from "./reasoning-summary";
+export * from "./working-indicators";

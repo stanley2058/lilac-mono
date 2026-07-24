@@ -164,7 +164,7 @@ surface:
 
     # Streaming embed title phrases for in-progress updates.
     # A random entry is selected and rotated periodically while the request is running.
-    # Defaults live in packages/utils/discord-working-indicators.ts.
+    # Defaults live in packages/utils/working-indicators.ts.
     # workingIndicators: []
 
     # Discord-only markdown output features.

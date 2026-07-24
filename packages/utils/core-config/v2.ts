@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { cloneDefaultDiscordWorkingIndicators } from "../discord-working-indicators";
+import { cloneDefaultWorkingIndicators } from "../working-indicators";
 import { parseFriendlyByteSize, parseFriendlyDurationMs } from "../friendly-units";
 
 import {
@@ -256,7 +256,7 @@ const discordSurfaceSchema = z
     workingIndicators: z
       .array(z.string().trim().min(1))
       .min(1)
-      .default(cloneDefaultDiscordWorkingIndicators()),
+      .default(cloneDefaultWorkingIndicators()),
     markdownTableRender: discordMarkdownTableRenderSchema,
   })
   .default({
@@ -267,7 +267,7 @@ const discordSurfaceSchema = z
     outputMode: "preview",
     outputPreviewModeFinalStyle: "plain",
     outputNotification: true,
-    workingIndicators: cloneDefaultDiscordWorkingIndicators(),
+    workingIndicators: cloneDefaultWorkingIndicators(),
     markdownTableRender: {
       enabled: true,
       style: "unicode",
@@ -561,7 +561,7 @@ export const coreConfigInputSchemaV2 = z.object({
         outputMode: "preview",
         outputPreviewModeFinalStyle: "plain",
         outputNotification: true,
-        workingIndicators: cloneDefaultDiscordWorkingIndicators(),
+        workingIndicators: cloneDefaultWorkingIndicators(),
         markdownTableRender: {
           enabled: true,
           style: "unicode",

@@ -15,7 +15,7 @@ import {
   type MiniLilacUIMessage,
 } from "@stanley2058/mini-lilac-client";
 
-import { MiniLilacApp } from "./app";
+import { MiniLilacApp, formatRunDuration } from "./app";
 import type { SessionBindings } from "./controller";
 import { COLORS } from "./theme";
 
@@ -40,6 +40,7 @@ async function renderApp(
   cwd = "/workspace",
   onNewSession: (bindings: SessionBindings) => Promise<void> = async () => {},
   initialTodos: MiniLilacTodoState = { revision: 0, todos: [] },
+  initialSnapshot: MiniLilacSessionSnapshot = { ...snapshot, cwd },
 ) {
   return testRender(
     () => (
@@ -52,7 +53,7 @@ async function renderApp(
         reasoning="low"
         models={[]}
         profiles={[{ id: "coding", label: "Coding", subagentOnly: false }]}
-        initialSnapshot={{ ...snapshot, cwd }}
+        initialSnapshot={initialSnapshot}
         initialMessages={messages}
         initialTodos={initialTodos}
         onNewSession={onNewSession}
@@ -132,6 +133,11 @@ function subagentMessagesResponse(): Response {
 }
 
 describe("MiniLilacApp tool interactions", () => {
+  it("formats completed run durations", () => {
+    expect(formatRunDuration(12 * 60_000 + 32_000)).toBe("12m 32s");
+    expect(formatRunDuration(3_500)).toBe("3s");
+  });
+
   it("opens a subagent block as a read-only transcript and returns with escape", async () => {
     const fetchMock = Object.assign(
       async (input: string | URL | Request) => {
@@ -886,6 +892,179 @@ describe("MiniLilacApp tool interactions", () => {
     }
   });
 
+  it("caps collapsed shell output height and restores it after expansion", async () => {
+    const output = Array.from(
+      { length: 14 },
+      (_, index) => `line ${index + 1} ${"detail ".repeat(16)}`,
+    ).join("\n");
+    const app = await renderApp([
+      {
+        id: "assistant-shell-height",
+        role: "assistant",
+        parts: [
+          {
+            type: "dynamic-tool",
+            toolName: "bash",
+            toolCallId: "bash-height-1",
+            state: "output-available",
+            input: { command: "docker system df -v" },
+            output: { stdout: output, stderr: "", exitCode: 0 },
+          },
+          {
+            type: "dynamic-tool",
+            toolName: "deploy_preview",
+            toolCallId: "after-shell-height",
+            state: "output-available",
+            input: {},
+            output: {},
+          },
+        ],
+      },
+    ]);
+    try {
+      await app.flush();
+      const initialCommandY = renderedTextPosition(app, "$ docker system df -v").y;
+      const initialNextY = renderedTextPosition(app, "Deploy Preview").y;
+      expect(initialNextY - initialCommandY).toBeLessThanOrEqual(13);
+
+      await clickRenderedText(app, "$ docker system df -v");
+      await clickRenderedText(app, "Click to collapse");
+      expect(renderedTextPosition(app, "Deploy Preview").y).toBe(initialNextY);
+    } finally {
+      app.renderer.destroy();
+    }
+  });
+
+  it("marks running and completed shell commands independently of color", async () => {
+    const app = await renderApp([
+      {
+        id: "assistant-shell-states",
+        role: "assistant",
+        parts: [
+          {
+            type: "dynamic-tool",
+            toolName: "bash",
+            toolCallId: "bash-complete",
+            state: "output-available",
+            input: { command: "df -h" },
+            output: { stdout: "done", stderr: "", exitCode: 0 },
+          },
+          {
+            type: "dynamic-tool",
+            toolName: "bash",
+            toolCallId: "bash-running",
+            state: "input-available",
+            input: { command: "du -x -h /" },
+          },
+          {
+            type: "dynamic-tool",
+            toolName: "deploy_preview",
+            toolCallId: "tool-running",
+            state: "input-available",
+            input: {},
+          },
+          {
+            type: "dynamic-tool",
+            toolName: "skill",
+            toolCallId: "tool-complete",
+            state: "output-available",
+            input: { name: "frontend-design" },
+            output: {},
+          },
+        ],
+      },
+    ]);
+    try {
+      await app.flush();
+      const frame = app.captureCharFrame();
+      expect(frame).toContain("✓ $ df -h");
+      expect(frame).toContain("● $ du -x -h /");
+      expect(frame).toContain("● Deploy Preview");
+      expect(frame).toContain("✓ Loaded skill frontend-design");
+      expect(renderedSpan(app, "✓ ").fg.equals(RGBA.fromHex(COLORS.success))).toBe(true);
+      expect(renderedSpan(app, "● ").fg.equals(RGBA.fromHex(COLORS.accent))).toBe(true);
+    } finally {
+      app.renderer.destroy();
+    }
+  });
+
+  it("keeps a stationary session status row across idle and active states", async () => {
+    const idleApp = await renderApp([]);
+    let idleComposerY: number;
+    try {
+      await idleApp.flush();
+      expect(idleApp.captureCharFrame()).toContain("▣ Ready");
+      idleComposerY = renderedTextPosition(idleApp, "Ask anything...").y;
+    } finally {
+      idleApp.renderer.destroy();
+    }
+
+    const fetch = Object.assign(async () => await new Promise<Response>(() => {}), {
+      preconnect() {},
+    });
+    const activeSnapshot = {
+      ...snapshot,
+      activeRunId: "run-active",
+      status: "streaming" as const,
+      queuedSteeringCount: 2,
+    };
+    const app = await renderApp(
+      [],
+      new MiniLilacTransport({ cwd: "/workspace", baseUrl: "/mini", fetch }),
+      90,
+      "/workspace",
+      async () => {},
+      { revision: 0, todos: [] },
+      activeSnapshot,
+    );
+    try {
+      await app.flush();
+      const frame = app.captureCharFrame();
+      expect(frame).toMatch(/[·▪■▣] \S+\.\.\. 0s/u);
+      expect(frame).toContain("2 queued / esc interrupt");
+      expect(renderedTextPosition(app, "2 queued / esc interrupt").y).toBeLessThan(
+        renderedTextPosition(app, "Steer the active run...").y,
+      );
+      expect(renderedTextPosition(app, "Steer the active run...").y).toBe(idleComposerY);
+      expect(frame).not.toContain("working / esc interrupt");
+    } finally {
+      app.renderer.destroy();
+    }
+  });
+
+  it("keeps the completed run duration in the ready status", async () => {
+    class FinishedRunTransport extends MiniLilacTransport {
+      override async reconnectToStream() {
+        return null;
+      }
+
+      override async getMessages() {
+        return [];
+      }
+    }
+
+    const activeSnapshot = {
+      ...snapshot,
+      activeRunId: "run-finished",
+      status: "streaming" as const,
+    };
+    const app = await renderApp(
+      [],
+      new FinishedRunTransport({ cwd: "/workspace" }),
+      90,
+      "/workspace",
+      async () => {},
+      { revision: 0, todos: [] },
+      activeSnapshot,
+    );
+    try {
+      await app.waitForFrame((frame) => frame.includes("▣ Ready · Ran for 0s"));
+      expect(app.captureCharFrame()).toContain("▣ Ready · Ran for 0s");
+    } finally {
+      app.renderer.destroy();
+    }
+  });
+
   it("expands exploration when its rendered text is clicked", async () => {
     const app = await renderApp([
       {
@@ -906,7 +1085,7 @@ describe("MiniLilacApp tool interactions", () => {
     try {
       await app.flush();
       expect(app.captureCharFrame()).not.toContain("src/app.ts · 12 lines");
-      await clickRenderedText(app, "Exploring");
+      await clickRenderedText(app, "Explored");
       expect(app.captureCharFrame()).toContain("src/app.ts · 12 lines");
     } finally {
       app.renderer.destroy();

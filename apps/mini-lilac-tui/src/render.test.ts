@@ -374,6 +374,7 @@ describe("renderInitialMessages", () => {
 
     expect(renderInitialMessages([message], { cwd: "/workspace/" })[0]).toMatchObject({
       text: "$ pwd",
+      running: true,
       shell: { command: "pwd" },
     });
     expect(renderInitialMessages([message], { cwd: "/other" })[0]).toMatchObject({
@@ -745,6 +746,7 @@ describe("renderInitialMessages", () => {
       kind: "exploration",
       tone: "accent",
       text: "Exploring · 1 read, 1 search",
+      running: true,
     });
     renderer.handle({
       type: "tool-output-available",
@@ -754,9 +756,10 @@ describe("renderInitialMessages", () => {
     });
     expect(entries()[0]).toMatchObject({
       kind: "exploration",
-      tone: "accent",
-      text: "Exploring · 1 read, 1 search",
+      tone: "normal",
+      text: "Explored · 1 read, 1 search",
     });
+    expect(entries()[0]).not.toHaveProperty("running");
 
     expect(
       renderInitialMessages([
@@ -783,7 +786,7 @@ describe("renderInitialMessages", () => {
           ],
         },
       ]).map((entry) => ({ kind: entry.kind, tone: entry.tone, text: entry.text })),
-    ).toEqual([{ kind: "exploration", tone: "accent", text: "Exploring · 1 read, 1 search" }]);
+    ).toEqual([{ kind: "exploration", tone: "normal", text: "Explored · 1 read, 1 search" }]);
   });
 
   it("segments exploration around commentary and expands operation details", () => {
@@ -819,7 +822,7 @@ describe("renderInitialMessages", () => {
     expect(entries.map((entry) => entry.text)).toEqual([
       "Explored · 1 read",
       "Adding imports",
-      "Exploring · 1 search",
+      "Explored · 1 search",
     ]);
     const first = entries[0]?.exploration;
     const last = entries[2]?.exploration;
@@ -1056,7 +1059,7 @@ describe("renderInitialMessages", () => {
 
     expect(
       renderInitialMessages([{ id: "assistant-batch-explore", role: "assistant", parts }]),
-    ).toMatchObject([{ kind: "exploration", text: "Exploring · 2 reads, 1 search" }]);
+    ).toMatchObject([{ kind: "exploration", text: "Explored · 2 reads, 1 search" }]);
   });
 
   it("keeps canonical and live file and source entries in parity", () => {
