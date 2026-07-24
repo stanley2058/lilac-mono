@@ -609,6 +609,7 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
     sessionPresentation(props.initialSnapshot),
   );
   const [bindingBusy, setBindingBusy] = createSignal(false);
+  const [profileCycleBusy, setProfileCycleBusy] = createSignal(false);
   const [expandedEntries, setExpandedEntries] = createSignal<ReadonlySet<string>>(new Set());
   const [workingNowMs, setWorkingNowMs] = createSignal(Date.now());
   const [workingStartedAtMs, setWorkingStartedAtMs] = createSignal(Date.now());
@@ -670,20 +671,23 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
     },
   });
 
+  const profileHint = createMemo(() =>
+    props.profiles.filter((profile) => !profile.subagentOnly).length > 1 ? "tab profile" : "",
+  );
   const phaseText = createMemo(() => {
     const current = state();
     if (notice() !== undefined) return notice() ?? "";
     if (current.exitArmed) return "ctrl+c again to exit";
     if (current.phase === "active") return "";
+    if (profileCycleBusy()) return profileHint();
     if (current.phase === "submitting") return "submitting";
     if (current.phase === "disconnected") return "disconnected / esc cancel";
-    return props.profiles.filter((profile) => !profile.subagentOnly).length > 1
-      ? "tab profile"
-      : "";
+    return profileHint();
   });
 
   const phaseColor = createMemo(() => {
     if (notice() !== undefined || state().phase === "disconnected") return colors.danger;
+    if (profileCycleBusy()) return colors.muted;
     if (state().phase === "active") return colors.success;
     if (state().phase === "submitting") return colors.warning;
     return colors.muted;
@@ -739,6 +743,17 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
   });
 
   const profileLabel = createMemo(() => bindings().profile ?? "default");
+  const currentProfile = createMemo(
+    () =>
+      props.profiles.find((profile) => profile.id === bindings().profile) ??
+      props.profiles.find((profile) => profile.isDefault === true),
+  );
+  const composerBorderColor = createMemo(() => {
+    const workspaceWrites = currentProfile()?.workspaceWrites;
+    if (workspaceWrites === true) return colors.success;
+    if (workspaceWrites === false) return colors.model;
+    return colors.accent;
+  });
   const modelLabel = createMemo(() => bindings().model ?? "server default");
   const reasoningLabel = createMemo(() => bindings().reasoning ?? "default");
   const cwdLabel = createMemo(() =>
@@ -1189,7 +1204,12 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
     if (bindingBusy()) return;
     const profile = nextProfile(props.profiles, bindings().profile);
     if (profile === undefined || profile.id === bindings().profile) return;
-    await applyBindings({ profile: profile.id });
+    setProfileCycleBusy(true);
+    try {
+      await applyBindings({ profile: profile.id });
+    } finally {
+      setProfileCycleBusy(false);
+    }
   }
 
   function createDraftExtmark(id: string, placeholder: string, start: number): void {
@@ -1862,11 +1882,12 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
         </Show>
         <Show when={subagentView() === undefined}>
           <box
+            id="composer-frame"
             width="100%"
             position="relative"
             backgroundColor={colors.panel}
             border={["left"]}
-            borderColor={state().phase === "active" ? colors.success : colors.accent}
+            borderColor={composerBorderColor()}
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { UIMessageChunk } from "ai";
 
 import {
+  type BoxRenderable,
   RGBA,
   type CapturedSpan,
   type ScrollBoxRenderable,
@@ -54,7 +55,7 @@ async function renderApp(
         profile="coding"
         reasoning="low"
         models={[]}
-        profiles={[{ id: "coding", label: "Coding", subagentOnly: false }]}
+        profiles={[{ id: "coding", label: "Coding", subagentOnly: false, workspaceWrites: true }]}
         initialSnapshot={initialSnapshot}
         initialMessages={messages}
         initialTodos={initialTodos}
@@ -616,6 +617,57 @@ describe("MiniLilacApp tool interactions", () => {
     }
   });
 
+  it("keeps the profile hint stable while cycling profiles", async () => {
+    const update = Promise.withResolvers<Response>();
+    const fetch = Object.assign(async () => await update.promise, {
+      preconnect() {},
+    });
+    const app = await testRender(
+      () => (
+        <MiniLilacApp
+          transport={new MiniLilacTransport({ cwd: "/workspace", baseUrl: "/mini", fetch })}
+          cwd="/workspace"
+          sessionId="session-1"
+          model="test/model"
+          profile="coding"
+          reasoning="low"
+          models={[]}
+          profiles={[
+            { id: "coding", label: "Coding", subagentOnly: false, workspaceWrites: true },
+            { id: "review", label: "Review", subagentOnly: false, workspaceWrites: false },
+          ]}
+          initialSnapshot={snapshot}
+          initialMessages={[]}
+          initialTodos={{ revision: 0, todos: [] }}
+          onNewSession={async () => {}}
+          onSessionSelect={async () => {}}
+          onExit={() => {}}
+        />
+      ),
+      { width: 90, height: 30 },
+    );
+    try {
+      await app.flush();
+      const composerFrame = app.renderer.root.findDescendantById("composer-frame") as BoxRenderable;
+      expect(app.captureCharFrame()).toContain("tab profile");
+      expect(composerFrame.borderColor.equals(RGBA.fromHex(COLORS.success))).toBe(true);
+
+      app.mockInput.pressKey("TAB");
+      await app.flush();
+
+      const frame = app.captureCharFrame();
+      expect(frame).toContain("tab profile");
+      expect(frame).not.toContain("submitting");
+      expect(renderedSpan(app, "tab profile").fg.equals(RGBA.fromHex(COLORS.muted))).toBe(true);
+
+      update.resolve(Response.json({ ...snapshot, profile: "review" }));
+      await app.waitForFrame((nextFrame) => nextFrame.includes("review |"));
+      expect(composerFrame.borderColor.equals(RGBA.fromHex(COLORS.model))).toBe(true);
+    } finally {
+      app.renderer.destroy();
+    }
+  });
+
   it("focuses the new session composer after /new", async () => {
     const transport = new MiniLilacTransport({ cwd: "/workspace" });
     const app = await testRender(
@@ -632,7 +684,9 @@ describe("MiniLilacApp tool interactions", () => {
                 profile="coding"
                 reasoning="low"
                 models={[]}
-                profiles={[{ id: "coding", label: "Coding", subagentOnly: false }]}
+                profiles={[
+                  { id: "coding", label: "Coding", subagentOnly: false, workspaceWrites: true },
+                ]}
                 initialSnapshot={id === "session-1" ? snapshot : undefined}
                 initialMessages={[]}
                 initialTodos={{ revision: 0, todos: [] }}

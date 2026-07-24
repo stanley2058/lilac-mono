@@ -73,7 +73,13 @@ function transport(
     },
   ];
   const profiles: MiniLilacProfileSummary[] = [
-    { id: "current-profile", label: "Current profile", subagentOnly: false, isDefault: true },
+    {
+      id: "current-profile",
+      label: "Current profile",
+      subagentOnly: false,
+      workspaceWrites: true,
+      isDefault: true,
+    },
   ];
   return {
     getSessionResume: async () => {

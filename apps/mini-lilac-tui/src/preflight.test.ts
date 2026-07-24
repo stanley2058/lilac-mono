@@ -37,8 +37,14 @@ describe("preflight selection helpers", () => {
 
   it("filters subagent-only profiles from selectable choices", () => {
     const choices = selectableProfileChoices([
-      { id: "general", label: "General", subagentOnly: false, isDefault: true },
-      { id: "explore", label: "Explore", subagentOnly: true },
+      {
+        id: "general",
+        label: "General",
+        subagentOnly: false,
+        workspaceWrites: true,
+        isDefault: true,
+      },
+      { id: "explore", label: "Explore", subagentOnly: true, workspaceWrites: false },
     ]);
     expect(choices.map((choice) => choice.id)).toEqual(["general"]);
   });

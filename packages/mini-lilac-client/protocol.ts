@@ -51,6 +51,7 @@ export const miniLilacProfileSummarySchema = z.object({
   description: z.string().optional(),
   isDefault: z.boolean().optional(),
   subagentOnly: z.boolean(),
+  workspaceWrites: z.boolean(),
 });
 export type MiniLilacProfileSummary = z.infer<typeof miniLilacProfileSummarySchema>;
 

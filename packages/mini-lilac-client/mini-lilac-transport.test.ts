@@ -714,12 +714,14 @@ describe("MiniLilacTransport", () => {
         label: "Explore",
         description: "Read-only investigation",
         subagentOnly: true,
+        workspaceWrites: false,
       }),
     ).toEqual({
       id: "explore",
       label: "Explore",
       description: "Read-only investigation",
       subagentOnly: true,
+      workspaceWrites: false,
     });
   });
 

@@ -1492,12 +1492,14 @@ describe("createMiniLilacServer", () => {
         description: "Coding profile",
         isDefault: true,
         subagentOnly: false,
+        workspaceWrites: false,
       },
       {
         id: "investigator",
         label: "investigator",
         description: "Subagent profile",
         subagentOnly: true,
+        workspaceWrites: false,
       },
     ]);
     service.close();

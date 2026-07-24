@@ -226,6 +226,7 @@ function profileSummaries(config: RuntimeConfig): MiniLilacProfileSummary[] {
     ...(profile.description ? { description: profile.description } : {}),
     ...(id === config.agent.defaultProfile ? { isDefault: true } : {}),
     subagentOnly: profile.subagentOnly,
+    workspaceWrites: profile.workspaceWrites,
   }));
 }
 

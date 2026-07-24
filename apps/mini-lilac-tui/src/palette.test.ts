@@ -149,9 +149,9 @@ describe("palette helpers", () => {
 
   it("cycles only top-level profiles in one direction", () => {
     const profiles = [
-      { id: "coding", label: "Coding", subagentOnly: false },
-      { id: "research", label: "Research", subagentOnly: true },
-      { id: "review", label: "Review", subagentOnly: false },
+      { id: "coding", label: "Coding", subagentOnly: false, workspaceWrites: true },
+      { id: "research", label: "Research", subagentOnly: true, workspaceWrites: false },
+      { id: "review", label: "Review", subagentOnly: false, workspaceWrites: false },
     ];
     expect(nextProfile(profiles, "coding")?.id).toBe("review");
     expect(nextProfile(profiles, "review")?.id).toBe("coding");
