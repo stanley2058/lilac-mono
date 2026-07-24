@@ -251,35 +251,21 @@ function ShellView(props: {
       </Show>
       <box width="100%" flexDirection="row" paddingTop={props.shell.cwd === undefined ? 0 : 1}>
         <text flexShrink={0} fg={statusColor()}>{`${statusGlyph()} `}</text>
-        <text
-          flexGrow={1}
-          minWidth={0}
-          maxHeight={!props.expanded && collapsible() ? previewRows() : undefined}
-          overflow={!props.expanded && collapsible() ? "hidden" : undefined}
-          wrapMode="word"
-          fg={props.colors.text}
-          selectable={true}
-        >
+        <text flexGrow={1} minWidth={0} wrapMode="word" fg={props.colors.text} selectable={true}>
           {`$ ${command()}`}
         </text>
       </box>
       <Show when={output() !== undefined}>
-        <text
-          width="100%"
-          maxHeight={!props.expanded && collapsible() ? previewRows() : undefined}
-          overflow={!props.expanded && collapsible() ? "hidden" : undefined}
-          paddingTop={1}
-          wrapMode="word"
-          fg={props.colors.text}
-          selectable={true}
-        >
+        <text width="100%" wrapMode="word" fg={props.colors.text} selectable={true}>
           {output() ?? ""}
         </text>
       </Show>
       <Show when={collapsible()}>
-        <text paddingTop={1} fg={props.colors.muted} selectable={false}>
-          {props.expanded ? "Click to collapse" : "Click to expand"}
-        </text>
+        <box paddingTop={1}>
+          <text fg={props.colors.muted} selectable={false}>
+            {props.expanded ? "Click to collapse" : "Click to expand"}
+          </text>
+        </box>
       </Show>
     </box>
   );

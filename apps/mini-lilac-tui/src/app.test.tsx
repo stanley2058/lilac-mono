@@ -898,11 +898,11 @@ describe("MiniLilacApp tool interactions", () => {
     }
   });
 
-  it("caps collapsed shell output height and restores it after expansion", async () => {
-    const output = Array.from(
-      { length: 14 },
-      (_, index) => `line ${index + 1} ${"detail ".repeat(16)}`,
-    ).join("\n");
+  it("shows eight logical shell output lines with deliberate spacing", async () => {
+    const output = [
+      `line 1 ${"detail ".repeat(16)}`,
+      ...Array.from({ length: 13 }, (_, index) => `line ${index + 2}`),
+    ].join("\n");
     const app = await renderApp([
       {
         id: "assistant-shell-height",
@@ -913,7 +913,7 @@ describe("MiniLilacApp tool interactions", () => {
             toolName: "bash",
             toolCallId: "bash-height-1",
             state: "output-available",
-            input: { command: "docker system df -v" },
+            input: { command: "docker system df -v", cwd: "/workspace/apps/api" },
             output: { stdout: output, stderr: "", exitCode: 0 },
           },
           {
@@ -929,11 +929,20 @@ describe("MiniLilacApp tool interactions", () => {
     ]);
     try {
       await app.flush();
+      const cwdY = renderedTextPosition(app, "# Running in /workspace/apps/api").y;
       const initialCommandY = renderedTextPosition(app, "$ docker system df -v").y;
+      const firstOutputY = renderedTextPosition(app, "line 1").y;
+      const lastOutputY = renderedTextPosition(app, "line 8").y;
+      const expandY = renderedTextPosition(app, "Click to expand").y;
       const initialNextY = renderedTextPosition(app, "Deploy Preview").y;
-      expect(initialNextY - initialCommandY).toBeLessThanOrEqual(13);
+      expect(app.captureCharFrame()).not.toContain("line 9");
+      expect(initialCommandY).toBe(cwdY + 2);
+      expect(firstOutputY).toBe(initialCommandY + 1);
+      expect(expandY).toBe(lastOutputY + 2);
+      expect(initialNextY).toBe(expandY + 3);
 
       await clickRenderedText(app, "$ docker system df -v");
+      expect(app.captureCharFrame()).toContain("line 14");
       await clickRenderedText(app, "Click to collapse");
       expect(renderedTextPosition(app, "Deploy Preview").y).toBe(initialNextY);
     } finally {
