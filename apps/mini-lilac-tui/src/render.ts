@@ -70,6 +70,11 @@ export interface ShellTranscript {
   readonly output?: string;
 }
 
+export interface ShellTranscriptPreview {
+  readonly command: string;
+  readonly output?: string;
+}
+
 export interface ExplorationOperation {
   readonly action: "Read" | "Grep" | "Glob" | "Find";
   readonly detail: string;
@@ -670,75 +675,65 @@ function sameCwd(commandCwd: string, clientCwd: string | undefined): boolean {
 export function shellTranscriptText(
   shell: ShellTranscript,
   expanded = false,
-  outputLineLimit = DEFAULT_SHELL_OUTPUT_LINES,
-  outputCharacterLimit = DEFAULT_SHELL_OUTPUT_CHARACTERS,
+  lineLimit = DEFAULT_SHELL_OUTPUT_LINES,
+  characterLimit = DEFAULT_SHELL_OUTPUT_CHARACTERS,
 ): string {
-  const collapsible = isShellTranscriptCollapsible(shell, outputLineLimit, outputCharacterLimit);
-  const visibleCommand = shellTranscriptCommand(
-    shell,
-    expanded,
-    outputLineLimit,
-    outputCharacterLimit,
-  );
-  const visibleOutput = shellTranscriptOutput(
-    shell,
-    expanded,
-    outputLineLimit,
-    outputCharacterLimit,
-  );
+  const collapsible = isShellTranscriptCollapsible(shell, lineLimit, characterLimit);
+  const preview = shellTranscriptPreview(shell, expanded, lineLimit, characterLimit);
   const lines = [
     shell.cwd === undefined ? undefined : `# Running in ${shell.cwd}`,
     shell.cwd === undefined ? undefined : "",
-    `$ ${visibleCommand}`,
-    visibleOutput === undefined ? undefined : "",
-    visibleOutput,
+    `$ ${preview.command}`,
+    preview.output === undefined ? undefined : "",
+    preview.output,
     collapsible ? "" : undefined,
     collapsible ? (expanded ? "Click to collapse" : "Click to expand") : undefined,
   ].filter((value) => value !== undefined);
   return lines.join("\n");
 }
 
-function shellTranscriptPreview(value: string, lineLimit: number, characterLimit: number): string {
+function truncateShellTranscript(value: string, lineLimit: number, characterLimit: number): string {
   const lineLimitedValue = value.split("\n").slice(0, lineLimit).join("\n");
   const characters = Array.from(lineLimitedValue);
   if (characters.length <= characterLimit) return lineLimitedValue;
   return `${characters.slice(0, Math.max(0, characterLimit - 3)).join("")}...`;
 }
 
-export function shellTranscriptCommand(
+function shellTranscriptContent(shell: ShellTranscript): string {
+  return shell.output === undefined || shell.output.length === 0
+    ? shell.command
+    : `${shell.command}\n${shell.output}`;
+}
+
+export function shellTranscriptPreview(
   shell: ShellTranscript,
   expanded = false,
   lineLimit = DEFAULT_SHELL_OUTPUT_LINES,
   characterLimit = DEFAULT_SHELL_OUTPUT_CHARACTERS,
-): string {
-  if (expanded) return shell.command;
-  return shellTranscriptPreview(shell.command, lineLimit, characterLimit);
-}
-
-export function shellTranscriptOutput(
-  shell: ShellTranscript,
-  expanded = false,
-  outputLineLimit = DEFAULT_SHELL_OUTPUT_LINES,
-  outputCharacterLimit = DEFAULT_SHELL_OUTPUT_CHARACTERS,
-): string | undefined {
-  if (shell.output === undefined || shell.output.length === 0) return undefined;
-  if (!isShellTranscriptCollapsible(shell, outputLineLimit, outputCharacterLimit) || expanded) {
-    return shell.output;
+): ShellTranscriptPreview {
+  const output = shell.output === undefined || shell.output.length === 0 ? undefined : shell.output;
+  if (expanded || !isShellTranscriptCollapsible(shell, lineLimit, characterLimit)) {
+    return { command: shell.command, ...(output === undefined ? {} : { output }) };
   }
 
-  return shellTranscriptPreview(shell.output, outputLineLimit, outputCharacterLimit);
+  const visible = truncateShellTranscript(shellTranscriptContent(shell), lineLimit, characterLimit);
+  const outputPrefix = `${shell.command}\n`;
+  if (!visible.startsWith(outputPrefix)) return { command: visible };
+  const visibleOutput = visible.slice(outputPrefix.length);
+  return {
+    command: shell.command,
+    ...(visibleOutput.length === 0 ? {} : { output: visibleOutput }),
+  };
 }
 
 export function isShellTranscriptCollapsible(
   shell: ShellTranscript,
-  outputLineLimit = DEFAULT_SHELL_OUTPUT_LINES,
-  outputCharacterLimit = DEFAULT_SHELL_OUTPUT_CHARACTERS,
+  lineLimit = DEFAULT_SHELL_OUTPUT_LINES,
+  characterLimit = DEFAULT_SHELL_OUTPUT_CHARACTERS,
 ): boolean {
+  const transcript = shellTranscriptContent(shell);
   return (
-    shell.command.split("\n").length > outputLineLimit ||
-    Array.from(shell.command).length > outputCharacterLimit ||
-    (shell.output?.split("\n").length ?? 0) > outputLineLimit ||
-    Array.from(shell.output ?? "").length > outputCharacterLimit
+    transcript.split("\n").length > lineLimit || Array.from(transcript).length > characterLimit
   );
 }
 

@@ -383,7 +383,7 @@ describe("renderInitialMessages", () => {
     });
   });
 
-  it("clamps shell output to eight lines and exposes expansion labels", () => {
+  it("clamps the combined shell transcript to eight lines and exposes expansion labels", () => {
     const shell = {
       command: "bun test",
       output: Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n"),
@@ -391,8 +391,8 @@ describe("renderInitialMessages", () => {
 
     expect(isShellTranscriptCollapsible(shell)).toBe(true);
     const collapsed = shellTranscriptText(shell);
-    expect(collapsed).toContain("line 8");
-    expect(collapsed).not.toContain("line 9");
+    expect(collapsed).toContain("line 7");
+    expect(collapsed).not.toContain("line 8");
     expect(collapsed.endsWith("Click to expand")).toBe(true);
     const expanded = shellTranscriptText(shell, true);
     expect(expanded).toContain("line 10");
@@ -405,19 +405,26 @@ describe("renderInitialMessages", () => {
     expect(characterCollapsedText).not.toContain(longLine);
     expect(characterCollapsedText).toContain(`${"x".repeat(32)}...`);
     expect(shellTranscriptText(characterClamped, true)).toContain(longLine);
+
+    const sharedCharacterBudget = { command: "123456", output: "abcdef" };
+    expect(isShellTranscriptCollapsible(sharedCharacterBudget, 8, 12)).toBe(true);
+    expect(shellTranscriptText(sharedCharacterBudget, false, 8, 12)).toContain("ab...");
+    expect(shellTranscriptText(sharedCharacterBudget, false, 8, 12)).not.toContain("abcdef");
   });
 
-  it("clamps shell command input and restores it after expansion", () => {
+  it("spends the shared shell transcript budget on command input before output", () => {
     const command = Array.from({ length: 10 }, (_, i) => `input line ${i + 1}`).join("\n");
-    const shell = { command };
+    const shell = { command, output: "/tmp/result.txt" };
 
     expect(isShellTranscriptCollapsible(shell)).toBe(true);
     const collapsed = shellTranscriptText(shell);
     expect(collapsed).toContain("input line 8");
     expect(collapsed).not.toContain("input line 9");
+    expect(collapsed).not.toContain("/tmp/result.txt");
     expect(collapsed.endsWith("Click to expand")).toBe(true);
     const expanded = shellTranscriptText(shell, true);
     expect(expanded).toContain("input line 10");
+    expect(expanded).toContain("/tmp/result.txt");
     expect(expanded.endsWith("Click to collapse")).toBe(true);
   });
 

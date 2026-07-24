@@ -1034,7 +1034,7 @@ describe("MiniLilacApp tool interactions", () => {
     }
   });
 
-  it("shows eight logical shell output lines with deliberate spacing", async () => {
+  it("shows eight logical shell transcript lines with deliberate spacing", async () => {
     const output = [
       `line 1 ${"detail ".repeat(16)}`,
       ...Array.from({ length: 13 }, (_, index) => `line ${index + 2}`),
@@ -1068,10 +1068,10 @@ describe("MiniLilacApp tool interactions", () => {
       const cwdY = renderedTextPosition(app, "# Running in /workspace/apps/api").y;
       const initialCommandY = renderedTextPosition(app, "$ docker system df -v").y;
       const firstOutputY = renderedTextPosition(app, "line 1").y;
-      const lastOutputY = renderedTextPosition(app, "line 8").y;
+      const lastOutputY = renderedTextPosition(app, "line 7").y;
       const expandY = renderedTextPosition(app, "Click to expand").y;
       const initialNextY = renderedTextPosition(app, "Deploy Preview").y;
-      expect(app.captureCharFrame()).not.toContain("line 9");
+      expect(app.captureCharFrame()).not.toContain("line 8");
       expect(initialCommandY).toBe(cwdY + 2);
       expect(firstOutputY).toBe(initialCommandY + 1);
       expect(expandY).toBe(lastOutputY + 2);

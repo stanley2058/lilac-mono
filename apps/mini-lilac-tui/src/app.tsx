@@ -83,8 +83,7 @@ import {
   isShellTranscriptCollapsible,
   explorationTranscriptText,
   renderInitialMessages,
-  shellTranscriptCommand,
-  shellTranscriptOutput,
+  shellTranscriptPreview,
   type EditOperation,
   type EditTranscript,
   type ExplorationTranscript,
@@ -223,11 +222,8 @@ function ShellView(props: {
   const collapsible = createMemo(() =>
     isShellTranscriptCollapsible(props.shell, previewRows(), characterLimit()),
   );
-  const command = createMemo(() =>
-    shellTranscriptCommand(props.shell, props.expanded, previewRows(), characterLimit()),
-  );
-  const output = createMemo(() =>
-    shellTranscriptOutput(props.shell, props.expanded, previewRows(), characterLimit()),
+  const preview = createMemo(() =>
+    shellTranscriptPreview(props.shell, props.expanded, previewRows(), characterLimit()),
   );
   const statusColor = createMemo(() => {
     if (props.running) return props.colors.accent;
@@ -252,12 +248,12 @@ function ShellView(props: {
       <box width="100%" flexDirection="row" paddingTop={props.shell.cwd === undefined ? 0 : 1}>
         <text flexShrink={0} fg={statusColor()}>{`${statusGlyph()} `}</text>
         <text flexGrow={1} minWidth={0} wrapMode="word" fg={props.colors.text} selectable={true}>
-          {`$ ${command()}`}
+          {`$ ${preview().command}`}
         </text>
       </box>
-      <Show when={output() !== undefined}>
+      <Show when={preview().output !== undefined}>
         <text width="100%" wrapMode="word" fg={props.colors.text} selectable={true}>
-          {output() ?? ""}
+          {preview().output ?? ""}
         </text>
       </Show>
       <Show when={collapsible()}>
