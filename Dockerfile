@@ -156,6 +156,7 @@ COPY packages/mini-lilac-client/package.json packages/mini-lilac-client/package.
 COPY packages/mini-lilac-runtime/package.json packages/mini-lilac-runtime/package.json
 COPY packages/plugin-runtime/package.json packages/plugin-runtime/package.json
 COPY packages/remote-fs-runner/package.json packages/remote-fs-runner/package.json
+COPY packages/tool-results/package.json packages/tool-results/package.json
 COPY packages/utils/package.json packages/utils/package.json
 COPY patches patches
 

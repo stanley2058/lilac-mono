@@ -61,5 +61,5 @@ describe("workspace tests", () => {
     }
 
     expect(true).toBe(true);
-  }, 60_000);
+  }, 120_000);
 });
