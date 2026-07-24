@@ -17,7 +17,6 @@ export function createTransientModelRetryController(params: {
   requestId: string;
   sessionId: string;
   modelSpec: string;
-  hasStartedOutput: () => boolean;
 }) {
   return createSharedTransientModelRetryController({
     ...params,

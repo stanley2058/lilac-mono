@@ -1527,6 +1527,8 @@ export async function attachAutoCompaction(
       if (baseDecision === "retry") return "retry";
     }
 
+    if (!context.retrySafety.canRetry) return "fail";
+
     const decision = computeOverflowRecoveryDecision({
       error,
       attempts: overflowRecoveryAttempts,

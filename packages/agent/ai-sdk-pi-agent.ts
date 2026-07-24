@@ -171,6 +171,12 @@ export type AiSdkPiAgentEvent<TOOLS extends ToolSet> =
       /** Token usage summed across steps for this turn. */
       totalUsage: LanguageModelUsage;
     }
+  /** A failed model request will be replayed from the unchanged canonical transcript. */
+  | {
+      type: "turn_retry";
+      hadPartialOutput: boolean;
+      abandonedToolCallIds: string[];
+    }
   /** Provider warnings emitted for the active model turn. */
   | {
       type: "turn_warnings";
@@ -305,10 +311,18 @@ export type TransformMessagesFn = (
 
 export type TurnErrorHandlerDecision = "retry" | "fail";
 
+export type TurnRetrySafety =
+  | { canRetry: true }
+  | {
+      canRetry: false;
+      reason: "invalid-transcript-boundary" | "post-model-phase" | "provider-executed-tool";
+    };
+
 export type TurnErrorHandler = (
   error: unknown,
   context: {
     abortSignal?: AbortSignal;
+    retrySafety: TurnRetrySafety;
   },
 ) => TurnErrorHandlerDecision | Promise<TurnErrorHandlerDecision>;
 
@@ -1129,8 +1143,20 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             break;
           }
 
+          let modelTurnCompleted = false;
+          let providerExecutedToolObserved = false;
+          const localToolDraftIds = new Set<string>();
+
           try {
-            const turn = await this.runTurn();
+            const turn = await this.runTurn({
+              onProviderExecutedTool: () => {
+                providerExecutedToolObserved = true;
+              },
+              onLocalToolDraft: (toolCallId) => {
+                localToolDraftIds.add(toolCallId);
+              },
+            });
+            modelTurnCompleted = true;
             if (this.cancelResetPending) {
               throw new TurnAbortedError({ reason: "cancel", phase: "model" });
             }
@@ -1265,13 +1291,28 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             }
 
             if (this.turnErrorHandler) {
+              const lastMessage = this.state.messages.at(-1);
+              const retrySafety: TurnRetrySafety = modelTurnCompleted
+                ? { canRetry: false, reason: "post-model-phase" }
+                : providerExecutedToolObserved
+                  ? { canRetry: false, reason: "provider-executed-tool" }
+                  : lastMessage?.role === "assistant" || this.state.pendingToolCalls.size > 0
+                    ? { canRetry: false, reason: "invalid-transcript-boundary" }
+                    : { canRetry: true };
               let decision: TurnErrorHandlerDecision | undefined;
               try {
                 decision = await this.turnErrorHandler(err, {
                   abortSignal: this.abortController?.signal,
+                  retrySafety,
                 });
               } catch (handlerError) {
-                if (!this.cancelResetPending) throw handlerError;
+                if (
+                  !this.cancelResetPending &&
+                  !this.pendingInterrupt &&
+                  !this.abortController?.signal.aborted
+                ) {
+                  throw handlerError;
+                }
               }
               if (this.cancelResetPending) {
                 this.emit({
@@ -1282,7 +1323,17 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
                 this.finishCancellation();
                 break;
               }
-              if (decision === "retry") {
+              if (this.pendingInterrupt || this.abortController?.signal.aborted) {
+                continue;
+              }
+              if (decision === "retry" && retrySafety.canRetry) {
+                const hadPartialOutput = this.state.streamMessage !== null;
+                this.state.streamMessage = null;
+                this.emit({
+                  type: "turn_retry",
+                  hadPartialOutput,
+                  abandonedToolCallIds: [...localToolDraftIds],
+                });
                 continue;
               }
             }
@@ -1322,7 +1373,10 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     await this.running;
   }
 
-  private async runTurn(): Promise<{
+  private async runTurn(params: {
+    onProviderExecutedTool: () => void;
+    onLocalToolDraft: (toolCallId: string) => void;
+  }): Promise<{
     finishReason: FinishReason;
     newMessages: ModelMessage[];
     toolCalls: Array<{
@@ -1527,6 +1581,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
           break;
         }
         case "tool-input-start": {
+          if (part.providerExecuted === true) {
+            params.onProviderExecutedTool();
+          } else {
+            params.onLocalToolDraft(part.id);
+          }
           this.emit({
             type: "message_update",
             message: cloneMessage(partialAssistant),
@@ -1598,6 +1657,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
         }
         case "tool-call": {
           const { toolCallId, toolName, input } = part;
+          if (part.providerExecuted === true) {
+            params.onProviderExecutedTool();
+          } else {
+            params.onLocalToolDraft(toolCallId);
+          }
           partialAssistant.content.push({
             type: "tool-call",
             toolCallId,
@@ -1606,6 +1670,21 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             providerExecuted: part.providerExecuted,
           });
           this.state.streamMessage = partialAssistant;
+          break;
+        }
+        case "tool-result":
+        case "tool-error":
+        case "tool-output-denied":
+        case "tool-approval-response": {
+          if (part.providerExecuted === true) {
+            params.onProviderExecutedTool();
+          }
+          break;
+        }
+        case "tool-approval-request": {
+          if (part.toolCall.providerExecuted === true) {
+            params.onProviderExecutedTool();
+          }
           break;
         }
         case "error": {

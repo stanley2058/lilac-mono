@@ -928,6 +928,45 @@ describe("AiSdkPiAgent queued steering and cancellation", () => {
     }
   });
 
+  it("preserves a manual abort when the awaited turn error handler rejects", async () => {
+    const handlerEntered = deferred();
+    const handlerAborted = deferred();
+    const terminalEvents: string[] = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model: fakeModel(),
+      transformMessages: () => {
+        throw new Error("transient model error");
+      },
+      turnErrorHandler: async (_error, context) => {
+        handlerEntered.resolve();
+        if (context.abortSignal?.aborted) return "fail" as const;
+        await new Promise<void>((resolve) => {
+          context.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        handlerAborted.resolve();
+        throw new Error("handler aborted");
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "turn_abort") {
+        terminalEvents.push(`${event.type}:${event.reason}`);
+      } else if (event.type === "agent_end") {
+        terminalEvents.push(event.type);
+      }
+    });
+
+    const run = agent.prompt("abort during backoff");
+    await handlerEntered.promise;
+    agent.abort();
+    await handlerAborted.promise;
+    await run;
+
+    expect(terminalEvents).toEqual(["turn_abort:manual", "agent_end"]);
+    expect(agent.state.error).toBeUndefined();
+    expect(agent.state.messages).toEqual([{ role: "user", content: "abort during backoff" }]);
+  });
+
   it("lets cancellation win when the awaited turn error handler rejects", async () => {
     const handlerEntered = deferred();
     const releaseHandler = deferred();
@@ -980,6 +1019,248 @@ describe("AiSdkPiAgent queued steering and cancellation", () => {
 
     await expect(agent.prompt("fail normally")).rejects.toBe(handlerError);
     expect(agent.state.error).toBe(handlerError.message);
+  });
+
+  it("replays a failed model turn after partial output without committing the failed draft", async () => {
+    const streamError = new Error("WebSocket closed before a terminal response event");
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "partial" },
+              { type: "text-delta", id: "partial", delta: "partial answer" },
+              { type: "error", error: streamError },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "recovered" },
+              { type: "text-delta", id: "recovered", delta: "recovered answer" },
+              { type: "text-end", id: "recovered" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const retries: boolean[] = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      turnErrorHandler: (_error, context) => (context.retrySafety.canRetry ? "retry" : "fail"),
+    });
+    agent.subscribe((event) => {
+      if (event.type === "turn_retry") retries.push(event.hadPartialOutput);
+    });
+
+    await agent.prompt("answer once");
+
+    expect(model.doStreamCalls).toHaveLength(2);
+    expect(model.doStreamCalls[1]?.prompt).toEqual(model.doStreamCalls[0]?.prompt);
+    expect(retries).toEqual([true]);
+    expect(agent.state.messages).toEqual([
+      { role: "user", content: "answer once" },
+      { role: "assistant", content: [{ type: "text", text: "recovered answer" }] },
+    ]);
+  });
+
+  it("does not replay after provider-executed tool activity", async () => {
+    const streamError = new Error("WebSocket closed before a terminal response event");
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            {
+              type: "tool-call",
+              toolCallId: "provider-call",
+              toolName: "provider_search",
+              input: "{}",
+              providerExecuted: true,
+            },
+            { type: "error", error: streamError },
+          ],
+        }),
+      },
+    });
+    const retryReasons: string[] = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      turnErrorHandler: async (_error, context) => {
+        if (!context.retrySafety.canRetry) retryReasons.push(context.retrySafety.reason);
+        return "retry" as const;
+      },
+    });
+
+    await expect(agent.prompt("search")).rejects.toBe(streamError);
+
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(retryReasons).toEqual(["provider-executed-tool"]);
+    expect(agent.state.messages).toEqual([{ role: "user", content: "search" }]);
+  });
+
+  it("does not replay after a provider-executed tool result", async () => {
+    const streamError = new Error("WebSocket closed before a terminal response event");
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            {
+              type: "tool-result",
+              toolCallId: "provider-call",
+              toolName: "provider_search",
+              input: {},
+              result: "result",
+              providerExecuted: true as const,
+            },
+            { type: "error", error: streamError },
+          ],
+        }),
+      },
+    });
+    const retryReasons: string[] = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      turnErrorHandler: async (_error, context) => {
+        if (!context.retrySafety.canRetry) retryReasons.push(context.retrySafety.reason);
+        return "retry" as const;
+      },
+    });
+
+    await expect(agent.prompt("search")).rejects.toBe(streamError);
+
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(retryReasons).toEqual(["provider-executed-tool"]);
+  });
+
+  it("replays a local tool draft and executes only the completed retry", async () => {
+    const streamError = new Error("WebSocket closed before a terminal response event");
+    const model = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call",
+                toolCallId: "draft-call",
+                toolName: "lookup",
+                input: "{}",
+              },
+              { type: "error", error: streamError },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call",
+                toolCallId: "completed-call",
+                toolName: "lookup",
+                input: "{}",
+              },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: "tool-calls" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+        {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "answer" },
+              { type: "text-delta", id: "answer", delta: "done" },
+              { type: "text-end", id: "answer" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: zeroUsage(),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    let executions = 0;
+    const abandonedToolCalls: string[][] = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      tools: {
+        lookup: tool({
+          inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+          execute: () => {
+            executions += 1;
+            return "result";
+          },
+        }),
+      },
+      turnErrorHandler: (_error, context) => (context.retrySafety.canRetry ? "retry" : "fail"),
+    });
+    agent.subscribe((event) => {
+      if (event.type === "turn_retry") {
+        abandonedToolCalls.push(event.abandonedToolCallIds);
+      }
+    });
+
+    await agent.prompt("look it up");
+
+    expect(model.doStreamCalls).toHaveLength(3);
+    expect(executions).toBe(1);
+    expect(abandonedToolCalls).toEqual([["draft-call"]]);
+    expect(JSON.stringify(agent.state.messages)).not.toContain("draft-call");
+    expect(JSON.stringify(agent.state.messages)).toContain("completed-call");
+  });
+
+  it("does not replay errors after the model turn commits", async () => {
+    const boundaryError = new Error("boundary network timeout");
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start", id: "answer" },
+            { type: "text-delta", id: "answer", delta: "committed" },
+            { type: "text-end", id: "answer" },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: "stop" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      },
+    });
+    const retryReasons: string[] = [];
+    const agent = new AiSdkPiAgent({
+      system: "test",
+      model,
+      turnBoundaryHandler: () => {
+        throw boundaryError;
+      },
+      turnErrorHandler: async (_error, context) => {
+        if (!context.retrySafety.canRetry) retryReasons.push(context.retrySafety.reason);
+        return "retry" as const;
+      },
+    });
+
+    await expect(agent.prompt("finish")).rejects.toBe(boundaryError);
+
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(retryReasons).toEqual(["post-model-phase"]);
+    expect(agent.state.messages.at(-1)).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "committed" }],
+    });
   });
 
   it("stops before approval when cancellation is requested by a tool start subscriber", async () => {

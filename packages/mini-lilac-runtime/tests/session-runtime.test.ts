@@ -1740,12 +1740,14 @@ describe("SessionService", () => {
     service.close();
   }, 10_000);
 
-  it("does not retry a Codex stream failure after output starts", async () => {
+  it("retries a Codex stream failure after partial output", async () => {
     let callCount = 0;
     const model = new MockLanguageModelV4({
       doStream: async () => {
         callCount += 1;
-        return streamErrorResult({ code: "server_is_overloaded" }, "partial answer");
+        return callCount === 1
+          ? streamErrorResult({ code: "server_is_overloaded" }, "partial answer")
+          : textResult("recovered", "recovered answer");
       },
     });
     const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-codex-partial-error-"));
@@ -1764,12 +1766,71 @@ describe("SessionService", () => {
     });
 
     const chunks = await collect(
-      (await service.startPrompt(session.id, userMessage("do not duplicate output"))).stream,
+      (await service.startPrompt(session.id, userMessage("recover partial output"))).stream,
     );
 
-    expect(callCount).toBe(1);
+    expect(callCount).toBe(2);
     expect(JSON.stringify(chunks)).toContain("partial answer");
-    expect(service.getSnapshot(session.id).status).toBe("error");
+    expect(JSON.stringify(chunks)).toContain("recovered answer");
+    expect(JSON.stringify(service.store.getModelMessages(session.id))).not.toContain(
+      "partial answer",
+    );
+    expect(JSON.stringify(service.store.getModelMessages(session.id))).toContain(
+      "recovered answer",
+    );
+    expect(service.getSnapshot(session.id).status).toBe("idle");
+    service.close();
+  });
+
+  it("marks an abandoned streamed tool draft failed before retrying", async () => {
+    let callCount = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        callCount += 1;
+        if (callCount > 1) return textResult("recovered", "recovered answer");
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-input-start" as const,
+                id: "draft-read",
+                toolName: "read_file",
+                providerExecuted: false,
+              },
+              {
+                type: "tool-input-delta" as const,
+                id: "draft-read",
+                delta: '{"path":"unfinished',
+              },
+              { type: "error" as const, error: { code: "server_is_overloaded" } },
+            ],
+          }),
+        };
+      },
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), "mini-lilac-codex-tool-draft-retry-"));
+    temporaryDirectories.push(directory);
+    const service = new SessionService({
+      config: config(),
+      databasePath: path.join(directory, "runtime.sqlite"),
+      modelResolver: () => model,
+      providers: loadedProviders(["oauth"]),
+    });
+    const session = await service.createSession({
+      cwd: directory,
+      model: "oauth/mock",
+      profile: "reader",
+      reasoning: "high",
+    });
+
+    const chunks = await collect(
+      (await service.startPrompt(session.id, userMessage("recover tool draft"))).stream,
+    );
+
+    expect(callCount).toBe(2);
+    expect(JSON.stringify(chunks)).toContain("Model turn interrupted; tool was not executed");
+    expect(JSON.stringify(chunks)).toContain("recovered answer");
+    expect(service.getSnapshot(session.id).status).toBe("idle");
     service.close();
   });
 

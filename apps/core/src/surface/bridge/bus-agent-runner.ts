@@ -3027,14 +3027,12 @@ export async function startBusAgentRunner(params: {
             providerOptions: ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
           }
         : systemPrompt;
-      let transientRetryOutputStarted = false;
       const transientRetryController = createTransientModelRetryController({
         retry: cfg.agent.retry,
         logger,
         requestId: headers.request_id,
         sessionId: headers.session_id,
         modelSpec: resolved.spec,
-        hasStartedOutput: () => transientRetryOutputStarted,
       });
 
       const agent = new AiSdkPiAgent<ToolSet>({
@@ -3412,6 +3410,7 @@ export async function startBusAgentRunner(params: {
       state.agent = agent;
 
       let finalText = "";
+      let stableFinalText = "";
       const assistantTextPartBoundaryState = createAssistantTextPartBoundaryState(
         next.recovery?.partialText,
       );
@@ -3419,6 +3418,7 @@ export async function startBusAgentRunner(params: {
         chunks: new Map<string, string>(),
         seq: 0,
       };
+      let retryAttemptHadReasoning = false;
 
       const toolStartMs = new Map<string, number>();
 
@@ -3512,7 +3512,8 @@ export async function startBusAgentRunner(params: {
 
         if (event.type === "turn_end") {
           transientRetryController.reset();
-          transientRetryOutputStarted = false;
+          retryAttemptHadReasoning = false;
+          stableFinalText = finalText;
 
           turnEndCount++;
           runStats.lastTurnFinishReason = event.finishReason;
@@ -3546,6 +3547,36 @@ export async function startBusAgentRunner(params: {
           void dumpContextAfterTurn(event);
         }
 
+        if (event.type === "turn_abort" && event.reason === "interrupt") {
+          transientRetryController.reset();
+        }
+
+        if (event.type === "turn_retry") {
+          assistantTextPartBoundaryState.lastTextPartId = null;
+          assistantTextPartBoundaryState.pendingTextPartStartIds.clear();
+          assistantTextPartBoundaryState.pendingRecoveryTextBoundary = event.hadPartialOutput;
+          finalText = stableFinalText;
+
+          if (retryAttemptHadReasoning) {
+            reasoningChunkState.chunks.clear();
+            reasoningChunkState.seq += 1;
+            bus
+              .publish(
+                lilacEventTypes.EvtAgentOutputDeltaReasoning,
+                { delta: "", seq: reasoningChunkState.seq },
+                { headers },
+              )
+              .catch((e: unknown) => {
+                logger.error(
+                  "failed to clear reasoning after model retry",
+                  { requestId: headers.request_id, sessionId: headers.session_id },
+                  e,
+                );
+              });
+          }
+          retryAttemptHadReasoning = false;
+        }
+
         if (event.type === "turn_warnings") {
           streamWarnings.push(...event.warnings);
 
@@ -3575,10 +3606,6 @@ export async function startBusAgentRunner(params: {
             delta: event.assistantMessageEvent.delta,
           });
 
-          if (delta.length > 0) {
-            transientRetryOutputStarted = true;
-          }
-
           finalText += delta;
           if (state.activeRun && state.activeRun.requestId === next.requestId) {
             state.activeRun.partialText += delta;
@@ -3607,6 +3634,7 @@ export async function startBusAgentRunner(params: {
           event.assistantMessageEvent.type === "thinking_start"
         ) {
           const chunkId = event.assistantMessageEvent.id;
+          retryAttemptHadReasoning = true;
           consumeReasoningChunkEvent(reasoningChunkState, { type: "start", chunkId });
 
           bus
@@ -3626,10 +3654,7 @@ export async function startBusAgentRunner(params: {
         ) {
           const chunkId = event.assistantMessageEvent.id;
           const delta = event.assistantMessageEvent.delta;
-          if (delta.length > 0) {
-            transientRetryOutputStarted = true;
-          }
-
+          retryAttemptHadReasoning = true;
           const update = consumeReasoningChunkEvent(reasoningChunkState, {
             type: "delta",
             chunkId,
@@ -3666,13 +3691,6 @@ export async function startBusAgentRunner(params: {
         ) {
           const chunkId = event.assistantMessageEvent.id;
           consumeReasoningChunkEvent(reasoningChunkState, { type: "end", chunkId });
-        }
-
-        if (
-          event.type === "message_update" &&
-          event.assistantMessageEvent.type === "toolcall_start"
-        ) {
-          transientRetryOutputStarted = true;
         }
 
         if (event.type === "tool_execution_start") {

@@ -239,6 +239,7 @@ type RunProjection = {
   streamFinished: boolean;
   eventError?: string;
   toolInputsAvailable: Map<string, { toolName: string; input: unknown }>;
+  streamedToolInputIds: Set<string>;
   toolOutputsAvailable: Set<string>;
 };
 
@@ -782,6 +783,7 @@ class SessionActor {
           uiChunkCursor: 0,
           chronologicalUiPrefix: [...priorUiMessages, userMessage],
           toolInputsAvailable: new Map(),
+          streamedToolInputIds: new Set(),
           toolOutputsAvailable: new Set(),
         };
         agent.subscribe((event) => {
@@ -883,7 +885,6 @@ class SessionActor {
       webSearchProvider === "openai"
         ? { openai: { ...baseProviderOptions?.openai, maxToolCalls: 3 } }
         : baseProviderOptions;
-    let transientRetryOutputStarted = false;
     const transientRetryController = usesCodexOAuth
       ? createTransientModelRetryController({
           retry: CODEX_TRANSIENT_RETRY,
@@ -891,7 +892,6 @@ class SessionActor {
           requestId: context.runId,
           sessionId: this.snapshot.id,
           modelSpec: modelSpecifier,
-          hasStartedOutput: () => transientRetryOutputStarted,
         })
       : undefined;
     const agent = new AiSdkPiAgent<ToolSet>({
@@ -917,17 +917,8 @@ class SessionActor {
       agent.subscribe((event) => {
         if (event.type === "turn_end") {
           transientRetryController.reset();
-          transientRetryOutputStarted = false;
-          return;
-        }
-        if (event.type !== "message_update") return;
-        const update = event.assistantMessageEvent;
-        if (
-          (update.type === "text_delta" && update.delta.length > 0) ||
-          (update.type === "thinking_delta" && update.delta.length > 0) ||
-          update.type === "toolcall_start"
-        ) {
-          transientRetryOutputStarted = true;
+        } else if (event.type === "turn_abort" && event.reason === "interrupt") {
+          transientRetryController.reset();
         }
       });
     }
@@ -1614,6 +1605,22 @@ class SessionActor {
           await this.appendChunk(runId, { type: "data-session", data: this.snapshot });
         }
         return;
+      case "turn_retry":
+        if (projection.stepOpen) {
+          projection.stepOpen = false;
+          await this.appendChunk(runId, { type: "finish-step" });
+        }
+        for (const toolCallId of event.abandonedToolCallIds) {
+          if (!projection.streamedToolInputIds.has(toolCallId)) continue;
+          await this.appendChunk(runId, {
+            type: "tool-output-error",
+            toolCallId,
+            errorText: "Model turn interrupted; tool was not executed",
+            dynamic: true,
+          });
+          projection.streamedToolInputIds.delete(toolCallId);
+        }
+        return;
       case "turn_abort":
         if (projection.stepOpen) {
           projection.stepOpen = false;
@@ -1743,6 +1750,7 @@ class SessionActor {
             });
             return;
           case "toolcall_start":
+            projection.streamedToolInputIds.add(update.toolCallId);
             await this.appendChunk(runId, {
               type: "tool-input-start",
               toolCallId: update.toolCallId,

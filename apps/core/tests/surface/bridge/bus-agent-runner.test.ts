@@ -2169,6 +2169,11 @@ describe("transient model retry", () => {
       }),
     ).toBe(true);
     expect(isRetryableTransientModelError({ code: "ECONNRESET" })).toBe(true);
+    expect(
+      isRetryableTransientModelError(
+        new Error("WebSocket closed before a terminal response event"),
+      ),
+    ).toBe(true);
   });
 
   it("does not classify context overflow or exhausted AI SDK retries", () => {
@@ -2202,18 +2207,18 @@ describe("transient model retry", () => {
       requestId: "request-1",
       sessionId: "session-1",
       modelSpec: "codex/gpt-5.5",
-      hasStartedOutput: () => false,
     });
+    const context = { retrySafety: { canRetry: true } as const };
 
-    await expect(controller.handler(error, {})).resolves.toBe("retry");
-    await expect(controller.handler(error, {})).resolves.toBe("retry");
-    await expect(controller.handler(error, {})).resolves.toBe("fail");
+    await expect(controller.handler(error, context)).resolves.toBe("retry");
+    await expect(controller.handler(error, context)).resolves.toBe("retry");
+    await expect(controller.handler(error, context)).resolves.toBe("fail");
 
     controller.reset();
-    await expect(controller.handler(error, {})).resolves.toBe("retry");
+    await expect(controller.handler(error, context)).resolves.toBe("retry");
   });
 
-  it("does not retry after assistant output has started", async () => {
+  it("does not retry when the transcript boundary is unsafe", async () => {
     const logger = createLogger({ module: "bus-agent-runner-test" });
     const controller = createTransientModelRetryController({
       retry,
@@ -2221,11 +2226,13 @@ describe("transient model retry", () => {
       requestId: "request-1",
       sessionId: "session-1",
       modelSpec: "codex/gpt-5.5",
-      hasStartedOutput: () => true,
     });
 
     await expect(
-      controller.handler({ statusCode: 503, message: "Service unavailable" }, {}),
+      controller.handler(
+        { statusCode: 503, message: "Service unavailable" },
+        { retrySafety: { canRetry: false, reason: "post-model-phase" } },
+      ),
     ).resolves.toBe("fail");
   });
 });

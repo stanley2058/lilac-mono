@@ -125,7 +125,6 @@ export function createTransientModelRetryController(params: {
   requestId: string;
   sessionId: string;
   modelSpec: string;
-  hasStartedOutput: () => boolean;
   formatError?: (error: unknown) => string;
 }): TransientModelRetryController {
   let attempts = 0;
@@ -136,10 +135,40 @@ export function createTransientModelRetryController(params: {
       attempts = 0;
     },
     handler: async (error, context) => {
-      if (!params.retry.enabled || params.retry.maxRetries <= 0) return "fail";
-      if (context.abortSignal?.aborted === true) return "fail";
-      if (params.hasStartedOutput()) return "fail";
-      if (!isRetryableTransientModelError(error)) return "fail";
+      const logSkipped = (reason: string) => {
+        params.logger.debug("transient model retry skipped", {
+          requestId: params.requestId,
+          sessionId: params.sessionId,
+          modelSpec: params.modelSpec,
+          reason,
+          error: summarizeError(error),
+          ...extractAiErrorLogDetails(error),
+        });
+      };
+
+      if (!params.retry.enabled || params.retry.maxRetries <= 0) {
+        logSkipped("disabled");
+        return "fail";
+      }
+      if (context.abortSignal?.aborted === true) {
+        logSkipped("aborted");
+        return "fail";
+      }
+      if (!isRetryableTransientModelError(error)) {
+        logSkipped("not-transient");
+        return "fail";
+      }
+      if (!context.retrySafety.canRetry) {
+        params.logger.warn("transient model retry skipped; unsafe transcript boundary", {
+          requestId: params.requestId,
+          sessionId: params.sessionId,
+          modelSpec: params.modelSpec,
+          reason: context.retrySafety.reason,
+          error: summarizeError(error),
+          ...extractAiErrorLogDetails(error),
+        });
+        return "fail";
+      }
       if (attempts >= params.retry.maxRetries) {
         params.logger.warn("transient model retry exhausted", {
           requestId: params.requestId,
@@ -175,6 +204,7 @@ export function createTransientModelRetryController(params: {
         try {
           await sleep(delayMs, undefined, { signal: context.abortSignal });
         } catch {
+          logSkipped("aborted-during-backoff");
           return "fail";
         }
       }
