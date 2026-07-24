@@ -1835,11 +1835,11 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
               <text flexShrink={0} wrapMode="none" fg={colors.warning}>
                 queued
               </text>
-              <text flexGrow={1} minWidth={0} paddingLeft={1} wrapMode="none" fg={colors.muted}>
-                {steering().length === 1
-                  ? "sends after current step"
-                  : `${steering().length} messages · send in order`}
-              </text>
+              <Show when={steering().length > 1}>
+                <text flexGrow={1} minWidth={0} wrapMode="none" fg={colors.muted}>
+                  {` ${steering().length} messages · send in order`}
+                </text>
+              </Show>
             </box>
             <For each={steering().slice(0, steeringQueueVisibleCount())}>
               {(message, index) => (

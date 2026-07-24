@@ -1084,6 +1084,7 @@ describe("MiniLilacApp tool interactions", () => {
     try {
       await app.waitForFrame((frame) => frame.includes("+1 more queued"));
       const queuedFrame = app.captureCharFrame();
+      expect(queuedFrame).toContain("queued 4 messages · send in order");
       expect(queuedFrame).toContain("first queued");
       expect(queuedFrame).toContain("third queued");
       expect(queuedFrame).not.toContain("fourth queued");
@@ -1105,6 +1106,16 @@ describe("MiniLilacApp tool interactions", () => {
       expect(renderedTextPosition(app, "first queued").y).toBeLessThan(
         renderedTextPosition(app, "3 messages · send in order").y,
       );
+
+      for (const committedMessage of steering.slice(1, 3)) {
+        transport.streamController?.enqueue({
+          type: "data-steeringCommitted",
+          id: committedMessage.id,
+          data: committedMessage,
+        });
+      }
+      await app.waitForFrame((frame) => frame.includes("fourth queued"));
+      expect(app.captureCharFrame()).not.toContain("sends after current step");
     } finally {
       app.renderer.destroy();
     }
