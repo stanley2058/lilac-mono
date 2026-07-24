@@ -3170,9 +3170,20 @@ describe("SessionService", () => {
     expect(service.getSnapshot(session.id).queuedSteeringCount).toBe(2);
 
     release();
-    await collect(started.stream);
+    const chunks = await collect(started.stream);
 
     expect(model.doStreamCalls).toHaveLength(2);
+    expect(
+      chunks.filter((chunk) => chunk.type === "data-steeringCommitted").map((chunk) => chunk.data),
+    ).toEqual([firstSteer, secondSteer]);
+    const finalCommitIndex = chunks.findLastIndex(
+      (chunk) => chunk.type === "data-steeringCommitted",
+    );
+    expect(
+      chunks
+        .slice(finalCommitIndex + 1)
+        .some((chunk) => chunk.type === "data-session" && chunk.data.queuedSteeringCount === 0),
+    ).toBe(true);
     const secondPrompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
     expect(secondPrompt).toContain("first steering");
     expect(secondPrompt).toContain("second steering");
@@ -4253,11 +4264,12 @@ describe("SessionService", () => {
       chunks.push(next.value);
     }
 
+    const replacement = steeringMessage("replace direction");
     await service.steer({
       sessionId: session.id,
       runId: started.runId,
       clientCommandId: "replacement-steer",
-      message: steeringMessage("replace direction"),
+      message: replacement,
     });
     const interrupted = await service.interruptQueuedSteering({
       sessionId: session.id,
@@ -4276,6 +4288,14 @@ describe("SessionService", () => {
         (chunk) => chunk.type === "data-transcriptReset" && chunk.data.reason === "interrupt",
       ),
     ).toBe(true);
+    const resetIndex = chunks.findIndex((chunk) => chunk.type === "data-transcriptReset");
+    const commitIndex = chunks.findIndex((chunk) => chunk.type === "data-steeringCommitted");
+    expect(commitIndex).toBeGreaterThan(resetIndex);
+    expect(chunks[commitIndex]).toEqual({
+      type: "data-steeringCommitted",
+      id: replacement.id,
+      data: replacement,
+    });
     const persisted = JSON.stringify(service.getMessages(session.id));
     expect(persisted).toContain("canonical final");
     expect(persisted).not.toContain("aborted partial");

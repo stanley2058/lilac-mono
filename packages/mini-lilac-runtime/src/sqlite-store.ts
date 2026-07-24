@@ -20,6 +20,7 @@ import {
   miniLilacMessagesSchema,
   miniLilacProviderMetadataSchema,
   miniLilacSessionSnapshotSchema,
+  miniLilacSteeringCommittedChunkSchema,
   miniLilacSteeringChunkSchema,
   miniLilacSubagentStatusSchema,
   miniLilacTodoChunkSchema,
@@ -256,6 +257,7 @@ const standardChunkSchema = z.discriminatedUnion("type", [
   }),
   miniLilacTodoChunkSchema,
   miniLilacSteeringChunkSchema,
+  miniLilacSteeringCommittedChunkSchema,
 ]);
 
 export type StoredUIMessageChunk = z.infer<typeof standardChunkSchema>;

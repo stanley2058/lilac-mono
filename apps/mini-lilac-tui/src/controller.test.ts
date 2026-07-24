@@ -1328,6 +1328,47 @@ describe("Controller effect wiring", () => {
     expect(transport.sendAbortSignal?.aborted).toBe(false);
     await flush();
     expect(controller.transcript.map((entry) => entry.text)).toEqual(["hello"]);
+    expect(controller.steeringQueue).toEqual([]);
+    expect(controller.inputState.queuedSteeringCount).toBe(0);
+    controller.dispose();
+  });
+
+  it("retries an interrupt barrier after the first interrupt request fails", async () => {
+    let interruptAttempts = 0;
+    const transport = new FakeTransport({
+      steer: () => new Promise<MiniLilacSteerResult>(() => {}),
+      interrupt: () => {
+        interruptAttempts += 1;
+        return interruptAttempts === 1
+          ? Promise.reject(new Error("interrupt unavailable"))
+          : Promise.resolve({ status: "interrupted", steeringIds: [] });
+      },
+    });
+    const controller = new Controller({
+      transport,
+      ui: silentUI(),
+      sessionId: "session-1",
+      onExit: () => {},
+    });
+    controller.start();
+    submitText(controller, "hello");
+    await flush();
+
+    submitText(controller, "stalled steer");
+    await flush();
+    controller.submit();
+    await flush();
+    expect(controller.steeringQueue.map(messageText)).toEqual(["stalled steer"]);
+    expect(controller.inputState.queuedSteeringCount).toBe(1);
+
+    controller.submit();
+    await flush();
+    expect(transport.interruptRequests).toHaveLength(2);
+    expect(transport.interruptRequests[1]?.pendingSteerCommandIds).toEqual(
+      transport.interruptRequests[0]?.pendingSteerCommandIds,
+    );
+    expect(controller.steeringQueue).toEqual([]);
+    expect(controller.inputState.queuedSteeringCount).toBe(0);
     controller.dispose();
   });
 
@@ -1408,7 +1449,7 @@ describe("Controller effect wiring", () => {
     expect(controller.inputState.phase).toBe("idle");
   });
 
-  it("rolls back one optimistic queue entry when steering fails", async () => {
+  it("removes a queued steering block when steering fails", async () => {
     const transport = new FakeTransport({ steerError: new Error("steer rejected") });
     const controller = new Controller({
       transport,
@@ -1421,9 +1462,11 @@ describe("Controller effect wiring", () => {
     await flush();
 
     submitText(controller, "failed steer");
-    expect(controller.transcript.map((entry) => entry.text)).toEqual(["hello", "failed steer"]);
+    expect(controller.transcript.map((entry) => entry.text)).toEqual(["hello"]);
+    expect(controller.steeringQueue.map(messageText)).toEqual(["failed steer"]);
     await flush();
     expect(controller.transcript.map((entry) => entry.text)).toEqual(["hello", "steer rejected"]);
+    expect(controller.steeringQueue).toEqual([]);
     expect(controller.inputState.queuedSteeringCount).toBe(0);
     expect(controller.inputState.editor).toBe("failed steer");
     controller.dispose();
@@ -1615,10 +1658,8 @@ describe("Controller effect wiring", () => {
     submitText(controller, "hello");
     await flush();
     submitText(controller, "discard queued steer");
-    expect(controller.transcript.map((entry) => entry.text)).toEqual([
-      "hello",
-      "discard queued steer",
-    ]);
+    expect(controller.transcript.map((entry) => entry.text)).toEqual(["hello"]);
+    expect(controller.steeringQueue.map(messageText)).toEqual(["discard queued steer"]);
 
     transport.enqueue({ type: "text-start", id: "text-1" });
     transport.enqueue({ type: "text-delta", id: "text-1", delta: "discard me" });
@@ -1635,6 +1676,7 @@ describe("Controller effect wiring", () => {
       "hello",
       "transcript rewound (cancel); canonical transcript will be reconciled",
     ]);
+    expect(controller.steeringQueue).toEqual([]);
     transport.closeStream();
     await flush();
     expect(controller.transcript.map((entry) => entry.text)).toEqual([
@@ -1644,7 +1686,7 @@ describe("Controller effect wiring", () => {
     expect(controller.inputState.phase).toBe("idle");
   });
 
-  it("preserves admitted steering across an interrupt transcript reset", async () => {
+  it("keeps admitted steering queued across an interrupt reset until it commits", async () => {
     const transport = new FakeTransport();
     const controller = new Controller({
       transport,
@@ -1664,12 +1706,23 @@ describe("Controller effect wiring", () => {
 
     expect(controller.transcript.map((entry) => entry.text)).toEqual([
       "hello",
-      "replacement direction",
       "transcript rewound (interrupt); canonical transcript will be reconciled",
+    ]);
+    expect(controller.steeringQueue.map(messageText)).toEqual(["replacement direction"]);
+
+    const [steering] = controller.steeringQueue;
+    if (steering === undefined) throw new Error("expected queued steering");
+    transport.enqueue({ type: "data-steeringCommitted", id: steering.id, data: steering });
+    await flush();
+    expect(controller.steeringQueue).toEqual([]);
+    expect(controller.transcript.map((entry) => entry.text)).toEqual([
+      "hello",
+      "transcript rewound (interrupt); canonical transcript will be reconciled",
+      "replacement direction",
     ]);
   });
 
-  it("shows canonical steering user messages after normal completion", async () => {
+  it("moves committed steering after preceding live activity and reconciles it", async () => {
     const transport = new FakeTransport();
     const controller = new Controller({
       transport,
@@ -1681,9 +1734,23 @@ describe("Controller effect wiring", () => {
     submitText(controller, "hello");
     await flush();
     submitText(controller, "change direction");
-    expect(controller.transcript.map((entry) => entry.text)).toEqual(["hello", "change direction"]);
-    const optimisticSteerId = controller.transcript[1]?.id;
+    expect(controller.transcript.map((entry) => entry.text)).toEqual(["hello"]);
+    expect(controller.steeringQueue.map(messageText)).toEqual(["change direction"]);
     await flush();
+
+    transport.enqueue({ type: "text-start", id: "working" });
+    transport.enqueue({ type: "text-delta", id: "working", delta: "working" });
+    transport.enqueue({ type: "text-end", id: "working" });
+    const [steering] = controller.steeringQueue;
+    if (steering === undefined) throw new Error("expected queued steering");
+    transport.enqueue({ type: "data-steeringCommitted", id: steering.id, data: steering });
+    await flush();
+    expect(controller.steeringQueue).toEqual([]);
+    expect(controller.transcript.map((entry) => entry.text)).toEqual([
+      "hello",
+      "working",
+      "change direction",
+    ]);
 
     transport.canonicalMessages = [
       { id: "user-prompt", role: "user", parts: [{ type: "text", text: "hello" }] },
@@ -1707,7 +1774,6 @@ describe("Controller effect wiring", () => {
       "change direction",
     ]);
     expect(controller.transcript[2]?.id).toBe("message:user-steer:0");
-    expect(controller.transcript[2]?.id).not.toBe(optimisticSteerId);
     expect(transport.getMessagesCount).toBe(1);
   });
 
@@ -2108,9 +2174,15 @@ describe("Controller effect wiring", () => {
     ]);
   });
 
-  it("replays an admitted steering message at its original stream position", async () => {
+  it("replays only uncommitted steering into the queue", async () => {
+    const committed: MiniLilacUserUIMessage = {
+      id: "committed",
+      role: "user",
+      parts: [{ type: "text", text: "already committed" }],
+    };
     const initialMessages: MiniLilacUIMessage[] = [
       { id: "root", role: "user", parts: [{ type: "text", text: "root prompt" }] },
+      committed,
     ];
     const steering: MiniLilacUserUIMessage = {
       id: "steer-replayed",
@@ -2121,6 +2193,11 @@ describe("Controller effect wiring", () => {
       reconnectStream: () =>
         new ReadableStream<UIMessageChunk>({
           start(stream) {
+            stream.enqueue({
+              type: "data-steeringCommitted",
+              id: "committed",
+              data: committed,
+            });
             stream.enqueue({ type: "data-steering", id: steering.id, data: steering });
           },
         }),
@@ -2148,8 +2225,9 @@ describe("Controller effect wiring", () => {
     await flush();
     expect(controller.transcript.map((entry) => entry.text)).toEqual([
       "root prompt",
-      "replayed steering",
+      "already committed",
     ]);
+    expect(controller.steeringQueue).toEqual([steering]);
     controller.dispose();
   });
 

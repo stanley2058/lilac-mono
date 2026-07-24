@@ -658,6 +658,13 @@ export const miniLilacSteeringChunkSchema = z.strictObject({
 });
 export type MiniLilacSteeringChunk = z.infer<typeof miniLilacSteeringChunkSchema>;
 
+export const miniLilacSteeringCommittedChunkSchema = z.strictObject({
+  type: z.literal("data-steeringCommitted"),
+  id: identifierSchema.optional(),
+  data: miniLilacUserUIMessageSchema,
+});
+export type MiniLilacSteeringCommittedChunk = z.infer<typeof miniLilacSteeringCommittedChunkSchema>;
+
 export const miniLilacUndoResultSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("undone"),

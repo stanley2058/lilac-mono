@@ -1,6 +1,7 @@
 import type { UIMessageChunk } from "ai";
 
 import {
+  miniLilacSteeringCommittedChunkSchema,
   miniLilacSteeringChunkSchema,
   miniLilacStreamCursorChunkSchema,
   type MiniLilacControlResult,
@@ -30,6 +31,7 @@ import { sessionPresentation, type SessionPresentation } from "./presentation";
 export interface ControllerUISink {
   onState(state: InputState): void;
   onOutput(entries: readonly TranscriptEntry[]): void;
+  onSteering?(messages: readonly MiniLilacUserUIMessage[]): void;
   onTodos?(todos: MiniLilacTodoState): void;
   onBindings?(bindings: SessionBindings): void;
   onSession?(session: SessionPresentation): void;
@@ -74,6 +76,7 @@ export class Controller {
   private readonly renderer: ChunkRenderer;
   private messages: MiniLilacUIMessage[];
   private output: TranscriptEntry[];
+  private steering: MiniLilacUserUIMessage[] = [];
   private outputSequence = 0;
   private steerChain: Promise<void> = Promise.resolve();
   private promptAdmission: Promise<string | undefined>;
@@ -157,6 +160,7 @@ export class Controller {
   start(): void {
     this.notifyState();
     this.notifyOutput();
+    this.notifySteering();
     this.options.ui.onTodos?.(this.todos);
     this.options.ui.onBindings?.(this.bindings);
     this.options.ui.onSession?.(this.presentation);
@@ -279,6 +283,10 @@ export class Controller {
 
   get transcript(): readonly TranscriptEntry[] {
     return this.output;
+  }
+
+  get steeringQueue(): readonly MiniLilacUserUIMessage[] {
+    return this.steering;
   }
 
   private dispatch(event: InputEvent): void {
@@ -582,6 +590,12 @@ export class Controller {
             this.appendReplayedSteering(steering.data.data);
             continue;
           }
+        } else if (value.type === "data-steeringCommitted") {
+          const steering = miniLilacSteeringCommittedChunkSchema.safeParse(value);
+          if (steering.success) {
+            this.commitSteering(steering.data.data);
+            continue;
+          }
         }
         this.renderer.handle(value);
       }
@@ -613,11 +627,9 @@ export class Controller {
     };
     const clientCommandId = crypto.randomUUID();
     this.pendingSteerCommandIds.add(clientCommandId);
-    this.messages.push(message);
-    const outputIds = this.appendUserOutput(text, files);
+    this.appendSteering(message);
     const removeOptimistic = () => {
-      this.messages = this.messages.filter((candidate) => candidate.id !== message.id);
-      outputIds.forEach((id) => this.removeOutput(id));
+      this.removeSteering(message.id);
     };
     const rollback = () => {
       removeOptimistic();
@@ -673,6 +685,13 @@ export class Controller {
         this.confirmInterrupt(clientCommandId);
       } catch (error) {
         if (!this.isCurrentRun(generation)) return;
+        const commandIds = this.interruptSteerCommandIds.get(clientCommandId) ?? [];
+        this.interruptSteerCommandIds.delete(clientCommandId);
+        commandIds.forEach((commandId) => {
+          if (this.pendingSteerOptimistic.has(commandId)) {
+            this.pendingSteerCommandIds.add(commandId);
+          }
+        });
         this.commitError(error);
       }
     })();
@@ -764,6 +783,7 @@ export class Controller {
         : [];
     this.messages = [...this.messages.slice(0, this.runMessageBaseline), ...preservedSteering];
     if (reset.reason === "cancel") {
+      this.clearSteering();
       this.pendingSteerOptimistic.clear();
       this.pendingSteerCommandIds.clear();
       this.interruptSteerCommandIds.clear();
@@ -866,6 +886,7 @@ export class Controller {
   private async completeRun(generation: number): Promise<void> {
     await this.reconcile(generation);
     if (!this.isCurrentRun(generation)) return;
+    this.clearSteering();
     this.activeRunId = undefined;
     this.dispatch({ type: "agent-stopped" });
   }
@@ -885,10 +906,13 @@ export class Controller {
 
   private replaceMessages(messages: readonly MiniLilacUIMessage[]): void {
     this.messages = [...messages];
+    const messageIds = new Set(messages.map((message) => message.id));
+    this.steering = this.steering.filter((message) => !messageIds.has(message.id));
     this.output = this.renderMessages();
     this.runOutputBaseline = this.output.length;
     this.runMessageBaseline = this.messages.length;
     this.notifyOutput();
+    this.notifySteering();
   }
 
   private renderMessages(): TranscriptEntry[] {
@@ -953,6 +977,28 @@ export class Controller {
       this.pendingSteerCommandIds.delete(commandId);
       break;
     }
+    this.appendSteering(message);
+  }
+
+  private appendSteering(message: MiniLilacUserUIMessage): void {
+    if (
+      this.messages.some((candidate) => candidate.id === message.id) ||
+      this.steering.some((candidate) => candidate.id === message.id)
+    ) {
+      return;
+    }
+    this.steering = [...this.steering, message];
+    this.notifySteering();
+  }
+
+  private commitSteering(message: MiniLilacUserUIMessage): void {
+    this.removeSteering(message.id);
+    for (const [commandId, pending] of this.pendingSteerOptimistic) {
+      if (pending.messageId !== message.id) continue;
+      this.pendingSteerOptimistic.delete(commandId);
+      this.pendingSteerCommandIds.delete(commandId);
+      break;
+    }
     if (this.messages.some((candidate) => candidate.id === message.id)) return;
     this.messages.push(message);
     const text = message.parts
@@ -971,11 +1017,26 @@ export class Controller {
       );
   }
 
+  private removeSteering(messageId: string): void {
+    const next = this.steering.filter((message) => message.id !== messageId);
+    if (next.length === this.steering.length) return;
+    this.steering = next;
+    this.notifySteering();
+  }
+
+  private clearSteering(): void {
+    if (this.steering.length === 0) return;
+    this.steering = [];
+    this.notifySteering();
+  }
+
   private confirmInterrupt(clientCommandId: string): void {
     const commandIds = this.interruptSteerCommandIds.get(clientCommandId);
     if (!commandIds) return;
     commandIds.forEach((commandId) => {
-      this.pendingSteerOptimistic.get(commandId)?.remove();
+      const pending = this.pendingSteerOptimistic.get(commandId);
+      pending?.remove();
+      if (pending !== undefined) this.dispatch({ type: "steer-failed" });
       this.pendingSteerOptimistic.delete(commandId);
       this.pendingSteerCommandIds.delete(commandId);
     });
@@ -1120,6 +1181,10 @@ export class Controller {
 
   private notifyOutput(): void {
     if (!this.disposed) this.options.ui.onOutput(this.output);
+  }
+
+  private notifySteering(): void {
+    if (!this.disposed) this.options.ui.onSteering?.(this.steering);
   }
 }
 

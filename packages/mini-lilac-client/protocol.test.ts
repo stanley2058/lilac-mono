@@ -5,6 +5,7 @@ import type { UIMessage } from "ai";
 import {
   type MiniLilacCompactRequest,
   type MiniLilacSessionSnapshot,
+  type MiniLilacSteeringCommittedChunk,
   type MiniLilacSteerRequest,
   type MiniLilacTodo,
   type MiniLilacTodoChunk,
@@ -19,6 +20,7 @@ import {
   miniLilacReconnectQuerySchema,
   miniLilacSessionSnapshotSchema,
   miniLilacSkillsSchema,
+  miniLilacSteeringCommittedChunkSchema,
   miniLilacSteerRequestSchema,
   miniLilacTodoChunkSchema,
   miniLilacTodoSchema,
@@ -174,6 +176,29 @@ describe("miniLilacUIMessageSchema", () => {
     expect(miniLilacTodoChunkSchema.safeParse({ ...chunk, unexpected: true }).success).toBe(false);
     expect(miniLilacUIMessageDataPartSchema.safeParse(chunk).success).toBe(false);
     expect(miniLilacUIMessageSchema.safeParse(messageWith(chunk)).success).toBe(false);
+  });
+
+  it("strictly validates committed steering chunks", () => {
+    const chunk: MiniLilacSteeringCommittedChunk = {
+      type: "data-steeringCommitted",
+      id: "steering-message-1",
+      data: {
+        id: "steering-message-1",
+        role: "user",
+        parts: [{ type: "text", text: "Change direction" }],
+      },
+    };
+
+    expect(miniLilacSteeringCommittedChunkSchema.parse(chunk)).toEqual(chunk);
+    expect(
+      miniLilacSteeringCommittedChunkSchema.safeParse({ ...chunk, unexpected: true }).success,
+    ).toBe(false);
+    expect(
+      miniLilacSteeringCommittedChunkSchema.safeParse({
+        ...chunk,
+        data: { ...chunk.data, role: "assistant" },
+      }).success,
+    ).toBe(false);
   });
 
   it("requires strict binding updates with a wire command ID and at least one binding", () => {

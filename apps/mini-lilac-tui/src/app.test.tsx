@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { UIMessageChunk } from "ai";
 
 import {
   RGBA,
@@ -41,6 +42,7 @@ async function renderApp(
   onNewSession: (bindings: SessionBindings) => Promise<void> = async () => {},
   initialTodos: MiniLilacTodoState = { revision: 0, todos: [] },
   initialSnapshot: MiniLilacSessionSnapshot = { ...snapshot, cwd },
+  height = 30,
 ) {
   return testRender(
     () => (
@@ -61,7 +63,7 @@ async function renderApp(
         onExit={() => {}}
       />
     ),
-    { width, height: 30 },
+    { width, height },
   );
 }
 
@@ -1029,6 +1031,113 @@ describe("MiniLilacApp tool interactions", () => {
       expect(frame).not.toContain("working / esc interrupt");
     } finally {
       app.renderer.destroy();
+    }
+  });
+
+  it("pins a capped steering queue above the composer until messages commit", async () => {
+    const steering = ["first queued", "second queued", "third queued", "fourth queued"].map(
+      (text, index) => ({
+        id: `steering-${index + 1}`,
+        role: "user" as const,
+        parts: [{ type: "text" as const, text }],
+      }),
+    );
+    class QueuedSteeringTransport extends MiniLilacTransport {
+      streamController: ReadableStreamDefaultController<UIMessageChunk> | undefined;
+
+      override async reconnectToStream() {
+        return new ReadableStream<UIMessageChunk>({
+          start: (controller) => {
+            this.streamController = controller;
+            steering.forEach((message) => {
+              controller.enqueue({ type: "data-steering", id: message.id, data: message });
+            });
+          },
+        });
+      }
+    }
+
+    const activeSnapshot = {
+      ...snapshot,
+      activeRunId: "run-steering",
+      status: "streaming" as const,
+      queuedSteeringCount: steering.length,
+    };
+    const transport = new QueuedSteeringTransport({ cwd: "/workspace" });
+    const app = await renderApp(
+      [{ id: "root", role: "user", parts: [{ type: "text", text: "root prompt" }] }],
+      transport,
+      90,
+      "/workspace",
+      async () => {},
+      { revision: 0, todos: [] },
+      activeSnapshot,
+    );
+    try {
+      await app.waitForFrame((frame) => frame.includes("+1 more queued"));
+      const queuedFrame = app.captureCharFrame();
+      expect(queuedFrame).toContain("first queued");
+      expect(queuedFrame).toContain("third queued");
+      expect(queuedFrame).not.toContain("fourth queued");
+      expect(renderedTextPosition(app, "4 messages · send in order").y).toBeGreaterThan(
+        renderedTextPosition(app, "root prompt").y,
+      );
+      expect(renderedTextPosition(app, "4 messages · send in order").y).toBeLessThan(
+        renderedTextPosition(app, "Steer the active run...").y,
+      );
+
+      const committed = steering[0];
+      if (committed === undefined) throw new Error("expected steering fixture");
+      transport.streamController?.enqueue({
+        type: "data-steeringCommitted",
+        id: committed.id,
+        data: committed,
+      });
+      await app.waitForFrame((frame) => !frame.includes("+1 more queued"));
+      expect(renderedTextPosition(app, "first queued").y).toBeLessThan(
+        renderedTextPosition(app, "3 messages · send in order").y,
+      );
+    } finally {
+      app.renderer.destroy();
+    }
+
+    const narrowApp = await renderApp(
+      [],
+      new QueuedSteeringTransport({ cwd: "/workspace" }),
+      50,
+      "/workspace",
+      async () => {},
+      { revision: 0, todos: [] },
+      activeSnapshot,
+    );
+    try {
+      await narrowApp.waitForFrame((frame) => frame.includes("first queued"));
+      const narrowFrame = narrowApp.captureCharFrame();
+      expect(narrowFrame).toContain("first queued");
+      expect(narrowFrame).not.toContain("second queued");
+      expect(narrowFrame).not.toContain("more queued");
+    } finally {
+      narrowApp.renderer.destroy();
+    }
+
+    const shortApp = await renderApp(
+      [],
+      new QueuedSteeringTransport({ cwd: "/workspace" }),
+      90,
+      "/workspace",
+      async () => {},
+      { revision: 0, todos: [] },
+      activeSnapshot,
+      12,
+    );
+    try {
+      await shortApp.waitForFrame((frame) => frame.includes("first queued"));
+      const shortFrame = shortApp.captureCharFrame();
+      expect(shortFrame).toContain("first queued");
+      expect(shortFrame).toContain("Steer the active run...");
+      expect(shortFrame).not.toContain("second queued");
+    } finally {
+      shortApp.renderer.destroy();
     }
   });
 

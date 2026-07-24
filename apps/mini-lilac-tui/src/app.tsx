@@ -43,6 +43,7 @@ import {
   type MiniLilacTodoState,
   type MiniLilacTransport,
   type MiniLilacUIMessage,
+  type MiniLilacUserUIMessage,
 } from "@stanley2058/mini-lilac-client";
 
 import {
@@ -532,6 +533,22 @@ function imageExtension(mediaType: string): string {
   return "png";
 }
 
+function steeringPreview(message: MiniLilacUserUIMessage): string {
+  const text = message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+  const attachments = message.parts
+    .filter((part) => part.type === "file")
+    .map((part) => part.filename ?? "image");
+  const attachmentText =
+    attachments.length === 0
+      ? ""
+      : `[${attachments.length === 1 ? attachments[0] : `${attachments.length} attachments`}]`;
+  return [text, attachmentText].filter(Boolean).join(" ");
+}
+
 export function MiniLilacApp(props: MiniLilacAppProps) {
   const colors = props.theme ?? COLORS;
   const toneColors: Record<TranscriptTone, string> = {
@@ -550,9 +567,30 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
   const dimensions = useTerminalDimensions();
   const terminalRenderer = useRenderer();
   const narrow = createMemo(() => dimensions().width < 64);
+  const steeringQueueHeight = createMemo(() =>
+    narrow() ? 2 : Math.max(2, Math.min(8, dimensions().height - 10)),
+  );
   const [state, setState] = createSignal(initialInputState());
   const active = createMemo(() => state().phase === "active");
   const [entries, setEntries] = createSignal<readonly TranscriptEntry[]>([]);
+  const [steering, setSteering] = createSignal<readonly MiniLilacUserUIMessage[]>([]);
+  const steeringQueueItemHeight = createMemo(() => (narrow() || steeringQueueHeight() < 4 ? 1 : 2));
+  const steeringQueueVisibleCount = createMemo(() =>
+    Math.max(
+      1,
+      Math.min(
+        3,
+        Math.floor(
+          (steeringQueueHeight() - 1 - (steering().length > 1 ? 1 : 0)) / steeringQueueItemHeight(),
+        ),
+      ),
+    ),
+  );
+  const steeringQueueShowsOverflow = createMemo(
+    () =>
+      steering().length > steeringQueueVisibleCount() &&
+      steeringQueueHeight() >= 1 + steeringQueueVisibleCount() * steeringQueueItemHeight() + 1,
+  );
   const [subagentView, setSubagentView] = createSignal<SubagentView | undefined>();
   const displayEntries = createMemo(() => groupNearbyEdits(subagentView()?.entries ?? entries()));
   const [todos, setTodos] = createSignal(props.initialTodos);
@@ -608,6 +646,7 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
     ui: {
       onState: setState,
       onOutput: (next) => setEntries([...next]),
+      onSteering: (next) => setSteering([...next]),
       onSession: setSession,
       onTodos: (next) => {
         setTodos(next);
@@ -1792,6 +1831,62 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
             <Show when={active()}>
               <text flexShrink={0} wrapMode="none" fg={colors.success}>
                 {` ${workingHint()}`}
+              </text>
+            </Show>
+          </box>
+        </Show>
+        <Show when={subagentView() === undefined && steering().length > 0}>
+          <box
+            id="steering-queue"
+            width="100%"
+            flexShrink={0}
+            maxHeight={steeringQueueHeight()}
+            overflow="hidden"
+            backgroundColor={colors.raised}
+            border={["left"]}
+            borderColor={colors.warning}
+            paddingLeft={1}
+            paddingRight={1}
+          >
+            <box width="100%" height={1} flexDirection="row">
+              <text flexShrink={0} wrapMode="none" fg={colors.warning}>
+                queued
+              </text>
+              <text flexGrow={1} minWidth={0} paddingLeft={1} wrapMode="none" fg={colors.muted}>
+                {steering().length === 1
+                  ? "sends after current step"
+                  : `${steering().length} messages · send in order`}
+              </text>
+            </box>
+            <For each={steering().slice(0, steeringQueueVisibleCount())}>
+              {(message, index) => (
+                <box
+                  width="100%"
+                  maxHeight={steeringQueueItemHeight()}
+                  overflow="hidden"
+                  flexDirection="row"
+                >
+                  <text flexShrink={0} wrapMode="none" fg={colors.warning}>
+                    {`${index() + 1}. `}
+                  </text>
+                  <text
+                    flexGrow={1}
+                    minWidth={0}
+                    maxHeight={steeringQueueItemHeight()}
+                    overflow="hidden"
+                    wrapMode={narrow() ? "none" : "word"}
+                    truncate={narrow()}
+                    fg={colors.text}
+                    selectable={true}
+                  >
+                    {steeringPreview(message)}
+                  </text>
+                </box>
+              )}
+            </For>
+            <Show when={steeringQueueShowsOverflow()}>
+              <text height={1} wrapMode="none" fg={colors.muted}>
+                {`+${steering().length - steeringQueueVisibleCount()} more queued`}
               </text>
             </Show>
           </box>

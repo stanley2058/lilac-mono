@@ -539,7 +539,7 @@ async function assistantMessageFromChunks(
   if (segment.length === 0) return { message: null, throughSeq };
   const segmentChunks = segment
     .map((entry) => entry.chunk)
-    .filter((chunk) => chunk.type !== "data-steering");
+    .filter((chunk) => chunk.type !== "data-steering" && chunk.type !== "data-steeringCommitted");
   const originalStart = runChunks.find((entry) => entry.chunk.type === "start")?.chunk;
   const firstSegmentSeq = segment[0]?.seq;
   const chunks =
@@ -1652,6 +1652,13 @@ class SessionActor {
           this.store.appendUserCheckpoints(this.snapshot.id, runId, checkpoints);
           active.chronologicalUiPrefix = chronologicalUiPrefix;
           active.uiChunkCursor = segment.throughSeq;
+          for (const checkpoint of consumedSteeringCheckpoints) {
+            await this.appendChunk(runId, {
+              type: "data-steeringCommitted",
+              id: checkpoint.message.id,
+              data: checkpoint.message,
+            });
+          }
           this.snapshot = this.store.updateSessionState(
             this.snapshot.id,
             this.snapshot.status,
