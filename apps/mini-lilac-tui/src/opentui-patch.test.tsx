@@ -1,11 +1,19 @@
 import { describe, expect, it } from "bun:test";
 
-import { CodeRenderable, MarkdownRenderable, TextRenderable, type Renderable } from "@opentui/core";
+import {
+  CodeRenderable,
+  MarkdownRenderable,
+  RGBA,
+  TextRenderable,
+  type CapturedFrame,
+  type Renderable,
+  type ScrollBoxRenderable,
+} from "@opentui/core";
 import { MockTreeSitterClient } from "@opentui/core/testing";
 import { testRender } from "@opentui/solid";
 import { createSignal } from "solid-js";
 
-import { createMarkdownSyntaxStyle } from "./theme";
+import { COLORS, createMarkdownSyntaxStyle } from "./theme";
 
 function codeBlocks(renderable: Renderable): CodeRenderable[] {
   const matches = renderable instanceof CodeRenderable ? [renderable] : [];
@@ -13,6 +21,17 @@ function codeBlocks(renderable: Renderable): CodeRenderable[] {
     matches.push(...codeBlocks(child));
   }
   return matches;
+}
+
+function backgroundAt(frame: CapturedFrame, x: number, y: number): RGBA {
+  const line = frame.lines[y];
+  if (line === undefined) throw new Error(`Rendered line ${y} missing`);
+  let column = 0;
+  for (const span of line.spans) {
+    column += span.width;
+    if (x < column) return span.bg;
+  }
+  throw new Error(`Rendered column ${x} missing from line ${y}`);
 }
 
 describe("OpenTUI Markdown completion patch", () => {
@@ -35,6 +54,8 @@ describe("OpenTUI Markdown completion patch", () => {
             treeSitterClient={treeSitterClient}
             streaming={streaming()}
             internalBlockMode="top-level"
+            bg={COLORS.background}
+            codeBlockBg={COLORS.panel}
           />
         );
       },
@@ -47,15 +68,23 @@ describe("OpenTUI Markdown completion patch", () => {
       const prose = markdown._blockStates.find(
         (state) => state.token.type === "paragraph",
       )?.renderable;
-      const code = markdown._blockStates.find((state) => state.token.type === "code")?.renderable;
+      const codeBlock = markdown._blockStates.find(
+        (state) => state.token.type === "code",
+      )?.renderable;
       const list = markdown._blockStates.find((state) => state.token.type === "list")?.renderable;
       const table = markdown._blockStates.find((state) => state.token.type === "table")?.renderable;
       expect(prose).toBeDefined();
-      if (!(code instanceof CodeRenderable)) throw new Error("Code renderable missing");
+      if (codeBlock === undefined) throw new Error("Code block missing");
+      const code = codeBlocks(codeBlock)[0];
+      if (code === undefined) throw new Error("Code renderable missing");
+      if (!(prose instanceof CodeRenderable)) throw new Error("Prose renderable missing");
       if (list === undefined) throw new Error("List renderable missing");
       const nestedCode = codeBlocks(list).find((candidate) => candidate.content.includes("nested"));
       if (nestedCode === undefined) throw new Error("Nested code renderable missing");
       expect(table).toBeDefined();
+      expect(prose.bg.equals(RGBA.fromHex(COLORS.background))).toBe(true);
+      expect(code.bg.equals(RGBA.fromHex(COLORS.panel))).toBe(true);
+      expect(nestedCode.bg.equals(RGBA.fromHex(COLORS.panel))).toBe(true);
 
       finish();
       await app.flush();
@@ -65,15 +94,18 @@ describe("OpenTUI Markdown completion patch", () => {
         markdown._blockStates.find((state) => state.token.type === "paragraph")?.renderable,
       ).toBe(prose);
       expect(markdown._blockStates.find((state) => state.token.type === "code")?.renderable).toBe(
-        code,
+        codeBlock,
       );
+      expect(codeBlocks(codeBlock)[0]).toBe(code);
       expect(code.streaming).toBe(false);
+      expect(code.bg.equals(RGBA.fromHex(COLORS.panel))).toBe(true);
       expect(
         codeBlocks(
           markdown._blockStates.find((state) => state.token.type === "list")?.renderable ?? list,
         ).find((candidate) => candidate.content.includes("nested")),
       ).toBe(nestedCode);
       expect(nestedCode.streaming).toBe(false);
+      expect(nestedCode.bg.equals(RGBA.fromHex(COLORS.panel))).toBe(true);
       expect(
         markdown._blockStates.find((state) => state.token.type === "table")?.renderable,
       ).not.toBe(table);
@@ -129,6 +161,76 @@ describe("OpenTUI Markdown completion patch", () => {
       expect(finalized.content.chunks.map((chunk) => chunk.text).join("")).toBe("CUSTOM TABLE");
     } finally {
       app.renderer.destroy();
+      syntaxStyle.destroy();
+    }
+  });
+
+  it("clips a code background when the block starts above a scroll viewport", async () => {
+    const syntaxStyle = createMarkdownSyntaxStyle();
+    const treeSitterClient = new MockTreeSitterClient({ autoResolveTimeout: 0 });
+    let scrollbox: ScrollBoxRenderable | undefined;
+    const app = await testRender(
+      () => (
+        <box width="100%" height="100%" backgroundColor={COLORS.background}>
+          <scrollbox
+            ref={(value: ScrollBoxRenderable) => (scrollbox = value)}
+            width="100%"
+            height={6}
+          >
+            <markdown
+              id="scrolled-code-markdown"
+              width="100%"
+              content={`\`\`\`text\n${Array.from({ length: 8 }, (_, index) => `CODE ${index}`).join("\n")}\n\`\`\`\n\nAFTER PROSE`}
+              syntaxStyle={syntaxStyle}
+              treeSitterClient={treeSitterClient}
+              internalBlockMode="top-level"
+              bg={COLORS.background}
+              codeBlockBg={COLORS.panel}
+            />
+          </scrollbox>
+        </box>
+      ),
+      { width: 40, height: 8 },
+    );
+    try {
+      await app.flush();
+      if (scrollbox === undefined) throw new Error("Scrollbox missing");
+      scrollbox.scrollTo(scrollbox.scrollHeight - scrollbox.height);
+      await app.flush();
+
+      const markdown = app.renderer.root.findDescendantById("scrolled-code-markdown");
+      if (!(markdown instanceof MarkdownRenderable)) throw new Error("Markdown renderable missing");
+      const codeBlock = markdown._blockStates.find(
+        (state) => state.token.type === "code",
+      )?.renderable;
+      const prose = markdown._blockStates.find(
+        (state) => state.token.type === "paragraph",
+      )?.renderable;
+      if (codeBlock === undefined) throw new Error("Code block missing");
+      const code = codeBlocks(codeBlock)[0];
+      if (code === undefined) throw new Error("Code renderable missing");
+      if (!(prose instanceof CodeRenderable)) throw new Error("Prose renderable missing");
+      await Promise.all([code.highlightingDone, prose.highlightingDone]);
+      await app.flush();
+
+      expect(codeBlock.screenY).toBeLessThan(0);
+      expect(prose.screenY).toBeGreaterThanOrEqual(0);
+      const visibleRightEdge = Math.min(
+        codeBlock.screenX + codeBlock.width - 1,
+        scrollbox.screenX + scrollbox.width - 2,
+      );
+      expect(
+        backgroundAt(app.captureSpans(), visibleRightEdge, 0).equals(RGBA.fromHex(COLORS.panel)),
+      ).toBe(true);
+      expect(
+        backgroundAt(app.captureSpans(), visibleRightEdge, prose.screenY).equals(
+          RGBA.fromHex(COLORS.background),
+        ),
+      ).toBe(true);
+    } finally {
+      await Promise.all(codeBlocks(app.renderer.root).map((code) => code.highlightingDone));
+      app.renderer.destroy();
+      await treeSitterClient.destroy();
       syntaxStyle.destroy();
     }
   });

@@ -1705,6 +1705,9 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
                   tableOptions={{ style: "grid" }}
                   fg={colors.text}
                   bg={colors.background}
+                  codeBlockBg={colors.panel}
+                  codeBlockLabelBg={colors.raised}
+                  codeBlockLabelFg={colors.syntaxType}
                 />
               </Show>
             )}

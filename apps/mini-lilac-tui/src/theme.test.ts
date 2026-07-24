@@ -64,8 +64,11 @@ describe("Markdown syntax theme", () => {
     const style = createMarkdownSyntaxStyle();
     try {
       expect(style.getStyle("comment")?.italic).toBe(true);
-      expect(style.getStyle("keyword")?.italic).toBe(true);
-      expect(style.getStyle("type")?.bold).toBe(true);
+      expect(style.getStyle("keyword")?.italic ?? false).toBe(false);
+      for (const name of ["type", "module", "class"] as const) {
+        expect(style.getStyle(name)?.fg).toEqual(style.getStyle("type")?.fg);
+        expect(style.getStyle(name)?.bold ?? false).toBe(false);
+      }
       expect(style.getStyle("function.call")?.fg).toEqual(style.getStyle("function")?.fg);
       expect(style.getStyle("string")?.fg).not.toEqual(style.getStyle("keyword")?.fg);
       expect(style.getStyle("number")?.fg).not.toEqual(style.getStyle("string")?.fg);

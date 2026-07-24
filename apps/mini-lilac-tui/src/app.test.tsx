@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import type { UIMessageChunk } from "ai";
 
 import {
-  type BoxRenderable,
+  BoxRenderable,
+  CodeRenderable,
   RGBA,
   type CapturedSpan,
+  type Renderable,
   type ScrollBoxRenderable,
   type TextareaRenderable,
 } from "@opentui/core";
@@ -97,6 +99,30 @@ function renderedSpan(app: Awaited<ReturnType<typeof renderApp>>, text: string):
     .find((candidate) => candidate.text.includes(text));
   if (span === undefined) throw new Error(`Could not find rendered span containing ${text}`);
   return span;
+}
+
+function renderedBackgroundAt(
+  app: Awaited<ReturnType<typeof renderApp>>,
+  x: number,
+  y: number,
+): RGBA {
+  const line = app.captureSpans().lines[y];
+  if (line === undefined) throw new Error(`Rendered line ${y} missing`);
+  let column = 0;
+  for (const span of line.spans) {
+    column += span.width;
+    if (x < column) return span.bg;
+  }
+  throw new Error(`Rendered column ${x} missing from line ${y}`);
+}
+
+function codeBlockContaining(renderable: Renderable, text: string): CodeRenderable | undefined {
+  if (renderable instanceof CodeRenderable && renderable.content.includes(text)) return renderable;
+  for (const child of renderable.getChildren()) {
+    const match = codeBlockContaining(child, text);
+    if (match !== undefined) return match;
+  }
+  return undefined;
 }
 
 function subagentMessagesResponse(): Response {
@@ -761,6 +787,62 @@ describe("MiniLilacApp tool interactions", () => {
       expect(frame).toContain("│Interaction");
       expect(frame).toContain("├");
       expect(frame).toContain("┘");
+    } finally {
+      app.renderer.destroy();
+    }
+  });
+
+  it("renders fenced code on a full-width panel without changing prose", async () => {
+    const app = await renderApp([
+      {
+        id: "assistant-code-background",
+        role: "assistant",
+        parts: [
+          {
+            type: "text",
+            text: "Ordinary prose\n\n```unsupported-language\nUNHIGHLIGHTED_CODE\n\nSECOND_CODE_LINE\n```\n\nAfter prose",
+          },
+        ],
+      },
+    ]);
+    try {
+      await app.flush();
+      const prose = codeBlockContaining(app.renderer.root, "Ordinary prose");
+      const code = codeBlockContaining(app.renderer.root, "UNHIGHLIGHTED_CODE");
+      const after = codeBlockContaining(app.renderer.root, "After prose");
+      if (prose === undefined) throw new Error("Prose block missing");
+      if (code === undefined) throw new Error("Code block missing");
+      if (after === undefined) throw new Error("Trailing prose block missing");
+      if (!(code.parent instanceof BoxRenderable)) {
+        throw new Error(`Code block container missing: ${code.parent?.constructor.name ?? "none"}`);
+      }
+      const container = code.parent;
+      await Promise.all([prose.highlightingDone, code.highlightingDone, after.highlightingDone]);
+      await app.flush();
+
+      expect(prose.bg.equals(RGBA.fromHex(COLORS.background))).toBe(true);
+      expect(code.bg.equals(RGBA.fromHex(COLORS.panel))).toBe(true);
+      expect(code.width).toBe(prose.width);
+      expect(container.backgroundColor.equals(RGBA.fromHex(COLORS.panel))).toBe(true);
+      expect(container.screenY).toBe(prose.screenY + prose.height);
+      expect(code.screenY).toBe(container.screenY + 1);
+      expect(container.height).toBe(code.height + 2);
+      expect(after.screenY).toBe(container.screenY + container.height);
+      const label = renderedSpan(app, "unsupported-language");
+      expect(label.bg.equals(RGBA.fromHex(COLORS.raised))).toBe(true);
+      expect(label.fg.equals(RGBA.fromHex(COLORS.syntaxType))).toBe(true);
+      const rightEdge = container.screenX + container.width - 1;
+      expect(
+        renderedBackgroundAt(app, rightEdge, code.screenY).equals(RGBA.fromHex(COLORS.panel)),
+      ).toBe(true);
+      expect(
+        renderedBackgroundAt(app, rightEdge, code.screenY + 1).equals(RGBA.fromHex(COLORS.panel)),
+      ).toBe(true);
+      expect(
+        renderedBackgroundAt(app, rightEdge, container.screenY + container.height - 1).equals(
+          RGBA.fromHex(COLORS.panel),
+        ),
+      ).toBe(true);
     } finally {
       app.renderer.destroy();
     }

@@ -101,9 +101,9 @@ function markdownSyntaxStyles(colors: ThemeColors) {
   const comment = { fg: colors.muted, italic: true } satisfies StyleDefinitionInput;
   const string = { fg: colors.success } satisfies StyleDefinitionInput;
   const number = { fg: colors.warning } satisfies StyleDefinitionInput;
-  const keyword = { fg: colors.danger, italic: true } satisfies StyleDefinitionInput;
+  const keyword = { fg: colors.danger } satisfies StyleDefinitionInput;
   const callable = { fg: colors.accent } satisfies StyleDefinitionInput;
-  const type = { fg: colors.syntaxType, bold: true } satisfies StyleDefinitionInput;
+  const type = { fg: colors.syntaxType } satisfies StyleDefinitionInput;
   const variable = { fg: colors.text } satisfies StyleDefinitionInput;
   const operator = { fg: colors.syntaxOperator } satisfies StyleDefinitionInput;
   const punctuation = { fg: colors.syntaxPunctuation } satisfies StyleDefinitionInput;

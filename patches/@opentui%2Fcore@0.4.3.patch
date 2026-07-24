@@ -1,8 +1,241 @@
 diff --git a/index.js b/index.js
-index c7badbef2f345f9d228d40c64a69d6570512fd8d..c36c5b0d41112649991b2cb7251bc11ee8d16610 100644
+index c7badbef2f345f9d228d40c64a69d6570512fd8d..dd6f825f552b5d77b7a68db7063703fe1692dfef 100644
 --- a/index.js
 +++ b/index.js
-@@ -9093,7 +9093,11 @@ class MarkdownRenderable extends Renderable {
+@@ -7941,6 +7941,9 @@ class MarkdownRenderable extends Renderable {
+   _syntaxStyle;
+   _fg;
+   _bg;
++  _codeBlockBg;
++  _codeBlockLabelBg;
++  _codeBlockLabelFg;
+   _conceal;
+   _concealCode;
+   _treeSitterClient;
+@@ -7972,6 +7975,9 @@ class MarkdownRenderable extends Renderable {
+     this._syntaxStyle = options.syntaxStyle;
+     this._fg = options.fg ? parseColor(options.fg) : undefined;
+     this._bg = options.bg ? parseColor(options.bg) : undefined;
++    this._codeBlockBg = options.codeBlockBg ? parseColor(options.codeBlockBg) : undefined;
++    this._codeBlockLabelBg = options.codeBlockLabelBg ? parseColor(options.codeBlockLabelBg) : undefined;
++    this._codeBlockLabelFg = options.codeBlockLabelFg ? parseColor(options.codeBlockLabelFg) : undefined;
+     this._conceal = options.conceal ?? this._contentDefaultOptions.conceal;
+     this._concealCode = options.concealCode ?? this._contentDefaultOptions.concealCode;
+     this._content = options.content ?? this._contentDefaultOptions.content;
+@@ -8023,6 +8029,44 @@ class MarkdownRenderable extends Renderable {
+       this._styleDirty = true;
+     }
+   }
++  get codeBlockBg() {
++    return this._codeBlockBg;
++  }
++  set codeBlockBg(value) {
++    const next = value ? parseColor(value) : undefined;
++    if (!colorsEqual(this._codeBlockBg, next)) {
++      const structureChanged = (this._codeBlockBg === undefined) !== (next === undefined);
++      this._codeBlockBg = next;
++      if (structureChanged) {
++        this.clearBlockStates();
++        this._parseState = null;
++        this.updateBlocks(true);
++        this.requestRender();
++      } else {
++        this._styleDirty = true;
++      }
++    }
++  }
++  get codeBlockLabelBg() {
++    return this._codeBlockLabelBg;
++  }
++  set codeBlockLabelBg(value) {
++    const next = value ? parseColor(value) : undefined;
++    if (!colorsEqual(this._codeBlockLabelBg, next)) {
++      this._codeBlockLabelBg = next;
++      this._styleDirty = true;
++    }
++  }
++  get codeBlockLabelFg() {
++    return this._codeBlockLabelFg;
++  }
++  set codeBlockLabelFg(value) {
++    const next = value ? parseColor(value) : undefined;
++    if (!colorsEqual(this._codeBlockLabelFg, next)) {
++      this._codeBlockLabelFg = next;
++      this._styleDirty = true;
++    }
++  }
+   get conceal() {
+     return this._conceal;
+   }
+@@ -8437,7 +8481,7 @@ class MarkdownRenderable extends Renderable {
+     if (token.type === "list" && renderable instanceof BoxRenderable) {
+       return this.applyListRenderable(renderable, token, previousToken, id);
+     }
+-    if (token.type === "code" && renderable instanceof CodeRenderable) {
++    if (token.type === "code" && this.getCodeBlockCodeRenderable(renderable)) {
+       this.applyCodeBlockRenderable(renderable, token, 0);
+       return true;
+     }
+@@ -8491,21 +8535,94 @@ class MarkdownRenderable extends Renderable {
+       marginBottom
+     });
+   }
+-  createCodeRenderable(token, id, marginBottom = 0) {
++  getCodeBlockLanguage(token) {
++    return (token.lang ?? "").trim().split(/\s+/u)[0] ?? "";
++  }
++  createCodeTextRenderable(token, id) {
+     return new CodeRenderable(this.ctx, {
+       id,
+       content: token.text,
+       filetype: infoStringToFiletype(token.lang ?? ""),
+       syntaxStyle: this._syntaxStyle,
+       fg: this._fg,
+-      bg: this._bg,
++      bg: this._codeBlockBg ?? this._bg,
+       conceal: this._concealCode,
+       drawUnstyledText: !this._streaming,
+       streaming: this._streaming,
+       treeSitterClient: this._treeSitterClient,
++      width: "100%"
++    });
++  }
++  createCodeBlockHeader(token, id) {
++    const header = new BoxRenderable(this.ctx, {
++      id,
+       width: "100%",
+-      marginBottom
++      height: 1,
++      flexDirection: "row",
++      justifyContent: "flex-end",
++      flexShrink: 0,
++      backgroundColor: this._codeBlockBg
+     });
++    this.applyCodeBlockHeader(header, token);
++    return header;
++  }
++  applyCodeBlockHeader(header, token) {
++    header.backgroundColor = this._codeBlockBg;
++    const language = this.getCodeBlockLanguage(token);
++    const existing = header.getChildren()[0];
++    if (!language) {
++      existing?.destroyRecursively();
++      return;
++    }
++    const options = {
++      content: ` ${language} `,
++      fg: this._codeBlockLabelFg ?? this.getStyle("type")?.fg ?? this._fg,
++      bg: this._codeBlockLabelBg ?? this._codeBlockBg,
++      height: 1,
++      flexShrink: 0,
++      selectable: false
++    };
++    if (existing instanceof TextRenderable) {
++      existing.content = options.content;
++      existing.fg = options.fg;
++      existing.bg = options.bg;
++      return;
++    }
++    existing?.destroyRecursively();
++    header.add(new TextRenderable(this.ctx, options));
++  }
++  createCodeRenderable(token, id, marginBottom = 0) {
++    if (!this._codeBlockBg) {
++      const code = this.createCodeTextRenderable(token, id);
++      code.marginBottom = marginBottom;
++      return code;
++    }
++    const block = new BoxRenderable(this.ctx, {
++      id,
++      width: "100%",
++      flexDirection: "column",
++      flexShrink: 0,
++      marginBottom: 0,
++      backgroundColor: this._codeBlockBg
++    });
++    block.add(this.createCodeBlockHeader(token, `${id}-header`));
++    block.add(this.createCodeTextRenderable(token, `${id}-content`));
++    block.add(new BoxRenderable(this.ctx, {
++      id: `${id}-footer`,
++      width: "100%",
++      height: 1,
++      flexShrink: 0,
++      backgroundColor: this._codeBlockBg
++    }));
++    return block;
++  }
++  getCodeBlockCodeRenderable(renderable) {
++    if (renderable instanceof CodeRenderable)
++      return renderable;
++    if (!(renderable instanceof BoxRenderable))
++      return;
++    const code = renderable.getChildren()[1];
++    return code instanceof CodeRenderable ? code : undefined;
+   }
+   applyMarkdownCodeRenderable(renderable, content, marginBottom, baseHighlight, initialStyledText) {
+     renderable.initialStyledText = initialStyledText;
+@@ -8536,17 +8653,32 @@ class MarkdownRenderable extends Renderable {
+     renderable.add(this.createMarkdownCodeRenderable(this.getBlockquoteContent(token), `${renderable.id}-content`, 0, this._linkifyMarkdownChunks, "markup.quote"));
+   }
+   applyCodeBlockRenderable(renderable, token, marginBottom) {
+-    if (!(renderable instanceof CodeRenderable))
++    const code = this.getCodeBlockCodeRenderable(renderable);
++    if (!code)
+       return;
+-    renderable.filetype = infoStringToFiletype(token.lang ?? "");
+-    renderable.syntaxStyle = this._syntaxStyle;
+-    renderable.fg = this._fg;
+-    renderable.bg = this._bg;
+-    renderable.conceal = this._concealCode;
+-    renderable.drawUnstyledText = !this._streaming;
+-    renderable.streaming = this._streaming;
+-    renderable.content = token.text;
+-    renderable.marginBottom = marginBottom;
++    if (renderable instanceof BoxRenderable) {
++      renderable.backgroundColor = this._codeBlockBg;
++      renderable.marginBottom = 0;
++      const children = renderable.getChildren();
++      const header = children[0];
++      if (header instanceof BoxRenderable) {
++        this.applyCodeBlockHeader(header, token);
++      }
++      const footer = children[2];
++      if (footer instanceof BoxRenderable) {
++        footer.backgroundColor = this._codeBlockBg;
++      }
++    } else {
++      code.marginBottom = marginBottom;
++    }
++    code.filetype = infoStringToFiletype(token.lang ?? "");
++    code.syntaxStyle = this._syntaxStyle;
++    code.fg = this._fg;
++    code.bg = this._codeBlockBg ?? this._bg;
++    code.conceal = this._concealCode;
++    code.drawUnstyledText = !this._streaming;
++    code.streaming = this._streaming;
++    code.content = token.text;
+   }
+   shouldRenderSeparately(token) {
+     return token.type === "code" || token.type === "table" || token.type === "blockquote" || token.type === "hr";
+@@ -8554,6 +8686,8 @@ class MarkdownRenderable extends Renderable {
+   getInterBlockMargin(token, nextToken) {
+     if (!nextToken)
+       return 0;
++    if (this._codeBlockBg && (token.type === "code" || nextToken.type === "code"))
++      return 0;
+     if (this.shouldRenderSeparately(token))
+       return 1;
+     if (!this.shouldRenderSeparately(nextToken))
+@@ -8645,6 +8779,8 @@ class MarkdownRenderable extends Renderable {
+     return blocks;
+   }
+   shouldAddTopLevelMargin(prev, current, gapBefore) {
++    if (this._codeBlockBg && (prev.type === "code" || current.type === "code"))
++      return false;
+     if (this.isSeparatedTopLevelBlock(prev) || this.isSeparatedTopLevelBlock(current))
+       return true;
+     if (prev.type !== "paragraph" || current.type !== "paragraph")
+@@ -9093,7 +9229,11 @@ class MarkdownRenderable extends Renderable {
      for (let i = 0;i < blocks.length; i += 1) {
        const block = blocks[i];
        const existing = this._blockStates[blockIndex];
@@ -15,7 +248,7 @@ index c7badbef2f345f9d228d40c64a69d6570512fd8d..c36c5b0d41112649991b2cb7251bc11e
          if (existing.marginTop !== block.marginTop) {
            this.applyMargins(existing.renderable, block.marginTop, 0);
          }
-@@ -9101,7 +9105,10 @@ class MarkdownRenderable extends Renderable {
+@@ -9101,7 +9241,10 @@ class MarkdownRenderable extends Renderable {
          blockIndex++;
          continue;
        }
@@ -27,7 +260,7 @@ index c7badbef2f345f9d228d40c64a69d6570512fd8d..c36c5b0d41112649991b2cb7251bc11e
          if (existing.marginTop !== block.marginTop) {
            this.applyMargins(existing.renderable, block.marginTop, 0);
          }
-@@ -9109,7 +9116,7 @@ class MarkdownRenderable extends Renderable {
+@@ -9109,7 +9252,7 @@ class MarkdownRenderable extends Renderable {
          blockIndex++;
          continue;
        }
@@ -36,7 +269,16 @@ index c7badbef2f345f9d228d40c64a69d6570512fd8d..c36c5b0d41112649991b2cb7251bc11e
          if (this._renderNode) {
            const custom = this.createTopLevelCustomRenderable(block, blockIndex);
            if (custom.renderable && !custom.canUpdateInPlace) {
-@@ -9216,10 +9223,10 @@ class MarkdownRenderable extends Renderable {
+@@ -9165,7 +9308,7 @@ class MarkdownRenderable extends Renderable {
+   }
+   canUpdateBlockRenderable(renderable, token) {
+     if (token.type === "code")
+-      return renderable instanceof CodeRenderable;
++      return this.getCodeBlockCodeRenderable(renderable) !== undefined;
+     if (token.type === "table")
+       return renderable instanceof TextTableRenderable;
+     if (token.type === "blockquote")
+@@ -9216,10 +9359,10 @@ class MarkdownRenderable extends Renderable {
        const token = blockTokens[i];
        const nextToken = blockTokens[i + 1];
        const existing = this._blockStates[blockIndex];
@@ -51,7 +293,7 @@ index c7badbef2f345f9d228d40c64a69d6570512fd8d..c36c5b0d41112649991b2cb7251bc11e
            existing.tokenRaw = token.raw;
          } else {
            this.applyInterBlockMargin(existing, token, nextToken);
-@@ -9227,10 +9234,10 @@ class MarkdownRenderable extends Renderable {
+@@ -9227,10 +9370,10 @@ class MarkdownRenderable extends Renderable {
          blockIndex++;
          continue;
        }
@@ -65,3 +307,56 @@ index c7badbef2f345f9d228d40c64a69d6570512fd8d..c36c5b0d41112649991b2cb7251bc11e
            existing.tokenRaw = token.raw;
          } else {
            this.applyInterBlockMargin(existing, token, nextToken);
+diff --git a/renderables/Markdown.d.ts b/renderables/Markdown.d.ts
+index 9300bf024dae00f9c27230b396391afef15de704..88318ef3f69becd5174ad6daea87f6c40aa003e0 100644
+--- a/renderables/Markdown.d.ts
++++ b/renderables/Markdown.d.ts
+@@ -70,6 +70,12 @@ export interface MarkdownOptions extends RenderableOptions<MarkdownRenderable> {
+     syntaxStyle: SyntaxStyle;
+     fg?: ColorInput;
+     bg?: ColorInput;
++    /** Background used by fenced code blocks. Defaults to `bg`. */
++    codeBlockBg?: ColorInput;
++    /** Background used by the fenced code block language label. */
++    codeBlockLabelBg?: ColorInput;
++    /** Foreground used by the fenced code block language label. */
++    codeBlockLabelFg?: ColorInput;
+     /** Controls concealment for markdown syntax markers in markdown text blocks. */
+     conceal?: boolean;
+     /** Controls concealment inside fenced code blocks rendered by CodeRenderable. */
+@@ -136,6 +142,9 @@ export declare class MarkdownRenderable extends Renderable {
+     private _syntaxStyle;
+     private _fg?;
+     private _bg?;
++    private _codeBlockBg?;
++    private _codeBlockLabelBg?;
++    private _codeBlockLabelFg?;
+     private _conceal;
+     private _concealCode;
+     private _treeSitterClient?;
+@@ -164,6 +173,12 @@ export declare class MarkdownRenderable extends Renderable {
+     set fg(value: ColorInput | undefined);
+     get bg(): RGBA | undefined;
+     set bg(value: ColorInput | undefined);
++    get codeBlockBg(): RGBA | undefined;
++    set codeBlockBg(value: ColorInput | undefined);
++    get codeBlockLabelBg(): RGBA | undefined;
++    set codeBlockLabelBg(value: ColorInput | undefined);
++    get codeBlockLabelFg(): RGBA | undefined;
++    set codeBlockLabelFg(value: ColorInput | undefined);
+     get conceal(): boolean;
+     set conceal(value: boolean);
+     get concealCode(): boolean;
+@@ -200,7 +215,12 @@ export declare class MarkdownRenderable extends Renderable {
+     private applyListItemMarker;
+     private createListChildRenderable;
+     private createHorizontalRuleRenderable;
++    private getCodeBlockLanguage;
++    private createCodeTextRenderable;
++    private createCodeBlockHeader;
++    private applyCodeBlockHeader;
+     private createCodeRenderable;
++    private getCodeBlockCodeRenderable;
+     private applyMarkdownCodeRenderable;
+     private applyBlockquoteRenderable;
+     private applyCodeBlockRenderable;
