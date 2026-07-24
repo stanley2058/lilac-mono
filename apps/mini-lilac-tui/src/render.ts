@@ -674,6 +674,12 @@ export function shellTranscriptText(
   outputCharacterLimit = DEFAULT_SHELL_OUTPUT_CHARACTERS,
 ): string {
   const collapsible = isShellTranscriptCollapsible(shell, outputLineLimit, outputCharacterLimit);
+  const visibleCommand = shellTranscriptCommand(
+    shell,
+    expanded,
+    outputLineLimit,
+    outputCharacterLimit,
+  );
   const visibleOutput = shellTranscriptOutput(
     shell,
     expanded,
@@ -683,13 +689,30 @@ export function shellTranscriptText(
   const lines = [
     shell.cwd === undefined ? undefined : `# Running in ${shell.cwd}`,
     shell.cwd === undefined ? undefined : "",
-    `$ ${shell.command}`,
+    `$ ${visibleCommand}`,
     visibleOutput === undefined ? undefined : "",
     visibleOutput,
     collapsible ? "" : undefined,
     collapsible ? (expanded ? "Click to collapse" : "Click to expand") : undefined,
   ].filter((value) => value !== undefined);
   return lines.join("\n");
+}
+
+function shellTranscriptPreview(value: string, lineLimit: number, characterLimit: number): string {
+  const lineLimitedValue = value.split("\n").slice(0, lineLimit).join("\n");
+  const characters = Array.from(lineLimitedValue);
+  if (characters.length <= characterLimit) return lineLimitedValue;
+  return `${characters.slice(0, Math.max(0, characterLimit - 3)).join("")}...`;
+}
+
+export function shellTranscriptCommand(
+  shell: ShellTranscript,
+  expanded = false,
+  lineLimit = DEFAULT_SHELL_OUTPUT_LINES,
+  characterLimit = DEFAULT_SHELL_OUTPUT_CHARACTERS,
+): string {
+  if (expanded) return shell.command;
+  return shellTranscriptPreview(shell.command, lineLimit, characterLimit);
 }
 
 export function shellTranscriptOutput(
@@ -703,10 +726,7 @@ export function shellTranscriptOutput(
     return shell.output;
   }
 
-  const lineLimitedOutput = shell.output.split("\n").slice(0, outputLineLimit).join("\n");
-  const characters = Array.from(lineLimitedOutput);
-  if (characters.length <= outputCharacterLimit) return lineLimitedOutput;
-  return `${characters.slice(0, Math.max(0, outputCharacterLimit - 3)).join("")}...`;
+  return shellTranscriptPreview(shell.output, outputLineLimit, outputCharacterLimit);
 }
 
 export function isShellTranscriptCollapsible(
@@ -715,6 +735,8 @@ export function isShellTranscriptCollapsible(
   outputCharacterLimit = DEFAULT_SHELL_OUTPUT_CHARACTERS,
 ): boolean {
   return (
+    shell.command.split("\n").length > outputLineLimit ||
+    Array.from(shell.command).length > outputCharacterLimit ||
     (shell.output?.split("\n").length ?? 0) > outputLineLimit ||
     Array.from(shell.output ?? "").length > outputCharacterLimit
   );

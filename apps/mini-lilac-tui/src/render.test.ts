@@ -407,6 +407,20 @@ describe("renderInitialMessages", () => {
     expect(shellTranscriptText(characterClamped, true)).toContain(longLine);
   });
 
+  it("clamps shell command input and restores it after expansion", () => {
+    const command = Array.from({ length: 10 }, (_, i) => `input line ${i + 1}`).join("\n");
+    const shell = { command };
+
+    expect(isShellTranscriptCollapsible(shell)).toBe(true);
+    const collapsed = shellTranscriptText(shell);
+    expect(collapsed).toContain("input line 8");
+    expect(collapsed).not.toContain("input line 9");
+    expect(collapsed.endsWith("Click to expand")).toBe(true);
+    const expanded = shellTranscriptText(shell, true);
+    expect(expanded).toContain("input line 10");
+    expect(expanded.endsWith("Click to collapse")).toBe(true);
+  });
+
   it("renders automatic and manual compaction as durable divider entries", () => {
     const automatic = {
       type: "data-compaction" as const,

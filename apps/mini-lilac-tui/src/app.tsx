@@ -83,6 +83,7 @@ import {
   isShellTranscriptCollapsible,
   explorationTranscriptText,
   renderInitialMessages,
+  shellTranscriptCommand,
   shellTranscriptOutput,
   type EditOperation,
   type EditTranscript,
@@ -222,6 +223,9 @@ function ShellView(props: {
   const collapsible = createMemo(() =>
     isShellTranscriptCollapsible(props.shell, previewRows(), characterLimit()),
   );
+  const command = createMemo(() =>
+    shellTranscriptCommand(props.shell, props.expanded, previewRows(), characterLimit()),
+  );
   const output = createMemo(() =>
     shellTranscriptOutput(props.shell, props.expanded, previewRows(), characterLimit()),
   );
@@ -247,8 +251,16 @@ function ShellView(props: {
       </Show>
       <box width="100%" flexDirection="row" paddingTop={props.shell.cwd === undefined ? 0 : 1}>
         <text flexShrink={0} fg={statusColor()}>{`${statusGlyph()} `}</text>
-        <text flexGrow={1} minWidth={0} wrapMode="word" fg={props.colors.text} selectable={true}>
-          {`$ ${props.shell.command}`}
+        <text
+          flexGrow={1}
+          minWidth={0}
+          maxHeight={!props.expanded && collapsible() ? previewRows() : undefined}
+          overflow={!props.expanded && collapsible() ? "hidden" : undefined}
+          wrapMode="word"
+          fg={props.colors.text}
+          selectable={true}
+        >
+          {`$ ${command()}`}
         </text>
       </box>
       <Show when={output() !== undefined}>
@@ -1806,35 +1818,6 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
             </box>
           )}
         </Show>
-        <Show when={subagentView() === undefined}>
-          <box
-            id="session-status"
-            width="100%"
-            height={1}
-            flexDirection="row"
-            paddingLeft={1}
-            paddingRight={1}
-          >
-            <text flexShrink={0} width={2} wrapMode="none" fg={workingStatusFrame().color}>
-              {workingStatusFrame().glyph}
-            </text>
-            <text
-              flexGrow={1}
-              flexShrink={1}
-              minWidth={0}
-              wrapMode="none"
-              truncate={true}
-              fg={colors.text}
-            >
-              {workingStatus()}
-            </text>
-            <Show when={active()}>
-              <text flexShrink={0} wrapMode="none" fg={colors.success}>
-                {` ${workingHint()}`}
-              </text>
-            </Show>
-          </box>
-        </Show>
         <Show when={subagentView() === undefined && steering().length > 0}>
           <box
             id="steering-queue"
@@ -1894,6 +1877,7 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
         <Show when={subagentView() === undefined}>
           <box
             width="100%"
+            position="relative"
             backgroundColor={colors.panel}
             border={["left"]}
             borderColor={state().phase === "active" ? colors.success : colors.accent}
@@ -1972,6 +1956,19 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
                 controller.submit();
               }}
             />
+            <Show when={active()}>
+              <text
+                position="absolute"
+                top={1}
+                right={1}
+                zIndex={20}
+                wrapMode="none"
+                fg={colors.success}
+                bg={colors.panel}
+              >
+                {workingHint()}
+              </text>
+            </Show>
           </box>
         </Show>
         <Show when={subagentView()}>
@@ -2023,31 +2020,50 @@ export function MiniLilacApp(props: MiniLilacAppProps) {
           </text>
         </box>
         <box
+          id="session-status"
           width="100%"
           flexDirection="row"
           justifyContent="space-between"
           paddingLeft={1}
           paddingRight={1}
         >
-          <text flexGrow={1} minWidth={0} wrapMode="none" truncate={true}>
-            <span style={{ fg: colors.accent }}>
-              {subagentView()?.subagent.profile ?? profileLabel()}
-            </span>
-            <span style={{ fg: colors.muted }}> | </span>
-            <span style={{ fg: colors.model }}>
-              {subagentView() === undefined ? modelLabel() : "subagent transcript"}
-            </span>
-            <span style={{ fg: colors.muted }}> | </span>
-            <span style={{ fg: colors.warning }}>
-              {subagentView() === undefined ? reasoningLabel() : "read-only"}
-            </span>
-            <span style={{ fg: colors.muted }}>
-              {tokenUsage() === undefined ? "" : ` | ${tokenUsage()}`}
-            </span>
-          </text>
-          <text fg={subagentView() === undefined ? phaseColor() : colors.accent}>
-            {subagentView() === undefined ? phaseText() : "esc parent | page up/down scroll"}
-          </text>
+          <Show
+            when={subagentView() === undefined}
+            fallback={
+              <>
+                <text flexGrow={1} minWidth={0} wrapMode="none" truncate={true}>
+                  <span style={{ fg: colors.accent }}>
+                    {subagentView()?.subagent.profile ?? "subagent"}
+                  </span>
+                  <span style={{ fg: colors.muted }}> | subagent transcript | </span>
+                  <span style={{ fg: colors.warning }}>read-only</span>
+                </text>
+                <text flexShrink={0} fg={colors.accent}>
+                  esc parent | page up/down scroll
+                </text>
+              </>
+            }
+          >
+            <text flexGrow={1} flexShrink={1} minWidth={0} wrapMode="none" truncate={true}>
+              <span style={{ fg: workingStatusFrame().color }}>
+                {`${workingStatusFrame().glyph} `}
+              </span>
+              <span style={{ fg: colors.text }}>{workingStatus()}</span>
+              <Show when={phaseText().length > 0}>
+                <span style={{ fg: phaseColor() }}>{` · ${phaseText()}`}</span>
+              </Show>
+            </text>
+            <text flexShrink={1} minWidth={0} wrapMode="none" truncate={true}>
+              <span style={{ fg: colors.accent }}>{profileLabel()}</span>
+              <span style={{ fg: colors.muted }}> | </span>
+              <span style={{ fg: colors.model }}>{modelLabel()}</span>
+              <span style={{ fg: colors.muted }}> | </span>
+              <span style={{ fg: colors.warning }}>{reasoningLabel()}</span>
+              <span style={{ fg: colors.muted }}>
+                {tokenUsage() === undefined ? "" : ` | ${tokenUsage()}`}
+              </span>
+            </text>
+          </Show>
         </box>
       </box>
     </box>

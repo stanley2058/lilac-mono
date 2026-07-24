@@ -813,6 +813,10 @@ describe("MiniLilacApp tool interactions", () => {
       expect(renderedTextPosition(app, "coding").y).toBe(
         renderedTextPosition(app, "Click test").y + 1,
       );
+      expect(renderedTextPosition(app, "coding").x).toBeGreaterThan(
+        renderedTextPosition(app, "▣ Ready").x,
+      );
+      expect(renderedTextPosition(app, "coding").y).toBe(renderedTextPosition(app, "▣ Ready").y);
       expect(renderedSpan(app, "coding").fg.equals(RGBA.fromHex(COLORS.accent))).toBe(true);
       expect(renderedSpan(app, "test/model").fg.equals(RGBA.fromHex(COLORS.model))).toBe(true);
       expect(renderedSpan(app, "low").fg.equals(RGBA.fromHex(COLORS.warning))).toBe(true);
@@ -997,6 +1001,7 @@ describe("MiniLilacApp tool interactions", () => {
       await idleApp.flush();
       expect(idleApp.captureCharFrame()).toContain("▣ Ready");
       idleComposerY = renderedTextPosition(idleApp, "Ask anything...").y;
+      expect(renderedTextPosition(idleApp, "▣ Ready").y).toBeGreaterThan(idleComposerY);
     } finally {
       idleApp.renderer.destroy();
     }
@@ -1024,8 +1029,11 @@ describe("MiniLilacApp tool interactions", () => {
       const frame = app.captureCharFrame();
       expect(frame).toMatch(/[·▪■▣] \S+\.\.\. 0s/u);
       expect(frame).toContain("2 queued / esc interrupt");
-      expect(renderedTextPosition(app, "2 queued / esc interrupt").y).toBeLessThan(
+      expect(renderedTextPosition(app, "2 queued / esc interrupt").y).toBe(
         renderedTextPosition(app, "Steer the active run...").y,
+      );
+      expect(renderedTextPosition(app, "2 queued / esc interrupt").x).toBeGreaterThan(
+        renderedTextPosition(app, "Steer the active run...").x,
       );
       expect(renderedTextPosition(app, "Steer the active run...").y).toBe(idleComposerY);
       expect(frame).not.toContain("working / esc interrupt");
