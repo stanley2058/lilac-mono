@@ -6,10 +6,10 @@
   "private": true,
   "license": "MIT",
   "bin": {
-    "tools": "dist/index.js"
+    "tools": "dist/tools"
   },
   "scripts": {
-    "build": "bun build.ts && chmod +x dist/index.js",
+    "build": "bun build.ts && chmod +x dist/tools dist/tools-worker",
     "test": "bun test"
   },
   "devDependencies": {

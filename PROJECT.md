@@ -65,7 +65,7 @@ The fail-closed workspace inventory is `ACTIVE_WORKSPACES` in `scripts/architect
 - `apps/mini-lilac`: publishable command dispatcher and single-file Mini bundle.
 - `apps/mini-lilac-server`: Mini HTTP/SSE boundary, server authentication, process lock, and runtime composition.
 - `apps/mini-lilac-tui`: OpenTUI/Solid terminal client and interaction state.
-- `apps/tool-bridge`: `tools` HTTP client/CLI, its bundle, and the reduced dev-mode Core tool server entry.
+- `apps/tool-bridge`: the native `tools` launcher, its resident Bun HTTP client, and the reduced dev-mode Core tool server entry.
 
 ### Packages
 

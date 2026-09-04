@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.1",
   "catalog": {
     "better-result": "3.0.1"
   },

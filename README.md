@@ -53,7 +53,7 @@ Build and inspect the standalone CLIs:
 
 ```sh
 bun --cwd apps/tool-bridge run build
-./apps/tool-bridge/dist/index.js --list
+./apps/tool-bridge/dist/tools --list
 
 bun --cwd apps/acp-controller run build
 ./apps/acp-controller/dist/index.js --help
@@ -61,6 +61,10 @@ bun --cwd apps/acp-controller run build
 bun --cwd apps/mini-lilac run build
 ./apps/mini-lilac/dist/main.js --help
 ```
+
+On Linux, `dist/tools` is a Go launcher backed by a resident Bun worker. Other platforms build a
+standalone Bun executable and run the client directly; the resident Unix-socket fast path is
+Linux-only.
 
 The Core tool server can also run without the event bus and surfaces for development:
 

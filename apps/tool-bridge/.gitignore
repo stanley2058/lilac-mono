@@ -4,6 +4,9 @@ node_modules
 # output
 out
 dist/client.js
+dist/chunk-*.js
+dist/tools
+dist/tools-worker
 *.tgz
 
 # code coverage

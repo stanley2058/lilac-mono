@@ -1,34 +1,67 @@
 /* oxlint-disable eslint/no-control-regex */
 
-import { getBuildInfo, type BuildInfo } from "@stanley2058/lilac-utils/build-info";
+declare const __LILAC_TOOL_BUILD_ID__: string | undefined;
+declare const __LILAC_TOOL_BUILD_VERSION__: string | undefined;
+declare const __LILAC_TOOL_BUILD_COMMIT__: string | undefined;
+declare const __LILAC_TOOL_BUILD_DIRTY__: boolean | undefined;
+declare const __LILAC_TOOL_BUILT_AT__: string | undefined;
+declare const __LILAC_TOOL_AUTOSTART__: boolean | undefined;
+
 import {
   serverToolExitCode,
   type ServerToolFailure,
   type ServerToolFailureKind,
 } from "@stanley2058/lilac-plugin-runtime/types";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
-import { z } from "zod";
-import { createHash, randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
-import fs from "node:fs/promises";
+import type { z } from "zod";
 import { homedir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
-import { fileURLToPath } from "node:url";
+import { basename, resolve } from "node:path";
 
-const BACKEND_URL = process.env.TOOL_SERVER_BACKEND_URL || "http://localhost:8080";
-const BUILD_ID_LENGTH = 8;
+import {
+  captureCliInvocation,
+  hasCapturedInvocation,
+  readRuntimeStdin,
+  runtimeArgs,
+  runtimeCwd,
+  runtimeEnv,
+  runtimeOperator,
+  runtimeSignal,
+  runtimeStdinIsTTY,
+  runtimeStdoutColumns,
+  runtimeStdoutIsTTY,
+  setRuntimeExitCode,
+  setRuntimeOperator,
+  writeRuntimeStderr,
+  writeRuntimeStdout,
+  type CliInvocationRequest,
+  type CliInvocationResponse,
+} from "./invocation-runtime";
+
+const DEFAULT_BACKEND_URL = "http://localhost:8080";
 const DEV_BUILD_ID = "dev";
+const DEFAULT_BUILD_VERSION = "dev";
+const DEFAULT_BUILD_COMMIT = "dev";
 const VERSION_FETCH_TIMEOUT_MS = 1_500;
-const CURRENT_FILE = fileURLToPath(import.meta.url);
-const MODULE_DIR = dirname(CURRENT_FILE);
+const CURRENT_FILE = import.meta.path;
 const DEFAULT_OPERATOR_TOKEN_FILE = "/run/lilac/operator-token";
+const INLINE_BUILD_ID =
+  typeof __LILAC_TOOL_BUILD_ID__ === "string" ? __LILAC_TOOL_BUILD_ID__ : undefined;
+const INLINE_BUILD_INFO: BuildInfo = {
+  version:
+    typeof __LILAC_TOOL_BUILD_VERSION__ === "string"
+      ? __LILAC_TOOL_BUILD_VERSION__
+      : DEFAULT_BUILD_VERSION,
+  commit:
+    typeof __LILAC_TOOL_BUILD_COMMIT__ === "string"
+      ? __LILAC_TOOL_BUILD_COMMIT__
+      : DEFAULT_BUILD_COMMIT,
+  ...(typeof __LILAC_TOOL_BUILD_DIRTY__ === "boolean" ? { dirty: __LILAC_TOOL_BUILD_DIRTY__ } : {}),
+  ...(typeof __LILAC_TOOL_BUILT_AT__ === "string" ? { builtAt: __LILAC_TOOL_BUILT_AT__ } : {}),
+};
 
 let buildIdPromise: Promise<string> | undefined;
 let localVersionInfoPromise: Promise<LocalVersionInfo> | undefined;
-let backendVersionInfoPromise: Promise<BackendVersionInfo | null> | undefined;
-let operatorToken: string | undefined;
-let operatorRequestId: string | undefined;
+let wireCodecsPromise: Promise<typeof import("./wire-codecs")> | undefined;
 
 type ToolOutputFull = {
   callableId: string;
@@ -45,12 +78,32 @@ type PrimaryPositional = {
   variadic?: boolean;
 };
 
+type BuildInfo = {
+  version: string;
+  commit: string;
+  dirty?: boolean;
+  builtAt?: string;
+};
+
 type LocalVersionInfo = BuildInfo & {
   build: string;
 };
 
-type JsonValue = z.output<typeof jsonValueSchema>;
-type JsonObject = z.output<typeof jsonObjectSchema>;
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+type JsonObject = { [key: string]: JsonValue };
+
+type BackendVersionInfo = {
+  readonly ok: true;
+  readonly version: string;
+  readonly commit: string;
+  readonly dirty?: boolean;
+  readonly builtAt?: string;
+  readonly plugins?: { readonly loadedExternal: number };
+};
+
+type ToolCallPayload =
+  | { readonly status: "ok"; readonly value: JsonValue }
+  | { readonly status: "error"; readonly error: ServerToolFailure };
 
 export class BridgeArgumentInvalid extends TaggedError("BridgeArgumentInvalid")<{
   readonly message: string;
@@ -175,28 +228,35 @@ async function captureBridgeOperationAsync<T, E>(
   return continueCapture();
 }
 
-let callableIdsCache: string[] | undefined;
+function backendUrl(): string {
+  return runtimeEnv("TOOL_SERVER_BACKEND_URL") || DEFAULT_BACKEND_URL;
+}
+
+function writeLine(value: string): void {
+  writeRuntimeStdout(`${value}\n`);
+}
 
 function lilacRequestHeaders(includeJson = false): Record<string, string> {
   const headers: Record<string, string> = includeJson ? { "Content-Type": "application/json" } : {};
   const values = [
-    ["x-lilac-request-id", process.env.LILAC_REQUEST_ID],
-    ["x-lilac-request-delivery-id", process.env.LILAC_REQUEST_DELIVERY_ID],
-    ["x-lilac-session-id", process.env.LILAC_SESSION_ID],
-    ["x-lilac-request-client", process.env.LILAC_REQUEST_CLIENT],
-    ["x-lilac-cwd", process.cwd()],
-    ["x-lilac-tool-call-id", process.env.LILAC_TOOL_CALL_ID],
-    ["x-lilac-control-capability", process.env.LILAC_CONTROL_CAPABILITY],
-    ["x-lilac-subagent-profile", process.env.LILAC_SUBAGENT_PROFILE],
-    ["x-lilac-current-turn-user-id", process.env.LILAC_CURRENT_TURN_USER_ID],
+    ["x-lilac-request-id", runtimeEnv("LILAC_REQUEST_ID")],
+    ["x-lilac-request-delivery-id", runtimeEnv("LILAC_REQUEST_DELIVERY_ID")],
+    ["x-lilac-session-id", runtimeEnv("LILAC_SESSION_ID")],
+    ["x-lilac-request-client", runtimeEnv("LILAC_REQUEST_CLIENT")],
+    ["x-lilac-cwd", runtimeCwd()],
+    ["x-lilac-tool-call-id", runtimeEnv("LILAC_TOOL_CALL_ID")],
+    ["x-lilac-control-capability", runtimeEnv("LILAC_CONTROL_CAPABILITY")],
+    ["x-lilac-subagent-profile", runtimeEnv("LILAC_SUBAGENT_PROFILE")],
+    ["x-lilac-current-turn-user-id", runtimeEnv("LILAC_CURRENT_TURN_USER_ID")],
   ] as const;
   for (const [name, value] of values) {
     if (value) headers[name] = value;
   }
-  if (operatorToken) {
-    headers["x-lilac-operator-token"] = operatorToken;
-    headers["x-lilac-request-id"] = operatorRequestId ?? "operator";
-    headers["x-lilac-tool-call-id"] = operatorRequestId ?? "operator";
+  const operator = runtimeOperator();
+  if (operator.token) {
+    headers["x-lilac-operator-token"] = operator.token;
+    headers["x-lilac-request-id"] = operator.requestId ?? "operator";
+    headers["x-lilac-tool-call-id"] = operator.requestId ?? "operator";
   }
   return headers;
 }
@@ -206,22 +266,7 @@ async function readFileText(
   operation: string,
 ): Promise<ResultType<string, BridgeExternalOperationFailed>> {
   return captureBridgeOperationAsync(
-    () => fs.readFile(filePath, "utf8"),
-    (cause) =>
-      new BridgeExternalOperationFailed({
-        cause,
-        operation,
-        message: `${operation} failed`,
-      }),
-  );
-}
-
-async function readFileBytes(
-  filePath: string,
-  operation: string,
-): Promise<ResultType<Buffer, BridgeExternalOperationFailed>> {
-  return captureBridgeOperationAsync(
-    () => fs.readFile(filePath),
+    () => Bun.file(filePath).text(),
     (cause) =>
       new BridgeExternalOperationFailed({
         cause,
@@ -232,96 +277,35 @@ async function readFileBytes(
 }
 
 async function enableOperatorMode(): Promise<ResultType<void, BridgeClientError>> {
-  const tokenPath = process.env.LILAC_OPERATOR_TOKEN_FILE || DEFAULT_OPERATOR_TOKEN_FILE;
+  const configuredTokenPath =
+    runtimeEnv("LILAC_OPERATOR_TOKEN_FILE") || DEFAULT_OPERATOR_TOKEN_FILE;
+  const tokenPath = resolve(runtimeCwd(), configuredTokenPath);
   const tokenFile = resultOutcome(await readFileText(tokenPath, "read operator token"));
   if (!tokenFile.ok) return Result.err(tokenFile.error);
   const token = tokenFile.value.trim();
   if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) {
     return Result.err(
-      new BridgeArgumentInvalid({ message: `Operator token file is malformed: ${tokenPath}` }),
+      new BridgeArgumentInvalid({
+        message: `Operator token file is malformed: ${configuredTokenPath}`,
+      }),
     );
   }
-  operatorToken = token;
-  operatorRequestId = `operator:${randomUUID()}`;
+  setRuntimeOperator(token, `operator:${crypto.randomUUID()}`);
   return Result.ok(undefined);
 }
 
-const jsonValueSchema = z.json();
-const jsonObjectSchema = z.record(z.string(), jsonValueSchema);
+function loadWireCodecs(): Promise<typeof import("./wire-codecs")> {
+  wireCodecsPromise ??= import("./wire-codecs");
+  return wireCodecsPromise;
+}
 
-const primaryPositionalSchema = z.object({
-  field: z.string().min(1),
-  variadic: z.boolean().optional(),
-});
+function preloadWireCodecs(): void {
+  void loadWireCodecs();
+}
 
-const toolOutputFullSchema = z.object({
-  callableId: z.string().min(1),
-  name: z.string(),
-  description: z.string(),
-  shortInput: z.array(z.string()),
-  input: z.array(z.string()),
-  primaryPositional: primaryPositionalSchema.optional(),
-  hidden: z.boolean().optional(),
-});
-
-const toolListItemSchema = toolOutputFullSchema.omit({ input: true });
-
-const listPayloadSchema = z.object({
-  tools: z.array(toolListItemSchema),
-});
-
-const callableIdListPayloadSchema = z.object({
-  tools: z.array(z.object({ callableId: z.string().min(1) })),
-});
-
-const errorPayloadSchema = z.object({
-  message: z.string().optional(),
-  error: jsonValueSchema.optional(),
-});
-
-const backendVersionPayloadSchema = z.object({
-  ok: z.literal(true),
-  version: z.string(),
-  commit: z.string(),
-  dirty: z.boolean().optional(),
-  builtAt: z.string().optional(),
-  plugins: z
-    .object({
-      loadedExternal: z.number().int().nonnegative(),
-    })
-    .optional(),
-});
-
-const serverToolFailureSchema: z.ZodType<ServerToolFailure> = z
-  .object({
-    kind: z.enum([
-      "usage",
-      "not_found",
-      "denied",
-      "conflict",
-      "timeout",
-      "unavailable",
-      "cancelled",
-      "internal",
-    ]),
-    code: z.string().min(1),
-    message: z.string(),
-    retryable: z.boolean(),
-    details: jsonValueSchema.optional(),
-  })
-  .strict();
-
-const toolCallPayloadSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("ok"), value: jsonValueSchema }).strict(),
-  z.object({ status: z.literal("error"), error: serverToolFailureSchema }).strict(),
-]);
-
-const onboardingGpgGenerateSchema = z.object({ fingerprint: z.string().min(1) });
-const onboardingGpgExportSchema = z.object({ publicKeyArmored: z.string().optional() });
-
-type BackendVersionInfo = z.infer<typeof backendVersionPayloadSchema>;
-
-type ToolCallPayload = z.output<typeof toolCallPayloadSchema>;
+export async function warmCliWorker(): Promise<void> {
+  await loadWireCodecs();
+}
 
 function invalidResponse(boundary: string, cause: z.ZodError): BridgeResponseInvalid {
   return new BridgeResponseInvalid({
@@ -331,63 +315,75 @@ function invalidResponse(boundary: string, cause: z.ZodError): BridgeResponseInv
   });
 }
 
-export function decodeListPayload(
+export async function decodeListPayload(
   payload: JsonValue,
-): ResultType<{ readonly tools: readonly Omit<ToolOutputFull, "input">[] }, BridgeResponseInvalid> {
+): Promise<
+  ResultType<{ readonly tools: readonly Omit<ToolOutputFull, "input">[] }, BridgeResponseInvalid>
+> {
+  const { listPayloadSchema } = await loadWireCodecs();
   const parsed = listPayloadSchema.safeParse(payload);
   if (!parsed.success) return Result.err(invalidResponse("tool list", parsed.error));
   return Result.ok(parsed.data);
 }
 
-function decodeCallableIdListPayload(
+async function decodeCallableIdListPayload(
   payload: JsonValue,
-): ResultType<readonly string[], BridgeResponseInvalid> {
+): Promise<ResultType<readonly string[], BridgeResponseInvalid>> {
+  const { callableIdListPayloadSchema } = await loadWireCodecs();
   const parsed = callableIdListPayloadSchema.safeParse(payload);
   if (!parsed.success) return Result.err(invalidResponse("callable ID list", parsed.error));
   return Result.ok(parsed.data.tools.map((item) => item.callableId));
 }
 
-export function decodeToolHelpPayload(
+export async function decodeToolHelpPayload(
   payload: JsonValue,
-): ResultType<ToolOutputFull, BridgeResponseInvalid> {
+): Promise<ResultType<ToolOutputFull, BridgeResponseInvalid>> {
+  const { toolOutputFullSchema } = await loadWireCodecs();
   const parsed = toolOutputFullSchema.safeParse(payload);
   if (!parsed.success) return Result.err(invalidResponse("tool help", parsed.error));
   return Result.ok(parsed.data);
 }
 
-export function decodeToolCallPayload(
+export async function decodeToolCallPayload(
   payload: JsonValue,
-): ResultType<ToolCallPayload, BridgeResponseInvalid> {
+): Promise<ResultType<ToolCallPayload, BridgeResponseInvalid>> {
+  const { toolCallPayloadSchema } = await loadWireCodecs();
   const parsed = toolCallPayloadSchema.safeParse(payload);
   if (!parsed.success) return Result.err(invalidResponse("tool call", parsed.error));
   return Result.ok(parsed.data);
 }
 
-export function decodeBackendVersionPayload(
+export async function decodeBackendVersionPayload(
   payload: JsonValue,
-): ResultType<BackendVersionInfo, BridgeResponseInvalid> {
+): Promise<ResultType<BackendVersionInfo, BridgeResponseInvalid>> {
+  const { backendVersionPayloadSchema } = await loadWireCodecs();
   const parsed = backendVersionPayloadSchema.safeParse(payload);
   if (!parsed.success) return Result.err(invalidResponse("version", parsed.error));
   return Result.ok(parsed.data);
 }
 
-function decodeOnboardingGpgGenerate(
+async function decodeOnboardingGpgGenerate(
   payload: JsonValue,
-): ResultType<z.output<typeof onboardingGpgGenerateSchema>, BridgeResponseInvalid> {
+): Promise<ResultType<{ fingerprint: string }, BridgeResponseInvalid>> {
+  const { onboardingGpgGenerateSchema } = await loadWireCodecs();
   const parsed = onboardingGpgGenerateSchema.safeParse(payload);
   if (!parsed.success) return Result.err(invalidResponse("GPG generation", parsed.error));
   return Result.ok(parsed.data);
 }
 
-function decodeOnboardingGpgExport(
+async function decodeOnboardingGpgExport(
   payload: JsonValue,
-): ResultType<z.output<typeof onboardingGpgExportSchema>, BridgeResponseInvalid> {
+): Promise<ResultType<{ publicKeyArmored?: string }, BridgeResponseInvalid>> {
+  const { onboardingGpgExportSchema } = await loadWireCodecs();
   const parsed = onboardingGpgExportSchema.safeParse(payload);
   if (!parsed.success) return Result.err(invalidResponse("GPG export", parsed.error));
   return Result.ok(parsed.data);
 }
 
-function decodeJsonText(raw: string, source: string): ResultType<JsonValue, BridgeJsonInvalid> {
+async function decodeJsonText(
+  raw: string,
+  source: string,
+): Promise<ResultType<JsonValue, BridgeJsonInvalid>> {
   const parsed = resultOutcome(
     Result.try({
       try: () => JSON.parse(raw),
@@ -396,6 +392,7 @@ function decodeJsonText(raw: string, source: string): ResultType<JsonValue, Brid
     }),
   );
   if (!parsed.ok) return Result.err(parsed.error);
+  const { jsonValueSchema } = await loadWireCodecs();
   const decoded = jsonValueSchema.safeParse(parsed.value);
   if (!decoded.success) {
     return Result.err(
@@ -409,10 +406,11 @@ function decodeJsonText(raw: string, source: string): ResultType<JsonValue, Brid
   return Result.ok(decoded.data);
 }
 
-function decodeJsonObject(
+async function decodeJsonObject(
   value: JsonValue,
   source: string,
-): ResultType<JsonObject, BridgeArgumentInvalid> {
+): Promise<ResultType<JsonObject, BridgeArgumentInvalid>> {
+  const { jsonObjectSchema } = await loadWireCodecs();
   const parsed = jsonObjectSchema.safeParse(value);
   if (!parsed.success) {
     return Result.err(new BridgeArgumentInvalid({ message: `${source} must be a JSON object` }));
@@ -425,10 +423,18 @@ async function fetchRequest(
   operation: string,
   init?: RequestInit,
 ): Promise<ResultType<Response, BridgeExternalOperationFailed | BridgeRequestCancelled>> {
-  const request = new Request(input, init);
+  const invocationSignal = runtimeSignal();
+  const signal =
+    init?.signal && invocationSignal
+      ? AbortSignal.any([init.signal, invocationSignal])
+      : (init?.signal ?? invocationSignal);
+  const request = new Request(input, { ...init, ...(signal ? { signal } : {}) });
   Reflect.set(request, "timeout", false);
+  const unix = runtimeEnv("TOOL_SERVER_BACKEND_URL")
+    ? undefined
+    : runtimeEnv("TOOL_SERVER_BACKEND_SOCKET");
   return captureBridgeOperationAsync(
-    () => fetch(request),
+    () => fetch(request, unix ? { unix } : undefined),
     (cause) => {
       if (request.signal.aborted) {
         return new BridgeRequestCancelled({
@@ -464,30 +470,21 @@ async function fetchWithTimeout(
 }
 
 async function listCallableIdsBestEffort(): Promise<string[]> {
-  if (callableIdsCache !== undefined) return callableIdsCache;
-
-  const response = await fetchRequest(`${BACKEND_URL}/list`, "fetch tools list", {
+  const response = await fetchRequest(`${backendUrl()}/list`, "fetch tools list", {
     headers: lilacRequestHeaders(),
   });
   const res = response.match({ ok: (value) => value, err: () => undefined });
-  if (!res?.ok) {
-    callableIdsCache = [];
-    return callableIdsCache;
-  }
+  if (!res?.ok) return [];
 
   const payload = (await readResponseJson(res, "tool list")).match({
     ok: (value) => value,
     err: () => undefined,
   });
-  if (payload === undefined) {
-    callableIdsCache = [];
-    return callableIdsCache;
-  }
-  callableIdsCache = decodeCallableIdListPayload(payload).match({
+  if (payload === undefined) return [];
+  return (await decodeCallableIdListPayload(payload)).match({
     ok: (value) => [...value],
     err: () => [],
   });
-  return callableIdsCache;
 }
 
 function maybeString(value: JsonValue | undefined): string | undefined {
@@ -496,10 +493,11 @@ function maybeString(value: JsonValue | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function extractErrorMessage(payload: JsonValue): string | undefined {
+async function extractErrorMessage(payload: JsonValue): Promise<string | undefined> {
   const asString = maybeString(payload);
   if (asString) return asString;
 
+  const { errorPayloadSchema } = await loadWireCodecs();
   const parsed = errorPayloadSchema.safeParse(payload);
   if (!parsed.success) return undefined;
 
@@ -508,7 +506,7 @@ function extractErrorMessage(payload: JsonValue): string | undefined {
 
   const errorValue = parsed.data.error;
   if (errorValue === undefined) return undefined;
-  const nested = extractErrorMessage(errorValue);
+  const nested = await extractErrorMessage(errorValue);
   if (nested) return nested;
 
   return undefined;
@@ -536,7 +534,7 @@ async function readResponseJson(
   const text = await readResponseText(response, `read ${boundary} response`);
   const outcome = resultOutcome(text);
   return outcome.ok
-    ? decodeJsonText(outcome.value, `${boundary} response`)
+    ? await decodeJsonText(outcome.value, `${boundary} response`)
     : Result.err(outcome.error);
 }
 
@@ -547,10 +545,14 @@ async function readHttpErrorMessage(res: Response): Promise<string | undefined> 
   });
   if (!body) return undefined;
 
-  return decodeJsonText(body, "backend error response").match({
-    ok: (payload) => extractErrorMessage(payload),
-    err: () => body,
+  const decoded = (await decodeJsonText(body, "backend error response")).match<
+    { readonly payload: JsonValue } | { readonly fallback: string }
+  >({
+    ok: (payload) => ({ payload }),
+    err: () => ({ fallback: body }),
   });
+  if ("fallback" in decoded) return decoded.fallback;
+  return await extractErrorMessage(decoded.payload);
 }
 
 function formatHttpStatus(res: Response): string {
@@ -670,7 +672,7 @@ async function listTools(): Promise<
   ResultType<{ readonly tools: readonly Omit<ToolOutputFull, "input">[] }, BridgeClientError>
 > {
   const fetched = resultOutcome(
-    await fetchRequest(`${BACKEND_URL}/list`, "fetch tools list", {
+    await fetchRequest(`${backendUrl()}/list`, "fetch tools list", {
       headers: lilacRequestHeaders(),
     }),
   );
@@ -688,34 +690,37 @@ async function listTools(): Promise<
   }
   const payload = resultOutcome(await readResponseJson(res, "tool list"));
   if (!payload.ok) return Result.err(payload.error);
-  return decodeListPayload(payload.value);
+  return await decodeListPayload(payload.value);
 }
 
 async function getBackendVersionInfoBestEffort(): Promise<BackendVersionInfo | null> {
-  backendVersionInfoPromise ??= (async () => {
-    const response = (
-      await fetchWithTimeout(`${BACKEND_URL}/versionz`, VERSION_FETCH_TIMEOUT_MS)
-    ).match({ ok: (value) => value, err: () => undefined });
-    if (!response?.ok) return null;
+  const response = (
+    await fetchWithTimeout(`${backendUrl()}/versionz`, VERSION_FETCH_TIMEOUT_MS)
+  ).match({ ok: (value) => value, err: () => undefined });
+  if (!response?.ok) return null;
 
-    const payload = (await readResponseJson(response, "version")).match({
-      ok: (value) => value,
-      err: () => undefined,
-    });
-    if (payload === undefined) return null;
-    return decodeBackendVersionPayload(payload).match({ ok: (value) => value, err: () => null });
-  })();
-
-  return await backendVersionInfoPromise;
+  const payload = (await readResponseJson(response, "version")).match({
+    ok: (value) => value,
+    err: () => undefined,
+  });
+  if (payload === undefined) return null;
+  return (await decodeBackendVersionPayload(payload)).match({
+    ok: (value) => value,
+    err: () => null,
+  });
 }
 
 async function toolHelp(
   callableId: string,
 ): Promise<ResultType<ToolOutputFull, BridgeClientError>> {
   const fetched = resultOutcome(
-    await fetchRequest(`${BACKEND_URL}/help/${encodeURIComponent(callableId)}`, "fetch tool help", {
-      headers: lilacRequestHeaders(),
-    }),
+    await fetchRequest(
+      `${backendUrl()}/help/${encodeURIComponent(callableId)}`,
+      "fetch tool help",
+      {
+        headers: lilacRequestHeaders(),
+      },
+    ),
   );
   if (!fetched.ok) return Result.err(fetched.error);
   const res = fetched.value;
@@ -736,7 +741,7 @@ async function toolHelp(
   }
   const payload = resultOutcome(await readResponseJson(res, "tool help"));
   if (!payload.ok) return Result.err(payload.error);
-  return decodeToolHelpPayload(payload.value);
+  return await decodeToolHelpPayload(payload.value);
 }
 
 async function callTool(
@@ -746,7 +751,7 @@ async function callTool(
   const headers = lilacRequestHeaders(true);
 
   const fetched = resultOutcome(
-    await fetchRequest(`${BACKEND_URL}/call`, "call tool", {
+    await fetchRequest(`${backendUrl()}/call`, "call tool", {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -774,7 +779,7 @@ async function callTool(
   }
   const payload = resultOutcome(await readResponseJson(res, "tool call"));
   if (!payload.ok) return Result.err(payload.error);
-  return decodeToolCallPayload(payload.value);
+  return await decodeToolCallPayload(payload.value);
 }
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -838,22 +843,22 @@ function wrapText(text: string, width: number): string[] {
 
 function termWidth() {
   // Keep a reasonable lower bound for wrapping.
-  return Math.max(60, process.stdout.columns ?? 80);
+  return Math.max(60, runtimeStdoutColumns() ?? 80);
 }
 
 function useColor() {
-  if (!process.stdout.isTTY) return false;
-  if (process.env.NO_COLOR !== undefined) return false;
-  if (process.env.TERM === "dumb") return false;
+  if (!runtimeStdoutIsTTY()) return false;
+  if (runtimeEnv("NO_COLOR") !== undefined) return false;
+  if (runtimeEnv("TERM") === "dumb") return false;
   return true;
 }
 
 type StyleFn = (s: string) => string;
-function createStyles(enabled: boolean) {
+function createStyles() {
   const wrap =
     (open: string, close = "\x1b[0m") =>
     (s: string) =>
-      enabled ? `${open}${s}${close}` : s;
+      useColor() ? `${open}${s}${close}` : s;
 
   return {
     dim: wrap("\x1b[2m"),
@@ -864,7 +869,7 @@ function createStyles(enabled: boolean) {
   } satisfies Record<string, StyleFn>;
 }
 
-const styles = createStyles(useColor());
+const styles = createStyles();
 
 function section(title: string, lines: string[]) {
   const hdr = styles.bold(title);
@@ -872,38 +877,13 @@ function section(title: string, lines: string[]) {
   return [hdr, ...body].join("\n");
 }
 
-async function isFile(filePath: string): Promise<boolean> {
-  const inspected = await captureBridgeOperationAsync(
-    () => fs.stat(filePath),
-    (cause) => cause,
-  );
-  return inspected.match({ ok: (value) => value.isFile(), err: () => false });
-}
-
-async function sha256HexPrefix(
-  filePath: string,
-  length = BUILD_ID_LENGTH,
-): Promise<ResultType<string, BridgeExternalOperationFailed>> {
-  const bytes = await readFileBytes(filePath, "read tool bridge build artifact");
-  return bytes.map((value) => createHash("sha256").update(value).digest("hex").slice(0, length));
-}
-
-export async function resolveBuildId(currentFile = CURRENT_FILE): Promise<string> {
-  const normalizedCurrent = normalizePathCandidate(currentFile, process.cwd()) ?? currentFile;
-  if (!normalizedCurrent) return DEV_BUILD_ID;
-
-  const currentBase = basename(normalizedCurrent);
+export async function resolveBuildId(
+  currentFile = CURRENT_FILE,
+  inlineBuildId = INLINE_BUILD_ID,
+): Promise<string> {
+  const currentBase = basename(currentFile);
   if (currentBase === "client.ts") return DEV_BUILD_ID;
-
-  const artifactPath =
-    currentBase === "client.js"
-      ? normalizedCurrent
-      : resolve(dirname(normalizedCurrent), "client.js");
-
-  if (!(await isFile(artifactPath))) return DEV_BUILD_ID;
-
-  const buildId = await sha256HexPrefix(artifactPath);
-  return buildId.match({ ok: (value) => value, err: () => DEV_BUILD_ID });
+  return inlineBuildId ?? DEV_BUILD_ID;
 }
 
 async function getBuildId(): Promise<string> {
@@ -912,10 +892,10 @@ async function getBuildId(): Promise<string> {
 }
 
 async function getLocalVersionInfo(): Promise<LocalVersionInfo> {
-  localVersionInfoPromise ??= (async () => ({
-    ...getBuildInfo({ cwd: MODULE_DIR }),
+  localVersionInfoPromise ??= Promise.resolve({
+    ...INLINE_BUILD_INFO,
     build: await getBuildId(),
-  }))();
+  });
 
   return await localVersionInfoPromise;
 }
@@ -1081,6 +1061,10 @@ async function main(): Promise<ResultType<void, BridgeClientError>> {
   const parsedCommand = resultOutcome(parseArgs(globalArgs.args));
   if (!parsedCommand.ok) return Result.err(parsedCommand.error);
   const command = parsedCommand.value;
+  const isStaticHelp =
+    command.type === "help" &&
+    (command.callableId === undefined || command.callableId === "onboard");
+  if (!isStaticHelp && command.type !== "unknown") preloadWireCodecs();
 
   if (
     globalArgs.operator &&
@@ -1094,11 +1078,11 @@ async function main(): Promise<ResultType<void, BridgeClientError>> {
 
   switch (command.type) {
     case "version":
-      console.log(await versionBanner());
+      writeLine(await versionBanner());
       return Result.ok(undefined);
     case "help": {
       if (command.callableId === "onboard") {
-        console.log(
+        writeLine(
           [
             await banner(),
             "",
@@ -1132,7 +1116,7 @@ async function main(): Promise<ResultType<void, BridgeClientError>> {
         const helped = resultOutcome(await toolHelp(command.callableId));
         if (!helped.ok) return Result.err(helped.error);
         const tool = helped.value;
-        console.log(
+        writeLine(
           [
             await banner(),
             "",
@@ -1148,7 +1132,7 @@ async function main(): Promise<ResultType<void, BridgeClientError>> {
         return Result.ok(undefined);
       }
 
-      console.log(
+      writeLine(
         [
           await banner(),
           "",
@@ -1191,7 +1175,7 @@ async function main(): Promise<ResultType<void, BridgeClientError>> {
           section(
             "Environment",
             formatBullets([
-              `TOOL_SERVER_BACKEND_URL (default: ${BACKEND_URL})`,
+              `TOOL_SERVER_BACKEND_URL (default: ${DEFAULT_BACKEND_URL})`,
               `LILAC_OPERATOR_TOKEN_FILE (default: ${DEFAULT_OPERATOR_TOKEN_FILE})`,
               "NO_COLOR disables ANSI formatting",
             ]),
@@ -1210,7 +1194,7 @@ async function main(): Promise<ResultType<void, BridgeClientError>> {
         28,
         Math.max(10, ...visibleTools.map((tool) => tool.callableId.length)),
       );
-      console.log(
+      writeLine(
         [
           await banner(),
           "",
@@ -1235,7 +1219,7 @@ async function main(): Promise<ResultType<void, BridgeClientError>> {
         command.fieldInputs.length > 0 ||
         command.jsonFieldInputs.length > 0 ||
         command.positionalArgs.length > 0;
-      if (!command.usesStdin && !hasAnyInputFlags && process.stdin.isTTY === false) {
+      if (!command.usesStdin && !hasAnyInputFlags && runtimeStdinIsTTY() === false) {
         return Result.err(
           new BridgeArgumentInvalid({
             message:
@@ -1259,7 +1243,7 @@ async function main(): Promise<ResultType<void, BridgeClientError>> {
           if (called.status === "error") {
             return Result.err(called.error);
           }
-          console.log(
+          writeLine(
             JSON.stringify(
               called.value,
               null,
@@ -1277,7 +1261,7 @@ async function main(): Promise<ResultType<void, BridgeClientError>> {
         () => ResultType<void, BridgeClientError>
       >({
         ok: (onboarded) => () => {
-          console.log(
+          writeLine(
             JSON.stringify(onboarded, null, command.outputMode === "json-pretty" ? 2 : undefined),
           );
           return Result.ok(undefined);
@@ -1321,7 +1305,7 @@ type ParsedArgs =
     }
   | { type: "unknown" };
 
-export function parseGlobalArgs(args = process.argv.slice(2)): {
+export function parseGlobalArgs(args = runtimeArgs()): {
   args: string[];
   operator: boolean;
 } {
@@ -1343,9 +1327,7 @@ function argumentError(message: string): ResultType<never, BridgeArgumentInvalid
   return Result.err(new BridgeArgumentInvalid({ message }));
 }
 
-export function parseArgs(
-  args = process.argv.slice(2),
-): ResultType<ParsedArgs, BridgeArgumentInvalid> {
+export function parseArgs(args = runtimeArgs()): ResultType<ParsedArgs, BridgeArgumentInvalid> {
   {
     const firstArg = args[0];
 
@@ -1714,7 +1696,7 @@ export async function buildToolInput(
   return Result.ok(input);
 }
 
-type PromptInterface = ReturnType<typeof createInterface>;
+type PromptInterface = import("node:readline/promises").Interface;
 
 type OnboardingOutput = {
   readonly ok: true;
@@ -1732,9 +1714,23 @@ type OnboardingOutput = {
   readonly gitTest: JsonValue;
 };
 
-function openPromptInterface(): ResultType<PromptInterface, BridgeExternalOperationFailed> {
-  return captureBridgeOperation(
-    () => createInterface({ input: process.stdin, output: process.stderr }),
+async function openPromptInterface(): Promise<
+  ResultType<PromptInterface, BridgeExternalOperationFailed>
+> {
+  if (hasCapturedInvocation()) {
+    return Result.err(
+      new BridgeExternalOperationFailed({
+        cause: new Error("Interactive prompts are unavailable through the resident worker"),
+        operation: "open onboarding prompt",
+        message: "Interactive onboarding must run in the foreground",
+      }),
+    );
+  }
+  return await captureBridgeOperationAsync(
+    async () => {
+      const { createInterface } = await import("node:readline/promises");
+      return createInterface({ input: process.stdin, output: process.stderr });
+    },
     (cause) =>
       new BridgeExternalOperationFailed({
         cause,
@@ -1855,7 +1851,7 @@ async function runOnboardingOperation(
       ),
     );
     if (!generated.ok) return Result.err(generated.error);
-    const decodedGenerate = resultOutcome(decodeOnboardingGpgGenerate(generated.value));
+    const decodedGenerate = resultOutcome(await decodeOnboardingGpgGenerate(generated.value));
     if (!decodedGenerate.ok) return Result.err(decodedGenerate.error);
     fingerprint = decodedGenerate.value.fingerprint;
 
@@ -1869,7 +1865,7 @@ async function runOnboardingOperation(
       ),
     );
     if (!exported.ok) return Result.err(exported.error);
-    const decodedExport = resultOutcome(decodeOnboardingGpgExport(exported.value));
+    const decodedExport = resultOutcome(await decodeOnboardingGpgExport(exported.value));
     if (!decodedExport.ok) return Result.err(decodedExport.error);
     publicKeyArmored = decodedExport.value.publicKeyArmored;
   }
@@ -1925,15 +1921,15 @@ async function runOnboardingWizard(
   const needsTty =
     !parsed.yes &&
     (parsed.userName === undefined || parsed.userEmail === undefined || parsed.sign === undefined);
-  if (needsTty && process.stdin.isTTY === false) {
+  if (needsTty && runtimeStdinIsTTY() === false) {
     return argumentError(
       "tools onboard requires a TTY for prompts. Use --yes with optional --name/--email/--sign flags for non-interactive use.",
     );
   }
 
   let prompt: PromptInterface | null = null;
-  if (process.stdin.isTTY) {
-    const opened = resultOutcome(openPromptInterface());
+  if (runtimeStdinIsTTY()) {
+    const opened = resultOutcome(await openPromptInterface());
     if (!opened.ok) return Result.err(opened.error);
     prompt = opened.value;
   }
@@ -1963,7 +1959,7 @@ function parseJsonSource(value: string): ResultType<JsonSource, BridgeArgumentIn
     if (!p) {
       return argumentError("Invalid JSON source '@' (expected @file.json or @-)");
     }
-    return Result.ok({ kind: "file", path: resolve(expandTilde(p)) });
+    return Result.ok({ kind: "file", path: resolve(runtimeCwd(), expandTilde(p)) });
   }
 
   if (value.length === 0) {
@@ -1979,7 +1975,7 @@ async function readJsonObjectSource(
 ): Promise<ResultType<JsonObject, BridgeClientError>> {
   const value = await readJsonSource(source, label);
   const outcome = resultOutcome(value);
-  return outcome.ok ? decodeJsonObject(outcome.value, label) : Result.err(outcome.error);
+  return outcome.ok ? await decodeJsonObject(outcome.value, label) : Result.err(outcome.error);
 }
 
 async function readJsonSource(
@@ -2005,18 +2001,12 @@ async function readJsonSource(
     return argumentError(`${label} is empty`);
   }
 
-  return decodeJsonText(trimmed, label);
+  return await decodeJsonText(trimmed, label);
 }
 
 async function readStdinText(): Promise<ResultType<string, BridgeExternalOperationFailed>> {
   return captureBridgeOperationAsync(
-    async () => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of process.stdin) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      return Buffer.concat(chunks).toString("utf8");
-    },
+    readRuntimeStdin,
     (cause) =>
       new BridgeExternalOperationFailed({
         cause,
@@ -2051,9 +2041,10 @@ function looksLikeBase64(value: string) {
 }
 
 function expandTilde(value: string) {
-  if (value === "~") return homedir();
-  if (value.startsWith("~/")) return `${homedir()}/${value.slice(2)}`;
-  if (value.startsWith("~\\")) return `${homedir()}\\${value.slice(2)}`;
+  const home = runtimeEnv("HOME") || homedir();
+  if (value === "~") return home;
+  if (value.startsWith("~/")) return `${home}/${value.slice(2)}`;
+  if (value.startsWith("~\\")) return `${home}\\${value.slice(2)}`;
   return value;
 }
 
@@ -2071,7 +2062,7 @@ function normalizeMaybePath(field: string, value: string) {
   const shouldNormalize = isPathField || (looksLikePath(value) && value.length <= 512);
 
   if (!shouldNormalize) return value;
-  return resolve(expandTilde(value));
+  return resolve(runtimeCwd(), expandTilde(value));
 }
 
 function kebabToCamelCase(input: string): string {
@@ -2081,40 +2072,6 @@ function kebabToCamelCase(input: string): string {
 
 function camelToKebabCase(input: string): string {
   return input.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
-}
-
-function normalizePathCandidate(candidate: string | undefined, cwd: string): string | undefined {
-  if (!candidate) return undefined;
-
-  const resolved = resolve(cwd, candidate);
-  const normalized = captureBridgeOperation(
-    () => realpathSync.native(resolved),
-    (cause) => cause,
-  );
-  return normalized.match({ ok: (value) => value, err: () => resolved });
-}
-
-export function isMainModule(args = process.argv, cwd = process.cwd(), currentFile = CURRENT_FILE) {
-  const normalizedCurrent = normalizePathCandidate(currentFile, cwd);
-  const normalizedArgv1 = normalizePathCandidate(args[1], cwd);
-
-  if (!normalizedCurrent || !normalizedArgv1) return false;
-  if (normalizedCurrent === normalizedArgv1) return true;
-
-  const currentBase = basename(normalizedCurrent);
-  const argvBase = basename(normalizedArgv1);
-  const isClientModule = currentBase === "client.js" || currentBase === "client.ts";
-  const isGeneratedWrapper = argvBase === "index.js" || argvBase === "index.ts";
-
-  if (
-    isClientModule &&
-    isGeneratedWrapper &&
-    dirname(normalizedCurrent) === dirname(normalizedArgv1)
-  ) {
-    return true;
-  }
-
-  return false;
 }
 
 function failure(
@@ -2136,11 +2093,12 @@ function isTimeoutCause(cause: unknown): boolean {
   );
 }
 
-function projectBridgeFailure(error: BridgeClientError): ServerToolFailure {
+async function projectBridgeFailure(error: BridgeClientError): Promise<ServerToolFailure> {
+  const { serverToolFailureSchema } = await loadWireCodecs();
   const serverFailure = serverToolFailureSchema.safeParse(error);
   if (serverFailure.success) return serverFailure.data;
   if (error instanceof BridgeOperationAndCleanupFailed) {
-    return projectBridgeFailure(error.operationError);
+    return await projectBridgeFailure(error.operationError);
   }
   if (error instanceof BridgeArgumentInvalid) {
     return failure("usage", "bridge_usage", error.message, false);
@@ -2195,25 +2153,32 @@ function outputModeFromArgs(args: readonly string[]): OutputMode {
 }
 
 function reportFailure(error: ServerToolFailure, outputMode: OutputMode): void {
-  process.stderr.write(
+  writeRuntimeStderr(
     `${JSON.stringify(
       { status: "error", error },
       null,
       outputMode === "json-pretty" ? 2 : undefined,
     )}\n`,
   );
-  process.exitCode = serverToolExitCode[error.kind];
+  setRuntimeExitCode(serverToolExitCode[error.kind]);
 }
 
-function reportMainResult(
+async function reportProjectedFailure(
+  error: BridgeClientError,
+  outputMode: OutputMode,
+): Promise<void> {
+  reportFailure(await projectBridgeFailure(error), outputMode);
+}
+
+async function reportMainResult(
   result: ResultType<void, BridgeClientError>,
   outputMode: OutputMode,
-): void {
-  const report = result.match<() => void>({
-    ok: () => () => undefined,
-    err: (error) => () => reportFailure(projectBridgeFailure(error), outputMode),
+): Promise<void> {
+  const report = result.match<() => Promise<void>>({
+    ok: () => async () => undefined,
+    err: (error) => () => reportProjectedFailure(error, outputMode),
   });
-  report();
+  await report();
 }
 
 export function reportMainDefect(_cause: unknown, outputMode: OutputMode = "json"): void {
@@ -2223,24 +2188,33 @@ export function reportMainDefect(_cause: unknown, outputMode: OutputMode = "json
   );
 }
 
-async function runMainEntrypoint(): Promise<void> {
+export async function runMainEntrypoint(): Promise<void> {
   const outputMode = outputModeFromArgs(parseGlobalArgs().args);
   const result = await Result.tryPromise({
     try: main,
     catch: captureBridgeFailure,
   });
-  const report = result.match<() => void>({
+  const report = result.match<() => Promise<void>>({
     ok: (value) => () => reportMainResult(value, outputMode),
-    err: (failure) => () =>
+    err: (failure) => async () =>
       reportMainDefect(failure.kind === "panic" ? failure.panic : failure.cause, outputMode),
   });
-  report();
+  await report();
+}
+
+export async function runCapturedCliInvocation(
+  request: CliInvocationRequest,
+  signal: AbortSignal,
+): Promise<CliInvocationResponse> {
+  return await captureCliInvocation(request, signal, runMainEntrypoint);
 }
 
 function startMain(): void {
   void runMainEntrypoint();
 }
 
-if (isMainModule()) {
+const shouldAutoStart =
+  typeof __LILAC_TOOL_AUTOSTART__ === "boolean" ? __LILAC_TOOL_AUTOSTART__ : import.meta.main;
+if (shouldAutoStart) {
   startMain();
 }

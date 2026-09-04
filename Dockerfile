@@ -108,6 +108,8 @@ RUN case "$CONTAINER_UID" in \
   && [ "$(id -G "$LILAC_USER")" = "$CONTAINER_UID" ]
 ENV HOME=/home/${LILAC_USER}
 ENV DATA_DIR=/data
+ENV TOOL_SERVER_BACKEND_SOCKET=/run/lilac/tool-server/server.sock
+ENV LILAC_TOOL_WORKER_DIR=/run/lilac/tool-worker
 ENV LILAC_WORKSPACE_DIR=${DATA_DIR}/workspace
 ENV GIT_CONFIG_GLOBAL=${DATA_DIR}/.gitconfig
 ENV GNUPGHOME=${DATA_DIR}/secret/gnupg
@@ -181,20 +183,35 @@ COPY bunfig.toml tsconfig.json ./
 COPY apps ./apps
 COPY packages ./packages
 
-# Build client bundles
+# Go is needed only to compile the small tools launcher. Keep the toolchain out
+# of the runtime image.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends golang-go \
+  && rm -rf /var/lib/apt/lists/*
+
+ARG LILAC_BUILD_VERSION=dev
+ARG LILAC_BUILD_COMMIT=dev
+ARG LILAC_BUILD_DIRTY=false
+ARG LILAC_BUILD_AT=
+
+# Build the client bundles and tools executable
 RUN (cd apps/tool-bridge && bun run build)
 RUN (cd apps/core && bun run build:remote-runner)
 RUN (cd packages/remote-fs-runner && bun run build)
 
-# Keep the operator CLI outside the lilac-writable application build tree.
-RUN install -d -o root -g root -m 0755 /usr/local/libexec/lilac-tool-bridge \
-  && install -o root -g root -m 0755 \
-       /app/apps/tool-bridge/dist/index.js \
-       /usr/local/libexec/lilac-tool-bridge/index.js \
-  && install -o root -g root -m 0644 \
-       /app/apps/tool-bridge/dist/client.js \
-       /usr/local/libexec/lilac-tool-bridge/client.js \
-  && ln -s /usr/local/libexec/lilac-tool-bridge/index.js /usr/local/bin/tools
+############################
+# Stage 4: runtime
+############################
+
+FROM deps AS runtime
+WORKDIR /app
+COPY --from=build /app/bunfig.toml /app/tsconfig.json ./
+COPY --from=build /app/apps ./apps
+COPY --from=build /app/packages ./packages
+
+# Keep the launcher and resident worker outside the lilac-writable application build tree.
+COPY --from=build --chmod=0755 /app/apps/tool-bridge/dist/tools /usr/local/bin/tools
+COPY --from=build --chmod=0755 /app/apps/tool-bridge/dist/tools-worker /usr/local/bin/tools-worker
 
 COPY --chmod=0755 docker/direct-entrypoint.sh /usr/local/sbin/lilac-entrypoint
 COPY docker/create-operator-token.mjs /usr/local/libexec/create-operator-token.mjs
@@ -206,11 +223,11 @@ RUN writable_path="$(find /app ! -type l -perm /022 -print -quit)" \
        exit 1; \
      fi
 
+# Keep Core's runtime metadata file aligned with the values embedded in the tool bridge.
 ARG LILAC_BUILD_VERSION=dev
 ARG LILAC_BUILD_COMMIT=dev
 ARG LILAC_BUILD_DIRTY=false
 ARG LILAC_BUILD_AT=
-# Generate build metadata last so metadata-only changes create one tiny layer.
 RUN mkdir -p /app/build && BUILD_AT_FRAGMENT="" && if [ -n "$LILAC_BUILD_AT" ]; then BUILD_AT_FRAGMENT=$(printf ',\n  "builtAt": "%s"' "$LILAC_BUILD_AT"); fi && printf '{\n  "version": "%s",\n  "commit": "%s",\n  "dirty": %s%s\n}\n' "$LILAC_BUILD_VERSION" "$LILAC_BUILD_COMMIT" "$LILAC_BUILD_DIRTY" "$BUILD_AT_FRAGMENT" > /app/build/build-info.json
 
 STOPSIGNAL SIGTERM
