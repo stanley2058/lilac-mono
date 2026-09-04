@@ -974,8 +974,7 @@ export class Onboarding implements ServerTool {
       }),
       "onboarding.reload_tools": callable({
         name: "Onboarding Reload Tools",
-        description:
-          "Reload tool instances (calls POST /reload on the local tool server). Hidden by default.",
+        description: "Reload tool instances. Hidden by default.",
         inputSchema: z.object({}),
         validation: "zod",
         hidden: true,
@@ -2028,22 +2027,6 @@ export class Onboarding implements ServerTool {
         }
 
         if (callableId === "onboarding.reload_tools") {
-          const port = Number(env.toolServer.port ?? 8080);
-          const res = yield* Result.await(
-            captureOperation(() =>
-              this.dependencies.fetch(`http://127.0.0.1:${port}/reload`, {
-                method: "POST",
-              }),
-            ),
-          );
-          if (!res.ok) {
-            return Result.err(
-              onboardingFailure(
-                "unavailable",
-                `POST /reload failed: ${res.status} ${res.statusText}`,
-              ),
-            );
-          }
           return Result.ok({ ok: true as const });
         }
 

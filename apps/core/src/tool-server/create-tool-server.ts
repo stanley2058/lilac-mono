@@ -25,8 +25,6 @@ import {
   type ServerToolListResult,
   type ServerToolResult,
   type ToolPluginCleanupError,
-  type ToolPluginCapabilityError,
-  type ToolPluginInvocationError,
   type ToolPluginManagerError,
   type ToolPluginStatus,
 } from "@stanley2058/lilac-plugin-runtime";
@@ -65,7 +63,6 @@ type ToolPluginManagerLike = {
   init(): Promise<Result<void, ToolPluginManagerError>>;
   destroy(): Promise<Result<void, ToolPluginCleanupError>>;
   reload(): Promise<Result<void, ToolPluginManagerError>>;
-  ensureFresh(): Promise<Result<void, ToolPluginManagerError>>;
   getLevel2Tools(): readonly ServerTool[];
   getLevel2ContributionInfo?(): ReadonlyMap<ServerTool, Level2ContributionInfo>;
   getLevel2Capabilities?(): ReadonlyMap<ServerTool, ServerToolCapabilitySnapshot>;
@@ -394,6 +391,7 @@ export type ToolServerOptions = {
 };
 
 const DEFAULT_TOOL_CALL_TIMEOUT_MS = 5 * 60 * 1000;
+const SERVER_OWNED_RELOAD_CALLABLE_ID = "onboarding.reload_tools";
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 
 function adaptResultToHost<T, E>(result: ResultType<T, E>, toError: (error: E) => unknown): T {
@@ -456,15 +454,6 @@ function adaptPluginLifecycleResultToHost(
   adaptResultToHost(result, (error) => {
     const formatted = formatTaggedErrorForLog(error);
     return new Error(`Tool plugin ${operation} failed: ${formatted.errorMessage}`);
-  });
-}
-
-function adaptPluginListResultToElysia(
-  result: ResultType<ServerToolListResult, ToolPluginInvocationError | ToolPluginCapabilityError>,
-): ServerToolListResult {
-  return adaptResultToHost(result, (error) => {
-    const formatted = formatTaggedErrorForLog(error);
-    return new Error(`Tool plugin level2.list failed: ${formatted.errorMessage}`);
   });
 }
 
@@ -632,6 +621,10 @@ export function createToolServer(options: ToolServerOptions) {
 
   let callMapping = new Map<string, ServerTool>();
   let level2ContributionMapping = new Map<string, Level2ContributionInfo>();
+  let toolCatalog: ServerToolListResult = [];
+  let toolReloadBarrier: Promise<void> | null = null;
+  let activeToolCallLeases = 0;
+  let toolCallsDrained: ReturnType<typeof Promise.withResolvers<void>> | null = null;
   const healthState = createToolServerHealthState({
     logger,
     pluginManager: options.pluginManager,
@@ -654,7 +647,7 @@ export function createToolServer(options: ToolServerOptions) {
   }
 
   async function requirePluginLifecycle(
-    operation: "init" | "reload" | "ensureFresh",
+    operation: "init" | "reload",
     run: () => Promise<Result<void, ToolPluginManagerError>>,
   ): Promise<ResultType<void, ToolPluginManagerError>> {
     const result = await run();
@@ -729,19 +722,55 @@ export function createToolServer(options: ToolServerOptions) {
 
   async function getActiveTools(): Promise<readonly ServerTool[]> {
     const pluginManager = options.pluginManager;
-    if (pluginManager) {
-      adaptPluginLifecycleResultToHost(
-        "ensureFresh",
-        await requirePluginLifecycle("ensureFresh", () => pluginManager.ensureFresh()),
-      );
-      return pluginManager.getLevel2Tools();
-    }
+    if (pluginManager) return pluginManager.getLevel2Tools();
     return staticTools;
+  }
+
+  async function acquireToolCallLease() {
+    while (toolReloadBarrier) await toolReloadBarrier;
+    activeToolCallLeases++;
+    let transferred = false;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      activeToolCallLeases--;
+      if (activeToolCallLeases !== 0 || !toolCallsDrained) return;
+      const drained = toolCallsDrained;
+      toolCallsDrained = null;
+      drained.resolve();
+    };
+    return {
+      transfer() {
+        transferred = true;
+      },
+      release,
+      [Symbol.dispose]() {
+        if (!transferred) release();
+      },
+    };
+  }
+
+  async function acquireToolReloadLease() {
+    while (toolReloadBarrier) await toolReloadBarrier;
+    const completed = Promise.withResolvers<void>();
+    toolReloadBarrier = completed.promise;
+    if (activeToolCallLeases > 0) {
+      toolCallsDrained = Promise.withResolvers<void>();
+      await toolCallsDrained.promise;
+    }
+    return {
+      [Symbol.dispose]() {
+        if (toolReloadBarrier === completed.promise) toolReloadBarrier = null;
+        completed.resolve();
+      },
+    };
   }
 
   async function refreshToolMapping() {
     const nextCallMapping = new Map<string, ServerTool>();
     const nextContributionMapping = new Map<string, Level2ContributionInfo>();
+    const nextToolCatalog: ServerToolListResult = [];
     const activeTools = await getActiveTools();
     const contributionByTool = options.pluginManager?.getLevel2ContributionInfo?.();
     for (const tool of activeTools) {
@@ -752,6 +781,7 @@ export function createToolServer(options: ToolServerOptions) {
         continue;
       }
       const entries = listed.match({ ok: (value) => value, err: () => [] });
+      nextToolCatalog.push(...entries);
       for (const { callableId } of entries) {
         nextCallMapping.set(callableId, tool);
         const contribution = contributionByTool?.get(tool);
@@ -760,10 +790,7 @@ export function createToolServer(options: ToolServerOptions) {
     }
     callMapping = nextCallMapping;
     level2ContributionMapping = nextContributionMapping;
-  }
-
-  async function ensureFreshToolMapping() {
-    await refreshToolMapping();
+    toolCatalog = nextToolCatalog;
   }
 
   async function captureSafetyModeProvider<TValue extends SafetyMode | CoreConfig>(
@@ -877,8 +904,6 @@ export function createToolServer(options: ToolServerOptions) {
 
   async function listToolsForContext(ctx: RequestContext) {
     const safetyMode = resolveSafetyModeFailClosed(await resolveSafetyMode(ctx));
-    const tools = await getActiveTools();
-    const toolDescs = await Promise.all(tools.map((tool) => listTool(tool)));
 
     const visible: Array<{
       callableId: string;
@@ -888,31 +913,23 @@ export function createToolServer(options: ToolServerOptions) {
       primaryPositional?: import("@stanley2058/lilac-plugin-runtime").ServerToolPrimaryPositional;
       hidden?: boolean;
     }> = [];
-    for (const result of toolDescs) {
-      const listError = result.match({ ok: () => null, err: (error) => error });
-      if (listError) {
-        logPluginError("level2.list", listError);
+    for (const entry of toolCatalog) {
+      if (!isCallableAllowedForControlCapability(entry.callableId, ctx)) continue;
+      if (!(await isCallableAllowedForNativeProfile(entry.callableId, ctx))) continue;
+      if (
+        safetyMode === "restricted" &&
+        !isRestrictedCallableAllowed({ callableId: entry.callableId, ctx })
+      ) {
         continue;
       }
-      const entries = result.match({ ok: (value) => value, err: () => [] });
-      for (const entry of entries) {
-        if (!isCallableAllowedForControlCapability(entry.callableId, ctx)) continue;
-        if (!(await isCallableAllowedForNativeProfile(entry.callableId, ctx))) continue;
-        if (
-          safetyMode === "restricted" &&
-          !isRestrictedCallableAllowed({ callableId: entry.callableId, ctx })
-        ) {
-          continue;
-        }
-        visible.push({
-          callableId: entry.callableId,
-          name: entry.name,
-          description: entry.description,
-          shortInput: entry.shortInput,
-          primaryPositional: entry.primaryPositional,
-          hidden: entry.hidden,
-        });
-      }
+      visible.push({
+        callableId: entry.callableId,
+        name: entry.name,
+        description: entry.description,
+        shortInput: entry.shortInput,
+        primaryPositional: entry.primaryPositional,
+        hidden: entry.hidden,
+      });
     }
     return { tools: visible };
   }
@@ -1157,14 +1174,6 @@ export function createToolServer(options: ToolServerOptions) {
   app.get(
     "/versionz",
     async () => {
-      if (options.pluginManager) {
-        const pluginManager = options.pluginManager;
-        adaptPluginLifecycleResultToHost(
-          "ensureFresh",
-          await requirePluginLifecycle("ensureFresh", () => pluginManager.ensureFresh()),
-        );
-      }
-
       const buildInfo = getBuildInfo({ cwd: MODULE_DIR });
       const loadedExternalPlugins = countLoadedExternalPlugins(
         options.pluginManager?.getStatuses?.(),
@@ -1191,7 +1200,7 @@ export function createToolServer(options: ToolServerOptions) {
   app.get(
     "/list",
     async ({ headers }) => {
-      await ensureFreshToolMapping();
+      using _toolCatalogLease = await acquireToolCallLease();
       const decodedHeaders = adaptToolRequestHeadersResultToElysia(
         decodeToolRequestHeaders(headers),
       );
@@ -1205,7 +1214,8 @@ export function createToolServer(options: ToolServerOptions) {
     },
   );
 
-  app.post("/reload", async () => {
+  async function reloadTools(): Promise<void> {
+    using _reloadLease = await acquireToolReloadLease();
     if (options.pluginManager) {
       const pluginManager = options.pluginManager;
       adaptPluginLifecycleResultToHost(
@@ -1217,26 +1227,54 @@ export function createToolServer(options: ToolServerOptions) {
       await runStaticToolLifecycle("level2.init");
     }
     await refreshToolMapping();
+  }
+
+  async function completeServerOwnedPostCall(
+    callableId: string,
+    result: ServerToolResult,
+  ): Promise<ServerToolResult> {
+    if (callableId !== SERVER_OWNED_RELOAD_CALLABLE_ID) return result;
+    const shouldReload = result.match({ ok: () => true, err: () => false });
+    if (!shouldReload) return result;
+
+    const reloaded = await Result.tryPromise({
+      try: reloadTools,
+      catch: captureError,
+    });
+    return reloaded.match<() => ServerToolResult>({
+      ok: () => () => result,
+      err:
+        ({ cause }) =>
+        () => {
+          if (isPanic(cause)) return adaptPanicToToolServerHost(cause);
+          return Result.err(
+            serverToolFailure({
+              kind: "unavailable",
+              code: "onboarding_unavailable",
+              message: "Tool reload failed",
+              retryable: true,
+            }),
+          );
+        },
+    })();
+  }
+
+  app.post("/reload", async () => {
+    await reloadTools();
     return { ok: true as const };
   });
 
   app.get("/help/:callableId", async ({ params, headers }) => {
-    await ensureFreshToolMapping();
+    using _toolCatalogLease = await acquireToolCallLease();
     const decodedHeaders = adaptToolRequestHeadersResultToElysia(decodeToolRequestHeaders(headers));
     const { context: ctx } = adaptToolAuthenticationResultToElysia(
       await authenticateContext(decodedHeaders),
     );
     const safetyMode = resolveSafetyModeFailClosed(await resolveSafetyMode(ctx));
-    const tool = adaptToolRouteResultToElysia(
+    adaptToolRouteResultToElysia(
       await lookupHelpTool({ callableId: params.callableId, context: ctx, safetyMode }),
     );
-    const listed = await listTool(tool);
-    listed.match<() => void>({
-      ok: () => () => undefined,
-      err: (error) => () => logPluginError("level2.list", error, { toolId: toolId(tool) }),
-    })();
-    const desc = adaptPluginListResultToElysia(listed);
-    const output = desc.find(
+    const output = toolCatalog.find(
       (entry: Awaited<ReturnType<ServerTool["list"]>>[number]) =>
         entry.callableId === params.callableId,
     );
@@ -1256,7 +1294,7 @@ export function createToolServer(options: ToolServerOptions) {
   app.post(
     "/call",
     async ({ body, request, headers }) => {
-      await ensureFreshToolMapping();
+      using toolCallLease = await acquireToolCallLease();
       const startedAt = Date.now();
 
       const toolResult = lookupTool(body.callableId);
@@ -1495,7 +1533,7 @@ export function createToolServer(options: ToolServerOptions) {
 
       const contribution = contributionForTool(tool);
       let toolCallTimedOut = false;
-      const callResult = Promise.resolve()
+      const invocationResult = Promise.resolve()
         .then(() =>
           invokeLevel2Call({
             pluginId: contribution.pluginId,
@@ -1535,6 +1573,12 @@ export function createToolServer(options: ToolServerOptions) {
             },
           })();
         })
+        .finally(() => {
+          toolCallLease.release();
+        });
+      toolCallLease.transfer();
+      const callResult = invocationResult
+        .then((result) => completeServerOwnedPostCall(body.callableId, result))
         .finally(() => {
           healthState.endToolCall(callToken, {
             settled: true,
@@ -1687,6 +1731,7 @@ export function createToolServer(options: ToolServerOptions) {
         started = false;
       });
     },
+    reload: reloadTools,
     getHealthSnapshot: async () => await healthState.getSnapshot(),
     recordUnhandledRejection: recordUnhandledRejectionAtBoundary,
   };

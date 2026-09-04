@@ -219,23 +219,18 @@ describe("onboarding default skills", () => {
     });
   });
 
-  it("returns reload network failures as semantic errors and preserves Panic", async () => {
-    const unavailable = onboardingWith({
+  it("leaves tool reload execution to the server-owned post-call path", async () => {
+    let fetchCalls = 0;
+    const onboarding = onboardingWith({
       fetch: async () => {
-        throw new Error("reload unavailable");
+        fetchCalls++;
+        throw new Error("reload must not use the network");
       },
     });
-    await expect(unavailable.call("onboarding.reload_tools", {})).resolves.toMatchObject({
-      status: "error",
-      error: { kind: "unavailable", message: "reload unavailable" },
+    await expect(onboarding.call("onboarding.reload_tools", {})).resolves.toMatchObject({
+      status: "ok",
+      value: { ok: true },
     });
-
-    const panic = new Panic({ message: "reload invariant failed" });
-    const panicking = onboardingWith({
-      fetch: async () => {
-        throw panic;
-      },
-    });
-    await expect(panicking.call("onboarding.reload_tools", {})).rejects.toBeInstanceOf(Panic);
+    expect(fetchCalls).toBe(0);
   });
 });

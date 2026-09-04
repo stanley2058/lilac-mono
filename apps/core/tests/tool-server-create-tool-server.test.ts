@@ -2058,7 +2058,7 @@ describe("createToolServer", () => {
     await server.stop();
   });
 
-  it("reads initialization-dependent and dynamic Level 2 catalogs at runtime", async () => {
+  it("reads initialization-dependent catalogs and caches them until reload", async () => {
     let listCalls = 0;
     let initialized = false;
     let callableId = "dynamic.call.v1";
@@ -2093,6 +2093,13 @@ describe("createToolServer", () => {
     await server.init();
     expect(listCalls).toBe(2);
     callableId = "dynamic.call.v2";
+    const cached = await server.app.handle(new Request("http://localhost/list"));
+    expect(await cached.json()).toMatchObject({ tools: [{ callableId: "dynamic.call.v1" }] });
+    expect(
+      (await server.app.handle(new Request("http://localhost/help/dynamic.call.v2"))).status,
+    ).toBe(404);
+
+    await server.reload();
     const listed = await server.app.handle(new Request("http://localhost/list"));
     expect(await listed.json()).toMatchObject({ tools: [{ callableId: "dynamic.call.v2" }] });
     expect(
@@ -2109,7 +2116,163 @@ describe("createToolServer", () => {
       status: "ok",
       value: { callableId: "dynamic.call.v2" },
     });
-    expect(listCalls).toBe(7);
+    expect(listCalls).toBe(4);
+    await server.stop();
+  });
+
+  it("drains active tool calls before swapping plugin generations", async () => {
+    const firstCallStarted = Promise.withResolvers<void>();
+    const releaseFirstCall = Promise.withResolvers<void>();
+    const callGenerations: number[] = [];
+    let generation = 0;
+    let firstCallActive = false;
+    let destroyedWhileActive = false;
+    const pluginManager = new ToolPluginManager<
+      Record<string, never>,
+      Level1ToolSpec<Record<string, never>>,
+      ServerTool
+    >({
+      runtime: {},
+      dataDir: "/tmp/tool-server-generation-lease-unused",
+      builtinPlugins: [
+        {
+          meta: { id: "generation-lease" },
+          create() {
+            generation++;
+            const current = generation;
+            return {
+              level2: [
+                {
+                  id: `generation-${current}`,
+                  async init() {},
+                  async destroy() {
+                    if (current === 1 && firstCallActive) destroyedWhileActive = true;
+                  },
+                  async list() {
+                    return [
+                      {
+                        callableId: "generation.call",
+                        name: "generation.call",
+                        description: "generation.call",
+                        shortInput: [],
+                      },
+                    ];
+                  },
+                  async call() {
+                    callGenerations.push(current);
+                    if (current === 1) {
+                      firstCallActive = true;
+                      firstCallStarted.resolve();
+                      await releaseFirstCall.promise;
+                      firstCallActive = false;
+                    }
+                    return Result.ok({ generation: current });
+                  },
+                } satisfies ServerTool,
+              ],
+            };
+          },
+        },
+      ],
+      adaptLevel1Item: (spec) => spec,
+      adaptLevel2Item: (item) => item,
+    });
+    const server = createToolServer({ pluginManager });
+    const call = () =>
+      server.app.handle(
+        new Request("http://localhost/call", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ callableId: "generation.call", input: {} }),
+        }),
+      );
+
+    await server.init();
+    const firstResponse = call();
+    await firstCallStarted.promise;
+
+    const reload = server.reload();
+    const secondResponse = call();
+    await Promise.resolve();
+    expect(callGenerations).toEqual([1]);
+    expect(destroyedWhileActive).toBe(false);
+
+    releaseFirstCall.resolve();
+    expect(await (await firstResponse).json()).toEqual({ status: "ok", value: { generation: 1 } });
+    await reload;
+    expect(await (await secondResponse).json()).toEqual({ status: "ok", value: { generation: 2 } });
+    expect(callGenerations).toEqual([1, 2]);
+    expect(destroyedWhileActive).toBe(false);
+    await server.stop();
+  });
+
+  it("reloads onboarding tools after the initiating call releases its generation", async () => {
+    const callGenerations: number[] = [];
+    let generation = 0;
+    let activeGeneration: number | null = null;
+    let destroyedWhileActive = false;
+    const pluginManager = new ToolPluginManager<
+      Record<string, never>,
+      Level1ToolSpec<Record<string, never>>,
+      ServerTool
+    >({
+      runtime: {},
+      dataDir: "/tmp/tool-server-onboarding-reload-unused",
+      builtinPlugins: [
+        {
+          meta: { id: "onboarding" },
+          create() {
+            generation++;
+            const current = generation;
+            return {
+              level2: [
+                {
+                  id: "onboarding",
+                  async init() {},
+                  async destroy() {
+                    if (activeGeneration === current) destroyedWhileActive = true;
+                  },
+                  async list() {
+                    return [
+                      {
+                        callableId: "onboarding.reload_tools",
+                        name: "onboarding.reload_tools",
+                        description: "onboarding.reload_tools",
+                        shortInput: [],
+                      },
+                    ];
+                  },
+                  async call() {
+                    activeGeneration = current;
+                    callGenerations.push(current);
+                    await Promise.resolve();
+                    activeGeneration = null;
+                    return Result.ok({ ok: true });
+                  },
+                } satisfies ServerTool,
+              ],
+            };
+          },
+        },
+      ],
+      adaptLevel1Item: (spec) => spec,
+      adaptLevel2Item: (item) => item,
+    });
+    const server = createToolServer({ pluginManager });
+
+    await server.init();
+    const response = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ callableId: "onboarding.reload_tools", input: {} }),
+      }),
+    );
+
+    expect(await response.json()).toEqual({ status: "ok", value: { ok: true } });
+    expect(callGenerations).toEqual([1]);
+    expect(generation).toBe(2);
+    expect(destroyedWhileActive).toBe(false);
     await server.stop();
   });
 
@@ -2184,7 +2347,7 @@ describe("createToolServer", () => {
     await server.stop();
   });
 
-  it("refreshes plugin-backed call mapping on list/help/call without explicit reload", async () => {
+  it("keeps plugin-backed call mapping stable until explicit reload", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-plugin-"));
     const dataDir = path.join(tmpRoot, "data");
 
@@ -2209,7 +2372,7 @@ describe("createToolServer", () => {
     const server = createToolServer({ pluginManager });
     await server.init();
 
-    // test-wait-justification: advances filesystem mtime so automatic freshness observes the rewritten plugin bundle
+    // test-wait-justification: advances filesystem mtime so explicit reload observes the rewritten plugin bundle
     await Bun.sleep(5);
     await writePluginServerTool({
       dataDir,
@@ -2222,14 +2385,30 @@ describe("createToolServer", () => {
     expect(await listRes.json()).toEqual({
       tools: [
         {
-          callableId: "fresh.call.v2",
-          name: "fresh.call.v2",
-          description: "fresh.call.v2",
+          callableId: "fresh.call",
+          name: "fresh.call",
+          description: "fresh.call",
           shortInput: [],
           hidden: undefined,
         },
       ],
     });
+
+    const staleCall = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ callableId: "fresh.call", input: {} }),
+      }),
+    );
+    expect(await staleCall.json()).toEqual({ status: "ok", value: { value: "one" } });
+
+    const reload = await server.app.handle(
+      new Request("http://localhost/reload", { method: "POST" }),
+    );
+    expect(await reload.json()).toEqual({ ok: true });
 
     const helpRes = await server.app.handle(new Request("http://localhost/help/fresh.call.v2"));
     expect(helpRes.status).toBe(200);

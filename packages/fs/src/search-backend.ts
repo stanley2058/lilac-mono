@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import type { Dir, Stats } from "node:fs";
-import { basename, join, relative, sep } from "node:path";
+import { spawn } from "node:child_process";
+import { basename, join, matchesGlob, relative, sep } from "node:path";
 
 import type { FileFinderApi } from "@ff-labs/fff-node";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
@@ -24,7 +25,7 @@ export type EffectiveFuzzySearchBackend = "fff" | "fzf";
 export type GlobSearchResult = {
   paths: string[];
   truncated: boolean;
-  effectiveBackend: "fff";
+  effectiveBackend: "fff" | "node-rg";
 };
 
 export type FuzzyFileSearchResult = {
@@ -130,8 +131,8 @@ function captureFffSyncOperation<T>(effect: () => T): ResultType<T, SearchBacken
 
 const nodeRgBackend: SearchBackend = {
   grep: ripgrep,
-  async glob() {
-    return null;
+  async glob(options) {
+    return await fdGlob(options);
   },
 };
 
@@ -146,6 +147,7 @@ type FffStoragePaths = {
 };
 
 const MAX_FFF_FINDER_CACHE_ENTRIES = 8;
+const MAX_FFF_GLOB_STAT_CONCURRENCY = 64;
 const MAX_FZF_FILES = 10_000;
 const FZF_SCAN_BUDGET_MS = 10_000;
 const fffFindersByBasePath = new Map<string, FffFinderEntry>();
@@ -503,6 +505,227 @@ function targetsNodeModules(pattern: string): boolean {
   return pattern.split(/[\\/]/u).includes("node_modules");
 }
 
+function normalizeNativeGlob(pattern: string): string {
+  return pattern
+    .replace(/^\.\/+/, "")
+    .split(sep)
+    .join("/");
+}
+
+function supportsFdGlob(pattern: string): boolean {
+  return !/[+@?!*]\(/u.test(pattern);
+}
+
+function literalGlobSearchRoot(pattern: string): string {
+  const segments = pattern.split("/").filter((segment) => segment.length > 0);
+  const prefix: string[] = [];
+  for (const segment of segments) {
+    if (segment === "." || segment === "..") return "";
+    if (/[*?[\]{}()!+@]/u.test(segment)) return prefix.join("/");
+    prefix.push(segment);
+  }
+  return prefix.slice(0, -1).join("/");
+}
+
+function escapeFdGlobLiteral(value: string): string {
+  return value.replace(/[\\*?[\]{}]/gu, "\\$&");
+}
+
+function matchesGlobContract(path: string, patterns: readonly string[]): boolean {
+  return patterns.some((pattern) => matchesGlob(path, pattern) || matchesGlob(`${path}/`, pattern));
+}
+
+function isExcludedByGlobContract(path: string, patterns: readonly string[]): boolean {
+  let candidate = path;
+  while (candidate.length > 0) {
+    if (matchesGlobContract(candidate, patterns)) return true;
+    const separator = candidate.lastIndexOf("/");
+    if (separator === -1) return false;
+    candidate = candidate.slice(0, separator);
+  }
+  return false;
+}
+
+function fdPrunedBasename(pattern: string): string | null {
+  const match = /^\*\*\/([^*?[\]{}()!+@/]+)\/\*\*\/?$/u.exec(pattern);
+  return match?.[1] ?? null;
+}
+
+function fdCandidatePatterns(pattern: string): string[] {
+  const withoutTrailingSlash = pattern.replace(/\/+$/u, "");
+  const withoutTerminalGlobstar = withoutTrailingSlash.endsWith("/**")
+    ? withoutTrailingSlash.slice(0, -3)
+    : withoutTrailingSlash;
+  return [...new Set([withoutTerminalGlobstar, withoutTrailingSlash, pattern])].filter(
+    (candidate) => candidate.length > 0,
+  );
+}
+
+function fdGlobArgs(params: {
+  cwd: string;
+  candidatePattern: string;
+  excludes: readonly string[];
+}): string[] {
+  const args = [
+    "--hidden",
+    "--no-ignore",
+    "--case-sensitive",
+    "--glob",
+    "--full-path",
+    "--print0",
+    "--strip-cwd-prefix=always",
+    "--color",
+    "never",
+    "--base-directory",
+    params.cwd,
+  ];
+  for (const exclude of params.excludes) {
+    const basename = fdPrunedBasename(exclude);
+    if (basename) args.push("--exclude", basename);
+  }
+
+  const cwdPrefix = escapeFdGlobLiteral(normalizeNativeGlob(params.cwd));
+  args.push("--", `${cwdPrefix}/${params.candidatePattern}`);
+  return args;
+}
+
+async function collectFdGlobPattern(params: {
+  cwd: string;
+  pattern: string;
+  candidatePattern: string;
+  excludes: readonly string[];
+  denyPaths: readonly string[];
+  dangerouslyAllow: boolean;
+  limit: number;
+  paths: string[];
+  seen: Set<string>;
+}): Promise<boolean | null> {
+  const child = spawn("fd", fdGlobArgs(params), {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const stdout = child.stdout;
+  if (!stdout) {
+    child.kill("SIGTERM");
+    return null;
+  }
+
+  return await new Promise<boolean | null>((resolve) => {
+    let remainder = "";
+    let terminatedAtLimit = false;
+    let settled = false;
+
+    const settle = (value: boolean | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const consumePath = (path: string) => {
+      if (path.length === 0 || terminatedAtLimit) return;
+      const withoutPrefix = path.startsWith("./") ? path.slice(2) : path;
+      const normalized = withoutPrefix.endsWith("/") ? withoutPrefix.slice(0, -1) : withoutPrefix;
+      if (normalized.length === 0 || params.seen.has(normalized)) return;
+      if (!matchesGlobContract(normalized, [params.pattern])) return;
+      if (isExcludedByGlobContract(normalized, params.excludes)) return;
+      const absolute = join(params.cwd, normalized);
+      if (!params.dangerouslyAllow && isDeniedPath(absolute, params.denyPaths)) return;
+      params.seen.add(normalized);
+      params.paths.push(normalized);
+      if (params.paths.length <= params.limit) return;
+
+      terminatedAtLimit = true;
+      child.kill("SIGTERM");
+      stdout.destroy();
+    };
+
+    stdout.setEncoding("utf8");
+    stdout.on("data", (chunk: string) => {
+      if (terminatedAtLimit) return;
+      remainder += chunk;
+      while (!terminatedAtLimit) {
+        const separator = remainder.indexOf("\0");
+        if (separator === -1) break;
+        consumePath(remainder.slice(0, separator));
+        remainder = remainder.slice(separator + 1);
+      }
+    });
+
+    child.on("error", () => settle(null));
+    child.on("close", (code) => {
+      if (!terminatedAtLimit && remainder.length > 0) consumePath(remainder);
+      const exitedNormally = code === 0;
+      const exitedAtLimit = terminatedAtLimit;
+      settle(exitedNormally || exitedAtLimit ? terminatedAtLimit : null);
+    });
+  });
+}
+
+async function fdGlob(options: {
+  cwd: string;
+  patterns: readonly string[];
+  maxEntries: number;
+  denyPaths: readonly string[];
+  dangerouslyAllow: boolean;
+}): Promise<GlobSearchResult | null> {
+  if (shouldFallbackForDenyPaths(options)) return null;
+
+  const includes = options.patterns
+    .filter((pattern) => pattern.length > 0 && !pattern.startsWith("!"))
+    .map(normalizeNativeGlob);
+  const excludes = options.patterns
+    .filter((pattern) => pattern.startsWith("!"))
+    .map((pattern) => normalizeNativeGlob(pattern.slice(1)))
+    .filter((pattern) => pattern.length > 0);
+  if (![...includes, ...excludes].every(supportsFdGlob)) return null;
+
+  const limit = Math.max(0, Math.floor(options.maxEntries));
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const pattern of new Set(includes)) {
+    const literalRoot = literalGlobSearchRoot(pattern);
+    if (
+      literalRoot.length > 0 &&
+      !seen.has(literalRoot) &&
+      matchesGlobContract(literalRoot, [pattern]) &&
+      !isExcludedByGlobContract(literalRoot, excludes)
+    ) {
+      const stats = resultOutcome(
+        await captureFilesystemOperation("inspect fd glob search root", () =>
+          fs.lstat(join(options.cwd, literalRoot)),
+        ),
+      );
+      if (!stats.ok && !isSkippableTraversalError(stats.error)) return null;
+      if (stats.ok && stats.value.isSymbolicLink()) return null;
+      if (stats.ok) {
+        seen.add(literalRoot);
+        paths.push(literalRoot);
+        if (paths.length > limit) break;
+      }
+    }
+
+    for (const candidatePattern of fdCandidatePatterns(pattern)) {
+      const truncated = await collectFdGlobPattern({
+        ...options,
+        pattern,
+        candidatePattern,
+        excludes,
+        limit,
+        paths,
+        seen,
+      });
+      if (truncated === null) return null;
+      if (truncated) break;
+    }
+    if (paths.length > limit) break;
+  }
+
+  return {
+    paths: paths.slice(0, limit),
+    truncated: paths.length > limit,
+    effectiveBackend: "node-rg",
+  };
+}
+
 function mapFffGrepMatch(item: {
   relativePath: string;
   lineNumber: number;
@@ -614,15 +837,31 @@ const fffBackend: SearchBackend = {
       const capturedOutcome = resultOutcome(captured);
       if (!capturedOutcome.ok || !capturedOutcome.value.ok) return null;
       const result = capturedOutcome.value;
+      const inspected: Array<string | null> = [];
+      for (
+        let offset = 0;
+        offset < result.value.items.length;
+        offset += MAX_FFF_GLOB_STAT_CONCURRENCY
+      ) {
+        const batch = result.value.items.slice(offset, offset + MAX_FFF_GLOB_STAT_CONCURRENCY);
+        inspected.push(
+          ...(await Promise.all(
+            batch.map(async (item) => {
+              const stat = await captureFilesystemOperation("stat FFF glob match", () =>
+                fs.stat(join(options.cwd, item.relativePath)),
+              );
+              return stat.match({
+                ok: (value) => (value.isFile() ? item.relativePath : null),
+                err: () => null,
+              });
+            }),
+          )),
+        );
+      }
 
-      for (const item of result.value.items) {
-        const relPath = item.relativePath;
+      for (const relPath of inspected) {
+        if (relPath === null) continue;
         if (seen.has(relPath)) continue;
-
-        const abs = join(options.cwd, relPath);
-        const stat = await captureFilesystemOperation("stat FFF glob match", () => fs.stat(abs));
-        const isFile = stat.match({ ok: (value) => value.isFile(), err: () => false });
-        if (!isFile) continue;
 
         seen.add(relPath);
         if (paths.length >= options.maxEntries) {

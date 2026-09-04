@@ -51,9 +51,9 @@ describe("search permission handling", () => {
         throw new Error("expected effective backend");
       }
       if (backend === "fff") {
-        expect(["fff", "node-fs"]).toContain(effectiveBackend);
+        expect(["fff", "node-rg", "node-fs"]).toContain(effectiveBackend);
       } else {
-        expect(effectiveBackend).toBe("node-fs");
+        expect(["node-rg", "node-fs"]).toContain(effectiveBackend);
       }
     }
   });

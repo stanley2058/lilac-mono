@@ -1,11 +1,11 @@
 /* oxlint-disable eslint/no-control-regex */
 
-import { getBuildInfo, type BuildInfo } from "@stanley2058/lilac-utils";
+import { getBuildInfo, type BuildInfo } from "@stanley2058/lilac-utils/build-info";
 import {
   serverToolExitCode,
   type ServerToolFailure,
   type ServerToolFailureKind,
-} from "@stanley2058/lilac-plugin-runtime";
+} from "@stanley2058/lilac-plugin-runtime/types";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";

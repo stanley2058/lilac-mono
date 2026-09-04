@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -115,5 +115,101 @@ describe("absolute glob patterns", () => {
 
       expectDefaultPaths(result, []);
     }
+  });
+
+  it("keeps matching directories and symlinks on the native glob path", async () => {
+    await mkdir(path.join(baseDir, "src", "generated.ts"));
+    await symlink(path.join(baseDir, "src", "a.ts"), path.join(baseDir, "src", "alias.ts"));
+
+    const result = await makeFs(baseDir, "node-rg").glob({
+      patterns: ["**/*.ts"],
+      mode: "default",
+    });
+
+    expectDefaultPaths(result, ["src/a.ts", "src/alias.ts", "src/b.ts", "src/generated.ts"]);
+    expect(result.effectiveBackend).toBe("node-rg");
+
+    const rooted = await makeFs(baseDir, "node-rg").glob({
+      patterns: ["src/**"],
+      mode: "default",
+    });
+    expect(rooted.mode === "default" && rooted.paths).toContain("src");
+  });
+
+  it("skips a broken symlink in detailed native glob results", async () => {
+    await symlink(path.join(baseDir, "missing.ts"), path.join(baseDir, "broken.ts"));
+
+    const defaults = await makeFs(baseDir, "node-rg").glob({
+      patterns: ["**/*.ts"],
+      mode: "default",
+    });
+    expect(defaults.mode === "default" && defaults.paths).toContain("broken.ts");
+
+    const detailed = await makeFs(baseDir, "node-rg").glob({
+      patterns: ["**/*.ts"],
+      mode: "detailed",
+    });
+    expect(detailed.error).toBeUndefined();
+    expect(
+      detailed.mode === "detailed" && detailed.entries.map((entry) => entry.path),
+    ).not.toContain("broken.ts");
+  });
+
+  it("preserves zero-length terminal glob matches on the native path", async () => {
+    await mkdir(path.join(baseDir, "src", "a"));
+    await mkdir(path.join(baseDir, "src", "b"));
+
+    const cases = [
+      { pattern: "src/*/**", expected: ["src/a", "src/a.ts", "src/b", "src/b.ts"] },
+      { pattern: "**/a/**", expected: ["src/a"] },
+      { pattern: "src/", expected: ["src"] },
+      { pattern: "*/", expected: ["root.txt", "src"] },
+      {
+        pattern: "**/",
+        expected: ["root.txt", "src", "src/a", "src/a.ts", "src/b", "src/b.ts"],
+      },
+      {
+        pattern: "src/**/",
+        expected: ["src", "src/a", "src/a.ts", "src/b", "src/b.ts"],
+      },
+    ];
+    for (const { pattern, expected } of cases) {
+      const result = await makeFs(baseDir, "node-rg").glob({
+        patterns: [pattern],
+        mode: "default",
+      });
+      expectDefaultPaths(result, expected);
+      expect(result.effectiveBackend).toBe("node-rg");
+    }
+  });
+
+  it("returns native empty results without falling back to the filesystem walker", async () => {
+    const result = await makeFs(baseDir, "node-rg").glob({
+      patterns: ["**/*.missing"],
+      mode: "default",
+    });
+
+    expectDefaultPaths(result, []);
+    expect(result.effectiveBackend).toBe("node-rg");
+  });
+
+  it("filters stale FFF paths before returning default or detailed results", async () => {
+    const fileSystem = makeFs(baseDir, "fff");
+    const stalePath = path.join(baseDir, "stale.ts");
+    await writeFile(stalePath, "export {};\n");
+    expectDefaultPaths(await fileSystem.glob({ patterns: ["**/*.ts"], mode: "default" }), [
+      "src/a.ts",
+      "src/b.ts",
+      "stale.ts",
+    ]);
+
+    await unlink(stalePath);
+    const defaults = await fileSystem.glob({ patterns: ["**/*.ts"], mode: "default" });
+    expectDefaultPaths(defaults, ["src/a.ts", "src/b.ts"]);
+
+    const detailed = await fileSystem.glob({ patterns: ["**/*.ts"], mode: "detailed" });
+    expect(detailed.error).toBeUndefined();
+    if (detailed.mode !== "detailed") throw new Error("expected detailed glob result");
+    expect(detailed.entries.map((entry) => entry.path).sort()).toEqual(["src/a.ts", "src/b.ts"]);
   });
 });

@@ -228,16 +228,10 @@ export function createCoreToolPluginManager(params: {
       Level1ToolsetBuildFailed | Level1ToolsetInvariantViolation | Level1ToolsetAssemblyFailed
     >
   > {
-    const fresh = await manager.ensureFresh();
-    const freshError = resultErrorOrNull(fresh);
-    if (freshError) {
-      if (freshError._tag !== "ToolPluginReloadCommittedCleanupError") {
-        return Result.err(pluginOperationFailure("ensureFresh", freshError));
-      }
-      logger.error("tool plugin refresh committed with cleanup failure", {
-        operation: "ensureFresh",
-        ...formatTaggedErrorForLog(freshError),
-      });
+    const initialized = await manager.init();
+    const initializationError = resultErrorOrNull(initialized);
+    if (initializationError) {
+      return Result.err(pluginOperationFailure("init", initializationError));
     }
     const resolvedConfig = await resolveConfig();
 

@@ -41,6 +41,9 @@ import {
   type FuzzyFileSearchResult,
 } from "./search-backend";
 
+const BUFFERED_LINE_READ_MAX_BYTES = 16 * 1024 * 1024;
+const BUFFERED_LINE_ARRAY_MAX_UTF16 = 64 * 1024;
+
 export function expandTilde(input: string) {
   if (input === "~") return homedir();
   if (input.startsWith("~/")) return join(homedir(), input.slice(2));
@@ -878,23 +881,113 @@ export class FileSystem {
         }
       };
 
+      const consumeBufferedLine = (bytes: Buffer) => {
+        if (!isCurrentLineSelected()) return;
+
+        const text = bytes.toString("utf8");
+        currentLineUtf16Length = text.length;
+        const remainingCharacters = Math.max(0, storedCharacterLimit - storedCharacters);
+        const contentStart = lineNumber === requestedStartLine ? requestedStartColumn : 0;
+        if (text.length <= BUFFERED_LINE_ARRAY_MAX_UTF16) {
+          const characters = Array.from(text);
+          currentLineCharacters = characters.length;
+          const stored = characters.slice(contentStart, contentStart + remainingCharacters);
+          currentLine = stored.join("");
+          storedCharacters += stored.length;
+          return;
+        }
+
+        const stored: string[] = [];
+        for (const character of text) {
+          if (currentLineCharacters >= contentStart && stored.length < remainingCharacters) {
+            stored.push(character);
+          }
+          currentLineCharacters++;
+        }
+        currentLine = stored.join("");
+        storedCharacters += stored.length;
+      };
+
+      const consumeBufferedFile = (bytes: Buffer) => {
+        hasher.update(bytes);
+        let lineStart = 0;
+        // UTF-8 never uses LF inside a multibyte code point, so line boundaries
+        // can be found before decoding the selected window.
+        while (true) {
+          const newline = bytes.indexOf(0x0a, lineStart);
+          if (newline === -1) {
+            consumeBufferedLine(bytes.subarray(lineStart));
+            finishLine(false);
+            return;
+          }
+
+          consumeBufferedLine(bytes.subarray(lineStart, newline));
+          finishLine(true);
+          lineNumber++;
+          lineStart = newline + 1;
+        }
+      };
+
+      const bufferedChunks: Buffer[] = [];
+      let bufferedBytes = 0;
+      let streamHighWaterMark: number | undefined;
+      let streamingText = start.type === "offset";
+      if (start.type === "line") {
+        const stats = resultOutcome(
+          await captureFilesystemOperation("stat file for line reading", () =>
+            fs.stat(canonicalPath),
+          ),
+        );
+        if (!stats.ok) return Result.err(stats.error);
+        if (stats.value.isFile() && stats.value.size > BUFFERED_LINE_READ_MAX_BYTES) {
+          streamingText = true;
+        } else if (stats.value.isFile() && stats.value.size > 0) {
+          streamHighWaterMark = stats.value.size + 1;
+        }
+      }
       const streamed = resultOutcome(
         await captureFilesystemOperation("stream file for reading", async () => {
-          for await (const chunk of createReadStream(canonicalPath)) {
+          for await (const chunk of createReadStream(canonicalPath, {
+            highWaterMark: streamHighWaterMark,
+          })) {
             const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            if (!streamingText && bufferedBytes + bytes.length <= BUFFERED_LINE_READ_MAX_BYTES) {
+              bufferedChunks.push(bytes);
+              bufferedBytes += bytes.length;
+              continue;
+            }
+
+            if (!streamingText) {
+              streamingText = true;
+              for (const buffered of bufferedChunks) {
+                hasher.update(buffered);
+                consumeText(decoder.write(buffered));
+              }
+              bufferedChunks.length = 0;
+            }
+
             hasher.update(bytes);
             consumeText(decoder.write(bytes));
           }
         }),
       );
       if (!streamed.ok) return Result.err(streamed.error);
-      consumeText(decoder.end());
-      if (requestedStartOffset !== undefined && offsetStartLine === undefined) {
-        offsetStartLine = lineNumber;
-        offsetStartColumn = currentLineCharacters;
-        normalizedStartOffset = sourceOffset;
+
+      if (!streamingText) {
+        const bytes =
+          bufferedChunks.length === 1
+            ? bufferedChunks[0]!
+            : Buffer.concat(bufferedChunks, bufferedBytes);
+        consumeBufferedFile(bytes);
+      } else {
+        consumeText(decoder.end());
+        if (start.type === "offset" && offsetStartLine === undefined) {
+          offsetStartLine = lineNumber;
+          offsetStartColumn = currentLineCharacters;
+          normalizedStartOffset = sourceOffset;
+        }
+        finishLine(false);
       }
-      finishLine(false);
 
       const fileHash = hasher.digest("hex");
       const totalLines = lineNumber;
@@ -1943,48 +2036,59 @@ export class FileSystem {
       };
     }
 
-    if (this.fsBackend === "fff") {
-      const normalizedPatterns = [...includes, ...excludes.map((pattern) => `!${pattern}`)];
-      const fffResult = await getSearchBackend("fff").glob({
+    const normalizedPatterns = [...includes, ...excludes.map((pattern) => `!${pattern}`)];
+    const selectedBackend = getSearchBackend(this.fsBackend);
+    let backendResult = await selectedBackend.glob({
+      cwd: canonicalBaseDir,
+      patterns: normalizedPatterns,
+      maxEntries,
+      denyPaths: this.denyPaths,
+      dangerouslyAllow,
+      cacheDir: this.fffCacheDir,
+    });
+    if (!backendResult && this.fsBackend === "fff") {
+      backendResult = await getSearchBackend("node-rg").glob({
         cwd: canonicalBaseDir,
         patterns: normalizedPatterns,
         maxEntries,
         denyPaths: this.denyPaths,
         dangerouslyAllow,
-        cacheDir: this.fffCacheDir,
       });
+    }
 
-      if (fffResult) {
-        if (mode === "default") {
-          return {
-            mode,
-            truncated: fffResult.truncated,
-            paths: fffResult.paths,
-            effectiveBackend: fffResult.effectiveBackend,
-          };
-        }
-
-        const values: GlobEntry[] = [];
-        for (const entry of fffResult.paths) {
-          const stats = resultOutcome(
-            await captureFilesystemOperation("stat FFF glob result", () =>
-              fs.stat(join(canonicalBaseDir, entry)),
-            ),
-          );
-          if (!stats.ok) return this.globFailure(mode, stats.error);
-          values.push({
-            path: entry,
-            type: this.getFileTypeFromStats(stats.value),
-            size: stats.value.size,
-          });
-        }
+    if (backendResult) {
+      if (mode === "default") {
         return {
           mode,
-          truncated: fffResult.truncated,
-          entries: values,
-          effectiveBackend: fffResult.effectiveBackend,
+          truncated: backendResult.truncated,
+          paths: backendResult.paths,
+          effectiveBackend: backendResult.effectiveBackend,
         };
       }
+
+      const values: GlobEntry[] = [];
+      for (const entry of backendResult.paths) {
+        const stats = resultOutcome(
+          await captureFilesystemOperation("stat native glob result", () =>
+            fs.stat(join(canonicalBaseDir, entry)),
+          ),
+        );
+        if (!stats.ok) {
+          if (isSkippableTraversalError(stats.error)) continue;
+          return this.globFailure(mode, stats.error);
+        }
+        values.push({
+          path: entry,
+          type: this.getFileTypeFromStats(stats.value),
+          size: stats.value.size,
+        });
+      }
+      return {
+        mode,
+        truncated: backendResult.truncated,
+        entries: values,
+        effectiveBackend: backendResult.effectiveBackend,
+      };
     }
 
     const collected = resultOutcome(

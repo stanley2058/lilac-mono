@@ -2590,6 +2590,7 @@ export async function createCoreRuntime(
     init(): Promise<void>;
     start(port: number): Promise<void>;
     stop(): Promise<void>;
+    reload(): Promise<void>;
     recordUnhandledRejection(reason: Error): void;
   } | null = null;
 
@@ -2732,6 +2733,7 @@ export async function createCoreRuntime(
         coreConfigValidationHadError = false;
         lastCoreConfigValidationError = null;
         await adapter.refreshCoreConfig();
+        await toolServer?.reload();
         conversationThreadMaterializer?.markAllDirty();
       },
       err: (error) => async () => {

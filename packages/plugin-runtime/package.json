@@ -5,7 +5,8 @@
   "type": "module",
   "module": "index.ts",
   "exports": {
-    ".": "./index.ts"
+    ".": "./index.ts",
+    "./types": "./types.ts"
   },
   "scripts": {
     "test": "bun test"
