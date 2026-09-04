@@ -31,6 +31,7 @@ import {
 import type { Logger } from "@stanley2058/simple-module-logger";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -77,6 +78,33 @@ type ToolCallTimeoutOptions = {
 type ToolJsonValue = string | number | boolean | null | ToolJsonValue[] | ToolJsonObject;
 type ToolJsonObject = { readonly [key: string]: ToolJsonValue };
 type FatalToolCallDefect = Panic | Error;
+type ToolServerCleanupFailure = {
+  readonly label: string;
+  readonly cause: Error;
+};
+
+function removeOwnedUnixSocket(socketPath: string): ResultType<void, Error> {
+  if (!existsSync(socketPath)) return Result.ok(undefined);
+  const statResult = Result.try({
+    try: () => lstatSync(socketPath),
+    catch: captureError,
+  }).mapError((error) => error.cause);
+  return statResult.andThen((stat) => {
+    if (!stat.isSocket()) {
+      return Result.err(new Error(`Refusing to remove non-socket tool server path: ${socketPath}`));
+    }
+    const effectiveUid = process.geteuid?.();
+    if (effectiveUid !== undefined && stat.uid !== effectiveUid) {
+      return Result.err(
+        new Error(`Refusing to remove tool server socket owned by another user: ${socketPath}`),
+      );
+    }
+    return Result.try({
+      try: () => unlinkSync(socketPath),
+      catch: captureError,
+    }).mapError((error) => error.cause);
+  });
+}
 
 type ToolRequestHeaders = {
   readonly operatorToken?: string;
@@ -1681,6 +1709,104 @@ export function createToolServer(options: ToolServerOptions) {
   );
 
   let started = false;
+  let unixServer: ReturnType<typeof Bun.serve> | undefined;
+  let unixSocketPath: string | undefined;
+
+  function recordCleanupResult(
+    label: string,
+    result: ResultType<void, Error>,
+  ): ToolServerCleanupFailure | undefined {
+    const failure = result.match<ToolServerCleanupFailure | undefined>({
+      ok: () => undefined,
+      err: (cause) => ({ label, cause }),
+    });
+    if (!failure) return undefined;
+    logger.error("tool server cleanup failed", {
+      operation: failure.label,
+      ...frameworkErrorLogProjection(failure.cause),
+    });
+    return failure;
+  }
+
+  function captureCleanupOperation(
+    label: string,
+    operation: () => void,
+  ): ToolServerCleanupFailure | undefined {
+    const result = Result.try({ try: operation, catch: captureError }).mapError(
+      (error) => error.cause,
+    );
+    return recordCleanupResult(label, result);
+  }
+
+  function settleLifecycleFailure(
+    priorFailure: Error | undefined,
+    cleanupFailures: readonly ToolServerCleanupFailure[],
+  ): void {
+    if (priorFailure && isPanic(priorFailure)) adaptPanicToToolServerHost(priorFailure);
+    for (const failure of cleanupFailures) {
+      if (isPanic(failure.cause)) adaptPanicToToolServerHost(failure.cause);
+    }
+    if (priorFailure) adaptResultToHost(Result.err(priorFailure), (error) => error);
+    const cleanupFailure = cleanupFailures[0];
+    if (cleanupFailure) adaptResultToHost(Result.err(cleanupFailure.cause), (error) => error);
+  }
+
+  function startUnixServer(socketPath: string): ResultType<void, Error> {
+    return removeOwnedUnixSocket(socketPath).andThen(() =>
+      Result.try({
+        try: () => {
+          const server = Bun.serve({
+            unix: socketPath,
+            fetch: (request) => app.fetch(request),
+          });
+          unixServer = server;
+          unixSocketPath = socketPath;
+          chmodSync(socketPath, 0o600);
+        },
+        catch: captureError,
+      }).mapError((error) => error.cause),
+    );
+  }
+
+  function stopServers(): ToolServerCleanupFailure[] {
+    const appWasStarted = started;
+    const capturedUnixServer = unixServer;
+    const capturedUnixSocketPath = unixSocketPath;
+    started = false;
+    unixServer = undefined;
+    unixSocketPath = undefined;
+
+    const failures: ToolServerCleanupFailure[] = [];
+    if (appWasStarted) {
+      const failure = captureCleanupOperation("http.stop", () => app.stop());
+      if (failure) failures.push(failure);
+    }
+    if (capturedUnixServer) {
+      const failure = captureCleanupOperation("unix.stop", () => capturedUnixServer.stop(true));
+      if (failure) failures.push(failure);
+    }
+    if (capturedUnixSocketPath) {
+      const failure = recordCleanupResult(
+        "unix.remove",
+        removeOwnedUnixSocket(capturedUnixSocketPath),
+      );
+      if (failure) failures.push(failure);
+    }
+    return failures;
+  }
+
+  function rollbackServerStart(priorFailure: Error): void {
+    const failures = stopServers();
+    const markFailure = captureCleanupOperation("health.mark-not-listening", () => {
+      healthState.markListening(false);
+    });
+    if (markFailure) failures.push(markFailure);
+    const monitoringFailure = captureCleanupOperation("health.stop-monitoring", () => {
+      healthState.stopMonitoring();
+    });
+    if (monitoringFailure) failures.push(monitoringFailure);
+    settleLifecycleFailure(priorFailure, failures);
+  }
 
   function recordUnhandledRejectionAtBoundary(reason: unknown): void {
     healthState.recordUnhandledRejection(projectUnhandledRejectionReason(reason));
@@ -1704,17 +1830,38 @@ export function createToolServer(options: ToolServerOptions) {
     start: async (port: number) => {
       if (started) return;
       started = true;
-      healthState.startMonitoring();
-
-      // Elysia listen is sync-ish, but server becomes available shortly after.
-      app.listen(port);
-      healthState.markListening(true);
-      logger.info(`Tool server listening on port ${app.server?.hostname}:${app.server?.port}`);
+      const configuredSocket = process.env.TOOL_SERVER_BACKEND_SOCKET;
+      const startup = Result.try({
+        try: () => {
+          healthState.startMonitoring();
+          // Elysia listen is sync-ish, but server becomes available shortly after.
+          app.listen(port);
+        },
+        catch: captureError,
+      })
+        .mapError((error) => error.cause)
+        .andThen(() =>
+          configuredSocket ? startUnixServer(configuredSocket) : Result.ok(undefined),
+        )
+        .andThen(() =>
+          Result.try({
+            try: () => {
+              healthState.markListening(true);
+              logger.info(
+                `Tool server listening on port ${app.server?.hostname}:${app.server?.port}`,
+              );
+              if (unixSocketPath)
+                logger.info(`Tool server listening on unix socket ${unixSocketPath}`);
+            },
+            catch: captureError,
+          }).mapError((error) => error.cause),
+        );
+      startup.match<() => void>({
+        ok: () => () => undefined,
+        err: (error) => () => rollbackServerStart(error),
+      })();
     },
     stop: async () => {
-      healthState.markListening(false);
-      healthState.markInitialized(false);
-      healthState.stopMonitoring();
       const destroy = async () => {
         if (options.pluginManager) {
           const destroyed = await options.pluginManager.destroy();
@@ -1726,10 +1873,27 @@ export function createToolServer(options: ToolServerOptions) {
           await runStaticToolLifecycle("level2.destroy");
         }
       };
-      await destroy().finally(() => {
-        if (started) app.stop();
-        started = false;
+      const failures: ToolServerCleanupFailure[] = [];
+      const markListeningFailure = captureCleanupOperation("health.mark-not-listening", () => {
+        healthState.markListening(false);
       });
+      if (markListeningFailure) failures.push(markListeningFailure);
+      const markInitializedFailure = captureCleanupOperation("health.mark-not-initialized", () => {
+        healthState.markInitialized(false);
+      });
+      if (markInitializedFailure) failures.push(markInitializedFailure);
+      const monitoringFailure = captureCleanupOperation("health.stop-monitoring", () => {
+        healthState.stopMonitoring();
+      });
+      if (monitoringFailure) failures.push(monitoringFailure);
+
+      const destroyResult = (
+        await Result.tryPromise({ try: destroy, catch: captureError })
+      ).mapError((error) => error.cause);
+      const destroyFailure = recordCleanupResult("tools.destroy", destroyResult);
+      if (destroyFailure) failures.push(destroyFailure);
+      failures.push(...stopServers());
+      settleLifecycleFailure(undefined, failures);
     },
     reload: reloadTools,
     getHealthSnapshot: async () => await healthState.getSnapshot(),

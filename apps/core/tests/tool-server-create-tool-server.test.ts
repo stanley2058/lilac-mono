@@ -158,6 +158,160 @@ export default {
 }
 
 describe("createToolServer", () => {
+  it("serves and cleans up the configured unix socket", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-socket-"));
+    const socketPath = path.join(root, "tool-server.sock");
+    const unrelatedPath = path.join(root, "unrelated.txt");
+    const previousSocket = process.env.TOOL_SERVER_BACKEND_SOCKET;
+    process.env.TOOL_SERVER_BACKEND_SOCKET = socketPath;
+    const server = createToolServer({ tools: [] });
+    let stopped = false;
+
+    try {
+      await server.init();
+      await server.start(0);
+      const response = await fetch("http://localhost/healthz", {
+        unix: socketPath,
+      });
+      expect(response.status).toBe(200);
+      expect((await response.json()) as { live: boolean }).toMatchObject({
+        live: true,
+      });
+      await fs.writeFile(unrelatedPath, "keep");
+      process.env.TOOL_SERVER_BACKEND_SOCKET = unrelatedPath;
+      await server.stop();
+      stopped = true;
+      expect(await fs.readFile(unrelatedPath, "utf8")).toBe("keep");
+    } finally {
+      if (!stopped) await server.stop();
+      if (previousSocket === undefined) delete process.env.TOOL_SERVER_BACKEND_SOCKET;
+      else process.env.TOOL_SERVER_BACKEND_SOCKET = previousSocket;
+      expect(await Bun.file(socketPath).exists()).toBe(false);
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to replace a non-socket unix path", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-file-"));
+    const socketPath = path.join(root, "tool-server.sock");
+    const previousSocket = process.env.TOOL_SERVER_BACKEND_SOCKET;
+    await fs.writeFile(socketPath, "keep");
+    process.env.TOOL_SERVER_BACKEND_SOCKET = socketPath;
+    const server = createToolServer({ tools: [] });
+
+    try {
+      await server.init();
+      await expect(server.start(0)).rejects.toThrow("Refusing to remove non-socket");
+      expect(await fs.readFile(socketPath, "utf8")).toBe("keep");
+    } finally {
+      await server.stop();
+      if (previousSocket === undefined) delete process.env.TOOL_SERVER_BACKEND_SOCKET;
+      else process.env.TOOL_SERVER_BACKEND_SOCKET = previousSocket;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes transport cleanup without replacing the original shutdown failure", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-cleanup-"));
+    const socketPath = path.join(root, "tool-server.sock");
+    const previousSocket = process.env.TOOL_SERVER_BACKEND_SOCKET;
+    const secret = "token=cleanup-secret";
+    const destroyFailure = new Error(`destroy failed: ${secret}`);
+    const stopFailure = new Error("http stop failed");
+    const chunks: string[] = [];
+    const output = { write: (chunk: string) => chunks.push(chunk) };
+    process.env.TOOL_SERVER_BACKEND_SOCKET = socketPath;
+    const server = createToolServer({
+      pluginManager: {
+        init: async () => Result.ok(undefined),
+        destroy: async () => Promise.reject(destroyFailure),
+        reload: async () => Result.ok(undefined),
+        getLevel2Tools: () => [],
+      },
+      logger: createLogger({
+        module: "tool-server-cleanup-test",
+        outputFormat: "jsonl",
+        stdout: output,
+        stderr: output,
+      }),
+    });
+
+    try {
+      await server.init();
+      await server.start(0);
+      const originalStop = server.app.stop.bind(server.app);
+      jest.spyOn(server.app, "stop").mockImplementation(() => {
+        originalStop();
+        throw stopFailure;
+      });
+
+      await expect(server.stop()).rejects.toBe(destroyFailure);
+      expect(server.app.server).toBeNull();
+      expect(await Bun.file(socketPath).exists()).toBe(false);
+      expect(chunks.join("\n")).not.toContain(secret);
+    } finally {
+      jest.restoreAllMocks();
+      if (previousSocket === undefined) delete process.env.TOOL_SERVER_BACKEND_SOCKET;
+      else process.env.TOOL_SERVER_BACKEND_SOCKET = previousSocket;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces a cleanup Panic after attempting every transport cleanup", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-tool-server-panic-"));
+    const socketPath = path.join(root, "tool-server.sock");
+    const previousSocket = process.env.TOOL_SERVER_BACKEND_SOCKET;
+    const destroyFailure = new Error("destroy failed");
+    const cleanupPanic = new Panic({ message: "http stop invariant" });
+    process.env.TOOL_SERVER_BACKEND_SOCKET = socketPath;
+    const server = createToolServer({
+      pluginManager: {
+        init: async () => Result.ok(undefined),
+        destroy: async () => Promise.reject(destroyFailure),
+        reload: async () => Result.ok(undefined),
+        getLevel2Tools: () => [],
+      },
+    });
+
+    try {
+      await server.init();
+      await server.start(0);
+      const originalStop = server.app.stop.bind(server.app);
+      jest.spyOn(server.app, "stop").mockImplementation(() => {
+        originalStop();
+        throw cleanupPanic;
+      });
+
+      await expect(server.stop()).rejects.toBe(cleanupPanic);
+      expect(server.app.server).toBeNull();
+      expect(await Bun.file(socketPath).exists()).toBe(false);
+    } finally {
+      jest.restoreAllMocks();
+      if (previousSocket === undefined) delete process.env.TOOL_SERVER_BACKEND_SOCKET;
+      else process.env.TOOL_SERVER_BACKEND_SOCKET = previousSocket;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces an ordinary transport cleanup failure after shutdown", async () => {
+    const stopFailure = new Error("http stop failed");
+    const server = createToolServer({ tools: [] });
+    await server.init();
+    await server.start(0);
+    const originalStop = server.app.stop.bind(server.app);
+    jest.spyOn(server.app, "stop").mockImplementation(() => {
+      originalStop();
+      throw stopFailure;
+    });
+
+    try {
+      await expect(server.stop()).rejects.toBe(stopFailure);
+      expect(server.app.server).toBeNull();
+    } finally {
+      jest.restoreAllMocks();
+    }
+  });
+
   it("rejects an invalid operator-token digest through the host option adapter", () => {
     expect(() => createToolServer({ operatorTokenSha256: "not-a-sha256-digest" })).toThrow(
       "operatorTokenSha256 must be a SHA-256 hex digest",
