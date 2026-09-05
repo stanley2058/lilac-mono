@@ -6,19 +6,19 @@ Statuses are implementation progress. An issue is complete after its acceptance 
 
 | ID | Audit item | Priority | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
-| ARCH-01 | 1, workflow takeover | P1 | Implemented | Recurring reconciliation takes over a crashed owner's run after lease expiry; live claims remain fenced. |
-| ARCH-02 | 2, runner preparation | P1 | Implemented | Failure during preparation releases acquired parents and request ownership; later session requests progress; partial parent setup rolls back. |
-| ARCH-03 | 3, plugin retirement | P1 | Implemented | Retired plugin instances stay alive for existing Level 1 toolsets and Level 2 calls; release triggers cleanup; reload from an active run does not deadlock. |
-| ARCH-04 | 4, artifact paging | P1 | Implemented | Local and blob adapters share streaming page policy; page reads retain bounded content and validate complete integrity/authentication. |
-| ARCH-05 | 5, ACP lock ownership | P1 | Implemented | Cross-process exclusion survives contention and releases on owner death; stale legacy lock directories cannot block index mutation. |
-| ARCH-06 | 6, tools client duplication | P2 | Implemented | Restricted help preserves all native help fields; both clients share protocol decoding and pure argument policy while keeping separate I/O adapters. |
-| ARCH-07 | 7, portable imports | P2 | Implemented | Portable helper imports outside a workspace do not require Core environment or initialize providers; existing product bootstrap remains compatible. |
-| ARCH-10 | 10, Discord projection | P2 | Implemented | Tool, prompt, and indexing consumers use Discord-owned attachment/reference projection; external and stored formats remain compatible. |
-| ARCH-11 | 11, workflow blob ownership | P2 | Implemented | Publication retains recoverable cleanup ownership before durable blob creation; crash/duplicate cleanup cannot abandon unreachable durable objects or delete live canonical artifacts. |
-| ARCH-13 | Follow-up, Claude attempts | P2 | Implemented | Named and primary continuation share attempt lifecycle policy while retaining distinct proof checks, tables, transactions, and outcomes. |
-| ARCH-14 | Follow-up, canonicalization | P3 | Implemented | Coding-tool traversal delegates to fs canonicalization with tilde handling and existing error/guardrail semantics preserved. |
-| ARCH-15 | Follow-up, source classification | P3 | Implemented | Semantic and syntax scanners share production-source classification, including production src/fixtures and test-owned fixture exclusions. |
-| ARCH-16 | Follow-up, product test selection | P3 | Implemented | Product test commands include their workspace dependency closure, including blob-storage; a regression check prevents omissions. |
+| ARCH-01 | 1, workflow takeover | P1 | Complete | Recurring reconciliation takes over a crashed owner's run after lease expiry; live claims remain fenced. |
+| ARCH-02 | 2, runner preparation | P1 | Complete | Failure during preparation releases acquired parents and request ownership; later session requests progress; partial parent setup rolls back. |
+| ARCH-03 | 3, plugin retirement | P1 | Complete | Retired plugin instances stay alive for existing Level 1 toolsets and Level 2 calls; release triggers cleanup; reload from an active run does not deadlock. |
+| ARCH-04 | 4, artifact paging | P1 | Complete | Local and blob adapters share streaming page policy; page reads retain bounded content and validate complete integrity/authentication. |
+| ARCH-05 | 5, ACP lock ownership | P1 | Complete | Cross-process exclusion survives contention and releases on owner death; stale legacy lock directories cannot block index mutation. |
+| ARCH-06 | 6, tools client duplication | P2 | Complete | Restricted help preserves all native help fields; both clients share protocol decoding and pure argument policy while keeping separate I/O adapters. |
+| ARCH-07 | 7, portable imports | P2 | Complete | Portable helper imports outside a workspace do not require Core environment or initialize providers; existing product bootstrap remains compatible. |
+| ARCH-10 | 10, Discord projection | P2 | Complete | Tool, prompt, and indexing consumers use Discord-owned attachment/reference projection; external and stored formats remain compatible. |
+| ARCH-11 | 11, workflow blob ownership | P2 | Complete | Publication retains recoverable cleanup ownership before durable blob creation; crash/duplicate cleanup cannot abandon unreachable durable objects or delete live canonical artifacts. |
+| ARCH-13 | Follow-up, Claude attempts | P2 | Complete | Named and primary continuation share attempt lifecycle policy while retaining distinct proof checks, tables, transactions, and outcomes. |
+| ARCH-14 | Follow-up, canonicalization | P3 | Complete | Coding-tool traversal delegates to fs canonicalization with tilde handling and existing error/guardrail semantics preserved. |
+| ARCH-15 | Follow-up, source classification | P3 | Complete | Semantic and syntax scanners share production-source classification, including production src/fixtures and test-owned fixture exclusions. |
+| ARCH-16 | Follow-up, product test selection | P3 | Complete | Product test commands include their workspace dependency closure, including blob-storage; a regression check prevents omissions. |
 
 ## Completion gates
 
@@ -43,4 +43,12 @@ The first independent review against `main` found one Standards blocker and thre
 - Spec, ARCH-11: expired adoption could report absence without winning the expiry fence, allowing cleanup to delete a concurrently registered canonical blob.
 - Spec, ARCH-11: a remote content copy could finish after cleanup removed its reservation and expiry index, leaving bytes that maintenance could no longer find.
 
-Each finding requires a regression and a repair before the final independent recheck.
+All four findings were repaired in `7110122c` and `afe7e689`, with regressions for each. The Bash spool cleanup test also dropped an unreliable assumption that a child must print before a 20 ms timeout; timeout behavior and cleanup remain checked.
+
+The final independent review compared `afe7e689` against `main` at `8ba7f40f931abdb132eafbb11db14d1d9c8ca6ad`:
+
+- Standards: zero blockers or new documented violations.
+- Spec: zero blockers; all thirteen acceptance criteria satisfied, with Mini deferred.
+- Storage race recheck: zero blockers; 103 focused tests passed and the optional real-S3 integration was skipped.
+
+The full repository check passed before each repair commit, with 5,430 passing tests on the final code. One earlier full run hit a Mini UI timeout that passed both focused and subsequent full reruns. No Mini source was changed. The final documentation commit records this completed review and runs the same repository check before commit.
