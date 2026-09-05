@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from "bun:test";
 
-import { createLogger } from "@stanley2058/lilac-utils";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
 
 import {
   computeTransientRetryDelayMs,

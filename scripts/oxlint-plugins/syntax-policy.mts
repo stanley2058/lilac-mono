@@ -1,3 +1,5 @@
+import { PRODUCTION_FILE_EXCLUSIONS } from "../architecture/source-policy.ts";
+
 export type ExceptionFlowKind =
   | "try-statement"
   | "promise-catch"
@@ -45,26 +47,5 @@ export const SYNTACTIC_POLICY: SyntacticPolicy = {
       symbol: "isRecord",
     },
   ],
-  productionExclusions: [
-    {
-      pattern: "(?:^|/)(?:tests?|__tests__)(?:/|$)",
-      reason: "Production syntax policy does not apply to test support trees",
-    },
-    {
-      pattern: "\\.(?:spec|test)\\.[cm]?[jt]sx?$",
-      reason: "Production syntax policy does not apply to test modules",
-    },
-    {
-      pattern: "(?:^|/)(?:dist|generated)(?:/|$)",
-      reason: "Generated output is enforced at its source module",
-    },
-    {
-      pattern: "(?:^|/)vendor(?:/|$)",
-      reason: "Vendored third-party source is enforced by its upstream project",
-    },
-    {
-      pattern: "^apps/core/src/ssh/remote-js/remote-runner\\.cjs$",
-      reason: "Generated remote runner bundle is enforced at its TypeScript source",
-    },
-  ],
+  productionExclusions: PRODUCTION_FILE_EXCLUSIONS,
 };

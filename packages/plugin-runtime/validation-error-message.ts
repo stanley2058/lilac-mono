@@ -1,6 +1,6 @@
 import { ZodError } from "zod";
 import type { output, ZodType } from "zod";
-import { errorMessage as toErrorMessage, isRecord } from "@stanley2058/lilac-utils";
+import { errorMessage as toErrorMessage, isRecord } from "@stanley2058/lilac-utils/runtime-utils";
 import { Result, type Result as ResultType } from "better-result";
 
 export type ToolValidationErrorParams = {

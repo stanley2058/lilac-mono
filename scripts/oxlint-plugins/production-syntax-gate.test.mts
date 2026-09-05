@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import path from "node:path";
 
 import { architectureManifest, type ArchitectureManifest } from "../architecture/manifest.ts";
+import { isProductionFileName } from "../architecture/source-policy.ts";
+import { SYNTACTIC_POLICY } from "./syntax-policy.mts";
+import { createProductionFileExclusionMatcher } from "./syntax-rule-utils.mts";
 
 import {
   formatSyntaxDiagnostic,
@@ -31,6 +35,33 @@ function fixtureManifest(): ArchitectureManifest {
 }
 
 describe("repository syntax gate", () => {
+  it.each([
+    ["apps/core", "src/service.ts", true],
+    ["apps/core", "src/fixtures/runtime.ts", true],
+    ["apps/core", "tests/fixtures/support.ts", false],
+    ["apps/core", "test/support.ts", false],
+    ["apps/core", "__tests__/support.ts", false],
+    ["apps/core", "src/service.test.ts", false],
+    ["apps/core", "src/service.spec.mts", false],
+    ["apps/core", "src/generated/output.ts", false],
+    ["apps/core", "dist/main.js", false],
+    ["apps/core", "src/vendor/library.ts", false],
+    ["apps/core", "src/ssh/remote-js/remote-runner.cjs", false],
+    ["apps/core", "src/ssh/remote-js/remote-runner-entry.ts", true],
+    ["apps/example", "src/ssh/remote-js/remote-runner.cjs", true],
+    ["packages/example", "src/fixtures/runtime.ts", true],
+  ] as const)("shares production ownership for %s/%s", (workspace, module, expected) => {
+    const root = path.resolve(import.meta.dir, "../..");
+    const file = `${workspace}/${module}`;
+    const syntaxExcluded = createProductionFileExclusionMatcher(
+      SYNTACTIC_POLICY.productionExclusions,
+    );
+    expect(!syntaxExcluded(file)).toBe(expected);
+    expect(!syntaxExcluded(path.join(root, file))).toBe(expected);
+    expect(!syntaxExcluded(file.replaceAll("/", "\\"))).toBe(expected);
+    expect(isProductionFileName(path.join(root, file), path.join(root, workspace))).toBe(expected);
+  });
+
   it("discovers fixture sources, preserves fixture directories, and excludes tests before parsing", async () => {
     const findings = await scanSyntaxFindings(fixtureManifest(), FIXTURE_ROOT);
 

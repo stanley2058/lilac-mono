@@ -26,15 +26,14 @@ import {
 } from "ai";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
+import { errorMessage, isRecord } from "@stanley2058/lilac-utils/runtime-utils";
+import { type ModelReasoningEffort } from "@stanley2058/lilac-utils/core-config/types";
 import {
-  createLogger,
-  errorMessage,
-  isRecord,
-  type ModelReasoningEffort,
   normalizeReplayMessages,
   normalizeAssistantToolCallInputMessage,
   normalizeToolCallInputValue,
-} from "@stanley2058/lilac-utils";
+} from "@stanley2058/lilac-utils/tool-call-input-normalization";
 
 import {
   executeAtomicToolCallResult,

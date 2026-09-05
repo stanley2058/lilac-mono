@@ -6,7 +6,8 @@ import {
   type ToolSet,
 } from "ai";
 import { Result, TaggedError, type Panic, type Result as ResultType } from "better-result";
-import { createLogger, errorMessage } from "@stanley2058/lilac-utils";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
+import { errorMessage } from "@stanley2058/lilac-utils/runtime-utils";
 
 import {
   captureAgentOperation,

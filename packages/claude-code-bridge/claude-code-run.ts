@@ -1,5 +1,6 @@
 import type { ExternalToolExecutionOutcome } from "@stanley2058/lilac-agent";
-import { claudeCodeExecutableSettings, opaqueErrorMessage } from "@stanley2058/lilac-utils";
+import { claudeCodeExecutableSettings } from "@stanley2058/lilac-utils/claude-code-executable";
+import { opaqueErrorMessage } from "@stanley2058/lilac-utils/runtime-utils";
 import type { LanguageModel, ToolSet } from "ai";
 import {
   createClaudeCode,

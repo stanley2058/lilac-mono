@@ -11,10 +11,12 @@ import { Result, TaggedError, type Result as ResultType } from "better-result";
 import {
   SERVER_COMPACTION_REQUEST_HEADER,
   SERVER_COMPACTION_REQUEST_MARKER,
-  isOpenAICompactionPart,
+} from "@stanley2058/lilac-utils/server-compaction-request";
+import { isOpenAICompactionPart } from "@stanley2058/lilac-utils/model-message-provider-options";
+import {
   type JSONObject,
   type ModelReasoningEffort,
-} from "@stanley2058/lilac-utils";
+} from "@stanley2058/lilac-utils/core-config/types";
 
 import { stripToolExecuteForModel, type SystemPrompt } from "./ai-sdk-pi-agent";
 import { captureAgentPromise, rethrowAgentPanic, type OpaqueAgentValue } from "./failure-adapters";

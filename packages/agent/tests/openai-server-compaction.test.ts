@@ -6,7 +6,7 @@ import { z } from "zod";
 import {
   SERVER_COMPACTION_REQUEST_HEADER,
   SERVER_COMPACTION_REQUEST_MARKER,
-} from "@stanley2058/lilac-utils";
+} from "@stanley2058/lilac-utils/server-compaction-request";
 
 import {
   compactWithOpenAIResponses,

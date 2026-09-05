@@ -1,10 +1,9 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 
 import {
-  captureFilesystemOperation,
+  canonicalizePathAsFarAsExists,
   expandTilde,
-  type FileSystemOperationFailed,
+  FileSystemOperationFailed,
 } from "@stanley2058/lilac-fs";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
@@ -64,64 +63,17 @@ export function assertLocalCwd(cwd: string): void {
 export async function canonicalizeAsFarAsExistsResult(
   inputPath: string,
 ): Promise<ResultType<string, FileSystemOperationFailed>> {
-  let current = path.resolve(expandTilde(inputPath));
-  const missingSegments: string[] = [];
-
-  while (true) {
-    const existing = await captureFilesystemOperation("canonicalize path", () =>
-      fs.realpath(current),
-    );
-    const existingOutcome = existing.match<
-      { value: string } | { error: FileSystemOperationFailed }
-    >({
-      ok: (value) => ({ value }),
-      err: (error) => ({ error }),
+  return (await canonicalizePathAsFarAsExists(expandTilde(inputPath))).mapError((error) => {
+    const operation =
+      error.operation === "inspect canonical path segment"
+        ? "inspect unresolved path"
+        : error.operation;
+    return new FileSystemOperationFailed({
+      operation: operation === "read canonical path symlink" ? "read symbolic link" : operation,
+      code: error.code,
+      message: error.message,
     });
-    if ("value" in existingOutcome) {
-      return Result.ok(path.resolve(existingOutcome.value, ...missingSegments));
-    }
-    if (existingOutcome.error.code !== "ENOENT" && existingOutcome.error.code !== "ENOTDIR") {
-      return Result.err(existingOutcome.error);
-    }
-
-    const stats = await captureFilesystemOperation("inspect unresolved path", () =>
-      fs.lstat(current),
-    );
-    const statsOutcome = stats.match<
-      { value: Awaited<ReturnType<typeof fs.lstat>> } | { error: FileSystemOperationFailed }
-    >({
-      ok: (value) => ({ value }),
-      err: (error) => ({ error }),
-    });
-    if (
-      "error" in statsOutcome &&
-      statsOutcome.error.code !== "ENOENT" &&
-      statsOutcome.error.code !== "ENOTDIR"
-    ) {
-      return Result.err(statsOutcome.error);
-    }
-    if ("value" in statsOutcome && statsOutcome.value.isSymbolicLink()) {
-      const linkTarget = await captureFilesystemOperation("read symbolic link", () =>
-        fs.readlink(current),
-      );
-      const targetOutcome = linkTarget.match<
-        { value: string } | { error: FileSystemOperationFailed }
-      >({
-        ok: (value) => ({ value }),
-        err: (error) => ({ error }),
-      });
-      if ("error" in targetOutcome) return Result.err(targetOutcome.error);
-      current = path.isAbsolute(targetOutcome.value)
-        ? path.resolve(targetOutcome.value)
-        : path.resolve(path.dirname(current), targetOutcome.value);
-      continue;
-    }
-
-    const parent = path.dirname(current);
-    if (parent === current) return Result.ok(path.resolve(current, ...missingSegments));
-    missingSegments.unshift(path.basename(current));
-    current = parent;
-  }
+  });
 }
 
 export async function canonicalizeAsFarAsExists(inputPath: string): Promise<string> {

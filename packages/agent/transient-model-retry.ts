@@ -1,6 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { createLogger, extractAiErrorLogDetails, isRecord } from "@stanley2058/lilac-utils";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
+import { extractAiErrorLogDetails } from "@stanley2058/lilac-utils/ai-error";
+import { isRecord } from "@stanley2058/lilac-utils/runtime-utils";
 
 import { captureAgentOperation, captureAgentPromise, rethrowAgentPanic } from "./failure-adapters";
 import { isLikelyContextOverflowError } from "./context-overflow";

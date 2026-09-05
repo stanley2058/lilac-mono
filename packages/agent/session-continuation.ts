@@ -4,7 +4,7 @@ import type { ModelMessage } from "ai";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
 
-import { isRecord } from "@stanley2058/lilac-utils";
+import { isRecord } from "@stanley2058/lilac-utils/runtime-utils";
 
 import {
   captureAgentOperation,

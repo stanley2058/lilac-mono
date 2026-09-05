@@ -23,12 +23,9 @@ import {
   readOpenAIServerCompactionArtifact,
   type OpenAIServerCompactionArtifact,
 } from "./openai-server-compaction";
-import {
-  isOpenAICompactionPart,
-  ModelCapability,
-  type JSONObject,
-  type ModelSpecifier,
-} from "@stanley2058/lilac-utils";
+import { isOpenAICompactionPart } from "@stanley2058/lilac-utils/model-message-provider-options";
+import { ModelCapability, type ModelSpecifier } from "@stanley2058/lilac-utils/model-capability";
+import { type JSONObject } from "@stanley2058/lilac-utils/core-config/types";
 
 function getString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;

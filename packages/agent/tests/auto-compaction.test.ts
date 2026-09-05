@@ -2,7 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { jsonSchema, tool, type LanguageModel, type ModelMessage } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 
-import { ModelCapability } from "@stanley2058/lilac-utils";
+import { ModelCapability } from "@stanley2058/lilac-utils/model-capability";
 
 import {
   attachAutoCompaction,

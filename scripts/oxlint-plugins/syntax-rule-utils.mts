@@ -2,6 +2,16 @@ import { createHash } from "node:crypto";
 
 import ts from "typescript-codegen";
 
+import {
+  createProductionFileExclusionMatcher,
+  type ProductionFileExclusionMatcher,
+} from "../architecture/source-policy.ts";
+
+export {
+  createProductionFileExclusionMatcher,
+  type ProductionFileExclusionMatcher,
+} from "../architecture/source-policy.ts";
+
 export interface SourceIdentity {
   readonly module: string;
   readonly workspace: string;
@@ -21,8 +31,6 @@ export interface SyntacticFinding<Kind extends string> {
 interface ProductionExclusion {
   readonly pattern: string;
 }
-
-export type ProductionFileExclusionMatcher = (filePath: string) => boolean;
 
 const PRODUCTION_EXCLUSION_MATCHERS = new WeakMap<
   readonly ProductionExclusion[],
@@ -53,16 +61,6 @@ export function isExcludedProductionFile(
     PRODUCTION_EXCLUSION_MATCHERS.set(exclusions, matcher);
   }
   return matcher(filePath);
-}
-
-export function createProductionFileExclusionMatcher(
-  exclusions: readonly ProductionExclusion[],
-): ProductionFileExclusionMatcher {
-  const patterns = exclusions.map((exclusion) => new RegExp(exclusion.pattern, "iu"));
-  return (filePath) => {
-    const normalized = normalizeFilePath(filePath);
-    return patterns.some((pattern) => pattern.test(normalized));
-  };
 }
 
 export function scriptKindFor(filePath: string): ts.ScriptKind {

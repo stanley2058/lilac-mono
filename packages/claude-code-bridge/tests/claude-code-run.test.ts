@@ -1,5 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { claudeCodeExecutableSettings } from "@stanley2058/lilac-utils";
+import { claudeCodeExecutableSettings } from "@stanley2058/lilac-utils/claude-code-executable";
 import { tool } from "ai";
 import { createClaudeCode, type ClaudeCodeSettings } from "ai-sdk-provider-claude-code";
 import { Panic } from "better-result";

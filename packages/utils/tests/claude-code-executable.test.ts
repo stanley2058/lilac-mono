@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { claudeCodeExecutableSettings } from "../model-provider";
+import { claudeCodeExecutableSettings } from "../claude-code-executable";
 
 describe("claudeCodeExecutableSettings", () => {
   it("points the SDK at the resolved Claude installation", () => {

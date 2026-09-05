@@ -7,7 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ExternalToolExecutionOutcome, ToolResultOutput } from "@stanley2058/lilac-agent";
-import { isRecord, opaqueErrorMessage } from "@stanley2058/lilac-utils";
+import { isRecord, opaqueErrorMessage } from "@stanley2058/lilac-utils/runtime-utils";
 import { asSchema, type ToolSet } from "ai";
 import type { ClaudeCodeSettings } from "ai-sdk-provider-claude-code";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";

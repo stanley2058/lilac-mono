@@ -1272,7 +1272,8 @@ describe("Stage 2 union rules", () => {
     expect(isProductionFileName(path.join(root, "tests/support.ts"), root)).toBeFalse();
     expect(isProductionFileName(path.join(root, "__tests__/support.ts"), root)).toBeFalse();
     expect(isProductionFileName(path.join(root, "src/generated/output.ts"), root)).toBeFalse();
-    expect(isProductionFileName(path.join(root, "src/fixtures/production.ts"), root)).toBeFalse();
+    expect(isProductionFileName(path.join(root, "src/fixtures/production.ts"), root)).toBeTrue();
+    expect(isProductionFileName(path.join(root, "tests/fixtures/support.ts"), root)).toBeFalse();
     expect(isProductionFileName(path.join(root, "src/vendor/library.ts"), root)).toBeFalse();
   });
 });
@@ -3085,6 +3086,31 @@ describe("real declaration integration", () => {
 });
 
 describe("architecture Program construction", () => {
+  test("checks production fixture modules while excluding test-owned fixture modules", () => {
+    withProgramFixture(
+      {
+        "src/fixtures/runtime.ts":
+          "export function project(value: unknown) { return value as { id: string }; }\n",
+        "tests/fixtures/support.ts":
+          "export function project(value: unknown) { return value as { id: string }; }\n",
+      },
+      ({ repositoryRoot, workspaceRoot, workspace }) => {
+        const program = createWorkspaceProgram(repositoryRoot, workspace).program;
+        const findings = analyzeWorkspace(
+          {
+            ...workspace,
+            ruleZones: { "architecture/no-unknown-assertion": [{ include: "**" }] },
+          },
+          workspaceRoot,
+          program,
+        );
+        expect(findings.map(({ rule, location }) => ({ rule, file: location?.file }))).toEqual([
+          { rule: "architecture/no-unknown-assertion", file: "src/fixtures/runtime.ts" },
+        ]);
+      },
+    );
+  });
+
   test("filters non-production roots, retains declarations, and resolves imported dependencies", () => {
     withProgramFixture(
       {

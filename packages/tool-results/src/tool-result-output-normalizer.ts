@@ -1,4 +1,4 @@
-import { createLogger } from "@stanley2058/lilac-utils";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
 import type { ToolModelMessage } from "ai";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 import { stripVTControlCharacters } from "node:util";

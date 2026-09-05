@@ -5,7 +5,8 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
-import { createLogger, errorCode } from "@stanley2058/lilac-utils";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
+import { errorCode } from "@stanley2058/lilac-utils/runtime-utils";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 
 import {

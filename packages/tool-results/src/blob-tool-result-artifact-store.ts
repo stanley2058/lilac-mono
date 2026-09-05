@@ -9,7 +9,8 @@ import {
   type BlobSource,
   type BlobStore,
 } from "@stanley2058/lilac-blob-storage";
-import { createLogger, errorCode } from "@stanley2058/lilac-utils";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
+import { errorCode } from "@stanley2058/lilac-utils/runtime-utils";
 import { Panic, Result, type Result as ResultType } from "better-result";
 
 import {
