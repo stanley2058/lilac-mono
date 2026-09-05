@@ -1,4 +1,6 @@
 import type { ToolSet } from "ai";
+import { isPluginPanic, safePluginExceptionCause } from "@stanley2058/lilac-plugin-runtime";
+import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import { computeInputCompactionBudget } from "@stanley2058/lilac-agent";
 import type { CorePrimaryLineageV2 } from "@stanley2058/lilac-event-bus";
 import {
@@ -275,55 +277,81 @@ export function createDiscordContextReportProvider(params: {
       );
     }
 
-    const selectedCatalogIds = resolveCorePrimaryLoadedCatalogIds({
-      lineage: request.corePrimaryLineage,
-      transcriptStore: params.transcriptStore,
-    });
-    const activeToolNames = selectedLevel1ToolNames(toolset, selectedCatalogIds);
-    toolset.updateActiveBatchTools(activeToolNames);
-    const activeTools = selectActiveTools(toolset.tools, activeToolNames);
-    const estimate = estimateContextSnapshotTokens({
-      system,
-      skillsSection,
-      additionalSessionPrompts,
-      messages: request.messages,
-      tools: activeTools,
-    });
+    const buildReport = async () => {
+      const selectedCatalogIds = resolveCorePrimaryLoadedCatalogIds({
+        lineage: request.corePrimaryLineage,
+        transcriptStore: params.transcriptStore,
+      });
+      const activeToolNames = selectedLevel1ToolNames(toolset, selectedCatalogIds);
+      toolset.updateActiveBatchTools(activeToolNames);
+      const activeTools = selectActiveTools(toolset.tools, activeToolNames);
+      const estimate = estimateContextSnapshotTokens({
+        system,
+        skillsSection,
+        additionalSessionPrompts,
+        messages: request.messages,
+        tools: activeTools,
+      });
 
-    const capabilityConfig = request.config.models.capability;
-    const capability = await new ModelCapability({
-      forceUnknownProviders: capabilityConfig?.forceUnknownProviders ?? ["openai-compatible"],
-      overrides: capabilityConfig?.overrides ?? {},
-    }).resolveResult(resolved.spec);
-    const modelLimits = capability.match({
-      ok: (value) => (value.limit.context > 0 ? value.limit : null),
-      err: () => null,
-    });
-    const contextLimit = modelLimits?.context ?? null;
-    const compactionTrigger = modelLimits
-      ? computeInputCompactionBudget({
-          contextLimit: modelLimits.context,
-          outputLimit: modelLimits.output,
-        }).inputBudget
-      : null;
-    const selectedSet = new Set(selectedCatalogIds);
-    const selectedToolCount = toolset.catalog.filter((entry) =>
-      selectedSet.has(entry.stableId),
-    ).length;
+      const capabilityConfig = request.config.models.capability;
+      const capability = await new ModelCapability({
+        forceUnknownProviders: capabilityConfig?.forceUnknownProviders ?? ["openai-compatible"],
+        overrides: capabilityConfig?.overrides ?? {},
+      }).resolveResult(resolved.spec);
+      const modelLimits = capability.match({
+        ok: (value) => (value.limit.context > 0 ? value.limit : null),
+        err: () => null,
+      });
+      const contextLimit = modelLimits?.context ?? null;
+      const compactionTrigger = modelLimits
+        ? computeInputCompactionBudget({
+            contextLimit: modelLimits.context,
+            outputLimit: modelLimits.output,
+          }).inputBudget
+        : null;
+      const selectedSet = new Set(selectedCatalogIds);
+      const selectedToolCount = toolset.catalog.filter((entry) =>
+        selectedSet.has(entry.stableId),
+      ).length;
 
-    return Result.ok(
-      formatReport({
-        source: request.source,
-        model: resolved.spec,
-        estimate,
-        contextLimit,
-        compactionTrigger,
-        activeToolCount: activeToolNames.size,
-        selectedToolCount,
-        pluginCatalogCount: toolset.catalog.filter((entry) => entry.source === "plugin").length,
-        mcpCatalogCount: toolset.catalog.filter((entry) => entry.source === "mcp").length,
-      }),
-    );
+      return Result.ok(
+        formatReport({
+          source: request.source,
+          model: resolved.spec,
+          estimate,
+          contextLimit,
+          compactionTrigger,
+          activeToolCount: activeToolNames.size,
+          selectedToolCount,
+          pluginCatalogCount: toolset.catalog.filter((entry) => entry.source === "plugin").length,
+          mcpCatalogCount: toolset.catalog.filter((entry) => entry.source === "mcp").length,
+        }),
+      );
+    };
+    const [report] = await Promise.allSettled([buildReport()]);
+    const [cleanup] = await Promise.allSettled([toolset.release()]);
+    if (report.status === "rejected" && isPluginPanic(report.reason)) {
+      return adaptToolResultToHost(Result.err(report.reason));
+    }
+    if (cleanup.status === "rejected" && isPluginPanic(cleanup.reason)) {
+      return adaptToolResultToHost(Result.err(cleanup.reason));
+    }
+    if (report.status === "rejected") {
+      return adaptToolResultToHost(Result.err(safePluginExceptionCause(report.reason)));
+    }
+    if (cleanup.status === "rejected") {
+      return adaptToolResultToHost(Result.err(safePluginExceptionCause(cleanup.reason)));
+    }
+    return cleanup.value
+      .andThen(() => report.value)
+      .mapError(
+        (error) =>
+          new DiscordContextReportFailed({
+            stage: "tools",
+            cause: error,
+            message: error.message,
+          }),
+      );
   };
 }
 

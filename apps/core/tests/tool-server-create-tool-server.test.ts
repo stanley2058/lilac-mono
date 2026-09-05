@@ -2362,6 +2362,7 @@ describe("createToolServer", () => {
 
   it("reloads onboarding tools after the initiating call releases its generation", async () => {
     const callGenerations: number[] = [];
+    const destroyedGenerations: number[] = [];
     let generation = 0;
     let activeGeneration: number | null = null;
     let destroyedWhileActive = false;
@@ -2384,6 +2385,7 @@ describe("createToolServer", () => {
                   id: "onboarding",
                   async init() {},
                   async destroy() {
+                    destroyedGenerations.push(current);
                     if (activeGeneration === current) destroyedWhileActive = true;
                   },
                   async list() {
@@ -2415,6 +2417,7 @@ describe("createToolServer", () => {
     const server = createToolServer({ pluginManager });
 
     await server.init();
+    const runGeneration = pluginManager.acquireGeneration();
     const response = await server.app.handle(
       new Request("http://localhost/call", {
         method: "POST",
@@ -2427,6 +2430,9 @@ describe("createToolServer", () => {
     expect(callGenerations).toEqual([1]);
     expect(generation).toBe(2);
     expect(destroyedWhileActive).toBe(false);
+    expect(destroyedGenerations).toEqual([]);
+    expect((await runGeneration.release()).status).toBe("ok");
+    expect(destroyedGenerations).toEqual([1]);
     await server.stop();
   });
 

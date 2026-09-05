@@ -32,6 +32,34 @@ export const REVIEWED_EXCEPTION_ADAPTERS: Readonly<Record<string, readonly Excep
     },
     {
       identity: {
+        module: "src/workflow/workflow-live-parent-bridge.ts",
+        exportName: "WorkflowLiveParentBridge.registerParent.then.<callback@1>",
+      },
+      category: "result-to-framework",
+      externalApi: {
+        package: "@stanley2058/lilac-core",
+        exportName: "live-parent lifecycle host",
+      },
+      direction: "signal-host",
+      reason:
+        "Rejects readiness with the selected child preparation failure after every preparation settles.",
+    },
+    {
+      identity: {
+        module: "src/workflow/workflow-live-parent-bridge.ts",
+        exportName: "WorkflowLiveParentBridge.registerParent.catch.<callback@1>",
+      },
+      category: "result-to-framework",
+      externalApi: {
+        package: "@stanley2058/lilac-core",
+        exportName: "live-parent lifecycle host",
+      },
+      direction: "signal-host",
+      reason:
+        "Releases failed live-parent registration before preserving the original readiness rejection and Panic precedence.",
+    },
+    {
+      identity: {
         module: "src/mcp/error-format.ts",
         exportName: "rethrowPanic",
       },

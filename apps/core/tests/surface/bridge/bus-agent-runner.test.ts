@@ -401,6 +401,7 @@ function level1TestToolset(params?: {
     updateActiveBatchTools: (activeToolNames) => params?.onBatchUpdate?.(activeToolNames),
     genericOutputNormalizerBypassTools: new Set(["builtin"]),
     aggregateOutputBudgetExemptTools: new Set(),
+    release: async () => Result.ok(undefined),
   };
 }
 
@@ -743,6 +744,7 @@ describe("runner Level 1 catalog selection", () => {
       updateActiveBatchTools: () => {},
       genericOutputNormalizerBypassTools: new Set(),
       aggregateOutputBudgetExemptTools: new Set(),
+      release: async () => Result.ok(undefined),
     };
     let calls = 0;
     const model = new MockLanguageModelV4({
@@ -2870,6 +2872,151 @@ function acceptedRunnerDelivery(input: {
 }
 
 describe("durable accepted runner recovery", () => {
+  it.each([false, true])(
+    "releases toolset ownership after run completion, cancelled during build=%s",
+    async (cancelDuringBuild) => {
+      const bus = createLilacBus(createInMemoryRawBus());
+      const config = parseCoreConfigV2ToUniversal({});
+      config.models.main = { model: "openai/toolset-release" };
+      const buildStarted = deferred<void>();
+      const finishBuild = deferred<void>();
+      const released = deferred<void>();
+      let releases = 0;
+      let modelCalls = 0;
+      const toolset = {
+        ...level1TestToolset(),
+        release: async () => {
+          releases += 1;
+          released.resolve(undefined);
+          return Result.ok(undefined);
+        },
+      };
+      const pluginManager = corePrimaryTestPluginManager(undefined, toolset);
+      pluginManager.buildLevel1ToolsetResult = async () => {
+        buildStarted.resolve(undefined);
+        if (cancelDuringBuild) await finishBuild.promise;
+        return Result.ok(toolset);
+      };
+      const runner = await startBusAgentRunner({
+        bus,
+        config,
+        pluginManager,
+        subscriptionId: "toolset-release",
+        reportFatalPanic: (panic) => {
+          throw panic;
+        },
+        issueControlCapability: () => ({ capability: "toolset-release", principal: null }),
+        createAgent: (options) =>
+          new AiSdkPiAgent({
+            ...options,
+            model: new MockLanguageModelV4({
+              modelId: "toolset-release",
+              doStream: async () => {
+                modelCalls += 1;
+                expect(releases).toBe(0);
+                return level1TextStep("finished");
+              },
+            }),
+          }),
+      });
+      const request = {
+        bus,
+        requestId: "github:toolset-release:request",
+        sessionId: "toolset-release",
+        text: "hold toolset ownership",
+      };
+      try {
+        await publishRunnerRequest(request);
+        await buildStarted.promise;
+        const drain = runner.getActiveDrainOperation();
+        if (cancelDuringBuild) {
+          await publishRunnerRequest({
+            ...request,
+            queue: "interrupt",
+            messages: [],
+            raw: { cancel: true },
+          });
+          await drain;
+          expect(releases).toBe(0);
+          finishBuild.resolve(undefined);
+        }
+        await released.promise;
+        await drain;
+        expect(releases).toBe(1);
+        expect(modelCalls).toBe(cancelDuringBuild ? 0 : 1);
+      } finally {
+        finishBuild.resolve(undefined);
+        await runner.stop();
+        await pluginManager.destroy();
+        await bus.close();
+      }
+    },
+  );
+  it.each(["register", "ready"] as const)(
+    "settles preparation failure at parent %s and starts the next session request",
+    async (failureStage) => {
+      const bus = createLilacBus(createInMemoryRawBus());
+      const pluginManager = corePrimaryTestPluginManager();
+      let registrations = 0;
+      let closes = 0;
+      const terminalized: string[] = [];
+      const workflowLiveParentBridge = {
+        registerParent: () => {
+          registrations += 1;
+          if (failureStage === "register") throw new Error("parent registration unavailable");
+          return {
+            ready: Promise.reject(new Error("child subscription unavailable")),
+            close: async () => {
+              closes += 1;
+            },
+          };
+        },
+      } as unknown as NonNullable<
+        Parameters<typeof startBusAgentRunner>[0]["workflowLiveParentBridge"]
+      >;
+      const runner = await startBusAgentRunner({
+        bus,
+        subscriptionId: `parent-preparation-${failureStage}`,
+        config: parseCoreConfigV2ToUniversal({}),
+        pluginManager,
+        workflowLiveParentBridge,
+        requestDelivery: {
+          terminalize: async ({ requestDeliveryId }: { requestDeliveryId: string }) => {
+            terminalized.push(requestDeliveryId);
+            return Result.ok(undefined);
+          },
+        } as unknown as BusAgentRunnerRequestDelivery,
+        reportFatalPanic: (panic) => {
+          throw panic;
+        },
+      });
+      try {
+        for (const suffix of ["first", "second"]) {
+          const requestDeliveryId = crypto.randomUUID();
+          transcriptResultValue(
+            await runner.resumeAcceptedDelivery(
+              acceptedRunnerDelivery({
+                requestDeliveryId,
+                requestId: `github:parent-preparation:${suffix}`,
+                sessionId: "parent-preparation",
+                queue: "prompt",
+                messages: [{ role: "user", content: "exercise preparation cleanup" }],
+              }),
+            ),
+          );
+          await runner.getActiveDrainOperation();
+          expect(terminalized).toContain(requestDeliveryId);
+        }
+        expect(registrations).toBe(2);
+        expect(closes).toBe(failureStage === "ready" ? 2 : 0);
+        expect(runner.getActiveLevel1Work()).toEqual([]);
+      } finally {
+        await runner.stop();
+        await pluginManager.destroy();
+        await bus.close();
+      }
+    },
+  );
   it.each(["handler-throw", "result-error", "already-accepted"] as const)(
     "does not start provider work for durable admission outcome %s",
     async (failureKind) => {

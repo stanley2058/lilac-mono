@@ -652,6 +652,7 @@ export type BusAgentRunnerTerminalCleanup = {
     | "core-named-retire"
     | "core-primary-retire"
     | "claude-dispose"
+    | "level1-toolset-release"
     | "live-close";
   readonly run: () => void | Promise<void>;
 };
@@ -4890,6 +4891,40 @@ export async function startBusAgentRunner(params: {
     );
     let unsubscribe = () => {};
     let unsubscribeCompaction = () => {};
+    const level1ToolsetReleases = new Set<BuiltLevel1Toolset["release"]>();
+    let level1ToolsetsClosed = false;
+    const releaseLevel1Toolset = async (release: BuiltLevel1Toolset["release"]): Promise<void> => {
+      const released = await captureBusAgentRunnerOperation(
+        "Level 1 toolset release",
+        release,
+        reportFatalPanic,
+      );
+      const failure = released.match<Error | null>({
+        ok: (result) => result.match({ ok: () => null, err: (error) => error }),
+        err: (error) => error,
+      });
+      if (failure) {
+        logger.warn(
+          "failed to release Level 1 toolset",
+          formatBridgeTaggedErrorForLog(failure, {
+            requestId: next.requestId,
+            sessionId: next.sessionId,
+          }),
+        );
+      }
+    };
+    const retainLevel1Toolset = async (
+      result: Awaited<ReturnType<CoreToolPluginManager["buildLevel1ToolsetResult"]>>,
+    ): Promise<Awaited<ReturnType<CoreToolPluginManager["buildLevel1ToolsetResult"]>>> => {
+      const release = result.match({ ok: (toolset) => toolset.release, err: () => null });
+      if (!release) return result;
+      if (level1ToolsetsClosed) {
+        await releaseLevel1Toolset(release);
+        return result;
+      }
+      level1ToolsetReleases.add(release);
+      return result;
+    };
 
     const headers: {
       request_id: string;
@@ -5113,15 +5148,7 @@ export async function startBusAgentRunner(params: {
       getOutputConfig: () => cfg.tools.output,
     });
 
-    const liveParentSession = params.workflowLiveParentBridge?.registerParent({
-      parentRequestId: next.requestId,
-      onActivity: () => markRunActivity("subagent"),
-      publishToolStatus: async (update) => {
-        await outputPublisher.publishToolCall(update);
-      },
-      recoverSynchronousDeliveries: next.recovery !== undefined,
-    });
-    await liveParentSession?.ready;
+    let liveParentSession: ReturnType<WorkflowLiveParentBridge["registerParent"]> | undefined;
     const workflowSubagentDispatcher = params.workflowSubagentDispatcher;
     let continuationSignalVersion = 0;
     const continuationWaiters = new Set<() => void>();
@@ -5160,23 +5187,7 @@ export async function startBusAgentRunner(params: {
       ]).finally(() => controller.abort());
     };
 
-    const runJournalHandle = next.requestDeliveryId
-      ? (next.journalHandle ??
-        openRunJournal({
-          requestDeliveryId: next.requestDeliveryId,
-          requestId: next.requestId,
-          sessionId: next.sessionId,
-        }))
-      : null;
-    const toolAuthority = new LineageToolAuthority(
-      next.loadedCatalogIds ??
-        (runProfile === "primary"
-          ? resolveCorePrimaryLoadedCatalogIds({
-              lineage: next.corePrimaryLineage,
-              transcriptStore: params.transcriptStore,
-            })
-          : []),
-    );
+    const toolAuthority = new LineageToolAuthority();
     state.activeRun = {
       ...(next.requestDeliveryId ? { requestDeliveryId: next.requestDeliveryId } : {}),
       requestId: next.requestId,
@@ -5227,7 +5238,7 @@ export async function startBusAgentRunner(params: {
         next.retainedRequestDeliveries?.map(({ requestDeliveryId }) => requestDeliveryId),
       ),
       retainedRequestDeliveryByInputId: new Map(),
-      journalHandle: runJournalHandle,
+      journalHandle: null,
       checkpointWriter: {
         disabled: false,
         pending: null,
@@ -5306,6 +5317,34 @@ export async function startBusAgentRunner(params: {
       const runResult = await captureBusAgentRunnerOperation(
         "agent queue run",
         async () => {
+          liveParentSession = params.workflowLiveParentBridge?.registerParent({
+            parentRequestId: next.requestId,
+            onActivity: () => markRunActivity("subagent"),
+            publishToolStatus: async (update) => {
+              await outputPublisher.publishToolCall(update);
+            },
+            recoverSynchronousDeliveries: next.recovery !== undefined,
+          });
+          await liveParentSession?.ready;
+          if (state.activeRun) state.activeRun.liveParent = liveParentSession;
+          const runJournalHandle = next.requestDeliveryId
+            ? (next.journalHandle ??
+              openRunJournal({
+                requestDeliveryId: next.requestDeliveryId,
+                requestId: next.requestId,
+                sessionId: next.sessionId,
+              }))
+            : null;
+          toolAuthority.select(
+            next.loadedCatalogIds ??
+              (runProfile === "primary"
+                ? resolveCorePrimaryLoadedCatalogIds({
+                    lineage: next.corePrimaryLineage,
+                    transcriptStore: params.transcriptStore,
+                  })
+                : []),
+          );
+          if (state.activeRun) state.activeRun.journalHandle = runJournalHandle;
           const looksLikeWorkflowRequest =
             next.requestId.startsWith("wfr:") || next.sessionId.startsWith("workflow:");
           if (workflowHint || looksLikeWorkflowRequest) {
@@ -6015,24 +6054,26 @@ export async function startBusAgentRunner(params: {
               },
             };
             const toolsetResult = await waitForPreAgent(
-              params.pluginManager.buildLevel1ToolsetResult({
-                cwd: executionCwd,
-                runProfile,
-                editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
-                subagentDepth: subagentMeta.depth,
-                subagentConfig: {
-                  enabled: subagents.enabled,
-                  idleTimeoutMs: deriveSubagentIdleTimeoutMs(cfg.agent.idleTimeoutMs),
-                  maxDepth: subagents.maxDepth,
-                },
-                requestContext: level1RequestContext,
-                onSelectCatalogIds: (catalogIds) => toolAuthority.select(catalogIds),
-                reportToolStatus: (update) => {
-                  void publishAuxiliaryOutput("failed to publish batch tool status", () =>
-                    outputPublisher.publishToolCall(update),
-                  );
-                },
-              }),
+              params.pluginManager
+                .buildLevel1ToolsetResult({
+                  cwd: executionCwd,
+                  runProfile,
+                  editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
+                  subagentDepth: subagentMeta.depth,
+                  subagentConfig: {
+                    enabled: subagents.enabled,
+                    idleTimeoutMs: deriveSubagentIdleTimeoutMs(cfg.agent.idleTimeoutMs),
+                    maxDepth: subagents.maxDepth,
+                  },
+                  requestContext: level1RequestContext,
+                  onSelectCatalogIds: (catalogIds) => toolAuthority.select(catalogIds),
+                  reportToolStatus: (update) => {
+                    void publishAuxiliaryOutput("failed to publish batch tool status", () =>
+                      outputPublisher.publishToolCall(update),
+                    );
+                  },
+                })
+                .then(retainLevel1Toolset),
             );
             return toolsetResult.map((toolset) => {
               level1RequestContext.currentTurnUserId = currentTurnUserId;
@@ -6952,18 +6993,19 @@ export async function startBusAgentRunner(params: {
               BusAgentRunnerOperationFailed
             >
           > => {
-            if (!liveParentSession) {
+            const parentSession = liveParentSession;
+            if (!parentSession) {
               return Result.ok({ append: [], forceNextTurn: false });
             }
 
-            const pendingIdentities = liveParentSession.listPendingIdentities();
+            const pendingIdentities = parentSession.listPendingIdentities();
             const consumedBeforeMaterialization = pendingIdentities
               .filter((identity) =>
                 hasConsumedDeferredSubagentResult(input.modelInputMessages, identity),
               )
               .map((identity) => identity.runId);
             if (consumedBeforeMaterialization.length > 0) {
-              await liveParentSession.acknowledge(consumedBeforeMaterialization);
+              await parentSession.acknowledge(consumedBeforeMaterialization);
             }
             if (input.abortSignal?.aborted) {
               return Result.ok({ append: [], forceNextTurn: false });
@@ -6971,10 +7013,10 @@ export async function startBusAgentRunner(params: {
 
             const queried = await captureBusAgentRunnerOperation(
               "workflow subagent completion query",
-              () => liveParentSession.listPendingSettledAsync(),
+              () => parentSession.listPendingSettledAsync(),
             );
             let queryError: BusAgentRunnerOperationFailed | null = null;
-            let settled: Awaited<ReturnType<typeof liveParentSession.listPendingSettledAsync>> = [];
+            let settled: Awaited<ReturnType<typeof parentSession.listPendingSettledAsync>> = [];
             const applyQuery = queried.match<() => void>({
               ok: (results) => () => {
                 settled = results;
@@ -7031,8 +7073,8 @@ export async function startBusAgentRunner(params: {
               }
 
               if (completion) {
-                if (!liveParentSession.isPending(completion.runId)) continue;
-                liveParentSession.clearMaterializationFailure(completion.runId);
+                if (!parentSession.isPending(completion.runId)) continue;
+                parentSession.clearMaterializationFailure(completion.runId);
                 completions.push(completion);
                 continue;
               }
@@ -7041,7 +7083,7 @@ export async function startBusAgentRunner(params: {
               const errorMessage =
                 materializationError?.message ??
                 "Workflow subagent completion materialization failed";
-              const attempts = liveParentSession.recordMaterializationFailure(
+              const attempts = parentSession.recordMaterializationFailure(
                 identity.runId,
                 errorMessage,
               );
@@ -7058,7 +7100,7 @@ export async function startBusAgentRunner(params: {
               );
               if (attempts === null || attempts < SUBAGENT_RESULT_MATERIALIZATION_ATTEMPTS)
                 continue;
-              if (!liveParentSession.isPending(identity.runId)) continue;
+              if (!parentSession.isPending(identity.runId)) continue;
 
               completions.push({
                 ...identity,
@@ -7070,7 +7112,7 @@ export async function startBusAgentRunner(params: {
             }
 
             const deliverableCompletions = completions.filter((completion) =>
-              liveParentSession.isPending(completion.runId),
+              parentSession.isPending(completion.runId),
             );
 
             const provisionalPlan = planDeferredSubagentBoundary({
@@ -7080,7 +7122,7 @@ export async function startBusAgentRunner(params: {
             });
 
             for (const completion of deliverableCompletions) {
-              if (!liveParentSession.isPending(completion.runId)) continue;
+              if (!parentSession.isPending(completion.runId)) continue;
               if (publishedDeferredCompletionRunIds.has(completion.runId)) continue;
               const published = await captureBusAgentRunnerOperation(
                 "workflow subagent completion publish",
@@ -7111,14 +7153,14 @@ export async function startBusAgentRunner(params: {
             }
 
             if (provisionalPlan.consumedRunIds.length > 0 && !input.abortSignal?.aborted) {
-              await liveParentSession.acknowledge(provisionalPlan.consumedRunIds);
+              await parentSession.acknowledge(provisionalPlan.consumedRunIds);
             }
 
             const finalPlan = planDeferredSubagentBoundary({
               canonicalMessages: agent.state.messages,
               modelInputMessages: input.modelInputMessages,
               completions: deliverableCompletions.filter((completion) =>
-                liveParentSession.isPending(completion.runId),
+                parentSession.isPending(completion.runId),
               ),
             });
             if (
@@ -8525,7 +8567,7 @@ export async function startBusAgentRunner(params: {
           requestTerminalKind = "cancelled";
           if (liveParentSession) {
             await captureBusAgentRunnerOperation("cancel deferred subagents", () =>
-              liveParentSession.cancelAll("parent request cancelled"),
+              liveParentSession?.cancelAll("parent request cancelled"),
             );
           }
           const finalText = "Cancelled.";
@@ -8627,7 +8669,7 @@ export async function startBusAgentRunner(params: {
         if (liveParentSession) {
           const cancelledSubagents = await captureBusAgentRunnerOperation(
             "deferred subagent cancellation after parent failure",
-            () => liveParentSession.cancelAll(`parent run failed: ${msg}`),
+            () => liveParentSession?.cancelAll(`parent run failed: ${msg}`),
           );
           const cancellationError = cancelledSubagents.match({
             ok: () => null,
@@ -8715,6 +8757,7 @@ export async function startBusAgentRunner(params: {
 
       return { status: "continue" } as const;
     })().finally(async () => {
+      level1ToolsetsClosed = true;
       const cleanupCoreNamedRuntime = getCoreNamedClaudeRuntime();
       const cleanupCorePrimaryRuntime = getCorePrimaryClaudeRuntime();
       const cleanupClaudeCodeRun = getClaudeCodeRun();
@@ -8783,6 +8826,12 @@ export async function startBusAgentRunner(params: {
           terminalCleanups.push({
             label: "claude-dispose",
             run: () => run.dispose(),
+          });
+        }
+        for (const release of level1ToolsetReleases) {
+          terminalCleanups.push({
+            label: "level1-toolset-release",
+            run: () => releaseLevel1Toolset(release),
           });
         }
         if (liveParentSession) {
@@ -8869,6 +8918,7 @@ export async function startBusAgentRunner(params: {
           });
         }
         await liveParentSession?.close();
+        await Promise.all([...level1ToolsetReleases].map(releaseLevel1Toolset));
       }
       const finalReplayDeadline = outputPublisher.getFinalReplayDeadline();
       const terminalSurfaceWriteSatisfied =

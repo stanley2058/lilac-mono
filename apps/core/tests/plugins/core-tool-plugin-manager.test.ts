@@ -220,6 +220,82 @@ async function writeExternalPlugin(params: {
 }
 
 describe("core tool plugin manager", () => {
+  it("keeps active toolsets alive across reload and releases a failed concurrent build", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-generation-"));
+    const dataDir = path.join(tmpRoot, "data");
+    await writeExternalPlugin({
+      dataDir,
+      pluginId: "connection",
+      entryBody: `export default {
+        meta: { id: "connection" },
+        create() {
+          let closed = false;
+          return {
+            level1: [{
+              name: "read", isEnabled: () => true,
+              createTool: () => ({
+                description: "Read a shared connection",
+                inputSchema: { type: "object", properties: {} },
+                execute: () => ({ closed }),
+              }),
+            }],
+            destroy: async () => { closed = true; },
+          };
+        },
+      };`,
+    });
+    const cfg = testConfig({});
+    const configRead = Promise.withResolvers<CoreConfig>();
+    const configReadStarted = Promise.withResolvers<void>();
+    let blockNextConfigRead = false;
+    const manager = createCoreToolPluginManager({
+      runtime: {
+        getConfig: async () => {
+          if (!blockNextConfigRead) return cfg;
+          blockNextConfigRead = false;
+          configReadStarted.resolve();
+          return configRead.promise;
+        },
+      },
+      dataDir,
+    });
+    const toolset = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "primary",
+      editingToolMode: "none",
+      subagentDepth: 0,
+      subagentConfig: cfg.agent.subagents,
+    });
+    const name = toolset.catalog.find((entry) => entry.sourceId === "connection")!.modelName;
+    const executable = getExecutableTool(
+      toolset.tools as Record<
+        string,
+        {
+          execute?: (...args: readonly unknown[]) => unknown;
+        }
+      >,
+      name,
+    );
+    expect(await executable.execute({})).toEqual({ closed: false });
+    blockNextConfigRead = true;
+    const failedBuild = manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "primary",
+      editingToolMode: "none",
+      subagentDepth: 0,
+      subagentConfig: cfg.agent.subagents,
+    });
+    await configReadStarted.promise;
+    expect((await manager.reload()).status).toBe("ok");
+    expect(await executable.execute({})).toEqual({ closed: false });
+    expect((await toolset.release()).status).toBe("ok");
+    expect(await executable.execute({})).toEqual({ closed: false });
+    configRead.reject(new Error("configuration unavailable"));
+    await expect(failedBuild).rejects.toThrow("configuration unavailable");
+    expect(await executable.execute({})).toEqual({ closed: true });
+    expect((await manager.destroy()).status).toBe("ok");
+  });
+
   let tmpRoot: string | null = null;
   let workflowStore: DurableWorkflowStore | null = null;
 

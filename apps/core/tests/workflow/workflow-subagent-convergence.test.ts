@@ -4,6 +4,7 @@ import {
   workflowValueArtifactReferenceForTest,
 } from "./workflow-test-blob-store";
 import { afterEach, describe, expect, it, jest, spyOn } from "bun:test";
+import { Result } from "better-result";
 import { Logger } from "@stanley2058/simple-module-logger";
 import path from "node:path";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -11,6 +12,7 @@ import { tmpdir } from "node:os";
 import { z } from "zod";
 import {
   createLilacBus,
+  EventDeliveryStartFailed,
   lilacEventTypes,
   outReqTopic,
   type Message,
@@ -209,6 +211,89 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
 }
 describe("workflow subagent convergence", () => {
+  it.each(["listActiveLiveParentRuns", "listPendingLiveParentCompletions"] as const)(
+    "does not retain a parent when %s fails during registration",
+    async (operation) => {
+      const { store } = await createRun("parent:read-failure");
+      const raw = createInMemoryRawBus();
+      const bus = createLilacBus(raw);
+      const bridge = new WorkflowLiveParentBridge({
+        bus,
+        blobStore,
+        store,
+        subscriptionId: "parent-read-failure",
+      });
+      const failure = new Error("durable parent read unavailable");
+      const intercepted = spyOn(store, operation).mockImplementationOnce(() => {
+        throw failure;
+      });
+      try {
+        expect(() => bridge.registerParent({ parentRequestId: "parent:read-failure" })).toThrow(
+          failure,
+        );
+        intercepted.mockRestore();
+        const retry = bridge.registerParent({ parentRequestId: "parent:read-failure" });
+        await retry.ready;
+        await retry.close();
+        expect(raw.activeSubscriptions()).toBe(0);
+      } finally {
+        intercepted.mockRestore();
+        await bridge.stop();
+        await bus.close();
+        store.close();
+      }
+    },
+  );
+  it("rolls back partial parent subscriptions when readiness fails", async () => {
+    const { store, dispatcher, projectRoot } = await createRun("parent:registration-failure");
+    await dispatcher.delegate({
+      ...registration(projectRoot, "parent:registration-failure"),
+      childRequestId: "sub:child:failed",
+      childSessionId: "sub:channel:1:named:failed",
+      parentToolCallId: "tool:failed",
+    });
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const subscribe = bus.subscribeTopic.bind(bus);
+    const subscriptionFailure = new EventDeliveryStartFailed({
+      cause: null,
+      topic: outReqTopic("sub:child:failed"),
+      message: "child subscription unavailable",
+    });
+    const intercepted = spyOn(bus, "subscribeTopic").mockImplementation(async (...args) => {
+      if (args[0] === outReqTopic("sub:child:failed")) return Result.err(subscriptionFailure);
+      return await subscribe(...args);
+    });
+    const bridge = new WorkflowLiveParentBridge({
+      bus,
+      blobStore,
+      store,
+      subscriptionId: "parent-registration-failure",
+    });
+    try {
+      const parent = bridge.registerParent({ parentRequestId: "parent:registration-failure" });
+      await expect(parent.ready).rejects.toBe(subscriptionFailure);
+      expect(raw.activeSubscriptions()).toBe(0);
+      await parent.close();
+      intercepted.mockRestore();
+      const retry = bridge.registerParent({ parentRequestId: "parent:registration-failure" });
+      await retry.ready;
+      expect(raw.activeSubscriptions()).toBe(2);
+      await retry.close();
+      expect(raw.activeSubscriptions()).toBe(0);
+      const closedBeforeReady = bridge.registerParent({
+        parentRequestId: "parent:registration-failure",
+      });
+      await closedBeforeReady.close();
+      await closedBeforeReady.ready;
+      expect(raw.activeSubscriptions()).toBe(0);
+    } finally {
+      intercepted.mockRestore();
+      await bridge.stop();
+      await bus.close();
+      store.close();
+    }
+  });
   it("parks every owned live-parent delivery failure", () => {
     expect(
       applyWorkflowLiveParentDeliveryPolicy(

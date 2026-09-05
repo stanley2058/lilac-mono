@@ -445,6 +445,10 @@ export const CORE_FINAL_CAPABILITY_IDENTITIES = [
   ["src/surface/bridge/bus-agent-runner.ts", "isCancelControlEntry"],
 ] as const;
 export const CORE_FINAL_REVIEWED_OPAQUE_IDENTITIES = [
+  [
+    "src/workflow/workflow-live-parent-bridge.ts",
+    "WorkflowLiveParentBridge.registerParent.catch.<callback@1>",
+  ],
   ["src/conversation/thread-worker.ts", "rethrowConversationThreadWorkerPanic"],
   ["src/github/github-api.ts", "captureGithubResponseText.captureGithubApiExternal.<callback@2>"],
   ["src/github/github-api.ts", "getGithubAppSlugOrNull.captureGithubApiExternal.<callback@2>@1"],

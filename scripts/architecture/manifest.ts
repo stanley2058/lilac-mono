@@ -911,7 +911,15 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         module: "loader.ts",
         exportName,
       })),
-      ...["init", "destroy", "reload", "ensureFresh"].map((method) => ({
+      ...[
+        "init",
+        "destroy",
+        "reload",
+        "ensureFresh",
+        "acquireGeneration.release",
+        "retireGeneration",
+        "cleanupRetiredGeneration",
+      ].map((method) => ({
         module: "manager.ts",
         exportName: `ToolPluginManager.${method}`,
       })),
@@ -5782,7 +5790,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "84fccbaf86e11aec5196071c344604b74433de8115218bfb429dcad1c585085f";
+  "2abe3fb265a828756bc2038c8dff7277a7c7b43184128d9adbb5cd15b2284a70";
 
 export const architectureManifest = {
   version: 1,

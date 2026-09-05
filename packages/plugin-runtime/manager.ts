@@ -83,6 +83,12 @@ type LoadedState<TRuntimeContext, TLevel1, TLevel2> = {
   readonly freshnessKey: string;
 };
 
+type GenerationLifetime = {
+  holders: number;
+  retired: boolean;
+  cleanup?: Promise<ResultType<void, ToolPluginCleanupError>>;
+};
+
 type LoadedOutcome<TRuntimeContext, TLevel1, TLevel2> =
   | { readonly kind: "loaded"; readonly plugin: LoadedPlugin<TRuntimeContext, TLevel1, TLevel2> }
   | { readonly kind: "disabled"; readonly pluginId: string }
@@ -281,6 +287,10 @@ export class ToolPluginManager<
     freshnessKey: "",
   };
   private initialized = false;
+  private readonly generations = new WeakMap<
+    LoadedState<TRuntimeContext, TLevel1, TLevel2>,
+    GenerationLifetime
+  >();
 
   constructor(
     private readonly options: ToolPluginManagerOptions<TRuntimeContext, TLevel1, TLevel2>,
@@ -342,6 +352,52 @@ export class ToolPluginManager<
     return this.state.statuses;
   }
 
+  acquireGeneration() {
+    const state = this.state;
+    const lifetime = this.generationLifetime(state);
+    lifetime.holders++;
+    let released = false;
+    return {
+      level1: state.level1,
+      level1ContributionInfo: this.getLevel1ContributionInfo(),
+      level1Capabilities: this.getLevel1Capabilities(),
+      level2: state.level2,
+      level2ContributionInfo: this.getLevel2ContributionInfo(),
+      level2Capabilities: this.getLevel2Capabilities(),
+      release: async (): Promise<ResultType<void, ToolPluginCleanupError>> => {
+        if (released) return Result.ok();
+        released = true;
+        lifetime.holders--;
+        return this.cleanupRetiredGeneration(state, lifetime);
+      },
+    };
+  }
+
+  private generationLifetime(state: LoadedState<TRuntimeContext, TLevel1, TLevel2>) {
+    const existing = this.generations.get(state);
+    if (existing) return existing;
+    const lifetime: GenerationLifetime = { holders: 0, retired: false };
+    this.generations.set(state, lifetime);
+    return lifetime;
+  }
+
+  private retireGeneration(
+    state: LoadedState<TRuntimeContext, TLevel1, TLevel2>,
+  ): Promise<ResultType<void, ToolPluginCleanupError>> {
+    const lifetime = this.generationLifetime(state);
+    lifetime.retired = true;
+    return this.cleanupRetiredGeneration(state, lifetime);
+  }
+
+  private async cleanupRetiredGeneration(
+    state: LoadedState<TRuntimeContext, TLevel1, TLevel2>,
+    lifetime: GenerationLifetime,
+  ): Promise<ResultType<void, ToolPluginCleanupError>> {
+    if (!lifetime.retired || lifetime.holders > 0) return Result.ok();
+    lifetime.cleanup ??= this.destroyLoaded(state.loaded);
+    return lifetime.cleanup;
+  }
+
   async init(): Promise<ResultType<void, ToolPluginManagerError>> {
     if (this.initialized) return Result.ok();
     const next = await this.loadAll();
@@ -359,7 +415,7 @@ export class ToolPluginManager<
     const previous = this.state;
     this.state = { loaded: [], level1: [], level2: [], statuses: [], freshnessKey: "" };
     this.initialized = false;
-    return this.destroyLoaded(previous.loaded);
+    return this.retireGeneration(previous);
   }
 
   async reload(): Promise<ResultType<void, ToolPluginManagerError>> {
@@ -381,7 +437,7 @@ export class ToolPluginManager<
     const previous = this.state;
     this.state = nextState;
     this.initialized = true;
-    const cleanup = await this.destroyLoaded(previous.loaded);
+    const cleanup = await this.retireGeneration(previous);
     return continueResult(cleanup, {
       ok: () => Result.ok(undefined),
       err: (error) =>

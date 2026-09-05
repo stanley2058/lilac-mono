@@ -102,6 +102,108 @@ async function writePlugin(params: {
 }
 
 describe("plugin runtime manager", () => {
+  it("retires shared Level 1 and Level 2 resources after the last generation holder releases", async () => {
+    const destroyed: number[] = [];
+    let nextGeneration = 0;
+    const value = manager({
+      dataDir: "/tmp/plugin-runtime-generation-unused",
+      builtinPlugins: [
+        {
+          meta: { id: "shared" },
+          create() {
+            const generation = ++nextGeneration;
+            const state = { closed: false };
+            return {
+              level1: [
+                {
+                  ...createLevel1Spec("read"),
+                  createTool: () => ({ execute: () => ({ generation, closed: state.closed }) }),
+                },
+              ],
+              level2: [
+                {
+                  ...createServerTool("read"),
+                  call: async () => Result.ok({ generation, closed: state.closed }),
+                },
+              ],
+              destroy: async () => {
+                state.closed = true;
+                destroyed.push(generation);
+              },
+            };
+          },
+        },
+      ],
+    });
+    await initManager(value);
+    const run = value.acquireGeneration();
+    const httpCall = value.acquireGeneration();
+    expect((await value.reload()).status).toBe("ok");
+    expect(destroyed).toEqual([]);
+    expect(run.level1[0]).not.toBe(value.getLevel1Items()[0]);
+    expect((await httpCall.level2[0]!.call("read", {})).unwrap()).toEqual({
+      generation: 1,
+      closed: false,
+    });
+    expect((await run.release()).status).toBe("ok");
+    expect(destroyed).toEqual([]);
+    expect((await httpCall.release()).status).toBe("ok");
+    expect(destroyed).toEqual([1]);
+    await httpCall.release();
+    await run.release();
+    expect(destroyed).toEqual([1]);
+    expect((await value.destroy()).status).toBe("ok");
+    expect(destroyed).toEqual([1, 2]);
+  });
+
+  it("defers shutdown cleanup and propagates its Panic through the final holder", async () => {
+    const panic = new Panic({ message: "retired generation cleanup defect" });
+    const value = manager({
+      dataDir: "/tmp/plugin-runtime-generation-panic-unused",
+      builtinPlugins: [
+        {
+          meta: { id: "cleanup" },
+          create: () => ({
+            level1: [createLevel1Spec("read")],
+            destroy: async () => {
+              throw panic;
+            },
+          }),
+        },
+      ],
+    });
+    await initManager(value);
+    const run = value.acquireGeneration();
+    expect((await value.destroy()).status).toBe("ok");
+    expect(value.getLevel1Items()).toEqual([]);
+    await expect(run.release()).rejects.toBe(panic);
+    expect((await run.release()).status).toBe("ok");
+  });
+
+  it("returns deferred cleanup failures to the final generation holder", async () => {
+    const value = manager({
+      dataDir: "/tmp/plugin-runtime-generation-failure-unused",
+      builtinPlugins: [
+        {
+          meta: { id: "cleanup" },
+          create: () => ({
+            level1: [createLevel1Spec("read")],
+            destroy: async () => {
+              throw new Error("connection close failed");
+            },
+          }),
+        },
+      ],
+    });
+    await initManager(value);
+    const run = value.acquireGeneration();
+    expect((await value.destroy()).status).toBe("ok");
+    const released = await run.release();
+    expect(released.status).toBe("error");
+    if (released.status === "ok") throw new Error("expected retirement cleanup failure");
+    expect(released.error.failures).toHaveLength(1);
+  });
+
   let tmpRoot: string | null = null;
 
   afterEach(async () => {

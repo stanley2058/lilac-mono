@@ -2065,6 +2065,72 @@ describe("WorkflowEngine", () => {
       rmSync(dbPath, { force: true });
     }
   });
+  it.each([false, true])(
+    "rechecks running leases after a fast restart, with live-owner refresh=%s",
+    async (refreshOwner) => {
+      const dbPath = join(tmpdir(), `workflow-fast-restart-${crypto.randomUUID()}.sqlite`);
+      const store = new HeartbeatTrackingWorkflowStore(dbPath);
+      const bus = createLilacBus(new LiveCapturingRawBus());
+      createApprovedRun(store);
+      store.tryClaimRun({ runId: "run-1", claimerId: "previous-owner", now: 100 });
+      let now = 200;
+      let dispatches = 0;
+      const engine = new WorkflowEngine({
+        bus,
+        store,
+        blobStore,
+        dataDir: dirname(dbPath),
+        subscriptionId: "fast-restart",
+        now: () => now,
+        pollMs: 1000000,
+        loadSnapshot: async () => agentWorkflowSource(),
+        compileSource: compileTestWorkflow,
+        dispatchAgentRequest: async () => {
+          dispatches += 1;
+          return { state: "resolved", output: "recovered", detail: null, usage: null };
+        },
+      });
+      const tick = async () => {
+        const scanned = store.observeNextQueuedScan();
+        await startResultForTest(
+          bus.publish(lilacEventTypes.EvtWorkflowProgressRequested, {
+            runId: "run-1",
+            revisionId: "revision-1",
+            reason: "operation_changed",
+            ts: now,
+          }),
+        );
+        await scanned;
+      };
+      try {
+        await engine.start();
+        expect(dispatches).toBe(0);
+        now = 60099;
+        await tick();
+        expect(workflowStoreValue(store.getRun("run-1"))?.claimedBy).toBe("previous-owner");
+        if (refreshOwner) {
+          expect(store.refreshRunClaim("run-1", "previous-owner", now)).toBe(true);
+          now = 60100;
+          await tick();
+          expect(dispatches).toBe(0);
+          expect(workflowStoreValue(store.getRun("run-1"))?.claimedBy).toBe("previous-owner");
+          now = 120099;
+        } else {
+          now = 60100;
+        }
+        await tick();
+        await waitFor(() => workflowStoreValue(store.getRun("run-1"))?.state === "succeeded");
+        await tick();
+        expect(dispatches).toBe(1);
+        expect(workflowStoreValue(store.getRun("run-1"))?.result).toBe("recovered");
+      } finally {
+        await engine.stop();
+        await bus.close();
+        store.close();
+        rmSync(dbPath, { force: true });
+      }
+    },
+  );
   it("reclaims a crashed running run and replays completed operations without dispatch", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-restart-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);

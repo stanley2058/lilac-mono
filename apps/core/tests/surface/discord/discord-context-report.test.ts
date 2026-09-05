@@ -23,6 +23,7 @@ describe("isDiscordContextTextCommand", () => {
 
 describe("createDiscordContextReportProvider", () => {
   it("reports deferred tool inventory and compaction-reserved space", async () => {
+    let releasedToolsets = 0;
     const directTool = tool({
       description: "Direct tool",
       inputSchema: z.object({ value: z.string() }),
@@ -75,6 +76,10 @@ describe("createDiscordContextReportProvider", () => {
       contributionInfo: new Map(),
       genericOutputNormalizerBypassTools: new Set(),
       aggregateOutputBudgetExemptTools: new Set(),
+      release: async () => {
+        releasedToolsets++;
+        return Result.ok(undefined);
+      },
     } satisfies BuiltLevel1Toolset;
     const pluginManager = {
       buildLevel1ToolsetResult: async () => Result.ok(toolset),
@@ -139,5 +144,6 @@ describe("createDiscordContextReportProvider", () => {
     expect(fullWindowReport.status).toBe("ok");
     if (fullWindowReport.status === "error") throw fullWindowReport.error;
     expect(fullWindowReport.value.text).not.toContain("Unusable space");
+    expect(releasedToolsets).toBe(2);
   });
 });

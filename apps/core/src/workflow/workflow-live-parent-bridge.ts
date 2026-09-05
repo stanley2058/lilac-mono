@@ -415,17 +415,12 @@ export class WorkflowLiveParentBridge {
     const existing = this.parents.get(input.parentRequestId);
     if (existing)
       throw new Error(`Live workflow parent is already registered: ${input.parentRequestId}`);
-    const protection = this.protectedParents.get(input.parentRequestId);
-    if (protection) clearTimeout(protection);
-    this.protectedParents.delete(input.parentRequestId);
     const signal: ParentSignal = {
       version: 0,
       waiters: new Set(),
       onActivity: input.onActivity,
       publishToolStatus: input.publishToolStatus,
     };
-    this.parents.set(input.parentRequestId, signal);
-    this.notify(signal);
     const runsById = new Map<string, WorkflowRun>();
     const activeRuns = this.input.store.listActiveLiveParentRuns(input.parentRequestId);
     const readActiveRuns = activeRuns.match({
@@ -449,29 +444,60 @@ export class WorkflowLiveParentBridge {
     for (const run of pending) {
       runsById.set(run.runId, run);
     }
-    const ready = Promise.all(
-      [...runsById.values()].map(async (run) => {
-        if (isTerminalRun(run)) {
-          const reconciled = await this.reconcileTerminalChildActivity(run, signal);
-          const reconciliationError = reconciled.match({
-            ok: () => null,
-            err: (error) => error,
-          });
-          if (reconciliationError) {
-            adaptToolResultToHost(
-              Result.err(
-                new WorkflowLiveParentRunEventFailed({
-                  cause: reconciliationError,
-                  runId: run.runId,
-                  message: "Live-parent terminal child activity reconciliation failed",
-                }),
-              ),
-            );
-          }
-        } else await this.ensureChildActivityForwarding(run, signal);
-      }),
-    ).then(() => {});
+    const protection = this.protectedParents.get(input.parentRequestId);
+    if (protection) clearTimeout(protection);
+    this.protectedParents.delete(input.parentRequestId);
+    this.parents.set(input.parentRequestId, signal);
     let closed = false;
+    const close = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      if (this.parents.get(input.parentRequestId) === signal) {
+        this.parents.delete(input.parentRequestId);
+      }
+      this.notify(signal);
+      await this.stopChildActivityForParent(input.parentRequestId);
+    };
+    const ready = Promise.resolve()
+      .then(async () => {
+        if (closed) return;
+        this.notify(signal);
+        const preparations = await Promise.allSettled(
+          [...runsById.values()].map(async (run) => {
+            if (isTerminalRun(run)) {
+              const reconciled = await this.reconcileTerminalChildActivity(run, signal);
+              const reconciliationError = reconciled.match({
+                ok: () => null,
+                err: (error) => error,
+              });
+              if (reconciliationError) {
+                adaptToolResultToHost(
+                  Result.err(
+                    new WorkflowLiveParentRunEventFailed({
+                      cause: reconciliationError,
+                      runId: run.runId,
+                      message: "Live-parent terminal child activity reconciliation failed",
+                    }),
+                  ),
+                );
+              }
+            } else await this.ensureChildActivityForwarding(run, signal);
+          }),
+        );
+        const failed =
+          preparations.find(
+            (outcome) => outcome.status === "rejected" && isPanic(outcome.reason),
+          ) ?? preparations.find((outcome) => outcome.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+      })
+      .catch(async (error: unknown) => {
+        const [cleanup] = await Promise.allSettled([close()]);
+        if (isPanic(error)) preserveToolPanic(error);
+        if (cleanup.status === "rejected" && isPanic(cleanup.reason)) {
+          preserveToolPanic(cleanup.reason);
+        }
+        throw error;
+      });
 
     return {
       ready,
@@ -652,15 +678,7 @@ export class WorkflowLiveParentBridge {
         }
         this.notify(signal);
       },
-      close: async () => {
-        if (closed) return;
-        closed = true;
-        if (this.parents.get(input.parentRequestId) === signal) {
-          this.parents.delete(input.parentRequestId);
-        }
-        this.notify(signal);
-        await this.stopChildActivityForParent(input.parentRequestId);
-      },
+      close,
     };
   }
 
@@ -1115,7 +1133,7 @@ export class WorkflowLiveParentBridge {
     if (forwarding.stopPromise) return await forwarding.stopPromise;
     forwarding.acceptingLive = false;
     forwarding.stopPromise = (async () => {
-      await Promise.all(forwarding.subscriptionStarts.values());
+      await Promise.allSettled(forwarding.subscriptionStarts.values());
       await Promise.all(
         [...forwarding.subscriptions.values()].map(async (subscription) => {
           const stopped = await subscription.stop();

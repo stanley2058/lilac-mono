@@ -67,6 +67,9 @@ type ToolPluginManagerLike = {
   getLevel2Tools(): readonly ServerTool[];
   getLevel2ContributionInfo?(): ReadonlyMap<ServerTool, Level2ContributionInfo>;
   getLevel2Capabilities?(): ReadonlyMap<ServerTool, ServerToolCapabilitySnapshot>;
+  acquireGeneration?(): {
+    release(): Promise<ResultType<void, ToolPluginCleanupError>>;
+  };
   getStatuses?(): readonly ToolPluginStatus[];
 };
 
@@ -756,25 +759,32 @@ export function createToolServer(options: ToolServerOptions) {
 
   async function acquireToolCallLease() {
     while (toolReloadBarrier) await toolReloadBarrier;
+    const generation = options.pluginManager?.acquireGeneration?.();
     activeToolCallLeases++;
     let transferred = false;
     let released = false;
-    const release = () => {
+    const release = async () => {
       if (released) return;
       released = true;
       activeToolCallLeases--;
-      if (activeToolCallLeases !== 0 || !toolCallsDrained) return;
-      const drained = toolCallsDrained;
-      toolCallsDrained = null;
-      drained.resolve();
+      if (activeToolCallLeases === 0 && toolCallsDrained) {
+        const drained = toolCallsDrained;
+        toolCallsDrained = null;
+        drained.resolve();
+      }
+      const cleanup = await generation?.release();
+      cleanup?.match({
+        ok: () => undefined,
+        err: (error) => logPluginError("generation.release", error),
+      });
     };
     return {
       transfer() {
         transferred = true;
       },
       release,
-      [Symbol.dispose]() {
-        if (!transferred) release();
+      async [Symbol.asyncDispose]() {
+        if (!transferred) await release();
       },
     };
   }
@@ -1228,7 +1238,7 @@ export function createToolServer(options: ToolServerOptions) {
   app.get(
     "/list",
     async ({ headers }) => {
-      using _toolCatalogLease = await acquireToolCallLease();
+      await using _toolCatalogLease = await acquireToolCallLease();
       const decodedHeaders = adaptToolRequestHeadersResultToElysia(
         decodeToolRequestHeaders(headers),
       );
@@ -1293,7 +1303,7 @@ export function createToolServer(options: ToolServerOptions) {
   });
 
   app.get("/help/:callableId", async ({ params, headers }) => {
-    using _toolCatalogLease = await acquireToolCallLease();
+    await using _toolCatalogLease = await acquireToolCallLease();
     const decodedHeaders = adaptToolRequestHeadersResultToElysia(decodeToolRequestHeaders(headers));
     const { context: ctx } = adaptToolAuthenticationResultToElysia(
       await authenticateContext(decodedHeaders),
@@ -1322,7 +1332,7 @@ export function createToolServer(options: ToolServerOptions) {
   app.post(
     "/call",
     async ({ body, request, headers }) => {
-      using toolCallLease = await acquireToolCallLease();
+      await using toolCallLease = await acquireToolCallLease();
       const startedAt = Date.now();
 
       const toolResult = lookupTool(body.callableId);
@@ -1602,7 +1612,7 @@ export function createToolServer(options: ToolServerOptions) {
           })();
         })
         .finally(() => {
-          toolCallLease.release();
+          return toolCallLease.release();
         });
       toolCallLease.transfer();
       const callResult = invocationResult

@@ -132,6 +132,7 @@ function testToolset(onEffect: () => void): BuiltLevel1Toolset {
     updateActiveBatchTools: () => undefined,
     genericOutputNormalizerBypassTools: new Set(["builtin"]),
     aggregateOutputBudgetExemptTools: new Set(),
+    release: async () => Result.ok(undefined),
   };
 }
 
