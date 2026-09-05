@@ -891,6 +891,20 @@ export class DurableWorkflowStore {
     });
   }
 
+  listRunsWithExpiredClaims(input: {
+    staleBefore: number;
+    limit?: number;
+  }): ResultType<WorkflowRun[], DurableWorkflowReadError> {
+    return captureWorkflowRead("list-runs-with-expired-claims", () => {
+      const rows = this.persistedRows(
+        `SELECT * FROM workflow_runs
+         WHERE state = 'running' AND claimed_at IS NOT NULL AND claimed_at <= ?
+         ORDER BY claimed_at, run_id LIMIT ?`,
+      ).all(input.staleBefore, boundedLimit(input.limit));
+      return this.decodeRows(rows, decodeWorkflowRunRow);
+    });
+  }
+
   listActiveRuns(limit = 1_000): ResultType<WorkflowRun[], DurableWorkflowReadError> {
     return captureWorkflowRead("list-active-runs", () => {
       const rows = this.persistedRows(

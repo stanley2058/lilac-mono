@@ -751,7 +751,10 @@ export class WorkflowEngine {
         formatWorkflowErrorForLog(error),
       );
     }
-    const runningRuns = this.input.store.listRuns({ state: "running", limit: 1_000 });
+    const runningRuns = this.input.store.listRunsWithExpiredClaims({
+      staleBefore: this.now() - WORKFLOW_LEASE_STALE_MS,
+      limit: 1_000,
+    });
     const readRunningRuns = runningRuns.match({
       ok: (value) => () => value,
       err: (error) => () => signalDurableWorkflowReadErrorToHost(error),

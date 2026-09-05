@@ -2131,6 +2131,58 @@ describe("WorkflowEngine", () => {
       }
     },
   );
+  it("recovers an older expired claim behind a full page of newer live owners", async () => {
+    const dbPath = join(tmpdir(), `workflow-recovery-page-${crypto.randomUUID()}.sqlite`);
+    const store = new DurableWorkflowStore(dbPath);
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(store);
+    const expired = store.tryClaimRun({ runId: "run-1", claimerId: "dead-owner", now: 100 });
+    if (!expired) throw new Error("expired fixture run was not claimed");
+    const now = 60200;
+    for (let index = 0; index < 1000; index += 1) {
+      expect(
+        store.createRun({
+          ...expired,
+          runId: `live-${index}`,
+          claimedBy: "live-owner",
+          claimedAt: now,
+          createdAt: index + 2,
+          updatedAt: now,
+        }),
+      ).toBe(true);
+    }
+    const firstPage = workflowStoreValue(store.listRuns({ state: "running", limit: 1000 }));
+    expect(firstPage).toHaveLength(1000);
+    expect(firstPage.some((run) => run.runId === expired.runId)).toBe(false);
+    const dispatched: string[] = [];
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      blobStore,
+      dataDir: dirname(dbPath),
+      subscriptionId: "expired-claim-page",
+      now: () => now,
+      pollMs: 1000000,
+      loadSnapshot: async () => agentWorkflowSource(),
+      compileSource: compileTestWorkflow,
+      dispatchAgentRequest: async ({ run }) => {
+        dispatched.push(run.runId);
+        return { state: "resolved", output: "recovered", detail: null, usage: null };
+      },
+    });
+    try {
+      await engine.start();
+      await waitFor(() => workflowStoreValue(store.getRun(expired.runId))?.state === "succeeded");
+      expect(dispatched).toEqual([expired.runId]);
+      expect(workflowStoreValue(store.getRun("live-0"))?.claimedBy).toBe("live-owner");
+      expect(workflowStoreValue(store.getRun("live-999"))?.claimedBy).toBe("live-owner");
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
   it("reclaims a crashed running run and replays completed operations without dispatch", async () => {
     const dbPath = join(tmpdir(), `workflow-engine-restart-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(dbPath);

@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { Result } from "better-result";
+import { Panic, Result } from "better-result";
 import {
   BlobReadCancelled,
   createMemoryBlobStore,
@@ -440,6 +440,93 @@ describe("blob-backed tool result artifact store", () => {
     );
     expect(interruptedStreamCancelled).toBe(true);
   });
+
+  for (const failure of ["consumer", "overflow", "abort"] as const) {
+    it(`releases the reader and preserves Panic precedence after ${failure} cancellation fails`, async () => {
+      const blobs = await memoryStore();
+      const primaryPanic = new Panic({ message: "consumer invariant failed" });
+      const cleanupPanic = new Panic({ message: "cancellation invariant failed" });
+      const started = Promise.withResolvers<void>();
+      let cancelled = false;
+      let completionObserved = false;
+      let stream: ReadableStream<Uint8Array> | undefined;
+      const observed: BlobStore = {
+        startStagedUpload: (input) => blobs.startStagedUpload(input),
+        adopt: (handle) => blobs.adopt(handle),
+        startUpload: (input) => blobs.startUpload(input),
+        resolve: (handle, options) => blobs.resolve(handle, options),
+        delete: (target) => blobs.delete(target),
+        maintain: (input) => blobs.maintain(input),
+        close: (input) => blobs.close(input),
+        open: async (ref) => {
+          const chunk = new Uint8Array(failure === "overflow" ? ref.byteLength + 1 : 12);
+          if (failure === "consumer") {
+            chunk.subarray = () => {
+              throw primaryPanic;
+            };
+          }
+          let delivered = false;
+          stream = new ReadableStream<Uint8Array>(
+            {
+              pull(controller) {
+                if (delivered) return new Promise<void>(() => undefined);
+                delivered = true;
+                controller.enqueue(chunk);
+                started.resolve();
+              },
+              cancel() {
+                cancelled = true;
+                throw cleanupPanic;
+              },
+            },
+            { highWaterMark: 0 },
+          );
+          return Result.ok({
+            ref,
+            stream,
+            get completion() {
+              completionObserved = true;
+              return Promise.resolve(
+                Result.err(
+                  new BlobReadCancelled({
+                    objectId: ref.objectId,
+                    message: "test read cancelled",
+                  }),
+                ),
+              );
+            },
+          });
+        },
+      };
+      const artifacts = createBlobBackedToolResultArtifactStore(
+        path.join(baseDir, "metadata"),
+        observed,
+      );
+      await artifacts.init();
+      const created = await artifacts.create(params("content"));
+      if (created.status === "error") throw created.error;
+      const abort = new AbortController();
+      const read =
+        failure === "abort"
+          ? artifacts.read(created.value.uri, "scope-a", { signal: abort.signal })
+          : artifacts.readWindow(created.value.uri, "scope-a", {
+              start: { type: "offset", offset: 0 },
+              maxCharacters: 4,
+              maxLines: 1,
+            });
+      const settled = read.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await started.promise;
+      if (failure === "abort") abort.abort();
+      const thrown = await settled;
+      expect(thrown).toBe(failure === "consumer" ? primaryPanic : cleanupPanic);
+      expect(cancelled).toBe(true);
+      expect(stream?.locked).toBe(false);
+      expect(completionObserved).toBe(true);
+    });
+  }
 
   it("rejects an oversized stream and deletes the completed partial blob", async () => {
     const artifacts = createBlobBackedToolResultArtifactStore(

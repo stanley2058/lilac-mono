@@ -135,11 +135,9 @@ function contentMismatch(): ToolResultArtifactContentMismatch {
   });
 }
 
-async function settleReaderCancellation(cancellation?: Promise<void>): Promise<boolean> {
-  if (!cancellation) return false;
-  const captured = await captureEffect(cancellation);
-  if (captured.kind === "panic") return rethrowBlobToolResultPanic(captured.panic);
-  return captured.kind === "defect";
+async function captureReaderCancellation(cancellation?: Promise<void>): Promise<Effect<void>> {
+  if (!cancellation) return { kind: "completed", value: undefined };
+  return captureEffect(cancellation);
 }
 
 async function consumeBlobReadWithSignal(
@@ -204,13 +202,17 @@ async function consumeBlobReadWithSignal(
     overflowed || sourceFailed || panic !== undefined
       ? reader.cancel("Tool result artifact read failed")
       : undefined;
-  const overflowCancellationFailed = await settleReaderCancellation(overflowCancellation);
-  const signalCancellationFailed = await settleReaderCancellation(signalCancellation);
-  sourceFailed = sourceFailed || overflowCancellationFailed || signalCancellationFailed;
+  const overflowCancelled = await captureReaderCancellation(overflowCancellation);
+  const signalCancelled = await captureReaderCancellation(signalCancellation);
   reader.releaseLock();
   const completed = await captureEffect(read.completion);
   if (panic !== undefined) return rethrowBlobToolResultPanic(panic);
   if (completed.kind === "panic") return rethrowBlobToolResultPanic(completed.panic);
+  if (overflowCancelled.kind === "panic")
+    return rethrowBlobToolResultPanic(overflowCancelled.panic);
+  if (signalCancelled.kind === "panic") return rethrowBlobToolResultPanic(signalCancelled.panic);
+  sourceFailed =
+    sourceFailed || overflowCancelled.kind === "defect" || signalCancelled.kind === "defect";
   if (signal?.aborted) return Result.err(cancelledRead());
   if (overflowed || sourceFailed || completed.kind === "defect") {
     return Result.err(contentMismatch());

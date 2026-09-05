@@ -636,7 +636,7 @@ describe("coding tools", () => {
     ).rejects.toThrow("artifactIntegration.maxSpoolBytes must be a non-negative finite number");
   });
 
-  it("cleans Bash spools after timeout, abort, and rejected artifact persistence", async () => {
+  it("leaves no Bash spools after timeout, abort, and rejected artifact persistence", async () => {
     const artifacts = createToolResultArtifactStore(path.join(cwd, "cleanup-artifacts"));
     await artifacts.init();
     const before = await bashSpoolDirectories();
@@ -655,9 +655,9 @@ describe("coding tools", () => {
       options("bash-artifact-timeout"),
     );
     expect(timeout).toMatchObject({
-      stdout: expect.stringContaining("0"),
-      executionError: { type: "timeout", timeoutKind: "wall_clock" },
+      executionError: { type: "timeout", timeoutMs: 20, timeoutKind: "wall_clock" },
     });
+    expect(await bashSpoolDirectories()).toEqual(before);
 
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 20);
@@ -666,6 +666,7 @@ describe("coding tools", () => {
       options("bash-artifact-abort", controller.signal),
     );
     expect(aborted).toMatchObject({ executionError: { type: "aborted" } });
+    expect(await bashSpoolDirectories()).toEqual(before);
 
     const failingArtifacts: ToolResultArtifactStore = {
       ...artifacts,
