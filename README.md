@@ -43,10 +43,10 @@ bun apps/mini-lilac/src/main.ts server init
 bun apps/mini-lilac/src/main.ts server
 ```
 
-Start its client from the target workspace in another terminal:
+Start its client from the target workspace in another terminal, using the absolute path to this checkout:
 
 ```sh
-bun apps/mini-lilac/src/main.ts
+bun /path/to/lilac-mono/apps/mini-lilac/src/main.ts
 ```
 
 Build and inspect the standalone CLIs:

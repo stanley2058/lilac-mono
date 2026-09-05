@@ -110,6 +110,11 @@ Run and session state lives under `$XDG_STATE_HOME/lilac-acp-controller`, fallin
 state, session updates, result text, and permission counters. Do not treat this directory as a
 secret-free cache when prompts or model output are sensitive.
 
+Session index updates hold an OS advisory lock on the `sessions` directory across the complete
+read, merge, and atomic replacement. Concurrent controller processes wait for that lock and report a
+timeout after five seconds of contention. The OS releases the lock when its file descriptor closes
+or the process exits; abandoned legacy `index.lock` directories do not block updates.
+
 Run lifecycle states are `submitted`, `running`, `completed`, `failed`, and `cancelled`. Status, result,
 and wait commands reconcile a nonterminal record with its worker. A submitted record whose worker was
 not admitted can be started during reconciliation; a vanished admitted worker becomes failed unless a

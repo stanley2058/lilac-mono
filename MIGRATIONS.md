@@ -5,19 +5,22 @@ documented separately in [`docs/core-config-migrations.md`](docs/core-config-mig
 
 ## Workflow schema 27 and staged blob publication
 
-Schema 27 adds `workflow_artifact_publications` to the existing workflow database. Its rows retain the
-expected artifact reference before a staged upload becomes durable. Existing schema-26 workflow data
+Schema 27 adds `workflow_artifact_publications` to the existing workflow database. Its columns are
+`object_id`, the primary key, `artifact_id`, `blob_ref_json`, and `created_at`. The JSON field retains the
+expected complete `BlobRefV1` before a staged upload becomes durable. Existing schema-26 workflow data
 and artifact references remain unchanged. Startup applies the additive migration automatically.
-Older databases that still contain legacy inline workflow blobs require the existing offline migration.
+Databases below the schema-26 blob baseline require the existing offline migration.
 
 BlobStore now supports staged reservations with finite cleanup deadlines. Adoption changes a completed
 staged reservation to durable ready through a fenced metadata decision. Existing BlobHandleV1 and
 BlobRefV1 formats and ordinary upload behavior stay unchanged. A new internal reservation decision file
 coordinates adoption and expiry cleanup.
 
-Core startup and the existing maintenance cycle finish retained publication intents and retry duplicate
-upload cleanup. A failure before intent persistence leaves expiring staging data. A failure after adoption
-leaves a publication row that can establish canonical ownership or finish deleting a duplicate.
+Core startup attempts a bounded batch of retained publication intents before starting workflow producers.
+It logs recovery failures and continues; the existing maintenance cycle retries bounded batches and
+duplicate-upload cleanup. Workflow staging has a ten-minute deadline. A failure before intent persistence
+leaves staging data for expiry cleanup. A failure after adoption leaves a publication row that can
+establish canonical ownership or finish deleting a duplicate.
 
 Expiry or deletion of a staged upload with unfinished byte writes retains its reservation and expiry
 index. Maintenance revisits that record to remove bytes from a delayed remote write. Only a producer
@@ -25,12 +28,17 @@ that confirms its byte writes finished can retire this cleanup ownership. Proces
 network failure can therefore leave a small cleanup record indefinitely. Expiry scans advance through
 retained records so they cannot prevent other objects from being cleaned up.
 
-Before rolling back, stop producers, finish pending workflow publication rows, and clear staged uploads.
-Retained unfinished-write records also require resolving any outstanding backend operations before
-their removal; elapsed time alone does not prove a remote write has stopped.
-Older binaries do not understand staged reservation states or the adoption decision file. Existing
-untracked durable blobs from earlier versions cannot be identified safely by this migration and are not
-deleted automatically.
+Older binaries reject workflow schema 27 and do not understand staged reservation fields or the adoption
+decision file. Adopted objects retain staging metadata, so finishing pending publication rows and clearing
+unfinished uploads does not make the current store backward-compatible. There is no automatic downgrade.
+Rollback requires a coordinated pre-upgrade backup of Core's databases and managed blob storage, or a
+separately reviewed downgrade. Stop producers before rollback and restore the backup's databases and
+managed blob storage together.
+
+Before any rollback that reuses current storage, resolve pending publications and outstanding backend
+writes. Retained unfinished-write records cannot be removed merely because their deadline passed;
+elapsed time alone does not prove a remote write has stopped. Existing untracked durable blobs from
+earlier versions cannot be identified safely by this migration and are not deleted automatically.
 
 A process interrupted immediately after a delayed backend decision write can leave an inert metadata
 file after deletion. It cannot resurrect readable content or a durable blob reference. Completed calls
@@ -160,8 +168,8 @@ Use `--dry-run` for a read-only preflight. The normal command preflights and the
 invocation. It accepts only supported legacy schemas, verifies every copied object's SHA-256 and byte
 length, rewrites each database only after its required objects exist, and removes replaced legacy byte
 columns and files. The offline command emits transcript schema 6 and workflow schema 26; current Core
-then applies the additive transcript schema 7 through 10 migrations during startup. Legacy or partially migrated
-versions stop startup with the migration command.
+then applies transcript schemas 7 through 10 and workflow schema 27 during startup. Databases below
+those blob baselines, including partially migrated legacy databases, stop startup with the migration command.
 
 The migration copies durable transcript, projection, lineage, and workflow artifact content. It discards
 rebuildable Discord downloads, Anthropic fallback media, and legacy tool-result artifacts. It does not
@@ -324,7 +332,9 @@ in one transaction. Migration uses `foreign_keys = OFF` and `legacy_alter_table 
 table rebuilds, verifies foreign keys before setting `user_version = 8`, restores both pragmas, and
 does not expose an intermediate schema as the completed startup state.
 
-## Core Transcript Database Schemas 1-9
+<a id="core-transcript-database-schemas-1-9"></a>
+
+## Core transcript database schemas 1-10
 
 Core's `agent-transcripts.db` has its own `transcript_schema_migrations` sequence. These are internal
 SQLite migrations and do not change `core-config.yaml`; its current config contract remains
@@ -400,7 +410,7 @@ Pre-envelope revisions cannot be interpreted without changing their approval mea
 
 ## Workflow Runtime Clean Break
 
-The unified programmatic workflow runtime does not read or migrate legacy `WorkflowDefinitionV2`/`WorkflowDefinitionV3` records. Existing `workflows` and `workflow_tasks` SQLite tables may remain on disk but are inert. Recreate scheduled jobs as JavaScript definitions plus `workflow.trigger.create`; existing approvals do not carry forward because approval identity includes the immutable source, schema, capability profile, project path, and runtime version.
+This section records the historical unified runtime transition. It did not read or migrate legacy `WorkflowDefinitionV2`/`WorkflowDefinitionV3` records. Existing `workflows` and `workflow_tasks` SQLite tables remain inert. That transition required recreating scheduled jobs as JavaScript definitions plus `workflow.trigger.create`. Its approval identity included immutable source, schema, capability profile, project path, and runtime version, so old approvals did not carry forward. Schema 20 later removed this approval model, and schema 23 replaced the v3 execution identity with v4.
 
 Deferred subagents persist as generated unified workflow runs. Graceful-restart snapshots no longer contain runner-local deferred child handles, output cursors, timers, or buffered completions. Active generated runs and pending live-parent deliveries recover from the durable workflow database. At this clean break, terminal results fell back to a durable progress card when the parent could not be restored; Schema 24 supersedes that behavior by durably orphaning unreachable live-parent deliveries instead.
 
@@ -410,7 +420,7 @@ The Level-2 HTTP server remains an internal trusted-network service rather than 
 
 ## Workflow Schema 20
 
-Schema 20 and runtime `lilac-workflow-js-v3` are the profile-native trusted-auto-run clean break. Workflow definitions use `resources` for orchestration bounds, and the public durable hash is `resourcePolicySha256`. The former maximum capability envelope, exact grant identity, approval API/state/actions, `awaiting_review`, and shared-editor lease runtime are removed.
+Schema 20 introduced the profile-native trusted-auto-run clean break for runtime `lilac-workflow-js-v3`. This section records that transition; schema 21 removed its remaining approval tables, and schema 23 replaced v3 executable state. Workflow definitions use `resources` for orchestration bounds, and the public durable hash is `resourcePolicySha256`. The former maximum capability envelope, exact grant identity, approval API/state/actions, `awaiting_review`, and shared-editor lease runtime are removed.
 
 Migration from schema 19 does not translate old authority:
 
@@ -420,20 +430,20 @@ Migration from schema 19 does not translate old authority:
 - All old request dispatches are deactivated before dependent rows are deleted, so no old dispatch can be adopted or redispatched under current defaults.
 - Standalone v19 terminal receipts are archived as bounded `terminal_receipt` audit records and deleted with their old runs; no receipt can outlive the executable identity it referred to.
 - Old triggers and generated subagent revisions are deleted and must be recreated from current source by an authenticated trusted principal.
-- The historical approval tables/columns remain inert to avoid a disproportionate SQLite table-rebuild migration. No current store API, engine, scheduler, tool API, event, or progress action reads or writes approval records.
+- At schema 20, historical approval tables and columns remained inert to avoid a SQLite table rebuild. The v3 runtime did not read or write approval records. Schema 21 later dropped those tables and columns.
 - `workflow_shared_editor_leases` is dropped. Shared writers are intentionally concurrent.
 
-After migration, source files remain on disk and are statically revalidated into a new v3 snapshot on their first trusted invocation. Removed `capabilities` metadata fails validation with migration guidance; rename resource bounds to `resources` and use only profile-native `agent()` options.
+After migration 20, source files remained on disk and were statically revalidated into a new v3 snapshot on their first trusted invocation. Removed `capabilities` metadata fails validation with migration guidance; rename resource bounds to `resources` and use only profile-native `agent()` options.
 
 The unshipped workflow-only `plugins.workflowExternal`, plugin `workflowExposure`, and Level-1 effect metadata were removed rather than migrated. Config v2 now owns Level-1 tools/plugins, Level-2 callables/plugins, direct network, workspace writes, execution, and delegation under each `agent.subagents.profiles.*` entry. Config v1 remains frozen and receives the useful built-in profile defaults during universal parsing. These native profiles apply identically to direct and workflow-launched subagents and are not serialized into workflow revisions or operation guardrail envelopes.
 
 ## Workflow Schema 21
 
-Schema 21 is the workflow-runtime-simplification clean break. The guiding rule is that workflows orchestrate and profiles authorize: the workflow layer keeps durable operation identity, dispatch epochs, single-owner claims, terminal receipts, waits, triggers, replay, and progress, and drops every workflow-specific security concept. This is an atomic migration that shrinks the persisted dispatch policy while still reading persisted v20 dispatches.
+Schema 21 was the workflow-runtime-simplification clean break for the historical v3 runtime. The guiding rule is that workflows orchestrate and profiles authorize: the workflow layer keeps durable operation identity, dispatch epochs, single-owner claims, terminal receipts, waits, triggers, replay, and progress, and drops every workflow-specific security concept. This is an atomic migration that shrinks the persisted dispatch policy while still reading persisted v20 dispatches.
 
 Resolved `agent()` input is reduced to `profile`, `cwd`, `model`, `reasoning`, and `label`. `cwd` is free-form and no longer canonicalized against protected roots. Agent authority comes entirely from the selected native profile: profiles own tools, Bash, Level-2 callables, network, and delegation, identically for direct and workflow launches. The former `isolation`, `editing`, `tools`, `executables`, `level2Callables`, `surfaceOriginOperations`, and `delegation` agent options are removed and fail validation with migration guidance.
 
-The deterministic program child is spawned directly with `bun --smol workflow-sandbox-child.js`. The child keeps its determinism lockdown and NDJSON protocol, and the host retains wall-time, cancellation, output-size, and protocol limits with forced termination. `maxRuntimeMemoryBytes` is removed because a plain Bun subprocess does not enforce that contract; it is stripped from persisted revision limits. Workflow execution no longer requires systemd, Bubblewrap, cgroup v2, or user namespaces, and there is no plain-subprocess fallback to fail closed against.
+Schema 21 spawned the deterministic program child directly with `bun --smol workflow-sandbox-child.js`. The child kept its determinism lockdown and NDJSON protocol, and the host retained wall-time, cancellation, output-size, and protocol limits with forced termination. Schema 23 later removed the workflow-wide wall-time limit. `maxRuntimeMemoryBytes` is removed because a plain Bun subprocess does not enforce that contract; it is stripped from persisted revision limits. Workflow execution no longer requires systemd, Bubblewrap, cgroup v2, or user namespaces, and there is no plain-subprocess fallback to fail closed against.
 
 The persisted state migration is a clean break rather than a reinterpretation:
 
@@ -448,6 +458,8 @@ The persisted state migration is a clean break rather than a reinterpretation:
 - Single-process projector residue is dropped: projection claims, orphans, missing-binding tables and triggers, and reconciliation state. One durable surface binding per run, the action outbox, edit-on-change, startup reconciliation, retry state, controls, and terminal cards are retained.
 
 The workflow-only security modules removed in this break (Level-1 boundary, path authority, protected-path, denied-root policy, network policy, descriptor path, scratch, and worktree artifact) are deleted rather than migrated. The dead tool-bridge `x-lilac-workflow-capability` header and plugin `workflowPathAuthority` guidance are removed. Level-2 `workflow.*` access follows native profile configuration and the generic profile-bound request capability; there is no workflow-specific active-request or principal gate.
+
+## Workflow schema 22
 
 Schema 22 adds durable materialization attempt/error state to live-parent completion deliveries. Deferred subagent results retry artifact loading and output normalization across process restarts before Core inserts an explicit failed synthetic result, preventing transient delivery failures from either losing successful child output or waiting forever.
 

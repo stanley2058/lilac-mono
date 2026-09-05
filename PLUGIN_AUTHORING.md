@@ -151,9 +151,15 @@ envelope themselves.
 
 - `create(context)` runs when Lilac loads or reloads the plugin.
 - `instance.init()` is optional and runs after `create`.
-- `instance.destroy()` is optional and runs when the plugin is unloaded.
-- Level 2 `ServerTool.init()` / `ServerTool.destroy()` still run when tools are activated or replaced.
+- `instance.destroy()` is optional and runs after the plugin is retired and its last active holder releases it.
+- Level 2 `ServerTool.init()` runs before its callable catalog is read. `ServerTool.destroy()` runs before the owning instance is destroyed.
 - Throw `ToolPluginSkipError` when your plugin should be skipped because an optional runtime capability is missing.
+
+Reload publishes a new plugin generation while existing Level 1 runs retain their original tools.
+Core drains active Level 2 calls before replacing their callable catalog. The retired generation keeps
+its shared resources until its Level 1 toolsets and Level 2 calls have released them. New and retired
+instances can therefore coexist; keep instance-owned resources scoped to the corresponding `create`
+result. An agent can reload tools without waiting for its own run to finish.
 
 ## Config
 
@@ -182,7 +188,7 @@ plugins:
   model-facing catalog, so different plugins may use the same raw name.
 - Level 2 callable ids must be globally unique.
 - Level 2 tools can opt into a single string positional shortcut via `primaryPositional`, e.g. `tools fetch <url>`.
-- Hot reload is based on `core-config.yaml` and plugin directory contents; changing the built entrypoint and then calling `/reload`, `/list`, `/help/:callableId`, or `/call` will cause re-evaluation.
+- Core reloads plugins after a valid `core-config.yaml` change or an explicit reload through `/reload` or `tools onboarding.reload_tools`. After rebuilding a plugin, request a reload to load its new entrypoint. `/list`, `/help/:callableId`, and `/call` use the installed catalog and do not trigger reload.
 
 ## Level 1 Output
 

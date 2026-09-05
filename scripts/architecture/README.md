@@ -112,8 +112,10 @@ The Core BLOB-column check has one registered structured-data exception: convers
 embeddings. Migration modules are exact registrations because their job is to read and remove legacy byte
 formats; runtime modules receive no compatibility exemption.
 
-Production tests, generated output, and the generated Core remote-runner bundle are excluded by
-`source-policy.ts` and `syntax-policy.mts`; their TypeScript source remains enforced.
+Semantic and syntax checks share the exclusions in `source-policy.ts`. Test modules, test-support
+trees, vendored source, generated output, and the Core remote-runner bundle are excluded. Generated
+bundles are checked at their TypeScript source. A `fixtures` directory alone is not an exclusion:
+production `src/fixtures` is checked, while fixtures under test-support trees are excluded.
 
 ### Persisted Codecs
 

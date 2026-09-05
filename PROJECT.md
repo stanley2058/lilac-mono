@@ -129,6 +129,10 @@ Native Bash executes with the Core or Mini service user's host authority. Static
 
 Level 2 is Core's Elysia tool service in `apps/core/src/tool-server`, consumed by `apps/tool-bridge/client.ts` and commonly reached by an agent through Level 1 Bash. The same Core plugin manager owns Level 1 and Level 2 registration. Built-ins are composed from `apps/core/src/plugins/builtin`; external plugins are trusted process code discovered under `${DATA_DIR}/plugins` through `packages/plugin-runtime`.
 
+The plugin manager retains each generation while Level 1 toolsets or Level 2 calls hold it. Reload
+publishes a new generation and retires the old one; destruction waits for its final holder to release.
+Reload does not wait for the active agent run that may have requested it.
+
 Level 2 callables settle with actual `better-result` Results. Expected failures carry the closed
 `ServerToolFailure` contract; raw returns are invalid and throws are defects. Core projects Results
 onto the strict `{ status: "ok", value } | { status: "error", error }` wire envelope, and the
@@ -172,6 +176,7 @@ Core has one current programmatic workflow runtime, `lilac-workflow-js-v4`, unde
 - The deterministic program child is a plain `bun --smol` subprocess with deterministic-global lockdown and an NDJSON host protocol. It is not an OS security sandbox. The host owns cancellation, operation-idle, output-size, and protocol limits. A workflow has no total wall-time limit.
 - Current host operations are agent orchestration, phase/parallel/pipeline composition, Discord-only `waitForReply`, and `sleep`. Reply waits are limited to the authenticated originating Discord session and user.
 - Journals, dispatch epochs, owner fencing, pinned resolved-model identity, waits, triggers, cancellation, terminal receipts, generated subagent runs, and progress actions are durable. Replay reuses operation identity rather than rerunning completed effects.
+- Recurring reconciliation selects expired running claims before applying its page limit and takes them over through the same atomic claim fence used for startup recovery. Live owners renew their claims through heartbeats.
 - Primary-created runs, ordinary workflow children, durable triggers, and generated subagent runs share the global active-run cap. Shared filesystem or external operations may race.
 - Progress projection is durable and independent of request output relays. Live-parent completion delivery is durable; when the parent cannot be restored, terminal output remains available through workflow progress/result state.
 
@@ -238,7 +243,7 @@ Redis Streams is separate durable bus state. Project workflow source lives in ea
 
 ### Mini Lilac
 
-Mini centralizes server state under `$XDG_STATE_HOME/mini-lilac`, falling back to `~/.local/state/mini-lilac`. Categories include strict server/provider configuration and owner credentials, the SQLite session/transcript/todo database, model metadata cache, encrypted transient tool-result artifacts, and private workspace-history storage. The selected project worktree remains separate user data. Active SSE logs are memory-only and cease to exist after finalization or process loss.
+Mini centralizes server state under `$XDG_STATE_HOME/mini-lilac`, falling back to `~/.local/state/mini-lilac`. Categories include strict server/provider configuration and owner credentials, the SQLite session/transcript/todo database, model metadata cache, encrypted transient tool-result artifacts, and private workspace-history storage. The selected project worktree remains separate user data. Active SSE logs are memory-only and are released after durable finalization or process loss. If both finalization writes fail, the live process retains a terminal replay while the durable run remains active for startup recovery.
 
 ### ACP Controller
 

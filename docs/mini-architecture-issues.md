@@ -1,6 +1,6 @@
 # Deferred Mini architecture issues
 
-All issues below are deferred by the user on September 5, 2026. They are excluded from the current branch's implementation and review acceptance criteria. Shared-package changes may still require Mini compatibility tests.
+All issues below are deferred by the user on September 5, 2026. They are not active implementation work. Shared-package changes may still require Mini compatibility tests.
 
 | ID | Issue | Priority | Status | Required outcome |
 | --- | --- | --- | --- | --- |
@@ -12,20 +12,20 @@ All issues below are deferred by the user on September 5, 2026. They are exclude
 
 ## Mini derives HTTP failure categories from English messages
 
-[MiniLilacSessionOperationRejected](/home/stanley/Sandbox/lilac-mcp/lilac-mono/packages/mini-lilac-runtime/src/session-service.ts:242) carries an operation and message, but no closed rejection reason. The server [reconstructs HTTP semantics from message patterns](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/mini-lilac-server/src/server.ts:218), with another creation-specific mapper nearby.
+[MiniLilacSessionOperationRejected](../packages/mini-lilac-runtime/src/session-service.ts) carries an operation and message, but no closed rejection reason. The server [reconstructs HTTP semantics from message patterns](../apps/mini-lilac-server/src/server.ts), with another creation-specific mapper nearby.
 
-An interrupt can record pending steering IDs. A later steering request is then [rejected as interrupted before admission](/home/stanley/Sandbox/lilac-mcp/lilac-mono/packages/mini-lilac-runtime/src/session-service.ts:4521). The `/steer` route uses the generic mapper, which has no matching pattern.
+An interrupt can record pending steering IDs. A later steering request is then [rejected as interrupted before admission](../packages/mini-lilac-runtime/src/session-service.ts). The `/steer` route uses the generic mapper, which has no matching pattern.
 
-**Verification:** Executing that mapper returned status 500 and `internal_error`. An [existing runtime test](/home/stanley/Sandbox/lilac-mcp/lilac-mono/packages/mini-lilac-runtime/tests/session-runtime-interruptions.test.ts:195) exercises the valid interruption sequence. This was a mapper probe plus route tracing, not a full HTTP test.
+**Verification:** Executing that mapper returned status 500 and `internal_error`. An [existing runtime test](../packages/mini-lilac-runtime/tests/session-runtime-interruptions.test.ts) exercises the valid interruption sequence. This was a mapper probe plus route tracing, not a full HTTP test.
 
 **Fix:** Add closed internal rejection reasons and exhaustively project them onto existing HTTP statuses/codes. Let messages change independently. Test interrupt-before-admission through the route and cover the mapping table. The current protocol need not change.
 
 
 ## Mini HTTP owns admission and scans all sessions per prompt
 
-[existingSession](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/mini-lilac-server/src/server.ts:527) finds one session by calling `listSessionsResult()`. The [store implementation](/home/stanley/Sandbox/lilac-mcp/lilac-mono/packages/mini-lilac-runtime/src/sqlite-store.ts:3960) selects and decodes every session and loads history-navigation state for each.
+[existingSession](../apps/mini-lilac-server/src/server.ts) finds one session by calling `listSessionsResult()`. The [store implementation](../packages/mini-lilac-runtime/src/sqlite-store.ts) selects and decodes every session and loads history-navigation state for each.
 
-The HTTP route owns find/create, binding comparison, and prompt start under a [server-local lock](/home/stanley/Sandbox/lilac-mcp/lilac-mono/apps/mini-lilac-server/src/server.ts:603). The runtime actor has its own serialization, and delegated-session admission implements another [find/create/admit sequence](/home/stanley/Sandbox/lilac-mcp/lilac-mono/packages/mini-lilac-runtime/src/session-service.ts:6943).
+The HTTP route owns find/create, binding comparison, and prompt start under a [server-local lock](../apps/mini-lilac-server/src/server.ts). The runtime actor has its own serialization, and delegated-session admission implements another [find/create/admit sequence](../packages/mini-lilac-runtime/src/session-service.ts).
 
 A prompt does work proportional to retained sessions and depends on unrelated session rows decoding successfully. Correct admission also requires callers to know which extra lock and checks to apply.
 
@@ -34,7 +34,7 @@ A prompt does work proportional to retained sessions and depends on unrelated se
 
 ## Mini history exposes competing throwing and Result interfaces
 
-Workspace-history Result methods [compare methods against class prototypes](/home/stanley/Sandbox/lilac-mcp/lilac-mono/packages/mini-lilac-runtime/src/workspace-history-store.ts:1516) to decide whether to execute an overridden throwing method or the internal Result implementation. There are 15 such checks. [Test doubles subclass the concrete store](/home/stanley/Sandbox/lilac-mcp/lilac-mono/packages/mini-lilac-runtime/tests/session-runtime-test-support.ts:625), and the runtime factory requires that concrete type.
+Workspace-history Result methods [compare methods against class prototypes](../packages/mini-lilac-runtime/src/workspace-history-store.ts) to decide whether to execute an overridden throwing method or the internal Result implementation. There are 15 such checks. [Test doubles subclass the concrete store](../packages/mini-lilac-runtime/tests/session-runtime-test-support.ts), and the runtime factory requires that concrete type.
 
 Wrapping or overriding a method changes its Result counterpart's execution path. Tests depend on one interface while production generally uses another, forcing production dispatch logic to preserve the relationship. Locking and failure handling acquire extra paths to maintain.
 

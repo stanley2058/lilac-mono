@@ -35,20 +35,22 @@ bun run build
 | `--model`     | last server choice / initial preflight     | Model id in `provider/model` form.                |
 | `--profile`   | last server choice / server default        | Agent profile id.                                 |
 | `--session`   | new random UUID                            | Resume/continue an existing session id.           |
-| `--reasoning` | provider default                           | One of the client reasoning levels.               |
+| `--reasoning` | last server choice / provider default      | One of the client reasoning levels.               |
 | `-h, --help`  |                                            | Show help.                                        |
 
-`cwd` is always `process.cwd()` canonicalized with `realpath` and sent by the
-transport with every request. The program requires TTY stdin and stdout; piped
+`cwd` is `process.cwd()` canonicalized with `realpath`. The transport sends it
+when submitting chat and listing workspace sessions or skills. Session reads and
+controls use the session id. The program requires TTY stdin and stdout; piped
 input/output is rejected.
 
 On startup the client fetches the live model and profile catalogs. Profiles
 marked `subagentOnly` are filtered out. The last model/profile/reasoning used
 with each server are stored under `$XDG_STATE_HOME/mini-lilac` (or
 `~/.local/state/mini-lilac`) and reused by fresh sessions. Explicit CLI options
-take precedence. Only a first-ever missing model opens numbered preflight;
-an omitted profile and reasoning use server defaults and are recorded once the
-session reports its resolved bindings.
+take precedence. A fresh session opens numbered model preflight when neither an
+explicit model nor an available remembered model exists. When no explicit or
+remembered profile or reasoning is available, the server resolves the defaults;
+the client records them once the session reports its bindings.
 
 With `--session`, the session snapshot and canonical messages are loaded before
 selection. Its stored cwd must match the current canonical cwd. Stored
@@ -81,10 +83,12 @@ is a fixed multiline textarea and remains focused while output streams.
 
 ## Rendering
 
-[`src/render.ts`](./src/render.ts) maps standard AI SDK chunks to a plain semantic
-transcript model: text, reasoning, tools/results, errors, plus mini-lilac data
-parts (`session`, `control`, `transcriptReset`, `subagentStatus`), which are
-validated with the client's Zod schema at the boundary.
+[`src/ui-message-chunk-projection.ts`](./src/ui-message-chunk-projection.ts)
+projects AI SDK messages and chunks into the renderer's closed types and validates
+mini-lilac data parts with the client's Zod schemas. The SDK-facing facade in
+[`src/render-boundary.ts`](./src/render-boundary.ts) passes these projections to
+[`src/render.ts`](./src/render.ts), which builds the semantic transcript model:
+text, reasoning, tools/results, errors, and mini-lilac session and control data.
 
 Provider reasoning summaries always render inline as a muted entry. Following
 OpenCode's convention, a leading `**Title**` block (separated by a blank line)
@@ -139,7 +143,9 @@ instructed to load that exact skill through its native `skill` tool before actin
 - `src/input-state.ts` — pure keyboard state reducer (fully unit-tested).
 - `src/startup.ts` — fresh/resumed session binding and transcript resolution.
 - `src/preflight.ts` — model/profile catalog selection.
-- `src/render.ts` — canonical-message and stream-chunk transcript mapping.
+- `src/ui-message-chunk-projection.ts` — SDK message and stream-chunk projections.
+- `src/render-boundary.ts` — SDK-facing renderer facade.
+- `src/render.ts` — projected-message and projected-chunk transcript mapping.
 - `src/controller.ts` — transport/session lifecycle behind a typed UI sink.
 - `src/app.tsx` — responsive OpenTUI transcript and multiline composer.
 - `src/main.tsx` — CLI and renderer lifecycle entry point.

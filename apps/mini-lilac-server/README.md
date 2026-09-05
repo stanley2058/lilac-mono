@@ -17,8 +17,9 @@ strict even when OAuth supplies OpenAI authentication, so `auth.json` must exist
 `{}`.
 
 The server caches the validated models.dev registry at `models-dev.json` in this state directory.
-Startup uses the cache immediately and refreshes it in the background; a cold cache never prevents
-the HTTP server from listening.
+Startup reuses a fresh, complete cache; otherwise it waits for a catalog refresh before listening.
+Catalog fetch failures emit warnings and use stale entries when available. Without cached entries,
+the affected providers can have no models in the catalog even though the HTTP server starts.
 
 Serving also holds a non-blocking `flock` lock beside the selected SQLite file. A second Mini Lilac
 server targeting the same database exits before opening it; the `flock` executable is therefore a
@@ -103,8 +104,8 @@ and never include results omitted by native query limits such as `maxResults` or
 
 ## Run
 
-From the repository, run `bun run src/main.ts`. The installable command exposes the same entry point
-as `mini-lilac server`.
+From the repository root, run `bun run apps/mini-lilac/src/main.ts server`. The installable command
+exposes the same entry point as `mini-lilac server`.
 
 The server defaults to `$XDG_STATE_HOME/mini-lilac/config.yaml`; `--config` can still select another
 file. SQLite defaults to `$XDG_STATE_HOME/mini-lilac/mini-lilac.sqlite`. Override either path when
@@ -225,8 +226,9 @@ removes that stream subscriber; use the cancel endpoint to cancel a run explicit
 `data-streamCursor` sequence. The resume endpoint returns a chronological message prefix and its
 matching run cursor atomically for active sessions. Active chunks and cursors exist only in the
 owning session actor; they are replayable after a network disconnect while that process and run are
-active, but are not retained after finalization or a process crash. A crash marks active runs as
-errors. Completed runs return `204`; canonical model and UI transcripts are stored as shared,
+active, but are not retained after durable finalization or a process crash. If both finalization
+attempts fail, the actor can retain terminal replay in memory while durable state awaits recovery.
+A crash marks active runs as errors. Completed runs return `204`; canonical model and UI transcripts are stored as shared,
 immutable SQLite chains at durable boundaries. Active SSE responses emit comment keepalives while
 quiet so long-running deferred subagents do not lose their parent connection to intermediary idle
 timeouts.
