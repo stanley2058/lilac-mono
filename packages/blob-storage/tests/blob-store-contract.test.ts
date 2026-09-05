@@ -97,6 +97,60 @@ const adapters: readonly ContractAdapter[] = [
 
 for (const adapter of adapters) {
   describe(`BlobStore contract: ${adapter.name}`, () => {
+    test("staged bytes stay unreadable until durable adoption, then survive staging expiry", async () => {
+      const store = await adapter.create();
+      const bytes = new TextEncoder().encode("recoverable publication");
+      const stagingExpiresAt = Date.now() + 60_000;
+      const started = success(await store.startStagedUpload({ source: bytes, stagingExpiresAt }));
+      const ref = success(await started.completion);
+      expect(ref.expiresAt).toBeUndefined();
+      expect(failure(await store.resolve(started.handle, { timeoutMs: 0 }))).toBeInstanceOf(
+        BlobResolveTimeout,
+      );
+      expect(failure(await store.open(ref))).toBeInstanceOf(BlobObjectAbsent);
+      expect(success(await store.adopt(started.handle))).toEqual(ref);
+      expect(success(await store.adopt(started.handle))).toEqual(ref);
+      expect(success(await store.maintain({ now: stagingExpiresAt, limit: 10 })).deleted).toBe(0);
+      expect(success(await store.maintain({ now: stagingExpiresAt, limit: 10 })).inspected).toBe(0);
+      expect(success(await materializeBlobRead(success(await store.open(ref))))).toEqual(bytes);
+      expect(success(await store.delete(ref))).toBe("deleted");
+      expect(failure(await store.adopt(started.handle))).toBeInstanceOf(BlobObjectAbsent);
+    });
+
+    test("unadopted staged bytes expire and cannot be adopted after cleanup", async () => {
+      const store = await adapter.create();
+      const stagingExpiresAt = Date.now() + 60_000;
+      const started = success(
+        await store.startStagedUpload({ source: new Uint8Array([1, 2]), stagingExpiresAt }),
+      );
+      const ref = success(await started.completion);
+      expect(success(await store.maintain({ now: stagingExpiresAt, limit: 10 })).deleted).toBe(1);
+      expect(failure(await store.adopt(started.handle))).toBeInstanceOf(BlobObjectAbsent);
+      expect(failure(await store.open(ref))).toBeInstanceOf(BlobObjectAbsent);
+      expect(success(await store.maintain({ now: stagingExpiresAt, limit: 10 })).inspected).toBe(0);
+    });
+
+    test("staged validation, pending adoption, and explicit deletion preserve lifecycle errors", async () => {
+      const store = await adapter.create();
+      const source = controlledStream();
+      expect(
+        failure(await store.startStagedUpload({ source: new Uint8Array(), stagingExpiresAt: -1 }))
+          ._tag,
+      ).toBe("BlobInvalidInput");
+      const started = success(
+        await store.startStagedUpload({
+          source: source.stream,
+          stagingExpiresAt: Date.now() + 60_000,
+        }),
+      );
+      expect(failure(await store.adopt(started.handle))).toBeInstanceOf(BlobResolveTimeout);
+      source.enqueue(new Uint8Array([1]));
+      source.close();
+      const ref = success(await started.completion);
+      expect(success(await store.delete(ref))).toBe("deleted");
+      expect(failure(await store.adopt(started.handle))).toBeInstanceOf(BlobObjectAbsent);
+    });
+
     test("reserves asynchronously, resolves, and verifies readable bytes", async () => {
       const store = await adapter.create();
       const source = controlledStream();

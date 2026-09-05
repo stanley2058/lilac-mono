@@ -15,6 +15,7 @@ import {
   BlobInvalidRetention,
   BlobMaintenanceFailed,
   BlobObjectExpired,
+  BlobObjectAbsent,
   BlobOperationAndCleanupFailed,
   BlobReadCancelled,
   BlobReadSourceFailure,
@@ -718,5 +719,77 @@ describe("blob storage contract", () => {
     await writeFile(contentPath, "corrupt", { mode: 0o600 });
     const read = success(await store.open(ref));
     expect(failure(await materializeBlobRead(read))).toBeInstanceOf(BlobIntegrityFailure);
+  });
+});
+
+describe("staged blob recovery", () => {
+  test("a reopened local store adopts staged bytes and preserves their identity", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "lilac-staged-reopen-"));
+    const root = path.join(parent, "store");
+    const store = success(await createLocalBlobStore({ root }));
+    const bytes = new TextEncoder().encode("staged before process restart");
+    const started = success(
+      await store.startStagedUpload({ source: bytes, stagingExpiresAt: Date.now() + 60_000 }),
+    );
+    const ref = success(await started.completion);
+    success(await store.close({ deadlineAtMs: Date.now() + 1000 }));
+    const reopened = success(await createLocalBlobStore({ root }));
+    expect(success(await reopened.adopt(started.handle))).toEqual(ref);
+    expect(success(await materializeBlobRead(success(await reopened.open(ref))))).toEqual(bytes);
+  });
+
+  test("expiry losing to adoption does not delete the adopted object", async () => {
+    const backend = new ControlledMemoryBackend();
+    const producer = new SupervisedBlobStore(backend);
+    const maintainer = new SupervisedBlobStore(backend);
+    const stagingExpiresAt = Date.now() + 60_000;
+    const started = success(
+      await producer.startStagedUpload({ source: new Uint8Array([1]), stagingExpiresAt }),
+    );
+    const ref = success(await started.completion);
+    const blocked = backend.blockReservationState("deleted");
+    const maintenance = maintainer.maintain({ now: stagingExpiresAt });
+    await blocked;
+    expect(success(await producer.adopt(started.handle))).toEqual(ref);
+    backend.releaseReservationWrite();
+    expect(success(await maintenance).deleted).toBe(0);
+    expect(success(await materializeBlobRead(success(await producer.open(ref))))).toEqual(
+      new Uint8Array([1]),
+    );
+  });
+
+  test("adoption losing to completed expiry cleanup cannot resurrect an object", async () => {
+    const backend = new ControlledMemoryBackend();
+    const producer = new SupervisedBlobStore(backend);
+    const maintainer = new SupervisedBlobStore(backend);
+    const stagingExpiresAt = Date.now() + 60_000;
+    const started = success(
+      await producer.startStagedUpload({ source: new Uint8Array([1]), stagingExpiresAt }),
+    );
+    const ref = success(await started.completion);
+    const blocked = backend.blockReservationState("ready");
+    const adoption = producer.adopt(started.handle);
+    await blocked;
+    expect(success(await maintainer.maintain({ now: stagingExpiresAt })).deleted).toBe(1);
+    backend.releaseReservationWrite();
+    expect(failure(await adoption)).toBeInstanceOf(BlobObjectAbsent);
+    expect(failure(await producer.open(ref))).toBeInstanceOf(BlobObjectAbsent);
+  });
+
+  test("failed staged deletion stays indexed for another maintenance cycle", async () => {
+    const backend = new ControlledMemoryBackend();
+    const store = new SupervisedBlobStore(backend);
+    const stagingExpiresAt = Date.now() + 60_000;
+    const started = success(
+      await store.startStagedUpload({ source: new Uint8Array([1]), stagingExpiresAt }),
+    );
+    await started.completion;
+    backend.failDeletes = 1;
+    expect(failure(await store.maintain({ now: stagingExpiresAt }))).toBeInstanceOf(
+      BlobMaintenanceFailed,
+    );
+    expect(failure(await store.adopt(started.handle))).toBeInstanceOf(BlobObjectAbsent);
+    expect(success(await store.maintain({ now: stagingExpiresAt })).deleted).toBe(1);
+    expect(success(await store.maintain({ now: stagingExpiresAt })).inspected).toBe(0);
   });
 });

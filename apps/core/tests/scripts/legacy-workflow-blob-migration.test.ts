@@ -250,6 +250,8 @@ function countingStore(store: BlobStore, onUpload: () => void): BlobStore {
       onUpload();
       return store.startUpload(input);
     },
+    startStagedUpload: (input) => store.startStagedUpload(input),
+    adopt: (handle) => store.adopt(handle),
     resolve: (handle, options) => store.resolve(handle, options),
     open: (reference) => store.open(reference),
     delete: (target) => store.delete(target),

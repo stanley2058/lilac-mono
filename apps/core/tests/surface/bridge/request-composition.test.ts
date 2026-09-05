@@ -193,6 +193,12 @@ function controlledReservationBlobStore(): {
   const uploads: Array<{ upload: BlobUpload; complete: () => void }> = [];
   let nextObject = 1;
   const store: BlobStore = {
+    async startStagedUpload() {
+      throw new Error("Staged uploads are not supported by this test store");
+    },
+    async adopt() {
+      throw new Error("Blob adoption is not supported by this test store");
+    },
     async startUpload() {
       const index = nextObject++;
       const objectId = `b1_${index.toString(16).padStart(32, "0")}`;

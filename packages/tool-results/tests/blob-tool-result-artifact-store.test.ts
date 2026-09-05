@@ -60,6 +60,8 @@ describe("blob-backed tool result artifact store", () => {
 
   function observeUploads(store: BlobStore, refs: BlobRefV1[]): BlobStore {
     return {
+      startStagedUpload: (input) => store.startStagedUpload(input),
+      adopt: (handle) => store.adopt(handle),
       startUpload: async (input) =>
         (await store.startUpload(input)).map((upload) => ({
           ...upload,
@@ -184,6 +186,8 @@ describe("blob-backed tool result artifact store", () => {
   it("handles fragmented nonce, Unicode, and authentication tag while preserving continuation", async () => {
     const blobs = await memoryStore();
     const fragmented: BlobStore = {
+      startStagedUpload: (input) => blobs.startStagedUpload(input),
+      adopt: (handle) => blobs.adopt(handle),
       startUpload: (input) => blobs.startUpload(input),
       resolve: (handle, options) => blobs.resolve(handle, options),
       delete: (target) => blobs.delete(target),
@@ -244,6 +248,8 @@ describe("blob-backed tool result artifact store", () => {
     const blobs = await memoryStore();
     let failure: "authentication" | "completion" | undefined;
     const observed: BlobStore = {
+      startStagedUpload: (input) => blobs.startStagedUpload(input),
+      adopt: (handle) => blobs.adopt(handle),
       startUpload: (input) => blobs.startUpload(input),
       resolve: (handle, options) => blobs.resolve(handle, options),
       delete: (target) => blobs.delete(target),
@@ -310,6 +316,8 @@ describe("blob-backed tool result artifact store", () => {
     const openGate = Promise.withResolvers<void>();
     const streamStarted = Promise.withResolvers<void>();
     const observed: BlobStore = {
+      startStagedUpload: (input) => blobs.startStagedUpload(input),
+      adopt: (handle) => blobs.adopt(handle),
       startUpload: (input) => blobs.startUpload(input),
       resolve: (handle, options) => blobs.resolve(handle, options),
       open: async (ref) => {
@@ -478,6 +486,8 @@ describe("blob-backed tool result artifact store", () => {
     const metadataRoot = path.join(baseDir, "metadata");
     const metadataCountsAtDelete: number[] = [];
     const observed: BlobStore = {
+      startStagedUpload: (input) => blobs.startStagedUpload(input),
+      adopt: (handle) => blobs.adopt(handle),
       startUpload: (input) => blobs.startUpload(input),
       resolve: (handle, options) => blobs.resolve(handle, options),
       open: (ref) => blobs.open(ref),

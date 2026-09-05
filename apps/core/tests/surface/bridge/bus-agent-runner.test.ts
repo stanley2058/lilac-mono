@@ -3621,6 +3621,8 @@ describe("durable accepted runner recovery", () => {
           })(),
         }));
       },
+      startStagedUpload: (input) => baseBlobStore.startStagedUpload(input),
+      adopt: (handle) => baseBlobStore.adopt(handle),
       resolve: (handle, options) => baseBlobStore.resolve(handle, options),
       open: (ref) => baseBlobStore.open(ref),
       delete: (target) => baseBlobStore.delete(target),
@@ -3814,6 +3816,8 @@ describe("durable accepted runner recovery", () => {
           })(),
         }));
       },
+      startStagedUpload: (input) => baseBlobStore.startStagedUpload(input),
+      adopt: (handle) => baseBlobStore.adopt(handle),
       resolve: (handle, options) => baseBlobStore.resolve(handle, options),
       open: (ref) => baseBlobStore.open(ref),
       delete: (target) => baseBlobStore.delete(target),

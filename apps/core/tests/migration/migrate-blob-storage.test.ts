@@ -92,6 +92,8 @@ async function legacyCliFixture(): Promise<{
 function closeFailingStore(store: BlobStore, onDelete: () => void = () => undefined): BlobStore {
   return {
     startUpload: (input) => store.startUpload(input),
+    startStagedUpload: (input) => store.startStagedUpload(input),
+    adopt: (handle) => store.adopt(handle),
     resolve: (handle, options) => store.resolve(handle, options),
     open: (reference) => store.open(reference),
     delete: (target) => {
@@ -129,6 +131,8 @@ function operationAndCloseFailingStore(store: BlobStore, onClose: () => void): B
           }),
         ),
       ),
+    startStagedUpload: (input) => store.startStagedUpload(input),
+    adopt: (handle) => store.adopt(handle),
     resolve: (handle, options) => store.resolve(handle, options),
     open: (reference) => store.open(reference),
     delete: (target) => store.delete(target),
@@ -151,6 +155,8 @@ function operationAndCloseFailingStore(store: BlobStore, onClose: () => void): B
 function rejectingOperationStore(store: BlobStore, onClose: () => void): BlobStore {
   return {
     startUpload: () => Promise.reject(new Error("controlled rejected operation")),
+    startStagedUpload: (input) => store.startStagedUpload(input),
+    adopt: (handle) => store.adopt(handle),
     resolve: (handle, options) => store.resolve(handle, options),
     open: (reference) => store.open(reference),
     delete: (target) => store.delete(target),

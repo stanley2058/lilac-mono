@@ -154,6 +154,12 @@ function createAttachment(
 ): Attachment {
   let nextObjectId = 0;
   const blobStore: BlobStore = {
+    async startStagedUpload() {
+      throw new Error("Staged uploads are not supported by this test store");
+    },
+    async adopt() {
+      throw new Error("Blob adoption is not supported by this test store");
+    },
     startUpload: async ({ source, retention }) => {
       const bytes = source instanceof Uint8Array ? source : new Uint8Array();
       const objectId = `b1_${(++nextObjectId).toString(16).padStart(32, "0")}`;

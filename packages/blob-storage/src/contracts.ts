@@ -76,6 +76,15 @@ export type BlobCloseSummary = {
 };
 
 export type BlobStore = {
+  startStagedUpload(input: {
+    readonly source: BlobSource;
+    readonly stagingExpiresAt: number;
+    readonly expectedSha256?: string;
+    readonly expectedByteLength?: number;
+  }): Promise<Result<BlobUpload, BlobUploadStartError>>;
+
+  adopt(handle: BlobHandleV1): Promise<Result<BlobRefV1, BlobResolveError>>;
+
   startUpload(input: {
     readonly source: BlobSource;
     readonly retention: BlobRetention;

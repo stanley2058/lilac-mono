@@ -99,6 +99,12 @@ function createBlobStore(input: {
   let nextId = 10;
 
   const store: BlobStore = {
+    async startStagedUpload() {
+      throw new Error("Staged uploads are not supported by this test store");
+    },
+    async adopt() {
+      throw new Error("Blob adoption is not supported by this test store");
+    },
     async startUpload(start) {
       const handle: BlobHandleV1 = { version: 1, objectId: objectId(nextId++) };
       let complete!: (result: ReturnType<typeof Result.ok<BlobRefV1>>) => void;

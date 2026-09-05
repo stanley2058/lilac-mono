@@ -1,5 +1,8 @@
 import {
   materializeBlobRead,
+  BlobObjectAbsent,
+  BlobObjectExpired,
+  type BlobResolveError,
   type BlobDeleteError,
   type BlobReadError,
   type BlobReadTerminalError,
@@ -29,11 +32,16 @@ import type { JsonValue, WorkflowArtifactReference } from "./workflow-domain";
 export const WORKFLOW_INLINE_VALUE_BYTES = 64 * 1024;
 const WORKFLOW_VALUE_ARTIFACT_PREFIX = "workflow-value:";
 const WORKFLOW_SOURCE_ARTIFACT_PREFIX = "workflow-source:";
+const WORKFLOW_ARTIFACT_STAGING_MS = 10 * 60 * 1000;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 
 type WorkflowArtifactIoOperation =
   | "lookup-artifact"
   | "register-artifact"
+  | "record-publication"
+  | "complete-publication"
+  | "remove-publication"
+  | "adopt-upload"
   | "start-upload"
   | "complete-upload"
   | "open-artifact"
@@ -130,6 +138,7 @@ type BlobFailure =
   | BlobReadTerminalError
   | BlobUploadStartError
   | BlobWriteError
+  | BlobResolveError
   | DurableWorkflowReadError
   | DurableWorkflowInvariantViolation;
 
@@ -190,102 +199,225 @@ async function deleteUploadedAfterFailure(input: {
   });
 }
 
-async function publishArtifact(input: {
+type WorkflowArtifactPublicationContext = {
   readonly blobStore: BlobStore;
   readonly workflowStore: DurableWorkflowStore;
-  readonly artifactId: string;
-  readonly bytes: Uint8Array;
-  readonly createdAt: number;
-  readonly verify: (
-    reference: WorkflowArtifactReference,
-  ) => Promise<ResultType<void, WorkflowArtifactReadError>>;
-}): Promise<ResultType<WorkflowArtifactReference, WorkflowArtifactWriteError>> {
-  const existing = input.workflowStore
-    .getWorkflowArtifact(input.artifactId)
-    .mapError((error) => ioFailure(input.artifactId, "lookup-artifact", error));
-  const existingOutcome = existing.match<
-    | { readonly kind: "existing"; readonly reference: WorkflowArtifactReference }
-    | { readonly kind: "missing" }
-    | { readonly kind: "error"; readonly error: WorkflowArtifactIoFailed }
-  >({
-    ok: (reference) => (reference === null ? { kind: "missing" } : { kind: "existing", reference }),
-    err: (error) => ({ kind: "error", error }),
+};
+
+function sameArtifactReference(
+  left: WorkflowArtifactReference,
+  right: WorkflowArtifactReference,
+): boolean {
+  return encodeWorkflowArtifactReference(left) === encodeWorkflowArtifactReference(right);
+}
+
+async function discardPublication(
+  input: WorkflowArtifactPublicationContext,
+  reference: WorkflowArtifactReference,
+): Promise<ResultType<void, WorkflowArtifactIoFailed>> {
+  return Result.gen(async function* () {
+    yield* Result.await(
+      input.blobStore
+        .delete({ version: 1, objectId: reference.blobRef.objectId })
+        .then((deleted) =>
+          deleted.mapError((error) => ioFailure(reference.artifactId, "delete-artifact", error)),
+        ),
+    );
+    return input.workflowStore
+      .removeWorkflowArtifactPublication(reference)
+      .mapError((error) => ioFailure(reference.artifactId, "remove-publication", error));
   });
-  if (existingOutcome.kind === "error") return Result.err(existingOutcome.error);
-  if (existingOutcome.kind === "existing") {
-    return (await input.verify(existingOutcome.reference)).map(() => existingOutcome.reference);
+}
+
+async function finishCanonicalPublication(
+  input: WorkflowArtifactPublicationContext,
+  candidate: WorkflowArtifactReference,
+  canonical: WorkflowArtifactReference,
+): Promise<ResultType<WorkflowArtifactReference, WorkflowArtifactIoFailed>> {
+  if (sameArtifactReference(candidate, canonical)) {
+    return input.workflowStore
+      .removeWorkflowArtifactPublication(candidate)
+      .map(() => canonical)
+      .mapError((error) => ioFailure(candidate.artifactId, "remove-publication", error));
   }
+  return (await discardPublication(input, candidate)).map(() => canonical);
+}
 
-  const started = await input.blobStore.startUpload({
-    source: input.bytes,
-    retention: { kind: "durable" },
-    expectedSha256: sha256(input.bytes),
-    expectedByteLength: input.bytes.byteLength,
-  });
-  const uploadOutcome = started.match<
-    | {
-        readonly kind: "ok";
-        readonly completion: Promise<ResultType<BlobRefV1, BlobWriteError>>;
-      }
-    | { readonly kind: "error"; readonly error: WorkflowArtifactIoFailed }
-  >({
-    ok: (value) => ({ kind: "ok", completion: value.completion }),
-    err: (error) => ({ kind: "error", error: ioFailure(input.artifactId, "start-upload", error) }),
-  });
-  if (uploadOutcome.kind === "error") return Result.err(uploadOutcome.error);
-  const completed = (await uploadOutcome.completion).mapError((error) =>
-    ioFailure(input.artifactId, "complete-upload", error),
-  );
-  const completeOutcome = completed.match<
-    | { readonly kind: "ok"; readonly reference: WorkflowArtifactReference }
-    | { readonly kind: "error"; readonly error: WorkflowArtifactIoFailed }
-  >({
-    ok: (blobRef) => ({ kind: "ok", reference: { artifactId: input.artifactId, blobRef } }),
-    err: (error) => ({ kind: "error", error }),
-  });
-  if (completeOutcome.kind === "error") return Result.err(completeOutcome.error);
+async function verifyPublication(
+  blobStore: BlobStore,
+  reference: WorkflowArtifactReference,
+): Promise<ResultType<void, WorkflowArtifactReadError>> {
+  const input = { blobStore, reference, maxBytes: reference.blobRef.byteLength };
+  if (reference.artifactId.startsWith(WORKFLOW_SOURCE_ARTIFACT_PREFIX)) {
+    return (await readWorkflowSourceArtifact(input)).map(() => undefined);
+  }
+  return (await readWorkflowValueArtifact(input)).map(() => undefined);
+}
 
-  const registered = input.workflowStore
-    .registerWorkflowArtifact(completeOutcome.reference, input.createdAt)
-    .mapError((error) => ioFailure(input.artifactId, "register-artifact", error));
-  const registerOutcome = registered.match<
-    | { readonly kind: "ok"; readonly reference: WorkflowArtifactReference }
-    | { readonly kind: "error"; readonly error: WorkflowArtifactIoFailed }
-  >({
-    ok: (reference) => ({ kind: "ok", reference }),
-    err: (error) => ({ kind: "error", error }),
+async function commitAdoptedPublication(
+  input: WorkflowArtifactPublicationContext,
+  reference: WorkflowArtifactReference,
+): Promise<ResultType<WorkflowArtifactReference, WorkflowArtifactReadError>> {
+  const committed = await Result.gen(async function* () {
+    yield* Result.await(verifyPublication(input.blobStore, reference));
+    const canonical = yield* input.workflowStore
+      .completeWorkflowArtifactPublication(reference, Date.now())
+      .mapError((error) => ioFailure(reference.artifactId, "complete-publication", error));
+    return await finishCanonicalPublication(input, reference, canonical);
   });
-  if (registerOutcome.kind === "error") {
-    return deleteUploadedAfterFailure({
-      blobStore: input.blobStore,
-      reference: completeOutcome.reference,
-      primary: registerOutcome.error,
+  async function useConcurrentCanonical(
+    failure: WorkflowArtifactReadError,
+  ): Promise<ResultType<WorkflowArtifactReference, WorkflowArtifactReadError>> {
+    return Result.gen(async function* () {
+      const canonical = yield* input.workflowStore
+        .getWorkflowArtifact(reference.artifactId)
+        .mapError((error) => ioFailure(reference.artifactId, "lookup-artifact", error));
+      if (canonical === null) return Result.err(failure);
+      return await finishCanonicalPublication(input, reference, canonical);
     });
   }
-  if (
-    encodeWorkflowArtifactReference(registerOutcome.reference) !==
-    encodeWorkflowArtifactReference(completeOutcome.reference)
-  ) {
-    const deleted = await input.blobStore.delete(completeOutcome.reference.blobRef);
-    const cleanupError = deleted.match({ ok: () => null, err: (error) => error });
-    if (cleanupError) {
+  return committed.tryRecoverAsync(useConcurrentCanonical);
+}
+
+async function reconcilePublication(
+  input: WorkflowArtifactPublicationContext,
+  reference: WorkflowArtifactReference,
+): Promise<ResultType<WorkflowArtifactReference | null, WorkflowArtifactReadError>> {
+  return Result.gen(async function* () {
+    const existing = yield* input.workflowStore
+      .getWorkflowArtifact(reference.artifactId)
+      .mapError((error) => ioFailure(reference.artifactId, "lookup-artifact", error));
+    if (existing !== null) return await finishCanonicalPublication(input, reference, existing);
+
+    const adopted = await input.blobStore.adopt({
+      version: 1,
+      objectId: reference.blobRef.objectId,
+    });
+    const adoption = adopted.match<
+      | { readonly kind: "adopted"; readonly blobRef: BlobRefV1 }
+      | { readonly kind: "error"; readonly error: BlobResolveError }
+    >({
+      ok: (blobRef) => ({ kind: "adopted" as const, blobRef }),
+      err: (error) => ({ kind: "error" as const, error }),
+    });
+    if (adoption.kind === "error") {
+      if (
+        !(adoption.error instanceof BlobObjectAbsent) &&
+        !(adoption.error instanceof BlobObjectExpired)
+      ) {
+        return Result.err(ioFailure(reference.artifactId, "adopt-upload", adoption.error));
+      }
+      const canonical = yield* input.workflowStore
+        .getWorkflowArtifact(reference.artifactId)
+        .mapError((error) => ioFailure(reference.artifactId, "lookup-artifact", error));
+      if (canonical !== null) return await finishCanonicalPublication(input, reference, canonical);
+      yield* Result.await(discardPublication(input, reference));
+      return Result.ok(null);
+    }
+    const adoptedReference = { artifactId: reference.artifactId, blobRef: adoption.blobRef };
+    if (!sameArtifactReference(reference, adoptedReference)) {
       return Result.err(
-        new WorkflowArtifactWriteAndCleanupFailed({
-          artifactId: input.artifactId,
-          primary: ioFailure(
-            input.artifactId,
-            "register-artifact",
-            new DurableWorkflowInvariantViolation({
-              message: "Concurrent workflow artifact registration reused the canonical object",
-            }),
-          ),
-          cleanup: ioFailure(input.artifactId, "delete-artifact", cleanupError),
-          message: "Workflow artifact deduplication cleanup failed",
+        new WorkflowArtifactIoFailed({
+          artifactId: reference.artifactId,
+          operation: "adopt-upload",
+          code: "WORKFLOW_PUBLICATION_REFERENCE_MISMATCH",
+          message: "Workflow artifact publication does not match its staged upload",
         }),
       );
     }
-  }
-  return (await input.verify(registerOutcome.reference)).map(() => registerOutcome.reference);
+    return await commitAdoptedPublication(input, adoptedReference);
+  });
+}
+
+export async function maintainWorkflowArtifactPublications(
+  input: WorkflowArtifactPublicationContext & { readonly limit?: number },
+): Promise<
+  ResultType<
+    { readonly inspected: number; readonly recovered: number; readonly discarded: number },
+    WorkflowArtifactReadError
+  >
+> {
+  return Result.gen(async function* () {
+    const publications = yield* input.workflowStore
+      .listWorkflowArtifactPublications(input.limit ?? 100)
+      .mapError((error) => ioFailure("workflow-publications", "lookup-artifact", error));
+    let recovered = 0;
+    let discarded = 0;
+    let firstFailure: WorkflowArtifactReadError | undefined;
+    for (const reference of publications) {
+      const reconciled = await reconcilePublication(input, reference);
+      reconciled.match({
+        ok: (canonical) => {
+          if (canonical === null) discarded++;
+          else recovered++;
+        },
+        err: (error) => {
+          firstFailure ??= error;
+        },
+      });
+    }
+    if (firstFailure !== undefined) return Result.err(firstFailure);
+    return Result.ok({ inspected: publications.length, recovered, discarded });
+  });
+}
+
+async function publishArtifact(
+  input: WorkflowArtifactPublicationContext & {
+    readonly artifactId: string;
+    readonly bytes: Uint8Array;
+    readonly createdAt: number;
+    readonly verify: (
+      reference: WorkflowArtifactReference,
+    ) => Promise<ResultType<void, WorkflowArtifactReadError>>;
+  },
+): Promise<ResultType<WorkflowArtifactReference, WorkflowArtifactWriteError>> {
+  return Result.gen(async function* () {
+    const existing = yield* input.workflowStore
+      .getWorkflowArtifact(input.artifactId)
+      .mapError((error) => ioFailure(input.artifactId, "lookup-artifact", error));
+    if (existing !== null) return (await input.verify(existing)).map(() => existing);
+
+    const upload = yield* Result.await(
+      input.blobStore
+        .startStagedUpload({
+          source: input.bytes,
+          stagingExpiresAt: Date.now() + WORKFLOW_ARTIFACT_STAGING_MS,
+          expectedSha256: sha256(input.bytes),
+          expectedByteLength: input.bytes.byteLength,
+        })
+        .then((started) =>
+          started.mapError((error) => ioFailure(input.artifactId, "start-upload", error)),
+        ),
+    );
+    const blobRef = yield* Result.await(
+      upload.completion.then((completed) =>
+        completed.mapError((error) => ioFailure(input.artifactId, "complete-upload", error)),
+      ),
+    );
+    const reference = { artifactId: input.artifactId, blobRef };
+    const recorded = input.workflowStore.beginWorkflowArtifactPublication(
+      reference,
+      input.createdAt,
+    );
+    const recordFailure = recorded.match({ ok: () => null, err: (error) => error });
+    if (recordFailure !== null) {
+      return await deleteUploadedAfterFailure({
+        blobStore: input.blobStore,
+        reference,
+        primary: ioFailure(input.artifactId, "record-publication", recordFailure),
+      });
+    }
+    const canonical = yield* Result.await(reconcilePublication(input, reference));
+    if (canonical === null) {
+      return Result.err(
+        new WorkflowArtifactAbsent({
+          artifactId: input.artifactId,
+          message: "Workflow artifact staging expired before publication",
+        }),
+      );
+    }
+    return (await input.verify(canonical)).map(() => canonical);
+  });
 }
 
 export async function writeWorkflowValueArtifact(input: {

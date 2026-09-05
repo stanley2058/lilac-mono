@@ -3,6 +3,31 @@
 This file records persisted-data, wire, and protocol migrations. Manual `core-config.yaml` upgrades are
 documented separately in [`docs/core-config-migrations.md`](docs/core-config-migrations.md).
 
+## Workflow schema 27 and staged blob publication
+
+Schema 27 adds `workflow_artifact_publications` to the existing workflow database. Its rows retain the
+expected artifact reference before a staged upload becomes durable. Existing schema-26 workflow data
+and artifact references remain unchanged. Startup applies the additive migration automatically.
+Older databases that still contain legacy inline workflow blobs require the existing offline migration.
+
+BlobStore now supports staged reservations with finite cleanup deadlines. Adoption changes a completed
+staged reservation to durable ready through a fenced metadata decision. Existing BlobHandleV1 and
+BlobRefV1 formats and ordinary upload behavior stay unchanged. A new internal reservation decision file
+coordinates adoption and expiry cleanup.
+
+Core startup and the existing maintenance cycle finish retained publication intents and retry duplicate
+upload cleanup. A failure before intent persistence leaves expiring staging data. A failure after adoption
+leaves a publication row that can establish canonical ownership or finish deleting a duplicate.
+
+Before rolling back, stop producers, finish pending workflow publication rows, and clear staged uploads.
+Older binaries do not understand staged reservation states or the adoption decision file. Existing
+untracked durable blobs from earlier versions cannot be identified safely by this migration and are not
+deleted automatically.
+
+A process interrupted immediately after a delayed backend decision write can leave an inert metadata
+file after deletion. It cannot resurrect readable content or a durable blob reference. Completed calls
+clean that file; removing every such interrupted marker would require a separate backend storage change.
+
 ## MCP 2026-07-28 client and OAuth credentials
 
 Core's configured MCP clients negotiate the stateless `2026-07-28` tool protocol and fall back to the

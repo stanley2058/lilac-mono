@@ -9,7 +9,8 @@ import {
 } from "./workflow-domain";
 import { canonicalJson } from "./workflow-definition";
 
-export const WORKFLOW_SCHEMA_VERSION = 26;
+export const WORKFLOW_SCHEMA_VERSION = 27;
+const WORKFLOW_BLOB_SCHEMA_VERSION = 26;
 export const WORKFLOW_BLOB_MIGRATION_COMMAND =
   "bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data";
 
@@ -1521,6 +1522,21 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
        BEGIN SELECT RAISE(ABORT, 'invalid workflow receipt artifact reference'); END`,
     ],
   },
+  {
+    version: 27,
+    name: "recoverable workflow artifact publications",
+    statements: [
+      `CREATE TABLE workflow_artifact_publications (
+        object_id TEXT PRIMARY KEY NOT NULL,
+        artifact_id TEXT NOT NULL,
+        blob_ref_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        CHECK (object_id = json_extract(blob_ref_json, '$.objectId'))
+      )`,
+      `CREATE INDEX idx_workflow_artifact_publications_created
+       ON workflow_artifact_publications (created_at, object_id)`,
+    ],
+  },
 ];
 
 export const WORKFLOW_MIGRATION_VERSIONS: readonly number[] = WORKFLOW_MIGRATIONS.map(
@@ -1830,9 +1846,9 @@ export function applyWorkflowSchemaMigrations(
               }
             }
             if (
-              throughVersion === WORKFLOW_SCHEMA_VERSION &&
+              throughVersion >= WORKFLOW_BLOB_SCHEMA_VERSION &&
               migrationTableExists &&
-              !applied.has(WORKFLOW_SCHEMA_VERSION)
+              !applied.has(WORKFLOW_BLOB_SCHEMA_VERSION)
             ) {
               const legacyVersion = Math.max(0, ...applied.keys());
               return Result.err(

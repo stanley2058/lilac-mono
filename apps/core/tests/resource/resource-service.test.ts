@@ -188,6 +188,8 @@ async function fixture(input: {
       uploadCount += 1;
       return ownedBlobStore.startUpload(upload);
     },
+    startStagedUpload: (input) => ownedBlobStore.startStagedUpload(input),
+    adopt: (handle) => ownedBlobStore.adopt(handle),
     resolve: (handle, options) => ownedBlobStore.resolve(handle, options),
     open: (ref) => openOverride?.(ref) ?? ownedBlobStore.open(ref),
     delete: (target) => deleteOverride?.(target) ?? ownedBlobStore.delete(target),

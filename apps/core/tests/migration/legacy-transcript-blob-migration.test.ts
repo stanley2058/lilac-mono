@@ -1136,6 +1136,8 @@ describe("legacy transcript blob migration", () => {
             }),
           ),
         })),
+      startStagedUpload: (input) => backingStore.startStagedUpload(input),
+      adopt: (handle) => backingStore.adopt(handle),
       resolve: (handle, options) => backingStore.resolve(handle, options),
       open: (ref) => backingStore.open(ref),
       delete: (target) => backingStore.delete(target),

@@ -461,10 +461,14 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
       { module: "src/backend.ts", exportName: "captureAdapterOperation" },
       ...[
         "SupervisedBlobStore.startUpload",
+        "SupervisedBlobStore.startStagedUpload",
+        "SupervisedBlobStore.#startUpload",
+        "SupervisedBlobStore.adopt",
         "SupervisedBlobStore.resolve",
         "SupervisedBlobStore.open",
         "SupervisedBlobStore.delete",
         "SupervisedBlobStore.maintain",
+        "SupervisedBlobStore.#maintainReservation",
         "SupervisedBlobStore.close",
         "materializeBlobRead",
       ].map((exportName) => ({ module: "src/store.ts", exportName })),
@@ -3605,6 +3609,8 @@ const CORE_WORKFLOW_STORE_READ_RESULT_APIS = [
   "DurableWorkflowStore.listSurfaceActions",
   "DurableWorkflowStore.listPendingActionOutboxEvents",
   "DurableWorkflowStore.listPendingActionOutboxProjections",
+  "DurableWorkflowStore.getWorkflowArtifactPublication",
+  "DurableWorkflowStore.listWorkflowArtifactPublications",
 ].map((exportName) => ({
   module: "src/workflow/durable-workflow-store.ts",
   exportName,
@@ -5020,7 +5026,8 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               "decodeReservation",
               "referenceIssues",
               "handleIssues",
-              "SupervisedBlobStore.startUpload",
+              "SupervisedBlobStore.startStagedUpload",
+              "SupervisedBlobStore.#startUpload",
               "SupervisedBlobStore.open",
               "SupervisedBlobStore.delete",
             ].map((exportName) => ({
@@ -5384,10 +5391,27 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER.identity,
             ...CORE_WORKFLOW_ROW_PERSISTED_CONSUMERS.map(({ identity }) => identity),
             ...CORE_WORKFLOW_STORE_READ_RESULT_APIS,
-            {
+            ...[
+              "writeWorkflowValueArtifact",
+              "maintainWorkflowArtifactPublications",
+              "discardPublication",
+              "finishCanonicalPublication",
+              "verifyPublication",
+              "commitAdoptedPublication",
+              "commitAdoptedPublication.useConcurrentCanonical",
+              "reconcilePublication",
+            ].map((exportName) => ({
               module: "src/workflow/workflow-artifact-store.ts",
-              exportName: "writeWorkflowValueArtifact",
-            },
+              exportName,
+            })),
+            ...[
+              "beginWorkflowArtifactPublication",
+              "completeWorkflowArtifactPublication",
+              "removeWorkflowArtifactPublication",
+            ].map((method) => ({
+              module: "src/workflow/durable-workflow-store.ts",
+              exportName: `DurableWorkflowStore.${method}`,
+            })),
             ...CORE_SQLITE_TRANSACTION_CONSUMERS.map(({ identity }) => identity),
             ...[
               "SqliteTranscriptStore.getCoreNamedClaudeSessionBinding",

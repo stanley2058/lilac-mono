@@ -1,3 +1,4 @@
+import { maintainWorkflowArtifactPublications } from "../workflow/workflow-artifact-store";
 import { captureError } from "../shared/error-capture.js";
 import Redis from "ioredis";
 import type { LogLevel } from "@stanley2058/simple-module-logger";
@@ -2471,18 +2472,30 @@ export async function createCoreRuntime(
     if (requestDeliveryMaintenanceOperation) return;
     const cycle = Promise.resolve().then(async () => {
       const activeBlobStore = blobStore;
-      const [maintained, maintainedBlobs, maintainedResources, maintainedTranscriptBlobs] =
-        await Promise.all([
-          requestDeliveryCoordinator.maintain(),
-          activeBlobStore ? activeBlobStore.maintain() : Promise.resolve(null),
-          resourceService?.maintain({ limit: 64 }) ?? Promise.resolve(null),
-          activeBlobStore && transcriptStore
-            ? transcriptStore.maintainCoreOwnedBlobs({
-                blobStore: activeBlobStore,
-                limit: 64,
-              })
-            : Promise.resolve(null),
-        ]);
+      const [
+        maintained,
+        maintainedBlobs,
+        maintainedResources,
+        maintainedTranscriptBlobs,
+        maintainedWorkflowArtifacts,
+      ] = await Promise.all([
+        requestDeliveryCoordinator.maintain(),
+        activeBlobStore ? activeBlobStore.maintain() : Promise.resolve(null),
+        resourceService?.maintain({ limit: 64 }) ?? Promise.resolve(null),
+        activeBlobStore && transcriptStore
+          ? transcriptStore.maintainCoreOwnedBlobs({
+              blobStore: activeBlobStore,
+              limit: 64,
+            })
+          : Promise.resolve(null),
+        activeBlobStore && durableWorkflowStore
+          ? maintainWorkflowArtifactPublications({
+              blobStore: activeBlobStore,
+              workflowStore: durableWorkflowStore,
+              limit: 64,
+            })
+          : Promise.resolve(null),
+      ]);
       maintained.match({
         err: (error) =>
           logger.error("Core request delivery maintenance failed", {
@@ -2495,6 +2508,14 @@ export async function createCoreRuntime(
             formatTaggedErrorForLog(summary.failures[0]!),
           );
         },
+      });
+      maintainedWorkflowArtifacts?.match({
+        ok: () => undefined,
+        err: (error) =>
+          logger.warn(
+            "Workflow artifact publication recovery deferred",
+            formatTaggedErrorForLog(error),
+          ),
       });
       maintainedBlobs?.match({
         err: (error) =>
@@ -2890,6 +2911,18 @@ export async function createCoreRuntime(
               ),
             };
           }
+          const recoveredArtifactPublications = await maintainWorkflowArtifactPublications({
+            blobStore: activeBlobStore,
+            workflowStore: activeDurableWorkflowStore,
+          });
+          recoveredArtifactPublications.match({
+            ok: () => undefined,
+            err: (error) =>
+              logger.warn(
+                "Workflow artifact startup publication recovery deferred",
+                formatTaggedErrorForLog(error),
+              ),
+          });
           const requestDeliveryPublisher = createLilacBusRequestDeliveryPublisher(bus);
           const durableBus = createDurableCoreRequestBus({
             transportBus: bus,

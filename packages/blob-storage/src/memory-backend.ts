@@ -2,9 +2,11 @@ import { Result } from "better-result";
 
 import {
   expiryIndexKey,
+  reservationDecisionKey,
   reservationFenceKey,
   reservationKey,
   reservationTransitionKey,
+  reservationUpdateKey,
   type BlobBackend,
   type BlobSink,
 } from "./backend";
@@ -31,8 +33,10 @@ export class MemoryBlobBackend implements BlobBackend {
   }
 
   async readReservation(objectId: string): Promise<Result<string | null, BlobAdapterFailure>> {
+    if (!this.#values.has(reservationKey(objectId))) return Result.ok(null);
     const value =
       this.#values.get(reservationFenceKey(objectId)) ??
+      this.#values.get(reservationDecisionKey(objectId)) ??
       this.#values.get(reservationTransitionKey(objectId)) ??
       this.#values.get(reservationKey(objectId));
     return Result.ok(value === undefined ? null : new TextDecoder().decode(value));
@@ -45,14 +49,14 @@ export class MemoryBlobBackend implements BlobBackend {
   ): Promise<Result<boolean, BlobAdapterFailure>> {
     const current = await this.readReservation(objectId);
     return current.map((observed) => {
-      if (observed !== expectedSerialized) return false;
-      const key = expectedSerialized.includes('"state":"pending"')
-        ? reservationTransitionKey(objectId)
-        : reservationFenceKey(objectId);
+      if (observed !== expectedSerialized || !this.#values.has(reservationKey(objectId)))
+        return false;
+      const key = reservationUpdateKey(objectId, expectedSerialized);
       if (this.#values.has(key)) return false;
       this.#values.set(key, new TextEncoder().encode(serialized));
       const effective =
         this.#values.get(reservationFenceKey(objectId)) ??
+        this.#values.get(reservationDecisionKey(objectId)) ??
         this.#values.get(reservationTransitionKey(objectId)) ??
         this.#values.get(reservationKey(objectId));
       return effective !== undefined && new TextDecoder().decode(effective) === serialized;

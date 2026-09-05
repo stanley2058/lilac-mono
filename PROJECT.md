@@ -193,6 +193,9 @@ dead-letter evidence keep only `BlobHandleV1` or `BlobRefV1` plus domain metadat
 or S3-compatible adapter owns byte integrity, exact logical expiry, physical cleanup, and pending-upload
 fences. References do not reveal the adapter, path, bucket, endpoint, or credentials. Domains retain
 ownership, quota, encryption, and deletion policy; the blob module has no cross-domain reference table.
+Workflow artifacts first complete an expiring staged upload, persist publication ownership, then adopt
+that exact object as durable and register its canonical reference. Startup and existing maintenance
+reconcile publication intents and retry duplicate cleanup. Staged bytes are not readable before adoption.
 At runtime, only the Core composition root constructs and closes the store. The offline migration task
 owns and closes its separate store. Providers and surfaces open references through registered
 materialization modules immediately before use.

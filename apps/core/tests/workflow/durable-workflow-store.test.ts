@@ -151,6 +151,155 @@ describe("durable workflow store minimal dispatch schema", () => {
     const latestMigrationVersion = Math.max(...WORKFLOW_MIGRATION_VERSIONS);
     expect(WORKFLOW_SCHEMA_VERSION).toBe(latestMigrationVersion);
   });
+  it("upgrades populated schema 26 online without rewriting workflow data", () => {
+    const file = dbPath("v26-publication-upgrade");
+    const original = new DurableWorkflowStore(file);
+    const saved = workflowStoreValue(
+      original.createInvocation({ revision: revision(), run: run() }),
+    );
+    expect(saved.status).toBe("accepted");
+    const originalRun = workflowStoreValue(original.getRun("run-1"));
+    const originalRevision = workflowStoreValue(original.getRevision("revision-1"));
+    const originalArtifact = workflowStoreValue(
+      original.getWorkflowArtifact(revision().snapshotArtifact.artifactId),
+    );
+    original.close();
+    const previous = new Database(file);
+    previous.run("DROP TABLE workflow_artifact_publications");
+    previous.run("DELETE FROM workflow_schema_migrations WHERE version = 27");
+    previous.close();
+    const upgraded = new DurableWorkflowStore(file);
+    try {
+      expect(workflowStoreValue(upgraded.getRun("run-1"))).toEqual(originalRun);
+      expect(workflowStoreValue(upgraded.getRevision("revision-1"))).toEqual(originalRevision);
+      expect(
+        workflowStoreValue(upgraded.getWorkflowArtifact(revision().snapshotArtifact.artifactId)),
+      ).toEqual(originalArtifact);
+      expect(workflowStoreValue(upgraded.listWorkflowArtifactPublications())).toEqual([]);
+      expect(upgraded.listMigrations().at(-1)?.version).toBe(27);
+    } finally {
+      upgraded.close();
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("keeps duplicate publication ownership until losing bytes are cleaned", () => {
+    const file = dbPath("publication-winner");
+    const first = new DurableWorkflowStore(file);
+    const firstReference = workflowSourceArtifactReferenceForTest("shared source");
+    const secondReference = {
+      ...firstReference,
+      blobRef: { ...firstReference.blobRef, objectId: `b1_${"b".repeat(32)}` },
+    };
+    expect(first.beginWorkflowArtifactPublication(firstReference, 10).status).toBe("ok");
+    expect(first.beginWorkflowArtifactPublication(firstReference, 30).status).toBe("ok");
+    first.close();
+    const resumed = new DurableWorkflowStore(file);
+    const concurrent = new DurableWorkflowStore(file);
+    try {
+      expect(concurrent.beginWorkflowArtifactPublication(secondReference, 20).status).toBe("ok");
+      expect(workflowStoreValue(resumed.listWorkflowArtifactPublications(1))).toEqual([
+        firstReference,
+      ]);
+      expect(
+        workflowStoreValue(concurrent.completeWorkflowArtifactPublication(secondReference, 20)),
+      ).toEqual(secondReference);
+      expect(
+        workflowStoreValue(resumed.completeWorkflowArtifactPublication(firstReference, 10)),
+      ).toEqual(secondReference);
+      expect(workflowStoreValue(resumed.listWorkflowArtifactPublications())).toEqual([
+        firstReference,
+      ]);
+      expect(workflowStoreValue(resumed.getWorkflowArtifact(firstReference.artifactId))).toEqual(
+        secondReference,
+      );
+      expect(resumed.removeWorkflowArtifactPublication(firstReference).status).toBe("ok");
+      expect(resumed.removeWorkflowArtifactPublication(firstReference).status).toBe("ok");
+      expect(workflowStoreValue(concurrent.listWorkflowArtifactPublications())).toEqual([]);
+      expect(
+        workflowStoreValue(concurrent.completeWorkflowArtifactPublication(secondReference, 30)),
+      ).toEqual(secondReference);
+    } finally {
+      concurrent.close();
+      resumed.close();
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("rejects absent and mismatched publication identities without discarding ownership", () => {
+    const store = new DurableWorkflowStore(":memory:");
+    const reference = workflowSourceArtifactReferenceForTest("identity source");
+    const mismatch = { ...reference, blobRef: { ...reference.blobRef, sha256: "c".repeat(64) } };
+    try {
+      expect(store.completeWorkflowArtifactPublication(reference, 10).status).toBe("error");
+      expect(workflowStoreValue(store.getWorkflowArtifact(reference.artifactId))).toBeNull();
+      expect(store.beginWorkflowArtifactPublication(reference, 10).status).toBe("ok");
+      expect(store.beginWorkflowArtifactPublication(mismatch, 20).status).toBe("error");
+      expect(store.completeWorkflowArtifactPublication(mismatch, 20).status).toBe("error");
+      expect(store.removeWorkflowArtifactPublication(mismatch).status).toBe("error");
+      expect(workflowStoreValue(store.listWorkflowArtifactPublications())).toEqual([reference]);
+      expect(workflowStoreValue(store.completeWorkflowArtifactPublication(reference, 10))).toEqual(
+        reference,
+      );
+      expect(workflowStoreValue(store.listWorkflowArtifactPublications())).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rolls back canonical registration when intent removal fails", () => {
+    const file = dbPath("publication-atomicity");
+    const store = new DurableWorkflowStore(file);
+    const raw = new Database(file);
+    const reference = workflowSourceArtifactReferenceForTest("rollback source");
+    try {
+      expect(store.beginWorkflowArtifactPublication(reference, 10).status).toBe("ok");
+      raw.run(`CREATE TRIGGER reject_publication_removal BEFORE DELETE ON workflow_artifact_publications
+               BEGIN SELECT RAISE(ABORT, 'injected intent deletion failure'); END`);
+      const failed = store.completeWorkflowArtifactPublication(reference, 10);
+      expect(failed.status).toBe("error");
+      if (failed.status === "error")
+        expect(failed.error._tag).toBe("DurableWorkflowSqliteDriverFailure");
+      expect(workflowStoreValue(store.getWorkflowArtifact(reference.artifactId))).toBeNull();
+      expect(workflowStoreValue(store.listWorkflowArtifactPublications())).toEqual([reference]);
+      raw.run("DROP TRIGGER reject_publication_removal");
+      expect(workflowStoreValue(store.completeWorkflowArtifactPublication(reference, 10))).toEqual(
+        reference,
+      );
+      expect(workflowStoreValue(store.listWorkflowArtifactPublications())).toEqual([]);
+    } finally {
+      raw.close();
+      store.close();
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("decodes publication references before recovery or mutation", () => {
+    const file = dbPath("publication-corruption");
+    const store = new DurableWorkflowStore(file);
+    const raw = new Database(file);
+    const reference = workflowSourceArtifactReferenceForTest("corrupt source");
+    try {
+      expect(store.beginWorkflowArtifactPublication(reference, 10).status).toBe("ok");
+      raw.run("UPDATE workflow_artifact_publications SET blob_ref_json = ?", [
+        JSON.stringify({ ...reference.blobRef, byteLength: -1 }),
+      ]);
+      const listed = store.listWorkflowArtifactPublications();
+      expect(listed.status).toBe("error");
+      if (listed.status === "error") expect(listed.error._tag).toBe("CorruptPersistedFields");
+      expect(store.completeWorkflowArtifactPublication(reference, 10).status).toBe("error");
+      expect(store.removeWorkflowArtifactPublication(reference).status).toBe("error");
+      expect(workflowStoreValue(store.getWorkflowArtifact(reference.artifactId))).toBeNull();
+      expect(
+        raw.query("SELECT COUNT(*) AS count FROM workflow_artifact_publications").get(),
+      ).toEqual({ count: 1 });
+    } finally {
+      raw.close();
+      store.close();
+      rmSync(file, { force: true });
+    }
+  });
+
   it("does not touch SQLite when the migration clock throws", () => {
     const db = new Database(":memory:");
     const defect = new Error("migration clock defect");
@@ -256,7 +405,7 @@ describe("durable workflow store minimal dispatch schema", () => {
             "SELECT version FROM workflow_schema_migrations ORDER BY version DESC LIMIT 1",
           )
           .get()?.version,
-      ).toBe(WORKFLOW_SCHEMA_VERSION);
+      ).toBe(26);
       const migratedRevision = db
         .query<{ snapshot_artifact_id: string }, []>(
           "SELECT snapshot_artifact_id FROM workflow_revisions WHERE revision_id = 'legacy-revision'",
@@ -274,7 +423,7 @@ describe("durable workflow store minimal dispatch schema", () => {
     }
   });
   for (const historicalVersion of WORKFLOW_MIGRATION_VERSIONS) {
-    it(`opens v${historicalVersion} only when it is the current clean-break schema`, () => {
+    it(`opens v${historicalVersion} online only after the blob migration baseline`, () => {
       const db = new Database(":memory:");
       try {
         const historical = applyWorkflowSchemaMigrations(
@@ -295,7 +444,7 @@ describe("durable workflow store minimal dispatch schema", () => {
           WORKFLOW_MIGRATION_VERSIONS.filter((version) => version <= historicalVersion),
         );
         const upgraded = applyWorkflowSchemaMigrations(db, () => WORKFLOW_SCHEMA_VERSION);
-        if (historicalVersion < WORKFLOW_SCHEMA_VERSION) {
+        if (historicalVersion < 26) {
           expect(upgraded.status).toBe("error");
           if (upgraded.status === "error") {
             expect(upgraded.error).toBeInstanceOf(WorkflowBlobStorageMigrationRequired);
@@ -313,7 +462,9 @@ describe("durable workflow store minimal dispatch schema", () => {
           >("SELECT version FROM workflow_schema_migrations ORDER BY version")
           .all();
         expect(complete.map(({ version }) => version)).toEqual(
-          WORKFLOW_MIGRATION_VERSIONS.filter((version) => version <= historicalVersion),
+          historicalVersion < 26
+            ? WORKFLOW_MIGRATION_VERSIONS.filter((version) => version <= historicalVersion)
+            : [...WORKFLOW_MIGRATION_VERSIONS],
         );
       } finally {
         db.close();
@@ -576,7 +727,7 @@ describe("durable workflow store minimal dispatch schema", () => {
       );
       expect(store.listMigrations().at(-1)).toMatchObject({
         version: WORKFLOW_SCHEMA_VERSION,
-        name: "unified durable workflow artifact references",
+        name: "recoverable workflow artifact publications",
       });
     } finally {
       store.close();

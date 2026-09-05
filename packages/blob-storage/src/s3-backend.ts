@@ -7,9 +7,11 @@ import {
   expiryIndexKey,
   LAYOUT_MARKER,
   metadataKey,
+  reservationDecisionKey,
   reservationFenceKey,
   reservationKey,
   reservationTransitionKey,
+  reservationUpdateKey,
   signalBlobAdapterFailure,
   temporaryKey,
   type BlobBackend,
@@ -123,10 +125,19 @@ export class S3BlobBackend implements BlobBackend {
 
   async readReservation(objectId: string): Promise<ResultType<string | null, BlobAdapterFailure>> {
     const read = await this.#readTextObjects(
-      [reservationFenceKey(objectId), reservationTransitionKey(objectId), reservationKey(objectId)],
+      [
+        reservationFenceKey(objectId),
+        reservationDecisionKey(objectId),
+        reservationTransitionKey(objectId),
+      ],
       "read upload reservation",
     );
-    return read.map((values) => values.find((value) => value !== null) ?? null);
+    const base = await this.#readTextObjects([reservationKey(objectId)], "read base reservation");
+    return Result.all([read, base]).map(([overlays, values]) => {
+      const reservation = values[0] ?? null;
+      if (reservation === null) return null;
+      return overlays.find((value) => value !== null) ?? reservation;
+    });
   }
 
   async compareAndSwapReservation(
@@ -144,9 +155,7 @@ export class S3BlobBackend implements BlobBackend {
     });
     if (state.kind === "failure") return Result.err(state.failure);
     if (state.value !== expectedSerialized) return Result.ok(false);
-    const key = expectedSerialized.includes('"state":"pending"')
-      ? reservationTransitionKey(objectId)
-      : reservationFenceKey(objectId);
+    const key = reservationUpdateKey(objectId, expectedSerialized);
     const published = await this.#writeTextExclusive(
       key,
       serialized,
@@ -160,7 +169,11 @@ export class S3BlobBackend implements BlobBackend {
       err: (failure) => ({ kind: "failure", failure }),
     });
     if (publishState.kind === "failure") return Result.err(publishState.failure);
-    return Result.ok(publishState.published);
+    if (!publishState.published) return Result.ok(false);
+    const effective = await this.readReservation(objectId);
+    const deleted = effective.match({ ok: (value) => value === null, err: () => false });
+    if (deleted) return (await this.deleteKeys([key])).map(() => false);
+    return effective.map((value) => value === serialized);
   }
 
   async openSink(

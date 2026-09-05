@@ -13,6 +13,12 @@ import {
   createS3BlobStore,
   materializeBlobRead,
 } from "../src";
+import {
+  reservationDecisionKey,
+  reservationFenceKey,
+  reservationKey,
+  reservationTransitionKey,
+} from "../src/backend";
 import { S3BlobBackend } from "../src/s3-backend";
 import { SupervisedBlobStore } from "../src/store";
 
@@ -785,4 +791,94 @@ realS3Test("real S3-compatible lifecycle, privacy, and local-copy integration", 
   expect(success(await materializeBlobRead(success(await copied.open(localRef))))).toEqual(
     new TextEncoder().encode("real key copy"),
   );
+});
+
+test("S3 staged adoption and expiry use one conditional decision key", async () => {
+  const client = new FakeS3Client();
+  const first = backend(client);
+  const second = backend(client);
+  const objectId = `b1_${"d".repeat(32)}`;
+  const pending = '{"state":"pending"}\n';
+  const staged = '{"state":"staged"}\n';
+  const ready = '{"state":"ready"}\n';
+  const deleted = '{"state":"deleted"}\n';
+  success(await first.initialize({ createIfMissing: true }));
+  success(await first.createReservation(objectId, pending));
+  expect(success(await first.compareAndSwapReservation(objectId, pending, staged))).toBe(true);
+
+  const decisions = await Promise.all([
+    first.compareAndSwapReservation(objectId, staged, ready),
+    second.compareAndSwapReservation(objectId, staged, deleted),
+  ]);
+  expect(decisions.map(success).filter(Boolean)).toHaveLength(1);
+  const expected = success(decisions[0]!) ? ready : deleted;
+  expect(success(await first.readReservation(objectId))).toBe(expected);
+  expect(success(await second.readReservation(objectId))).toBe(expected);
+  expect(success(await second.compareAndSwapReservation(objectId, staged, ready))).toBe(false);
+  expect(success(await first.compareAndSwapReservation(objectId, staged, deleted))).toBe(false);
+  expect(client.values.has(`tenant/blobs/reservations/${objectId}.decision.json`)).toBe(true);
+});
+
+test("S3 adopted reservations retain their explicit deletion fence", async () => {
+  const client = new FakeS3Client();
+  const first = backend(client);
+  const objectId = `b1_${"e".repeat(32)}`;
+  const pending = '{"state":"pending"}\n';
+  const staged = '{"state":"staged"}\n';
+  const ready = '{"state":"ready"}\n';
+  const deleted = '{"state":"deleted"}\n';
+  success(await first.initialize({ createIfMissing: true }));
+  success(await first.createReservation(objectId, pending));
+  expect(success(await first.compareAndSwapReservation(objectId, pending, staged))).toBe(true);
+  expect(success(await first.compareAndSwapReservation(objectId, staged, ready))).toBe(true);
+  const reopened = backend(client);
+  expect(success(await reopened.readReservation(objectId))).toBe(ready);
+  expect(success(await reopened.compareAndSwapReservation(objectId, ready, deleted))).toBe(true);
+  expect(success(await first.readReservation(objectId))).toBe(deleted);
+  expect(client.values.has(`tenant/blobs/reservations/${objectId}.fence.json`)).toBe(true);
+  expect(success(await first.compareAndSwapReservation(objectId, staged, ready))).toBe(false);
+});
+
+test("S3 a delayed staged adopter cannot recreate a deleted reservation", async () => {
+  const client = new FakeS3Client();
+  const first = backend(client);
+  const second = backend(client);
+  const objectId = `b1_${"f".repeat(32)}`;
+  const pending = '{"state":"pending"}\n';
+  const staged = '{"state":"staged"}\n';
+  const ready = '{"state":"ready"}\n';
+  const deleted = '{"state":"deleted"}\n';
+  success(await first.initialize({ createIfMissing: true }));
+  success(await first.createReservation(objectId, pending));
+  expect(success(await first.compareAndSwapReservation(objectId, pending, staged))).toBe(true);
+  const observed = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const readReservation = first.readReservation.bind(first);
+  let pause = true;
+  first.readReservation = async (id) => {
+    const result = await readReservation(id);
+    if (pause) {
+      pause = false;
+      observed.resolve();
+      await resume.promise;
+    }
+    return result;
+  };
+
+  const adopting = first.compareAndSwapReservation(objectId, staged, ready);
+  await observed.promise;
+  expect(success(await second.compareAndSwapReservation(objectId, staged, deleted))).toBe(true);
+  success(
+    await second.deleteKeys([
+      reservationKey(objectId),
+      reservationFenceKey(objectId),
+      reservationDecisionKey(objectId),
+      reservationTransitionKey(objectId),
+    ]),
+  );
+  resume.resolve();
+
+  expect(success(await adopting)).toBe(false);
+  expect(success(await second.readReservation(objectId))).toBeNull();
+  expect(client.values.has(`tenant/blobs/${reservationDecisionKey(objectId)}`)).toBe(false);
 });

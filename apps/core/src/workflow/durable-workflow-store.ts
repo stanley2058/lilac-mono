@@ -474,6 +474,151 @@ export class DurableWorkflowStore {
     });
   }
 
+  private getWorkflowArtifactPublication(
+    objectId: string,
+  ): ResultType<WorkflowArtifactReference | null, DurableWorkflowReadError> {
+    return captureWorkflowRead("get-workflow-artifact-publication", () => {
+      const row = this.persistedRows(
+        `SELECT artifact_id, blob_ref_json, created_at
+         FROM workflow_artifact_publications WHERE object_id = ?`,
+      ).get(objectId);
+      return row === null ? Result.ok(null) : this.decodeRow(row, decodeWorkflowArtifactRow);
+    });
+  }
+
+  beginWorkflowArtifactPublication(
+    reference: WorkflowArtifactReference,
+    createdAt: number,
+  ): ResultType<void, DurableWorkflowReadError | DurableWorkflowInvariantViolation> {
+    return runWorkflowTransaction(this.db, "begin-workflow-artifact-publication", () => {
+      this.db.run(
+        `INSERT INTO workflow_artifact_publications (object_id, artifact_id, blob_ref_json, created_at)
+         VALUES (?, ?, ?, ?) ON CONFLICT(object_id) DO NOTHING`,
+        [
+          reference.blobRef.objectId,
+          reference.artifactId,
+          canonicalJson(reference.blobRef),
+          createdAt,
+        ],
+      );
+      return this.getWorkflowArtifactPublication(reference.blobRef.objectId).andThen((stored) => {
+        if (
+          stored === null ||
+          encodeWorkflowArtifactReference(stored) !== encodeWorkflowArtifactReference(reference)
+        ) {
+          return Result.err(
+            new DurableWorkflowInvariantViolation({
+              message: `Workflow artifact publication identity conflict: ${reference.blobRef.objectId}`,
+            }),
+          );
+        }
+        return Result.ok(undefined);
+      });
+    });
+  }
+
+  listWorkflowArtifactPublications(
+    limit = 100,
+  ): ResultType<WorkflowArtifactReference[], DurableWorkflowReadError> {
+    return captureWorkflowRead("list-workflow-artifact-publications", () => {
+      const rows = this.persistedRows(
+        `SELECT artifact_id, blob_ref_json, created_at FROM workflow_artifact_publications
+         ORDER BY created_at, object_id LIMIT ?`,
+      ).all(boundedLimit(limit));
+      return this.decodeRows(rows, decodeWorkflowArtifactRow);
+    });
+  }
+
+  completeWorkflowArtifactPublication(
+    reference: WorkflowArtifactReference,
+    createdAt: number,
+  ): ResultType<
+    WorkflowArtifactReference,
+    DurableWorkflowReadError | DurableWorkflowInvariantViolation
+  > {
+    return runWorkflowTransaction(this.db, "complete-workflow-artifact-publication", () => {
+      const publication = this.getWorkflowArtifactPublication(reference.blobRef.objectId).match<
+        | { readonly kind: "publication"; readonly reference: WorkflowArtifactReference | null }
+        | { readonly kind: "error"; readonly error: DurableWorkflowReadError }
+      >({
+        ok: (value) => ({ kind: "publication", reference: value }),
+        err: (error) => ({ kind: "error", error }),
+      });
+      if (publication.kind === "error") return Result.err(publication.error);
+      const expected = encodeWorkflowArtifactReference(reference);
+      if (publication.reference === null) {
+        return this.getWorkflowArtifact(reference.artifactId).andThen((canonical) => {
+          if (canonical !== null && encodeWorkflowArtifactReference(canonical) === expected) {
+            return Result.ok(canonical);
+          }
+          return Result.err(
+            new DurableWorkflowInvariantViolation({
+              message: `Workflow artifact publication is not retained: ${reference.blobRef.objectId}`,
+            }),
+          );
+        });
+      }
+      if (encodeWorkflowArtifactReference(publication.reference) !== expected) {
+        return Result.err(
+          new DurableWorkflowInvariantViolation({
+            message: `Workflow artifact publication identity conflict: ${reference.blobRef.objectId}`,
+          }),
+        );
+      }
+      const registered = this.registerWorkflowArtifact(reference, createdAt).match<
+        | { readonly kind: "registered"; readonly reference: WorkflowArtifactReference }
+        | {
+            readonly kind: "error";
+            readonly error: DurableWorkflowReadError | DurableWorkflowInvariantViolation;
+          }
+      >({
+        ok: (value) => ({ kind: "registered", reference: value }),
+        err: (error) => ({ kind: "error", error }),
+      });
+      if (registered.kind === "error") return Result.err(registered.error);
+      if (encodeWorkflowArtifactReference(registered.reference) === expected) {
+        this.db.run("DELETE FROM workflow_artifact_publications WHERE object_id = ?", [
+          reference.blobRef.objectId,
+        ]);
+      }
+      return Result.ok(registered.reference);
+    });
+  }
+
+  removeWorkflowArtifactPublication(
+    reference: WorkflowArtifactReference,
+  ): ResultType<void, DurableWorkflowReadError | DurableWorkflowInvariantViolation> {
+    return runWorkflowTransaction(
+      this.db,
+      "remove-workflow-artifact-publication",
+      (): ResultType<void, DurableWorkflowReadError | DurableWorkflowInvariantViolation> => {
+        const publication = this.getWorkflowArtifactPublication(reference.blobRef.objectId).match<
+          | { readonly kind: "publication"; readonly reference: WorkflowArtifactReference | null }
+          | { readonly kind: "error"; readonly error: DurableWorkflowReadError }
+        >({
+          ok: (value) => ({ kind: "publication", reference: value }),
+          err: (error) => ({ kind: "error", error }),
+        });
+        if (publication.kind === "error") return Result.err(publication.error);
+        if (publication.reference === null) return Result.ok(undefined);
+        if (
+          encodeWorkflowArtifactReference(publication.reference) !==
+          encodeWorkflowArtifactReference(reference)
+        ) {
+          return Result.err(
+            new DurableWorkflowInvariantViolation({
+              message: `Workflow artifact publication identity conflict: ${reference.blobRef.objectId}`,
+            }),
+          );
+        }
+        this.db.run("DELETE FROM workflow_artifact_publications WHERE object_id = ?", [
+          reference.blobRef.objectId,
+        ]);
+        return Result.ok(undefined);
+      },
+    );
+  }
+
   releaseWorkflowArtifactIfUnreferenced(
     artifactId: string,
   ): ResultType<WorkflowArtifactReference | null, DurableWorkflowReadError> {

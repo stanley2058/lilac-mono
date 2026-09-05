@@ -22,6 +22,8 @@ export type BlobBackend = {
     serialized: string,
     expiresAt?: number,
   ): Promise<ResultType<void, BlobAdapterFailure>>;
+  // Removing the base reservation makes every overlay inert. Delayed CAS writers can
+  // outlive deletion and must remove their new overlay when they observe no base.
   readReservation(objectId: string): Promise<ResultType<string | null, BlobAdapterFailure>>;
   compareAndSwapReservation(
     objectId: string,
@@ -165,6 +167,16 @@ export function reservationKey(objectId: string): string {
 
 export function reservationTransitionKey(objectId: string): string {
   return `reservations/${objectId}.transition.json`;
+}
+
+export function reservationDecisionKey(objectId: string): string {
+  return `reservations/${objectId}.decision.json`;
+}
+
+export function reservationUpdateKey(objectId: string, expectedSerialized: string): string {
+  if (expectedSerialized.includes('"state":"pending"')) return reservationTransitionKey(objectId);
+  if (expectedSerialized.includes('"state":"staged"')) return reservationDecisionKey(objectId);
+  return reservationFenceKey(objectId);
 }
 
 export function reservationFenceKey(objectId: string): string {

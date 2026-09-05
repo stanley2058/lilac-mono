@@ -10,9 +10,11 @@ import {
   expiryIndexKey,
   LAYOUT_MARKER,
   metadataKey,
+  reservationDecisionKey,
   reservationFenceKey,
   reservationKey,
   reservationTransitionKey,
+  reservationUpdateKey,
   signalBlobAdapterFailure,
   signalRetainedBlobPanic,
   temporaryKey,
@@ -195,8 +197,10 @@ export class LocalBlobBackend implements BlobBackend {
   }
 
   async readReservation(objectId: string): Promise<ResultType<string | null, BlobAdapterFailure>> {
+    let effective: string | null = null;
     for (const key of [
       reservationFenceKey(objectId),
+      reservationDecisionKey(objectId),
       reservationTransitionKey(objectId),
       reservationKey(objectId),
     ]) {
@@ -209,7 +213,10 @@ export class LocalBlobBackend implements BlobBackend {
         err: (failure) => ({ kind: "failure", failure }),
       });
       if (outcome.kind === "failure") return Result.err(outcome.failure);
-      if (outcome.value !== null) return Result.ok(outcome.value);
+      if (key === reservationKey(objectId)) {
+        return Result.ok(outcome.value === null ? null : (effective ?? outcome.value));
+      }
+      effective ??= outcome.value;
     }
     return Result.ok(null);
   }
@@ -229,9 +236,7 @@ export class LocalBlobBackend implements BlobBackend {
     });
     if (state.kind === "failure") return Result.err(state.failure);
     if (state.value !== expectedSerialized) return Result.ok(false);
-    const key = expectedSerialized.includes('"state":"pending"')
-      ? reservationTransitionKey(objectId)
-      : reservationFenceKey(objectId);
+    const key = reservationUpdateKey(objectId, expectedSerialized);
     const published = await this.#writeTextExclusive(
       key,
       serialized,
@@ -253,6 +258,8 @@ export class LocalBlobBackend implements BlobBackend {
     }
     if (!publishState.published) return Result.ok(false);
     const effective = await this.readReservation(objectId);
+    const deleted = effective.match({ ok: (value) => value === null, err: () => false });
+    if (deleted) return (await this.deleteKeys([key])).map(() => false);
     return effective.map((value) => value === serialized);
   }
 
