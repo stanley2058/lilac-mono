@@ -1,8 +1,15 @@
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes,
+  randomUUID,
+  type DecipherGCM,
+} from "node:crypto";
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import {
   type BlobRead,
   type BlobRefV1,
@@ -20,7 +27,6 @@ import {
   type DecodedBlobToolResultArtifactMetadata,
 } from "./blob-tool-result-artifact-metadata-codec";
 import {
-  TOOL_RESULT_MAX_PAGE_CHARACTERS,
   TOOL_RESULT_URI_PREFIX,
   ToolResultArtifactContentMismatch,
   ToolResultArtifactDecryptAuthenticationFailed,
@@ -41,7 +47,6 @@ import {
   type ToolResultArtifactMetadataReadError,
   type ToolResultArtifactReadOperationError,
   type ToolResultArtifactReadOptions,
-  type ToolResultArtifactStart,
   type ToolResultArtifactStore,
   type ToolResultArtifactStoreOptions,
   type ToolResultArtifactWriteError,
@@ -51,6 +56,12 @@ import {
   ToolResultArtifactMetadataUnsupportedVersion,
   type ToolResultArtifactMetadataCodecError,
 } from "./tool-result-artifact-metadata-codec";
+
+import {
+  createToolResultWindow,
+  type ToolResultWindow,
+  type ToolResultWindowOptions,
+} from "./tool-result-window";
 
 type StorageOperation =
   | "initialize"
@@ -131,15 +142,16 @@ async function settleReaderCancellation(cancellation?: Promise<void>): Promise<b
   return captured.kind === "defect";
 }
 
-async function materializeBlobReadWithSignal(
+async function consumeBlobReadWithSignal(
   read: BlobRead,
   maxBytes: number,
+  consume: (chunk: Uint8Array) => void,
   signal?: AbortSignal,
 ): Promise<
-  ResultType<Uint8Array, ToolResultArtifactReadCancelled | ToolResultArtifactContentMismatch>
+  ResultType<number, ToolResultArtifactReadCancelled | ToolResultArtifactContentMismatch>
 > {
   const reader = read.stream.getReader();
-  const chunks: Uint8Array[] = [];
+  let panic: Panic | undefined;
   let byteLength = 0;
   let sourceFailed = false;
   let overflowed = false;
@@ -158,7 +170,10 @@ async function materializeBlobReadWithSignal(
       ? Promise.race([readStep, aborted.promise.then(() => ({ kind: "cancelled" as const }))])
       : readStep;
     const captured = await captureEffect(raced);
-    if (captured.kind === "panic") return rethrowBlobToolResultPanic(captured.panic);
+    if (captured.kind === "panic") {
+      panic = captured.panic;
+      break;
+    }
     if (captured.kind === "defect") {
       sourceFailed = true;
       continue;
@@ -173,18 +188,28 @@ async function materializeBlobReadWithSignal(
       overflowed = true;
       continue;
     }
-    chunks.push(chunk);
+    const consumed = captureSyncEffect(() => consume(chunk));
+    if (consumed.kind === "panic") {
+      panic = consumed.panic;
+      break;
+    }
+    if (consumed.kind === "defect") {
+      sourceFailed = true;
+      continue;
+    }
     byteLength += chunk.byteLength;
   }
   signal?.removeEventListener("abort", cancelForSignal);
-  const overflowCancellation = overflowed
-    ? reader.cancel("Tool result artifact exceeded its limit")
-    : undefined;
+  const overflowCancellation =
+    overflowed || sourceFailed || panic !== undefined
+      ? reader.cancel("Tool result artifact read failed")
+      : undefined;
   const overflowCancellationFailed = await settleReaderCancellation(overflowCancellation);
   const signalCancellationFailed = await settleReaderCancellation(signalCancellation);
   sourceFailed = sourceFailed || overflowCancellationFailed || signalCancellationFailed;
   reader.releaseLock();
   const completed = await captureEffect(read.completion);
+  if (panic !== undefined) return rethrowBlobToolResultPanic(panic);
   if (completed.kind === "panic") return rethrowBlobToolResultPanic(completed.panic);
   if (signal?.aborted) return Result.err(cancelledRead());
   if (overflowed || sourceFailed || completed.kind === "defect") {
@@ -194,6 +219,22 @@ async function materializeBlobReadWithSignal(
   if (!verified.ok || verified.value.byteLength !== byteLength) {
     return Result.err(contentMismatch());
   }
+  return Result.ok(byteLength);
+}
+
+async function materializeBlobReadWithSignal(
+  read: BlobRead,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<
+  ResultType<Uint8Array, ToolResultArtifactReadCancelled | ToolResultArtifactContentMismatch>
+> {
+  const chunks: Uint8Array[] = [];
+  const consumed = outcome(
+    await consumeBlobReadWithSignal(read, maxBytes, (chunk) => chunks.push(chunk), signal),
+  );
+  if (!consumed.ok) return Result.err(consumed.error);
+  const byteLength = consumed.value;
   const joined = captureSyncEffect(() => {
     const content = new Uint8Array(byteLength);
     let offset = 0;
@@ -266,122 +307,6 @@ function validateReadOptions(
       message: "Tool result artifact read maxBytes must be a positive safe integer",
     }),
   );
-}
-
-type WindowSelection = {
-  readonly content: string;
-  readonly startOffset: number;
-  readonly endOffset: number;
-  readonly totalCharacters: number;
-  readonly hasMore: boolean;
-  readonly nextStart?: ToolResultArtifactStart;
-};
-
-function selectWindow(
-  content: string,
-  requestedStart: ToolResultArtifactStart,
-  requestedCharacters: number,
-  requestedLines: number,
-  requestedOutputBytes: number | undefined,
-): WindowSelection {
-  const start: ToolResultArtifactStart =
-    requestedStart.type === "offset"
-      ? {
-          type: "offset",
-          offset: Number.isFinite(requestedStart.offset)
-            ? Math.max(0, Math.floor(requestedStart.offset))
-            : 0,
-        }
-      : {
-          type: "line",
-          line: Number.isFinite(requestedStart.line)
-            ? Math.max(1, Math.floor(requestedStart.line))
-            : 1,
-          column:
-            requestedStart.column !== undefined && Number.isFinite(requestedStart.column)
-              ? Math.max(0, Math.floor(requestedStart.column))
-              : 0,
-        };
-  const maxCharacters = Math.min(
-    TOOL_RESULT_MAX_PAGE_CHARACTERS,
-    Math.max(
-      1,
-      Number.isFinite(requestedCharacters)
-        ? Math.floor(requestedCharacters)
-        : TOOL_RESULT_MAX_PAGE_CHARACTERS,
-    ),
-  );
-  const maxLines = Number.isFinite(requestedLines) ? Math.max(1, Math.floor(requestedLines)) : 1;
-  const maxOutputBytes =
-    requestedOutputBytes !== undefined && Number.isFinite(requestedOutputBytes)
-      ? Math.max(1, Math.floor(requestedOutputBytes))
-      : Number.POSITIVE_INFINITY;
-  let offset = 0;
-  let line = 1;
-  let column = 0;
-  let startOffset: number | undefined;
-  let endOffset: number | undefined;
-  let endLine: number | undefined;
-  let endColumn: number | undefined;
-  let selectedLines = 1;
-  let selectedBytes = 0;
-  const selected: string[] = [];
-  for (const character of content) {
-    if (startOffset === undefined) {
-      const reached =
-        start.type === "offset"
-          ? offset >= start.offset
-          : line === start.line && (column >= (start.column ?? 0) || character === "\n");
-      if (reached) startOffset = offset;
-    }
-    let selectionEnds = false;
-    if (startOffset !== undefined && endOffset === undefined) {
-      const characterBytes = Buffer.byteLength(character, "utf8");
-      if (selectedBytes + characterBytes > maxOutputBytes) {
-        endOffset = offset;
-        endLine = line;
-        endColumn = column;
-      } else if (character === "\n" && selectedLines >= maxLines) {
-        if (start.type === "offset") {
-          selected.push(character);
-          selectedBytes += characterBytes;
-        }
-        selectionEnds = true;
-      } else {
-        selected.push(character);
-        selectedBytes += characterBytes;
-        if (selected.length >= maxCharacters) selectionEnds = true;
-        else if (character === "\n") selectedLines += 1;
-      }
-    }
-    offset += 1;
-    if (character === "\n") {
-      line += 1;
-      column = 0;
-    } else column += 1;
-    if (selectionEnds) {
-      endOffset = offset;
-      endLine = line;
-      endColumn = column;
-    }
-  }
-  const resolvedStartOffset = startOffset ?? offset;
-  const resolvedEndOffset = endOffset ?? offset;
-  const hasMore = resolvedEndOffset < offset;
-  let nextStart: ToolResultArtifactStart | undefined;
-  if (hasMore && start.type === "offset") {
-    nextStart = { type: "offset", offset: resolvedEndOffset };
-  } else if (hasMore) {
-    nextStart = { type: "line", line: endLine ?? line, column: endColumn ?? column };
-  }
-  return {
-    content: selected.join(""),
-    startOffset: resolvedStartOffset,
-    endOffset: resolvedEndOffset,
-    totalCharacters: offset,
-    hasMore,
-    ...(nextStart === undefined ? {} : { nextStart }),
-  };
 }
 
 function encryptedStream(
@@ -674,6 +599,78 @@ export function createBlobBackedToolResultArtifactStore(
       return Result.err(mismatch);
     }
     return Result.ok(decrypted.value);
+  }
+
+  async function readContentWindow(
+    metadata: Metadata,
+    options: ToolResultWindowOptions,
+  ): Promise<ResultType<ToolResultWindow, ToolResultArtifactReadOperationError>> {
+    const opened = outcome(await blobStore.open(metadata.blob));
+    if (!opened.ok) return Result.err(contentMismatch());
+    const nonce = Buffer.alloc(12);
+    const authTag = Buffer.alloc(16);
+    const window = createToolResultWindow(options);
+    const decoder = new StringDecoder("utf8");
+    let offset = 0;
+    let decipher: DecipherGCM | undefined;
+    let decodedBytes = 0;
+    const consumeText = (text: string) => {
+      decodedBytes += Buffer.byteLength(text, "utf8");
+      window.consume(text);
+    };
+    const ciphertextEnd = nonce.byteLength + metadata.bytes;
+    const consume = (chunk: Uint8Array): void => {
+      let index = 0;
+      while (index < chunk.byteLength) {
+        if (offset < nonce.byteLength) {
+          const size = Math.min(nonce.byteLength - offset, chunk.byteLength - index);
+          nonce.set(chunk.subarray(index, index + size), offset);
+          offset += size;
+          index += size;
+          if (offset === nonce.byteLength) {
+            decipher = createDecipheriv("aes-256-gcm", encryptionKey, nonce);
+          }
+          continue;
+        }
+        if (offset < ciphertextEnd) {
+          const size = Math.min(ciphertextEnd - offset, chunk.byteLength - index, 64 * 1024);
+          consumeText(decoder.write(decipher!.update(chunk.subarray(index, index + size))));
+          offset += size;
+          index += size;
+          continue;
+        }
+        authTag.set(chunk.subarray(index), offset - ciphertextEnd);
+        offset += chunk.byteLength - index;
+        break;
+      }
+    };
+    const consumed = outcome(
+      await consumeBlobReadWithSignal(opened.value, metadata.bytes + 28, consume),
+    );
+    if (!consumed.ok) return Result.err(consumed.error);
+    if (consumed.value !== metadata.bytes + 28 || decipher === undefined) {
+      return Result.err(contentMismatch());
+    }
+    // Authentication covers every byte even when the requested page ends earlier.
+    const finalized = captureSyncEffect(() => {
+      decipher!.setAuthTag(authTag);
+      consumeText(decoder.write(decipher!.final()));
+      consumeText(decoder.end());
+      return window.finish();
+    });
+    if (finalized.kind === "panic") return rethrowBlobToolResultPanic(finalized.panic);
+    if (finalized.kind === "completed") {
+      return decodedBytes === metadata.bytes
+        ? Result.ok(finalized.value)
+        : Result.err(contentMismatch());
+    }
+    return Result.err(
+      new ToolResultArtifactDecryptAuthenticationFailed({
+        target: "content",
+        issueCode: "decrypt-auth-failed",
+        message: "Tool result artifact content authentication failed",
+      }),
+    );
   }
 
   async function upload(
@@ -1045,16 +1042,18 @@ export function createBlobBackedToolResultArtifactStore(
       return exclusive(async () => {
         const metadata = outcome(await find(uri, owner));
         if (!metadata.ok) return Result.err(metadata.error);
-        const content = outcome(await readContent(metadata.value));
-        if (!content.ok) return Result.err(content.error);
+        const window = outcome(await readContentWindow(metadata.value, options));
+        if (!window.ok) {
+          if (
+            window.error instanceof ToolResultArtifactContentMismatch ||
+            window.error instanceof ToolResultArtifactDecryptAuthenticationFailed
+          ) {
+            report(window.error);
+          }
+          return Result.err(window.error);
+        }
         return Result.ok({
-          ...selectWindow(
-            content.value,
-            options.start,
-            options.maxCharacters,
-            options.maxLines,
-            options.maxOutputBytes,
-          ),
+          ...window.value,
           id: metadata.value.id,
           bytes: metadata.value.bytes,
           createdAt: metadata.value.createdAt,

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +16,7 @@ import {
 import { createBlobBackedToolResultArtifactStore } from "../src/blob-tool-result-artifact-store";
 import {
   ToolResultArtifactContentMismatch,
+  ToolResultArtifactDecryptAuthenticationFailed,
   ToolResultArtifactReadCancelled,
   ToolResultArtifactReadTooLarge,
   ToolResultArtifactStorageFailure,
@@ -137,6 +138,164 @@ describe("blob-backed tool result artifact store", () => {
         nextStart: { type: "offset", offset: 3 },
       },
     });
+  });
+
+  it("pages a large artifact without assembling its full plaintext", async () => {
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "metadata"),
+      await memoryStore(),
+    );
+    await artifacts.init();
+    const content = "😀ab\n".repeat(256 * 1024);
+    const created = await artifacts.create({ ...params(content), ttlMs: 60_000 });
+    if (created.status === "error") throw created.error;
+
+    const originalConcat = Buffer.concat;
+    let largestConcatenation = 0;
+    const concat = spyOn(Buffer, "concat").mockImplementation((list, totalLength) => {
+      largestConcatenation = Math.max(
+        largestConcatenation,
+        totalLength ?? list.reduce((sum, part) => sum + part.byteLength, 0),
+      );
+      return originalConcat(list, totalLength);
+    });
+    try {
+      const page = await artifacts.readWindow(created.value.uri, "scope-a", {
+        start: { type: "offset", offset: 1 },
+        maxCharacters: 5,
+        maxLines: 10,
+      });
+      expect(page).toMatchObject({
+        status: "ok",
+        value: {
+          content: "ab\n😀a",
+          startOffset: 1,
+          endOffset: 6,
+          totalCharacters: 1024 * 1024,
+          nextStart: { type: "offset", offset: 6 },
+        },
+      });
+      expect(largestConcatenation).toBeLessThanOrEqual(64 * 1024);
+    } finally {
+      concat.mockRestore();
+    }
+  });
+
+  it("handles fragmented nonce, Unicode, and authentication tag while preserving continuation", async () => {
+    const blobs = await memoryStore();
+    const fragmented: BlobStore = {
+      startUpload: (input) => blobs.startUpload(input),
+      resolve: (handle, options) => blobs.resolve(handle, options),
+      delete: (target) => blobs.delete(target),
+      maintain: (input) => blobs.maintain(input),
+      close: (input) => blobs.close(input),
+      open: async (ref) =>
+        (await blobs.open(ref)).map((read) => ({
+          ...read,
+          stream: read.stream.pipeThrough(
+            new TransformStream<Uint8Array, Uint8Array>({
+              transform(chunk, controller) {
+                for (let offset = 0; offset < chunk.byteLength; offset += 1) {
+                  controller.enqueue(chunk.subarray(offset, offset + 1));
+                }
+              },
+            }),
+          ),
+        })),
+    };
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "metadata"),
+      fragmented,
+    );
+    await artifacts.init();
+    const content = "A😀é\nsecond\nlast";
+    const created = await artifacts.create(params(content));
+    if (created.status === "error") throw created.error;
+    let start = { type: "offset" as const, offset: 0 };
+    const pages: string[] = [];
+    for (let index = 0; index < [...content].length; index += 1) {
+      const page = await artifacts.readWindow(created.value.uri, "scope-a", {
+        start,
+        maxCharacters: 100,
+        maxLines: 1,
+        maxOutputBytes: 4,
+      });
+      if (page.status === "error") throw page.error;
+      pages.push(page.value.content);
+      if (!page.value.hasMore) break;
+      if (page.value.nextStart?.type !== "offset") throw new Error("Expected offset cursor");
+      expect(page.value.nextStart.offset).toBeGreaterThan(start.offset);
+      start = page.value.nextStart;
+    }
+    expect(pages.join("")).toBe(content);
+    expect(
+      await artifacts.readWindow(created.value.uri, "scope-a", {
+        start: { type: "line", line: 1, column: 1 },
+        maxCharacters: 100,
+        maxLines: 1,
+      }),
+    ).toMatchObject({
+      status: "ok",
+      value: { content: "😀é", nextStart: { type: "line", line: 2, column: 0 } },
+    });
+  });
+
+  it("withholds a selected page when final authentication or blob verification fails", async () => {
+    const blobs = await memoryStore();
+    let failure: "authentication" | "completion" | undefined;
+    const observed: BlobStore = {
+      startUpload: (input) => blobs.startUpload(input),
+      resolve: (handle, options) => blobs.resolve(handle, options),
+      delete: (target) => blobs.delete(target),
+      maintain: (input) => blobs.maintain(input),
+      close: (input) => blobs.close(input),
+      open: async (ref) =>
+        (await blobs.open(ref)).map((read) => ({
+          ...read,
+          stream: read.stream.pipeThrough(
+            new TransformStream<Uint8Array, Uint8Array>({
+              transform(chunk, controller) {
+                const copied = chunk.slice();
+                if (failure === "authentication") copied[copied.byteLength - 1]! ^= 1;
+                controller.enqueue(copied);
+              },
+            }),
+          ),
+          completion: read.completion.then((completed) =>
+            failure === "completion"
+              ? Result.err(
+                  new BlobReadCancelled({ objectId: ref.objectId, message: "test failure" }),
+                )
+              : completed,
+          ),
+        })),
+    };
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "metadata"),
+      observed,
+      { onDiagnostic: () => undefined },
+    );
+    await artifacts.init();
+    const created = await artifacts.create(params("requested page\nlater text"));
+    if (created.status === "error") throw created.error;
+    const readPage = () =>
+      artifacts.readWindow(created.value.uri, "scope-a", {
+        start: { type: "offset", offset: 0 },
+        maxCharacters: 4,
+        maxLines: 1,
+      });
+    failure = "authentication";
+    const corrupt = await readPage();
+    expect(corrupt.status === "error" && corrupt.error).toBeInstanceOf(
+      ToolResultArtifactDecryptAuthenticationFailed,
+    );
+    failure = "completion";
+    const incomplete = await readPage();
+    expect(incomplete.status === "error" && incomplete.error).toBeInstanceOf(
+      ToolResultArtifactContentMismatch,
+    );
+    failure = undefined;
+    expect(await readPage()).toMatchObject({ status: "ok", value: { content: "requ" } });
   });
 
   it("rejects bounded reads from metadata before opening content and honors cancellation", async () => {

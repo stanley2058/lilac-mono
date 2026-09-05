@@ -10,6 +10,12 @@ import { errorCode } from "@stanley2058/lilac-utils/runtime-utils";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 
 import {
+  createToolResultWindow,
+  type ToolResultWindow,
+  type ToolResultWindowOptions,
+} from "./tool-result-window";
+
+import {
   decodeToolResultArtifactMetadata,
   encodeToolResultArtifactMetadata,
   ToolResultArtifactMetadataUnsupportedVersion,
@@ -22,8 +28,7 @@ import {
 export const TOOL_RESULT_URI_PREFIX = "tool-result://";
 export const TOOL_RESULT_UNAVAILABLE_MESSAGE =
   "This transient tool result is no longer available because it expired or was evicted. Re-run the original tool call if the output is still needed.";
-// Four-byte Unicode characters still fit within the configured 40 KiB raw preview budget.
-export const TOOL_RESULT_MAX_PAGE_CHARACTERS = 10 * 1024;
+export { TOOL_RESULT_MAX_PAGE_CHARACTERS } from "./tool-result-window";
 
 export type ToolResultArtifactStart =
   | { type: "offset"; offset: number }
@@ -925,23 +930,8 @@ export function createToolResultArtifactStore(
   async function readEncryptedWindow(
     storageKey: string,
     expectedBytes: number,
-    start: ToolResultArtifactStart,
-    maxCharacters: number,
-    maxLines: number,
-    maxOutputBytes: number,
-  ): Promise<
-    ResultType<
-      {
-        content: string;
-        startOffset: number;
-        endOffset: number;
-        totalCharacters: number;
-        endLine: number;
-        endColumn: number;
-      },
-      ToolResultArtifactReadError
-    >
-  > {
+    options: ToolResultWindowOptions,
+  ): Promise<ResultType<ToolResultWindow, ToolResultArtifactReadError>> {
     const filePath = contentPath(storageKey);
     const opened = await captureOperation("read-content", () => fs.open(filePath, "r"));
     const openedOutcome = opened.match<
@@ -1007,60 +997,7 @@ export function createToolResultArtifactStore(
       );
     }
     const decoder = new StringDecoder("utf8");
-    let totalCharacters = 0;
-    let line = 1;
-    let column = 0;
-    let selectedStartOffset: number | undefined;
-    let selectedEndOffset: number | undefined;
-    let selectedEndLine: number | undefined;
-    let selectedEndColumn: number | undefined;
-    let selectedLines = 1;
-    let selectedBytes = 0;
-    const selected: string[] = [];
-    const consume = (text: string) => {
-      for (const character of text) {
-        if (selectedStartOffset === undefined) {
-          const reachedStart =
-            start.type === "offset"
-              ? totalCharacters >= start.offset
-              : line === start.line && (column >= (start.column ?? 0) || character === "\n");
-          if (reachedStart) selectedStartOffset = totalCharacters;
-        }
-        let selectionEnds = false;
-        if (selectedStartOffset !== undefined && selectedEndOffset === undefined) {
-          const characterBytes = Buffer.byteLength(character, "utf8");
-          if (selectedBytes + characterBytes > maxOutputBytes) {
-            selectedEndOffset = totalCharacters;
-            selectedEndLine = line;
-            selectedEndColumn = column;
-          } else if (character === "\n" && selectedLines >= maxLines) {
-            if (start.type === "offset") selected.push(character);
-            if (start.type === "offset") selectedBytes += characterBytes;
-            selectionEnds = true;
-          } else {
-            selected.push(character);
-            selectedBytes += characterBytes;
-            if (selected.length >= maxCharacters) {
-              selectionEnds = true;
-            } else if (character === "\n") {
-              selectedLines += 1;
-            }
-          }
-        }
-        totalCharacters += 1;
-        if (character === "\n") {
-          line += 1;
-          column = 0;
-        } else {
-          column += 1;
-        }
-        if (selectionEnds) {
-          selectedEndOffset = totalCharacters;
-          selectedEndLine = line;
-          selectedEndColumn = column;
-        }
-      }
-    };
+    const window = createToolResultWindow(options);
 
     const ciphertextBytes = size - 28;
     if (ciphertextBytes !== expectedBytes) {
@@ -1099,7 +1036,7 @@ export function createToolResultArtifactStore(
                 end: size - 17,
               }).pipe(decipher);
               for await (const chunk of decrypted) {
-                consume(decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+                window.consume(decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
               }
             } else {
               decipher.final();
@@ -1141,16 +1078,8 @@ export function createToolResultArtifactStore(
     const decryption = applyReadCleanup(decryptionOutcome.value, ciphertextCloseOutcome.value);
     const decryptionError = decryption.match({ ok: () => null, err: (error) => error });
     if (decryptionError) return Result.err(decryptionError);
-    consume(decoder.end());
-    const startOffset = selectedStartOffset ?? totalCharacters;
-    return Result.ok({
-      content: selected.join(""),
-      startOffset,
-      endOffset: selectedEndOffset ?? totalCharacters,
-      totalCharacters,
-      endLine: selectedEndLine ?? line,
-      endColumn: selectedEndColumn ?? column,
-    });
+    window.consume(decoder.end());
+    return Result.ok(window.finish());
   }
 
   async function readEncryptedContent(
@@ -1357,72 +1286,17 @@ export function createToolResultArtifactStore(
           );
         }
 
-        const start: ToolResultArtifactStart =
-          options.start.type === "offset"
-            ? {
-                type: "offset",
-                offset: Number.isFinite(options.start.offset)
-                  ? Math.max(0, Math.floor(options.start.offset))
-                  : 0,
-              }
-            : {
-                type: "line",
-                line: Number.isFinite(options.start.line)
-                  ? Math.max(1, Math.floor(options.start.line))
-                  : 1,
-                column:
-                  options.start.column !== undefined && Number.isFinite(options.start.column)
-                    ? Math.max(0, Math.floor(options.start.column))
-                    : 0,
-              };
-        const requestedCharacters = Number.isFinite(options.maxCharacters)
-          ? Math.floor(options.maxCharacters)
-          : TOOL_RESULT_MAX_PAGE_CHARACTERS;
-        const maxCharacters = Math.min(
-          TOOL_RESULT_MAX_PAGE_CHARACTERS,
-          Math.max(1, requestedCharacters),
-        );
-        const maxLines = Number.isFinite(options.maxLines)
-          ? Math.max(1, Math.floor(options.maxLines))
-          : 1;
-        const maxOutputBytes =
-          options.maxOutputBytes !== undefined && Number.isFinite(options.maxOutputBytes)
-            ? Math.max(1, Math.floor(options.maxOutputBytes))
-            : Number.POSITIVE_INFINITY;
         const window = resultOutcome(
-          await readEncryptedWindow(
-            metadata.storageKey,
-            metadata.bytes,
-            start,
-            maxCharacters,
-            maxLines,
-            maxOutputBytes,
-          ),
+          await readEncryptedWindow(metadata.storageKey, metadata.bytes, options),
         );
         if (!window.ok) return Result.err(window.error);
-        const hasMore = window.value.endOffset < window.value.totalCharacters;
-        let nextStart: ToolResultArtifactStart | undefined;
-        if (hasMore && start.type === "offset") {
-          nextStart = { type: "offset", offset: window.value.endOffset };
-        } else if (hasMore) {
-          nextStart = {
-            type: "line",
-            line: window.value.endLine,
-            column: window.value.endColumn,
-          };
-        }
         logger.info("tool.artifact.read", { bytes: metadata.bytes });
         return Result.ok({
-          content: window.value.content,
+          ...window.value,
           id,
           bytes: metadata.bytes,
           createdAt: metadata.createdAt,
           expiresAt: metadata.expiresAt,
-          startOffset: window.value.startOffset,
-          endOffset: window.value.endOffset,
-          totalCharacters: window.value.totalCharacters,
-          hasMore,
-          ...(nextStart ? { nextStart } : {}),
         });
       });
     },
