@@ -9,9 +9,8 @@ import {
   type SurfaceAdapter,
   type SurfaceBurstCacheInput,
 } from "../adapter";
-import { getDiscordSurfaceDisplayText } from "../discord/discord-surface-display-text";
+import { projectDiscordMessage } from "../discord/discord-message-projection";
 import {
-  selectVisibleDiscordAttachments,
   hashIndexedDiscordAttachments,
   toIndexedDiscordAttachments,
   type DiscordIndexedAttachmentMeta,
@@ -19,7 +18,6 @@ import {
   type DiscordAttachmentCacheEntry,
   type DiscordAttachmentCacheKey,
 } from "../discord/discord-attachment";
-import { normalizeDiscordRaw } from "../discord/discord-raw-normalizer";
 import type { DiscordMsgRef, DiscordSessionRef, SurfaceMessage, SurfacePlatform } from "../types";
 import { configureSqliteConnection } from "../../shared/sqlite";
 
@@ -370,9 +368,8 @@ export class DiscordSearchStore {
     const tx = this.db.transaction((input: readonly SurfaceMessage[]) => {
       for (const message of input) {
         if (!isDiscordMessage(message)) continue;
-        const attachments = toIndexedDiscordAttachments(
-          selectVisibleDiscordAttachments(normalizeDiscordRaw(message.raw)),
-        );
+        const projection = projectDiscordMessage(message);
+        const attachments = toIndexedDiscordAttachments(projection.attachments);
         const attachmentsHash = hashIndexedDiscordAttachments(attachments);
         const existingAttachmentHash = this.db
           .query<{ attachments_hash: string | null }, [string, string]>(
@@ -424,10 +421,7 @@ export class DiscordSearchStore {
             message.ref.messageId,
             message.userId,
             message.userName ?? null,
-            getDiscordSurfaceDisplayText({
-              raw: message.raw,
-              fallbackText: message.text,
-            }),
+            projection.displayText,
             message.ts,
             message.editedTs ?? null,
             message.deleted ? 1 : 0,

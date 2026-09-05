@@ -18,6 +18,14 @@ import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 
 import {
+  applyToolPositionals,
+  parseToolBoolean as parseBooleanLike,
+  toolFlagField as kebabToCamelCase,
+  toolFieldFlag as camelToKebabCase,
+  type ToolPrimaryPositional as PrimaryPositional,
+} from "@stanley2058/lilac-core/tool-server/client-arguments";
+
+import {
   captureCliInvocation,
   hasCapturedInvocation,
   readRuntimeStdin,
@@ -71,11 +79,6 @@ type ToolOutputFull = {
   input: string[];
   primaryPositional?: PrimaryPositional;
   hidden?: boolean;
-};
-
-type PrimaryPositional = {
-  field: string;
-  variadic?: boolean;
 };
 
 type BuildInfo = {
@@ -1649,51 +1652,17 @@ export async function buildToolInput(
     input[field] = value;
   }
 
-  if (parsed.positionalArgs.length > 0) {
-    if (!primaryPositional) {
-      const bareBooleanFlag = parsed.fieldInputs.find((entry) => entry.value === true);
-      const flagHint = bareBooleanFlag
-        ? ` Bare --${camelToKebabCase(bareBooleanFlag.field)} was parsed as boolean true; if you meant to pass a value, use --${camelToKebabCase(bareBooleanFlag.field)}=<value>.`
-        : " If you meant to pass a flag value, use --field=<value>.";
-      return argumentError(
-        `Tool '${parsed.callableId}' does not support positional input.${flagHint} Space-separated flag values are not supported; use --input JSON or stdin for structured input.`,
-      );
-    }
-
-    const displayField = camelToKebabCase(primaryPositional.field);
-
-    if (primaryPositional.variadic === true) {
-      if (Object.hasOwn(input, primaryPositional.field)) {
-        return argumentError(
-          `Primary positional <${displayField}...> conflicts with an existing '${primaryPositional.field}' value from flags or JSON input.`,
-        );
-      }
-
-      input[primaryPositional.field] = parsed.positionalArgs.map((arg) =>
-        normalizeMaybePath(primaryPositional.field, arg),
-      );
-      return Result.ok(input);
-    }
-
-    if (parsed.positionalArgs.length > 1) {
-      return argumentError(
-        `Tool '${parsed.callableId}' accepts at most one positional argument: <${displayField}>.`,
-      );
-    }
-
-    if (Object.hasOwn(input, primaryPositional.field)) {
-      return argumentError(
-        `Primary positional <${displayField}> conflicts with an existing '${primaryPositional.field}' value from flags or JSON input.`,
-      );
-    }
-
-    input[primaryPositional.field] = normalizeMaybePath(
-      primaryPositional.field,
-      parsed.positionalArgs[0] ?? "",
-    );
-  }
-
-  return Result.ok(input);
+  const positionals =
+    primaryPositional === undefined
+      ? parsed.positionalArgs
+      : parsed.positionalArgs.map((value) => normalizeMaybePath(primaryPositional.field, value));
+  return applyToolPositionals({
+    callableId: parsed.callableId,
+    input,
+    positionals,
+    primary: primaryPositional,
+    bareBooleanField: parsed.fieldInputs.find((entry) => entry.value === true)?.field,
+  }).mapError((error) => new BridgeArgumentInvalid({ message: error.message }));
 }
 
 type PromptInterface = import("node:readline/promises").Interface;
@@ -2016,13 +1985,6 @@ async function readStdinText(): Promise<ResultType<string, BridgeExternalOperati
   );
 }
 
-function parseBooleanLike(s: string): boolean | undefined {
-  const lowered = s.trim().toLowerCase();
-  if (lowered === "true") return true;
-  if (lowered === "false") return false;
-  return undefined;
-}
-
 function looksLikePath(value: string) {
   if (value.includes("://")) return false;
   if (value === "~" || value.startsWith("~/") || value.startsWith("~\\")) {
@@ -2063,15 +2025,6 @@ function normalizeMaybePath(field: string, value: string) {
 
   if (!shouldNormalize) return value;
   return resolve(runtimeCwd(), expandTilde(value));
-}
-
-function kebabToCamelCase(input: string): string {
-  if (!input.includes("-")) return input;
-  return input.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
-}
-
-function camelToKebabCase(input: string): string {
-  return input.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
 }
 
 function failure(

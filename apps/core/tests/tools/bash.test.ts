@@ -660,6 +660,39 @@ describe("executeRestrictedBash", () => {
     }
   });
 
+  it("initializes Bun file handles before restricted filesystem execution in a fresh process", async () => {
+    const runtime = new URL("../../src/tools/restricted-bash.ts", import.meta.url).href;
+    const script = `
+      import { executeRestrictedBash } from ${JSON.stringify(runtime)};
+      import { mkdtemp, realpath, writeFile, rm } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import path from "node:path";
+      const workspace = await mkdtemp(path.join(await realpath(tmpdir()), "lilac-cold-fs-"));
+      try {
+        await writeFile(path.join(workspace, "input.txt"), "input");
+        const output = await executeRestrictedBash(
+          { command: "cat input.txt && printf output > output.txt && cat output.txt", cwd: workspace },
+          { workspaceRoot: workspace, context: { workspaceWritable: true } },
+        );
+        process.stdout.write(JSON.stringify(output));
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    `;
+    const child = Bun.spawn([process.execPath, "--eval", script], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(JSON.parse(stdout)).toMatchObject({ stdout: "inputoutput", stderr: "", exitCode: 0 });
+  });
+
   it("preserves writable primary-profile behavior through the Bash tool", async () => {
     const workspace = await fs.mkdtemp(
       path.join(await fs.realpath(tmpdir()), "lilac-restricted-primary-workspace-"),
@@ -850,6 +883,97 @@ describe("executeRestrictedBash", () => {
     }
   });
 
+  it("preserves complete restricted tool help with and without a positional field", async () => {
+    const workspace = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), "lilac-tools-help-"));
+    const help = {
+      callableId: "demo.echo",
+      name: "echo",
+      description: "Echo the supplied value",
+      shortInput: ["value"],
+      input: ["value: string", "enabled?: boolean"],
+      hidden: false,
+    };
+    let positional = false;
+    const restoreFetch = installMockFetch(async () =>
+      Response.json({
+        ...help,
+        ...(positional ? { primaryPositional: { field: "value" } } : {}),
+      }),
+    );
+    try {
+      for (const hasPositional of [false, true]) {
+        positional = hasPositional;
+        const result = await executeRestrictedBash(
+          { command: "tools --help demo.echo", cwd: workspace },
+          { workspaceRoot: workspace },
+        );
+        expect(result.exitCode).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({
+          ...help,
+          ...(hasPositional ? { primaryPositional: { field: "value" } } : {}),
+        });
+      }
+    } finally {
+      restoreFetch();
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects incomplete restricted help instead of printing a stripped object", async () => {
+    const workspace = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), "lilac-tools-help-"));
+    const restoreFetch = installMockFetch(async () =>
+      Response.json({ primaryPositional: { field: "value" } }),
+    );
+    try {
+      const result = await executeRestrictedBash(
+        { command: "tools --help demo.echo", cwd: workspace },
+        { workspaceRoot: workspace },
+      );
+      expect(result.stdout).toBe("");
+      expect(result.exitCode).toBe(serverToolExitCode.internal);
+      expect(JSON.parse(result.stderr)).toMatchObject({
+        status: "error",
+        error: { code: "TOOL_SERVER_INVALID_HELP" },
+      });
+    } finally {
+      restoreFetch();
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps restricted JSON input reads in the virtual filesystem and stdin adapters", async () => {
+    const workspace = await fs.mkdtemp(
+      path.join(await fs.realpath(tmpdir()), "lilac-tools-input-"),
+    );
+    const payload = { value: "hello", options: { enabled: true } };
+    await fs.writeFile(path.join(workspace, "payload.json"), JSON.stringify(payload));
+    const calls: unknown[] = [];
+    const restoreFetch = installMockFetch(async (_input, init) => {
+      calls.push(typeof init?.body === "string" ? JSON.parse(init.body) : undefined);
+      return Response.json({ status: "ok", value: payload });
+    });
+    try {
+      const commands = [
+        `tools demo.echo --input='${JSON.stringify(payload)}'`,
+        "tools demo.echo --input=@payload.json",
+        "cat payload.json | tools demo.echo --stdin",
+        "cat payload.json | tools demo.echo --input=@-",
+      ];
+      for (const command of commands) {
+        const result = await executeRestrictedBash(
+          { command, cwd: workspace },
+          { workspaceRoot: workspace },
+        );
+        expect(result.exitCode).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual(payload);
+      }
+      expect(calls).toEqual(commands.map(() => ({ callableId: "demo.echo", input: payload })));
+    } finally {
+      restoreFetch();
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("passes variadic tool positionals through the nested tools command", async () => {
     const workspace = await fs.mkdtemp(
       path.join(await fs.realpath(tmpdir()), "lilac-restricted-tools-workspace-"),
@@ -860,7 +984,14 @@ describe("executeRestrictedBash", () => {
     const restoreFetch = installMockFetch(async (input, init) => {
       const url = String(input);
       if (url.endsWith("/help/attachment.add_files")) {
-        return Response.json({ primaryPositional: { field: "paths", variadic: true } });
+        return Response.json({
+          callableId: "attachment.add_files",
+          name: "add_files",
+          description: "Attach files",
+          shortInput: ["paths"],
+          input: ["paths: string[]"],
+          primaryPositional: { field: "paths", variadic: true },
+        });
       }
       if (url.endsWith("/call")) {
         capturedRequestDeliveryIds.push(
@@ -987,7 +1118,14 @@ describe("executeRestrictedBash", () => {
     const restoreFetch = installMockFetch(async (input, init) => {
       const url = String(input);
       if (url.endsWith("/help/attachment.add_files")) {
-        return Response.json({ primaryPositional: { field: "paths", variadic: true } });
+        return Response.json({
+          callableId: "attachment.add_files",
+          name: "add_files",
+          description: "Attach files",
+          shortInput: ["paths"],
+          input: ["paths: string[]"],
+          primaryPositional: { field: "paths", variadic: true },
+        });
       }
       if (url.endsWith("/call")) {
         capturedCallInput = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
@@ -1036,7 +1174,14 @@ describe("executeRestrictedBash", () => {
     const restoreFetch = installMockFetch(async (input, init) => {
       const url = String(input);
       if (url.endsWith("/help/attachment.add_files")) {
-        return Response.json({ primaryPositional: { field: "paths", variadic: true } });
+        return Response.json({
+          callableId: "attachment.add_files",
+          name: "add_files",
+          description: "Attach files",
+          shortInput: ["paths"],
+          input: ["paths: string[]"],
+          primaryPositional: { field: "paths", variadic: true },
+        });
       }
       if (url.endsWith("/call")) {
         capturedCallInput = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
@@ -1081,7 +1226,13 @@ describe("executeRestrictedBash", () => {
     const restoreFetch = installMockFetch(async (input) => {
       const url = String(input);
       if (url.endsWith("/help/surface.messages.list")) {
-        return Response.json({});
+        return Response.json({
+          callableId: "surface.messages.list",
+          name: "list",
+          description: "List messages",
+          shortInput: ["sessionId"],
+          input: ["sessionId: string"],
+        });
       }
       if (url.endsWith("/call")) {
         calledTool = true;
@@ -1126,7 +1277,14 @@ describe("executeRestrictedBash", () => {
     const restoreFetch = installMockFetch(async (input) => {
       const url = String(input);
       if (url.endsWith("/help/fetch")) {
-        return Response.json({ primaryPositional: { field: "url" } });
+        return Response.json({
+          callableId: "fetch",
+          name: "fetch",
+          description: "Fetch a URL",
+          shortInput: ["url"],
+          input: ["url: string"],
+          primaryPositional: { field: "url" },
+        });
       }
       if (url.endsWith("/call")) {
         calledTool = true;

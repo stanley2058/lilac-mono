@@ -19,6 +19,20 @@ import { z } from "zod";
 import { Result, TaggedError, type Panic, type Result as ResultType } from "better-result";
 
 import {
+  applyToolPositionals,
+  parseToolBoolean as parseBooleanLike,
+  toolFlagField as kebabToCamelCase,
+} from "../tool-server/client-arguments";
+import {
+  jsonObjectSchema,
+  jsonValueSchema,
+  type ToolClientJsonObject,
+  type ToolClientJsonValue,
+  toolCallPayloadSchema as nestedToolResponseSchema,
+  toolOutputFullSchema,
+} from "../tool-server/client-protocol";
+
+import {
   Bash,
   decodeBytesToUtf8,
   defineCommand,
@@ -400,52 +414,6 @@ class RestrictedReadFs implements IFileSystem {
   }
 }
 
-function kebabToCamelCase(input: string): string {
-  return input.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
-}
-
-function parseBooleanLike(value: string): boolean | undefined {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "true") return true;
-  if (normalized === "false") return false;
-  return undefined;
-}
-
-const nestedToolJsonValueSchema: z.ZodType<ServerToolJsonValue> = z.lazy(() =>
-  z.union([
-    z.null(),
-    z.string(),
-    z.number().finite(),
-    z.boolean(),
-    z.array(nestedToolJsonValueSchema),
-    z.record(z.string(), nestedToolJsonValueSchema),
-  ]),
-);
-
-const nestedToolFailureSchema: z.ZodType<ServerToolFailure> = z
-  .object({
-    kind: z.enum([
-      "usage",
-      "denied",
-      "not_found",
-      "conflict",
-      "unavailable",
-      "timeout",
-      "cancelled",
-      "internal",
-    ]),
-    code: z.string().min(1),
-    message: z.string(),
-    retryable: z.boolean(),
-    details: nestedToolJsonValueSchema.optional(),
-  })
-  .strict();
-
-const nestedToolResponseSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("ok"), value: nestedToolJsonValueSchema }).strict(),
-  z.object({ status: z.literal("error"), error: nestedToolFailureSchema }).strict(),
-]);
-
 type NestedToolResponse = z.infer<typeof nestedToolResponseSchema>;
 type NestedToolsOutputMode = "json" | "json-pretty";
 
@@ -524,7 +492,7 @@ function signalNestedToolsInputFailure(code: string, message: string): never {
   );
 }
 
-async function readJsonSource(source: string, ctx: CommandContext): Promise<unknown> {
+async function readJsonSource(source: string, ctx: CommandContext): Promise<ToolClientJsonValue> {
   if (source === "@-") {
     return adaptToolResultToHost(decodeRestrictedJson(decodeBytesToUtf8(ctx.stdin)));
   }
@@ -536,14 +504,16 @@ async function readJsonSource(source: string, ctx: CommandContext): Promise<unkn
   return adaptToolResultToHost(decodeRestrictedJson(source));
 }
 
-function decodeRestrictedJson(source: string): ResultType<unknown, NestedToolsCommandFailure> {
+function decodeRestrictedJson(
+  source: string,
+): ResultType<ToolClientJsonValue, NestedToolsCommandFailure> {
   const decoded = Result.try({
-    try: () => JSON.parse(source),
+    try: () => jsonValueSchema.parse(JSON.parse(source)),
     catch: captureRuntimeError,
   }).mapError((captured) =>
     projectCapturedRuntimeError(captured, "Opaque restricted Bash JSON parse failure"),
   );
-  return decoded.match<() => ResultType<unknown, NestedToolsCommandFailure>>({
+  return decoded.match<() => ResultType<ToolClientJsonValue, NestedToolsCommandFailure>>({
     ok: (value) => () => Result.ok(value),
     err: (error) => () => {
       const cause = preserveToolPanic(error);
@@ -564,8 +534,8 @@ function decodeRestrictedJson(source: string): ResultType<unknown, NestedToolsCo
 
 function decodeNestedToolInput(
   value: unknown,
-): ResultType<Record<string, unknown>, NestedToolsCommandFailure> {
-  const decoded = z.record(z.string(), z.unknown()).safeParse(value);
+): ResultType<ToolClientJsonObject, NestedToolsCommandFailure> {
+  const decoded = jsonObjectSchema.safeParse(value);
   if (decoded.success) return Result.ok(decoded.data);
   return Result.err(
     new NestedToolsCommandFailure({
@@ -807,13 +777,7 @@ async function fetchToolHelp(
     signal,
     classifyTermination,
   });
-  const decoded = z
-    .object({
-      primaryPositional: z
-        .object({ field: z.string(), variadic: z.boolean().optional() })
-        .optional(),
-    })
-    .safeParse(value);
+  const decoded = toolOutputFullSchema.safeParse(value);
   if (!decoded.success) {
     signalNestedToolsFailure(
       createNestedToolsFailure({
@@ -834,8 +798,8 @@ async function buildNestedToolInput(params: {
   headers: Record<string, string>;
   signal?: AbortSignal;
   classifyTermination: RestrictedBashTerminationClassifier;
-}): Promise<Record<string, unknown>> {
-  let input: Record<string, unknown> = {};
+}): Promise<ToolClientJsonObject> {
+  let input: ToolClientJsonObject = {};
   const positionals: string[] = [];
   const bareBooleanFlags: string[] = [];
 
@@ -904,35 +868,18 @@ async function buildNestedToolInput(params: {
       params.classifyTermination,
       params.signal,
     );
-    const primaryPositional = help.primaryPositional;
-    if (!primaryPositional) {
-      const bareFlag = bareBooleanFlags[0];
-      const flagHint = bareFlag
-        ? ` Bare --${bareFlag} was parsed as boolean true; if you meant to pass a value, use --${bareFlag}=<value>.`
-        : " If you meant to pass a flag value, use --field=<value>.";
-      signalNestedToolsInputFailure(
-        "UNSUPPORTED_POSITIONAL_INPUT",
-        `Tool '${params.callableId}' does not support positional input.${flagHint} Space-separated flag values are not supported; use --input JSON or stdin for structured input.`,
-      );
+    const positionalInput = applyToolPositionals({
+      callableId: params.callableId,
+      input,
+      positionals,
+      primary: help.primaryPositional,
+      bareBooleanField: bareBooleanFlags[0],
+    });
+    const positionalError = positionalInput.match({ ok: () => undefined, err: (error) => error });
+    if (positionalError !== undefined) {
+      return signalNestedToolsInputFailure(positionalError.code, positionalError.message);
     }
-    if (Object.hasOwn(input, primaryPositional.field)) {
-      signalNestedToolsInputFailure(
-        "CONFLICTING_POSITIONAL_INPUT",
-        `Primary positional conflicts with an existing '${primaryPositional.field}' value from flags or JSON input`,
-      );
-    }
-    if (primaryPositional.variadic === true) {
-      input[primaryPositional.field] = positionals;
-      return input;
-    }
-
-    if (positionals.length > 1) {
-      signalNestedToolsInputFailure(
-        "TOO_MANY_POSITIONAL_ARGUMENTS",
-        `Tool '${params.callableId}' accepts at most one positional argument`,
-      );
-    }
-    input[primaryPositional.field] = positionals[0] ?? "";
+    return positionalInput.match({ ok: (value) => value, err: () => input });
   }
 
   return input;
@@ -1083,6 +1030,9 @@ async function createRestrictedBash(params: {
   context: RestrictedBashContext;
   classifyTermination: RestrictedBashTerminationClassifier;
 }): Promise<Bash> {
+  // Bun lazily creates FileHandle's FinalizationRegistry. Initialize it before
+  // just-bash blocks that constructor during guest filesystem operations.
+  await initializeRestrictedFileHandles();
   await fs.mkdir(params.sessionTmpDir, { recursive: true, mode: 0o700 });
   if (params.context.workspaceWritable) {
     const workspaceStats = await fs.lstat(params.workspaceRoot);
@@ -1162,6 +1112,10 @@ async function createRestrictedBash(params: {
       maxHeredocSize: 10 * 1024 * 1024,
     },
   });
+}
+
+async function initializeRestrictedFileHandles(): Promise<void> {
+  await using _handle = await fs.open(process.execPath, "r");
 }
 
 async function getRestrictedBash(params: {

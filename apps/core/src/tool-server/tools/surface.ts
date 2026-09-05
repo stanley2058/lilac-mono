@@ -14,11 +14,7 @@ import {
 import { defineServerTool, type ServerTool, type ServerToolCallOptions } from "../types";
 
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";
-import {
-  hasCacheBurstProvider,
-  type SurfaceAdapter,
-  type SurfaceOperationError,
-} from "../../surface/adapter";
+import { hasCacheBurstProvider, type SurfaceOperationError } from "../../surface/adapter";
 import type {
   ResolvedSurfaceAdapter,
   SurfaceAdapterResolver,
@@ -53,12 +49,16 @@ import {
   inferMimeTypeFromFilename,
   resolveToolPathForRequestContextResult,
 } from "../../shared/attachment-utils";
-import { getDiscordSurfaceDisplayText } from "../../surface/discord/discord-surface-display-text";
+import type { DiscordAttachmentMeta } from "../../surface/discord/discord-attachment";
 import {
-  DISCORD_REFERENCE_TYPE_DEFAULT,
-  DISCORD_REFERENCE_TYPE_FORWARD,
-  normalizeDiscordRaw,
-} from "../../surface/discord/discord-raw-normalizer";
+  projectDiscordMessage,
+  getDiscordMessageKind,
+} from "../../surface/discord/discord-message-projection";
+import {
+  resolveDiscordReferencedMessage,
+  resolveDiscordReferencedMessages,
+  surfaceMessageKey,
+} from "../../surface/discord/discord-reference-enrichment";
 
 function surfaceFailure(kind: ServerToolFailure["kind"], message: string): ServerToolFailure {
   return serverToolFailure({
@@ -474,37 +474,12 @@ type SurfaceMessageAttachmentMeta = {
   size?: number;
 };
 
-const surfaceMessageAttachmentMetaSchema = z.object({
-  url: z.string().min(1),
-  filename: z.string().optional(),
-  name: z.string().optional(),
-  mimeType: z.string().optional(),
-  contentType: z.string().optional(),
-  size: z.number().finite().optional(),
-});
-
-const discordMessageTypeMetaSchema = z.object({
-  discord: z.object({
-    type: z.number().finite().optional(),
-    typeName: z.string().optional(),
-    system: z.boolean().optional(),
-    isChat: z.boolean().optional(),
-  }),
-});
-
 type SurfaceMessageAttachmentHints = {
   hasAttachments: boolean;
   attachmentCount: number;
   hasMedia: boolean;
   mediaCount: number;
   mediaKinds: SurfaceMessageAttachmentKind[];
-};
-
-type SurfaceMessageReference = {
-  messageId?: string;
-  channelId?: string;
-  guildId?: string;
-  type?: number;
 };
 
 function normalizeMimeTypeForAttachment(mimeType: string): string | undefined {
@@ -550,85 +525,21 @@ function attachmentKindFromMimeType(mimeType: string | undefined): SurfaceMessag
   return "file";
 }
 
-function normalizeAttachmentMeta(input: unknown): SurfaceMessageAttachmentMeta | null {
-  const decoded = surfaceMessageAttachmentMetaSchema.safeParse(input);
-  if (!decoded.success) return null;
-  const attachment = decoded.data;
-  const url = attachment.url;
-
-  const filename = attachment.filename ?? attachment.name;
-
-  const rawMimeType = attachment.mimeType ?? attachment.contentType;
-
-  const mimeType = inferAttachmentMimeType({
-    mimeType: rawMimeType,
-    filename,
-    url,
-  });
-
-  const size = attachment.size;
-
+function toAttachmentMeta(attachment: DiscordAttachmentMeta): SurfaceMessageAttachmentMeta {
+  const mimeType = inferAttachmentMimeType(attachment);
   return {
-    url,
+    url: attachment.url,
     kind: attachmentKindFromMimeType(mimeType),
-    ...(filename ? { filename } : {}),
+    ...(attachment.filename ? { filename: attachment.filename } : {}),
     ...(mimeType ? { mimeType } : {}),
-    ...(size !== undefined ? { size } : {}),
+    ...(attachment.size !== undefined ? { size: attachment.size } : {}),
   };
-}
-
-function extractAttachmentMetaFromList(list: readonly unknown[]): SurfaceMessageAttachmentMeta[] {
-  const out: SurfaceMessageAttachmentMeta[] = [];
-  for (const item of list) {
-    const normalized = normalizeAttachmentMeta(item);
-    if (normalized) out.push(normalized);
-  }
-  return out;
-}
-
-function getDiscordReferenceFromRaw(raw: unknown): SurfaceMessageReference | null {
-  const normalized = normalizeDiscordRaw(raw);
-  if (!normalized) return null;
-
-  const ref = normalized.replyReference ?? normalized.reference;
-  if (!ref) return null;
-
-  return {
-    ...(ref.messageId ? { messageId: ref.messageId } : {}),
-    ...(ref.channelId ? { channelId: ref.channelId } : {}),
-    ...(ref.guildId ? { guildId: ref.guildId } : {}),
-    type: normalized.referenceType,
-  };
-}
-
-function extractDiscordAttachmentMetaFromRaw(raw: unknown): SurfaceMessageAttachmentMeta[] {
-  const normalized = normalizeDiscordRaw(raw);
-  if (!normalized) return [];
-
-  const snapshotAttachments = normalized.forwardSnapshot?.attachments;
-  const attachments =
-    snapshotAttachments && snapshotAttachments.length > 0
-      ? snapshotAttachments
-      : normalized.attachments;
-  return extractAttachmentMetaFromList(attachments);
 }
 
 function getMessageAttachmentMeta(msg: SurfaceMessage): SurfaceMessageAttachmentMeta[] {
-  if (msg.session.platform === "discord") {
-    return extractDiscordAttachmentMetaFromRaw(msg.raw);
-  }
-  return [];
-}
-
-function getSurfaceMessageRichText(msg: SurfaceMessage): string {
-  if (msg.session.platform === "discord") {
-    return getDiscordSurfaceDisplayText({
-      raw: msg.raw,
-      fallbackText: msg.text,
-    });
-  }
-
-  return msg.text;
+  return msg.session.platform === "discord"
+    ? projectDiscordMessage(msg).attachments.map(toAttachmentMeta)
+    : [];
 }
 
 function buildAttachmentHints(
@@ -642,169 +553,6 @@ function buildAttachmentHints(
     mediaCount: mediaFiles.length,
     mediaKinds: Array.from(new Set(mediaFiles.map((a) => a.kind))),
   };
-}
-
-function getDiscordMessageTypeMetaFromRaw(raw: unknown): {
-  typeId?: number;
-  typeName?: string;
-  isSystem?: boolean;
-  isChat?: boolean;
-} | null {
-  const decoded = discordMessageTypeMetaSchema.safeParse(raw);
-  if (!decoded.success) return null;
-  const discord = decoded.data.discord;
-  const typeId = discord.type;
-  const typeName = discord.typeName;
-  const isSystem = discord.system;
-  const isChat = discord.isChat;
-
-  if (
-    typeId === undefined &&
-    typeName === undefined &&
-    isSystem === undefined &&
-    isChat === undefined
-  ) {
-    return null;
-  }
-
-  return { typeId, typeName, isSystem, isChat };
-}
-
-function getDiscordMessageKind(meta: {
-  isSystem?: boolean;
-  isChat?: boolean;
-}): "chat" | "system" | "unknown" {
-  if (meta.isChat === true) return "chat";
-  if (meta.isSystem === true) return "system";
-  return "unknown";
-}
-
-function surfaceMessageKey(msg: SurfaceMessage): string {
-  return `${msg.ref.channelId}:${msg.ref.messageId}`;
-}
-
-function isDiscordThreadStarterMessage(
-  meta: { typeId?: number; typeName?: string } | null,
-): boolean {
-  return meta?.typeId === 21 || meta?.typeName === "ThreadStarterMessage";
-}
-
-async function resolveDiscordReferencedMessage(input: {
-  adapter: SurfaceAdapter;
-  cfg: CoreConfig;
-  message: SurfaceMessage;
-  alreadyFetchedByKey?: Map<string, SurfaceMessage>;
-  fetchedReferenceByKey?: Map<string, Promise<SurfaceMessage | null>>;
-}): Promise<ResultType<SurfaceMessage | null, ServerToolFailure>> {
-  return Result.gen(async function* () {
-    const msg = input.message;
-    if (msg.session.platform !== "discord") return Result.ok(null);
-
-    const ref = getDiscordReferenceFromRaw(msg.raw);
-    if (!ref?.messageId) return Result.ok(null);
-
-    const referenceType = ref.type ?? DISCORD_REFERENCE_TYPE_DEFAULT;
-    if (referenceType === DISCORD_REFERENCE_TYPE_FORWARD) return Result.ok(null);
-
-    const meta = getDiscordMessageTypeMetaFromRaw(msg.raw);
-    const refChannelId = ref.channelId ?? msg.session.channelId;
-    const isSameSession = refChannelId === msg.session.channelId;
-    const isThreadStarterParentReference =
-      isDiscordThreadStarterMessage(meta) &&
-      typeof msg.session.parentChannelId === "string" &&
-      refChannelId === msg.session.parentChannelId;
-
-    if (!isSameSession && !isThreadStarterParentReference) return Result.ok(null);
-
-    const targetAllowed = yield* shouldAllowDiscordChannel({
-      cfg: input.cfg,
-      channelId: refChannelId,
-      guildId: ref.guildId ?? msg.session.guildId,
-    });
-    if (!targetAllowed) return Result.ok(null);
-
-    const targetKey = `${refChannelId}:${ref.messageId}`;
-    const alreadyFetched = input.alreadyFetchedByKey?.get(targetKey);
-    if (alreadyFetched) return Result.ok(alreadyFetched);
-
-    let referencedPromise = input.fetchedReferenceByKey?.get(targetKey);
-    if (!referencedPromise) {
-      referencedPromise = input.adapter
-        .readMsg({
-          platform: "discord",
-          channelId: refChannelId,
-          messageId: ref.messageId,
-        })
-        .then((result) => result.match({ ok: (value) => value, err: () => null }));
-      input.fetchedReferenceByKey?.set(targetKey, referencedPromise);
-    }
-
-    const referenced = await referencedPromise;
-    if (!referenced || referenced.session.platform !== "discord") return Result.ok(null);
-
-    const referencedAllowed = yield* shouldAllowDiscordChannel({
-      cfg: input.cfg,
-      channelId: referenced.session.channelId,
-      guildId: referenced.session.guildId,
-    });
-    return Result.ok(referencedAllowed ? referenced : null);
-  });
-}
-
-async function mapWithConcurrency<T, R>(input: {
-  items: readonly T[];
-  concurrency: number;
-  run: (item: T, index: number) => Promise<R>;
-}): Promise<R[]> {
-  const concurrency = Math.max(1, Math.floor(input.concurrency));
-  const out = Array.from({ length: input.items.length }) as R[];
-  let nextIndex = 0;
-
-  const workers = Array.from({ length: Math.min(concurrency, input.items.length) }, async () => {
-    while (true) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= input.items.length) return;
-      out[index] = await input.run(input.items[index]!, index);
-    }
-  });
-
-  await Promise.all(workers);
-  return out;
-}
-
-async function resolveDiscordReferencedMessages(input: {
-  adapter: SurfaceAdapter;
-  cfg: CoreConfig;
-  messages: readonly SurfaceMessage[];
-}): Promise<ResultType<Map<string, SurfaceMessage>, ServerToolFailure>> {
-  const out = new Map<string, SurfaceMessage>();
-  const alreadyFetchedByKey = new Map<string, SurfaceMessage>();
-  const fetchedReferenceByKey = new Map<string, Promise<SurfaceMessage | null>>();
-
-  for (const message of input.messages) {
-    alreadyFetchedByKey.set(surfaceMessageKey(message), message);
-  }
-
-  const resolved = await mapWithConcurrency({
-    items: input.messages,
-    concurrency: 8,
-    run: async (message) => {
-      return (
-        await resolveDiscordReferencedMessage({
-          adapter: input.adapter,
-          cfg: input.cfg,
-          message,
-          alreadyFetchedByKey,
-          fetchedReferenceByKey,
-        })
-      ).map((referenced) => {
-        if (referenced) out.set(surfaceMessageKey(message), referenced);
-      });
-    },
-  });
-
-  return Result.all(resolved).map(() => out);
 }
 
 const MESSAGE_LIST_ORDER_SCHEMA = z.enum(["ts_asc", "ts_desc"]);
@@ -890,11 +638,12 @@ function toCompactMessage(
   msg: SurfaceMessage,
   opts: { includeRaw: boolean; includeAttachments: boolean; referenced?: SurfaceMessage },
 ): Record<string, unknown> {
+  const discord = msg.session.platform === "discord" ? projectDiscordMessage(msg) : undefined;
   const out: Record<string, unknown> = {
     messageId: msg.ref.messageId,
     userId: msg.userId,
     userName: msg.userName,
-    richText: getSurfaceMessageRichText(msg),
+    richText: discord?.displayText ?? msg.text,
     ts: msg.ts,
   };
 
@@ -902,7 +651,7 @@ function toCompactMessage(
   if (typeof msg.deleted === "boolean") out["deleted"] = msg.deleted;
 
   if (msg.session.platform === "discord") {
-    const meta = getDiscordMessageTypeMetaFromRaw(msg.raw);
+    const meta = discord?.typeMeta;
     if (meta) {
       if (typeof meta.typeName === "string") out["platformMessageType"] = meta.typeName;
       else if (typeof meta.typeId === "number") out["platformMessageType"] = String(meta.typeId);
@@ -915,7 +664,7 @@ function toCompactMessage(
     }
   }
 
-  const attachments = getMessageAttachmentMeta(msg);
+  const attachments = discord?.attachments.map(toAttachmentMeta) ?? [];
   const mediaFiles = attachments.filter((a) => a.kind !== "file");
   const hints = buildAttachmentHints(attachments);
 
@@ -1846,7 +1595,8 @@ export class Surface implements ServerTool {
           ? yield* Result.await(
               resolveDiscordReferencedMessages({
                 adapter: target.resolved.adapter,
-                cfg: discordCfg,
+                allowChannel: (channel) =>
+                  shouldAllowDiscordChannel({ cfg: discordCfg, ...channel }),
                 messages: filtered,
               }),
             )
@@ -1932,7 +1682,8 @@ export class Surface implements ServerTool {
           ? yield* Result.await(
               resolveDiscordReferencedMessage({
                 adapter: target.resolved.adapter,
-                cfg: target.cfg,
+                allowChannel: (channel) =>
+                  shouldAllowDiscordChannel({ cfg: target.cfg!, ...channel }),
                 message: msg,
               }),
             )

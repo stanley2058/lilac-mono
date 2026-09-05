@@ -2,7 +2,9 @@
   "name": "@stanley2058/lilac-core",
   "module": "src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./tool-server/client-protocol": "./src/tool-server/client-protocol.ts",
+    "./tool-server/client-arguments": "./src/tool-server/client-arguments.ts"
   },
   "type": "module",
   "private": true,

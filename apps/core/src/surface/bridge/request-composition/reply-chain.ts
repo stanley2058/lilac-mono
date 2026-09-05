@@ -3,9 +3,8 @@ import { Result, type Result as ResultType } from "better-result";
 import type { MsgRef, SurfaceMessage } from "../../types";
 
 import type { SurfaceAdapter, SurfaceOperationResult } from "../../adapter";
-import { selectVisibleDiscordAttachments } from "../../discord/discord-attachment";
-import { buildDiscordRichTextFromContentAndEmbeds } from "../../discord/discord-embed-text";
-import { normalizeDiscordRaw } from "../../discord/discord-raw-normalizer";
+import { projectDiscordMessage } from "../../discord/discord-message-projection";
+export { getForwardSnapshotTextFromRaw } from "../../discord/discord-message-projection";
 
 import { splitByDiscordWindowOldestToNewest } from "../../discord/merge-window";
 
@@ -41,27 +40,6 @@ function compareDiscordSnowflakeLike(a: string, b: string): number {
   }).match({ ok: (order) => order, err: () => a.localeCompare(b) });
 }
 
-export function getForwardSnapshotTextFromRaw(raw: unknown): string | undefined {
-  const snapshot = normalizeDiscordRaw(raw)?.forwardSnapshot;
-  if (!snapshot) return undefined;
-
-  const fromSnapshot = buildDiscordRichTextFromContentAndEmbeds({
-    content: snapshot.content,
-    embeds: snapshot.embeds,
-    mode: "inbound",
-  });
-
-  return fromSnapshot.length > 0 ? fromSnapshot : undefined;
-}
-
-function getReferenceFromRaw(raw: unknown): {
-  messageId?: string;
-  channelId?: string;
-} {
-  const replyReference = normalizeDiscordRaw(raw)?.replyReference;
-  return replyReference ?? {};
-}
-
 export function toReplyChainMessage(
   msg: SurfaceMessage,
   opts?: {
@@ -69,11 +47,11 @@ export function toReplyChainMessage(
     authorNameFallback?: string;
   },
 ): ReplyChainMessage {
-  const isChat = normalizeDiscordRaw(msg.raw)?.isChat;
+  const projection = projectDiscordMessage(msg);
+  const isChat = projection.isChat;
   let text = opts?.overrideText;
   if (text === undefined) {
-    text =
-      msg.text.trim().length > 0 ? msg.text : (getForwardSnapshotTextFromRaw(msg.raw) ?? msg.text);
+    text = msg.text.trim().length > 0 ? msg.text : (projection.forwardSnapshotText ?? msg.text);
   }
 
   return {
@@ -82,9 +60,9 @@ export function toReplyChainMessage(
     authorName: msg.userName ?? opts?.authorNameFallback ?? `user_${msg.userId}`,
     ts: msg.ts,
     text,
-    attachments: selectVisibleDiscordAttachments(normalizeDiscordRaw(msg.raw)),
+    attachments: projection.attachments,
     ...(isChat === undefined ? {} : { isChat }),
-    replyReference: getReferenceFromRaw(msg.raw),
+    replyReference: projection.replyReference ?? {},
   };
 }
 
@@ -243,8 +221,8 @@ export async function resolveMergeBlockEndingAt(
 
 export function findEarliestReplyAnchor(block: readonly SurfaceMessage[]): SurfaceMessage | null {
   for (const m of block) {
-    const ref = getReferenceFromRaw(m.raw);
-    if (ref.messageId) return m;
+    const ref = projectDiscordMessage(m).replyReference;
+    if (ref?.messageId) return m;
   }
   return null;
 }

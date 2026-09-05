@@ -1,3 +1,4 @@
+import { toReplyChainMessage } from "../src/surface/bridge/request-composition/reply-chain";
 import { describe, expect, it } from "bun:test";
 import { Panic, Result } from "better-result";
 import type { ServerToolResult } from "@stanley2058/lilac-plugin-runtime";
@@ -3555,4 +3556,134 @@ describe("tool-server surface", () => {
 
     expect(deleteCalls).toBe(0);
   });
+});
+
+describe("Discord projection parity", () => {
+  const top = {
+    id: "top",
+    url: "https://example.com/top.png",
+    filename: "top.png",
+    mimeType: "image/png",
+    size: 3,
+  };
+  const envelope = {
+    id: "envelope",
+    url: "https://example.com/envelope.png",
+    filename: "envelope.png",
+    mimeType: "image/png",
+    size: 4,
+  };
+  const snapshot = {
+    id: "snapshot",
+    url: "https://example.com/snapshot.png",
+    filename: "snapshot.png",
+    mimeType: "image/png",
+    size: 5,
+  };
+
+  for (const fixture of [
+    {
+      name: "ordinary replies prefer Discord envelope attachments",
+      referenceType: 0,
+      snapshots: [snapshot],
+      expected: envelope,
+    },
+    {
+      name: "forwards prefer visible snapshot attachments",
+      referenceType: 1,
+      snapshots: [snapshot],
+      expected: snapshot,
+    },
+    {
+      name: "forwards with empty snapshots retain envelope attachments",
+      referenceType: 1,
+      snapshots: [],
+      expected: envelope,
+    },
+    {
+      name: "forwards with malformed snapshot attachments retain envelope attachments",
+      referenceType: 1,
+      snapshots: [{ url: 4 }],
+      expected: envelope,
+    },
+  ]) {
+    it(fixture.name, async () => {
+      const channelId = "123";
+      const message: SurfaceMessage = {
+        ref: { platform: "discord", channelId, messageId: "m1" },
+        session: { platform: "discord", channelId },
+        userId: "u1",
+        text: "message text",
+        ts: 1,
+        raw: {
+          attachments: [top],
+          discord: { attachments: [envelope], isChat: true },
+          reference: { messageId: "original", channelId, type: fixture.referenceType },
+          messageSnapshots: [
+            { message: { content: "snapshot text", attachments: fixture.snapshots } },
+          ],
+        },
+      };
+      const adapter = new FakeAdapter([], { [channelId]: [message] });
+      const cfg = testConfig({
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [channelId],
+            allowedGuildIds: [],
+            botName: "lilac",
+          },
+        },
+      });
+      const tool = new Surface({ adapter, config: cfg });
+      const listed = (await tool.call("surface.messages.list", {
+        client: "discord",
+        sessionId: channelId,
+        includeAttachments: true,
+      })) as {
+        messages: Array<{
+          attachments: Array<{
+            url: string;
+            kind: string;
+            filename: string;
+            mimeType: string;
+            size: number;
+          }>;
+          richText: string;
+        }>;
+      };
+      const reply = toReplyChainMessage(message);
+      const store = new DiscordSearchStore(":memory:");
+      try {
+        store.upsertMessages([message]);
+        const indexed = store.getIndexedMessage({ channelId, messageId: "m1" });
+        expect(reply.attachments).toEqual([fixture.expected]);
+        expect(indexed?.attachments).toEqual([
+          {
+            id: fixture.expected.id,
+            filename: fixture.expected.filename,
+            mimeType: fixture.expected.mimeType,
+            size: fixture.expected.size,
+          },
+        ]);
+        expect(listed.messages[0]?.attachments).toEqual([
+          {
+            url: fixture.expected.url,
+            filename: fixture.expected.filename,
+            mimeType: fixture.expected.mimeType,
+            size: fixture.expected.size,
+            kind: "image",
+          },
+        ]);
+        expect(listed.messages[0]?.richText).toBe(reply.text);
+        expect(indexed?.text).toBe(reply.text);
+        expect(reply.replyReference.messageId).toBe(
+          fixture.referenceType === 0 ? "original" : undefined,
+        );
+        expect(adapter.readCalls.length).toBe(fixture.referenceType === 0 ? 1 : 0);
+      } finally {
+        store.close();
+      }
+    });
+  }
 });

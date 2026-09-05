@@ -1,5 +1,5 @@
 import { buildDiscordRichTextFromContentAndEmbeds } from "./discord-embed-text";
-import { normalizeDiscordRaw } from "./discord-raw-normalizer";
+import { normalizeDiscordRaw, type NormalizedDiscordRaw } from "./discord-raw-normalizer";
 
 function joinTextBlocks(blocks: readonly string[]): string | undefined {
   const nonEmpty = blocks.map((block) => block.trim()).filter((block) => block.length > 0);
@@ -8,7 +8,10 @@ function joinTextBlocks(blocks: readonly string[]): string | undefined {
 }
 
 export function getDiscordSurfaceTextFromRaw(raw: unknown): string | undefined {
-  const discordRaw = normalizeDiscordRaw(raw);
+  return getDiscordSurfaceText(normalizeDiscordRaw(raw));
+}
+
+export function getDiscordSurfaceText(discordRaw: NormalizedDiscordRaw | null): string | undefined {
   if (!discordRaw) return undefined;
 
   if (discordRaw.forwardSnapshot) {

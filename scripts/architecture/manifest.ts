@@ -1001,13 +1001,7 @@ const CORE_TOOL_SERVER_BOUNDARY_DECODERS = [
     "withDefaultSessionId",
     "withDefaultMessageId",
     "mustPresentString",
-    "normalizeAttachmentMeta",
-    "getDiscordReferenceFromRaw",
-    "extractDiscordAttachmentMetaFromRaw",
     "getMessageAttachmentMeta",
-    "getSurfaceMessageRichText",
-    "getDiscordMessageTypeMetaFromRaw",
-    "resolveDiscordReferencedMessage",
     "toCompactMessage",
   ].map((exportName) => ({
     identity: { module: "src/tool-server/tools/surface.ts", exportName },
@@ -5233,6 +5227,16 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
       ...(WAVE_3_OPERATIONAL_RESULT_APIS.get(root) ?? []),
       ...(root === "apps/core"
         ? [
+            {
+              module: "src/tool-server/client-arguments.ts",
+              exportName: "applyToolPositionals",
+            },
+            ...["resolveDiscordReferencedMessage", "resolveDiscordReferencedMessages"].map(
+              (exportName) => ({
+                module: "src/surface/discord/discord-reference-enrichment.ts",
+                exportName,
+              }),
+            ),
             ...["captureBuildOperation", "buildRemoteRunner"].map((exportName) => ({
               module: "build-remote-runner.ts",
               exportName,
