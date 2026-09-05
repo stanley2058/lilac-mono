@@ -6,7 +6,7 @@
       "name": "lilac-mono",
       "devDependencies": {
         "@oxlint/plugins": "1.75.0",
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
         "oxfmt": "^0.44.0",
         "oxlint": "1.75.0",
         "typescript": "^7.0.2",
@@ -26,7 +26,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -79,7 +79,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
         "@types/mdast": "^4.0.4",
       },
       "peerDependencies": {
@@ -98,7 +98,7 @@
       },
       "devDependencies": {
         "@opentui/solid": "0.4.3",
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
         "zod": "^4.3.6",
       },
     },
@@ -116,7 +116,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -136,7 +136,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -157,7 +157,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -172,7 +172,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -186,7 +186,7 @@
         "just-bash": "^3.0.1",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -200,7 +200,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -218,7 +218,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -237,7 +237,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -256,7 +256,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -272,7 +272,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -287,7 +287,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -317,7 +317,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
         "@types/turndown": "^5.0.6",
       },
       "peerDependencies": {
@@ -333,7 +333,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -351,7 +351,7 @@
       },
       "devDependencies": {
         "@stanley2058/lilac-fs": "workspace:*",
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
@@ -369,7 +369,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -392,7 +392,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@types/bun": "^1.4.0",
+        "@types/bun": "^1.4.1",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -402,7 +402,7 @@
   "patchedDependencies": {
     "@ai-sdk/mcp@2.0.39": "patches/@ai-sdk%2Fmcp@2.0.39.patch",
     "@opentui/core@0.4.3": "patches/@opentui%2Fcore@0.4.3.patch",
-    "bun-types@1.4.0": "patches/bun-types@1.4.0.patch",
+    "bun-types@1.4.1": "patches/bun-types@1.4.1.patch",
   },
   "catalog": {
     "better-result": "3.0.1",
@@ -778,7 +778,7 @@
 
     "@tokenizer/token": ["@tokenizer/token@0.3.0", "", {}, "sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A=="],
 
-    "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
+    "@types/bun": ["@types/bun@1.4.1", "", { "dependencies": { "bun-types": "1.4.1" } }, "sha512-0AVGiTXGajf1rgKom3N+c5L7CBxuoyyv1i44M0nX4UDK0G/fnRAMiri93nHuVPIb429KKtAgj7HatVmmOjeQLA=="],
 
     "@types/debug": ["@types/debug@4.1.12", "", { "dependencies": { "@types/ms": "*" } }, "sha512-vIChWdVG3LG1SMxEvI/AK+FWJthlrqlTu7fbrlywTkkaONwk/UAGaULXRlf8vkzFBLVm0zkMdCquhL5aOjhXPQ=="],
 
@@ -914,7 +914,7 @@
 
     "bun-ffi-structs": ["bun-ffi-structs@0.2.4", "", { "peerDependencies": { "typescript": "^5" } }, "sha512-AJzsqoVFs1KBbJbWHIYrVZLDC3NhTqqh25awRXqzoLzmBAKr5oqk6+CwuYHAekKx+VBCYVohBoKuRq40dV+TYg=="],
 
-    "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
+    "bun-types": ["bun-types@1.4.1", "", { "dependencies": { "@types/node": "*" } }, "sha512-loKuVrAFZKfEv+JvWkHRS9GW5IqLuLRjVXN9p+vZvBN86O5hf/pBZQ5hSoyipsrMmWObZBDvWnlmKvjKTM0PdA=="],
 
     "bytes": ["bytes@3.1.2", "", {}, "sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg=="],
 

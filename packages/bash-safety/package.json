@@ -20,7 +20,7 @@
     "just-bash": "^3.0.1"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.0"
+    "@types/bun": "^1.4.1"
   },
   "peerDependencies": {
     "typescript": "^7.0.2"

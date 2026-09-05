@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "packageManager": "bun@1.4.1",
+  "packageManager": "bun@1.4.2",
   "catalog": {
     "better-result": "3.0.1"
   },
@@ -50,7 +50,7 @@
   },
   "devDependencies": {
     "@oxlint/plugins": "1.75.0",
-    "@types/bun": "^1.4.0",
+    "@types/bun": "^1.4.1",
     "oxfmt": "^0.44.0",
     "oxlint": "1.75.0",
     "typescript": "^7.0.2",
@@ -63,6 +63,6 @@
   "patchedDependencies": {
     "@ai-sdk/mcp@2.0.39": "patches/@ai-sdk%2Fmcp@2.0.39.patch",
     "@opentui/core@0.4.3": "patches/@opentui%2Fcore@0.4.3.patch",
-    "bun-types@1.4.0": "patches/bun-types@1.4.0.patch"
+    "bun-types@1.4.1": "patches/bun-types@1.4.1.patch"
   }
 }
