@@ -125,3 +125,34 @@ for (const kind of ["memory", "local"] as const) {
     expect(success(await second.deleteKeys([reservationDecisionKey(objectId)]))).toBe(0);
   });
 }
+
+for (const kind of ["memory", "local"] as const) {
+  test(`${kind} expiry pages advance past retained entries and wrap for retries`, async () => {
+    const [adapter] = await backendPair(kind);
+    const first = `b1_${"a".repeat(32)}`;
+    const second = `b1_${"b".repeat(32)}`;
+    const third = `b1_${"c".repeat(32)}`;
+    const future = `b1_${"d".repeat(32)}`;
+    success(await adapter.createReservation(second, '{"state":"deleted"}\n', 1));
+    success(await adapter.createReservation(third, '{"state":"deleted"}\n', 2));
+    success(await adapter.createReservation(first, '{"state":"deleted"}\n', 1));
+    success(await adapter.createReservation(future, '{"state":"pending"}\n', 10));
+
+    expect(success(await adapter.listExpiredReservationIds(2, 1))).toEqual({
+      ids: [first],
+      remaining: true,
+    });
+    expect(success(await adapter.listExpiredReservationIds(2, 1))).toEqual({
+      ids: [second],
+      remaining: true,
+    });
+    expect(success(await adapter.listExpiredReservationIds(2, 1))).toEqual({
+      ids: [third],
+      remaining: false,
+    });
+    expect(success(await adapter.listExpiredReservationIds(2, 1))).toEqual({
+      ids: [first],
+      remaining: true,
+    });
+  });
+}

@@ -95,6 +95,7 @@ export class LocalBlobBackend implements BlobBackend {
   readonly #root: string;
   #rootDevice?: number;
   #rootInode?: number;
+  #expiryCursor?: string;
 
   constructor(root: string) {
     this.#root = path.resolve(root);
@@ -420,28 +421,40 @@ export class LocalBlobBackend implements BlobBackend {
         const partitions = await fs.readdir(this.#safePath("expiry"), {
           withFileTypes: true,
         });
+        const cursorPartition = this.#expiryCursor?.split("/")[1];
         const eligiblePartitions = partitions
           .filter(
             (entry) =>
               entry.isDirectory() && /^\d{16}$/u.test(entry.name) && Number(entry.name) <= now,
           )
           .map((entry) => entry.name)
+          .filter((partition) => cursorPartition === undefined || partition >= cursorPartition)
           .sort();
-        const ids: string[] = [];
+        const keys: string[] = [];
         for (const partition of eligiblePartitions) {
           await this.#assertSafeParent(`expiry/${partition}/item`);
           const entries = await fs.readdir(this.#safePath(`expiry/${partition}`), {
             withFileTypes: true,
           });
+          entries.sort((first, second) => first.name.localeCompare(second.name));
           for (const entry of entries) {
-            if (entry.isFile() && /^b1_[0-9a-f]{32}$/u.test(entry.name)) {
-              ids.push(entry.name);
-            }
-            if (ids.length > limit) break;
+            if (!entry.isFile() || !/^b1_[0-9a-f]{32}$/u.test(entry.name)) continue;
+            const key = `expiry/${partition}/${entry.name}`;
+            if (this.#expiryCursor !== undefined && key <= this.#expiryCursor) continue;
+            keys.push(key);
+            if (keys.length > limit) break;
           }
-          if (ids.length > limit) break;
+          if (keys.length > limit) break;
         }
-        return { ids: ids.slice(0, limit), remaining: ids.length > limit };
+        const page = keys.slice(0, limit);
+        const remaining = keys.length > limit;
+        this.#expiryCursor = remaining ? page.at(-1) : undefined;
+        return {
+          ids: page
+            .map((key) => key.split("/")[2])
+            .filter((objectId): objectId is string => objectId !== undefined),
+          remaining,
+        };
       },
     });
   }

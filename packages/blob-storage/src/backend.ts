@@ -43,6 +43,8 @@ export type BlobBackend = {
   ): Promise<ResultType<ReadableStream<Uint8Array> | null, BlobAdapterFailure>>;
   readMetadata(contentKey: string): Promise<ResultType<string | null, BlobAdapterFailure>>;
   deleteKeys(keys: readonly string[]): Promise<ResultType<number, BlobAdapterFailure>>;
+  // Pages advance past retained expiry entries and wrap after each complete scan,
+  // so an interrupted producer cannot starve later objects of maintenance.
   listExpiredReservationIds(
     now: number,
     limit: number,

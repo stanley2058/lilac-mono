@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +8,8 @@ import {
   type BlobStore,
 } from "@stanley2058/lilac-blob-storage";
 import { Result } from "better-result";
+import { MemoryBlobBackend } from "../../../../packages/blob-storage/src/memory-backend";
+import { SupervisedBlobStore } from "../../../../packages/blob-storage/src/store";
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 import { encodeWorkflowValueArtifact } from "../../src/workflow/workflow-artifact-persistence-codec";
 import {
@@ -98,6 +100,62 @@ describe("workflow artifact publication recovery", () => {
     expect((await stores.blobStore.maintain({ now: deadline + 1 })).unwrap().deleted).toBe(1);
     expect((await maintainWorkflowArtifactPublications(stores)).unwrap().inspected).toBe(0);
     expect((await stores.blobStore.open(reference.blobRef)).isErr()).toBe(true);
+  });
+
+  it("keeps a canonical artifact when an adopter wins against concurrent deadline recovery", async () => {
+    const backend = new MemoryBlobBackend();
+    const blobStore = new SupervisedBlobStore(backend);
+    const workflowStore = new DurableWorkflowStore(":memory:");
+    const stores = { blobStore, workflowStore };
+    openStores.add(stores);
+    const deadline = Date.now() + 60_000;
+    const reference = await stage(blobStore, deadline);
+    workflowStore.beginWorkflowArtifactPublication(reference, 10).unwrap();
+
+    const adoptionStarted = Promise.withResolvers<void>();
+    const resumeAdoption = Promise.withResolvers<void>();
+    const expiryStarted = Promise.withResolvers<void>();
+    const resumeExpiry = Promise.withResolvers<void>();
+    const compareAndSwap = backend.compareAndSwapReservation.bind(backend);
+    backend.compareAndSwapReservation = async (objectId, expected, next) => {
+      if (next.includes('"state":"ready"')) {
+        adoptionStarted.resolve();
+        await resumeAdoption.promise;
+      }
+      if (next.includes('"state":"deleted"')) {
+        expiryStarted.resolve();
+        await resumeExpiry.promise;
+      }
+      return compareAndSwap(objectId, expected, next);
+    };
+    const deleteBlob = blobStore.delete.bind(blobStore);
+    blobStore.delete = async (target) => {
+      expiryStarted.resolve();
+      await resumeExpiry.promise;
+      return deleteBlob(target);
+    };
+
+    const adopter = maintainWorkflowArtifactPublications(stores);
+    await adoptionStarted.promise;
+    const now = spyOn(Date, "now").mockReturnValue(deadline + 1);
+    try {
+      const expirer = maintainWorkflowArtifactPublications(stores);
+      await expiryStarted.promise;
+      resumeAdoption.resolve();
+      expect((await adopter).unwrap().recovered).toBe(1);
+      resumeExpiry.resolve();
+      (await expirer).unwrap();
+
+      expect(workflowStore.getWorkflowArtifact(reference.artifactId).unwrap()).toEqual(reference);
+      expect(workflowStore.listWorkflowArtifactPublications().unwrap()).toEqual([]);
+      expect(
+        (await readWorkflowValueArtifact({ ...stores, reference, maxBytes: 1_024 })).unwrap(),
+      ).toEqual({ value: "recover me" });
+    } finally {
+      now.mockRestore();
+      resumeAdoption.resolve();
+      resumeExpiry.resolve();
+    }
   });
 
   it("retires an intent whose staging expired before adoption", async () => {

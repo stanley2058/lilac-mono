@@ -19,7 +19,15 @@ Core startup and the existing maintenance cycle finish retained publication inte
 upload cleanup. A failure before intent persistence leaves expiring staging data. A failure after adoption
 leaves a publication row that can establish canonical ownership or finish deleting a duplicate.
 
+Expiry or deletion of a staged upload with unfinished byte writes retains its reservation and expiry
+index. Maintenance revisits that record to remove bytes from a delayed remote write. Only a producer
+that confirms its byte writes finished can retire this cleanup ownership. Process loss or an ambiguous
+network failure can therefore leave a small cleanup record indefinitely. Expiry scans advance through
+retained records so they cannot prevent other objects from being cleaned up.
+
 Before rolling back, stop producers, finish pending workflow publication rows, and clear staged uploads.
+Retained unfinished-write records also require resolving any outstanding backend operations before
+their removal; elapsed time alone does not prove a remote write has stopped.
 Older binaries do not understand staged reservation states or the adoption decision file. Existing
 untracked durable blobs from earlier versions cannot be identified safely by this migration and are not
 deleted automatically.

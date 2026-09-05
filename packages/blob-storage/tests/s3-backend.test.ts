@@ -45,6 +45,8 @@ class FakeS3Client {
   readonly writes: Array<{ readonly key: string; readonly acl?: string }> = [];
   readonly fetches: Array<{ readonly key: string; readonly method: string }> = [];
   failExists?: Error;
+  failList?: Error;
+  maxListKeys?: number;
   ambiguousContentWrite = false;
   ambiguousKeyIncludes?: string;
   failKeyIncludesBeforeWrite?: string;
@@ -219,11 +221,21 @@ class FakeS3Client {
     };
   }
 
-  async list(input?: { readonly prefix?: string; readonly maxKeys?: number }) {
+  async list(input?: {
+    readonly prefix?: string;
+    readonly maxKeys?: number;
+    readonly startAfter?: string;
+  }) {
+    if (this.failList !== undefined) {
+      const error = this.failList;
+      this.failList = undefined;
+      throw error;
+    }
     const keys = [...this.values.keys()]
       .filter((key) => key.startsWith(input?.prefix ?? ""))
+      .filter((key) => input?.startAfter === undefined || key > input.startAfter)
       .sort();
-    const limit = input?.maxKeys ?? 1_000;
+    const limit = Math.min(input?.maxKeys ?? 1_000, this.maxListKeys ?? 1_000);
     return {
       contents: keys.slice(0, limit).map((key) => ({
         key,
@@ -882,3 +894,48 @@ test("S3 a delayed staged adopter cannot recreate a deleted reservation", async 
   expect(success(await second.readReservation(objectId))).toBeNull();
   expect(client.values.has(`tenant/blobs/${reservationDecisionKey(objectId)}`)).toBe(false);
 });
+
+for (const maxListKeys of [1, 1_000]) {
+  test(`S3 expiry pages advance past retained entries with provider page limit ${maxListKeys}`, async () => {
+    const client = new FakeS3Client();
+    client.maxListKeys = maxListKeys;
+    const adapter = backend(client);
+    const first = `b1_${"a".repeat(32)}`;
+    const second = `b1_${"b".repeat(32)}`;
+    const third = `b1_${"c".repeat(32)}`;
+    success(await adapter.initialize({ createIfMissing: true }));
+    success(await adapter.createReservation(second, '{"state":"deleted"}\n', 1));
+    success(await adapter.createReservation(third, '{"state":"deleted"}\n', 2));
+    success(await adapter.createReservation(first, '{"state":"deleted"}\n', 1));
+    for (let index = 0; index < 5; index += 1) {
+      success(
+        await adapter.createReservation(
+          `b1_${index.toString().padStart(32, "0")}`,
+          '{"state":"pending"}\n',
+          10,
+        ),
+      );
+    }
+
+    expect(success(await adapter.listExpiredReservationIds(2, 1))).toEqual({
+      ids: [first],
+      remaining: true,
+    });
+    client.failList = new Error("controlled list failure");
+    expect(failure(await adapter.listExpiredReservationIds(2, 1))).toBeInstanceOf(
+      BlobAdapterFailure,
+    );
+    expect(success(await adapter.listExpiredReservationIds(2, 1))).toEqual({
+      ids: [second],
+      remaining: true,
+    });
+    expect(success(await adapter.listExpiredReservationIds(2, 1))).toEqual({
+      ids: [third],
+      remaining: false,
+    });
+    expect(success(await adapter.listExpiredReservationIds(2, 1))).toEqual({
+      ids: [first],
+      remaining: true,
+    });
+  });
+}

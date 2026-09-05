@@ -112,9 +112,14 @@ export class ControlledS3Client {
     };
   }
 
-  async list(input?: { readonly prefix?: string; readonly maxKeys?: number }) {
+  async list(input?: {
+    readonly prefix?: string;
+    readonly maxKeys?: number;
+    readonly startAfter?: string;
+  }) {
     const keys = [...this.values.keys()]
       .filter((key) => key.startsWith(input?.prefix ?? ""))
+      .filter((key) => input?.startAfter === undefined || key > input.startAfter)
       .sort();
     const limit = input?.maxKeys ?? 1_000;
     return {

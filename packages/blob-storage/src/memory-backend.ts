@@ -15,6 +15,7 @@ import type { BlobAdapterFailure } from "./errors";
 export class MemoryBlobBackend implements BlobBackend {
   readonly kind = "memory" as const;
   readonly #values = new Map<string, Uint8Array>();
+  #expiryCursor?: string;
 
   async initialize(): Promise<Result<void, BlobAdapterFailure>> {
     return Result.ok(undefined);
@@ -146,15 +147,19 @@ export class MemoryBlobBackend implements BlobBackend {
   ): Promise<
     Result<{ readonly ids: readonly string[]; readonly remaining: boolean }, BlobAdapterFailure>
   > {
-    const ids = [...this.#values.keys()]
+    const keys = [...this.#values.keys()]
       .filter((key) => key.startsWith("expiry/"))
+      .filter((key) => this.#expiryCursor === undefined || key > this.#expiryCursor)
       .sort()
-      .filter((key) => Number(key.split("/")[1]) <= now)
-      .map((key) => key.split("/")[2])
-      .filter((objectId): objectId is string => objectId !== undefined);
+      .filter((key) => Number(key.split("/")[1]) <= now);
+    const page = keys.slice(0, limit);
+    const remaining = keys.length > limit;
+    this.#expiryCursor = remaining ? page.at(-1) : undefined;
     return Result.ok({
-      ids: ids.slice(0, limit),
-      remaining: ids.length > limit,
+      ids: page
+        .map((key) => key.split("/")[2])
+        .filter((objectId): objectId is string => objectId !== undefined),
+      remaining,
     });
   }
 }

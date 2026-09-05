@@ -1,8 +1,8 @@
 # Recoverable workflow artifact publication
 
-Decision requested for ARCH-11. The current BlobStore starts durable storage before callers receive an upload handle. Saving that returned handle cannot close the crash window.
+Approved by the user on September 5, 2026 for ARCH-11. The previous BlobStore started durable storage before callers received an upload handle. Saving that returned handle could not close the crash window.
 
-## Proposed change
+## Approved change
 
 Add a staged-upload lifecycle inside BlobStore. A staged upload writes bytes with their final immutable content identity, but remains unavailable to ordinary reads until adoption. A finite staging deadline lets existing blob maintenance remove uploads that never acquired a workflow owner. Adoption atomically makes that exact staged object durable. It cannot recreate a deleted object or overwrite an expiry decision.
 
@@ -24,6 +24,18 @@ Existing BlobHandleV1 and BlobRefV1 wire formats, normal uploads, and existing a
 A rollback must first finish pending publication rows and clear staged uploads. Older binaries do not understand the new staged reservation state. The migration notes will state that limit.
 
 No new dependency or configuration option is proposed. The staging deadline is an implementation constant. Recovery runs through existing Core maintenance and before workflow producers start.
+
+## Review refinements
+
+An expired adoption attempt must establish the shared terminal expiry decision before returning absence.
+If concurrent adoption wins that decision, recovery uses the adopted reference instead of deleting it.
+
+Expiry cannot prove that a remote byte write has stopped. A staged upload deleted while writes remain
+unfinished retains its reservation and expiry index. Maintenance repeatedly removes any late bytes.
+Only confirmed byte-write completion permits retiring this cleanup ownership; a timeout or process loss
+does not. Interrupted producers can leave a small cleanup record indefinitely. Backend expiry scans
+advance through retained records and wrap after a complete pass so these records cannot starve later
+uploads. This uses the approved reservation lifecycle and existing maintenance.
 
 ## Verification
 

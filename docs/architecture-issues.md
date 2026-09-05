@@ -32,4 +32,15 @@ The audit's documented non-goals remain unchanged. A required new stored contrac
 
 ARCH-11 storage design was explicitly approved by the user on September 5, 2026: [staged publication design](architecture-blob-publication-design.md).
 
-All thirteen active issues have regression coverage and pass the full repository check. The final branch review verifies Standards and Spec independently against `main`; Mini issues remain deferred.
+All thirteen active issues have regression coverage. The six implementation commits each passed the full repository check before commit. Mini issues remain deferred.
+
+## Branch review
+
+The first independent review against `main` found one Standards blocker and three Spec blockers:
+
+- Standards, ARCH-04: a cancellation Panic could replace the original consumer Panic and skip reader release.
+- Spec, ARCH-01: limiting running claims before filtering expiry could permanently skip an older crashed run.
+- Spec, ARCH-11: expired adoption could report absence without winning the expiry fence, allowing cleanup to delete a concurrently registered canonical blob.
+- Spec, ARCH-11: a remote content copy could finish after cleanup removed its reservation and expiry index, leaving bytes that maintenance could no longer find.
+
+Each finding requires a regression and a repair before the final independent recheck.

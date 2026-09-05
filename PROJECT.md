@@ -196,6 +196,8 @@ ownership, quota, encryption, and deletion policy; the blob module has no cross-
 Workflow artifacts first complete an expiring staged upload, persist publication ownership, then adopt
 that exact object as durable and register its canonical reference. Startup and existing maintenance
 reconcile publication intents and retry duplicate cleanup. Staged bytes are not readable before adoption.
+Expired unfinished uploads retain cleanup ownership until byte-write completion is confirmed. Existing
+maintenance revisits these records to delete late writes and advances past them to service other objects.
 At runtime, only the Core composition root constructs and closes the store. The offline migration task
 owns and closes its separate store. Providers and surfaces open references through registered
 materialization modules immediately before use.

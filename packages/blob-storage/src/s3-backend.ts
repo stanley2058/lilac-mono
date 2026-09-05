@@ -43,6 +43,7 @@ export class S3BlobBackend implements BlobBackend {
   readonly #accessKeyId: string;
   readonly #secretAccessKey: string;
   readonly #sessionToken?: string;
+  #expiryCursor?: string;
 
   constructor(options: S3BackendOptions) {
     this.#prefix = normalizePrefix(options.prefix);
@@ -365,23 +366,43 @@ export class S3BlobBackend implements BlobBackend {
       adapter: this.kind,
       operation: "list expired upload reservations",
       run: async () => {
-        const requested = Math.min(1_000, limit + 1);
-        const response = await this.#client.list({
-          prefix: this.#key("expiry/"),
-          maxKeys: requested,
-        });
-        const prefixLength = this.#key("expiry/").length;
-        const ids = (response.contents ?? [])
-          .map(({ key }) => key.slice(prefixLength))
-          .filter((key) => {
-            const [partition] = key.split("/");
-            return partition !== undefined && Number(partition) <= now;
-          })
-          .map((key) => key.split("/")[1])
-          .filter((objectId): objectId is string => objectId !== undefined);
+        // Reserve one S3 list slot to distinguish another expired item from a future-only tail.
+        const pageLimit = Math.min(999, limit);
+        const prefix = this.#key("expiry/");
+        const eligible: string[] = [];
+        let startAfter = this.#expiryCursor;
+        while (eligible.length <= pageLimit) {
+          const response = await this.#client.list({
+            prefix,
+            maxKeys: pageLimit + 1 - eligible.length,
+            startAfter,
+          });
+          const contents = response.contents ?? [];
+          if (contents.length === 0) break;
+          let reachedFuture = false;
+          for (const { key } of contents) {
+            const [partition] = key.slice(prefix.length).split("/");
+            if (partition === undefined || !(Number(partition) <= now)) {
+              reachedFuture = true;
+              break;
+            }
+            eligible.push(key);
+          }
+          if (reachedFuture || response.isTruncated !== true) break;
+          const next = contents.at(-1)?.key;
+          if (next === undefined || (startAfter !== undefined && next <= startAfter)) {
+            signalBlobAdapterFailure("S3 expiry listing did not advance");
+          }
+          startAfter = next;
+        }
+        const page = eligible.slice(0, pageLimit);
+        const remaining = eligible.length > pageLimit;
+        this.#expiryCursor = remaining ? page.at(-1) : undefined;
         return {
-          ids: ids.slice(0, limit),
-          remaining: response.isTruncated === true || ids.length > limit,
+          ids: page
+            .map((key) => key.slice(prefix.length).split("/")[1])
+            .filter((objectId): objectId is string => objectId !== undefined),
+          remaining,
         };
       },
     });
