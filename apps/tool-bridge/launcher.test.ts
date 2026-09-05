@@ -70,6 +70,7 @@ function stopWorker(worker: WorkerHealth | undefined): void {
 }
 
 describe("resident tools worker", () => {
+  // Cold Go builds on CI compile the standard library and can exceed Bun's default hook timeout.
   beforeAll(async () => {
     nativeFixtureRoot = await fs.mkdtemp(path.join(tmpdir(), "lilac-native-tools-test-"));
     nativeLauncherPath = path.join(nativeFixtureRoot, "tools");
@@ -97,7 +98,7 @@ describe("resident tools worker", () => {
       `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(LAUNCHER_ENTRY)} "$@"\n`,
       { mode: 0o755 },
     );
-  });
+  }, 120_000);
 
   afterAll(async () => {
     await fs.rm(nativeFixtureRoot, { recursive: true, force: true });
