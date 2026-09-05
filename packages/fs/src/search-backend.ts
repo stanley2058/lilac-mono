@@ -573,7 +573,6 @@ function fdGlobArgs(params: {
     "--glob",
     "--full-path",
     "--print0",
-    "--strip-cwd-prefix=always",
     "--color",
     "never",
     "--base-directory",
