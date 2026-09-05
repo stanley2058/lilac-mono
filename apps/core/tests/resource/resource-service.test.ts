@@ -346,6 +346,73 @@ describe("CoreResourceService", () => {
     success(await resources.blobStore.close({ deadlineAtMs: Date.now() + 5_000 }));
   });
 
+  test("bounds origin downloads and retries a transport failure on a fresh connection", async () => {
+    const bytes = new TextEncoder().encode("retried resource");
+    const requests: BunFetchRequestInit[] = [];
+    const resources = await fixture({
+      bytes,
+      filename: "retried.txt",
+      declaredMediaType: "text/plain",
+      fetch: async (_url, init) => {
+        requests.push(init);
+        if (requests.length === 1) throw new Error("stale pooled connection");
+        return new Response(bytes);
+      },
+    });
+
+    const read = success(
+      await resources.service.open(resources.descriptor.uri, {
+        maxBytes: 100,
+        expected: "text",
+      }),
+    );
+
+    expect(success(await consumeVerifiedResourceRead(read))).toEqual(bytes);
+    expect(requests).toHaveLength(2);
+    expect(requests.map(({ timeout }) => timeout)).toEqual([15_000, 15_000]);
+    expect(requests[0]?.keepalive).toBeUndefined();
+    expect(requests[1]?.keepalive).toBe(false);
+    expect(requests.every(({ signal }) => signal instanceof AbortSignal)).toBe(true);
+    expect(resources.uploadCount()).toBe(1);
+
+    await closeFixture(resources.service, resources.blobStore);
+  });
+
+  test("retries a failed response body on a fresh connection", async () => {
+    const bytes = new TextEncoder().encode("retried stream");
+    const requests: BunFetchRequestInit[] = [];
+    const resources = await fixture({
+      bytes,
+      filename: "retried.txt",
+      declaredMediaType: "text/plain",
+      fetch: async (_url, init) => {
+        requests.push(init);
+        if (requests.length > 1) return new Response(bytes);
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.error(new Error("stale pooled response body"));
+            },
+          }),
+        );
+      },
+    });
+
+    const read = success(
+      await resources.service.open(resources.descriptor.uri, {
+        maxBytes: 100,
+        expected: "text",
+      }),
+    );
+
+    expect(success(await consumeVerifiedResourceRead(read))).toEqual(bytes);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.keepalive).toBe(false);
+    expect(resources.uploadCount()).toBe(2);
+
+    await closeFixture(resources.service, resources.blobStore);
+  });
+
   test("releases a registration reservation after observing durable retention", async () => {
     let now = 10_000;
     const resources = await fixture({

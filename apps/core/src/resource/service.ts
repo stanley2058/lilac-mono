@@ -7,6 +7,7 @@ import {
   BlobObjectAbsent,
   BlobObjectExpired,
   BlobReadCancelled,
+  BlobUploadFailed,
   type BlobRead,
   type BlobReadError,
   type BlobReadTerminalError,
@@ -108,7 +109,7 @@ export type ResourceServiceLogger = {
   error(message: string, context: Readonly<Record<string, unknown>>): void;
 };
 
-export type ResourceFetch = (url: URL, init: RequestInit) => Promise<Response>;
+export type ResourceFetch = (url: URL, init: BunFetchRequestInit) => Promise<Response>;
 
 export type ResourceServiceDependencies = {
   readonly store: ResourceStore;
@@ -162,8 +163,24 @@ type ResourceFileOpenFailure = ResourceCapturedFailure & {
   readonly kind: "already_exists" | "io";
 };
 
+type ResourceOriginDownloadDecision =
+  | { readonly kind: "blob"; readonly blob: BlobRefV1 }
+  | { readonly kind: "error"; readonly error: ResourceAccessError }
+  | { readonly kind: "panic"; readonly panic: Panic };
+
+type ResourceOriginDownloadAttemptDecision =
+  | ResourceOriginDownloadDecision
+  | {
+      readonly kind: "retry";
+      readonly phase: "fetch" | "stream";
+      readonly terminalError: ResourceAccessError;
+    };
+
 const RESOURCE_ID_COLLISION_ATTEMPTS = 8;
 const RESOURCE_REGISTRATION_RESERVATION_MS = 60_000;
+const RESOURCE_ORIGIN_DOWNLOAD_ATTEMPTS = 2;
+const RESOURCE_ORIGIN_IDLE_TIMEOUT_MS = 15_000;
+const RESOURCE_ORIGIN_ATTEMPT_TIMEOUT_MS = 5 * 60_000;
 
 function normalizeMediaType(value: string | undefined): string | undefined {
   const normalized = value?.split(";", 1)[0]?.trim().toLowerCase();
@@ -993,128 +1010,12 @@ export class CoreResourceService implements ResourceRegistry, ResourceAccess {
       err: (error) => ({ kind: "error", error }),
     });
     if (originDecision.kind === "error") return Result.err(originDecision.error);
-    const fetched = await Result.tryPromise({
-      try: () =>
-        this.#fetch(originDecision.origin.url, {
-          redirect: "follow",
-          signal: active.abortController.signal,
-        }),
-      catch: captureResourceFailure,
-    });
-    const responseDecision = fetched.match<
-      | { readonly kind: "response"; readonly response: Response }
-      | { readonly kind: "error"; readonly failure: ResourceCapturedFailure }
-    >({
-      ok: (response) => ({ kind: "response", response }),
-      err: (failure) => ({ kind: "error", failure }),
-    });
-    if (responseDecision.kind === "error") {
-      if (Panic.is(responseDecision.failure.cause)) {
-        return adaptToolResultToHost(Result.err(responseDecision.failure.cause));
-      }
-      return Result.err(
-        new ResourceOriginUnavailable({
-          uri,
-          retryable: true,
-          message: "Resource origin download failed",
-        }),
-      );
+    const downloaded = await this.#downloadOrigin(active, originDecision.origin.url, uri);
+    if (downloaded.kind === "error") return Result.err(downloaded.error);
+    if (downloaded.kind === "panic") {
+      return adaptToolResultToHost(Result.err(downloaded.panic));
     }
-    const response = responseDecision.response;
-    if (!response.ok || response.body === null) {
-      await response.body?.cancel();
-      return Result.err(
-        new ResourceOriginUnavailable({
-          uri,
-          retryable: response.status === 408 || response.status === 429 || response.status >= 500,
-          message: "Resource origin did not return readable bytes",
-        }),
-      );
-    }
-    const contentLengthValue = response.headers.get("content-length");
-    const contentLength =
-      contentLengthValue !== null && /^\d+$/u.test(contentLengthValue)
-        ? Number(contentLengthValue)
-        : undefined;
-    if (contentLength !== undefined) {
-      active.responseByteLength = contentLength;
-      const responseSizeFailure = this.#rejectOversizedParticipants(
-        active,
-        contentLength,
-        "response",
-      );
-      if (active.participants.size === 0 && responseSizeFailure !== null) {
-        await response.body.cancel();
-        return Result.err(responseSizeFailure);
-      }
-    }
-
-    let streamFailure: ResourceTooLarge | null = null;
-    const sourceReader = response.body.getReader();
-    const limitedSource = new ReadableStream<Uint8Array>({
-      pull: async (controller) => {
-        const chunk = await sourceReader.read();
-        if (chunk.done) {
-          controller.close();
-          return;
-        }
-        active.observedBytes += chunk.value.byteLength;
-        streamFailure = this.#rejectOversizedParticipants(active, active.observedBytes, "observed");
-        if (active.participants.size === 0) {
-          controller.error(streamFailure);
-          return;
-        }
-        controller.enqueue(chunk.value);
-      },
-      cancel: async (reason) => sourceReader.cancel(reason),
-    });
-    const started = await this.#blobStore.startUpload({
-      source: limitedSource,
-      retention: { kind: "durable" },
-    });
-    const uploadDecision = started.match<
-      | {
-          readonly kind: "upload";
-          readonly upload: Awaited<ReturnType<BlobStore["startUpload"]>> extends ResultType<
-            infer T,
-            unknown
-          >
-            ? T
-            : never;
-        }
-      | { readonly kind: "error" }
-    >({
-      ok: (upload) => ({ kind: "upload", upload }),
-      err: () => ({ kind: "error" }),
-    });
-    if (uploadDecision.kind === "error") {
-      await limitedSource.cancel();
-      return Result.err(storeAccessFailure(uri, "cache upload"));
-    }
-    const completed = await uploadDecision.upload.completion;
-    const completionDecision = completed.match<
-      { readonly kind: "blob"; readonly blob: BlobRefV1 } | { readonly kind: "error" }
-    >({
-      ok: (blob) => ({ kind: "blob", blob }),
-      err: () => ({ kind: "error" }),
-    });
-    if (completionDecision.kind === "error") {
-      if (streamFailure) return Result.err(streamFailure);
-      return Result.err(storeAccessFailure(uri, "cache upload"));
-    }
-    const blob = completionDecision.blob;
-    if (blob.byteLength !== active.observedBytes) {
-      const removed = await this.#blobStore.delete(blob);
-      const removalFailed = removed.match({ ok: () => false, err: () => true });
-      if (removalFailed) return Result.err(storeAccessFailure(uri, "invalid cache cleanup"));
-      return Result.err(
-        new ResourceIntegrityFailure({
-          uri,
-          reason: "Uploaded byte length does not match streamed bytes",
-          message: "Resource cache verification failed",
-        }),
-      );
-    }
+    const blob = downloaded.blob;
     const next = { blob, cachedAt: this.#now() };
     if (active.participants.size === 0) {
       const removed = await this.#blobStore.delete(blob);
@@ -1162,6 +1063,223 @@ export class CoreResourceService implements ResourceRegistry, ResourceAccess {
           }),
         )
       : Result.ok(winning);
+  }
+
+  async #downloadOrigin(
+    active: ActiveResourceFill,
+    url: URL,
+    uri: ResourceUri,
+  ): Promise<ResourceOriginDownloadDecision> {
+    for (let attempt = 0; attempt < RESOURCE_ORIGIN_DOWNLOAD_ATTEMPTS; attempt += 1) {
+      active.observedBytes = 0;
+      delete active.responseByteLength;
+      const decision = await this.#downloadOriginAttempt(active, url, uri, attempt > 0);
+      if (decision.kind !== "retry") return decision;
+      if (this.#shouldRetryOriginDownload(active, attempt, uri, decision.phase)) continue;
+      return { kind: "error", error: decision.terminalError };
+    }
+    return {
+      kind: "error",
+      error: new ResourceOriginUnavailable({
+        uri,
+        retryable: true,
+        message: "Resource origin download failed",
+      }),
+    };
+  }
+
+  #shouldRetryOriginDownload(
+    active: ActiveResourceFill,
+    attempt: number,
+    uri: ResourceUri,
+    phase: "fetch" | "stream",
+  ): boolean {
+    if (attempt + 1 >= RESOURCE_ORIGIN_DOWNLOAD_ATTEMPTS) return false;
+    if (active.participants.size === 0 || active.abortController.signal.aborted) return false;
+    this.#logger?.debug("resource origin download retrying", { uri, phase });
+    return true;
+  }
+
+  async #downloadOriginAttempt(
+    active: ActiveResourceFill,
+    url: URL,
+    uri: ResourceUri,
+    freshConnection: boolean,
+  ): Promise<ResourceOriginDownloadAttemptDecision> {
+    const signal = AbortSignal.any([
+      active.abortController.signal,
+      AbortSignal.timeout(RESOURCE_ORIGIN_ATTEMPT_TIMEOUT_MS),
+    ]);
+    const fetched = await Result.tryPromise({
+      try: () =>
+        this.#fetch(url, {
+          redirect: "follow",
+          signal,
+          timeout: RESOURCE_ORIGIN_IDLE_TIMEOUT_MS,
+          ...(freshConnection ? { keepalive: false } : {}),
+        }),
+      catch: captureResourceFailure,
+    });
+    const responseDecision = fetched.match<
+      | { readonly kind: "response"; readonly response: Response }
+      | { readonly kind: "error"; readonly failure: ResourceCapturedFailure }
+    >({
+      ok: (response) => ({ kind: "response", response }),
+      err: (failure) => ({ kind: "error", failure }),
+    });
+    if (responseDecision.kind === "error") {
+      return this.#originFetchFailureDecision(responseDecision.failure, uri);
+    }
+    const response = responseDecision.response;
+    if (!response.ok || response.body === null) {
+      return this.#rejectUnreadableOriginResponse(response, uri);
+    }
+    const responseSizeFailure = await this.#applyOriginResponseSize(active, response);
+    if (responseSizeFailure !== null) return { kind: "error", error: responseSizeFailure };
+
+    let streamFailure: ResourceTooLarge | null = null;
+    const sourceReader = response.body.getReader();
+    const limitedSource = new ReadableStream<Uint8Array>({
+      pull: async (controller) => {
+        const chunk = await sourceReader.read();
+        if (chunk.done) {
+          controller.close();
+          return;
+        }
+        active.observedBytes += chunk.value.byteLength;
+        streamFailure = this.#rejectOversizedParticipants(active, active.observedBytes, "observed");
+        if (active.participants.size === 0) {
+          controller.error(streamFailure);
+          return;
+        }
+        controller.enqueue(chunk.value);
+      },
+      cancel: async (reason) => sourceReader.cancel(reason),
+    });
+    const started = await this.#blobStore.startUpload({
+      source: limitedSource,
+      retention: { kind: "durable" },
+    });
+    const uploadDecision = started.match<
+      | {
+          readonly kind: "upload";
+          readonly upload: Awaited<ReturnType<BlobStore["startUpload"]>> extends ResultType<
+            infer T,
+            unknown
+          >
+            ? T
+            : never;
+        }
+      | { readonly kind: "error" }
+    >({
+      ok: (upload) => ({ kind: "upload", upload }),
+      err: () => ({ kind: "error" }),
+    });
+    if (uploadDecision.kind === "error") {
+      return this.#rejectOriginUploadStart(limitedSource, uri);
+    }
+    const completed = await uploadDecision.upload.completion;
+    const completionDecision = completed.match<
+      | { readonly kind: "blob"; readonly blob: BlobRefV1 }
+      | { readonly kind: "error"; readonly sourceFailure: boolean }
+    >({
+      ok: (blob) => ({ kind: "blob", blob }),
+      err: (error) => ({
+        kind: "error",
+        sourceFailure: error instanceof BlobUploadFailed && error.reason === "source",
+      }),
+    });
+    if (completionDecision.kind === "error" && streamFailure !== null) {
+      return { kind: "error", error: streamFailure };
+    }
+    if (completionDecision.kind === "error" && completionDecision.sourceFailure) {
+      return {
+        kind: "retry",
+        phase: "stream",
+        terminalError: storeAccessFailure(uri, "cache upload"),
+      };
+    }
+    if (completionDecision.kind === "error") {
+      return { kind: "error", error: storeAccessFailure(uri, "cache upload") };
+    }
+    const blob = completionDecision.blob;
+    if (blob.byteLength === active.observedBytes) return { kind: "blob", blob };
+    return this.#rejectMismatchedOriginBlob(blob, uri);
+  }
+
+  #originFetchFailureDecision(
+    failure: ResourceCapturedFailure,
+    uri: ResourceUri,
+  ): ResourceOriginDownloadAttemptDecision {
+    if (Panic.is(failure.cause)) return { kind: "panic", panic: failure.cause };
+    return {
+      kind: "retry",
+      phase: "fetch",
+      terminalError: new ResourceOriginUnavailable({
+        uri,
+        retryable: true,
+        message: "Resource origin download failed",
+      }),
+    };
+  }
+
+  async #rejectUnreadableOriginResponse(
+    response: Response,
+    uri: ResourceUri,
+  ): Promise<ResourceOriginDownloadDecision> {
+    await response.body?.cancel();
+    return {
+      kind: "error",
+      error: new ResourceOriginUnavailable({
+        uri,
+        retryable: response.status === 408 || response.status === 429 || response.status >= 500,
+        message: "Resource origin did not return readable bytes",
+      }),
+    };
+  }
+
+  async #applyOriginResponseSize(
+    active: ActiveResourceFill,
+    response: Response,
+  ): Promise<ResourceTooLarge | null> {
+    const contentLengthValue = response.headers.get("content-length");
+    const contentLength =
+      contentLengthValue !== null && /^\d+$/u.test(contentLengthValue)
+        ? Number(contentLengthValue)
+        : undefined;
+    if (contentLength === undefined) return null;
+    active.responseByteLength = contentLength;
+    const failure = this.#rejectOversizedParticipants(active, contentLength, "response");
+    if (active.participants.size > 0 || failure === null) return null;
+    await response.body?.cancel();
+    return failure;
+  }
+
+  async #rejectOriginUploadStart(
+    source: ReadableStream<Uint8Array>,
+    uri: ResourceUri,
+  ): Promise<ResourceOriginDownloadDecision> {
+    await source.cancel();
+    return { kind: "error", error: storeAccessFailure(uri, "cache upload") };
+  }
+
+  async #rejectMismatchedOriginBlob(
+    blob: BlobRefV1,
+    uri: ResourceUri,
+  ): Promise<ResourceOriginDownloadDecision> {
+    const removed = await this.#blobStore.delete(blob);
+    const removalFailed = removed.match({ ok: () => false, err: () => true });
+    if (removalFailed) {
+      return { kind: "error", error: storeAccessFailure(uri, "invalid cache cleanup") };
+    }
+    return {
+      kind: "error",
+      error: new ResourceIntegrityFailure({
+        uri,
+        reason: "Uploaded byte length does not match streamed bytes",
+        message: "Resource cache verification failed",
+      }),
+    };
   }
 
   async #classifyOpened(
