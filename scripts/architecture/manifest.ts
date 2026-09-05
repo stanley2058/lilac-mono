@@ -3235,6 +3235,8 @@ const WAVE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[]
     "apps/acp-controller",
     [
       ["external-adapters.ts", "captureExternal"],
+      ["session-index-lock.ts", "acquireSessionIndexLock"],
+      ["session-index-lock.ts", "waitForLock"],
       ...[
         "decodeRunRecord",
         "decodeRunCancellation",
@@ -3469,6 +3471,19 @@ const CORE_TRANSCRIPT_PERSISTED_CONSUMERS = [
     ),
   }),
 );
+
+const CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER = {
+  identity: {
+    module: "src/transcript/claude-attempt-lifecycle.ts",
+    exportName: "CoreClaudeAttemptLifecycle.reserve",
+  },
+  codecs: [
+    {
+      module: "src/transcript/transcript-persistence-codec.ts",
+      exportName: "decodeTranscriptRow",
+    },
+  ],
+} as const satisfies PersistedStoreConsumerRegistration;
 
 const CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC = {
   identity: {
@@ -4344,6 +4359,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                   { include: "src/conversation/thread-store.ts" },
                   { include: "src/transcript/transcript-persistence-codec.ts" },
                   { include: "src/transcript/transcript-store.ts" },
+                  { include: CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER.identity.module },
                   { include: "src/surface/bridge/agent-run-journal/index.ts" },
                   { include: "src/migration/frozen-graceful-restart-store.ts" },
                   {
@@ -4523,6 +4539,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                 ? [
                     ...CORE_THREAD_PERSISTED_CONSUMERS,
                     ...CORE_TRANSCRIPT_PERSISTED_CONSUMERS,
+                    CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER,
                     CORE_RESOURCE_PERSISTED_CONSUMER,
                     CORE_AGENT_RUN_JOURNAL_PERSISTED_CONSUMER,
                     CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER,
@@ -5344,6 +5361,11 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             ...CORE_THREAD_PERSISTED_CONSUMERS.map(({ identity }) => identity),
             ...CORE_TRANSCRIPT_PERSISTED_CODECS.map(({ identity }) => identity),
             ...CORE_TRANSCRIPT_PERSISTED_CONSUMERS.map(({ identity }) => identity),
+            CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER.identity,
+            {
+              module: "src/transcript/claude-attempt-lifecycle.ts",
+              exportName: "CoreClaudeAttemptLifecycle.recordOutcome",
+            },
             CORE_RESOURCE_PERSISTED_CODEC.identity,
             CORE_RESOURCE_PERSISTED_CONSUMER.identity,
             CORE_AGENT_RUN_OPENED_PERSISTED_CODEC.identity,

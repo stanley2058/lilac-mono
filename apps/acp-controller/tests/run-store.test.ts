@@ -409,10 +409,89 @@ describe("run store adapters", () => {
     }
   });
 
+  it("ignores orphaned legacy lock directories", async () => {
+    const lockPath = path.join(tempRoot, "lilac-acp-controller", "sessions", "index.lock");
+    await fs.mkdir(lockPath, { recursive: true });
+    expect((await upsertSessionIndexEntries([])).status).toBe("ok");
+  });
+
+  it("releases a killed process's lock without deleting its directory", async () => {
+    const directory = path.join(tempRoot, "lilac-acp-controller", "sessions");
+    await fs.mkdir(directory, { recursive: true });
+    const lockModule = new URL("../session-index-lock.ts", import.meta.url).href;
+    const child = Bun.spawn({
+      cmd: [
+        process.execPath,
+        "-e",
+        `
+        import { acquireSessionIndexLock } from ${JSON.stringify(lockModule)};
+        const acquired = await acquireSessionIndexLock(${JSON.stringify(directory)});
+        if (acquired.status === "error") process.exit(1);
+        process.stdout.write("locked\\n");
+        await Bun.stdin.text();
+        await acquired.value.close();
+      `,
+      ],
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    try {
+      const reader = child.stdout.getReader();
+      const ready = await reader.read();
+      expect(new TextDecoder().decode(ready.value)).toBe("locked\n");
+      reader.releaseLock();
+      child.kill("SIGKILL");
+      await child.exited;
+      expect((await upsertSessionIndexEntries([])).status).toBe("ok");
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+  });
+
+  it("serializes cross-process index updates without losing sessions", async () => {
+    const storeModule = new URL("../run-store.ts", import.meta.url).href;
+    const children = Array.from({ length: 8 }, (_, owner) =>
+      Bun.spawn({
+        cmd: [
+          process.execPath,
+          "-e",
+          `
+        import { upsertSessionIndexEntries } from ${JSON.stringify(storeModule)};
+        for (let index = 0; index < 12; index += 1) {
+          const sessionId = ${JSON.stringify(String(owner))} + ":" + index;
+          const saved = await upsertSessionIndexEntries([{
+            sessionRef: "opencode::" + sessionId,
+            harnessId: "opencode",
+            remoteSessionId: sessionId,
+            cwd: "/repo",
+            capabilities: [],
+            lastSeenAt: index,
+          }]);
+          if (saved.status === "error") process.exit(1);
+        }
+      `,
+        ],
+        env: { ...process.env, XDG_STATE_HOME: tempRoot },
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
+    );
+    try {
+      expect(await Promise.all(children.map((child) => child.exited))).toEqual(Array(8).fill(0));
+      const loaded = await loadSessionIndex();
+      expect(loaded.status).toBe("ok");
+      if (loaded.status === "ok") expect(loaded.value.value.sessions).toHaveLength(96);
+    } finally {
+      for (const child of children) child.kill();
+      await Promise.all(children.map((child) => child.exited));
+    }
+  });
+
   it("releases the session-index lock before rethrowing the exact work Panic", async () => {
     const sessionsDir = path.join(tempRoot, "lilac-acp-controller", "sessions");
     const indexPath = path.join(sessionsDir, "index.json");
-    const lockPath = path.join(sessionsDir, "index.lock");
     await fs.mkdir(sessionsDir, { recursive: true });
     await fs.writeFile(indexPath, '{"version":1,"sessions":[]}', "utf8");
     const panic = new Panic({ message: "session index work invariant" });
@@ -440,15 +519,12 @@ describe("run store adapters", () => {
     }
 
     expect(observed).toBe(panic);
-    const lock = await captureExternal("read-session-index", () => fs.stat(lockPath));
-    expect(lock.status).toBe("error");
-    if (lock.status === "error") expect(lock.error.code).toBe("ENOENT");
+    expect((await upsertSessionIndexEntries([])).status).toBe("ok");
   });
 
-  it("retains cleanup failure while preserving the original work Panic", async () => {
+  it("releases the lock despite directory permission changes while preserving the work Panic", async () => {
     const sessionsDir = path.join(tempRoot, "lilac-acp-controller", "sessions");
     const indexPath = path.join(sessionsDir, "index.json");
-    const lockPath = path.join(sessionsDir, "index.lock");
     await fs.mkdir(sessionsDir, { recursive: true });
     await fs.writeFile(indexPath, '{"version":1,"sessions":[]}', "utf8");
     const panic = new Panic({ message: "session index work invariant" });
@@ -482,9 +558,8 @@ describe("run store adapters", () => {
 
     expect(observed).toBe(panic);
     const cleanupFailures = acpCleanupFailuresForPanic(panic);
-    expect(cleanupFailures).toHaveLength(1);
-    expect(cleanupFailures[0]?._tag).toBe("ExternalOperationFailed");
-    await fs.rm(lockPath, { recursive: true, force: true });
+    expect(cleanupFailures).toHaveLength(0);
+    expect((await upsertSessionIndexEntries([])).status).toBe("ok");
   });
 
   it("preserves exact Panic identity at external rejection boundaries", async () => {

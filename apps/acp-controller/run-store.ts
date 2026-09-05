@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { FileHandle } from "node:fs/promises";
+import { acquireSessionIndexLock, type SessionIndexLockFailure } from "./session-index-lock.ts";
 import { watch } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -111,10 +113,6 @@ function sessionsDir(): string {
 
 function sessionIndexPath(): string {
   return path.join(sessionsDir(), "index.json");
-}
-
-function sessionIndexLockPath(): string {
-  return path.join(sessionsDir(), "index.lock");
 }
 
 function runFilePath(runId: string): string {
@@ -312,45 +310,25 @@ async function atomicWriteFile(
   return captureExternal(operation, () => fs.rename(tempPath, filePath));
 }
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function acquireSessionIndexLock(): Promise<
-  ResultType<void, ExternalOperationFailed | SessionIndexLockTimedOut>
-> {
-  const directory = await captureExternal("acquire-session-lock", () =>
-    fs.mkdir(sessionsDir(), { recursive: true }),
-  );
-  const directoryError = directory.match({ ok: () => undefined, err: (error) => error });
-  if (directoryError !== undefined) return Result.err(directoryError);
-  const lockPath = sessionIndexLockPath();
-  const deadline = Date.now() + 5_000;
-
-  while (true) {
-    const acquired = await captureExternal("acquire-session-lock", () => fs.mkdir(lockPath));
-    const acquireError = acquired.match({ ok: () => undefined, err: (error) => error });
-    if (acquireError === undefined) return Result.ok(undefined);
-    if (acquireError.code !== "EEXIST") return Result.err(acquireError);
-    if (Date.now() >= deadline) {
-      return Result.err(
-        new SessionIndexLockTimedOut({
-          message: "Timed out waiting for the session index lock.",
-        }),
-      );
-    }
-    await sleep(25);
-  }
-}
-
 async function withSessionIndexLock<T>(
   work: () => Promise<
     ResultType<T, ExternalOperationFailed | SessionIndexCodecError | SessionIndexLockTimedOut>
   >,
 ): Promise<ResultType<T, SessionStoreError>> {
-  const acquired = await acquireSessionIndexLock();
-  const acquireError = acquired.match({ ok: () => undefined, err: (error) => error });
-  if (acquireError !== undefined) return Result.err(acquireError);
+  const directory = await captureExternal("acquire-session-lock", () =>
+    fs.mkdir(sessionsDir(), { recursive: true }),
+  );
+  const directoryError = directory.match({ ok: () => undefined, err: (error) => error });
+  if (directoryError !== undefined) return Result.err(directoryError);
+  const acquired = await acquireSessionIndexLock(sessionsDir());
+  const lock = acquired.match<
+    | { readonly kind: "acquired"; readonly file: FileHandle }
+    | { readonly kind: "failed"; readonly error: SessionIndexLockFailure }
+  >({
+    ok: (file) => ({ kind: "acquired" as const, file }),
+    err: (error) => ({ kind: "failed" as const, error }),
+  });
+  if (lock.kind === "failed") return Result.err(lock.error);
 
   const attempted = await settleAcpCapturePromise(
     Result.tryPromise({
@@ -360,10 +338,7 @@ async function withSessionIndexLock<T>(
   );
   const cleanupAttempted = await settleAcpCapturePromise(
     Result.tryPromise({
-      try: () =>
-        captureExternal("remove-session-lock", () =>
-          fs.rm(sessionIndexLockPath(), { recursive: true, force: true }),
-        ),
+      try: () => captureExternal("remove-session-lock", () => lock.file.close()),
       catch: captureAcpFailure,
     }),
   );
