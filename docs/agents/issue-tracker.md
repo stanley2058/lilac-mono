@@ -1,8 +1,8 @@
 # Issue tracker
 
-This repository uses local Markdown issues for the architecture repair branch.
+This repository tracks open and deferred work in local Markdown files.
 
-- Read [architecture issues](../architecture-issues.md) for active issue IDs, acceptance criteria, and completion gates. The linked audit provides original evidence.
-- Read [Mini architecture issues](../mini-architecture-issues.md) only for Mini work. Those issues are deferred and excluded from this branch's scope.
-- For review, use the active tracker as the spec and compare `git diff main...HEAD`. Resolve ARCH issue IDs in commit messages through the active tracker.
-- Update issue status and verification evidence after checks pass. Keep the approved acceptance criteria unchanged.
+- Read [Mini architecture issues](../mini-architecture-issues.md) for deferred Mini work.
+- Read [plans and confirmed residuals](../../plan/README.md) for other outstanding work and its approval status.
+- For review, use the relevant issue's acceptance criteria as the spec. For completed work, retrieve the issue document from Git history at the reviewed commit.
+- Remove completed issues after fixes and verification are committed. Delete empty trackers and update affected links. Preserve current architecture decisions in [PROJECT.md](../../PROJECT.md) and migration guidance in [MIGRATIONS.md](../../MIGRATIONS.md).

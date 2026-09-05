@@ -28,6 +28,4 @@ promises to implement:
   failed runs after canonical messages were replaced by compaction.
 - Core tool-triggered checkpoint deletion depends on receiving the Discord gateway deletion event;
   the deletion tool does not unlink the checkpoint mapping directly.
-- Core compaction-checkpoint metadata accepts and strips unknown extra keys instead of degrading that
-  metadata to an ordinary transcript.
 - Persistent compaction checkpoints have limited end-to-end deletion and time-based cleanup coverage.

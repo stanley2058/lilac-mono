@@ -2,15 +2,13 @@
 
 All issues below are deferred by the user on September 5, 2026. They are excluded from the current branch's implementation and review acceptance criteria. Shared-package changes may still require Mini compatibility tests.
 
-Source: [original audit](architecture-audit-2026-09-05.md).
-
-| ID | Audit item | Priority | Status | Required outcome |
+| ID | Issue | Priority | Status | Required outcome |
 | --- | --- | --- | --- | --- |
-| MINI-01 | 8, HTTP rejection semantics | P2 | Deferred | Closed runtime rejection reasons map to existing HTTP statuses independently of message wording, including interrupted steering admission. |
-| MINI-02 | 9, session admission | P2 | Deferred | Runtime owns resolve/create/admit serialization and performs targeted lookup instead of listing every session per prompt. |
-| MINI-03 | 12, workspace-history interfaces | P2 | Deferred | Result methods are canonical; compatibility wrappers compose in one direction; test adapters no longer require prototype detection. |
-| MINI-04 | Follow-up, transcript follower | P2 | Deferred | Main and subagent transcript views share reconnect, cancellation, cursor/reset handling, and buffered updates. |
-| MINI-05 | Follow-up, history coordination | P2 | Deferred | Live finalization and startup recovery share capture registration, commit, and cleanup policy while retaining transaction guarantees. |
+| MINI-01 | HTTP rejection semantics | P2 | Deferred | Closed runtime rejection reasons map to existing HTTP statuses independently of message wording, including interrupted steering admission. |
+| MINI-02 | Session admission | P2 | Deferred | Runtime owns resolve/create/admit serialization and performs targeted lookup instead of listing every session per prompt. |
+| MINI-03 | Workspace-history interfaces | P2 | Deferred | Result methods are canonical; compatibility wrappers compose in one direction; test adapters no longer require prototype detection. |
+| MINI-04 | Transcript follower | P2 | Deferred | Main and subagent transcript views share reconnect, cancellation, cursor/reset handling, and buffered updates. |
+| MINI-05 | History coordination | P2 | Deferred | Live finalization and startup recovery share capture registration, commit, and cleanup policy while retaining transaction guarantees. |
 
 ## Mini derives HTTP failure categories from English messages
 
