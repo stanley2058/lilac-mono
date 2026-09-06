@@ -112,6 +112,46 @@ const host: AgentHostServices = {
 };
 
 describe("agent adapter ownership", () => {
+  test("absorbed follow-up and steering IDs commit atomically against one prepared message", () => {
+    const attempt = new AgentAttempt("first");
+    attempt.register({ ...input("follow"), intent: "follow-up" });
+    attempt.register(input("steer"));
+    attempt.reserve(["follow", "steer"]);
+    const merged = [{ role: "user", content: "follow\nsteer" }] satisfies AgentInput["messages"];
+    expect(attempt.preparedBatch(["follow", "steer"], merged).isOk()).toBe(true);
+    expect(attempt.pendingInputs.map((entry) => entry.messages)).toEqual([
+      input("follow").messages,
+      input("steer").messages,
+    ]);
+    expect(
+      attempt
+        .accept(
+          event(0, {
+            type: "history-commit",
+            inputIds: ["steer"],
+            messages: merged,
+          }),
+        )
+        .isErr(),
+    ).toBe(true);
+    expect(attempt.returnPrepared(["follow"]).isErr()).toBe(true);
+    expect(attempt.prepared(input("steer")).isErr()).toBe(true);
+    expect(attempt.messages).toEqual([]);
+    expect(
+      attempt
+        .accept(
+          event(0, {
+            type: "history-commit",
+            inputIds: ["follow", "steer"],
+            messages: merged,
+          }),
+        )
+        .isOk(),
+    ).toBe(true);
+    expect(attempt.messages).toEqual(merged);
+    expect(attempt.pendingInputs).toEqual([]);
+  });
+
   test("caller mutation cannot rewrite queued input, prepared content, or canonical history", () => {
     const attempt = new AgentAttempt("first");
     const original = {

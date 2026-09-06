@@ -51,4 +51,26 @@ Focused tests and agent typecheck passed. Full repository checks passed before r
 The standards review found no blockers. The spec review found cross-event same-intent ordering was
 not enforced. The fix rejects an out-of-order commit without changing history, ownership, or event
 sequence; regression tests cover ordered retries and steering priority over follow-ups. The spec
-re-review found no remaining Stage 1 blockers. Final repository recheck is required before commit.
+re-review found no remaining Stage 1 blockers. The final repository recheck passed. Committed as
+`e4edce09`.
+
+## Stage 2
+
+Extracted the provider-neutral executor, AI SDK execution adapter, shared tool host, and
+compatibility facade. The facade preserves canonical message-array identity because compaction uses
+it to detect concurrent history replacement. Adapter state reads return detached snapshots.
+
+The shared ownership contract now supports prepared batches: buffered follow-ups can merge into one
+steering message while every original delivery ID remains attributable to that canonical message.
+Partial commitment or return of a merged batch is invalid. The originals remain available for recovery.
+
+The extracted path passed the existing agent suite and the Core/Mini integration milestone. Core ran
+2,950 tests and Mini runtime ran 466 tests without failures. Architecture registration tests passed.
+New executor fixtures exposed uncertain submission settlement, subsequent native batch scheduling,
+merged input attribution, and tool exclusivity defects. Each was fixed and covered by regression tests.
+
+The standards review found no blockers. The spec review found that adapter state reads could mutate
+canonical history and failed startup skipped disposal. The fixes detach nested state and put startup
+inside the disposal/retirement path. Tests cover returned startup failures, Panic identity, retired host
+access, replacement execution, and nested snapshot mutation. The spec re-review found no remaining
+blockers. All 275 agent tests pass, including 14 neutral executor tests. The final `bun run check` passed.

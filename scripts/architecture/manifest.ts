@@ -1225,29 +1225,40 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "atomic-tool-execution.ts", exportName },
         category: "projection" as const,
       })),
-      ...[
-        "recoveryToolOutput",
-        "AiSdkPiAgent.executeExternalToolCall",
-        "AiSdkPiAgent.finishIdleRecovery",
-        "AiSdkPiAgent.runTurn",
-        "AiSdkPiAgent.executeExpansionChildren",
-        "extractToolCallsFromMessages",
-      ].map((exportName) => ({
-        identity: { module: "ai-sdk-pi-agent.ts", exportName },
-        category: "projection" as const,
-      })),
+      {
+        identity: { module: "agent-executor.ts", exportName: "AgentExecutor.finishIdleRecovery" },
+        category: "projection",
+      },
       ...["cloneSteeringValue", "isClonedModelMessage"].map((exportName) => ({
         identity: { module: "message-clone.ts", exportName },
         category: "projection" as const,
       })),
+      ...["AgentToolHost.executeExternalToolCall", "AgentToolHost.executeExpansionChildren"].map(
+        (exportName) => ({
+          identity: { module: "agent-tool-host.ts", exportName },
+          category: "projection" as const,
+        }),
+      ),
+      {
+        identity: { module: "adapters/ai-sdk/model-call.ts", exportName: "executeAiSdkModelCall" },
+        category: "projection",
+      },
       ...[
+        "recoveryToolOutput",
         "cloneMessage.map.<callback@1>",
         "completedAssistantPrefix.map.<callback@1>",
         "recoveryCheckpointForMessages.map.<callback@1>",
       ].map((exportName) => ({
-        identity: { module: "ai-sdk-pi-agent.ts", exportName },
+        identity: { module: "agent-runtime-support.ts", exportName },
         category: "projection" as const,
       })),
+      {
+        identity: {
+          module: "adapters/ai-sdk/support.ts",
+          exportName: "extractToolCallsFromMessages",
+        },
+        category: "projection",
+      },
       {
         identity: {
           module: "tool-call-id-normalization.ts",
@@ -2561,11 +2572,15 @@ const INTEGRATED_OPAQUE_UNKNOWN = new Map<string, readonly ReasonedSymbolExcepti
     [
       {
         identity: {
-          module: "ai-sdk-pi-agent.ts",
-          exportName: "AiSdkPiAgent.requestIdleRecovery",
+          module: "agent-executor.ts",
+          exportName: "AgentExecutor.requestIdleRecovery",
         },
         reason:
           "Carries the model provider's idle failure opaquely to the configured retry policy.",
+      },
+      {
+        identity: { module: "ai-sdk-pi-agent.ts", exportName: "AiSdkPiAgent.requestIdleRecovery" },
+        reason: "Forwards the legacy caller's opaque idle failure to the shared executor.",
       },
       {
         identity: {
@@ -3022,7 +3037,7 @@ const INTEGRATED_OPEN_PROTOCOL_ADAPTERS = new Map<string, readonly OpenProtocolA
     [
       {
         identity: {
-          module: "ai-sdk-pi-agent.ts",
+          module: "adapters/ai-sdk/support.ts",
           exportName: "projectAiSdkTextStreamPart",
         },
         externalProtocol: { package: "ai", exportName: "TextStreamPart" },
@@ -3070,7 +3085,7 @@ const INTEGRATED_OPEN_PROTOCOL_ADAPTERS = new Map<string, readonly OpenProtocolA
 ]);
 
 const OPEN_PROTOCOL_RULE_ZONES = new Map<string, readonly RuleZone[]>([
-  ["packages/agent", [{ include: "ai-sdk-pi-agent.ts" }]],
+  ["packages/agent", [{ include: "adapters/ai-sdk/support.ts" }]],
   ["apps/acp-controller", [{ include: "session-history.ts" }]],
   ["apps/mini-lilac-tui", [{ include: "src/ui-message-chunk-projection.ts" }]],
 ]);
@@ -4769,7 +4784,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
         ? ([
             {
               identity: {
-                module: "ai-sdk-pi-agent.ts",
+                module: "adapters/ai-sdk/support.ts",
                 exportName: "repairLegacyBatchInput",
               },
               category: "request",
@@ -5843,7 +5858,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "a6773ab2352689f661a30c6861fa7f8bfdcbf2ed042fd753ae80194f710e537b";
+  "c9f3741276a457eed41562762b92fc2272ee44f822403c3a60d059ffbdbb8476";
 
 export const architectureManifest = {
   version: 1,

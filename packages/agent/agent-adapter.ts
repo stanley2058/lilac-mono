@@ -110,6 +110,11 @@ export type AgentExecutionEvent = {
   readonly sequence: number;
 } & (
   | { readonly type: "output"; readonly output: AgentOutput }
+  | {
+      readonly type: "message";
+      readonly phase: "start" | "update" | "end";
+      readonly message: ModelMessage;
+    }
   | { readonly type: "turn-start"; readonly step: number }
   | {
       readonly type: "turn-end";
@@ -183,11 +188,11 @@ export interface AgentExecution {
   dispose(): Promise<ResultType<void, AgentAdapterFailure>>;
 }
 
-export interface AgentAdapter {
+export interface AgentAdapter<HOST extends AgentHostServices = AgentHostServices> {
   createExecution(context: {
     readonly attemptId: string;
     readonly messages: readonly ModelMessage[];
-    readonly host: AgentHostServices;
+    readonly host: HOST;
   }): AgentExecution;
 }
 
@@ -203,6 +208,7 @@ type OwnedInput = {
   readonly input: AgentInput;
   state: AgentInputState;
   preparedMessages: readonly ModelMessage[];
+  preparedInputIds: readonly string[];
 };
 
 function invalidState(message: string): ResultType<never, AgentAdapterFailure> {
@@ -303,6 +309,7 @@ export class AgentAttempt {
           input: { ...input, messages },
           state: "queued",
           preparedMessages: messages,
+          preparedInputIds: [input.id],
         });
       });
   }
@@ -317,6 +324,8 @@ export class AgentAttempt {
     const entry = this.inputs.get(input.id);
     if (!entry || entry.state !== "reserved")
       return invalidState("Input is not reserved for preparation");
+    if (entry.preparedInputIds.length !== 1)
+      return invalidState("Merged input must be prepared as a complete batch");
     if (input.intent !== entry.input.intent)
       return invalidState("Preparation cannot change input intent");
     if (input.messages.length === 0)
@@ -338,6 +347,34 @@ export class AgentAttempt {
   returnPrepared(inputIds: readonly string[]): ResultType<void, AgentAdapterFailure> {
     if (this.retired || this.terminal) return invalidState("Attempt is no longer active");
     return this.transition(inputIds, ["reserved"], "returned");
+  }
+
+  preparedBatch(
+    inputIds: readonly string[],
+    messages: readonly ModelMessage[],
+  ): ResultType<void, AgentAdapterFailure> {
+    if (this.retired || this.terminal) return invalidState("Attempt is no longer active");
+    if (inputIds.length === 0 || messages.length === 0)
+      return invalidState("Prepared batch must contain inputs and canonical messages");
+    const attempt = this;
+    return Result.gen(function* () {
+      const cloned = yield* Result.all(messages.map(cloneAgentMessage)).mapError(
+        (error) =>
+          new AgentAdapterFailure({
+            reason: "invalid-state",
+            message: error.message,
+            replaySafety: "safe",
+          }),
+      );
+      yield* attempt.transition(inputIds, ["reserved"], "reserved");
+      const batchIds = [...inputIds];
+      for (const entry of attempt.inputs.values()) {
+        if (!batchIds.includes(entry.input.id)) continue;
+        entry.preparedMessages = cloned;
+        entry.preparedInputIds = batchIds;
+      }
+      return Result.ok(undefined);
+    });
   }
 
   retire(): void {
@@ -396,6 +433,7 @@ export class AgentAttempt {
         this.terminal = true;
         this.unresolveOutstanding();
         return Result.ok(undefined);
+      case "message":
       case "output":
       case "tool-activity":
       case "turn-start":
@@ -438,6 +476,7 @@ export class AgentAttempt {
     inputIds: readonly string[],
   ): string | undefined {
     let offset = 0;
+    const matchedBatches = new Set<readonly string[]>();
     for (const id of inputIds) {
       const entry = this.inputs.get(id);
       if (!entry) return "Canonical commit references an unregistered input";
@@ -447,6 +486,8 @@ export class AgentAttempt {
         if (predecessor.state === "committed" || inputIds.includes(predecessor.input.id)) continue;
         return "Canonical commit skips an earlier input with the same intent";
       }
+      if (matchedBatches.has(entry.preparedInputIds)) continue;
+      matchedBatches.add(entry.preparedInputIds);
       const expected = entry.preparedMessages;
       let found = false;
       for (; offset + expected.length <= messages.length; offset += 1) {
@@ -480,6 +521,8 @@ export class AgentAttempt {
       const entry = this.inputs.get(id);
       if (!entry || !allowed.includes(entry.state))
         return invalidState("Input ownership transition is invalid");
+      if (entry.preparedInputIds.some((id) => !inputIds.includes(id)))
+        return invalidState("Merged input ownership must move as a complete batch");
       entries.push(entry);
     }
     for (const entry of entries) entry.state = next;
