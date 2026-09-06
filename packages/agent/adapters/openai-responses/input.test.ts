@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
+import type { ResponseInputItem } from "openai/resources/responses/responses";
+
+function field(item: ResponseInputItem | undefined, key: string): unknown {
+  return item && key in item ? Reflect.get(item, key) : undefined;
+}
 import { Panic } from "better-result";
 import type { AgentPreparedContext } from "../../agent-adapter";
 import { openAIRequestCodec } from "./input";
@@ -113,12 +118,12 @@ describe("OpenAI Responses input", () => {
         ],
       },
     ]);
-    expect(result.unwrap()[0]?.content).toEqual([
+    expect(field(result.unwrap()[0], "content")).toEqual([
       { type: "input_image", image_url: "data:image/png;base64,AQI=", detail: "high" },
       { type: "input_file", file_url: "https://example.com/file.pdf" },
       { type: "input_file", filename: "notes.pdf", file_data: "data:application/pdf;base64,AQI=" },
-      { type: "input_image", file_id: "file-image", detail: undefined },
-      { type: "input_image", image_url: "https://example.com/a.png", detail: undefined },
+      { type: "input_image", file_id: "file-image", detail: "auto" },
+      { type: "input_image", image_url: "https://example.com/a.png", detail: "auto" },
     ]);
   });
 
@@ -158,16 +163,17 @@ describe("OpenAI Responses input", () => {
         ],
       },
       {
+        type: "message",
         role: "assistant",
         id: "msg_1",
+        status: "completed",
         phase: "commentary",
-        content: [{ type: "output_text", text: "working" }],
+        content: [{ type: "output_text", text: "working", annotations: [] }],
       },
       {
         role: "assistant",
-        id: undefined,
         phase: "final_answer",
-        content: [{ type: "output_text", text: "done" }],
+        content: "done",
       },
     ]);
   });
@@ -270,7 +276,9 @@ describe("OpenAI Responses input", () => {
     expect((await openAIRequestCodec.steer([])).isErr()).toBe(true);
     expect(
       (await openAIRequestCodec.steer([{ role: "user", content: "change" }])).unwrap(),
-    ).toEqual([{ role: "user", content: [{ type: "input_text", text: "change" }] }]);
+    ).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "change" }] },
+    ]);
   });
 
   test("preserves explicit compaction payload and trigger", async () => {
@@ -356,9 +364,9 @@ describe("OpenAI Responses input", () => {
         ],
       },
     ]);
-    expect(result.unwrap()[0]?.content).toEqual([
-      { type: "input_image", image_url: "data:image/jpeg;base64,/9j/AA==", detail: undefined },
-      { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=", detail: undefined },
+    expect(field(result.unwrap()[0], "content")).toEqual([
+      { type: "input_image", image_url: "data:image/jpeg;base64,/9j/AA==", detail: "auto" },
+      { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=", detail: "auto" },
     ]);
   });
 
@@ -384,7 +392,7 @@ describe("OpenAI Responses input", () => {
       providerOptions: { openai: { passThroughUnsupportedFiles: true } },
     });
     expect(result.unwrap().reasoning).toMatchObject({ effort: "high", summary: "detailed" });
-    expect(result.unwrap().input[1]?.content).toEqual([
+    expect(field(result.unwrap().input[1], "content")).toEqual([
       { type: "input_file", filename: "file", file_data: "data:text/plain;base64,AQ==" },
     ]);
   });
@@ -401,7 +409,7 @@ describe("OpenAI Responses input", () => {
       ["custom", "system"],
     ]) {
       const result = await openAIRequestCodec.request({ model: model!, context });
-      expect(result.unwrap().input[0]?.role).toBe(expectedRole);
+      expect(field(result.unwrap().input[0], "role")).toBe(expectedRole);
     }
     expect(
       (
@@ -410,8 +418,8 @@ describe("OpenAI Responses input", () => {
           context,
           providerOptions: { openai: { forceReasoning: true } },
         })
-      ).unwrap().input[0]?.role,
-    ).toBe("developer");
+      ).unwrap().input[0],
+    ).toMatchObject({ role: "developer" });
     expect(
       (
         await openAIRequestCodec.request({
@@ -419,8 +427,8 @@ describe("OpenAI Responses input", () => {
           context,
           providerOptions: { openai: { forceReasoning: false } },
         })
-      ).unwrap().input[0]?.role,
-    ).toBe("developer");
+      ).unwrap().input[0],
+    ).toMatchObject({ role: "developer" });
     expect(
       (
         await openAIRequestCodec.request({
@@ -428,8 +436,8 @@ describe("OpenAI Responses input", () => {
           context,
           providerOptions: { openai: { systemMessageMode: "system" } },
         })
-      ).unwrap().input[0]?.role,
-    ).toBe("system");
+      ).unwrap().input[0],
+    ).toMatchObject({ role: "system" });
     expect(
       (
         await openAIRequestCodec.request({
@@ -437,8 +445,8 @@ describe("OpenAI Responses input", () => {
           context,
           providerOptions: { openai: { systemMessageMode: "remove" } },
         })
-      ).unwrap().input[0]?.role,
-    ).toBe("user");
+      ).unwrap().input[0],
+    ).toMatchObject({ role: "user" });
   });
 
   test("output schemas encode text results as JSON string literals in history and continuations", async () => {
@@ -489,7 +497,7 @@ describe("OpenAI Responses input", () => {
     const continuation = (
       await openAIRequestCodec.messages(messages, { outputSchemaToolNames: ["typed"] })
     ).unwrap();
-    expect(continuation.map((item) => item.output)).toEqual(expected);
+    expect(continuation.map((item) => field(item, "output"))).toEqual(expected);
     const request = (
       await openAIRequestCodec.request({
         model: "gpt-6-astra",
@@ -507,7 +515,7 @@ describe("OpenAI Responses input", () => {
         },
       })
     ).unwrap();
-    expect(request.input.slice(1).map((item) => item.output)).toEqual(expected);
+    expect(request.input.slice(1).map((item) => field(item, "output"))).toEqual(expected);
     const assistantResult: ModelMessage = {
       role: "assistant",
       content: [
@@ -522,8 +530,8 @@ describe("OpenAI Responses input", () => {
     expect(
       (
         await openAIRequestCodec.messages([assistantResult], { outputSchemaToolNames: ["typed"] })
-      ).unwrap()[0]?.output,
-    ).toBe('"inline"');
+      ).unwrap()[0],
+    ).toMatchObject({ output: '"inline"' });
   });
 
   test("preserves Panic identity at the JSON boundary", async () => {
@@ -543,7 +551,7 @@ describe("OpenAI Responses input", () => {
     ).rejects.toBe(panic);
   });
   test("preserves prompt cache breakpoints on every user resource form", async () => {
-    const options = { openai: { promptCacheBreakpoint: true } };
+    const options = { openai: { promptCacheBreakpoint: { mode: "explicit" } } };
     const messages: ModelMessage[] = [
       {
         role: "user",
@@ -582,10 +590,16 @@ describe("OpenAI Responses input", () => {
       },
     ];
     const input = (await openAIRequestCodec.messages(messages)).unwrap();
-    expect(input[0]?.content).toEqual(
+    expect(field(input[0], "content")).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ type: "input_image", prompt_cache_breakpoint: true }),
-        expect.objectContaining({ type: "input_file", prompt_cache_breakpoint: true }),
+        expect.objectContaining({
+          type: "input_image",
+          prompt_cache_breakpoint: { mode: "explicit" },
+        }),
+        expect.objectContaining({
+          type: "input_file",
+          prompt_cache_breakpoint: { mode: "explicit" },
+        }),
       ]),
     );
     const encoded = JSON.stringify(input);
@@ -647,9 +661,267 @@ describe("OpenAI Responses input", () => {
         providerOptions: { openai: { previousResponseId: "response" } },
       })
     ).unwrap();
-    expect(previous.input.some((item) => item.id === "rs")).toBe(false);
+    expect(previous.input.some((item) => field(item, "id") === "rs")).toBe(false);
     expect(
       previous.input.some((item) => item.type === "function_call" && item.call_id === "call"),
     ).toBe(true);
+  });
+  test("preserves tool-result cache boundaries and resource metadata without mutating messages", async () => {
+    const providerOptions = {
+      openai: { promptCacheBreakpoint: { mode: "explicit" }, imageDetail: "original" },
+    };
+    const messages: ModelMessage[] = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call",
+            toolName: "read",
+            output: {
+              type: "content",
+              value: [
+                { type: "text", text: "cached", providerOptions },
+                {
+                  type: "file",
+                  data: { type: "reference", reference: { openai: "file-resource" } },
+                  mediaType: "application/pdf",
+                  providerOptions,
+                },
+                {
+                  type: "file-data",
+                  data: "AQ==",
+                  filename: "named.pdf",
+                  mediaType: "application/pdf",
+                  providerOptions,
+                },
+                { type: "image-data", data: "AQ==", mediaType: "image/png", providerOptions },
+                { type: "file-url", url: "https://example.test/a.pdf", providerOptions },
+                { type: "image-url", url: "https://example.test/a.png", providerOptions },
+                { type: "file-id", fileId: "file-id", providerOptions },
+                { type: "image-file-id", fileId: { openai: "file-image-id" }, providerOptions },
+                {
+                  type: "file-reference",
+                  providerReference: { openai: "file-ref" },
+                  providerOptions,
+                },
+                {
+                  type: "image-file-reference",
+                  providerReference: { openai: "file-image-ref" },
+                  providerOptions,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ];
+    const before = structuredClone(messages);
+    const items = (await openAIRequestCodec.messages(messages)).unwrap();
+    const output = field(items[0], "output");
+    expect(output).toEqual([
+      { type: "input_text", text: "cached", prompt_cache_breakpoint: { mode: "explicit" } },
+      {
+        type: "input_file",
+        file_id: "file-resource",
+        prompt_cache_breakpoint: { mode: "explicit" },
+      },
+      {
+        type: "input_file",
+        filename: "named.pdf",
+        file_data: "data:application/pdf;base64,AQ==",
+        prompt_cache_breakpoint: { mode: "explicit" },
+      },
+      {
+        type: "input_image",
+        image_url: "data:image/png;base64,AQ==",
+        detail: "original",
+        prompt_cache_breakpoint: { mode: "explicit" },
+      },
+      {
+        type: "input_file",
+        file_url: "https://example.test/a.pdf",
+        prompt_cache_breakpoint: { mode: "explicit" },
+      },
+      {
+        type: "input_image",
+        image_url: "https://example.test/a.png",
+        detail: "original",
+        prompt_cache_breakpoint: { mode: "explicit" },
+      },
+      { type: "input_file", file_id: "file-id", prompt_cache_breakpoint: { mode: "explicit" } },
+      {
+        type: "input_image",
+        file_id: "file-image-id",
+        detail: "original",
+        prompt_cache_breakpoint: { mode: "explicit" },
+      },
+      { type: "input_file", file_id: "file-ref", prompt_cache_breakpoint: { mode: "explicit" } },
+      {
+        type: "input_image",
+        file_id: "file-image-ref",
+        detail: "original",
+        prompt_cache_breakpoint: { mode: "explicit" },
+      },
+    ]);
+    expect(messages).toEqual(before);
+  });
+
+  test("preserves system cache boundaries and request cache controls", async () => {
+    const request = (
+      await openAIRequestCodec.request({
+        model: "gpt-6-astra",
+        context: {
+          ...context,
+          system: {
+            role: "system",
+            content: "cached system",
+            providerOptions: { openai: { promptCacheBreakpoint: { mode: "explicit" } } },
+          },
+          tools: [
+            {
+              name: "lookup",
+              description: "",
+              inputSchemaJson: "{}",
+              strict: false,
+              providerOptions: { openai: { deferLoading: false, allowedCallers: ["direct"] } },
+            },
+          ],
+        },
+        providerOptions: {
+          openai: {
+            store: false,
+            promptCacheKey: "cache-key",
+            promptCacheRetention: "24h",
+            promptCacheOptions: { mode: "explicit", ttl: "30m" },
+            previousResponseId: "resp_previous",
+            parallelToolCalls: false,
+            forceReasoning: false,
+            reasoningEffort: "high",
+          },
+        },
+      })
+    ).unwrap();
+    expect(request).toMatchObject({
+      store: false,
+      prompt_cache_key: "cache-key",
+      prompt_cache_retention: "24h",
+      prompt_cache_options: { mode: "explicit", ttl: "30m" },
+      previous_response_id: "resp_previous",
+      parallel_tool_calls: false,
+      tools: [{ strict: false, defer_loading: false, allowed_callers: ["direct"] }],
+      include: ["reasoning.encrypted_content"],
+    });
+    expect(request.input[0]).toEqual({
+      role: "developer",
+      content: [
+        {
+          type: "input_text",
+          text: "cached system",
+          prompt_cache_breakpoint: { mode: "explicit" },
+        },
+      ],
+    });
+    expect(request.reasoning).toBeUndefined();
+  });
+
+  test("foreign provider and absent metadata cannot enable OpenAI features", async () => {
+    const foreign = {
+      anthropic: {
+        promptCacheBreakpoint: { mode: "explicit" },
+        imageDetail: "high",
+        itemId: "foreign",
+        reasoningEncryptedContent: "foreign",
+        phase: "commentary",
+      },
+    };
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "plain", providerOptions: foreign },
+          {
+            type: "text",
+            text: "disabled",
+            providerOptions: { openai: { promptCacheBreakpoint: false } },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "foreign", providerOptions: foreign },
+          { type: "text", text: "answer", providerOptions: foreign },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call",
+            toolName: "read",
+            output: {
+              type: "content",
+              value: [{ type: "text", text: "plain", providerOptions: foreign }],
+            },
+          },
+        ],
+      },
+    ];
+    const before = structuredClone(messages);
+    const request = (
+      await openAIRequestCodec.request({
+        model: "gpt-6-astra",
+        context: { ...context, messages },
+        providerOptions: {
+          anthropic: {
+            compactionTrigger: true,
+            promptCacheKey: "foreign",
+            reasoningEffort: "high",
+          },
+        },
+      })
+    ).unwrap();
+    const wire = JSON.stringify(request);
+    expect(wire).not.toContain("prompt_cache");
+    expect(wire).not.toContain("compaction");
+    expect(wire).not.toContain("foreign");
+    expect(request.reasoning).toBeUndefined();
+    expect(messages).toEqual(before);
+  });
+
+  test("retains encrypted reasoning with an empty summary and without an item id", async () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "",
+            providerOptions: { openai: { reasoningEncryptedContent: "encrypted-no-id" } },
+          },
+          {
+            type: "reasoning",
+            text: "",
+            providerOptions: {
+              openai: { itemId: "empty", reasoningEncryptedContent: "encrypted-empty" },
+            },
+          },
+          {
+            type: "reasoning",
+            text: "not replayable",
+            providerOptions: { openai: { itemId: "null", reasoningEncryptedContent: null } },
+          },
+        ],
+      },
+    ];
+    const replay = (await openAIRequestCodec.messages(messages)).unwrap();
+    expect(replay).toMatchObject([
+      { type: "reasoning", encrypted_content: "encrypted-no-id", summary: [] },
+      { type: "reasoning", id: "empty", encrypted_content: "encrypted-empty", summary: [] },
+    ]);
+    expect(field(replay[0], "id")).toBeUndefined();
+    expect(replay).toHaveLength(2);
   });
 });

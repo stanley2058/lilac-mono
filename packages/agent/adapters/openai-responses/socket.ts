@@ -1,16 +1,30 @@
 import { Result, type Result as ResultType } from "better-result";
+import OpenAI from "openai";
+import { ResponsesWS } from "openai/resources/responses/ws";
+import type {
+  ResponsesClientEvent,
+  ResponsesServerEvent,
+} from "openai/resources/responses/responses";
+import type {
+  WebSocketError,
+  ResponsesStreamMessage,
+} from "openai/resources/responses/internal-base";
 import {
-  connectOpenAIResponsesWebSocket,
+  toOpenAIResponsesWebSocketHeaders,
   type OpenAIResponsesConnectionOptions,
 } from "@stanley2058/lilac-utils/openai-responses-connection";
 import { REMOTE_COMPACTION_BETA_FEATURE } from "@stanley2058/lilac-utils/server-compaction-request";
 import { AgentAdapterFailure } from "../../agent-adapter";
-import { captureAgentOperation, rethrowAgentPanic } from "../../failure-adapters";
+import {
+  captureAgentOperation,
+  rethrowAgentPanic,
+  type OpaqueAgentValue,
+} from "../../failure-adapters";
 import { resultOutcome } from "../../agent-runtime-support";
 
 export interface OpenAIResponsesSocket {
-  readonly events: AsyncIterable<ResultType<string, AgentAdapterFailure>>;
-  send(payload: string): ResultType<void, AgentAdapterFailure>;
+  readonly events: AsyncIterable<ResultType<ResponsesServerEvent, AgentAdapterFailure>>;
+  send(payload: ResponsesClientEvent): ResultType<void, AgentAdapterFailure>;
   close(): void;
 }
 export type OpenAIResponsesConnect = (
@@ -21,23 +35,63 @@ export function createOpenAIResponsesConnect(
   options: OpenAIResponsesConnectionOptions,
 ): OpenAIResponsesConnect {
   return async (signal) => {
-    const connected = await connectOpenAIResponsesWebSocket({
-      url: options.websocketUrl,
-      headers: nativeHeaders(options.headers),
-      signal,
-    });
-    return connected
-      .mapError(
-        (error) =>
-          new AgentAdapterFailure({
-            reason: "unavailable",
-            message: error.message,
-            replaySafety: "safe",
-            cause: error.error,
-          }),
-      )
-      .map(observeSocket);
+    const created = resultOutcome(
+      captureAgentOperation(() => {
+        signal.throwIfAborted();
+        const client = new OpenAI({
+          apiKey:
+            new Headers(options.headers).get("authorization")?.replace(/^Bearer /u, "") ?? "unused",
+          baseURL: options.baseUrl,
+          maxRetries: 0,
+        });
+        return new ResponsesWS(client, {
+          headers: toOpenAIResponsesWebSocketHeaders(nativeHeaders(options.headers)),
+          handshakeTimeout: 30_000,
+          reconnect: null,
+        });
+      }),
+    );
+    if (!created.ok) {
+      rethrowAgentPanic(created.error);
+      return Result.err(
+        connectionFailure("OpenAI WebSocket connection failed", "safe", created.error),
+      );
+    }
+    const sdk = created.value;
+    const stream = sdk.stream();
+    const observed = observeSocket(sdk, stream);
+    const abort = () => sdk.close();
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    const opened = await awaitOpen(stream, signal);
+    signal.removeEventListener("abort", abort);
+    if (opened.ok) return Result.ok(observed);
+    const closed = resultOutcome(captureAgentOperation(() => observed.close()));
+    const abortReason: {} | null | undefined = signal.reason;
+    rethrowAgentPanic(abortReason);
+    rethrowAgentPanic(opened.cause);
+    if (!closed.ok) rethrowAgentPanic(closed.error);
+    return Result.err(
+      connectionFailure("OpenAI WebSocket closed before opening", "safe", opened.cause),
+    );
   };
+}
+
+async function awaitOpen(
+  stream: AsyncIterableIterator<ResponsesStreamMessage>,
+  signal: AbortSignal,
+): Promise<{ ok: true } | { ok: false; cause?: OpaqueAgentValue }> {
+  while (true) {
+    const next = await stream.next();
+    if (signal.aborted || next.done) return { ok: false };
+    const event = next.value;
+    if (event.type === "open") return { ok: true };
+    if (event.type === "connecting") continue;
+    return {
+      ok: false,
+      cause: event.type === "error" ? sdkFailureCause(event.error) : undefined,
+    };
+  }
 }
 
 function nativeHeaders(headers: Record<string, string>): Record<string, string> {
@@ -50,73 +104,80 @@ function nativeHeaders(headers: Record<string, string>): Record<string, string> 
     "x-codex-beta-features",
     [...new Set([...features, REMOTE_COMPACTION_BETA_FEATURE])].join(","),
   );
-  return Object.fromEntries(resolved.entries());
+  const result = Object.fromEntries(resolved.entries());
+  const authorization = result.authorization;
+  if (authorization !== undefined) {
+    delete result.authorization;
+    result.Authorization = authorization;
+  }
+  return result;
 }
 
-function observeSocket(socket: WebSocket): OpenAIResponsesSocket {
-  const pending: Array<ResultType<string, AgentAdapterFailure>> = [];
-  let notify = Promise.withResolvers<void>();
-  let closed = false;
+function connectionFailure(
+  message: string,
+  replaySafety: "safe" | "reconcile",
+  cause?: AgentAdapterFailure["cause"],
+): AgentAdapterFailure {
+  return new AgentAdapterFailure({ reason: "unavailable", message, replaySafety, cause });
+}
+
+function observeSocket(
+  sdk: ResponsesWS,
+  stream: AsyncIterableIterator<ResponsesStreamMessage>,
+): OpenAIResponsesSocket {
   let disposed = false;
-  const push = (value: ResultType<string, AgentAdapterFailure>): void => {
-    if (closed) return;
-    pending.push(value);
-    notify.resolve();
+  let failed = false;
+  const state: { failure?: WebSocketError } = {};
+  const onError = (error: WebSocketError): void => {
+    state.failure = error;
   };
-  const fail = (message: string): void => {
-    push(
-      Result.err(
-        new AgentAdapterFailure({ reason: "unavailable", message, replaySafety: "reconcile" }),
-      ),
-    );
-    closed = true;
-    notify.resolve();
-  };
-  const onMessage = (event: MessageEvent): void => {
-    if (typeof event.data === "string") {
-      push(Result.ok(event.data));
-      return;
-    }
-    fail("OpenAI WebSocket sent a non-text protocol frame");
-  };
-  const onError = (): void => fail("OpenAI WebSocket connection failed");
-  const onClose = (): void => fail("OpenAI WebSocket closed before execution settled");
-  socket.addEventListener("message", onMessage);
-  socket.addEventListener("error", onError);
-  socket.addEventListener("close", onClose);
+  sdk.on("error", onError);
+  sdk.once("close", () => sdk.off("error", onError));
+  const currentFailure = (): WebSocketError | undefined => state.failure;
   return {
     events: {
       async *[Symbol.asyncIterator]() {
-        while (!closed || pending.length > 0) {
-          const value = pending.shift();
-          if (value) {
-            yield value;
+        for await (const event of stream) {
+          if (disposed) return;
+          if (event.type === "message") {
+            yield Result.ok(event.message);
             continue;
           }
-          await notify.promise;
-          notify = Promise.withResolvers<void>();
+          if (event.type === "error" && event.error.error) {
+            yield Result.ok(event.error.error);
+            continue;
+          }
+          failed = true;
+          if (event.type === "error") rethrowAgentPanic(sdkFailureCause(event.error));
+          yield Result.err(
+            connectionFailure(
+              event.type === "error"
+                ? event.error.message
+                : "OpenAI WebSocket closed or sent an invalid protocol frame",
+              "reconcile",
+              event.type === "error" ? event.error : undefined,
+            ),
+          );
+          return;
         }
       },
     },
     send(payload) {
-      if (closed || socket.readyState !== WebSocket.OPEN)
+      if (disposed || failed || sdk.socket.readyState !== 1)
+        return Result.err(connectionFailure("OpenAI WebSocket is not open", "reconcile"));
+      state.failure = undefined;
+      const sent = resultOutcome(captureAgentOperation(() => sdk.send(payload)));
+      if (!sent.ok) {
+        rethrowAgentPanic(sent.error);
         return Result.err(
-          new AgentAdapterFailure({
-            reason: "unavailable",
-            message: "OpenAI WebSocket is not open",
-            replaySafety: "reconcile",
-          }),
+          connectionFailure("OpenAI WebSocket send failed", "reconcile", sent.error),
         );
-      const result = resultOutcome(captureAgentOperation(() => socket.send(payload)));
-      if (!result.ok) {
-        rethrowAgentPanic(result.error);
+      }
+      const failure = currentFailure();
+      if (failure) {
+        rethrowAgentPanic(sdkFailureCause(failure));
         return Result.err(
-          new AgentAdapterFailure({
-            reason: "unavailable",
-            message: "OpenAI WebSocket send failed",
-            replaySafety: "reconcile",
-            cause: result.error,
-          }),
+          connectionFailure("OpenAI WebSocket send failed", "reconcile", sdkFailureCause(failure)),
         );
       }
       return Result.ok(undefined);
@@ -124,12 +185,20 @@ function observeSocket(socket: WebSocket): OpenAIResponsesSocket {
     close() {
       if (disposed) return;
       disposed = true;
-      closed = true;
-      notify.resolve();
-      socket.removeEventListener("message", onMessage);
-      socket.removeEventListener("error", onError);
-      socket.removeEventListener("close", onClose);
-      socket.close();
+      void stream.return?.();
+      state.failure = undefined;
+      const closed = resultOutcome(captureAgentOperation(() => sdk.close()));
+      if (!closed.ok) signalSocketCloseFailure(closed.error);
+      const failure = currentFailure();
+      if (failure) signalSocketCloseFailure(sdkFailureCause(failure));
     },
   };
+}
+
+function signalSocketCloseFailure(cause: OpaqueAgentValue): never {
+  throw cause;
+}
+
+function sdkFailureCause(error: WebSocketError): OpaqueAgentValue {
+  return error.cause ?? error;
 }

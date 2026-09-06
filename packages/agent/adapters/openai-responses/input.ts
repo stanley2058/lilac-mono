@@ -1,6 +1,13 @@
 import type { FilePart, ImagePart, ModelMessage, ToolResultPart } from "ai";
 import { Result, type Result as ResultType } from "better-result";
 import { z } from "zod";
+import type {
+  ResponseInputContent,
+  ResponseSteerInputItemList,
+  ResponseInputItem,
+  ResponseReasoningItem,
+  FunctionTool,
+} from "openai/resources/responses/responses";
 import { captureResultOutcome } from "@stanley2058/lilac-utils/runtime-utils";
 import { AgentAdapterFailure } from "../../agent-adapter";
 import {
@@ -8,13 +15,9 @@ import {
   rethrowAgentPanic,
   type OpaqueAgentValue,
 } from "../../failure-adapters";
-import type {
-  OpenAIInputItem,
-  OpenAIJson,
-  OpenAIRequestCodec,
-  OpenAIResponseRequest,
-} from "./protocol";
+import type { OpenAIJson, OpenAIRequestCodec, OpenAIResponseRequest } from "./protocol";
 
+type OpenAIInputItem = ResponseInputItem;
 type ToolResultOutput = ToolResultPart["output"];
 type Encoded<T> = ResultType<T, AgentAdapterFailure>;
 type Options = NonNullable<ModelMessage["providerOptions"]>[string];
@@ -64,17 +67,32 @@ function stringOption(options: Options, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function imageDetail(options: Options): "auto" | "low" | "high" | "original" {
+  const detail = options.imageDetail;
+  return detail === "low" || detail === "high" || detail === "original" ? detail : "auto";
+}
+
+function cacheBreakpoint(
+  options: ModelMessage["providerOptions"],
+): ResponseInputContent["prompt_cache_breakpoint"] {
+  const value = metadata(options).promptCacheBreakpoint;
+  if (value == null || value === false) return undefined;
+  if (typeof value === "object" && !Array.isArray(value) && value.mode === "explicit")
+    return { mode: "explicit" };
+  return undefined;
+}
+
 function referenceFile(
   id: string | undefined,
   image: boolean,
   options: Options,
-): Encoded<OpenAIInputItem> {
+): Encoded<ResponseInputContent> {
   if (!id) return unsupported("File reference has no OpenAI file id");
-  return Result.ok({
-    type: image ? "input_image" : "input_file",
-    file_id: id,
-    ...(image ? { detail: options.imageDetail } : {}),
-  });
+  return Result.ok(
+    image
+      ? { type: "input_image", file_id: id, detail: imageDetail(options) }
+      : { type: "input_file", file_id: id },
+  );
 }
 
 function imageMediaType(data: string): string | undefined {
@@ -92,7 +110,7 @@ function binaryFile(
   mediaType: string,
   filename: string | undefined,
   options: Options,
-): Encoded<OpenAIInputItem> {
+): Encoded<ResponseInputContent> {
   const image = mediaType === "image" || mediaType.startsWith("image/");
   if (typeof data === "string" && data.startsWith("file-"))
     return referenceFile(data, image, options);
@@ -106,7 +124,7 @@ function binaryFile(
     return unsupported("Image data requires a recognized format or explicit media type");
   const content = bytes.startsWith("data:") ? bytes : `data:${resolvedMediaType};base64,${bytes}`;
   if (image)
-    return Result.ok({ type: "input_image", image_url: content, detail: options.imageDetail });
+    return Result.ok({ type: "input_image", image_url: content, detail: imageDetail(options) });
   return Result.ok({
     type: "input_file",
     filename: filename ?? (mediaType === "application/pdf" ? "file.pdf" : "file"),
@@ -114,7 +132,7 @@ function binaryFile(
   });
 }
 
-function resource(part: FilePart | ImagePart): Encoded<OpenAIInputItem> {
+function resource(part: FilePart | ImagePart): Encoded<ResponseInputContent> {
   const options = metadata(part.providerOptions);
   const mediaType = part.type === "image" ? (part.mediaType ?? "image") : part.mediaType;
   const filename = part.type === "file" ? part.filename : undefined;
@@ -123,20 +141,20 @@ function resource(part: FilePart | ImagePart): Encoded<OpenAIInputItem> {
   if (typeof data === "string" || data instanceof Uint8Array || data instanceof ArrayBuffer)
     return binaryFile(data, mediaType, filename, options);
   if (data instanceof URL)
-    return Result.ok({
-      type: image ? "input_image" : "input_file",
-      [image ? "image_url" : "file_url"]: data.href,
-      ...(image ? { detail: options.imageDetail } : {}),
-    });
+    return Result.ok(
+      image
+        ? { type: "input_image", image_url: data.href, detail: imageDetail(options) }
+        : { type: "input_file", file_url: data.href },
+    );
   if (!("type" in data)) return referenceFile(data.openai, image, options);
   if (data.type === "data" && "data" in data)
     return binaryFile(data.data, mediaType, filename, options);
   if (data.type === "url" && "url" in data)
-    return Result.ok({
-      type: image ? "input_image" : "input_file",
-      [image ? "image_url" : "file_url"]: data.url.toString(),
-      ...(image ? { detail: options.imageDetail } : {}),
-    });
+    return Result.ok(
+      image
+        ? { type: "input_image", image_url: data.url.toString(), detail: imageDetail(options) }
+        : { type: "input_file", file_url: data.url.toString() },
+    );
   if (data.type === "reference" && "reference" in data)
     return referenceFile(data.reference.openai, image, options);
   return unsupported("Inline text file content is not supported by OpenAI Responses");
@@ -145,12 +163,12 @@ function resource(part: FilePart | ImagePart): Encoded<OpenAIInputItem> {
 function userContent(
   part: Exclude<Extract<ModelMessage, { role: "user" }>["content"], string>[number],
   policy: EncodingPolicy,
-): Encoded<OpenAIInputItem> {
+): Encoded<ResponseInputContent> {
   if (part.type === "text")
     return Result.ok({
       type: "input_text",
       text: part.text,
-      prompt_cache_breakpoint: metadata(part.providerOptions).promptCacheBreakpoint,
+      prompt_cache_breakpoint: cacheBreakpoint(part.providerOptions),
     });
   return resource(part).andThen((item) => {
     if (
@@ -163,14 +181,14 @@ function userContent(
       return unsupported(`Unsupported OpenAI user file media type: ${part.mediaType}`);
     return Result.ok({
       ...item,
-      prompt_cache_breakpoint: metadata(part.providerOptions).promptCacheBreakpoint,
+      prompt_cache_breakpoint: cacheBreakpoint(part.providerOptions),
     });
   });
 }
 
-function toolContent(
+function encodeToolContent(
   part: Extract<ToolResultOutput, { type: "content" }>["value"][number],
-): Encoded<OpenAIInputItem> {
+): Encoded<ResponseInputContent> {
   switch (part.type) {
     case "text":
       return Result.ok({ type: "input_text", text: part.text });
@@ -186,7 +204,7 @@ function toolContent(
       return Result.ok({
         type: "input_image",
         image_url: part.url,
-        detail: metadata(part.providerOptions).imageDetail,
+        detail: imageDetail(metadata(part.providerOptions)),
       });
     case "file-id":
       return referenceFile(
@@ -209,7 +227,19 @@ function toolContent(
   }
 }
 
-function toolOutput(output: ToolResultOutput, hasOutputSchema: boolean): Encoded<OpenAIJson> {
+function toolContent(
+  part: Extract<ToolResultOutput, { type: "content" }>["value"][number],
+): Encoded<ResponseInputContent> {
+  return encodeToolContent(part).map((item) => ({
+    ...item,
+    prompt_cache_breakpoint: cacheBreakpoint(part.providerOptions),
+  }));
+}
+
+function toolOutput(
+  output: ToolResultOutput,
+  hasOutputSchema: boolean,
+): Encoded<ResponseInputItem.FunctionCallOutput["output"]> {
   switch (output.type) {
     case "text":
     case "error-text":
@@ -226,23 +256,36 @@ function toolOutput(output: ToolResultOutput, hasOutputSchema: boolean): Encoded
   }
 }
 
+function replayReasoning(
+  item: Omit<ResponseReasoningItem, "id"> & { id?: string },
+): ResponseReasoningItem {
+  // Responses accepts encrypted reasoning without an id, although the SDK requires output ids on replay inputs.
+  return item as ResponseReasoningItem;
+}
+
+function assistantText(text: string, options: Options): OpenAIInputItem {
+  const id = stringOption(options, "itemId");
+  const phase =
+    options.phase === "commentary" || options.phase === "final_answer" ? options.phase : undefined;
+  if (!id) return { role: "assistant", content: text, phase };
+  return {
+    type: "message",
+    id,
+    role: "assistant",
+    status: "completed",
+    content: [{ type: "output_text", text, annotations: [] }],
+    phase,
+  };
+}
+
 function assistantMessage(
   message: Extract<ModelMessage, { role: "assistant" }>,
   policy: EncodingPolicy,
 ): Encoded<OpenAIInputItem[]> {
   if (typeof message.content === "string")
-    return Result.ok([
-      {
-        role: "assistant",
-        content: [{ type: "output_text", text: message.content }],
-        phase: metadata(message.providerOptions).phase,
-      },
-    ]);
+    return Result.ok([assistantText(message.content, metadata(message.providerOptions))]);
   const items: OpenAIInputItem[] = [];
-  const reasoning = new Map<
-    string,
-    { type: string; id?: string; encrypted_content?: OpenAIJson; summary: OpenAIJson[] }
-  >();
+  const reasoning = new Map<string, ResponseReasoningItem>();
   for (const part of message.content) {
     const options = metadata("providerOptions" in part ? part.providerOptions : undefined);
     const id = stringOption(options, "itemId");
@@ -253,12 +296,7 @@ function assistantMessage(
           items.push({ type: "item_reference", id });
           break;
         }
-        items.push({
-          role: "assistant",
-          id,
-          content: [{ type: "output_text", text: part.text }],
-          phase: options.phase ?? metadata(message.providerOptions).phase,
-        });
+        items.push(assistantText(part.text, { ...metadata(message.providerOptions), ...options }));
         break;
       }
       case "reasoning": {
@@ -268,21 +306,21 @@ function assistantMessage(
           if (previous && part.text)
             previous.summary.push({ type: "summary_text", text: part.text });
           if (previous && options.reasoningEncryptedContent != null)
-            previous.encrypted_content = options.reasoningEncryptedContent;
+            previous.encrypted_content = stringOption(options, "reasoningEncryptedContent");
           break;
         }
         if (policy.store && id) {
           items.push({ type: "item_reference", id });
-          reasoning.set(id, { type: "reasoning", summary: [] });
+          reasoning.set(id, { type: "reasoning", id, summary: [] });
           break;
         }
         if (!id && options.reasoningEncryptedContent == null) break;
-        const item = {
+        const item = replayReasoning({
           type: "reasoning",
           id,
-          encrypted_content: options.reasoningEncryptedContent,
+          encrypted_content: stringOption(options, "reasoningEncryptedContent"),
           summary: part.text ? [{ type: "summary_text", text: part.text }] : [],
-        };
+        });
         items.push(item);
         if (id) reasoning.set(id, item);
         break;
@@ -344,13 +382,25 @@ function encodeMessages(
     switch (message.role) {
       case "system": {
         if (policy.systemMode !== "remove")
-          items.push({ role: policy.systemMode, content: message.content });
+          items.push({
+            role: policy.systemMode,
+            content:
+              cacheBreakpoint(message.providerOptions) == null
+                ? message.content
+                : [
+                    {
+                      type: "input_text",
+                      text: message.content,
+                      prompt_cache_breakpoint: cacheBreakpoint(message.providerOptions),
+                    },
+                  ],
+          });
         break;
       }
       case "user": {
         const encodedContent = captureResultOutcome(
           typeof message.content === "string"
-            ? Result.ok([{ type: "input_text", text: message.content }])
+            ? Result.ok<ResponseInputContent[]>([{ type: "input_text", text: message.content }])
             : Result.all(message.content.map((part) => userContent(part, policy))),
         );
         if (!encodedContent.ok) return Result.err(encodedContent.error);
@@ -382,7 +432,7 @@ function encodeMessages(
   return Result.ok(items);
 }
 
-const directOptions: Record<string, string> = {
+const directOptions: Record<string, keyof OpenAIResponseRequest> = {
   conversation: "conversation",
   maxToolCalls: "max_tool_calls",
   metadata: "metadata",
@@ -443,6 +493,14 @@ function reasoningSummary(
   return undefined;
 }
 
+function assignRequestOption<K extends keyof OpenAIResponseRequest>(
+  request: OpenAIResponseRequest,
+  key: K,
+  value: OpenAIJson,
+): void {
+  request[key] = value as OpenAIResponseRequest[K];
+}
+
 function encodeRequest(
   input: Parameters<OpenAIRequestCodec["request"]>[0],
 ): Encoded<OpenAIResponseRequest> {
@@ -476,31 +534,38 @@ function encodeRequest(
     input: messages,
   };
   for (const [name, wireName] of Object.entries(directOptions))
-    if (options[name] !== undefined) request[wireName] = options[name];
-  const tools: OpenAIJson[] = [];
+    if (options[name] !== undefined) assignRequestOption(request, wireName, options[name]);
+  const tools: FunctionTool[] = [];
   for (const tool of input.context.tools) {
     const encodedParameters = captureResultOutcome(parseJson(tool.inputSchemaJson));
     if (!encodedParameters.ok) return Result.err(encodedParameters.error);
     const parameters = encodedParameters.value;
+    if (parameters === null || typeof parameters !== "object" || Array.isArray(parameters))
+      return unsupported("OpenAI tool parameters must be a JSON schema object");
     const encodedOutputSchema = captureResultOutcome(
       tool.outputSchemaJson === undefined ? Result.ok(undefined) : parseJson(tool.outputSchemaJson),
     );
     if (!encodedOutputSchema.ok) return Result.err(encodedOutputSchema.error);
     const outputSchema = encodedOutputSchema.value;
+    if (
+      outputSchema !== undefined &&
+      (outputSchema === null || typeof outputSchema !== "object" || Array.isArray(outputSchema))
+    )
+      return unsupported("OpenAI tool output must be a JSON schema object");
     const toolOptions = metadata(tool.providerOptions);
     tools.push({
       type: "function",
       name: tool.name,
       description: tool.description,
       parameters,
-      strict: tool.strict,
+      strict: tool.strict ?? null,
       ...(outputSchema === undefined ? {} : { output_schema: outputSchema }),
       ...(toolOptions.deferLoading === undefined
         ? {}
-        : { defer_loading: toolOptions.deferLoading }),
+        : { defer_loading: toolOptions.deferLoading === true }),
       ...(toolOptions.allowedCallers === undefined
         ? {}
-        : { allowed_callers: toolOptions.allowedCallers }),
+        : { allowed_callers: toolOptions.allowedCallers as FunctionTool["allowed_callers"] }),
     });
   }
   if (tools.length) request.tools = tools;
@@ -514,26 +579,34 @@ function encodeRequest(
       options.reasoningContext != null)
   )
     request.reasoning = {
-      effort,
-      summary: reasoningSummary(options, effort),
-      mode: options.reasoningMode,
-      context: options.reasoningContext,
+      effort: effort as NonNullable<OpenAIResponseRequest["reasoning"]>["effort"],
+      summary: reasoningSummary(options, effort) as NonNullable<
+        OpenAIResponseRequest["reasoning"]
+      >["summary"],
+      mode: options.reasoningMode as NonNullable<OpenAIResponseRequest["reasoning"]>["mode"],
+      context: options.reasoningContext as NonNullable<
+        OpenAIResponseRequest["reasoning"]
+      >["context"],
     };
-  if (options.textVerbosity != null) request.text = { verbosity: options.textVerbosity };
+  if (options.textVerbosity != null)
+    request.text = {
+      verbosity: options.textVerbosity as NonNullable<OpenAIResponseRequest["text"]>["verbosity"],
+    };
   const includes = z.array(z.string()).safeParse(options.include ?? []);
   if (!includes.success) return unsupported("Invalid OpenAI include option");
   const include = [...includes.data];
   if (options.store === false && !include.includes("reasoning.encrypted_content"))
     include.push("reasoning.encrypted_content");
   if (options.logprobs) {
-    request.top_logprobs = options.logprobs === true ? 20 : options.logprobs;
+    if (options.logprobs === true) request.top_logprobs = 20;
+    if (typeof options.logprobs === "number") request.top_logprobs = options.logprobs;
     if (!include.includes("message.output_text.logprobs"))
       include.push("message.output_text.logprobs");
   }
-  if (include.length) request.include = include;
+  if (include.length) request.include = include as OpenAIResponseRequest["include"];
   if (options.contextManagement != null) {
     const contexts = z
-      .array(z.object({ type: z.string(), compactThreshold: z.number().optional() }))
+      .array(z.object({ type: z.literal("compaction"), compactThreshold: z.number().optional() }))
       .safeParse(options.contextManagement);
     if (!contexts.success) return unsupported("Invalid OpenAI context management option");
     request.context_management = contexts.data.map((context) => ({
@@ -568,14 +641,19 @@ export const openAIRequestCodec: OpenAIRequestCodec = {
   async steer(messages) {
     if (messages.length === 0 || messages.some((message) => message.role !== "user"))
       return unsupported("OpenAI steering requires one or more user messages");
-    return encodeMessages(messages, defaultPolicy);
+    return Result.all(
+      messages.map((message): Encoded<ResponseSteerInputItemList.Message> => {
+        if (message.role !== "user") return unsupported("OpenAI steering requires user messages");
+        if (typeof message.content === "string")
+          return Result.ok({
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: message.content }],
+          });
+        return Result.all(message.content.map((part) => userContent(part, defaultPolicy))).map(
+          (content) => ({ type: "message", role: "user", content }),
+        );
+      }),
+    );
   },
 };
-
-export function serializeOpenAIRequest(
-  request:
-    | OpenAIResponseRequest
-    | { type: "response.steer"; previous_response_id: string; input: OpenAIInputItem[] },
-): string {
-  return JSON.stringify(request);
-}

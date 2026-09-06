@@ -464,6 +464,7 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
   "apps/mini-lilac-tui": [["src/failure-adapter.ts", "signalTuiDefect", "signal"]],
   "apps/tool-bridge": [["client.ts", "signalBridgeDefect", "signal"]],
   "packages/agent": [
+    ["adapters/openai-responses/socket.ts", "signalSocketCloseFailure", "signal"],
     ["agent-tool-host.ts", "signalExternalToolCallHost", "signal"],
     ["agent-tool-host.ts", "AgentToolHost.executeExternalToolCall.map.<callback@1>", "signal"],
     ["message-clone.ts", "snapshotAgentMessage", "signal"],

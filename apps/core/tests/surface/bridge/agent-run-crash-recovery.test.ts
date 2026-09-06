@@ -1,3 +1,4 @@
+import { openAIResponseCodec } from "@stanley2058/lilac-agent/adapters/openai-responses/output";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -441,12 +442,16 @@ class RecoveryMailbox<T> {
   }
 }
 
+type OpenAIResponsesSocketEvent = Parameters<typeof openAIResponseCodec.decode>[0];
+
 class RecoverySocket implements OpenAIResponsesSocket {
-  readonly events = new RecoveryMailbox<ResultType<string, AgentAdapterFailure>>();
+  readonly events = new RecoveryMailbox<
+    ResultType<OpenAIResponsesSocketEvent, AgentAdapterFailure>
+  >();
   readonly outgoing = new RecoveryMailbox<Record<string, unknown>>();
 
-  send(payload: string) {
-    this.outgoing.push(JSON.parse(payload));
+  send(payload: Parameters<OpenAIResponsesSocket["send"]>[0]) {
+    this.outgoing.push({ ...payload });
     return Result.ok(undefined);
   }
 
@@ -455,7 +460,7 @@ class RecoverySocket implements OpenAIResponsesSocket {
   }
 
   emit(event: object): void {
-    this.events.push(Result.ok(JSON.stringify(event)));
+    this.events.push(Result.ok(event as OpenAIResponsesSocketEvent));
   }
 
   created(id: string, previousResponseId?: string): void {

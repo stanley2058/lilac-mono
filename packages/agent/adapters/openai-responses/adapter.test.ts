@@ -1,3 +1,7 @@
+import type {
+  ResponsesClientEvent,
+  ResponsesServerEvent,
+} from "openai/resources/responses/responses";
 import { describe, expect, test } from "bun:test";
 import { tool } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
@@ -44,13 +48,13 @@ class Mailbox<T> {
 }
 
 class SocketFixture implements OpenAIResponsesSocket {
-  readonly events = new Mailbox<ResultType<string, AgentAdapterFailure>>();
+  readonly events = new Mailbox<ResultType<ResponsesServerEvent, AgentAdapterFailure>>();
   readonly sent: Record<string, unknown>[] = [];
   closeFailure: Panic | undefined;
   onClose: (() => void) | undefined;
   private readonly outgoing = new Mailbox<Record<string, unknown>>();
-  send(payload: string) {
-    const value: Record<string, unknown> = JSON.parse(payload);
+  send(payload: ResponsesClientEvent) {
+    const value = { ...payload };
     this.sent.push(value);
     this.outgoing.push(value);
     return Result.ok(undefined);
@@ -63,7 +67,7 @@ class SocketFixture implements OpenAIResponsesSocket {
     if (this.closeFailure) throw this.closeFailure;
   }
   emit(value: object) {
-    this.events.push(Result.ok(JSON.stringify(value)));
+    this.events.push(Result.ok(value as ResponsesServerEvent));
   }
   async nextSend() {
     return (await this.outgoing.next()).value;

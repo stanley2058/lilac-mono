@@ -6,7 +6,8 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.1"
+    "@types/bun": "^1.4.1",
+    "@types/ws": "^8.18.1"
   },
   "peerDependencies": {
     "typescript": "^7.0.2"
@@ -15,6 +16,8 @@
     "@stanley2058/lilac-utils": "workspace:*",
     "ai": "^7.0.22",
     "better-result": "catalog:",
+    "openai": "7.10.0",
+    "ws": "^8.21.3",
     "zod": "^4.3.6"
   }
 }

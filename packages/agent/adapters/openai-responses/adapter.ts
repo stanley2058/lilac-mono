@@ -1,3 +1,4 @@
+import type { ResponseOutputItem } from "openai/resources/responses/responses";
 import { isDeepStrictEqual } from "node:util";
 import type { ModelMessage } from "ai";
 import { Result, type Result as ResultType } from "better-result";
@@ -15,10 +16,9 @@ import type { AgentExecutionHost } from "../../agent-execution-host";
 import { captureAgentPromise, captureAgentOperation, isAgentPanic } from "../../failure-adapters";
 import { resultOutcome, lengthRecoveryContinueMessage } from "../../agent-runtime-support";
 import { snapshotAgentMessage } from "../../message-clone";
-import { openAIRequestCodec, serializeOpenAIRequest } from "./input";
+import { openAIRequestCodec } from "./input";
 import { openAIResponseCodec } from "./output";
 import type {
-  OpenAIInputItem,
   OpenAIProjectedResponse,
   OpenAIProtocolEvent,
   OpenAIResponse,
@@ -49,7 +49,7 @@ type ParentResponse = {
   results?: readonly AgentToolResult[];
   continuationSent: boolean;
   committed: boolean;
-  completedItems: OpenAIInputItem[];
+  completedItems: ResponseOutputItem[];
   settledResults: AgentToolResult[];
 };
 type SubmittedInput = {
@@ -422,7 +422,7 @@ class OpenAIResponsesExecution implements AgentExecution {
     this.pendingRequest = { prepared: prepared.value, request: encoded.value };
     if (this.current?.complete?.calls.length) this.current.continuationSent = true;
     this.context.host.recordModelView(prepared.value.messages, prepared.value.step);
-    return this.socket!.send(serializeOpenAIRequest(optimized.value));
+    return this.socket!.send(optimized.value);
   }
   private async continuationRequest(
     request: OpenAIResponseRequest,
@@ -504,9 +504,10 @@ class OpenAIResponsesExecution implements AgentExecution {
         const item = event.item;
         if (typeof item.id === "string")
           this.outputMetadata.set(item.id, {
-            ...(typeof item.call_id === "string" ? { callId: item.call_id } : {}),
-            ...(typeof item.name === "string" ? { toolName: item.name } : {}),
-            ...(item.phase === "commentary" || item.phase === "final_answer"
+            ...(item.type === "function_call" ? { callId: item.call_id } : {}),
+            ...(item.type === "function_call" ? { toolName: item.name } : {}),
+            ...(item.type === "message" &&
+            (item.phase === "commentary" || item.phase === "final_answer")
               ? { phase: item.phase }
               : {}),
           });
@@ -516,17 +517,19 @@ class OpenAIResponsesExecution implements AgentExecution {
         return this.checkpointItem(event.item);
       case "block-complete": {
         const existing = this.current?.completedItems.find((item) => item.id === event.item.id);
-        const key = event.item.type === "reasoning" ? "summary" : "content";
-        const parts = existing && Array.isArray(existing[key]) ? [...existing[key]] : [];
-        const incoming = event.item[key];
-        if (!Array.isArray(incoming) || incoming.length !== 1)
+        if (event.item.type === "reasoning") {
+          if (event.item.summary.length !== 1)
+            return Result.err(failure("OpenAI completed an invalid content block"));
+          const summary = existing?.type === "reasoning" ? [...existing.summary] : [];
+          summary[event.index] = event.item.summary[0]!;
+          return this.checkpointItem({ ...event.item, summary });
+        }
+        if (event.item.type !== "message" || event.item.content.length !== 1)
           return Result.err(failure("OpenAI completed an invalid content block"));
-        parts[event.index] = incoming[0]!;
-        const phase =
-          typeof event.item.id === "string"
-            ? this.outputMetadata.get(event.item.id)?.phase
-            : undefined;
-        return this.checkpointItem({ ...event.item, ...(phase ? { phase } : {}), [key]: parts });
+        const content = existing?.type === "message" ? [...existing.content] : [];
+        content[event.index] = event.item.content[0]!;
+        const phase = this.outputMetadata.get(event.item.id)?.phase;
+        return this.checkpointItem({ ...event.item, ...(phase ? { phase } : {}), content });
       }
       case "created":
         return await this.created(event.response, signal);
@@ -582,7 +585,7 @@ class OpenAIResponsesExecution implements AgentExecution {
       }
     }
   }
-  private checkpointItem(item: OpenAIInputItem): ResultType<"continue", AgentAdapterFailure> {
+  private checkpointItem(item: ResponseOutputItem): ResultType<"continue", AgentAdapterFailure> {
     const parent = this.current;
     if (!parent) return Result.err(failure("OpenAI output item preceded response creation"));
     const index = parent.completedItems.findIndex((existing) => existing.id === item.id);
@@ -637,13 +640,11 @@ class OpenAIResponsesExecution implements AgentExecution {
         return Result.ok(undefined);
       }
       this.submitting = { input, parentId: parent.id, prepared: prepared.value };
-      return this.socket!.send(
-        serializeOpenAIRequest({
-          type: "response.steer",
-          previous_response_id: parent.id,
-          input: encoded.value,
-        }),
-      );
+      return this.socket!.send({
+        type: "response.steer",
+        previous_response_id: parent.id,
+        input: encoded.value,
+      });
     }
     return Result.ok(undefined);
   }
@@ -900,13 +901,11 @@ class OpenAIResponsesExecution implements AgentExecution {
     if (!inherited.ok) return Result.err(inherited.error);
     parent.continuationSent = true;
     this.pendingRequest = { prepared, request: inherited.value, continuationParentId: parent.id };
-    return this.socket!.send(
-      serializeOpenAIRequest({
-        ...parent.request,
-        previous_response_id: parent.id,
-        input: encoded.value,
-      }),
-    ).map(() => "continue" as const);
+    return this.socket!.send({
+      ...parent.request,
+      previous_response_id: parent.id,
+      input: encoded.value,
+    }).map(() => "continue" as const);
   }
   private async boundary(
     parent: ParentResponse,

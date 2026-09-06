@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type { ResponsesServerEvent } from "openai/resources/responses/responses";
+import { openAIRequestCodec } from "./input";
 import { openAIResponseCodec } from "./output";
 import type { OpenAIProtocolEvent } from "./protocol";
 
 function decode(value: object): OpenAIProtocolEvent {
-  return openAIResponseCodec.decode(JSON.stringify(value)).unwrap();
+  return openAIResponseCodec.decode(value as ResponsesServerEvent).unwrap();
 }
 
 describe("OpenAI Responses output codec", () => {
@@ -18,13 +20,13 @@ describe("OpenAI Responses output codec", () => {
       decode({
         type: "response.steer.pending",
         steer,
-        required_input: [{ type: "function_call_output", call_id: "call-1" }],
+        required_input: [{ type: "function_call_output", call_id: "call-1", name: "lookup" }],
       }),
     ).toEqual({
       type: "steer-pending",
       steerId: "steer-1",
       previousResponseId: "response-1",
-      requiredInput: [{ type: "function_call_output", call_id: "call-1" }],
+      requiredInput: [{ type: "function_call_output", call_id: "call-1", name: "lookup" }],
     });
     expect(
       decode({ type: "response.steer.failed", steer, error: { message: "No active response" } }),
@@ -50,17 +52,35 @@ describe("OpenAI Responses output codec", () => {
     });
   });
 
-  test("rejects malformed relevant events and invalid JSON, tolerates unrelated events", () => {
-    for (const event of [
-      { type: "response.created", response: {} },
-      { type: "response.steer.accepted", steer: { previous_response_id: "r" } },
-      { type: "response.output_text.delta", item_id: "m" },
-      { type: "response.output_item.done", item: { type: "message", id: "m" } },
-    ])
-      expect(openAIResponseCodec.decode(JSON.stringify(event)).isErr()).toBe(true);
-    expect(openAIResponseCodec.decode("{").isErr()).toBe(true);
+  test("ignores unrelated SDK events", () => {
     expect(decode({ type: "response.in_progress" })).toEqual({ type: "ignored" });
-    expect(decode({ type: "future.telemetry", detail: 42 })).toEqual({ type: "ignored" });
+  });
+
+  test("preserves SDK protocol and streaming error details", () => {
+    expect(
+      decode({
+        type: "error",
+        status: 429,
+        error: { code: "rate_limit", type: "rate_limit_error", param: null, message: "Slow down" },
+      }),
+    ).toEqual({
+      type: "error",
+      message: "Slow down",
+      details: { code: "rate_limit", type: "rate_limit_error", param: null, statusCode: 429 },
+    });
+    expect(
+      decode({
+        type: "error",
+        sequence_number: 1,
+        code: "stream_error",
+        param: "input",
+        message: "Interrupted",
+      }),
+    ).toEqual({
+      type: "error",
+      message: "Interrupted",
+      details: { code: "stream_error", type: "error", param: "input", statusCode: undefined },
+    });
   });
 
   test("projects complete output with replay metadata, tool inputs, and usage", () => {
@@ -75,6 +95,7 @@ describe("OpenAI Responses output codec", () => {
             type: "message",
             id: "m",
             role: "assistant",
+            status: "completed",
             phase: "commentary",
             content: [{ type: "output_text", text: "Looking up" }],
           },
@@ -175,7 +196,7 @@ describe("OpenAI Responses output codec", () => {
         type: "response.content_part.done",
         item_id: "m",
         content_index: 1,
-        part: { type: "output_text", text: "Saved" },
+        part: { type: "output_text", text: "Saved", annotations: [] },
       }),
     ).toEqual({
       type: "block-complete",
@@ -184,7 +205,8 @@ describe("OpenAI Responses output codec", () => {
         type: "message",
         id: "m",
         role: "assistant",
-        content: [{ type: "output_text", text: "Saved" }],
+        status: "in_progress",
+        content: [{ type: "output_text", text: "Saved", annotations: [] }],
       },
     });
     expect(
@@ -199,27 +221,6 @@ describe("OpenAI Responses output codec", () => {
       index: 0,
       item: { type: "reasoning", id: "rs", summary: [{ type: "summary_text", text: "Reason" }] },
     });
-    expect(
-      openAIResponseCodec
-        .decode(
-          JSON.stringify({
-            type: "response.steer.pending",
-            steer: { id: "s", previous_response_id: "r" },
-          }),
-        )
-        .isErr(),
-    ).toBe(true);
-    expect(
-      openAIResponseCodec
-        .decode(
-          JSON.stringify({
-            type: "response.content_part.done",
-            item_id: "m",
-            part: { type: "output_text" },
-          }),
-        )
-        .isErr(),
-    ).toBe(true);
   });
 
   test("projects completed checkpoint items and compaction replay data", () => {
@@ -232,8 +233,9 @@ describe("OpenAI Responses output codec", () => {
             type: "message",
             id: "m",
             role: "assistant",
+            status: "completed",
             phase: "final_answer",
-            content: [{ type: "output_text", text: "Complete block" }],
+            content: [{ type: "output_text", text: "Complete block", annotations: [] }],
           },
           { type: "compaction", id: "cmp", encrypted_content: "compact" },
         ],
@@ -260,16 +262,6 @@ describe("OpenAI Responses output codec", () => {
         item: { type: "message", id: "m", role: "assistant", phase: "commentary", content: [] },
       }),
     ).toMatchObject({ type: "item-start", item: { id: "m", phase: "commentary" } });
-    expect(
-      openAIResponseCodec
-        .decode(
-          JSON.stringify({
-            type: "response.output_item.added",
-            item: { type: "function_call", id: "x" },
-          }),
-        )
-        .isErr(),
-    ).toBe(true);
   });
 
   test("reports incomplete finish reasons and fails closed on unknown output", () => {
@@ -285,7 +277,11 @@ describe("OpenAI Responses output codec", () => {
     ).toBe("length");
     expect(
       openAIResponseCodec
-        .project({ id: "r", status: "completed", output: [{ type: "unhandled_tool", id: "x" }] })
+        .project({
+          id: "r",
+          status: "completed",
+          output: [{ type: "image_generation_call", id: "x", result: null, status: "completed" }],
+        })
         .isErr(),
     ).toBe(true);
     const projected = openAIResponseCodec
@@ -305,5 +301,101 @@ describe("OpenAI Responses output codec", () => {
       .unwrap();
     expect(projected.calls).toEqual([{ callId: "call", name: "lookup", inputJson: "not-json" }]);
     expect(projected.assistant.content).toMatchObject([{ type: "tool-call", input: "not-json" }]);
+  });
+  test("round trips provider replay metadata without inventing optional features", async () => {
+    const output = [
+      { type: "reasoning" as const, id: "rs-encrypted", summary: [], encrypted_content: "sealed" },
+      {
+        type: "reasoning" as const,
+        id: "rs-plain",
+        summary: [{ type: "summary_text" as const, text: "Plan" }],
+      },
+      { type: "reasoning" as const, id: "rs-null", summary: [], encrypted_content: null },
+      {
+        type: "message" as const,
+        id: "msg-comment",
+        role: "assistant" as const,
+        status: "completed" as const,
+        phase: "commentary" as const,
+        content: [{ type: "output_text" as const, text: "Checking", annotations: [] }],
+      },
+      {
+        type: "message" as const,
+        id: "msg-final",
+        role: "assistant" as const,
+        status: "completed" as const,
+        phase: "final_answer" as const,
+        content: [{ type: "output_text" as const, text: "Done", annotations: [] }],
+      },
+      {
+        type: "message" as const,
+        id: "msg-plain",
+        role: "assistant" as const,
+        status: "completed" as const,
+        content: [{ type: "refusal" as const, refusal: "No" }],
+      },
+      {
+        type: "function_call" as const,
+        id: "fc",
+        call_id: "call",
+        name: "lookup",
+        arguments: '{"q":"hello"}',
+      },
+      { type: "compaction" as const, id: "cmp", encrypted_content: "compacted" },
+    ];
+    const original = structuredClone(output);
+    const projected = openAIResponseCodec
+      .project({ id: "r", status: "completed", output })
+      .unwrap();
+    expect(projected.assistant.content).toMatchObject([
+      {
+        providerOptions: {
+          openai: { itemId: "rs-encrypted", reasoningEncryptedContent: "sealed" },
+        },
+      },
+      { providerOptions: { openai: { itemId: "rs-plain", reasoningEncryptedContent: null } } },
+      { providerOptions: { openai: { itemId: "rs-null", reasoningEncryptedContent: null } } },
+      {},
+      {},
+      { providerOptions: { openai: { itemId: "msg-plain" } } },
+      {},
+      {},
+    ]);
+    const replay = (await openAIRequestCodec.messages(projected.messages)).unwrap();
+    expect(replay).toEqual([
+      { type: "reasoning", id: "rs-encrypted", summary: [], encrypted_content: "sealed" },
+      {
+        type: "message",
+        id: "msg-comment",
+        role: "assistant",
+        status: "completed",
+        phase: "commentary",
+        content: [{ type: "output_text", text: "Checking", annotations: [] }],
+      },
+      {
+        type: "message",
+        id: "msg-final",
+        role: "assistant",
+        status: "completed",
+        phase: "final_answer",
+        content: [{ type: "output_text", text: "Done", annotations: [] }],
+      },
+      {
+        type: "message",
+        id: "msg-plain",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "No", annotations: [] }],
+      },
+      {
+        type: "function_call",
+        id: "fc",
+        call_id: "call",
+        name: "lookup",
+        arguments: '{"q":"hello"}',
+      },
+      { type: "compaction", id: "cmp", encrypted_content: "compacted" },
+    ]);
+    expect(output).toEqual(original);
   });
 });

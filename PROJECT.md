@@ -262,7 +262,9 @@ authority. Adapters own model calls, transport, response chains, tool scheduling
 services. Model fallback disposes the previous execution before constructing its replacement. Core's
 bus runner retains durable delivery, lineage/storage finalization, resource authority, and publication.
 
-Core uses native OpenAI Responses execution for its existing WebSocket transport selection. The OpenAI
+Core uses native OpenAI Responses execution for its existing WebSocket transport selection. The official
+OpenAI SDK owns WebSocket transport and protocol parsing. The adapter converts SDK types to and from
+AI SDK-compatible messages, preserving provider metadata through durable transcript replay. The OpenAI
 adapter gates native steering to exactly `gpt-6-astra` in compatible single-agent settings. Conversation
 binding and automatic compaction use boundary delivery. Auto transport may fall back to SSE only before
 submission; connection loss after submission retires and reconciles the attempt. Acceptance reserves an

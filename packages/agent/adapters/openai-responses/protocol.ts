@@ -1,3 +1,11 @@
+import type {
+  ResponseInputItem,
+  ResponseOutputItem,
+  ResponsesClientEvent,
+  ResponsesServerEvent,
+  ResponseSteerInput,
+  ResponseSteerRequiredInput,
+} from "openai/resources/responses/responses";
 import type { AssistantModelMessage, FinishReason, LanguageModelUsage, ModelMessage } from "ai";
 import type { Result as ResultType } from "better-result";
 import type {
@@ -14,34 +22,32 @@ export type OpenAIJson =
   | string
   | OpenAIJson[]
   | { [key: string]: OpenAIJson | undefined };
-export type OpenAIInputItem = { [key: string]: OpenAIJson | undefined };
-export type OpenAIResponseRequest = {
-  type: "response.create";
+export type OpenAIInputItem = ResponseInputItem;
+export type OpenAIResponseRequest = Omit<ResponsesClientEvent.ResponseCreate, "model" | "input"> & {
   model: string;
-  input: OpenAIInputItem[];
-  [key: string]: OpenAIJson | undefined;
+  input: ResponseInputItem[];
 };
 export type OpenAIResponse = {
   id: string;
   previousResponseId?: string;
   status: string;
   incompleteReason?: string;
-  output: OpenAIInputItem[];
+  output: ResponseOutputItem[];
   usage?: LanguageModelUsage;
 };
 export type OpenAIProtocolEvent =
   | { type: "created"; response: OpenAIResponse }
   | { type: "finished"; response: OpenAIResponse }
   | { type: "output"; output: AgentOutput }
-  | { type: "item-start"; item: OpenAIInputItem }
-  | { type: "block-complete"; item: OpenAIInputItem; index: number }
-  | { type: "item-complete"; item: OpenAIInputItem }
+  | { type: "item-start"; item: ResponseOutputItem }
+  | { type: "block-complete"; item: ResponseOutputItem; index: number }
+  | { type: "item-complete"; item: ResponseOutputItem }
   | { type: "steer-accepted"; steerId: string; previousResponseId: string }
   | {
       type: "steer-pending";
       previousResponseId: string;
       steerId?: string;
-      requiredInput: OpenAIInputItem[];
+      requiredInput: ResponseSteerRequiredInput[];
     }
   | { type: "steer-failed"; previousResponseId: string; steerId?: string; message: string }
   | {
@@ -58,7 +64,7 @@ export type OpenAIProjectedResponse = {
   finishReason: FinishReason;
 };
 export type OpenAIResponseCodec = {
-  decode(data: string): ResultType<OpenAIProtocolEvent, AgentAdapterFailure>;
+  decode(event: ResponsesServerEvent): ResultType<OpenAIProtocolEvent, AgentAdapterFailure>;
   project(response: OpenAIResponse): ResultType<OpenAIProjectedResponse, AgentAdapterFailure>;
 };
 export type OpenAIRequestCodec = {
@@ -74,5 +80,5 @@ export type OpenAIRequestCodec = {
   ): Promise<ResultType<OpenAIInputItem[], AgentAdapterFailure>>;
   steer(
     messages: readonly ModelMessage[],
-  ): Promise<ResultType<OpenAIInputItem[], AgentAdapterFailure>>;
+  ): Promise<ResultType<ResponseSteerInput, AgentAdapterFailure>>;
 };
