@@ -889,6 +889,9 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
     ["model-slot.ts", "resolveModelPlan", "signal"],
     ["model-slot.ts", "resolveModelRef", "signal"],
     ["model-slot.ts", "resolveModelSlot", "signal"],
+    ["openai-responses-connection.ts", "resolveOpenAIResponsesConnectionOptions", "signal"],
+    ["openai-responses-connection.ts", "connectOpenAIResponsesWebSocket.<callback>.fail", "signal"],
+    ["openai-responses-connection.ts", "connectOpenAIResponsesWebSocket.<callback>", "signal"],
     [
       "openai-responses-websocket-fetch.ts",
       "createOpenAIResponsesWebSocketFetch.websocketFetch.start.onMessage.<callback>",

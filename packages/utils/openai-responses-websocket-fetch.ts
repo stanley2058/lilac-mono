@@ -6,7 +6,11 @@ import { z } from "zod";
 import type { ResponsesTransportMode } from "./env";
 import { captureResultOutcome, isPanic, isRecord, settleSyncResult } from "./runtime-utils";
 
-const OPENAI_BETA_RESPONSES_WEBSOCKETS = "responses_websockets=2026-02-06";
+import {
+  connectOpenAIResponsesWebSocket,
+  openAIResponsesWebSocketUrl,
+  toOpenAIResponsesWebSocketHeaders,
+} from "./openai-responses-connection";
 const WEBSOCKET_OPEN_STATE = 1;
 const CONTINUATION_CACHE_TTL_MS = 30 * 60 * 1000;
 const RESPONSES_WEBSOCKET_TIMEOUT_MS = 30_000;
@@ -180,10 +184,6 @@ type IncrementalPayloadResult = {
   turnState: string | null;
 };
 
-type WebSocketWithHeadersConstructor = {
-  new (url: string | URL, options?: Bun.WebSocketOptions): WebSocket;
-};
-
 export function createOpenAIResponsesWebSocketFetch(
   options: CreateOpenAIResponsesWebSocketFetchOptions,
 ): OpenAIResponsesWebSocketFetch {
@@ -236,10 +236,7 @@ export function createOpenAIResponsesWebSocketFetch(
     if (typeof options.url === "function") return options.url(requestUrl);
     if (typeof options.url === "string" && options.url.length > 0) return options.url;
 
-    const url = new URL(requestUrl.toString());
-    if (url.protocol === "https:") url.protocol = "wss:";
-    if (url.protocol === "http:") url.protocol = "ws:";
-    return url.toString();
+    return openAIResponsesWebSocketUrl(requestUrl);
   }
 
   function closeSocket(socket: WebSocket | null): void {
@@ -343,63 +340,18 @@ export function createOpenAIResponsesWebSocketFetch(
     touchContinuationCacheEntry(continuationCacheKey(entry), entry);
   }
 
-  function connectWebSocket(
+  async function connectWebSocket(
     socketUrl: string,
     headers: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<ResultType<WebSocket, CapturedResponsesFailure>> {
-    return new Promise<ResultType<WebSocket, CapturedResponsesFailure>>((resolve) => {
-      let socket: WebSocket | undefined;
-      const WebSocketCtor = globalThis.WebSocket as typeof globalThis.WebSocket &
-        WebSocketWithHeadersConstructor;
-
-      const cleanup = () => {
-        clearTimeout(timeout);
-        socket?.removeEventListener("open", onOpen);
-        socket?.removeEventListener("error", onError);
-        signal?.removeEventListener("abort", onAbort);
-      };
-      const failConnection = (error: Error) => {
-        cleanup();
-        closeSocket(socket ?? null);
-        resolve(Result.err(captureResponsesFailure(() => error)));
-      };
-      const onOpen = () => {
-        if (!socket) return;
-        cleanup();
-        resolve(Result.ok(socket));
-      };
-      const onError = (event: Event) => failConnection(extractWebSocketError(event));
-      const onAbort = () =>
-        failConnection(
-          projectResponsesStreamError(signal?.reason ?? new DOMException("Aborted", "AbortError")),
-        );
-      const timeout = setTimeout(() => {
-        failConnection(
-          new DOMException("WebSocket connection timed out before opening", "TimeoutError"),
-        );
-      }, RESPONSES_WEBSOCKET_TIMEOUT_MS);
-
-      const created = Result.try({
-        try: () => {
-          signal?.throwIfAborted();
-          return new WebSocketCtor(socketUrl, { headers });
-        },
-        catch: (cause) => ({ restoreCause: () => cause }),
-      });
-      const outcome = settleResponsesResult(created);
-      if (outcome.kind !== "value") {
-        cleanup();
-        resolve(Result.err(outcome));
-        return;
-      }
-      socket = outcome.value;
-
-      socket.addEventListener("open", onOpen, { once: true });
-      socket.addEventListener("error", onError, { once: true });
-      if (signal?.aborted) onAbort();
-      else signal?.addEventListener("abort", onAbort, { once: true });
+    const captured = await Result.tryPromise({
+      try: () => connectOpenAIResponsesWebSocket({ url: socketUrl, headers, signal }),
+      catch: (cause) => ({ restoreCause: () => cause }),
     });
+    const outcome = settleResponsesResult(captured);
+    if (outcome.kind !== "value") return Result.err(outcome);
+    return outcome.value.mapError((failure) => captureResponsesFailure(() => failure.error));
   }
 
   function getConnectionKey(socketUrl: string, headers: Record<string, string>): string {
@@ -518,7 +470,7 @@ export function createOpenAIResponsesWebSocketFetch(
       return forwardWithSseNormalization();
     }
 
-    const wsHeaders = toWebSocketHeaders(getRequestHeaders(input, init));
+    const wsHeaders = toOpenAIResponsesWebSocketHeaders(getRequestHeaders(input, init));
     const socketUrl = getWebSocketUrl(requestUrl);
 
     const useReusableConnection = !reusableBusy;
@@ -1900,29 +1852,6 @@ function getRequestHeaders(input: FetchInput, init?: FetchInit): Record<string, 
     ...base,
     ...override,
   };
-}
-
-function toWebSocketHeaders(headers: Record<string, string>): Record<string, string> {
-  const wsHeaders: Record<string, string> = {};
-
-  for (const [key, value] of Object.entries(headers)) {
-    wsHeaders[key] = value;
-  }
-
-  const existingBeta = wsHeaders["openai-beta"];
-  if (existingBeta && existingBeta.length > 0) {
-    if (!existingBeta.includes(OPENAI_BETA_RESPONSES_WEBSOCKETS)) {
-      wsHeaders["OpenAI-Beta"] = `${existingBeta}, ${OPENAI_BETA_RESPONSES_WEBSOCKETS}`;
-      delete wsHeaders["openai-beta"];
-    } else {
-      wsHeaders["OpenAI-Beta"] = existingBeta;
-      delete wsHeaders["openai-beta"];
-    }
-  } else {
-    wsHeaders["OpenAI-Beta"] = OPENAI_BETA_RESPONSES_WEBSOCKETS;
-  }
-
-  return wsHeaders;
 }
 
 function readHeaderValue(headers: unknown, name: string): string | null | undefined {

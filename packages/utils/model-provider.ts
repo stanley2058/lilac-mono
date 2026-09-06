@@ -15,7 +15,7 @@ import { z } from "zod";
 
 import { claudeCodeExecutableSettings } from "./claude-code-executable";
 import { CODEX_BASE_INSTRUCTIONS } from "./codex-instructions";
-import { env } from "./env";
+import { env, type ResponsesTransportMode } from "./env";
 import {
   extractAccountId,
   OAUTH_DUMMY_KEY,
@@ -475,13 +475,13 @@ export function createCodexOAuthProvider(options: CreateCodexOAuthProviderOption
   });
 }
 
-export function getModelProviders() {
+function createOpenAIProviderForTransport(mode: ResponsesTransportMode) {
   const logger = createLogger({
     module: "utils:model-provider",
   });
 
   const openaiResponsesFetch = createOpenAIResponsesWebSocketFetch({
-    mode: env.providers.openai.responsesTransport,
+    mode,
     onTransportSelected: (details) => {
       logger.debug("responses transport selected", {
         provider: "openai",
@@ -504,13 +504,21 @@ export function getModelProviders() {
     }),
   );
 
+  return createOpenAI({
+    baseURL: env.providers.openai.baseUrl,
+    apiKey: env.providers.openai.apiKey,
+    fetch: withOpenAIImageEditFilenamesFetch(openaiFetch),
+  });
+}
+
+export function createOpenAIResponsesSseModelProvider() {
+  return createOpenAIProviderForTransport("sse");
+}
+
+export function getModelProviders() {
   const providers = {
     openai: env.providers.openai
-      ? createOpenAI({
-          baseURL: env.providers.openai.baseUrl,
-          apiKey: env.providers.openai.apiKey,
-          fetch: withOpenAIImageEditFilenamesFetch(openaiFetch),
-        })
+      ? createOpenAIProviderForTransport(env.providers.openai.responsesTransport)
       : null,
 
     "openai-compatible": env.providers.openaiCompatible.baseUrl

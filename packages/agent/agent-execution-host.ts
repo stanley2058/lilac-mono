@@ -69,6 +69,7 @@ export interface AgentExecutionHost<TOOLS extends ToolSet = ToolSet> extends Age
   prepareRequest(request: {
     executionMode: "local-tools" | "provider-tools";
     signal?: AbortSignal;
+    preparation?: "continuation";
     onErrorPhase(phase: TurnErrorPhase): void;
     selectRequest(context: {
       canonicalMessages: readonly ModelMessage[];

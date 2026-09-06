@@ -88,12 +88,27 @@ function fixture(host: AgentHostServices) {
 }
 
 const host: AgentHostServices = {
+  async prepareContinuation() {
+    return this.prepareContext({
+      attemptId: "first",
+      messages: [],
+      step: 1,
+      signal: new AbortController().signal,
+    });
+  },
+  async beginContinuation() {
+    return Result.ok(undefined);
+  },
+  async awaitEvent() {
+    return Result.ok(undefined);
+  },
   async boundary() {
     return Result.ok({ action: "complete", messages: [] });
   },
   async prepareContext() {
     return Result.ok({
       scopeId: "scope",
+      step: 1,
       system: "",
       messages: [],
       canonicalMessages: [],

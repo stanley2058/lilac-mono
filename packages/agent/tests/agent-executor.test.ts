@@ -28,6 +28,9 @@ class ControlledExecution implements AgentExecution {
   submissionResult: ReturnType<AgentExecution["submitInput"]> = Result.ok(undefined);
   startResult: ReturnType<AgentExecution["start"]> = Result.ok(undefined);
   startPanic: Panic | undefined;
+  retryOwner: AgentExecution["retryOwner"];
+  onStart: (() => void) | undefined;
+  beforeDispose: (() => Promise<void>) | undefined;
   readonly submitted: AgentInput[] = [];
   readonly abort = new AbortController();
   private readonly queued: AgentExecutionEvent[] = [];
@@ -58,12 +61,15 @@ class ControlledExecution implements AgentExecution {
     }
   }
 
-  emit(payload: ExecutionPayload): void {
-    this.queued.push({ attemptId: this.attemptId, sequence: this.sequence++, ...payload });
+  emit(payload: ExecutionPayload): number {
+    const sequence = this.sequence++;
+    this.queued.push({ attemptId: this.attemptId, sequence, ...payload });
     this.available.resolve();
+    return sequence;
   }
 
   start() {
+    this.onStart?.();
     this.started.resolve();
     if (this.startPanic) throw this.startPanic;
     return this.startResult;
@@ -91,6 +97,7 @@ class ControlledExecution implements AgentExecution {
   }
 
   async dispose() {
+    await this.beforeDispose?.();
     this.disposed = true;
     this.closed = true;
     this.available.resolve();
@@ -129,6 +136,644 @@ class ControlledAdapter implements AgentAdapter {
 }
 
 describe("provider-neutral agent executor", () => {
+  test.each(["steer", "followUp"] as const)(
+    "%s accepted during successful attempt disposal continues the same logical run",
+    async (kind) => {
+      const adapter = new ControlledAdapter();
+      const disposalEntered = Promise.withResolvers<void>();
+      const releaseDisposal = Promise.withResolvers<void>();
+      const retained: string[] = [];
+      let ended = 0;
+      let retries = 0;
+      const agent = new AgentExecutor({
+        system: "test",
+        adapter,
+        turnErrorHandler() {
+          retries += 1;
+          return "fail";
+        },
+        recoveryCheckpointHandler(_messages, ids) {
+          retained.push(...ids);
+        },
+      });
+      agent.subscribe((event) => {
+        if (event.type === "agent_end") ended += 1;
+      });
+      const run = agent.prompt("question");
+      const first = await adapter.created.promise;
+      await first.started.promise;
+      first.beforeDispose = async () => {
+        disposalEntered.resolve();
+        await releaseDisposal.promise;
+      };
+      first.emit({ type: "terminal", outcome: { status: "completed" } });
+      await disposalEntered.promise;
+      expect(agent.state.isStreaming).toBe(true);
+      const replacementCreated = adapter.nextCreated.promise;
+      const id = agent[kind]("late update");
+      releaseDisposal.resolve();
+      const continuation = await Promise.race([
+        replacementCreated.then((execution) => ({ status: "replacement" as const, execution })),
+        run.then(() => ({ status: "ended" as const })),
+      ]);
+      expect(continuation.status).toBe("replacement");
+      if (continuation.status !== "replacement")
+        throw new Error("Accepted input outlived the logical run");
+      const replacement = continuation.execution;
+      await replacement.started.promise;
+      expect(first.disposed).toBe(true);
+      expect(ended).toBe(0);
+      expect(replacement.initialMessages).toEqual([
+        { role: "user", content: "question" },
+        { role: "user", content: "late update" },
+      ]);
+      replacement.emit({
+        type: "history-commit",
+        inputIds: [],
+        messages: [{ role: "assistant", content: "answer" }],
+      });
+      replacement.emit({ type: "terminal", outcome: { status: "completed" } });
+      await run;
+      expect(retained).toEqual([id]);
+      expect(ended).toBe(1);
+      expect(retries).toBe(0);
+      expect(adapter.executions).toHaveLength(2);
+    },
+  );
+
+  test("host retry retires the failed attempt and retains each committed or uncertain input ID once", async () => {
+    const timeline: string[] = [];
+    const adapter = new ControlledAdapter(undefined, (execution) => {
+      execution.onStart = () => {
+        timeline.push(`start:${execution.attemptId}`);
+      };
+      execution.beforeDispose = async () => {
+        timeline.push(`dispose:${execution.attemptId}`);
+      };
+    });
+    const cause = new Error("connection lost");
+    const failure = new AgentAdapterFailure({
+      reason: "unavailable",
+      message: "native connection lost",
+      replaySafety: "reconcile",
+      cause,
+    });
+    const handled: unknown[] = [];
+    const retained: string[] = [];
+    const agent = new AgentExecutor({
+      system: "test",
+      adapter,
+      turnErrorHandler(error) {
+        handled.push(error);
+        timeline.push("handler");
+        expect(adapter.executions[0]?.disposed).toBe(true);
+        return "retry";
+      },
+      recoveryCheckpointHandler(_messages, ids) {
+        retained.push(...ids);
+      },
+    });
+    const run = agent.prompt("question");
+    const first = await adapter.created.promise;
+    await first.started.promise;
+    const committedId = agent.steer("committed correction");
+    const committed = await first.inputSubmitted.promise;
+    const commitSequence = first.emit({
+      type: "history-commit",
+      inputIds: [committedId],
+      messages: committed.messages,
+    });
+    expect(
+      (
+        await first.host.awaitEvent({ attemptId: first.attemptId, sequence: commitSequence })
+      ).isOk(),
+    ).toBe(true);
+    const pendingSubmission = first.nextSubmitted.promise;
+    const pendingId = agent.steer("uncertain correction");
+    await pendingSubmission;
+    const acceptedSequence = first.emit({
+      type: "delivery",
+      status: "provider-owned",
+      inputIds: [pendingId],
+    });
+    await first.host.awaitEvent({ attemptId: first.attemptId, sequence: acceptedSequence });
+    const replacementCreated = adapter.nextCreated.promise;
+    first.emit({ type: "terminal", outcome: { status: "failed", error: failure } });
+    const replacement = await replacementCreated;
+    await replacement.started.promise;
+    expect(handled).toEqual([failure]);
+    expect(failure.cause).toBe(cause);
+    expect(timeline).toEqual([
+      `start:${first.attemptId}`,
+      `dispose:${first.attemptId}`,
+      "handler",
+      `start:${replacement.attemptId}`,
+    ]);
+    expect(replacement.initialMessages).toEqual([
+      { role: "user", content: "question" },
+      { role: "user", content: "committed correction" },
+      { role: "user", content: "uncertain correction" },
+    ]);
+    expect(replacement.submitted).toEqual([]);
+    replacement.emit({
+      type: "history-commit",
+      inputIds: [],
+      messages: [{ role: "assistant", content: "answer" }],
+    });
+    replacement.emit({ type: "terminal", outcome: { status: "completed" } });
+    await run;
+    expect(retained).toEqual([committedId, pendingId]);
+    expect(agent.state.recoveryRequired).toBeUndefined();
+    expect(adapter.executions).toHaveLength(2);
+  });
+
+  test.each(["fail", "throw"] as const)(
+    "host retry budget survives attempts and %s leaves recovery required before terminal publication",
+    async (decision) => {
+      const adapter = new ControlledAdapter();
+      const firstFailure = new AgentAdapterFailure({
+        reason: "unavailable",
+        message: "first lost acknowledgement",
+        replaySafety: "reconcile",
+        cause: new Error("first"),
+      });
+      const secondCause = new Error("second");
+      const secondFailure = new AgentAdapterFailure({
+        reason: "unavailable",
+        message: "second lost acknowledgement",
+        replaySafety: "reconcile",
+        cause: secondCause,
+      });
+      const handlerFailure = new Error("retry handler failed");
+      const failures: unknown[] = [];
+      let recoveryAtEnd: typeof agent.state.recoveryRequired;
+      const agent = new AgentExecutor({
+        system: "test",
+        adapter,
+        turnErrorHandler(error) {
+          failures.push(error);
+          if (failures.length === 1) return "retry";
+          if (decision === "throw") throw handlerFailure;
+          return "fail";
+        },
+      });
+      agent.subscribe((event) => {
+        if (event.type === "agent_end") recoveryAtEnd = agent.state.recoveryRequired;
+      });
+      const run = agent.prompt("question");
+      const observedRun = run.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const first = await adapter.created.promise;
+      await first.started.promise;
+      const firstId = agent.steer("first uncertain update");
+      await first.inputSubmitted.promise;
+      first.emit({ type: "delivery", status: "provider-owned", inputIds: [firstId] });
+      const replacementCreated = adapter.nextCreated.promise;
+      first.emit({ type: "terminal", outcome: { status: "failed", error: firstFailure } });
+      const second = await replacementCreated;
+      await second.started.promise;
+      const secondId = agent.steer("second uncertain update");
+      await second.inputSubmitted.promise;
+      second.emit({ type: "delivery", status: "provider-owned", inputIds: [secondId] });
+      second.emit({ type: "terminal", outcome: { status: "failed", error: secondFailure } });
+      expect(await observedRun).toBe(decision === "throw" ? handlerFailure : secondCause);
+      expect(failures).toEqual([firstFailure, secondFailure]);
+      expect(recoveryAtEnd).toEqual({
+        attemptId: second.attemptId,
+        inputIds: [secondId],
+      });
+      expect(agent.state.recoveryRequired).toEqual(recoveryAtEnd);
+      expect(agent.getQueuedSteeringIds()).toEqual([secondId]);
+      expect(adapter.executions).toHaveLength(2);
+      expect(second.disposed).toBe(true);
+    },
+  );
+
+  test("failed replay input preparation keeps the original recovery requirement before agent_end", async () => {
+    const adapter = new ControlledAdapter();
+    const failure = new AgentAdapterFailure({
+      reason: "unavailable",
+      message: "lost acknowledgement",
+      replaySafety: "reconcile",
+      cause: new Error("connection lost"),
+    });
+    let preparations = 0;
+    let handled = 0;
+    let recoveryAtEnd: typeof agent.state.recoveryRequired;
+    const agent = new AgentExecutor({
+      system: "test",
+      adapter,
+      async beforeSteeringDelivery() {
+        preparations += 1;
+        if (preparations === 2) throw new Error("replay input preparation failed");
+      },
+      turnErrorHandler() {
+        handled += 1;
+        return "retry";
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "agent_end") recoveryAtEnd = agent.state.recoveryRequired;
+    });
+    const run = agent.prompt("question");
+    const observedRun = run.then(
+      () => ({ status: "completed" as const }),
+      (error: unknown) => ({ status: "failed" as const, error }),
+    );
+    const execution = await adapter.created.promise;
+    await execution.started.promise;
+    const id = agent.steer("uncertain correction");
+    await execution.inputSubmitted.promise;
+    execution.emit({ type: "delivery", status: "provider-owned", inputIds: [id] });
+    execution.emit({ type: "terminal", outcome: { status: "failed", error: failure } });
+    expect((await observedRun).status).toBe("failed");
+    expect(preparations).toBe(2);
+    expect(handled).toBe(1);
+    expect(recoveryAtEnd).toEqual({ attemptId: execution.attemptId, inputIds: [id] });
+    expect(agent.getQueuedSteeringIds()).toEqual([id]);
+    expect(adapter.executions).toHaveLength(1);
+  });
+
+  test.each(["cancel", "interrupt"] as const)(
+    "Panic identity survives simultaneous %s during failed-attempt retirement",
+    async (control) => {
+      const adapter = new ControlledAdapter();
+      const panic = new Panic({ message: "native execution invariant failed" });
+      const failure = new AgentAdapterFailure({
+        reason: "protocol",
+        message: panic.message,
+        replaySafety: "reconcile",
+        cause: panic,
+      });
+      let handled = 0;
+      const agent = new AgentExecutor({
+        system: "test",
+        adapter,
+        turnErrorHandler() {
+          handled += 1;
+          return "retry";
+        },
+      });
+      const run = agent.prompt("question");
+      const observedRun = run.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const execution = await adapter.created.promise;
+      await execution.started.promise;
+      execution.beforeDispose = async () => {
+        if (control === "cancel") {
+          agent.cancel();
+          return;
+        }
+        await agent.interrupt("correction");
+      };
+      execution.emit({ type: "terminal", outcome: { status: "failed", error: failure } });
+      expect(await observedRun).toBe(panic);
+      expect(execution.disposed).toBe(true);
+      expect(handled).toBe(0);
+      expect(adapter.executions).toHaveLength(1);
+      expect(agent.state.isStreaming).toBe(false);
+    },
+  );
+
+  test("adapter-owned retries do not invoke the host error handler again", async () => {
+    const adapter = new ControlledAdapter(undefined, (execution) => {
+      execution.retryOwner = "adapter";
+    });
+    const cause = new Error("adapter exhausted its own retries");
+    const failure = new AgentAdapterFailure({
+      reason: "unavailable",
+      message: cause.message,
+      replaySafety: "safe",
+      cause,
+    });
+    let handled = 0;
+    const agent = new AgentExecutor({
+      system: "test",
+      adapter,
+      turnErrorHandler() {
+        handled += 1;
+        return "retry";
+      },
+    });
+    const run = agent.prompt("question");
+    const observedRun = run.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const execution = await adapter.created.promise;
+    await execution.started.promise;
+    execution.emit({ type: "terminal", outcome: { status: "failed", error: failure } });
+    expect(await observedRun).toBe(cause);
+    expect(execution.disposed).toBe(true);
+    expect(handled).toBe(0);
+    expect(adapter.executions).toHaveLength(1);
+  });
+
+  test.each(["direct", "queued"] as const)(
+    "%s native interruption starts a fresh execution after retirement without invoking retry policy",
+    async (kind) => {
+      const timeline: string[] = [];
+      const adapter = new ControlledAdapter(
+        { steering: "boundary", followUp: "boundary", interruption: "native" },
+        (execution) => {
+          execution.onStart = () => {
+            timeline.push(`start:${execution.attemptId}`);
+          };
+          execution.beforeDispose = async () => {
+            timeline.push(`dispose:${execution.attemptId}`);
+          };
+        },
+      );
+      let handled = 0;
+      const retained: string[] = [];
+      const agent = new AgentExecutor({
+        system: "test",
+        adapter,
+        turnErrorHandler() {
+          handled += 1;
+          return "fail";
+        },
+        recoveryCheckpointHandler(_messages, ids) {
+          retained.push(...ids);
+        },
+      });
+      const run = agent.prompt("question");
+      const first = await adapter.created.promise;
+      await first.started.promise;
+      const replacementCreated = adapter.nextCreated.promise;
+      const id = kind === "queued" ? agent.steer("correction") : undefined;
+      const interruption =
+        kind === "queued" ? agent.interruptQueuedSteeringAsync() : agent.interrupt("correction");
+      const replacement = await replacementCreated;
+      await replacement.started.promise;
+      const result = await interruption;
+      if (kind === "queued") {
+        if (!id) throw new Error("Queued interrupt has no input ID");
+        expect(result).toEqual({ status: "interrupted", steeringIds: [id] });
+      }
+      expect(timeline).toEqual([
+        `start:${first.attemptId}`,
+        `dispose:${first.attemptId}`,
+        `start:${replacement.attemptId}`,
+      ]);
+      expect(first.disposed).toBe(true);
+      expect(replacement.initialMessages).toEqual([
+        { role: "user", content: "question" },
+        { role: "user", content: "correction" },
+      ]);
+      replacement.emit({
+        type: "history-commit",
+        inputIds: [],
+        messages: [{ role: "assistant", content: "answer" }],
+      });
+      replacement.emit({ type: "terminal", outcome: { status: "completed" } });
+      await run;
+      expect(handled).toBe(0);
+      expect(agent.state.recoveryRequired).toBeUndefined();
+      if (id) expect(retained).toEqual([id]);
+    },
+  );
+
+  test("event barriers acknowledge canonical projection and reject wrong or retired attempts", async () => {
+    const adapter = new ControlledAdapter();
+    const agent = new AgentExecutor({ system: "test", adapter });
+    const run = agent.prompt("question");
+    const execution = await adapter.created.promise;
+    await execution.started.promise;
+    expect(
+      (await execution.host.awaitEvent({ attemptId: "different-attempt", sequence: 0 })).isErr(),
+    ).toBe(true);
+    const sequence = execution.emit({
+      type: "history-commit",
+      inputIds: [],
+      messages: [{ role: "assistant", content: "committed" }],
+    });
+    const barrier = await execution.host.awaitEvent({ attemptId: execution.attemptId, sequence });
+    expect(barrier.isOk()).toBe(true);
+    expect(agent.state.messages).toEqual([
+      { role: "user", content: "question" },
+      { role: "assistant", content: "committed" },
+    ]);
+    execution.emit({ type: "terminal", outcome: { status: "completed" } });
+    await run;
+    expect(
+      (await execution.host.awaitEvent({ attemptId: execution.attemptId, sequence })).isErr(),
+    ).toBe(true);
+  });
+
+  test("an invalid history event rejects its barrier before disposal waits for it", async () => {
+    const adapter = new ControlledAdapter();
+    const agent = new AgentExecutor({ system: "test", adapter });
+    const run = agent.prompt("question");
+    const observedRun = run.then(
+      () => ({ status: "completed" as const }),
+      (error: unknown) => ({ status: "failed" as const, error }),
+    );
+    const execution = await adapter.created.promise;
+    await execution.started.promise;
+    const barrier = execution.host.awaitEvent({ attemptId: execution.attemptId, sequence: 0 });
+    let disposalObservedBarrier = false;
+    execution.beforeDispose = async () => {
+      const result = await barrier;
+      disposalObservedBarrier = result.isErr();
+    };
+    execution.emit({
+      type: "history-commit",
+      inputIds: [],
+      messages: [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "orphan",
+              toolName: "read",
+              output: { type: "text", value: "invalid" },
+            },
+          ],
+        },
+      ],
+    });
+    expect((await barrier).isErr()).toBe(true);
+    expect((await observedRun).status).toBe("failed");
+    expect(disposalObservedBarrier).toBe(true);
+    expect(execution.disposed).toBe(true);
+    expect(agent.state.messages).toEqual([{ role: "user", content: "question" }]);
+  });
+
+  test("continuation preparation refreshes authority without starting or counting the candidate step", async () => {
+    const adapter = new ControlledAdapter();
+    const beforeSteps: number[] = [];
+    let starts = 0;
+    const agent = new AgentExecutor({
+      system: "test",
+      adapter,
+      tools: {
+        original: tool({ inputSchema: z.object({}), execute: () => "original" }),
+        refreshed: tool({ inputSchema: z.object({}), execute: () => "refreshed" }),
+      },
+      beforeStep({ step }) {
+        beforeSteps.push(step);
+        if (step === 2) agent.setActiveTools(new Set(["refreshed"]));
+      },
+    });
+    agent.setActiveTools(new Set(["original"]));
+    agent.subscribe((event) => {
+      if (event.type === "turn_start") starts += 1;
+    });
+    const run = agent.prompt("question");
+    const execution = await adapter.created.promise;
+    await execution.started.promise;
+    const initial = await execution.host.prepareContext({
+      attemptId: execution.attemptId,
+      messages: execution.initialMessages,
+      step: 1,
+      signal: execution.abort.signal,
+    });
+    if (initial.isErr()) throw initial.error;
+    expect(initial.value.step).toBe(1);
+    expect(initial.value.tools.map((entry) => entry.name)).toEqual(["original"]);
+    expect(starts).toBe(1);
+    const candidate = await execution.host.prepareContinuation({
+      attemptId: execution.attemptId,
+      scopeId: initial.value.scopeId,
+      signal: execution.abort.signal,
+    });
+    if (candidate.isErr()) throw candidate.error;
+    expect(candidate.value.step).toBe(2);
+    expect(candidate.value.tools.map((entry) => entry.name)).toEqual(["refreshed"]);
+    expect(beforeSteps).toEqual([1, 2]);
+    expect(starts).toBe(1);
+    const begun = await execution.host.beginContinuation({
+      attemptId: execution.attemptId,
+      scopeId: candidate.value.scopeId,
+      signal: execution.abort.signal,
+    });
+    expect(begun.isOk()).toBe(true);
+    expect(starts).toBe(2);
+    expect(
+      (
+        await execution.host.beginContinuation({
+          attemptId: execution.attemptId,
+          scopeId: candidate.value.scopeId,
+          signal: execution.abort.signal,
+        })
+      ).isErr(),
+    ).toBe(true);
+    expect(
+      (
+        await execution.host.prepareContinuation({
+          attemptId: execution.attemptId,
+          scopeId: initial.value.scopeId,
+          signal: execution.abort.signal,
+        })
+      ).isErr(),
+    ).toBe(true);
+    expect(starts).toBe(2);
+    execution.emit({ type: "terminal", outcome: { status: "completed" } });
+    await run;
+  });
+
+  test("a failed continuation candidate does not consume a step and cannot activate a stale scope", async () => {
+    const adapter = new ControlledAdapter();
+    const beforeSteps: number[] = [];
+    let rejectCandidate = true;
+    let starts = 0;
+    const agent = new AgentExecutor({
+      system: "test",
+      adapter,
+      beforeStep({ step }) {
+        beforeSteps.push(step);
+        if (step === 2 && rejectCandidate) throw new Error("candidate preparation rejected");
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "turn_start") starts += 1;
+    });
+    const run = agent.prompt("question");
+    const execution = await adapter.created.promise;
+    await execution.started.promise;
+    const initial = await execution.host.prepareContext({
+      attemptId: execution.attemptId,
+      messages: execution.initialMessages,
+      step: 1,
+      signal: execution.abort.signal,
+    });
+    if (initial.isErr()) throw initial.error;
+    expect(
+      (
+        await execution.host.prepareContinuation({
+          attemptId: execution.attemptId,
+          scopeId: "unknown",
+          signal: execution.abort.signal,
+        })
+      ).isErr(),
+    ).toBe(true);
+    expect(
+      (
+        await execution.host.prepareContinuation({
+          attemptId: execution.attemptId,
+          scopeId: initial.value.scopeId,
+          signal: execution.abort.signal,
+        })
+      ).isErr(),
+    ).toBe(true);
+    expect(starts).toBe(1);
+    rejectCandidate = false;
+    const candidate = await execution.host.prepareContinuation({
+      attemptId: execution.attemptId,
+      scopeId: initial.value.scopeId,
+      signal: execution.abort.signal,
+    });
+    if (candidate.isErr()) throw candidate.error;
+    expect(candidate.value.step).toBe(2);
+    expect(beforeSteps).toEqual([1, 2, 2]);
+    expect(starts).toBe(1);
+    expect(
+      (
+        await execution.host.beginContinuation({
+          attemptId: execution.attemptId,
+          scopeId: initial.value.scopeId,
+          signal: execution.abort.signal,
+        })
+      ).isErr(),
+    ).toBe(true);
+    expect(
+      (
+        await execution.host.beginContinuation({
+          attemptId: "wrong-attempt",
+          scopeId: candidate.value.scopeId,
+          signal: execution.abort.signal,
+        })
+      ).isErr(),
+    ).toBe(true);
+    expect(
+      (
+        await execution.host.beginContinuation({
+          attemptId: execution.attemptId,
+          scopeId: candidate.value.scopeId,
+          signal: execution.abort.signal,
+        })
+      ).isOk(),
+    ).toBe(true);
+    expect(starts).toBe(2);
+    execution.emit({ type: "terminal", outcome: { status: "completed" } });
+    await run;
+    expect(
+      (
+        await execution.host.beginContinuation({
+          attemptId: execution.attemptId,
+          scopeId: candidate.value.scopeId,
+          signal: execution.abort.signal,
+        })
+      ).isErr(),
+    ).toBe(true);
+  });
+
   test("adapter state views cannot mutate canonical history or nested message content", async () => {
     const controlled = new ControlledAdapter();
     const hostCreated = Promise.withResolvers<AgentExecutionHost>();
@@ -581,6 +1226,9 @@ describe("provider-neutral agent executor", () => {
         double: tool({
           description: "Double a number",
           inputSchema: z.object({ value: z.number() }),
+          outputSchema: z.number(),
+          strict: true,
+          providerOptions: { openai: { deferLoading: false } },
           execute: ({ value }) => {
             calls.push(value);
             return value * 2;
@@ -608,6 +1256,13 @@ describe("provider-neutral agent executor", () => {
     expect(prepared.isOk()).toBe(true);
     if (prepared.isErr()) throw prepared.error;
     expect(prepared.value.tools.map((entry) => entry.name)).toEqual(["double"]);
+    expect(prepared.value.step).toBe(1);
+    expect(prepared.value.tools[0]?.strict).toBe(true);
+    expect(prepared.value.tools[0]?.providerOptions).toEqual({ openai: { deferLoading: false } });
+    expect(JSON.parse(prepared.value.tools[0]?.outputSchemaJson ?? "null")).toMatchObject({
+      type: "number",
+    });
+    expect(prepared.value.tools[0]).not.toHaveProperty("execute");
     const denied = await execution.host.executeTools({
       attemptId: execution.attemptId,
       scopeId: "forged-scope",

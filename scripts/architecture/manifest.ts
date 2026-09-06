@@ -1266,6 +1266,18 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         },
         category: "projection",
       },
+      {
+        identity: { module: "adapters/openai-responses/output.ts", exportName: "parseSchema" },
+        category: "wire",
+      },
+      {
+        identity: { module: "adapters/openai-responses/input.ts", exportName: "jsonOperation" },
+        category: "request",
+      },
+      ...["assistantMessage", "encodeRequest"].map((exportName) => ({
+        identity: { module: "adapters/openai-responses/input.ts", exportName },
+        category: "request" as const,
+      })),
       ...["visit", "isLikelyContextOverflowError"].map((exportName) => ({
         identity: { module: "context-overflow.ts", exportName },
         category: "projection" as const,
@@ -5858,7 +5870,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "c9f3741276a457eed41562762b92fc2272ee44f822403c3a60d059ffbdbb8476";
+  "41c6e13541df7efe5cd4d5241861f6ded6f748e1b40cf844e33e7ee9cf5ecf72";
 
 export const architectureManifest = {
   version: 1,

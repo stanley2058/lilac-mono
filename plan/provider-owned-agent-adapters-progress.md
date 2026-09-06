@@ -74,3 +74,33 @@ canonical history and failed startup skipped disposal. The fixes detach nested s
 inside the disposal/retirement path. Tests cover returned startup failures, Panic identity, retired host
 access, replacement execution, and nested snapshot mutation. The spec re-review found no remaining
 blockers. All 275 agent tests pass, including 14 neutral executor tests. The final `bun run check` passed.
+Committed as `ce60cee7`.
+
+## Stage 3
+
+Rechecked AI SDK 7.0.93 and `@ai-sdk/openai` 4.0.60 distributions and the upstream Responses
+implementation. None exposes `response.steer`. The native implementation uses the documented
+WebSocket protocol and gates native steering to exactly `gpt-6-astra` with compatible execution settings.
+
+The connection helper shares authentication, endpoint shaping, beta headers, and Bun socket setup
+with the existing fetch path. Auto fallback is permitted only before submission and uses a separately
+constructed SSE-only provider. The old fetch wrapper remains available for other consumers.
+
+Native context preparation preserves declaration metadata and tool authority. A prepared successor
+refreshes host context before submission without consuming the next step; the matching successor
+begins that reserved step. An event acknowledgement waits for canonical projection and checkpoint
+publication before the adapter makes a history-dependent host call.
+
+Recovery uses the existing bounded retry policy after attempt retirement. There is no live recovery
+scheduler after retry exhaustion. Unresolved accepted work must remain available for startup recovery,
+with Core suppressing terminal WAL and delivery markers before failure publication in Stage 4.
+
+The review loop fixed conversation-bound replay of stored assistant items, expansion children omitted
+from tool continuations, and a second continuation sent after a late steering failure. Deterministic
+tests cover each case, queued controls before successor creation, and ordering after definite return.
+Cleanup preserves execution and cleanup Panic identity. A final terminal-race review found that input
+arriving during socket close could fail successful completion; the executor now fences delivery at the
+completed boundary and retains later input for a replacement after retirement.
+
+Both standards and spec re-reviews found no remaining blockers. All 344 agent tests pass, including
+54 native protocol/codec/socket tests. The final `bun run check` passed before the Stage 3 commit.

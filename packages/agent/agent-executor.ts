@@ -36,6 +36,7 @@ import {
   type AgentAdapter,
   type AgentExecution,
   type AgentExecutionEvent,
+  type AgentPreparedContext,
 } from "./agent-adapter";
 import {
   type SystemPrompt,
@@ -59,6 +60,7 @@ import {
   type IdleRecoveryDecisionHandler,
   type IdleRecoveryResult,
   type TurnRetrySafety,
+  type TurnErrorPhase,
   type TurnErrorHandler,
   type TurnBoundaryHandler,
   type BeforeStepHandler,
@@ -123,7 +125,19 @@ function presentationMessagePhase(type: "message_start" | "message_update" | "me
   }
 }
 
+type RetiredExecution = {
+  readonly attemptId: string;
+  readonly retryOwner: "host" | "adapter";
+  readonly unresolvedInputIds: readonly string[];
+  readonly cleanupComplete: boolean;
+  readonly hasLateInputs: boolean;
+  readonly phase: TurnErrorPhase;
+};
+
 export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
+  private activeAdapterFailure: OpaqueAgentValue;
+  private retiredExecution: RetiredExecution | undefined;
+  private activeExecutionFailurePhase: TurnErrorPhase = "before-step";
   private readonly adapter: AgentAdapter<AgentExecutionHost<TOOLS>>;
   private readonly toolHost: AgentToolHost<TOOLS>;
   private execution: AgentExecution | undefined;
@@ -318,6 +332,11 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
       canonicalInputIds,
     );
     this.canonicalInputIdsSinceCheckpoint.splice(0, canonicalInputCount);
+    const recovery = this.state.recoveryRequired;
+    if (recovery) {
+      const inputIds = recovery.inputIds.filter((id) => !canonicalInputIds.includes(id));
+      this.state.recoveryRequired = inputIds.length > 0 ? { ...recovery, inputIds } : undefined;
+    }
   }
 
   private recordCanonicalInputs(entries: readonly { readonly id: AgentInputQueueId }[]): void {
@@ -1276,11 +1295,12 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
   private async prepareExecutionRequest(
     request: Parameters<AgentExecutionHost<TOOLS>["prepareRequest"]>[0],
   ): Promise<PreparedExecutionRequest> {
+    this.activeExecutionFailurePhase = "before-step";
     request.onErrorPhase("before-step");
-    await this.persistRecoveryCheckpoint();
-    this.emit({ type: "turn_start" });
-
-    const turnIndex = ++this.turnCounter;
+    const inherited = request.preparation === "continuation";
+    if (!inherited) await this.persistRecoveryCheckpoint();
+    if (!inherited) this.emit({ type: "turn_start" });
+    const turnIndex = inherited ? this.turnCounter + 1 : ++this.turnCounter;
 
     if (this.beforeStep) {
       const preStepSignal = request.signal ?? this.abortController?.signal;
@@ -1315,6 +1335,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
 
     const abortSignal = request.signal ?? this.abortController?.signal;
 
+    this.activeExecutionFailurePhase = "transform-messages";
     request.onErrorPhase("transform-messages");
     const throwIfPreparationAborted = () => {
       if (!abortSignal?.aborted) return;
@@ -1419,7 +1440,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     }
 
     return {
-      scopeId: String(turnIndex),
+      scopeId: String(++this.scopeCounter),
       step: turnIndex,
       system: this.state.system,
       messages: messagesForModel,
@@ -1715,6 +1736,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     this.state.pendingToolCalls = new Set();
     this.recoveryCheckpoint = null;
     this.state.error = undefined;
+    this.state.recoveryRequired = undefined;
 
     this.abortController = new AbortController();
     this.abortRequestedReason = null;
@@ -1797,11 +1819,13 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
 
   private controlWork: Promise<ResultType<void, AgentAdapterFailure>> | undefined;
   private nativeDeliveryWork: Promise<ResultType<void, OpaqueAgentValue>> | undefined;
+  private readonly boundaryReturnedInputIds = new Set<string>();
   private nativeDeliveryFailure: OpaqueAgentValue;
   private readonly nativeInputGroups = new Map<string, readonly string[]>();
   private nativeDeliveryRequested = false;
   private nativeDeliveryScheduled = false;
   private executionTerminated = false;
+  private completedBoundaryInputIds: Set<string> | undefined;
   private scheduleNativeDelivery(): void {
     if (this.execution?.capabilities.steering !== "native" || this.executionTerminated) return;
     this.nativeDeliveryRequested = true;
@@ -1838,6 +1862,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     const execution = this.execution;
     const attempt = this.attempt;
     if (!execution || !attempt || this.cancelResetPending) return;
+    if (this.steeringQueue.some((entry) => this.boundaryReturnedInputIds.has(entry.id))) return;
     const preparation = await this.prepareQueuedSteeringDelivery();
     if (preparation.status !== "prepared") return;
     if (this.executionTerminated) {
@@ -1863,12 +1888,32 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     this.nativeInputGroups.delete(first.id);
     const returned = resultOutcome(attempt.returnPrepared(entries.map((entry) => entry.id)));
     if (!returned.ok) this.failAdapter(returned.error);
+    for (const entry of entries) this.boundaryReturnedInputIds.add(entry.id);
   }
   private attemptSequence = 0;
   private adapterSequence = 0;
+  private acceptedAdapterSequence = -1;
+  private readonly eventWaiters = new Map<
+    number,
+    Array<(result: ResultType<void, AgentAdapterFailure>) => void>
+  >();
   private readonly scopes = new Map<string, StepToolSnapshot<TOOLS>>();
+  private scopeCounter = 0;
+  private activeExecutionScopeId: string | undefined;
+  private readonly continuationScopes = new Map<
+    string,
+    {
+      parentScopeId: string;
+      step: number;
+      settings: Pick<
+        AgentExecutionState<TOOLS>,
+        "system" | "providerOptions" | "reasoning" | "modelSpecifier"
+      >;
+    }
+  >();
 
   private failAdapter(error: AgentAdapterFailure): never {
+    this.activeAdapterFailure = error;
     rethrowAgentPanic(error.cause);
     return signalExternalToolCallHost(
       new AgentExternalHostFailed({ cause: error.cause ?? error, message: error.message }),
@@ -2015,9 +2060,182 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         : undefined,
     });
   }
+  private awaitAdapterEvent(
+    attemptId: string,
+    context: { attemptId: string; sequence: number },
+  ): Promise<ResultType<void, AgentAdapterFailure>> {
+    const invalid =
+      context.attemptId !== attemptId ||
+      this.execution?.attemptId !== attemptId ||
+      !Number.isInteger(context.sequence) ||
+      context.sequence < 0;
+    if (invalid)
+      return Promise.resolve(
+        Result.err(
+          new AgentAdapterFailure({
+            reason: "invalid-state",
+            message: "Event acknowledgement belongs to an invalid execution",
+            replaySafety: "reconcile",
+          }),
+        ),
+      );
+    if (context.sequence <= this.acceptedAdapterSequence)
+      return Promise.resolve(Result.ok(undefined));
+    if (this.executionTerminated)
+      return Promise.resolve(
+        Result.err(
+          new AgentAdapterFailure({
+            reason: "invalid-state",
+            message: "Execution ended before event acceptance",
+            replaySafety: "reconcile",
+          }),
+        ),
+      );
+    return new Promise((resolve) => {
+      const waiters = this.eventWaiters.get(context.sequence) ?? [];
+      waiters.push(resolve);
+      this.eventWaiters.set(context.sequence, waiters);
+    });
+  }
+  private settleAdapterEvent(sequence: number): void {
+    this.acceptedAdapterSequence = sequence;
+    for (const [pendingSequence, waiters] of this.eventWaiters) {
+      if (pendingSequence > sequence) continue;
+      this.eventWaiters.delete(pendingSequence);
+      for (const resolve of waiters) resolve(Result.ok(undefined));
+    }
+  }
+  private rejectEventWaiters(): void {
+    this.executionTerminated = true;
+    const failure = new AgentAdapterFailure({
+      reason: "invalid-state",
+      message: "Execution ended before event acceptance",
+      replaySafety: "reconcile",
+    });
+    for (const waiters of this.eventWaiters.values()) {
+      for (const resolve of waiters) resolve(Result.err(failure));
+    }
+    this.eventWaiters.clear();
+  }
+  private requireCurrentScope(scopeId: string): void {
+    if (this.activeExecutionScopeId === scopeId && this.scopes.has(scopeId)) return;
+    this.failAdapter(
+      new AgentAdapterFailure({
+        reason: "invalid-state",
+        message: "Execution scope is no longer current",
+        replaySafety: "reconcile",
+      }),
+    );
+  }
+  private inheritedSettings() {
+    const state = this.snapshotExecutionState();
+    return {
+      system: state.system,
+      providerOptions: state.providerOptions,
+      reasoning: state.reasoning,
+      modelSpecifier: state.modelSpecifier,
+    };
+  }
+  private async prepareNativeContext(
+    attemptId: string,
+    signal: AbortSignal,
+    inherited: boolean,
+  ): Promise<AgentPreparedContext> {
+    signal.throwIfAborted();
+    const prepared = await this.prepareExecutionRequest({
+      executionMode: "local-tools",
+      signal: AbortSignal.any([
+        signal,
+        ...(this.abortController ? [this.abortController.signal] : []),
+      ]),
+      ...(inherited ? { preparation: "continuation" as const } : {}),
+      onErrorPhase: () => {},
+      selectRequest: async () => ({ executionMode: "local-tools", payload: { mode: "full" } }),
+    });
+    this.requireActiveAttempt(attemptId);
+    this.scopes.set(prepared.scopeId, this.lastStepToolSnapshot!);
+    const tools = await Promise.all(
+      Object.entries(prepared.tools).map(async ([name, definition]) => ({
+        name,
+        description:
+          typeof definition.description === "function"
+            ? definition.description({ context: this.context })
+            : (definition.description ?? ""),
+        inputSchemaJson: JSON.stringify(await asSchema(definition.inputSchema).jsonSchema),
+        strict: definition.strict,
+        providerOptions: snapshotAgentMessage({
+          role: "system",
+          content: "",
+          providerOptions: definition.providerOptions,
+        }).providerOptions,
+        ...(definition.outputSchema === undefined
+          ? {}
+          : {
+              outputSchemaJson: JSON.stringify(await asSchema(definition.outputSchema).jsonSchema),
+            }),
+      })),
+    );
+    this.synchronizeCanonicalHistory();
+    return {
+      scopeId: prepared.scopeId,
+      step: prepared.step,
+      messages: prepared.messages,
+      canonicalMessages: this.state.messages.map(cloneMessage),
+      system: this.snapshotSystemPrompt(prepared.system),
+      tools,
+    };
+  }
   private createExecutionHost(attemptId: string): AgentExecutionHost<TOOLS> {
     const active = () => this.requireActiveAttempt(attemptId);
     return {
+      awaitEvent: (context) => this.awaitAdapterEvent(attemptId, context),
+      prepareContinuation: (context) =>
+        this.hostResult(async () => {
+          active();
+          this.requireSuppliedAttempt(attemptId, context.attemptId);
+          this.requireCurrentScope(context.scopeId);
+          const prepared = await this.prepareNativeContext(attemptId, context.signal, true);
+          this.requireCurrentScope(context.scopeId);
+          this.continuationScopes.set(prepared.scopeId, {
+            parentScopeId: context.scopeId,
+            step: prepared.step,
+            settings: this.inheritedSettings(),
+          });
+          return prepared;
+        }),
+      beginContinuation: (context) =>
+        this.hostResult(async () => {
+          active();
+          this.requireSuppliedAttempt(attemptId, context.attemptId);
+          context.signal.throwIfAborted();
+          const candidate = this.continuationScopes.get(context.scopeId);
+          const snapshot = this.scopes.get(context.scopeId);
+          if (!candidate || !snapshot || candidate.step !== this.turnCounter + 1)
+            this.failAdapter(
+              new AgentAdapterFailure({
+                reason: "invalid-state",
+                message: "Continuation scope is not reserved for the next step",
+                replaySafety: "reconcile",
+              }),
+            );
+          this.requireCurrentScope(candidate.parentScopeId);
+          if (
+            !isDeepStrictEqual(candidate.settings, this.inheritedSettings()) ||
+            !isDeepStrictEqual(snapshot, this.createStepToolSnapshot(candidate.step))
+          )
+            this.failAdapter(
+              new AgentAdapterFailure({
+                reason: "invalid-state",
+                message: "Inherited execution settings changed after preparation",
+                replaySafety: "reconcile",
+              }),
+            );
+          this.turnCounter = candidate.step;
+          this.activeExecutionScopeId = context.scopeId;
+          this.lastStepToolSnapshot = snapshot;
+          this.continuationScopes.clear();
+          this.emit({ type: "turn_start" });
+        }),
       controlBoundary: async () => {
         active();
         return await this.checkControlBoundary();
@@ -2100,38 +2318,10 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         this.hostResult(async () => {
           active();
           this.requireSuppliedAttempt(attemptId, context.attemptId);
-          context.signal.throwIfAborted();
-          const prepared = await this.prepareExecutionRequest({
-            executionMode: "local-tools",
-            signal: AbortSignal.any([
-              context.signal,
-              ...(this.abortController ? [this.abortController.signal] : []),
-            ]),
-            onErrorPhase: () => {},
-            selectRequest: async () => ({
-              executionMode: "local-tools",
-              payload: { mode: "full" },
-            }),
-          });
-          active();
-          this.scopes.set(prepared.scopeId, this.lastStepToolSnapshot!);
-          const tools = await Promise.all(
-            Object.entries(prepared.tools).map(async ([name, definition]) => ({
-              name,
-              description:
-                typeof definition.description === "function"
-                  ? definition.description({ context: this.context })
-                  : (definition.description ?? ""),
-              inputSchemaJson: JSON.stringify(await asSchema(definition.inputSchema).jsonSchema),
-            })),
-          );
-          return {
-            scopeId: prepared.scopeId,
-            messages: prepared.messages,
-            canonicalMessages: this.state.messages.map(cloneMessage),
-            system: prepared.system,
-            tools,
-          };
+          const prepared = await this.prepareNativeContext(attemptId, context.signal, false);
+          this.activeExecutionScopeId = prepared.scopeId;
+          this.continuationScopes.clear();
+          return prepared;
         }),
       executeTools: (context) =>
         this.hostResult(async () => {
@@ -2166,7 +2356,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
               context.calls.map((request) => request.name),
             );
             active();
-            results.push({
+            const settled = {
               callId: call.callId,
               ...projectExternalToolOutcome(outcome),
               message: {
@@ -2180,7 +2370,9 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
                   },
                 ],
               },
-            });
+            };
+            results.push(settled);
+            await context.onSettled?.(settled);
           }
           return results;
         }),
@@ -2192,6 +2384,12 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
           const action = await this.finishExecutionBoundary(context);
           active();
           this.synchronizeCanonicalHistory();
+          if (action !== "continue") {
+            this.executionTerminated = true;
+            this.completedBoundaryInputIds = new Set(
+              [...this.steeringQueue, ...this.followUpQueue].map((entry) => entry.id),
+            );
+          }
           return action === "continue"
             ? {
                 action: "continue" as const,
@@ -2202,19 +2400,196 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         }),
     };
   }
+  private hasPendingExecutionControl(): boolean {
+    return (
+      this.pendingInterrupt !== null ||
+      this.awaitedSteeringInterrupt !== null ||
+      this.idleRecoveryRequest !== null
+    );
+  }
+  private async prepareControlReplacement(): Promise<boolean> {
+    while (true) {
+      const control = await this.checkControlBoundary();
+      if (control === "ready") return true;
+      if (control === "stop") return false;
+    }
+  }
+  private async prepareReplacementInputs(): Promise<void> {
+    const prepared = await this.prepareQueuedSteeringDelivery();
+    if (prepared.status === "prepared") {
+      const batch = prepared.preparation;
+      const consumed = resultOutcome(this.consumeSteeringDelivery(batch));
+      if (!consumed.ok) return signalAgentStateHost(consumed.error);
+      for (const message of consumed.value) this.appendMessage(message);
+      this.recordCanonicalInputs([...batch.followUpEntries, ...batch.steeringEntries]);
+      await this.persistRecoveryCheckpoint();
+      return;
+    }
+    if (this.steeringQueue.length > 0) {
+      return signalAgentStateHost(
+        new AgentStateTransitionFailed({
+          operation: "replacement input delivery",
+          message: "Uncommitted steering could not be prepared for the next execution",
+        }),
+      );
+    }
+    const followUps = takeQueued(this.followUpMode, this.followUpQueue);
+    if (followUps.length === 0) return;
+    const messages = mergeUserMessages(followUps.map((entry) => entry.message));
+    this.prepareInputBatch(followUps, messages);
+    for (const message of messages) this.appendMessage(message);
+    this.recordCanonicalInputs(followUps);
+    await this.persistRecoveryCheckpoint();
+  }
   private async runAdapterExecution(): Promise<void> {
+    let setup: "none" | "inputs" | "controls" = "none";
+    while (true) {
+      const outcome = resultOutcome(
+        await captureAgentPromise(() => this.runSingleAdapterExecution(setup)),
+      );
+      const retired = this.retiredExecution;
+      if (!outcome.ok) rethrowAgentPanic(outcome.error);
+      if (this.cancelResetPending) {
+        this.finishCancellation();
+        return;
+      }
+      if (retired?.cleanupComplete && this.hasPendingExecutionControl()) {
+        setup = "controls";
+        continue;
+      }
+      if (outcome.ok) {
+        if (
+          retired?.cleanupComplete &&
+          retired.hasLateInputs &&
+          this.abortRequestedReason !== "manual"
+        ) {
+          setup = "inputs";
+          continue;
+        }
+        return;
+      }
+      if (!retired || retired.retryOwner === "adapter") {
+        return signalExternalToolCallHost(
+          new AgentExternalHostFailed({
+            cause: outcome.error,
+            message: errorMessage(outcome.error),
+          }),
+        );
+      }
+      const failure =
+        this.activeAdapterFailure instanceof AgentAdapterFailure
+          ? this.activeAdapterFailure
+          : new AgentAdapterFailure({
+              reason: "unavailable",
+              message: errorMessage(outcome.error),
+              replaySafety: "reconcile",
+              cause: outcome.error,
+            });
+      if (retired.unresolvedInputIds.length > 0) {
+        this.state.recoveryRequired = {
+          attemptId: retired.attemptId,
+          inputIds: [...retired.unresolvedInputIds],
+        };
+      }
+      const handler = this.turnErrorHandler;
+      if (!handler || !retired.cleanupComplete || this.abortRequestedReason === "manual") {
+        return signalExternalToolCallHost(
+          new AgentExternalHostFailed({
+            cause: outcome.error,
+            message: errorMessage(outcome.error),
+          }),
+        );
+      }
+      const hadPartialOutput = this.state.streamMessage !== null;
+      this.resetMessagesAfterAbort("recovery");
+      const canRetry =
+        this.state.messages.at(-1)?.role !== "assistant" ||
+        this.steeringQueue.length > 0 ||
+        this.followUpQueue.length > 0;
+      const retrySafety: TurnRetrySafety = canRetry
+        ? { canRetry: true }
+        : { canRetry: false, reason: "invalid-transcript-boundary" };
+      const abortSignal = this.beginFreshPostInterruptPhase();
+      await this.persistRecoveryCheckpoint();
+      const handled = resultOutcome(
+        await captureAgentPromise(
+          async () => await handler(failure, { abortSignal, retrySafety, phase: retired.phase }),
+        ),
+      );
+      if (!handled.ok) rethrowAgentPanic(handled.error);
+      if (this.cancelResetPending) {
+        this.finishCancellation();
+        return;
+      }
+      if (this.hasPendingExecutionControl()) {
+        setup = "controls";
+        continue;
+      }
+      if (!handled.ok) {
+        rethrowAgentPanic(handled.error);
+        return signalExternalToolCallHost(
+          new AgentExternalHostFailed({
+            cause: handled.error,
+            message: "Turn error handler failed",
+          }),
+        );
+      }
+      if (handled.value === "retry" && canRetry && !abortSignal.aborted) {
+        this.emit({ type: "turn_retry", hadPartialOutput, abandonedToolCallIds: [] });
+        setup = "inputs";
+        continue;
+      }
+      return signalExternalToolCallHost(
+        new AgentExternalHostFailed({ cause: outcome.error, message: errorMessage(outcome.error) }),
+      );
+    }
+  }
+
+  private async runSingleAdapterExecution(setup: "none" | "inputs" | "controls"): Promise<void> {
     const attemptId = `execution-${++this.attemptCounter}`;
     this.attempt = new AgentAttempt(attemptId, this.state.messages);
     this.attemptSequence = 0;
     this.adapterSequence = 0;
+    this.acceptedAdapterSequence = -1;
     this.executionTerminated = false;
+    this.completedBoundaryInputIds = undefined;
     this.nativeDeliveryFailure = undefined;
-    const execution = this.adapter.createExecution({
-      attemptId,
-      messages: this.state.messages.map(cloneMessage),
-      host: this.createExecutionHost(attemptId),
-    });
+    this.activeAdapterFailure = undefined;
+    this.retiredExecution = undefined;
+    this.activeExecutionFailurePhase = "before-step";
+    const constructed = resultOutcome(
+      await captureAgentPromise(async () => {
+        if (setup === "controls") {
+          const ready = await this.prepareControlReplacement();
+          if (!ready) return undefined;
+          await this.persistRecoveryCheckpoint();
+        }
+        if (setup === "inputs") await this.prepareReplacementInputs();
+        return this.adapter.createExecution({
+          attemptId,
+          messages: this.state.messages.map(cloneMessage),
+          host: this.createExecutionHost(attemptId),
+        });
+      }),
+    );
+    if (!constructed.ok) {
+      this.attempt.retire();
+      this.attempt = undefined;
+      return signalExternalToolCallHost(
+        new AgentExternalHostFailed({
+          cause: constructed.error,
+          message: errorMessage(constructed.error),
+        }),
+      );
+    }
+    const execution = constructed.value;
+    if (!execution) {
+      this.attempt.retire();
+      this.attempt = undefined;
+      return;
+    }
     this.execution = execution;
+    let completedInputIds: Set<string> | undefined;
     const outcome = resultOutcome(
       await captureAgentPromise(async () => {
         const started = resultOutcome(execution.start());
@@ -2234,11 +2609,18 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
           if (event.type === "terminal") this.executionTerminated = true;
           this.acceptAttemptEvent(event);
           if (event.type === "terminal") {
+            if (event.outcome.status === "completed") {
+              completedInputIds =
+                this.completedBoundaryInputIds ??
+                new Set([...this.steeringQueue, ...this.followUpQueue].map((entry) => entry.id));
+            }
+            this.settleAdapterEvent(event.sequence);
             if (event.outcome.status === "failed") this.failAdapter(event.outcome.error);
             if (this.cancelResetPending) this.finishCancellation();
             return;
           }
-          this.projectExecutionEvent(event);
+          await this.projectExecutionEvent(event);
+          this.settleAdapterEvent(event.sequence);
         }
         this.failAdapter(
           new AgentAdapterFailure({
@@ -2249,6 +2631,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         );
       }),
     );
+    this.rejectEventWaiters();
     const nativeWork = this.nativeDeliveryWork;
     if (nativeWork) {
       const delivered = resultOutcome(await nativeWork);
@@ -2261,6 +2644,21 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     );
     const disposed = resultOutcome(await captureAgentPromise(() => execution.dispose()));
     this.attempt.retire();
+    const disposeOutcome = disposed.ok ? resultOutcome(disposed.value) : undefined;
+    this.retiredExecution = {
+      attemptId,
+      retryOwner: execution.retryOwner ?? "host",
+      unresolvedInputIds: this.attempt.pendingInputs
+        .filter((input) => this.attempt?.inputState(input.id) === "unresolved")
+        .map((input) => input.id),
+      cleanupComplete: disposeOutcome?.ok === true,
+      hasLateInputs:
+        completedInputIds !== undefined &&
+        [...this.steeringQueue, ...this.followUpQueue].some(
+          (entry) => !completedInputIds?.has(entry.id),
+        ),
+      phase: this.activeExecutionFailurePhase,
+    };
     this.attempt = undefined;
     this.execution = undefined;
     this.controlWork = undefined;
@@ -2268,7 +2666,10 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     this.nativeDeliveryRequested = false;
     this.externalToolStarted = undefined;
     this.scopes.clear();
+    this.continuationScopes.clear();
+    this.activeExecutionScopeId = undefined;
     this.nativeInputGroups.clear();
+    this.boundaryReturnedInputIds.clear();
     if (!outcome.ok)
       return signalExternalToolCallHost(
         new AgentExternalHostFailed({ cause: outcome.error, message: errorMessage(outcome.error) }),
@@ -2377,10 +2778,11 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     ];
     return { ...event, inputIds };
   }
-  private projectExecutionEvent(event: AgentExecutionEvent): void {
+  private async projectExecutionEvent(event: AgentExecutionEvent): Promise<void> {
     switch (event.type) {
       case "history-commit":
         for (const message of event.messages) this.appendMessage(cloneMessage(message));
+        this.recoveryCheckpoint = null;
         this.canonicalInputIdsSinceCheckpoint.push(...event.inputIds);
         this.steeringQueue = this.steeringQueue.filter(
           (entry) => !event.inputIds.includes(entry.id),
@@ -2389,6 +2791,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
           (entry) => !event.inputIds.includes(entry.id),
         );
         this.state.streamMessage = null;
+        await this.persistRecoveryCheckpoint();
         this.scheduleNativeDelivery();
         return;
       case "history-checkpoint":
@@ -2455,6 +2858,10 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         this.emit({ type: "turn_warnings", warnings: [...event.warnings] });
         return;
       case "delivery":
+        if (event.status === "returned") {
+          for (const id of event.inputIds) this.boundaryReturnedInputIds.add(id);
+        }
+        return;
       case "tool-activity":
       case "content":
       case "terminal":

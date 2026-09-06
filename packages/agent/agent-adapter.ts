@@ -29,6 +29,11 @@ export class AgentAdapterFailure extends TaggedError("AgentAdapterFailure")<{
   readonly cause?: OpaqueAgentValue;
 }> {}
 
+export type AgentRecoveryRequired = {
+  readonly attemptId: string;
+  readonly inputIds: readonly string[];
+};
+
 export type AgentToolRequest = {
   readonly callId: string;
   readonly name: string;
@@ -44,6 +49,7 @@ export type AgentToolResult = {
 
 export type AgentPreparedContext = {
   readonly scopeId: string;
+  readonly step: number;
   readonly canonicalMessages: readonly ModelMessage[];
   readonly messages: readonly ModelMessage[];
   readonly system: string | SystemModelMessage | readonly SystemModelMessage[];
@@ -51,10 +57,27 @@ export type AgentPreparedContext = {
     readonly name: string;
     readonly description: string;
     readonly inputSchemaJson: string;
+    readonly strict?: boolean;
+    readonly providerOptions?: ModelMessage["providerOptions"];
+    readonly outputSchemaJson?: string;
   }[];
 };
 
 export interface AgentHostServices {
+  prepareContinuation(context: {
+    readonly attemptId: string;
+    readonly scopeId: string;
+    readonly signal: AbortSignal;
+  }): Promise<ResultType<AgentPreparedContext, AgentAdapterFailure>>;
+  beginContinuation(context: {
+    readonly attemptId: string;
+    readonly scopeId: string;
+    readonly signal: AbortSignal;
+  }): Promise<ResultType<void, AgentAdapterFailure>>;
+  awaitEvent(context: {
+    readonly attemptId: string;
+    readonly sequence: number;
+  }): Promise<ResultType<void, AgentAdapterFailure>>;
   boundary(context: {
     readonly attemptId: string;
     readonly finishReason: FinishReason;
@@ -84,6 +107,7 @@ export interface AgentHostServices {
     readonly scopeId: string;
     readonly calls: readonly AgentToolRequest[];
     readonly signal: AbortSignal;
+    readonly onSettled?: (result: AgentToolResult) => void | Promise<void>;
   }): Promise<ResultType<readonly AgentToolResult[], AgentAdapterFailure>>;
 }
 
@@ -177,6 +201,7 @@ export type AgentExecutionEvent = {
 
 export interface AgentExecution {
   readonly attemptId: string;
+  readonly retryOwner?: "host" | "adapter";
   readonly capabilities: AgentCapabilities;
   readonly events: AsyncIterable<AgentExecutionEvent>;
   // Construction is dormant so the host can install observers before any work begins.

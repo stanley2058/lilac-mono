@@ -99,6 +99,7 @@ export class AiSdkAgentAdapter<TOOLS extends ToolSet = ToolSet> implements Agent
     };
     return {
       attemptId: context.attemptId,
+      retryOwner: "adapter",
       capabilities: { steering: "boundary", followUp: "boundary", interruption: "restart" },
       events: channel.events,
       start: () => {

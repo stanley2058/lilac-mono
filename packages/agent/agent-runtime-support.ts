@@ -26,6 +26,7 @@ import {
 import { cloneAgentMessage as cloneQueuedMessageValue } from "./message-clone";
 import type { ExpandedToolCall } from "./tool-call-expansion";
 import type { ToolBatchExecutionFailed } from "./agent-tool-host";
+import type { AgentRecoveryRequired } from "./agent-adapter";
 export type {
   StepToolSnapshot,
   ExecutedExpansionChild,
@@ -358,6 +359,7 @@ export interface AgentState<TOOLS extends ToolSet> {
   pendingToolCalls: Set<string>;
   /** Set when the run terminates due to an error. */
   error?: string;
+  recoveryRequired?: AgentRecoveryRequired;
   /** Provider-specific options. */
   providerOptions?: { [x: string]: JSONObject };
   /** Portable AI SDK reasoning effort. */
