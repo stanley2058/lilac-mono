@@ -1226,8 +1226,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         category: "projection" as const,
       })),
       ...[
-        "cloneSteeringValue",
-        "isClonedModelMessage",
         "recoveryToolOutput",
         "AiSdkPiAgent.executeExternalToolCall",
         "AiSdkPiAgent.finishIdleRecovery",
@@ -1236,6 +1234,10 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         "extractToolCallsFromMessages",
       ].map((exportName) => ({
         identity: { module: "ai-sdk-pi-agent.ts", exportName },
+        category: "projection" as const,
+      })),
+      ...["cloneSteeringValue", "isClonedModelMessage"].map((exportName) => ({
+        identity: { module: "message-clone.ts", exportName },
         category: "projection" as const,
       })),
       ...[
@@ -2924,7 +2926,7 @@ const INTEGRATED_CAPABILITY_PREDICATES = new Map<string, readonly ReasonedSymbol
       },
       {
         identity: {
-          module: "ai-sdk-pi-agent.ts",
+          module: "message-clone.ts",
           exportName: "isClonedModelMessage",
         },
         reason:
@@ -5841,7 +5843,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "2abe3fb265a828756bc2038c8dff7277a7c7b43184128d9adbb5cd15b2284a70";
+  "a6773ab2352689f661a30c6861fa7f8bfdcbf2ed042fd753ae80194f710e537b";
 
 export const architectureManifest = {
   version: 1,

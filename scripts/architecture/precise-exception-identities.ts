@@ -463,6 +463,7 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
   "apps/mini-lilac-tui": [["src/failure-adapter.ts", "signalTuiDefect", "signal"]],
   "apps/tool-bridge": [["client.ts", "signalBridgeDefect", "signal"]],
   "packages/agent": [
+    ["message-clone.ts", "snapshotAgentMessage", "signal"],
     ["ai-sdk-pi-agent.ts", "AiSdkPiAgent.executeExternalToolCall.map.<callback@1>", "signal"],
     ["ai-sdk-pi-agent.ts", "AiSdkPiAgent.finishIdleRecovery", "signal"],
     ["ai-sdk-pi-agent.ts", "AiSdkPiAgent.runLoop.<callback>", "signal"],

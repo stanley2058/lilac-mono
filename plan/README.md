@@ -7,7 +7,8 @@ facts are incorporated into those documents and remain available in Git history.
 
 ## Active
 
-No repository-wide implementation plans are active.
+- [Provider-owned agent adapters](provider-owned-agent-adapters.md): extract provider execution from
+  the shared executor, add native OpenAI steering, and unify Core's Claude control path.
 
 Only plans listed under **Active** are repository-wide implementation plans. A task-specific plan is
 authoritative only when the user explicitly approves it for that task.
