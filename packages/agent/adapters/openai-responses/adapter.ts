@@ -195,10 +195,12 @@ class OpenAIResponsesExecution implements AgentExecution {
   }
   async dispose(): Promise<ResultType<void, AgentAdapterFailure>> {
     this.stop();
-    if (this.fallback) await this.fallback.dispose();
+    const disposal = this.fallback
+      ? await this.fallback.dispose()
+      : Result.ok<void, AgentAdapterFailure>(undefined);
     if (this.work) await this.work;
     this.channel.close();
-    return Result.ok(undefined);
+    return disposal;
   }
   private stop(): void {
     this.controller.abort();

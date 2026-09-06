@@ -181,6 +181,20 @@ describe("OpenAI Responses connection", () => {
     await expect(opening).rejects.toBe(panic);
     expect(ControlledWebSocket.instances[0]!.closed).toBe(true);
   });
+  it("preserves the cancellation Panic when socket cleanup also panics", async () => {
+    installSocket();
+    const controller = new AbortController();
+    const originalPanic = new Panic({ message: "cancel invariant" });
+    ControlledWebSocket.closeFailure = new Panic({ message: "close invariant" });
+    const opening = connectOpenAIResponsesWebSocket({
+      url: "wss://example.test/responses",
+      headers: {},
+      signal: controller.signal,
+    });
+    controller.abort(originalPanic);
+    await expect(opening).rejects.toBe(originalPanic);
+    expect(ControlledWebSocket.instances[0]!.closed).toBe(true);
+  });
   it("rejects a cleanup Panic rather than converting it into a connection error", async () => {
     installSocket();
     const panic = new Panic({ message: "close invariant" });

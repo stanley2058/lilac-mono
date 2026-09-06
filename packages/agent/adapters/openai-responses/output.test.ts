@@ -288,16 +288,22 @@ describe("OpenAI Responses output codec", () => {
         .project({ id: "r", status: "completed", output: [{ type: "unhandled_tool", id: "x" }] })
         .isErr(),
     ).toBe(true);
-    expect(
-      openAIResponseCodec
-        .project({
-          id: "r",
-          status: "completed",
-          output: [
-            { type: "function_call", id: "fc", call_id: "call", name: "lookup", arguments: "{" },
-          ],
-        })
-        .isErr(),
-    ).toBe(true);
+    const projected = openAIResponseCodec
+      .project({
+        id: "r",
+        status: "completed",
+        output: [
+          {
+            type: "function_call",
+            id: "fc",
+            call_id: "call",
+            name: "lookup",
+            arguments: "not-json",
+          },
+        ],
+      })
+      .unwrap();
+    expect(projected.calls).toEqual([{ callId: "call", name: "lookup", inputJson: "not-json" }]);
+    expect(projected.assistant.content).toMatchObject([{ type: "tool-call", input: "not-json" }]);
   });
 });

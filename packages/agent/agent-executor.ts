@@ -1939,6 +1939,10 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
       new AgentExternalHostFailed({ cause: error.cause ?? error, message: error.message }),
     );
   }
+  private rethrowExecutionPanic(error: OpaqueAgentValue): void {
+    rethrowAgentPanic(error);
+    if (error instanceof AgentAdapterFailure) rethrowAgentPanic(error.cause);
+  }
   private requireSuppliedAttempt(expected: string, supplied: string): void {
     if (expected === supplied) return;
     this.failAdapter(
@@ -2700,6 +2704,13 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     this.activeExecutionScopeId = undefined;
     this.nativeInputGroups.clear();
     this.boundaryReturnedInputIds.clear();
+    const controlResult = controlled.ok ? resultOutcome(controlled.value) : undefined;
+    if (!outcome.ok) this.rethrowExecutionPanic(outcome.error);
+    this.rethrowExecutionPanic(this.nativeDeliveryFailure);
+    if (!controlled.ok) this.rethrowExecutionPanic(controlled.error);
+    if (controlResult && !controlResult.ok) this.rethrowExecutionPanic(controlResult.error);
+    if (!disposed.ok) this.rethrowExecutionPanic(disposed.error);
+    if (disposeOutcome && !disposeOutcome.ok) this.rethrowExecutionPanic(disposeOutcome.error);
     if (!outcome.ok)
       return signalExternalToolCallHost(
         new AgentExternalHostFailed({ cause: outcome.error, message: errorMessage(outcome.error) }),
@@ -2718,8 +2729,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
           message: errorMessage(controlled.error),
         }),
       );
-    const controlResult = resultOutcome(controlled.value);
-    if (!controlResult.ok) this.failAdapter(controlResult.error);
+    if (controlResult && !controlResult.ok) this.failAdapter(controlResult.error);
     if (!disposed.ok)
       return signalExternalToolCallHost(
         new AgentExternalHostFailed({
@@ -2727,8 +2737,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
           message: errorMessage(disposed.error),
         }),
       );
-    const disposeResult = resultOutcome(disposed.value);
-    if (!disposeResult.ok) this.failAdapter(disposeResult.error);
+    if (disposeOutcome && !disposeOutcome.ok) this.failAdapter(disposeOutcome.error);
   }
 
   private acceptPresentation(attemptId: string, event: AgentEvent<ToolSet>): void {

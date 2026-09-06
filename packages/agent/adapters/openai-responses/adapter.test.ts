@@ -953,4 +953,105 @@ describe("OpenAI Responses native execution", () => {
       ),
     ).toHaveLength(1);
   });
+  test("invalid tool arguments produce a host error while valid sibling calls still execute", async () => {
+    const executed: string[] = [];
+    const { socket, agent } = fixture({
+      tools: {
+        lookup: tool({
+          inputSchema: z.object({ query: z.string() }),
+          execute: ({ query }) => {
+            executed.push(query);
+            return "valid sibling result";
+          },
+        }),
+      },
+    });
+    const run = agent.prompt("question");
+    await socket.nextSend();
+    socket.created("r1");
+    socket.finished("r1", "", false, [
+      {
+        type: "function_call",
+        id: "bad-fc",
+        call_id: "bad-call",
+        name: "lookup",
+        arguments: "not-json",
+      },
+      {
+        type: "function_call",
+        id: "good-fc",
+        call_id: "good-call",
+        name: "lookup",
+        arguments: '{"query":"valid"}',
+      },
+    ]);
+    const continuation = await socket.nextSend();
+    expect(executed).toEqual(["valid"]);
+    expect(continuation.previous_response_id).toBe("r1");
+    expect(JSON.stringify(continuation.input)).toContain("bad-call");
+    expect(JSON.stringify(continuation.input)).toContain("valid sibling result");
+    socket.created("r2", "r1");
+    socket.finished("r2", "done");
+    await run;
+    const results = agent.state.messages
+      .filter((message) => message.role === "tool")
+      .flatMap((message) => message.content);
+    const invalid = results.find(
+      (part) => part.type === "tool-result" && part.toolCallId === "bad-call",
+    );
+    expect(invalid).toMatchObject({ type: "tool-result", output: { type: "error-text" } });
+    expect(socket.sent).toHaveLength(2);
+  });
+
+  test("reports a delegated fallback disposal failure instead of clean retirement", async () => {
+    const failure = new AgentAdapterFailure({
+      reason: "unavailable",
+      message: "fallback cleanup failed",
+      replaySafety: "reconcile",
+    });
+    const fallback: AgentAdapter<AgentExecutionHost> = {
+      createExecution({ attemptId }) {
+        return {
+          attemptId,
+          capabilities: { steering: "boundary", followUp: "boundary", interruption: "restart" },
+          events: {
+            async *[Symbol.asyncIterator]() {
+              yield {
+                attemptId,
+                sequence: 0,
+                type: "terminal" as const,
+                outcome: { status: "completed" as const },
+              };
+            },
+          },
+          start: () => Result.ok(undefined),
+          submitInput: () => Result.err(failure),
+          interrupt: async () => Result.ok(undefined),
+          cancel: async () => Result.ok(undefined),
+          dispose: async () => Result.err(failure),
+        };
+      },
+    };
+    const { agent } = fixture(
+      {},
+      {
+        transport: "auto",
+        fallback,
+        connect: async () =>
+          Result.err(
+            new AgentAdapterFailure({
+              reason: "unavailable",
+              message: "upgrade refused",
+              replaySafety: "safe",
+            }),
+          ),
+      },
+    );
+    expect(
+      await agent.prompt("question").then(
+        () => undefined,
+        (error: unknown) => error,
+      ),
+    ).toBe(failure);
+  });
 });

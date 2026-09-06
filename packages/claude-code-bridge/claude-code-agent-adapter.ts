@@ -33,7 +33,14 @@ type EventPayload = AgentExecutionEvent extends infer Event
   : never;
 type Injection = {
   input: AgentInput;
-  state: "submitting" | "pending" | "delivered" | "returned" | "committed";
+  state:
+    | "submitting"
+    | "pending"
+    | "delivered"
+    | "returned"
+    | "committing"
+    | "committed"
+    | "unresolved";
   callback?: boolean;
 };
 
@@ -82,18 +89,41 @@ export class ClaudeCodeAgentAdapter<TOOLS extends ToolSet = ToolSet> implements 
     const flushDelivered = async (): Promise<ResultType<void, AgentAdapterFailure>> => {
       const delivered = injections.filter((entry) => entry.state === "delivered");
       if (delivered.length === 0) return Result.ok(undefined);
-      for (const entry of delivered) entry.state = "committed";
+      for (const entry of delivered) entry.state = "committing";
       const committedSequence = emit({
         type: "history-commit",
         messages: delivered.flatMap((entry) => [...entry.input.messages]),
         inputIds: delivered.map((entry) => entry.input.id),
       });
-      return await context.host.awaitEvent({
+      const accepted = await context.host.awaitEvent({
         attemptId: context.attemptId,
         sequence: committedSequence,
       });
+      accepted.match({
+        ok: () => {
+          for (const entry of delivered) entry.state = "committed";
+        },
+        err: () => {
+          retryOwner = "host";
+          for (const entry of delivered) entry.state = "unresolved";
+        },
+      });
+      return accepted;
     };
-    const pending = () => injections.filter((entry) => entry.state === "pending");
+    const unresolvedInputs = () =>
+      injections.filter(
+        (entry) =>
+          entry.state === "pending" || entry.state === "unresolved" || entry.state === "committing",
+      );
+    const closeDeliveryWindow = (): void => {
+      nativeAccepting = false;
+      // A later acknowledgement cannot establish where its input belongs before the completed turn.
+      for (const entry of injections) {
+        if (entry.state !== "pending") continue;
+        entry.state = "unresolved";
+        retryOwner = "host";
+      }
+    };
     const wrappedHost: AgentExecutionHost<TOOLS> = {
       ...context.host,
       prepareRequest: async (request) => {
@@ -102,28 +132,32 @@ export class ClaudeCodeAgentAdapter<TOOLS extends ToolSet = ToolSet> implements 
         return prepared;
       },
       commitTurn: async (turn) => {
-        nativeAccepting = false;
+        closeDeliveryWindow();
         const committed = resultOutcome(await flushDelivered());
         if (!committed.ok) return signalClaudeAdapterHost(committed.error);
         await context.host.commitTurn(turn);
       },
       finishBoundary: async (input) => {
-        await this.lifecycle.recordSuccessfulModelCall?.(context.host.readState().messages);
-        if (pending().length > 0) {
+        if (unresolvedInputs().length > 0) {
           retryOwner = "host";
           return "break";
         }
+        await this.lifecycle.recordSuccessfulModelCall?.(context.host.readState().messages);
         const decision = await context.host.finishBoundary(input);
-        injections.splice(0, injections.length);
+        for (let index = injections.length - 1; index >= 0; index -= 1) {
+          const entry = injections[index];
+          if (entry?.state === "committed" || entry?.state === "returned")
+            injections.splice(index, 1);
+        }
         boundaryDeliveryRequired = false;
         return decision;
       },
       settleFailure: async (error, failureContext) => {
-        nativeAccepting = false;
+        closeDeliveryWindow();
         rethrowAgentPanic(error);
         const committed = resultOutcome(await flushDelivered());
         if (!committed.ok) return signalClaudeAdapterHost(committed.error);
-        if (pending().length > 0) {
+        if (unresolvedInputs().length > 0) {
           retryOwner = "host";
           return "break";
         }
@@ -143,8 +177,9 @@ export class ClaudeCodeAgentAdapter<TOOLS extends ToolSet = ToolSet> implements 
           emit(event);
           continue;
         }
+        closeDeliveryWindow();
         const committed = resultOutcome(await flushDelivered());
-        const unresolved = pending();
+        const unresolved = unresolvedInputs();
         for (const entry of unresolved)
           emit({ type: "delivery", inputIds: [entry.input.id], status: "unresolved" });
         retired = true;
@@ -178,6 +213,7 @@ export class ClaudeCodeAgentAdapter<TOOLS extends ToolSet = ToolSet> implements 
       const drained = resultOutcome(await captureAgentPromise(drain));
       if (!drained.ok) {
         retired = true;
+        if (unresolvedInputs().length > 0 || uncertainSubmission) retryOwner = "host";
         emit({
           type: "terminal",
           outcome: {
@@ -308,7 +344,7 @@ export class ClaudeCodeAgentAdapter<TOOLS extends ToolSet = ToolSet> implements 
         const disposed = await sdk.dispose();
         if (pumping) await pumping;
         channel.close();
-        if (pending().length > 0 || uncertainSubmission) {
+        if (unresolvedInputs().length > 0 || uncertainSubmission) {
           if (this.lifecycle.retireForRetry) {
             await this.lifecycle.retireForRetry();
             return disposed;

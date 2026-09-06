@@ -29,3 +29,5 @@ promises to implement:
 - Core tool-triggered checkpoint deletion depends on receiving the Discord gateway deletion event;
   the deletion tool does not unlink the checkpoint mapping directly.
 - Persistent compaction checkpoints have limited end-to-end deletion and time-based cleanup coverage.
+- Native OpenAI tool-result content does not propagate per-part `openai.promptCacheBreakpoint`
+  metadata. Current Core tool results do not set it.

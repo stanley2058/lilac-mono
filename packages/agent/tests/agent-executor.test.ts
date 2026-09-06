@@ -31,6 +31,9 @@ class ControlledExecution implements AgentExecution {
   retryOwner: AgentExecution["retryOwner"];
   onStart: (() => void) | undefined;
   beforeDispose: (() => Promise<void>) | undefined;
+  disposePanic: Panic | undefined;
+  disposeResult: Awaited<ReturnType<AgentExecution["dispose"]>> = Result.ok(undefined);
+  cancelAction: AgentExecution["cancel"] | undefined;
   readonly submitted: AgentInput[] = [];
   readonly abort = new AbortController();
   private readonly queued: AgentExecutionEvent[] = [];
@@ -92,6 +95,7 @@ class ControlledExecution implements AgentExecution {
   async cancel() {
     this.cancelled = true;
     this.abort.abort();
+    if (this.cancelAction) return this.cancelAction();
     this.emit({ type: "terminal", outcome: { status: "cancelled" } });
     return Result.ok(undefined);
   }
@@ -101,7 +105,8 @@ class ControlledExecution implements AgentExecution {
     this.disposed = true;
     this.closed = true;
     this.available.resolve();
-    return Result.ok(undefined);
+    if (this.disposePanic) throw this.disposePanic;
+    return this.disposeResult;
   }
 }
 
@@ -136,6 +141,80 @@ class ControlledAdapter implements AgentAdapter {
 }
 
 describe("provider-neutral agent executor", () => {
+  for (const scenario of [
+    { cleanup: "dispose", result: false, operationPanic: false },
+    { cleanup: "dispose", result: true, operationPanic: false },
+    { cleanup: "control", result: false, operationPanic: false },
+    { cleanup: "control", result: true, operationPanic: false },
+    { cleanup: "dispose", result: false, operationPanic: true },
+    { cleanup: "control", result: true, operationPanic: true },
+  ] as const) {
+    test(`${scenario.operationPanic ? "operation Panic remains primary with" : "ordinary failure yields to"} ${scenario.cleanup} ${scenario.result ? "Result cause" : "throw"} Panic after cleanup`, async () => {
+      const adapter = new ControlledAdapter();
+      const operationError = scenario.operationPanic
+        ? new Panic({ message: "operation invariant failed" })
+        : new Error("ordinary operation failure");
+      const operationFailure = new AgentAdapterFailure({
+        reason: "unavailable",
+        message: operationError.message,
+        replaySafety: "reconcile",
+        cause: operationError,
+      });
+      const cleanupPanic = new Panic({ message: `${scenario.cleanup} invariant failed` });
+      const cleanupFailure = new AgentAdapterFailure({
+        reason: "unavailable",
+        message: cleanupPanic.message,
+        replaySafety: "reconcile",
+        cause: cleanupPanic,
+      });
+      const timeline: string[] = [];
+      let retries = 0;
+      const agent = new AgentExecutor({
+        system: "test",
+        adapter,
+        turnErrorHandler() {
+          retries += 1;
+          return "retry";
+        },
+      });
+      const run = agent.prompt("question");
+      const observedRun = run.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const execution = await adapter.created.promise;
+      await execution.started.promise;
+      execution.beforeDispose = async () => {
+        timeline.push("dispose");
+      };
+      const releaseControl = Promise.withResolvers<void>();
+      if (scenario.cleanup === "dispose") {
+        if (scenario.result) execution.disposeResult = Result.err(cleanupFailure);
+        else execution.disposePanic = cleanupPanic;
+      } else {
+        execution.cancelAction = async () => {
+          await releaseControl.promise;
+          timeline.push("control");
+          if (!scenario.result) throw cleanupPanic;
+          return Result.err(cleanupFailure);
+        };
+        agent.cancel();
+      }
+      execution.emit({ type: "terminal", outcome: { status: "failed", error: operationFailure } });
+      releaseControl.resolve();
+      expect(await observedRun).toBe(scenario.operationPanic ? operationError : cleanupPanic);
+      expect(execution.disposed).toBe(true);
+      expect(timeline).toEqual(
+        scenario.cleanup === "control" ? ["control", "dispose"] : ["dispose"],
+      );
+      expect(retries).toBe(0);
+      expect(agent.state.isStreaming).toBe(false);
+      expect(
+        (await execution.host.awaitEvent({ attemptId: execution.attemptId, sequence: 0 })).isErr(),
+      ).toBe(true);
+    });
+  }
+
   test.each(["steer", "followUp"] as const)(
     "%s after a rich host completed boundary waits for a fresh attempt",
     async (kind) => {

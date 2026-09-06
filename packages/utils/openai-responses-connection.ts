@@ -129,15 +129,15 @@ export function connectOpenAIResponsesWebSocket(options: {
       settled = true;
       cleanup();
       const closed = Result.try({ try: () => socket?.close(), catch: (cause) => ({ cause }) });
+      if (isPanic(error)) {
+        reject(error);
+        return;
+      }
       if (closed.isErr()) {
         if (isPanic(closed.error.cause)) {
           reject(closed.error.cause);
           return;
         }
-      }
-      if (isPanic(error)) {
-        reject(error);
-        return;
       }
       resolve(
         Result.err(new OpenAIResponsesConnectionFailed({ reason, error, message: error.message })),

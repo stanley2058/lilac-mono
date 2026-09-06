@@ -462,4 +462,117 @@ describe("ClaudeCodeAgentAdapter", () => {
     expect(agent.state.messages.filter((message) => message.content === "late")).toHaveLength(1);
     expect(f.calls()).toBe(2);
   });
+  test.each([true, false])(
+    "late delivery callback %s during canonical turn publication retains unresolved input ownership",
+    async (delivered) => {
+      const f = fixture();
+      const turnPublished = Promise.withResolvers<void>();
+      const releasePublication = Promise.withResolvers<void>();
+      let recorded = 0;
+      let boundaries = 0;
+      f.lifecycle.recordSuccessfulModelCall = async () => {
+        recorded += 1;
+      };
+      const agent = new AgentExecutor({
+        system: "test",
+        adapter: {
+          createExecution(context) {
+            return f.adapter.createExecution({
+              ...context,
+              host: {
+                ...context.host,
+                async commitTurn(turn) {
+                  await context.host.commitTurn(turn);
+                  turnPublished.resolve();
+                  await releasePublication.promise;
+                },
+                async finishBoundary(input) {
+                  boundaries += 1;
+                  return await context.host.finishBoundary(input);
+                },
+              },
+            });
+          },
+        },
+      });
+      const running = agent.prompt("question");
+      const failure = running.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await f.started;
+      const id = agent.steer({ role: "user", content: "uncertain correction" });
+      await f.injected;
+      f.finish();
+      await turnPublished.promise;
+      f.deliver(delivered);
+      releasePublication.resolve();
+      expect(await failure).toBeDefined();
+      expect(agent.state.recoveryRequired?.inputIds).toEqual([id]);
+      expect(
+        agent.state.messages.some((message) => message.content === "uncertain correction"),
+      ).toBe(false);
+      expect(recorded).toBe(0);
+      expect(boundaries).toBe(0);
+    },
+  );
+
+  test.each(["success-record", "host-boundary"] as const)(
+    "callbacks during %s cannot discard or duplicate an already committed input",
+    async (gap) => {
+      const f = fixture({ immediateDelivery: true });
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let recordedMessages: readonly ModelMessage[] = [];
+      f.lifecycle.recordSuccessfulModelCall = async (messages) => {
+        recordedMessages = messages;
+        if (gap === "success-record") {
+          entered.resolve();
+          await release.promise;
+        }
+      };
+      const agent = new AgentExecutor({
+        system: "test",
+        adapter: {
+          createExecution(context) {
+            return f.adapter.createExecution({
+              ...context,
+              host: {
+                ...context.host,
+                async finishBoundary(input) {
+                  if (gap === "host-boundary") {
+                    entered.resolve();
+                    await release.promise;
+                  }
+                  return await context.host.finishBoundary(input);
+                },
+              },
+            });
+          },
+        },
+      });
+      const running = agent.prompt("question");
+      await f.started;
+      agent.steer({ role: "user", content: "confirmed correction" });
+      await f.injected;
+      f.finish();
+      await entered.promise;
+      f.deliver(false);
+      f.deliver(true);
+      release.resolve();
+      await running;
+      expect(agent.state.messages.map((message) => message.role)).toEqual([
+        "user",
+        "user",
+        "assistant",
+      ]);
+      expect(
+        agent.state.messages.filter((message) => message.content === "confirmed correction"),
+      ).toHaveLength(1);
+      expect(recordedMessages.some((message) => message.content === "confirmed correction")).toBe(
+        true,
+      );
+      expect(agent.state.recoveryRequired).toBeUndefined();
+    },
+  );
 });

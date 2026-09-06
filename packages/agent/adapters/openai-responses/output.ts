@@ -1,6 +1,7 @@
 import type { AssistantModelMessage, LanguageModelUsage } from "ai";
 import { Result, type Result as ResultType } from "better-result";
 import { z } from "zod";
+import { normalizeToolCallInputValue } from "@stanley2058/lilac-utils/tool-call-input-normalization";
 import { AgentAdapterFailure, type AgentOutput, type AgentToolRequest } from "../../agent-adapter";
 import { resultOutcome } from "../../agent-runtime-support";
 import { captureAgentOperation, rethrowAgentPanic } from "../../failure-adapters";
@@ -398,7 +399,7 @@ function projectResponse(
             });
           break;
         case "function_call": {
-          const input = yield* decodeJson(item.arguments);
+          const input = normalizeToolCallInputValue(item.arguments);
           calls.push({ callId: item.call_id, name: item.name, inputJson: item.arguments });
           content.push({
             type: "tool-call",
