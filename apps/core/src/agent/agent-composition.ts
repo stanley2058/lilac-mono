@@ -325,11 +325,6 @@ export function createCoreAgentComposition(input: {
     configureOptions,
     initializeTools,
     retireForRetry,
-    adapterFactory: (options: AdapterOptions) =>
-      createCoreAgentAdapter(options, {
-        resolved: input.getBinding().resolved,
-        claude: input.claude,
-      }),
     prepareHistory,
     recoverProtocolFailure,
     compaction,

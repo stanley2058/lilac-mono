@@ -69,11 +69,13 @@ The fail-closed workspace inventory is `ACTIVE_WORKSPACES` in `scripts/architect
 
 ### Packages
 
-- `packages/agent`: provider-neutral AI SDK agent loop, steering/follow-up/interrupt queues, atomic tool execution, compaction hooks, retries, and cross-provider history projection.
+- `packages/agent`: provider-neutral execution policy, input ownership, canonical history/checkpoints,
+  authorized host tool execution, and AI SDK and native OpenAI Responses adapters.
 - `packages/bash-safety`: static Bash analysis and accidental-damage policy. It is a guardrail, not isolation.
 - `packages/blob-storage`: the adapter-neutral Core managed-blob seam, strict handle/reference codecs,
   supervised uploads, verified reads, expiry, maintenance, and local and S3-compatible adapters.
-- `packages/claude-code-bridge`: Claude runtime integration, in-process MCP tool bridge, native attempt ownership, and continuation metadata.
+- `packages/claude-code-bridge`: Claude agent adapter, runtime integration, in-process MCP tool bridge,
+  native input delivery, attempt settlement, and continuation metadata.
 - `packages/coding-tools`: shared coding-tool schemas and implementations, patch/edit behavior, batching, instruction discovery, and tool guardrails.
 - `packages/event-bus`: event catalog, codecs, typed bus, delivery policy, dead letters, and Redis Streams transport.
 - `packages/fs`: local filesystem operations, search backends, edit/hashline primitives, and the remote filesystem protocol.
@@ -231,7 +233,10 @@ terminalizes terminal heads, restores active heads, and starts accepted work wit
 original messages. Journal corruption resets only journal progress and never rewrites accepted work.
 
 Agent recovery is at-least-once. A crash can repeat model calls, tools, controls, external effects, or a
-terminal surface write. A run becomes terminal when Core initiates its terminal output write. Core does
+terminal surface write. Ordinarily, a run becomes terminal when Core initiates its terminal output write.
+An exhausted failure with unresolved native input preserves accepted deliveries, its workflow claim,
+and a nonterminal WAL checkpoint before publishing failure feedback. That work resumes through startup
+recovery; there is no live recovery scheduler after retry exhaustion. Core does
 not wait for a Discord or GitHub acknowledgement. Discord recovery best-effort reconnects to the latest
 durably linked output message. A missing, deleted, or uneditable message falls back to a fresh reply.
 
@@ -250,6 +255,23 @@ Mini centralizes server state under `$XDG_STATE_HOME/mini-lilac`, falling back t
 ACP Controller stores run records, cancellation records, and its session index under `$XDG_STATE_HOME/lilac-acp-controller`, falling back to `~/.local/state/lilac-acp-controller`. Harness-owned session storage remains owned by each external harness.
 
 ### Provider-Owned State
+
+`packages/agent/agent-executor.ts` owns logical runs, ordered input IDs, canonical commits, and host
+authority. Adapters own model calls, transport, response chains, tool scheduling, and native controls.
+`apps/core/src/agent` selects and constructs adapters and supplies Core history, compaction, and lifecycle
+services. Model fallback disposes the previous execution before constructing its replacement. Core's
+bus runner retains durable delivery, lineage/storage finalization, resource authority, and publication.
+
+Core uses native OpenAI Responses execution for its existing WebSocket transport selection. The OpenAI
+adapter gates native steering to exactly `gpt-6-astra` in compatible single-agent settings. Conversation
+binding and automatic compaction use boundary delivery. Auto transport may fall back to SSE only before
+submission; connection loss after submission retires and reconciles the attempt. Acceptance reserves an
+input, while successor creation establishes its canonical position. Socket and steering state remain
+process-local, with existing accepted controls and checkpoints providing the recovery floor.
+
+`AiSdkPiAgent` is a delegating compatibility facade. Mini retains its default AI SDK execution and
+existing Claude continuation and queued steering behavior. The WebSocket-to-SSE utility remains in use
+by Mini's provider resolution and Codex OAuth; native Core execution does not depend on that emulation.
 
 Claude native authentication, configuration, and transcripts live under `CLAUDE_CONFIG_DIR` or Claude's own default, outside Core and Mini stores. Lilac persists only its own bindings and attempt metadata and does not own Claude credentials or transcript retention. See `docs/claude-code.md` for the continuation and deployment contract.
 
@@ -289,7 +311,10 @@ These invariants matter more than a fragile numbered list. Update this section o
 - Core resource URI, origin, cache, classification, access, and materialization behavior:
   `apps/core/src/resource`; Discord origin refresh belongs in
   `apps/core/src/surface/discord/discord-resource-origin.ts`.
-- Shared agent turn, steering, interrupt, retry, or compaction behavior: `packages/agent`; Core bus/session policy stays in `apps/core/src/surface/bridge/bus-agent-runner.ts`.
+- Shared run/input/history policy: `packages/agent/agent-executor.ts`; provider execution:
+  `packages/agent/adapters` and `packages/claude-code-bridge/claude-code-agent-adapter.ts`; Core adapter
+  composition: `apps/core/src/agent`. Core bus/session policy stays in
+  `apps/core/src/surface/bridge/bus-agent-runner.ts`.
 - Portable coding tools: `packages/coding-tools`, `packages/fs`, `packages/bash-safety`, and `packages/tool-results`. Core host adapters belong in `apps/core/src/tools`.
 - Core Level 1 or Level 2 exposure: `apps/core/src/plugins/builtin`, `apps/core/src/plugins/manager.ts`, and the implementation under `apps/core/src/tools` or `apps/core/src/tool-server/tools`.
 - Plugin contract, loading, or lifecycle: `packages/plugin-runtime` and `PLUGIN_AUTHORING.md`.
