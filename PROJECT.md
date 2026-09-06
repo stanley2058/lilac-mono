@@ -211,6 +211,12 @@ At runtime, only the Core composition root constructs and closes the store. The 
 owns and closes its separate store. Providers and surfaces open references through registered
 materialization modules immediately before use.
 
+Core's transcript database retains surface-message aliases after surface deletion. Deleted aliases
+remain valid for transcript lookup and request lineage; recovery targets and surface-coverage checks
+use live aliases only. Transcript deletion removes both live and deleted aliases. Deleted aliases
+without a transcript expire under the configured transcript age limit. A failed terminal transcript
+save produces a failed request outcome through the runner's ordinary failure path.
+
 Core's transcript database also owns resource metadata and retained transcript or surface-projection
 references. A structured resource part contains only the opaque URI and display metadata. Discord
 attachment IDs, signed CDN URLs, and blob object IDs do not enter messages or model markers. The

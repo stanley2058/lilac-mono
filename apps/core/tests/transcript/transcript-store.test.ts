@@ -1752,6 +1752,162 @@ describe("SqliteTranscriptStore", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
+  it("retains deleted aliases for history without advertising them as live output", () => {
+    const store = new SqliteTranscriptStore(":memory:");
+    const preview = { platform: "discord", channelId: "chan", messageId: "preview" } as const;
+    const final = { ...preview, messageId: "final" };
+    resultValue(
+      store.saveRequestTranscript({
+        requestId: "request",
+        sessionId: "chan",
+        requestClient: "discord",
+        messages: [{ role: "assistant", content: "answer" }],
+        finalText: "answer",
+      }),
+    );
+    store.linkSurfaceMessagesToRequest({
+      requestId: "request",
+      created: [preview, final],
+      last: final,
+    });
+    unlinkSurfaceMessage(store, preview);
+    store.linkSurfaceMessagesToRequest({ requestId: "request", created: [preview], last: preview });
+    expect(getTranscriptBySurfaceMessage(store, preview)?.requestId).toBe("request");
+    expect(store.listSurfaceMessagesForRequest({ requestId: "request" })).toEqual([final]);
+    expect(store.listRecentAgentWrites().map((row) => row.messageId)).toEqual(["final"]);
+    expect(store.listDiscoveryRecords()[0]?.surfaceRefs).toEqual([final]);
+    unlinkSurfaceMessage(store, final);
+    expect(getTranscriptBySurfaceMessage(store, final)?.requestId).toBe("request");
+    expect(store.listSurfaceMessagesForRequest({ requestId: "request" })).toEqual([]);
+    expect(store.listRecentAgentWrites()).toEqual([]);
+    expect(store.listDiscoveryRecords()[0]?.surfaceRefs).toEqual([]);
+    store.close();
+  });
+
+  it("migrates schema 10 aliases as live and preserves tombstones across reopen", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-alias-migration-"));
+    const dbPath = path.join(dir, "transcripts.db");
+    const original = new SqliteTranscriptStore(dbPath);
+    const ref = { platform: "discord", channelId: "chan", messageId: "output" } as const;
+    resultValue(
+      original.saveRequestTranscript({
+        requestId: "request",
+        sessionId: "chan",
+        requestClient: "discord",
+        messages: [{ role: "assistant", content: "answer" }],
+      }),
+    );
+    original.linkSurfaceMessagesToRequest({ requestId: "request", created: [ref], last: ref });
+    original.close();
+    const legacy = new Database(dbPath);
+    legacy.run("DROP TRIGGER delete_transcript_surface_aliases");
+    legacy.run("ALTER TABLE surface_message_to_request DROP COLUMN deleted_ts");
+    legacy.run("DELETE FROM transcript_schema_migrations WHERE version = 11");
+    legacy.close();
+
+    const migrated = new SqliteTranscriptStore(dbPath);
+    expect(migrated.listSurfaceMessagesForRequest({ requestId: "request" })).toEqual([ref]);
+    unlinkSurfaceMessage(migrated, ref);
+    migrated.close();
+    const reopened = new SqliteTranscriptStore(dbPath);
+    expect(reopened.listSurfaceMessagesForRequest({ requestId: "request" })).toEqual([]);
+    expect(getTranscriptBySurfaceMessage(reopened, ref)?.requestId).toBe("request");
+    reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it.each(["age", "count"] as const)(
+    "removes live and deleted aliases during %s retention",
+    async (mode) => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-alias-retention-"));
+      const dbPath = path.join(dir, "transcripts.db");
+      const store = new SqliteTranscriptStore(dbPath, undefined, undefined, {
+        retention: {
+          maxAgeMs: mode === "age" ? { kind: "bounded", value: 60_000 } : { kind: "unlimited" },
+          maxRequests: mode === "count" ? { kind: "bounded", value: 1 } : { kind: "unlimited" },
+        },
+      });
+      resultValue(
+        store.saveRequestTranscript({
+          requestId: "old",
+          sessionId: "chan",
+          requestClient: "discord",
+          messages: [{ role: "assistant", content: "old answer" }],
+        }),
+      );
+      const preview = { platform: "discord", channelId: "chan", messageId: "preview" } as const;
+      const final = { ...preview, messageId: "final" };
+      store.linkSurfaceMessagesToRequest({
+        requestId: "old",
+        created: [preview, final],
+        last: final,
+      });
+      unlinkSurfaceMessage(store, preview);
+      const raw = new Database(dbPath);
+      raw.run("UPDATE request_transcripts SET updated_ts = 1 WHERE request_id = 'old'");
+      resultValue(
+        store.saveRequestTranscript({
+          requestId: "new",
+          sessionId: "chan",
+          requestClient: "discord",
+          messages: [{ role: "assistant", content: "new answer" }],
+        }),
+      );
+      expect(getRequestTranscript(store, { requestId: "old" })).toBeNull();
+      expect(
+        raw
+          .query("SELECT message_id FROM surface_message_to_request WHERE request_id = 'old'")
+          .all(),
+      ).toEqual([]);
+      raw.close();
+      store.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    },
+  );
+
+  it("expires deleted orphan aliases using the configured transcript age limit", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-orphan-alias-retention-"));
+    const dbPath = path.join(dir, "transcripts.db");
+    let maxAgeMs: RetentionLimit = { kind: "unlimited" };
+    const store = new SqliteTranscriptStore(dbPath, undefined, undefined, {
+      getRetention: () => ({ maxAgeMs, maxRequests: { kind: "unlimited" } }),
+    });
+    const save = (requestId: string) =>
+      resultValue(
+        store.saveRequestTranscript({
+          requestId,
+          sessionId: "chan",
+          requestClient: "discord",
+          messages: [{ role: "assistant", content: "answer" }],
+        }),
+      );
+    save("retained");
+    for (const requestId of ["expired-orphan", "recent-orphan", "live-orphan", "retained"]) {
+      const ref = { platform: "discord", channelId: "chan", messageId: requestId } as const;
+      store.linkSurfaceMessagesToRequest({ requestId, created: [ref], last: ref });
+      if (requestId !== "live-orphan") unlinkSurfaceMessage(store, ref);
+    }
+    const raw = new Database(dbPath);
+    raw.run(
+      "UPDATE surface_message_to_request SET deleted_ts = 1 WHERE request_id IN ('expired-orphan', 'retained')",
+    );
+    const aliasIds = () =>
+      raw
+        .query<{ request_id: string }, []>(
+          "SELECT request_id FROM surface_message_to_request ORDER BY request_id",
+        )
+        .all()
+        .map((row) => row.request_id);
+    save("unlimited-prune");
+    expect(aliasIds()).toEqual(["expired-orphan", "live-orphan", "recent-orphan", "retained"]);
+    maxAgeMs = { kind: "bounded", value: 60_000 };
+    save("bounded-prune");
+    expect(aliasIds()).toEqual(["live-orphan", "recent-orphan", "retained"]);
+    raw.close();
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
   it("cleans only unlinked checkpoint candidates", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
     const store = new SqliteTranscriptStore(path.join(dir, "transcripts.db"));
@@ -1877,7 +2033,7 @@ describe("SqliteTranscriptStore", () => {
     const version = migrated
       .query("SELECT MAX(version) AS version FROM transcript_schema_migrations")
       .get();
-    expect(version).toEqual({ version: 10 });
+    expect(version).toEqual({ version: 11 });
     expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
     const columns = migrated.query("PRAGMA table_info(request_transcripts)").all() as Array<{
       name: string;
@@ -2847,6 +3003,8 @@ describe("SqliteTranscriptStore", () => {
     );
     store.close();
     const schema7 = new Database(dbPath);
+    schema7.run("DROP TRIGGER delete_transcript_surface_aliases");
+    schema7.run("ALTER TABLE surface_message_to_request DROP COLUMN deleted_ts");
     schema7.run("DROP TABLE core_agent_run_checkpoint_blobs");
     schema7.run("DROP TABLE core_transcript_blob_refs");
     schema7.run("ALTER TABLE core_owned_blobs DROP COLUMN deletion_claim_ts");

@@ -752,6 +752,78 @@ describe("Core primary lineage composition", () => {
     store.close();
   });
 
+  it("persists follow-up lineage after its replied-to preview is deleted", async () => {
+    const { store } = await createStore();
+    const preview = surfaceMessage({ id: "preview", text: "working", ts: 1, userId: "bot" });
+    const user = surfaceMessage({
+      id: "follow-up",
+      text: "next",
+      ts: 2,
+      raw: { reference: { messageId: "preview", channelId: "channel" } },
+    });
+    const final = surfaceMessage({ id: "final", text: "answer", ts: 3, userId: "bot" });
+    resultValue(
+      store.saveRequestTranscript({
+        requestId: "source",
+        sessionId: "channel",
+        requestClient: "discord",
+        messages: [{ role: "assistant", content: "canonical answer" }],
+        providerState: { lastFamily: "ai-sdk", containsCrossFamilyTurns: false },
+      }),
+    );
+    store.linkSurfaceMessagesToRequest({
+      requestId: "source",
+      created: [preview.ref],
+      last: preview.ref,
+    });
+    const adapter = new LayeredCompositionAdapter([preview, user], [preview.ref, user.ref]);
+    const composed = await composeRequestMessages(adapter, {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      transcriptStore: store,
+      ingressMessages: [user],
+      trigger: { type: "reply", msgRef: user.ref },
+    });
+    const manifest = composed.corePrimaryLineage;
+    expect(manifest.state).toBe("complete");
+    if (manifest.state !== "complete") throw new Error("expected complete lineage");
+    expect(manifest.segments[0]?.requestSource?.aliases.map((alias) => alias.messageId)).toEqual([
+      "preview",
+    ]);
+    const validate = () =>
+      resultValue(
+        store.validateCorePrimaryLineageReferences({
+          manifest,
+          requestClient: "discord",
+          sessionId: "channel",
+          surfaceId: "discord:channel",
+        }),
+      );
+    expect(validate()).toBeNull();
+    resultValue(store.unlinkSurfaceMessage(preview.ref));
+    store.linkSurfaceMessagesToRequest({
+      requestId: "source",
+      created: [final.ref],
+      last: final.ref,
+    });
+    expect(validate()).toBeNull();
+    resultValue(
+      store.saveRequestTranscript({
+        requestId: "following",
+        sessionId: "channel",
+        requestClient: "discord",
+        messages: [{ role: "assistant", content: "following answer" }],
+        corePrimaryLineage: manifest,
+      }),
+    );
+    expect<unknown>(
+      resultValue(store.getCorePrimaryLineageManifest({ requestId: "following" })),
+    ).toEqual(manifest);
+    expect(store.listSurfaceMessagesForRequest({ requestId: "source" })).toEqual([final.ref]);
+    store.close();
+  });
+
   it("falls back to the surface projection when a linked request transcript is empty", async () => {
     const { store } = await createStore();
     store.saveRequestTranscript({

@@ -1,6 +1,6 @@
 import { openAIResponseCodec } from "@stanley2058/lilac-agent/adapters/openai-responses/output";
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -16,6 +16,7 @@ import type { OpenAIResponsesSocket } from "@stanley2058/lilac-agent/adapters/op
 import {
   createLilacBus,
   lilacEventTypes,
+  outReqTopic,
   type StoredMessageV1,
 } from "@stanley2058/lilac-event-bus";
 import { parseCoreConfigV2ToUniversal } from "@stanley2058/lilac-utils";
@@ -45,6 +46,12 @@ import {
   removeFullyReconciledAgentRunTerminalHeads,
   selectAgentRunAcceptedRecovery,
 } from "../../../src/runtime/create-core-runtime";
+
+import {
+  SqliteTranscriptStore,
+  TranscriptStoreSqliteDriverFailure,
+  type TranscriptStore,
+} from "../../../src/transcript/transcript-store";
 
 const directories: string[] = [];
 
@@ -279,6 +286,8 @@ async function reconstruct(input: {
   readonly dbPath: string;
   readonly blobStore: BlobStore;
   readonly onEffect?: () => void;
+  readonly transcriptStore?: TranscriptStore;
+  readonly beforeActivate?: (bus: ReturnType<typeof createLilacBus>) => Promise<void>;
   readonly createAgent?: (options: AiSdkPiAgentOptions<ToolSet>) => AiSdkPiAgent<ToolSet>;
 }): Promise<RecoveredRun> {
   const store = new SqliteRequestDeliveryStore({
@@ -328,6 +337,7 @@ async function reconstruct(input: {
     blobStore: input.blobStore,
     requestDelivery: delivery,
     agentRunJournal: journalPort,
+    transcriptStore: input.transcriptStore,
     subscriptionId: `crash-recovery-${crypto.randomUUID()}`,
     config: parseCoreConfigV2ToUniversal(
       input.createAgent ? { agent: { retry: { enabled: false } } } : {},
@@ -397,6 +407,7 @@ async function reconstruct(input: {
     requestDeliveryStore: store,
     journal,
   });
+  await input.beforeActivate?.(bus);
   runner.activate();
   return { prompts, order, runner, store, journal, bus, manager };
 }
@@ -485,6 +496,78 @@ async function waitForRecoveryState(predicate: () => boolean): Promise<void> {
 }
 
 describe("agent run hard-crash recovery", () => {
+  it.each(["result", "throw"] as const)(
+    "reports transcript save %s failures as failed durable outcomes",
+    async (failureMode) => {
+      const initial = await fixture();
+      const accepted = acceptWork(initial.store, { label: "transcript-save-failure" }, Date.now());
+      initial.store.close();
+      initial.journal.close();
+      const transcripts = new SqliteTranscriptStore(":memory:");
+      const error = new TranscriptStoreSqliteDriverFailure({
+        operation: "save-request-transcript",
+        code: "SQLITE_FULL",
+        message: "Transcript storage is full",
+      });
+      const save = spyOn(transcripts, "saveRequestTranscript").mockImplementation(() => {
+        if (failureMode === "throw") throw error;
+        return Result.err(error);
+      });
+      const states: string[] = [];
+      const finalTexts: string[] = [];
+      const run = await reconstruct({
+        dbPath: initial.dbPath,
+        blobStore: initial.blobStore,
+        transcriptStore: transcripts,
+        beforeActivate: async (bus) => {
+          value(
+            await bus.subscribeTopic(
+              "evt.request",
+              { mode: "tail", offset: { type: "now" } },
+              async (message) => {
+                if (message.type === lilacEventTypes.EvtRequestLifecycleChanged)
+                  states.push(message.data.state);
+                return Result.ok(undefined);
+              },
+              () => "dead-letter",
+            ),
+          );
+          value(
+            await bus.subscribeTopic(
+              outReqTopic(accepted.requestId),
+              { mode: "tail", offset: { type: "now" } },
+              async (message) => {
+                if (message.type === lilacEventTypes.EvtAgentOutputResponseText)
+                  finalTexts.push(message.data.finalText);
+                return Result.ok(undefined);
+              },
+              () => "dead-letter",
+            ),
+          );
+        },
+      });
+      try {
+        await waitForTerminal(run.store, [accepted.requestDeliveryId]);
+        expect(states).toContain("failed");
+        expect(states).not.toContain("resolved");
+        expect(finalTexts).toHaveLength(1);
+        expect(finalTexts[0]).toContain("Error:");
+        expect(finalTexts[0]).toContain("Transcript storage is full");
+        expect(value(run.store.load(accepted.requestDeliveryId))).toMatchObject({
+          state: "terminal",
+          outcome: { kind: "failed" },
+        });
+        expect(
+          value(transcripts.getRequestTranscript({ requestId: accepted.requestId })),
+        ).toBeNull();
+      } finally {
+        await closeRecovered(run);
+        save.mockRestore();
+        transcripts.close();
+      }
+    },
+  );
+
   it("retains exhausted native steering and recovers only input absent from its checkpoint", async () => {
     const initial = await fixture();
     const owner = acceptWork(initial.store, { label: "native-recovery-owner" }, 1);

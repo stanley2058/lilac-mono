@@ -1921,6 +1921,20 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
           [10, Date.now()],
         );
       }
+      if (version < 11) {
+        this.db.run("ALTER TABLE surface_message_to_request ADD COLUMN deleted_ts INTEGER");
+        this.db.run(`
+          CREATE TRIGGER delete_transcript_surface_aliases
+          AFTER DELETE ON request_transcripts
+          BEGIN
+            DELETE FROM surface_message_to_request WHERE request_id = OLD.request_id;
+          END
+        `);
+        this.db.run(
+          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
+          [11, Date.now()],
+        );
+      }
       const foreignKeyFailures = this.db
         .query<DecodedTranscriptForeignKeyFailureRow, []>("PRAGMA foreign_key_check")
         .all()
@@ -3629,7 +3643,7 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
             const linkedOutput = this.db
               .query(
                 `SELECT 1 FROM surface_message_to_request
-               WHERE request_id = ? AND platform = ? AND channel_id = ?
+               WHERE request_id = ? AND platform = ? AND channel_id = ? AND deleted_ts IS NULL
                LIMIT 1`,
               )
               .get(atom.requestId, input.requestClient, input.sessionId);
@@ -3939,18 +3953,20 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
       () => {
         const mapping = this.db
           .query<{ request_id: string }, [AdapterPlatform, string, string]>(
-            "SELECT request_id FROM surface_message_to_request WHERE platform = ? AND channel_id = ? AND message_id = ?",
+            "SELECT request_id FROM surface_message_to_request WHERE platform = ? AND channel_id = ? AND message_id = ? AND deleted_ts IS NULL",
           )
           .get(input.platform, input.channelId, input.messageId);
         if (!mapping) return Result.ok({ checkpointDeleted: false });
 
         this.db.run(
-          "DELETE FROM surface_message_to_request WHERE platform = ? AND channel_id = ? AND message_id = ?",
-          [input.platform, input.channelId, input.messageId],
+          "UPDATE surface_message_to_request SET deleted_ts = ? WHERE platform = ? AND channel_id = ? AND message_id = ?",
+          [Date.now(), input.platform, input.channelId, input.messageId],
         );
 
         const remaining = this.db
-          .query("SELECT 1 FROM surface_message_to_request WHERE request_id = ? LIMIT 1")
+          .query(
+            "SELECT 1 FROM surface_message_to_request WHERE request_id = ? AND deleted_ts IS NULL LIMIT 1",
+          )
           .get(mapping.request_id);
         if (remaining)
           return Result.ok({ requestId: mapping.request_id, checkpointDeleted: false });
@@ -4022,7 +4038,9 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
       this.db,
       () => {
         const linked = this.db
-          .query("SELECT 1 FROM surface_message_to_request WHERE request_id = ? LIMIT 1")
+          .query(
+            "SELECT 1 FROM surface_message_to_request WHERE request_id = ? AND deleted_ts IS NULL LIMIT 1",
+          )
           .get(input.requestId);
         if (linked) return Result.ok(false);
 
@@ -5040,7 +5058,7 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
         `
         SELECT request_id, platform, channel_id, message_id
         FROM surface_message_to_request
-        WHERE request_id = ?
+        WHERE request_id = ? AND deleted_ts IS NULL
         ORDER BY created_ts ASC, rowid ASC
         `,
       )
@@ -5090,13 +5108,14 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
           rt.final_text
         FROM request_transcripts rt
         JOIN surface_message_to_request sm
-          ON sm.request_id = rt.request_id
+          ON sm.request_id = rt.request_id AND sm.deleted_ts IS NULL
         WHERE sm.rowid = (
           SELECT sm2.rowid
           FROM surface_message_to_request sm2
           WHERE sm2.request_id = sm.request_id
             AND sm2.platform = sm.platform
             AND sm2.channel_id = sm.channel_id
+            AND sm2.deleted_ts IS NULL
           ORDER BY sm2.created_ts DESC, sm2.rowid DESC
           LIMIT 1
         )
@@ -5158,7 +5177,7 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
           sm.created_ts AS surface_created_ts
         FROM request_transcripts rt
         LEFT JOIN surface_message_to_request sm
-          ON sm.request_id = rt.request_id
+          ON sm.request_id = rt.request_id AND sm.deleted_ts IS NULL
         ORDER BY rt.updated_ts DESC, rt.created_ts DESC, sm.created_ts ASC, sm.rowid ASC
         `,
       )
@@ -6056,7 +6075,7 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
           AND context_meta_json IS NOT NULL
           AND NOT EXISTS (
             SELECT 1 FROM surface_message_to_request sm
-            WHERE sm.request_id = request_transcripts.request_id
+            WHERE sm.request_id = request_transcripts.request_id AND sm.deleted_ts IS NULL
           )
           AND NOT EXISTS (
             SELECT 1 FROM core_lineage_request_refs lineage_ref
@@ -6095,6 +6114,15 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
     if (retention.maxAgeMs.kind === "bounded") {
       const cutoff = now - retention.maxAgeMs.value;
       this.db.run(
+        `DELETE FROM surface_message_to_request
+         WHERE deleted_ts < ?
+           AND NOT EXISTS (
+             SELECT 1 FROM request_transcripts transcript
+             WHERE transcript.request_id = surface_message_to_request.request_id
+           )`,
+        [cutoff],
+      );
+      this.db.run(
         `DELETE FROM request_transcripts
          WHERE updated_ts < ?
            AND NOT EXISTS (
@@ -6126,9 +6154,6 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
 
         for (const v of victims) {
           this.db.run("DELETE FROM request_transcripts WHERE request_id = ?", [v.request_id]);
-          this.db.run("DELETE FROM surface_message_to_request WHERE request_id = ?", [
-            v.request_id,
-          ]);
         }
       }
     }

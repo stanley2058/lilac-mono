@@ -7680,7 +7680,7 @@ export async function startBusAgentRunner(params: {
                       errorMessage: saveError.message,
                     }),
                   );
-                  return;
+                  return signalBusAgentRunnerHostFailure(saveError);
                 }
                 if (coreNamedClaudeRuntime && !isCancelled) {
                   if (!providerState) {
@@ -7817,6 +7817,7 @@ export async function startBusAgentRunner(params: {
                   sessionId: headers.session_id,
                 }),
               );
+              return signalBusAgentRunnerHostFailure(persistError);
             }
           }
           if (corePrimaryClaudeRuntime && shouldSkipSurfaceReply) {

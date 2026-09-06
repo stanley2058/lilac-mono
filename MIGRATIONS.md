@@ -334,7 +334,7 @@ does not expose an intermediate schema as the completed startup state.
 
 <a id="core-transcript-database-schemas-1-9"></a>
 
-## Core transcript database schemas 1-10
+## Core transcript database schemas 1-11
 
 Core's `agent-transcripts.db` has its own `transcript_schema_migrations` sequence. These are internal
 SQLite migrations and do not change `core-config.yaml`; its current config contract remains
@@ -381,6 +381,16 @@ SQLite migrations and do not change `core-config.yaml`; its current config contr
 - Transcript schema 10 adds a canonical deferred-tool snapshot to every new request transcript and
   removes the session-wide selection table. Historical rows have no snapshot. Descendants use the
   newest reachable prefix snapshot, or start empty when none exists.
+
+- Transcript schema 11 adds nullable `deleted_ts` to surface-message aliases. Existing rows remain
+  live. Surface deletion marks an alias deleted while transcript lookup and request-alias lineage
+  validation retain its request identity. Recovery targets, recent output links, discovery coverage,
+  and checkpoint live-output checks exclude deleted aliases. A database trigger removes every alias
+  when its request transcript is deleted, including age-based retention and checkpoint cleanup.
+  Deleted aliases without a transcript expire under the configured transcript age limit during
+  retention cleanup. Unlimited age retention keeps them.
+  Previously removed aliases cannot be reconstructed by this migration. Older binaries reject schema
+  11; rollback requires a pre-upgrade backup or a separately reviewed downgrade.
 
 Core applies missing versions in one immediate transaction, validates foreign keys, marks interrupted
 native attempts uncertain during startup recovery, and promotes recovered pending successes only
