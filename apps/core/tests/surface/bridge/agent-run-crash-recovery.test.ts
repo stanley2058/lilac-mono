@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createMemoryBlobStore, type BlobStore } from "@stanley2058/lilac-blob-storage";
-import { AiSdkPiAgent, type AiSdkPiAgentOptions } from "@stanley2058/lilac-agent";
+import {
+  AgentAdapterFailure,
+  AiSdkPiAgent,
+  type AiSdkPiAgentOptions,
+} from "@stanley2058/lilac-agent";
+import { OpenAIResponsesAgentAdapter } from "@stanley2058/lilac-agent/adapters/openai-responses/adapter";
+import type { OpenAIResponsesSocket } from "@stanley2058/lilac-agent/adapters/openai-responses/socket";
 import {
   createLilacBus,
   lilacEventTypes,
@@ -272,6 +278,7 @@ async function reconstruct(input: {
   readonly dbPath: string;
   readonly blobStore: BlobStore;
   readonly onEffect?: () => void;
+  readonly createAgent?: (options: AiSdkPiAgentOptions<ToolSet>) => AiSdkPiAgent<ToolSet>;
 }): Promise<RecoveredRun> {
   const store = new SqliteRequestDeliveryStore({
     dbPath: input.dbPath,
@@ -321,7 +328,9 @@ async function reconstruct(input: {
     requestDelivery: delivery,
     agentRunJournal: journalPort,
     subscriptionId: `crash-recovery-${crypto.randomUUID()}`,
-    config: parseCoreConfigV2ToUniversal({}),
+    config: parseCoreConfigV2ToUniversal(
+      input.createAgent ? { agent: { retry: { enabled: false } } } : {},
+    ),
     pluginManager: manager,
     startPaused: true,
     issueControlCapability: () => ({
@@ -332,6 +341,7 @@ async function reconstruct(input: {
       throw panic;
     },
     createAgent: (options: AiSdkPiAgentOptions<ToolSet>) => {
+      if (input.createAgent) return input.createAgent(options);
       let call = 0;
       return new AiSdkPiAgent({
         ...options,
@@ -403,7 +413,188 @@ function messagesFor(run: RecoveredRun, marker: string): string {
   return JSON.stringify(match?.[1] ?? []);
 }
 
+class RecoveryMailbox<T> {
+  private readonly values: T[] = [];
+  private readonly readers: Array<(value: IteratorResult<T>) => void> = [];
+  private closed = false;
+
+  push(value: T): void {
+    const reader = this.readers.shift();
+    if (reader) reader({ done: false, value });
+    else this.values.push(value);
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const reader of this.readers.splice(0)) reader({ done: true, value: undefined });
+  }
+
+  async next(): Promise<IteratorResult<T>> {
+    const value = this.values.shift();
+    if (value !== undefined) return { done: false, value };
+    if (this.closed) return { done: true, value: undefined };
+    return await new Promise((resolve) => this.readers.push(resolve));
+  }
+
+  [Symbol.asyncIterator]() {
+    return this;
+  }
+}
+
+class RecoverySocket implements OpenAIResponsesSocket {
+  readonly events = new RecoveryMailbox<ResultType<string, AgentAdapterFailure>>();
+  readonly outgoing = new RecoveryMailbox<Record<string, unknown>>();
+
+  send(payload: string) {
+    this.outgoing.push(JSON.parse(payload));
+    return Result.ok(undefined);
+  }
+
+  close(): void {
+    this.events.close();
+  }
+
+  emit(event: object): void {
+    this.events.push(Result.ok(JSON.stringify(event)));
+  }
+
+  created(id: string, previousResponseId?: string): void {
+    this.emit({
+      type: "response.created",
+      response: {
+        id,
+        previous_response_id: previousResponseId,
+        status: "in_progress",
+        output: [],
+      },
+    });
+  }
+}
+
+async function waitForRecoveryState(predicate: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 20_000; turn += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("Native recovery state did not settle");
+}
+
 describe("agent run hard-crash recovery", () => {
+  it("retains exhausted native steering and recovers only input absent from its checkpoint", async () => {
+    const initial = await fixture();
+    const owner = acceptWork(initial.store, { label: "native-recovery-owner" }, 1);
+    initial.journal.close();
+    initial.store.close();
+    const socket = new RecoverySocket();
+    let connectionCount = 0;
+    const failed = await reconstruct({
+      dbPath: initial.dbPath,
+      blobStore: initial.blobStore,
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          adapterFactory: () =>
+            new OpenAIResponsesAgentAdapter({
+              model: "gpt-6-astra",
+              transport: "websocket",
+              connect: async () => {
+                connectionCount += 1;
+                return Result.ok(socket);
+              },
+            }),
+        }),
+    });
+    expect((await socket.outgoing.next()).value).toMatchObject({ type: "response.create" });
+    socket.created("native-parent");
+    const publishControl = async (text: string): Promise<string> => {
+      const requestDeliveryId = crypto.randomUUID();
+      const data = {
+        requestDeliveryId,
+        queue: "steer" as const,
+        messages: [{ role: "user" as const, content: text }],
+        raw: { requiresActive: true },
+      };
+      value(
+        failed.store.prepare({
+          requestDeliveryId,
+          requestId: owner.requestId,
+          envelope: { headers: owner.work.headers, data },
+          inputHandles: [],
+          createdAt: Date.now(),
+        }),
+      );
+      await resultValue(
+        failed.bus.publish(lilacEventTypes.CmdRequestMessage, data, {
+          headers: owner.work.headers,
+        }),
+      );
+      return requestDeliveryId;
+    };
+    const committedId = await publishControl("native committed correction");
+    expect((await socket.outgoing.next()).value).toMatchObject({ type: "response.steer" });
+    socket.emit({
+      type: "response.steer.accepted",
+      steer: { id: "committed-steer", previous_response_id: "native-parent" },
+    });
+    socket.emit({
+      type: "response.incomplete",
+      response: {
+        id: "native-parent",
+        status: "incomplete",
+        incomplete_details: { reason: "steered" },
+        output: [],
+      },
+    });
+    socket.created("native-successor", "native-parent");
+    await waitForRecoveryState(() =>
+      value(failed.journal.loadRecoveryHeads()).heads.some((head) =>
+        head.checkpoint?.retainedRequestDeliveries.some(
+          (delivery) => delivery.requestDeliveryId === committedId,
+        ),
+      ),
+    );
+    const pendingId = await publishControl("native pending correction");
+    expect((await socket.outgoing.next()).value).toMatchObject({ type: "response.steer" });
+    socket.emit({
+      type: "response.steer.accepted",
+      steer: { id: "pending-steer", previous_response_id: "native-successor" },
+    });
+    socket.events.push(
+      Result.err(
+        new AgentAdapterFailure({
+          reason: "unavailable",
+          message: "WebSocket closed after steering acceptance",
+          replaySafety: "reconcile",
+        }),
+      ),
+    );
+    await waitForRecoveryState(() => failed.runner.getActiveLevel1Work().length === 0);
+    expect(connectionCount).toBe(1);
+    expect(failed.order).toContain(`surface:${owner.requestId}`);
+    expect(failed.order).not.toContain(`terminal:${owner.requestId}`);
+    for (const id of [owner.requestDeliveryId, committedId, pendingId]) {
+      expect(value(failed.store.load(id)).state).toBe("accepted");
+    }
+    const head = value(failed.journal.loadRecoveryHeads()).heads.find(
+      (entry) => entry.handle.runId === owner.requestDeliveryId,
+    );
+    expect(head?.state).not.toBe("terminal");
+    expect(
+      head?.checkpoint?.retainedRequestDeliveries.map((entry) => entry.requestDeliveryId),
+    ).toEqual([committedId]);
+    await closeRecovered(failed);
+
+    const recovered = await reconstruct({ dbPath: initial.dbPath, blobStore: initial.blobStore });
+    await waitForTerminal(recovered.store, [owner.requestDeliveryId, committedId, pendingId]);
+    const firstPrompt = [...recovered.prompts.values()][0]?.[0];
+    const text = JSON.stringify(firstPrompt);
+    expect(text.match(/native committed correction/g)).toHaveLength(1);
+    expect(text.match(/native pending correction/g)).toHaveLength(1);
+    expect(recovered.prompts.size).toBe(1);
+    await closeRecovered(recovered);
+    await resultValue(initial.blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+  });
+
   it("reconstructs original, semantic, tool, subagent, and terminal boundaries", async () => {
     const first = await fixture();
     const records: AcceptedRequestDelivery<CoreAcceptedRequestWork>[] = [];

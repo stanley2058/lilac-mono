@@ -298,6 +298,7 @@ export type MaterializedClaudeCodeRun = {
   /** Present on bridge-created runs; optional for existing injected run implementations. */
   nativeSession?: ClaudeNativeSessionLifecycle;
   disposeResult(): Promise<ResultType<void, ClaudeCodeRunCleanupFailed>>;
+  settleExecutionResult?(): Promise<ResultType<void, ClaudeCodeRunCleanupFailed>>;
   dispose(): Promise<void>;
 };
 
@@ -1062,6 +1063,45 @@ export async function materializeClaudeCodeRunResult(options: {
     },
   };
 
+  const settleExecutionResult = async (): Promise<ResultType<void, ClaudeCodeRunCleanupFailed>> => {
+    const settlements = await Promise.allSettled([
+      Promise.resolve().then(clearResult),
+      drainQueryControllers(),
+    ]);
+    const failures: ClaudeCodeRunExternalFailure[] = [];
+    let firstPanic: Panic | undefined;
+    for (const settlement of settlements) {
+      const panic = deferredCleanupPanic(settlement);
+      if (panic) firstPanic ??= panic;
+      else if (settlement.status === "fulfilled") {
+        settlement.value.match({
+          ok: () => undefined,
+          err: (error) => failures.push(...error.failures),
+        });
+      }
+    }
+    if (unclaimedProcesses.length > 0) {
+      failures.push(
+        new ClaudeCodeRunExternalFailure({
+          operation: "Claude query-controller registration",
+          cause: new Error(
+            "Claude execution has subprocesses without query-controller registration",
+          ),
+          message: "Claude execution has subprocesses without query-controller registration",
+        }),
+      );
+    }
+    if (firstPanic) throw firstPanic;
+    return failures.length === 0
+      ? Result.ok(undefined)
+      : Result.err(
+          new ClaudeCodeRunCleanupFailed({
+            failures,
+            message: "Claude execution could not prove clean settlement",
+          }),
+        );
+  };
+
   let disposalResultPromise: Promise<ResultType<void, ClaudeCodeRunCleanupFailed>> | null = null;
   const disposeResult = (): Promise<ResultType<void, ClaudeCodeRunCleanupFailed>> => {
     if (disposalResultPromise) return disposalResultPromise;
@@ -1413,6 +1453,7 @@ export async function materializeClaudeCodeRunResult(options: {
           finalize,
         },
         disposeResult,
+        settleExecutionResult,
         dispose,
       });
     }),

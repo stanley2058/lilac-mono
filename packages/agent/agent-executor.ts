@@ -139,6 +139,26 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
   private retiredExecution: RetiredExecution | undefined;
   private activeExecutionFailurePhase: TurnErrorPhase = "before-step";
   private readonly adapter: AgentAdapter<AgentExecutionHost<TOOLS>>;
+  private pendingAdapterRebind = false;
+  private adapterRebindContinuation = false;
+
+  requestAdapterRebind(): void {
+    if (this.execution) this.pendingAdapterRebind = true;
+  }
+  private finishAdapterBoundary(decision: "continue" | "break"): "continue" | "break" {
+    if (decision === "break" || !this.pendingAdapterRebind) return decision;
+    this.adapterRebindContinuation = true;
+    return "break";
+  }
+  private closeCompletedAdapterBoundary(decision: "continue" | "break"): "continue" | "break" {
+    const action = this.finishAdapterBoundary(decision);
+    if (action === "continue") return action;
+    this.executionTerminated = true;
+    this.completedBoundaryInputIds = new Set(
+      [...this.steeringQueue, ...this.followUpQueue].map((entry) => entry.id),
+    );
+    return action;
+  }
   private readonly toolHost: AgentToolHost<TOOLS>;
   private execution: AgentExecution | undefined;
   private attempt: AgentAttempt | undefined;
@@ -2238,6 +2258,10 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         }),
       controlBoundary: async () => {
         active();
+        if (this.pendingAdapterRebind) {
+          this.adapterRebindContinuation = true;
+          return "stop";
+        }
         return await this.checkControlBoundary();
       },
       prepareRequest: async (request) => {
@@ -2258,11 +2282,12 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         const result = await this.finishExecutionBoundary(input);
         active();
         this.synchronizeCanonicalHistory();
-        return result;
+        return this.closeCompletedAdapterBoundary(result);
       },
       settleFailure: async (error, context) => {
         active();
-        return await this.settleExecutionFailure(error, context);
+        const decision = await this.settleExecutionFailure(error, context);
+        return this.finishAdapterBoundary(decision);
       },
       executeToolBatch: async (calls, scopeId) => {
         active();
@@ -2381,15 +2406,10 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
           active();
           this.requireSuppliedAttempt(attemptId, context.attemptId);
           context.signal.throwIfAborted();
-          const action = await this.finishExecutionBoundary(context);
+          const result = await this.finishExecutionBoundary(context);
           active();
           this.synchronizeCanonicalHistory();
-          if (action !== "continue") {
-            this.executionTerminated = true;
-            this.completedBoundaryInputIds = new Set(
-              [...this.steeringQueue, ...this.followUpQueue].map((entry) => entry.id),
-            );
-          }
+          const action = this.closeCompletedAdapterBoundary(result);
           return action === "continue"
             ? {
                 action: "continue" as const,
@@ -2458,6 +2478,14 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         continue;
       }
       if (outcome.ok) {
+        if (
+          retired?.cleanupComplete &&
+          this.adapterRebindContinuation &&
+          this.abortRequestedReason !== "manual"
+        ) {
+          setup = "inputs";
+          continue;
+        }
         if (
           retired?.cleanupComplete &&
           retired.hasLateInputs &&
@@ -2552,6 +2580,8 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     this.adapterSequence = 0;
     this.acceptedAdapterSequence = -1;
     this.executionTerminated = false;
+    this.pendingAdapterRebind = false;
+    this.adapterRebindContinuation = false;
     this.completedBoundaryInputIds = undefined;
     this.nativeDeliveryFailure = undefined;
     this.activeAdapterFailure = undefined;

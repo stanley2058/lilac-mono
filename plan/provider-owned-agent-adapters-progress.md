@@ -104,3 +104,34 @@ completed boundary and retains later input for a replacement after retirement.
 
 Both standards and spec re-reviews found no remaining blockers. All 344 agent tests pass, including
 54 native protocol/codec/socket tests. The final `bun run check` passed before the Stage 3 commit.
+Committed as `f08547e9`.
+
+## Stage 4
+
+Core now suppresses terminal WAL and request-delivery markers before publishing a failure when the
+executor retains unresolved accepted inputs. The existing workflow claim is retained with that work.
+Recovery tests exercise this ordering through the real request-delivery and checkpoint seams.
+
+The compatibility facade constructs each adapter from its current model/settings. Required fallback
+and boundary continuations retire the old execution before rebinding, without calling retry policy
+twice. A model setter after a final answer only affects the next logical run. Completed boundaries
+fence native admission on both host interfaces, so late steering and follow-ups retain their IDs and
+resume after retirement.
+
+Core composition now owns provider selection, request options, history projection, compaction,
+Claude construction, and provider retry hooks. The bus runner retains storage/lineage finalization,
+authority services, and surface publication. It dispatches controls through the shared executor.
+
+The Claude adapter uses the existing SDK projection internally and owns injection, interruption,
+input commitment, and retry retirement. Unresolved ephemeral input requires the existing query and
+process settlement proof before replay. The new private settlement method keeps the run reusable;
+missing proof retains recovery-required work. Tests cover transmission followed by a thrown failure,
+stale callbacks, cancellation, and execution/cleanup Panic precedence.
+
+Focused verification passed: 351 agent tests, 2,963 Core tests, and 90 Claude bridge tests. The Core
+recovery fixture uses real accepted control records and checkpoints, then reconstructs the runtime
+to verify that committed and uncommitted corrections each appear once in its recovery prompt.
+
+Standards and spec reviews found no blockers. The final `bun run check` passed. The standards review
+identified one optional unused composition return property; Stage 5 will remove it with the remaining
+compatibility cleanup.

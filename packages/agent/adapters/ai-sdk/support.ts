@@ -8,6 +8,8 @@ import type {
 import { z } from "zod";
 import { normalizeToolCallInputValue } from "@stanley2058/lilac-utils/tool-call-input-normalization";
 import type { OpaqueAgentValue } from "../../failure-adapters";
+import type { AgentAdapter } from "../../agent-adapter";
+import type { AgentExecutionHost } from "../../agent-execution-host";
 import {
   canonicalToolName,
   getToolResultToolCallIds,
@@ -227,6 +229,9 @@ export type AiSdkPiAgentState<TOOLS extends ToolSet = ToolSet> = AgentState<TOOL
 };
 export type AiSdkPiAgentOptions<TOOLS extends ToolSet = ToolSet> = AgentOptions<TOOLS> & {
   model: LanguageModel;
+  adapterFactory?: (
+    options: Omit<AiSdkPiAgentOptions<TOOLS>, "adapterFactory">,
+  ) => AgentAdapter<AgentExecutionHost<TOOLS>>;
   prepareModelCall?: PrepareModelCall;
   streamTextMaxRetries?: number;
   sendToolsToModel?: boolean;

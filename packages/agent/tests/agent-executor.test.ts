@@ -137,6 +137,76 @@ class ControlledAdapter implements AgentAdapter {
 
 describe("provider-neutral agent executor", () => {
   test.each(["steer", "followUp"] as const)(
+    "%s after a rich host completed boundary waits for a fresh attempt",
+    async (kind) => {
+      const controlled = new ControlledAdapter();
+      const hostCreated = Promise.withResolvers<AgentExecutionHost>();
+      const adapter: AgentAdapter<AgentExecutionHost> = {
+        createExecution(context) {
+          hostCreated.resolve(context.host);
+          return controlled.createExecution(context);
+        },
+      };
+      const retained: string[] = [];
+      let ended = 0;
+      let retries = 0;
+      const agent = new AgentExecutor({
+        system: "test",
+        adapter,
+        turnErrorHandler() {
+          retries += 1;
+          return "fail";
+        },
+        recoveryCheckpointHandler(_messages, ids) {
+          retained.push(...ids);
+        },
+      });
+      agent.subscribe((event) => {
+        if (event.type === "agent_end") ended += 1;
+      });
+      const run = agent.prompt("question");
+      const first = await controlled.created.promise;
+      const host = await hostCreated.promise;
+      await first.started.promise;
+      const boundary = await host.finishBoundary({
+        finishReason: "stop",
+        modelInputMessages: first.initialMessages,
+        executedToolCallCount: 0,
+        naturallyRequiresContinuation: false,
+      });
+      expect(boundary).toBe("break");
+      const replacementCreated = controlled.nextCreated.promise;
+      const id = agent[kind]("late update");
+      first.emit({ type: "terminal", outcome: { status: "completed" } });
+      const continuation = await Promise.race([
+        replacementCreated.then((execution) => ({ status: "replacement" as const, execution })),
+        run.then(() => ({ status: "ended" as const })),
+      ]);
+      expect(continuation.status).toBe("replacement");
+      if (continuation.status !== "replacement")
+        throw new Error("Completed boundary lost accepted input");
+      const replacement = continuation.execution;
+      await replacement.started.promise;
+      expect(first.submitted).toEqual([]);
+      expect(first.disposed).toBe(true);
+      expect(replacement.initialMessages).toEqual([
+        { role: "user", content: "question" },
+        { role: "user", content: "late update" },
+      ]);
+      replacement.emit({
+        type: "history-commit",
+        inputIds: [],
+        messages: [{ role: "assistant", content: "answer" }],
+      });
+      replacement.emit({ type: "terminal", outcome: { status: "completed" } });
+      await run;
+      expect(retained).toEqual([id]);
+      expect(ended).toBe(1);
+      expect(retries).toBe(0);
+    },
+  );
+
+  test.each(["steer", "followUp"] as const)(
     "%s accepted during successful attempt disposal continues the same logical run",
     async (kind) => {
       const adapter = new ControlledAdapter();

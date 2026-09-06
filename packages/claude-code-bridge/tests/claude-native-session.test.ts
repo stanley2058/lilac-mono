@@ -1328,3 +1328,90 @@ describe("Claude native session lifecycle", () => {
     }
   });
 });
+
+describe("Claude reusable execution settlement", () => {
+  it("awaits exit proof and accepts another query without disposing the run", async () => {
+    const settings: ClaudeCodeSettings[] = [];
+    const processes = [new FakeSpawnedProcess(), new FakeSpawnedProcess()];
+    let spawned = 0;
+    const run = await materializeClaudeCodeRun({
+      modelId: "sonnet",
+      cwd: process.cwd(),
+      tools: {},
+      execute: async () => {
+        throw new Error("not called");
+      },
+      spawnClaudeCodeProcess: () => processes[spawned++]!,
+      createModel: createModelCapture(settings),
+    });
+    const modelSettings = settings[0]!;
+    const firstReturned = Promise.withResolvers<void>();
+    spawnTrackedProcess(modelSettings, process.cwd());
+    await emitQueryController(modelSettings, {
+      returnQuery: async () => {
+        firstReturned.resolve();
+      },
+    });
+    let settled = false;
+    const settlement = run.settleExecutionResult!().then((result) => {
+      settled = true;
+      return result;
+    });
+    await firstReturned.promise;
+    expect(settled).toBe(false);
+    processes[0]!.exit();
+    expect((await settlement).status).toBe("ok");
+    let injected = false;
+    modelSettings.onStreamStart?.({
+      inject() {
+        injected = true;
+      },
+      close() {},
+    });
+    expect(run.control.inject("new query")).toBe(true);
+    expect(injected).toBe(true);
+    spawnTrackedProcess(modelSettings, process.cwd());
+    await emitQueryController(modelSettings, {
+      returnQuery: async () => {
+        processes[1]!.exit();
+      },
+    });
+    expect((await run.settleExecutionResult!()).status).toBe("ok");
+    expect(spawned).toBe(2);
+    await run.dispose();
+  });
+
+  it("settles the query when injector cleanup panics and preserves that defect", async () => {
+    const settings: ClaudeCodeSettings[] = [];
+    const child = new FakeSpawnedProcess();
+    const panic = new Panic({ message: "injector settlement defect" });
+    let querySettled = false;
+    const run = await materializeClaudeCodeRun({
+      modelId: "sonnet",
+      cwd: process.cwd(),
+      tools: {},
+      execute: async () => {
+        throw new Error("not called");
+      },
+      spawnClaudeCodeProcess: () => child,
+      createModel: createModelCapture(settings),
+    });
+    const modelSettings = settings[0]!;
+    modelSettings.onStreamStart?.({
+      inject() {},
+      close() {
+        throw panic;
+      },
+    });
+    spawnTrackedProcess(modelSettings, process.cwd());
+    await emitQueryController(modelSettings, {
+      returnQuery: async () => {
+        querySettled = true;
+        child.exit();
+      },
+    });
+    await expect(run.settleExecutionResult!()).rejects.toBe(panic);
+    expect(querySettled).toBe(true);
+    await run.dispose();
+  });
+});

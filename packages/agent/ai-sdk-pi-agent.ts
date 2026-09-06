@@ -24,18 +24,44 @@ export type {
 
 export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   private readonly executor: AgentExecutor<TOOLS>;
-  private readonly adapter: AiSdkAgentAdapter<TOOLS>;
+  private model: LanguageModel;
+  private prepareModelCall: PrepareModelCall | undefined;
+  private download: DownloadFunction | undefined;
   readonly state: AiSdkPiAgentState<TOOLS>;
   constructor(options: AiSdkPiAgentOptions<TOOLS>) {
-    this.adapter = new AiSdkAgentAdapter(options);
-    this.executor = new AgentExecutor({ ...options, adapter: this.adapter });
+    const { adapterFactory = (settings) => new AiSdkAgentAdapter(settings), ...initialOptions } =
+      options;
+    this.model = options.model;
+    this.prepareModelCall = options.prepareModelCall;
+    this.download = options.experimentalDownload;
+    this.executor = new AgentExecutor({
+      ...options,
+      adapter: {
+        createExecution: (context) =>
+          adapterFactory({
+            ...initialOptions,
+            model: this.model,
+            modelSpecifier: this.state.modelSpecifier,
+            system: this.state.system,
+            tools: this.state.tools,
+            messages: this.state.messages,
+            providerOptions: this.state.providerOptions,
+            reasoning: this.state.reasoning,
+            prepareModelCall: this.prepareModelCall,
+            experimentalDownload: this.download,
+          }).createExecution(context),
+      },
+    });
     this.state = Object.defineProperty(
       Object.assign(this.executor.state, { model: options.model }),
       "model",
       {
         enumerable: true,
-        get: () => this.adapter.getModel(),
-        set: (model: LanguageModel) => this.adapter.setModel(model, this.state.modelSpecifier),
+        get: () => this.model,
+        set: (model: LanguageModel) => {
+          this.model = model;
+          this.executor.requestAdapterRebind();
+        },
       },
     );
   }
@@ -45,16 +71,19 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     modelSpecifier?: string,
     reasoning?: ModelReasoningEffort,
   ): void {
-    this.adapter.setModel(model, modelSpecifier);
+    this.model = model;
+    this.executor.requestAdapterRebind();
     this.state.modelSpecifier = modelSpecifier;
     this.state.providerOptions = providerOptions;
     this.state.reasoning = reasoning;
   }
   setPrepareModelCall(handler: PrepareModelCall | undefined): void {
-    this.adapter.setPrepareModelCall(handler);
+    this.prepareModelCall = handler;
+    this.executor.requestAdapterRebind();
   }
   setExperimentalDownload(download: DownloadFunction | undefined): void {
-    this.adapter.setExperimentalDownload(download);
+    this.download = download;
+    this.executor.requestAdapterRebind();
   }
   subscribe(
     ...args: Parameters<AgentExecutor<TOOLS>["subscribe"]>

@@ -31,6 +31,7 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
     ],
   ],
   "apps/core": [
+    ["src/agent/claude-composition.ts", "canonicalClaudeExecutionCwd", "signal"],
     ["src/surface/bridge/subscribe-from-bus.ts", "bridgeBusToAdapter.startRelay", "signal"],
     [
       "src/conversation/thread-summarization-worker.ts",
@@ -485,6 +486,7 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
   ],
   "packages/blob-storage": [],
   "packages/claude-code-bridge": [
+    ["claude-code-agent-adapter.ts", "signalClaudeAdapterHost", "signal"],
     ["claude-attempt-runtime-owner.ts", "ClaudeAttemptRuntimeOwner.prepare", "signal"],
     [
       "claude-attempt-runtime-owner.ts",
@@ -517,6 +519,7 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
     ["claude-code-run.ts", "materializeClaudeCodeRunResult.clear", "signal"],
     ["claude-code-run.ts", "materializeClaudeCodeRunResult.clearResult", "signal"],
     ["claude-code-run.ts", "materializeClaudeCodeRunResult.drainQueryControllers", "signal"],
+    ["claude-code-run.ts", "materializeClaudeCodeRunResult.settleExecutionResult", "signal"],
     ["claude-code-run.ts", "materializeClaudeCodeRunResult.finalizeToHost", "signal"],
     ["claude-code-run.ts", "materializeClaudeCodeRunResult.spawnTrackedProcess", "signal"],
     ["claude-code-run.ts", "materializeClaudeCodeRunResult.waitForObservability", "signal"],

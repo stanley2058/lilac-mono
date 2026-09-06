@@ -5713,7 +5713,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             })),
             {
               kind: "local" as const,
-              module: "src/surface/bridge/bus-agent-runner.ts",
+              module: "src/agent/claude-composition.ts",
               exportName: "formatClaudeLifecycleLogFields",
             },
             {
@@ -5870,7 +5870,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "41c6e13541df7efe5cd4d5241861f6ded6f748e1b40cf844e33e7ee9cf5ecf72";
+  "e60cf662eeccf0841d085d614db0ffb624a97a63af53d9a74cd22183f139fc79";
 
 export const architectureManifest = {
   version: 1,
