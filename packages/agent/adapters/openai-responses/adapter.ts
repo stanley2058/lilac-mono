@@ -23,6 +23,7 @@ import type {
   OpenAIProtocolEvent,
   OpenAIResponse,
   OpenAIResponseRequest,
+  OpenAIRequestCodec,
 } from "./protocol";
 import type { OpenAIResponsesConnect, OpenAIResponsesSocket } from "./socket";
 
@@ -32,6 +33,8 @@ export type OpenAIResponsesAdapterOptions = {
   readonly connect: OpenAIResponsesConnect;
   readonly fallback?: AgentAdapter<AgentExecutionHost>;
   readonly executionMode?: "single-agent" | "multi-agent";
+  readonly nativeSteering?: boolean;
+  readonly requestCodec?: OpenAIRequestCodec;
 };
 type EventPayload = AgentExecutionEvent extends infer Event
   ? Event extends AgentExecutionEvent
@@ -155,6 +158,7 @@ class OpenAIResponsesExecution implements AgentExecution {
       steering:
         !this.closing &&
         !this.boundaryDeliveryRequired &&
+        this.options.nativeSteering !== false &&
         supportsOpenAINativeSteering(this.options, this.context.host.readState().providerOptions)
           ? ("native" as const)
           : ("boundary" as const),
@@ -409,7 +413,7 @@ class OpenAIResponsesExecution implements AgentExecution {
     this.boundaryDeliveryRequired = false;
     const state = this.context.host.readState();
     const encoded = resultOutcome(
-      await openAIRequestCodec.request({
+      await (this.options.requestCodec ?? openAIRequestCodec).request({
         model: this.options.model,
         context: prepared.value,
         providerOptions: state.providerOptions,
@@ -427,7 +431,11 @@ class OpenAIResponsesExecution implements AgentExecution {
   private async continuationRequest(
     request: OpenAIResponseRequest,
   ): Promise<ResultType<OpenAIResponseRequest, AgentAdapterFailure>> {
-    if (request.conversation != null || request.previous_response_id != null)
+    if (
+      this.socket?.managesContinuation ||
+      request.conversation != null ||
+      request.previous_response_id != null
+    )
       return Result.ok(request);
     const parent = this.current;
     if (!parent?.committed || !parent.complete || this.submitting) return Result.ok(request);
@@ -437,7 +445,7 @@ class OpenAIResponsesExecution implements AgentExecution {
       messages: [...parent.prepared.messages, ...parent.complete.messages],
     };
     const prefix = resultOutcome(
-      await openAIRequestCodec.request({
+      await (this.options.requestCodec ?? openAIRequestCodec).request({
         model: this.options.model,
         context: prefixContext,
         providerOptions: state.providerOptions,
@@ -608,7 +616,9 @@ class OpenAIResponsesExecution implements AgentExecution {
     if (this.pendingRequest || this.boundaryDeliveryRequired) return Result.ok(undefined);
     while (!this.submitting && this.current && this.inputs.length > 0) {
       const input = this.inputs.shift()!;
-      const encoded = resultOutcome(await openAIRequestCodec.steer(input.messages));
+      const encoded = resultOutcome(
+        await (this.options.requestCodec ?? openAIRequestCodec).steer(input.messages),
+      );
       if (!encoded.ok) {
         this.returnToBoundary(input.id);
         return Result.ok(undefined);
@@ -628,7 +638,7 @@ class OpenAIResponsesExecution implements AgentExecution {
       }
       const state = this.context.host.readState();
       const candidate = resultOutcome(
-        await openAIRequestCodec.request({
+        await (this.options.requestCodec ?? openAIRequestCodec).request({
           model: this.options.model,
           context: prepared.value,
           providerOptions: state.providerOptions,
@@ -693,7 +703,7 @@ class OpenAIResponsesExecution implements AgentExecution {
       };
       const state = this.context.host.readState();
       const inherited = resultOutcome(
-        await openAIRequestCodec.request({
+        await (this.options.requestCodec ?? openAIRequestCodec).request({
           model: this.options.model,
           context: prepared,
           providerOptions: state.providerOptions,
@@ -877,7 +887,7 @@ class OpenAIResponsesExecution implements AgentExecution {
       ...(result.expansionMessages ?? []),
     ]);
     const encoded = resultOutcome(
-      await openAIRequestCodec.messages(results, {
+      await (this.options.requestCodec ?? openAIRequestCodec).messages(results, {
         outputSchemaToolNames: parent.prepared.tools
           .filter((tool) => tool.outputSchemaJson !== undefined)
           .map((tool) => tool.name),
@@ -891,7 +901,7 @@ class OpenAIResponsesExecution implements AgentExecution {
     };
     const state = this.context.host.readState();
     const inherited = resultOutcome(
-      await openAIRequestCodec.request({
+      await (this.options.requestCodec ?? openAIRequestCodec).request({
         model: this.options.model,
         context: prepared,
         providerOptions: state.providerOptions,

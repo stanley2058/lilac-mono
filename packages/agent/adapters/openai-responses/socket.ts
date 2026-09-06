@@ -26,6 +26,8 @@ export interface OpenAIResponsesSocket {
   readonly events: AsyncIterable<ResultType<ResponsesServerEvent, AgentAdapterFailure>>;
   send(payload: ResponsesClientEvent): ResultType<void, AgentAdapterFailure>;
   close(): void;
+  isOpen?(): boolean;
+  readonly managesContinuation?: boolean;
 }
 export type OpenAIResponsesConnect = (
   signal: AbortSignal,
@@ -135,6 +137,7 @@ function observeSocket(
   sdk.once("close", () => sdk.off("error", onError));
   const currentFailure = (): WebSocketError | undefined => state.failure;
   return {
+    isOpen: () => !disposed && !failed && sdk.socket.readyState === 1,
     events: {
       async *[Symbol.asyncIterator]() {
         for await (const event of stream) {

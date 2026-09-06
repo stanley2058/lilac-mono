@@ -26,7 +26,8 @@ import {
 import { signalExternalToolCallHost } from "@stanley2058/lilac-agent/agent-runtime-support";
 import { AiSdkAgentAdapter } from "@stanley2058/lilac-agent/adapters/ai-sdk/adapter";
 import { OpenAIResponsesAgentAdapter } from "@stanley2058/lilac-agent/adapters/openai-responses/adapter";
-import { createOpenAIResponsesConnect } from "@stanley2058/lilac-agent/adapters/openai-responses/socket";
+import { createResponsesTransport } from "@stanley2058/lilac-agent/adapters/openai-responses/transport";
+import { CodexAgentAdapter } from "@stanley2058/lilac-agent/adapters/codex/adapter";
 import { ClaudeCodeAgentAdapter } from "@stanley2058/lilac-claude-code-bridge";
 import { env, type ResolvedModelRef, type CoreConfig } from "@stanley2058/lilac-utils";
 import { createOpenAIResponsesSseModelProvider } from "@stanley2058/lilac-utils/model-provider";
@@ -58,6 +59,8 @@ import {
   ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
 } from "../surface/bridge/bus-agent-runner/provider-options";
 
+const openAIResponsesTransport = createResponsesTransport();
+
 type AdapterOptions = Omit<AiSdkPiAgentOptions<ToolSet>, "adapterFactory">;
 type CompactionOptions = Parameters<typeof attachAutoCompaction>[1];
 export type CoreAgentBinding = {
@@ -84,6 +87,11 @@ export function createCoreAgentAdapter(
       retireForRetry: runtime ? () => runtime.retireForRetry() : undefined,
     });
   }
+  if (resolved.provider === "codex" && options.model === resolved.model)
+    return new CodexAgentAdapter(options, {
+      model: resolved.modelId,
+      transport: env.providers.codex.responsesTransport,
+    });
   const settings = input.openai ?? env.providers.openai;
   if (
     resolved.provider !== "openai" ||
@@ -104,7 +112,7 @@ export function createCoreAgentAdapter(
   return new OpenAIResponsesAgentAdapter({
     model: resolved.modelId,
     transport: settings.responsesTransport,
-    connect: createOpenAIResponsesConnect(connection.value),
+    connect: (signal) => openAIResponsesTransport.connect(connection.value, signal),
     fallback: new AiSdkAgentAdapter({
       ...options,
       model: createOpenAIResponsesSseModelProvider().responses(resolved.modelId),

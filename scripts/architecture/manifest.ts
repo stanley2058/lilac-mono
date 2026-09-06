@@ -1267,6 +1267,28 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         category: "projection",
       },
       {
+        identity: {
+          module: "adapters/openai-responses/continuation.ts",
+          exportName: "stableJsonStringify",
+        },
+        category: "request",
+      },
+      ...[
+        "normalizeCodexWebSocketRequest.map.<callback@1>",
+        "createCodexWebSocketEventNormalizer.<callback>",
+        "readCodexTurnState",
+      ].map((exportName) => ({
+        identity: { module: "adapters/codex/compatibility.ts", exportName },
+        category: "wire" as const,
+      })),
+      {
+        identity: {
+          module: "adapters/openai-responses/errors.ts",
+          exportName: "decodeResponsesErrorFields",
+        },
+        category: "wire",
+      },
+      {
         identity: { module: "adapters/openai-responses/socket.ts", exportName: "sdkFailureCause" },
         category: "wire",
       },
@@ -5870,7 +5892,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "3d4e7d765af8348267cc2da3376cd35233ffcc4505223a273fa6645928ab685f";
+  "6cff8432f284fb3c98499714399bc198f61322a318634963b939c47edfea739c";
 
 export const architectureManifest = {
   version: 1,

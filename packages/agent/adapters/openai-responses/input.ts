@@ -635,6 +635,7 @@ export const openAIRequestCodec: OpenAIRequestCodec = {
   async messages(messages, options) {
     return encodeMessages(messages, {
       ...defaultPolicy,
+      store: options?.store ?? defaultPolicy.store,
       outputSchemaToolNames: options?.outputSchemaToolNames,
     });
   },

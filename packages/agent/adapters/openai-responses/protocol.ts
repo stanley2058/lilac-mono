@@ -26,6 +26,7 @@ export type OpenAIInputItem = ResponseInputItem;
 export type OpenAIResponseRequest = Omit<ResponsesClientEvent.ResponseCreate, "model" | "input"> & {
   model: string;
   input: ResponseInputItem[];
+  client_metadata?: Record<string, string>;
 };
 export type OpenAIResponse = {
   id: string;
@@ -76,7 +77,7 @@ export type OpenAIRequestCodec = {
   }): Promise<ResultType<OpenAIResponseRequest, AgentAdapterFailure>>;
   messages(
     messages: readonly ModelMessage[],
-    options?: { outputSchemaToolNames?: readonly string[] },
+    options?: { outputSchemaToolNames?: readonly string[]; store?: boolean },
   ): Promise<ResultType<OpenAIInputItem[], AgentAdapterFailure>>;
   steer(
     messages: readonly ModelMessage[],

@@ -10,21 +10,19 @@ import { createGroq } from "@ai-sdk/groq";
 import type { OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";
 import { createGateway } from "ai";
 import { createClaudeCode } from "ai-sdk-provider-claude-code";
-import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
+import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
 
 import { claudeCodeExecutableSettings } from "./claude-code-executable";
 import { CODEX_BASE_INSTRUCTIONS } from "./codex-instructions";
 import { env, type ResponsesTransportMode } from "./env";
+import { OAUTH_DUMMY_KEY } from "./codex-oauth";
 import {
-  extractAccountId,
-  OAUTH_DUMMY_KEY,
-  readCodexTokens,
-  refreshAccessToken,
-  type CodexOAuthFetch,
-  type CodexOAuthTokens,
-  writeCodexTokens,
-} from "./codex-oauth";
+  createCodexOAuthAuthorization,
+  type CodexOAuthAuthorizationOptions,
+} from "./codex-provider-auth";
+export { refreshCodexOAuthTokens, shouldRefreshCodexOAuthTokens } from "./codex-provider-auth";
+export type { RefreshCodexOAuthTokensOptions } from "./codex-provider-auth";
 import { createLogger } from "./logging";
 import { withOpenAIImageEditFilenamesFetch } from "./openai-image-edit-fetch";
 import { createOpenAIResponsesWebSocketFetch } from "./openai-responses-websocket-fetch";
@@ -65,12 +63,6 @@ const CODEX_RESPONSES_REQUEST_KEYS = new Set([
   "client_metadata",
 ]);
 const CODEX_REASONING_INCLUDE = "reasoning.encrypted_content";
-const CODEX_OAUTH_REFRESH_SKEW_MS = 30_000;
-
-export function shouldRefreshCodexOAuthTokens(tokens: CodexOAuthTokens, now = Date.now()): boolean {
-  return !tokens.access || tokens.expires <= now + CODEX_OAUTH_REFRESH_SKEW_MS;
-}
-
 function decodeCodexRequestBody(body: unknown): string | undefined {
   if (typeof body === "string") return body;
   if (body instanceof Uint8Array) return new TextDecoder().decode(body);
@@ -185,30 +177,6 @@ export function normalizeCodexResponsesRequestRecord(
   return resolved.value;
 }
 
-export type RefreshCodexOAuthTokensOptions = {
-  fetch?: CodexOAuthFetch;
-  writeTokens?: (tokens: CodexOAuthTokens) => Promise<void>;
-  now?: () => number;
-  signal?: AbortSignal;
-};
-
-export async function refreshCodexOAuthTokens(
-  current: CodexOAuthTokens,
-  options: RefreshCodexOAuthTokensOptions = {},
-): Promise<CodexOAuthTokens> {
-  const tokens = await refreshAccessToken(current.refresh, options.fetch, options.signal);
-  const next: CodexOAuthTokens = {
-    type: "oauth",
-    refresh: tokens.refresh_token ?? current.refresh,
-    access: tokens.access_token,
-    expires: (options.now ?? Date.now)() + (tokens.expires_in ?? 3600) * 1000,
-    accountId: extractAccountId(tokens) ?? current.accountId,
-    idToken: tokens.id_token ?? current.idToken,
-  };
-  await (options.writeTokens ?? writeCodexTokens)(next);
-  return next;
-}
-
 function codexReasoningSummaryKey(event: Record<string, unknown>): string | undefined {
   return typeof event.item_id === "string" && typeof event.summary_index === "number"
     ? `${event.item_id}:${event.summary_index}`
@@ -287,54 +255,15 @@ export function createCodexResponsesEventNormalizer(): (
   };
 }
 
-export type CreateCodexOAuthProviderOptions = {
-  readTokens?: () => Promise<CodexOAuthTokens | null>;
-  writeTokens?: (tokens: CodexOAuthTokens) => Promise<void>;
+export type CreateCodexOAuthProviderOptions = CodexOAuthAuthorizationOptions & {
+  responsesTransport?: ResponsesTransportMode;
 };
 
-const CODEX_REFRESH_CALLER_ABORTED = Symbol("codex-refresh-caller-aborted");
-
-type CapturedCodexRefreshFailure =
-  | { readonly kind: "panic"; readonly panic: import("better-result").Panic }
-  | { readonly kind: "defect"; readonly error: Error };
-type CodexRefreshOutcome = { readonly kind: "success" } | CapturedCodexRefreshFailure;
-
-function captureCodexRefreshFailure(restoreCause: () => unknown): CapturedCodexRefreshFailure {
-  const cause = restoreCause();
-  const panic = Result.try({
-    try: () => (Panic.is(cause) ? cause : undefined),
-    catch: () => undefined,
-  }).match({ ok: (value) => value, err: () => undefined });
-  if (panic) return { kind: "panic", panic };
-  return {
-    kind: "defect",
-    error: cause instanceof Error ? cause : new Error("Codex OAuth token refresh failed"),
-  };
-}
-
-async function waitForCodexRefresh(
-  refresh: Promise<CodexRefreshOutcome>,
-  signal: AbortSignal,
-): Promise<CodexRefreshOutcome | typeof CODEX_REFRESH_CALLER_ABORTED> {
-  if (signal.aborted) return CODEX_REFRESH_CALLER_ABORTED;
-  let removeAbortListener = () => {};
-  const aborted = new Promise<typeof CODEX_REFRESH_CALLER_ABORTED>((resolve) => {
-    const onAbort = () => resolve(CODEX_REFRESH_CALLER_ABORTED);
-    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  const outcome = await Promise.race([refresh, aborted]);
-  removeAbortListener();
-  return outcome;
-}
-
 export function createCodexOAuthProvider(options: CreateCodexOAuthProviderOptions = {}) {
-  let refreshInFlight: Promise<CodexRefreshOutcome> | null = null;
-  const readTokens = options.readTokens ?? readCodexTokens;
-  const writeTokens = options.writeTokens ?? writeCodexTokens;
+  const authorize = createCodexOAuthAuthorization(options);
   const logger = createLogger({ module: "utils:model-provider" });
   const responsesFetch = createOpenAIResponsesWebSocketFetch({
-    mode: env.providers.codex.responsesTransport,
+    mode: options.responsesTransport ?? env.providers.codex.responsesTransport,
     url: "wss://chatgpt.com/backend-api/codex/responses",
     completionEventTypes: ["response.completed", "response.done"],
     createEventNormalizer: createCodexResponsesEventNormalizer,
@@ -383,76 +312,8 @@ export function createCodexOAuthProvider(options: CreateCodexOAuthProviderOption
       headers.delete("authorization");
       headers.delete("Authorization");
 
-      const now = Date.now();
-      let auth = await readTokens();
-      if (!auth) {
-        throw new Error(
-          "Codex OAuth not configured. Complete a Codex OAuth login to authenticate.",
-        );
-      }
-
-      const refreshIfNeeded = async (): Promise<
-        CodexRefreshOutcome | typeof CODEX_REFRESH_CALLER_ABORTED
-      > => {
-        if (auth && !shouldRefreshCodexOAuthTokens(auth)) return { kind: "success" };
-        if (!refreshInFlight) {
-          refreshInFlight = (async (): Promise<CodexRefreshOutcome> => {
-            const captured = await Result.tryPromise({
-              try: async () => {
-                const latest = await readTokens();
-                if (!latest) {
-                  return {
-                    kind: "defect" as const,
-                    error: new Error(
-                      "Codex OAuth not configured. Complete a Codex OAuth login to authenticate.",
-                    ),
-                  };
-                }
-                if (!shouldRefreshCodexOAuthTokens(latest)) {
-                  auth = latest;
-                  return { kind: "success" as const };
-                }
-
-                auth = await refreshCodexOAuthTokens(latest, { writeTokens });
-                return { kind: "success" as const };
-              },
-              catch: (cause) => ({ restoreCause: () => cause }),
-            });
-            refreshInFlight = null;
-            return captured.match<CodexRefreshOutcome>({
-              ok: (outcome) => outcome,
-              err: ({ restoreCause }) => captureCodexRefreshFailure(restoreCause),
-            });
-          })();
-        }
-        const activeRefresh = refreshInFlight;
-        if (!activeRefresh) return { kind: "success" };
-        const callerSignal = init?.signal ?? undefined;
-        if (!callerSignal) {
-          return activeRefresh;
-        }
-        return waitForCodexRefresh(activeRefresh, callerSignal);
-      };
-
-      if (shouldRefreshCodexOAuthTokens(auth, now)) {
-        const refreshOutcome = await refreshIfNeeded();
-        if (refreshOutcome === CODEX_REFRESH_CALLER_ABORTED) {
-          throw init?.signal?.reason;
-        }
-        if (refreshOutcome.kind === "panic") throw refreshOutcome.panic;
-        if (refreshOutcome.kind === "defect") throw refreshOutcome.error;
-        auth = await readTokens();
-        if (!auth?.access) {
-          throw new Error("Codex OAuth token refresh failed. Complete a new Codex OAuth login.");
-        }
-      }
-
-      headers.set("authorization", `Bearer ${auth.access}`);
-      if (auth.accountId) {
-        headers.set("chatgpt-account-id", auth.accountId);
-        headers.set("ChatGPT-Account-Id", auth.accountId);
-      }
-      headers.set("originator", "lilac");
+      const authorization = await authorize(init?.signal ?? undefined);
+      for (const [key, value] of Object.entries(authorization)) headers.set(key, value);
 
       let body = init?.body;
       if (

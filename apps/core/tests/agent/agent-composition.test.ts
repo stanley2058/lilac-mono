@@ -1,3 +1,4 @@
+import { CodexAgentAdapter } from "@stanley2058/lilac-agent/adapters/codex/adapter";
 import { describe, expect, test } from "bun:test";
 import { MockLanguageModelV4 } from "ai/test";
 import { AiSdkAgentAdapter } from "@stanley2058/lilac-agent/adapters/ai-sdk/adapter";
@@ -56,7 +57,7 @@ describe("Core agent adapter selection", () => {
     expect(adapter).toBeInstanceOf(OpenAIResponsesAgentAdapter);
   });
 
-  test.each(["codex", "anthropic", "google"])("%s preserves AI SDK execution", (provider) => {
+  test.each(["anthropic", "google"])("%s preserves AI SDK execution", (provider) => {
     const resolved = resolvedModel(provider);
     const adapter = createCoreAgentAdapter(
       { model: resolved.model, system: "" },
@@ -64,6 +65,15 @@ describe("Core agent adapter selection", () => {
     );
 
     expect(adapter).toBeInstanceOf(AiSdkAgentAdapter);
+  });
+
+  test("Codex selects its own adapter without reading credentials or opening a connection", () => {
+    const resolved = resolvedModel("codex");
+    const adapter = createCoreAgentAdapter(
+      { model: resolved.model, system: "" },
+      { resolved, claude },
+    );
+    expect(adapter).toBeInstanceOf(CodexAgentAdapter);
   });
 
   test("a constructor model override selects AI SDK execution", () => {

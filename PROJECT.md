@@ -262,18 +262,29 @@ authority. Adapters own model calls, transport, response chains, tool scheduling
 services. Model fallback disposes the previous execution before constructing its replacement. Core's
 bus runner retains durable delivery, lineage/storage finalization, resource authority, and publication.
 
-Core uses native OpenAI Responses execution for its existing WebSocket transport selection. The official
-OpenAI SDK owns WebSocket transport and protocol parsing. The adapter converts SDK types to and from
-AI SDK-compatible messages, preserving provider metadata through durable transcript replay. The OpenAI
-adapter gates native steering to exactly `gpt-6-astra` in compatible single-agent settings. Conversation
-binding and automatic compaction use boundary delivery. Auto transport may fall back to SSE only before
-submission; connection loss after submission retires and reconciles the attempt. Acceptance reserves an
-input, while successor creation establishes its canonical position. Socket and steering state remain
-process-local, with existing accepted controls and checkpoints providing the recovery floor.
+Core selects native OpenAI and Codex adapters for WebSocket execution. Codex owns OAuth/account headers,
+stateless request normalization, backend event repairs, and its SSE fallback. Codex steering remains at
+turn boundaries. The OpenAI adapter gates native steering to exactly `gpt-6-astra` in compatible
+single-agent settings. Conversation binding and automatic compaction use boundary delivery.
+
+Both adapters share the official OpenAI SDK transport, connection leases, continuation matching, and
+output reconstruction. A reusable socket survives executions with a 30-second idle expiry; concurrent
+executions use dedicated sockets. Credentials and endpoint determine connection reuse. Cached response
+IDs expire after 30 minutes. A rejected internal previous-response optimization retries once with full
+input before exposing output. Codex turn state survives matching failed-request retries and pending tool
+continuations, but does not carry into a new user turn after a completed answer. A narrow patch to the
+pinned SDK restores the existing bridge's empty/non-object JSON tolerance and binary UTF8 JSON decoding.
+
+Auto transport may fall back to SSE only before submission; uncertain connection loss after submission
+retires and reconciles the attempt. Acceptance reserves an input, while successor creation establishes
+its canonical position. Socket, continuation, and steering state remain process-local. Existing accepted
+controls and checkpoints provide the recovery floor. Conversion preserves AI SDK-compatible durable
+messages and provider metadata, including IDs that Codex omits from its outgoing requests.
 
 `AiSdkPiAgent` is a delegating compatibility facade. Mini retains its default AI SDK execution and
 existing Claude continuation and queued steering behavior. The WebSocket-to-SSE utility remains in use
-by Mini's provider resolution and Codex OAuth; native Core execution does not depend on that emulation.
+by Mini's provider resolution and legacy Codex OAuth consumers; native Core WebSocket execution does not
+depend on that emulation.
 
 Claude native authentication, configuration, and transcripts live under `CLAUDE_CONFIG_DIR` or Claude's own default, outside Core and Mini stores. Lilac persists only its own bindings and attempt metadata and does not own Claude credentials or transcript retention. See `docs/claude-code.md` for the continuation and deployment contract.
 

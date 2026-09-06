@@ -9,6 +9,178 @@ function decode(value: object): OpenAIProtocolEvent {
 }
 
 describe("OpenAI Responses output codec", () => {
+  test("normalizes sparse nested and flat stream errors with legacy defaults", () => {
+    for (const value of [
+      { type: "error", error: { code: "previous_response_not_found" } },
+      { type: "error", code: "previous_response_not_found" },
+    ])
+      expect(decode(value)).toEqual({
+        type: "error",
+        message: "Response stream error",
+        details: {
+          code: "previous_response_not_found",
+          type: "previous_response_not_found",
+          param: null,
+          statusCode: undefined,
+        },
+      });
+    expect(decode({ type: "error", error: {}, param: "previous_response_id" })).toMatchObject({
+      type: "error",
+      message: "Response stream error",
+      details: { code: "response_error", type: "response_error", param: "previous_response_id" },
+    });
+    expect(
+      decode({
+        type: "error",
+        error: {
+          message: "Nested",
+          code: "nested_code",
+          type: "nested_type",
+          param: "nested_param",
+        },
+        message: "Flat",
+        code: "flat_code",
+        param: "flat_param",
+        status: 429,
+      }),
+    ).toEqual({
+      type: "error",
+      message: "Nested",
+      details: { code: "nested_code", type: "nested_type", param: "nested_param", statusCode: 429 },
+    });
+    expect(
+      decode({
+        type: "error",
+        error: { message: 1, code: null, param: [], type: false },
+        message: "Flat",
+        code: "flat_code",
+        param: "input",
+      }),
+    ).toMatchObject({
+      type: "error",
+      message: "Flat",
+      details: { code: "flat_code", type: "flat_code", param: "input" },
+    });
+  });
+
+  test("preserves terminal error precedence and usage for ordinary OpenAI envelopes", () => {
+    const usage = { input_tokens: 3, output_tokens: 2, total_tokens: 5 };
+    const response = { id: "r", status: "completed", output: [], usage };
+    expect(
+      decode({
+        type: "response.completed",
+        response,
+        error: {
+          code: "invalid_prompt",
+          message: "Top-level",
+          type: "invalid_request_error",
+          param: "input",
+        },
+      }),
+    ).toMatchObject({
+      type: "error",
+      message: "Top-level",
+      details: { code: "invalid_prompt", type: "invalid_request_error", param: "input" },
+      response: { usage: { inputTokens: 3, outputTokens: 2, raw: usage } },
+    });
+    expect(
+      decode({
+        type: "response.completed",
+        response: { ...response, error: { message: "Response error", code: "response_code" } },
+        error: { message: "Top-level", code: "top_code" },
+      }),
+    ).toMatchObject({
+      type: "error",
+      message: "Response error",
+      details: { code: "response_code" },
+    });
+  });
+
+  test("retains raw provider usage metadata and uses AI SDK defaults for absent counters", () => {
+    const raw = {
+      input_tokens: 100,
+      output_tokens: 20,
+      total_tokens: 120,
+      input_tokens_details: { cache_write_tokens: 25, orchestration_input_tokens: 7 },
+      output_tokens_details: { orchestration_output_tokens: 3 },
+      provider_optimization: { enabled: false, tier: "test" },
+    };
+    const decoded = decode({
+      type: "response.completed",
+      response: { id: "r", output: [], usage: raw },
+    });
+    expect(decoded).toMatchObject({
+      response: {
+        usage: {
+          inputTokenDetails: { cacheReadTokens: 0, cacheWriteTokens: 25, noCacheTokens: 75 },
+          outputTokenDetails: { reasoningTokens: 0, textTokens: 20 },
+          raw,
+        },
+      },
+    });
+    expect(
+      decode({
+        type: "response.completed",
+        response: {
+          id: "r",
+          output: [],
+          usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+        },
+      }),
+    ).toMatchObject({
+      response: {
+        usage: {
+          inputTokenDetails: { cacheReadTokens: 0, cacheWriteTokens: undefined, noCacheTokens: 4 },
+          outputTokenDetails: { reasoningTokens: 0, textTokens: 2 },
+        },
+      },
+    });
+  });
+
+  test("preserves cache write usage and subtracts both cache categories", () => {
+    expect(
+      decode({
+        type: "response.completed",
+        response: {
+          id: "r",
+          status: "completed",
+          output: [],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 120,
+            input_tokens_details: { cached_tokens: 40, cache_write_tokens: 25 },
+            output_tokens_details: { reasoning_tokens: 5 },
+          },
+        },
+      }),
+    ).toMatchObject({
+      response: {
+        usage: {
+          inputTokenDetails: { cacheReadTokens: 40, cacheWriteTokens: 25, noCacheTokens: 35 },
+          outputTokenDetails: { reasoningTokens: 5, textTokens: 15 },
+        },
+      },
+    });
+  });
+
+  test("treats failed completion envelopes as errors with their original details", () => {
+    expect(
+      decode({
+        type: "response.completed",
+        response: {
+          id: "r",
+          status: "failed",
+          output: [],
+          error: { code: "invalid_prompt", message: "Invalid", param: "input" },
+        },
+      }),
+    ).toMatchObject({
+      type: "error",
+      message: "Invalid",
+      details: { code: "invalid_prompt", param: "input" },
+    });
+  });
   test("uses nested steering IDs and separates acceptance from successor creation", () => {
     const steer = { id: "steer-1", previous_response_id: "response-1" };
     expect(decode({ type: "response.steer.accepted", steer })).toEqual({
@@ -79,7 +251,12 @@ describe("OpenAI Responses output codec", () => {
     ).toEqual({
       type: "error",
       message: "Interrupted",
-      details: { code: "stream_error", type: "error", param: "input", statusCode: undefined },
+      details: {
+        code: "stream_error",
+        type: "stream_error",
+        param: "input",
+        statusCode: undefined,
+      },
     });
   });
 

@@ -7,6 +7,7 @@ import type {
 } from "openai/resources/responses/responses";
 import { normalizeToolCallInputValue } from "@stanley2058/lilac-utils/tool-call-input-normalization";
 import { AgentAdapterFailure, type AgentOutput, type AgentToolRequest } from "../../agent-adapter";
+import { readResponsesStreamError, readResponsesTerminalError } from "./errors";
 import type {
   OpenAIProjectedResponse,
   OpenAIProtocolEvent,
@@ -20,20 +21,32 @@ function protocolFailure(message: string): AgentAdapterFailure {
 
 function usageFromWire(usage: Response["usage"]): LanguageModelUsage | undefined {
   if (!usage) return undefined;
-  const cached = usage.input_tokens_details?.cached_tokens;
-  const reasoning = usage.output_tokens_details?.reasoning_tokens;
+  const cached = usage.input_tokens_details?.cached_tokens ?? 0;
+  const written = usage.input_tokens_details?.cache_write_tokens ?? undefined;
+  const reasoning = usage.output_tokens_details?.reasoning_tokens ?? 0;
   return {
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
     totalTokens: usage.total_tokens,
     inputTokenDetails: {
       cacheReadTokens: cached,
-      cacheWriteTokens: undefined,
-      noCacheTokens: cached === undefined ? undefined : usage.input_tokens - cached,
+      cacheWriteTokens: written,
+      noCacheTokens: usage.input_tokens - cached - (written ?? 0),
     },
     outputTokenDetails: {
       reasoningTokens: reasoning,
-      textTokens: reasoning === undefined ? undefined : usage.output_tokens - reasoning,
+      textTokens: usage.output_tokens - reasoning,
+    },
+    raw: {
+      ...usage,
+      input_tokens_details:
+        usage.input_tokens_details == null
+          ? usage.input_tokens_details
+          : { ...usage.input_tokens_details },
+      output_tokens_details:
+        usage.output_tokens_details == null
+          ? usage.output_tokens_details
+          : { ...usage.output_tokens_details },
     },
   };
 }
@@ -88,17 +101,19 @@ function decodeEvent(
     case "response.created":
     case "response.completed":
     case "response.incomplete":
+    case "response.failed": {
+      const error = readResponsesTerminalError(event);
+      if (error)
+        return Result.ok({
+          type: "error",
+          ...error,
+          response: projectWireResponse(event.response),
+        });
       return Result.ok({
         type: event.type === "response.created" ? "created" : "finished",
         response: projectWireResponse(event.response),
       });
-    case "response.failed":
-      return Result.ok({
-        type: "error",
-        message: event.response.error?.message ?? "OpenAI response failed",
-        details: event.response.error ?? undefined,
-        response: projectWireResponse(event.response),
-      });
+    }
     case "response.steer.accepted":
       return Result.ok({
         type: "steer-accepted",
@@ -180,19 +195,11 @@ function decodeEvent(
         },
       });
     }
-    case "error": {
-      const error = "error" in event ? event.error : event;
+    case "error":
       return Result.ok({
         type: "error",
-        message: error.message,
-        details: {
-          code: error.code,
-          type: error.type,
-          param: error.param,
-          statusCode: "status" in event ? event.status : undefined,
-        },
+        ...readResponsesStreamError(event),
       });
-    }
     default:
       return Result.ok({ type: "ignored" });
   }

@@ -81,6 +81,55 @@ test("official SDK sends typed requests and delivers parsed events with authenti
   expect((await events.next()).done).toBe(true);
 });
 
+for (const frame of ["", "null", "[]", "[{}]", '"keepalive"', "42", "true", "false"]) {
+  test(`empty or valid non-object JSON frame is ignored before the next SDK event: ${JSON.stringify(frame)}`, async () => {
+    const event = {
+      type: "response.output_text.delta",
+      delta: "after ignored frame",
+      item_id: "m1",
+      output_index: 0,
+      content_index: 0,
+      sequence_number: 1,
+      logprobs: [],
+    };
+    const harness = serve((ws) => {
+      ws.send(frame);
+      ws.send(JSON.stringify(event));
+    });
+    const socket = (await harness.connect(new AbortController().signal)).unwrap();
+    socket.send({ type: "response.create", input: [] }).unwrap();
+    expect((await socket.events[Symbol.asyncIterator]().next()).value?.unwrap()).toEqual(event);
+    expect(socket.isOpen?.()).toBe(true);
+    socket.close();
+    await harness.closed.promise;
+  });
+}
+
+test("binary UTF8 JSON frames decode into SDK events after ignored empty and scalar binary frames", async () => {
+  const event = {
+    type: "response.output_text.delta",
+    delta: "你好",
+    item_id: "m1",
+    output_index: 0,
+    content_index: 0,
+    sequence_number: 1,
+    logprobs: [],
+  };
+  const harness = serve((ws) => {
+    const encode = (text: string) => new TextEncoder().encode(text);
+    ws.send(new Uint8Array());
+    ws.send(encode("null"));
+    ws.send(encode("[]"));
+    ws.send(encode(JSON.stringify(event)));
+  });
+  const socket = (await harness.connect(new AbortController().signal)).unwrap();
+  socket.send({ type: "response.create", input: [] }).unwrap();
+  expect((await socket.events[Symbol.asyncIterator]().next()).value?.unwrap()).toEqual(event);
+  expect(socket.isOpen?.()).toBe(true);
+  socket.close();
+  await harness.closed.promise;
+});
+
 for (const frame of ["invalid JSON", new Uint8Array([1])]) {
   test(`invalid protocol frame terminates typed events and disposal closes SDK socket: ${typeof frame}`, async () => {
     const harness = serve((ws) => {

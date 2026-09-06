@@ -1,0 +1,93 @@
+diff --git a/resources/responses/ws-base.js b/resources/responses/ws-base.js
+index 9bf22db00d26b265455dbba21369d58220b57ee7..525b7b5fc70a72bca15696ef343b1daeee908b0f 100644
+--- a/resources/responses/ws-base.js
++++ b/resources/responses/ws-base.js
+@@ -249,12 +249,9 @@ class ResponsesWSBase extends internal_base_1.ResponsesEmitter {
+         this.url = (0, internal_base_1.buildURL)(this._client, this._parameters ?? {});
+         const socket = this._createSocket(this.url, this._authHeaders());
+         socket.on('message', (data, isBinary) => {
+-            if (isBinary) {
+-                this._emit('raw', data);
+-                return;
+-            }
+-            // Coerce to string in case the adapter delivers a typed-array for text frames.
+-            const text = typeof data === 'string' ? data : String(data);
++            const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
++            if (!text) return;
++
+             let event;
+             try {
+                 event = JSON.parse(text);
+@@ -263,6 +260,10 @@ class ResponsesWSBase extends internal_base_1.ResponsesEmitter {
+                 this._emit('raw', data);
+                 return;
+             }
++            if (event === null || typeof event !== 'object' || Array.isArray(event)) {
++                return;
++            }
++
+             this._emit('event', event);
+             if (event.type === 'error') {
+                 this._onError(event);
+diff --git a/resources/responses/ws-base.mjs b/resources/responses/ws-base.mjs
+index e678f40bd277e481cbbd2a5717d490e1bff6b5db..f8730ca700a2e023bdcc27f70466f5841aac556d 100644
+--- a/resources/responses/ws-base.mjs
++++ b/resources/responses/ws-base.mjs
+@@ -246,12 +246,9 @@ export class ResponsesWSBase extends ResponsesEmitter {
+         this.url = buildURL(this._client, this._parameters ?? {});
+         const socket = this._createSocket(this.url, this._authHeaders());
+         socket.on('message', (data, isBinary) => {
+-            if (isBinary) {
+-                this._emit('raw', data);
+-                return;
+-            }
+-            // Coerce to string in case the adapter delivers a typed-array for text frames.
+-            const text = typeof data === 'string' ? data : String(data);
++            const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
++            if (!text) return;
++
+             let event;
+             try {
+                 event = JSON.parse(text);
+@@ -260,6 +257,10 @@ export class ResponsesWSBase extends ResponsesEmitter {
+                 this._emit('raw', data);
+                 return;
+             }
++            if (event === null || typeof event !== 'object' || Array.isArray(event)) {
++                return;
++            }
++
+             this._emit('event', event);
+             if (event.type === 'error') {
+                 this._onError(event);
+diff --git a/src/resources/responses/ws-base.ts b/src/resources/responses/ws-base.ts
+index fbe418b6b2b429816f7e87d562738ed1393e8d37..571836c63160c650d75c11a7b6a5c017aabf5e38 100644
+--- a/src/resources/responses/ws-base.ts
++++ b/src/resources/responses/ws-base.ts
+@@ -344,13 +344,8 @@ export abstract class ResponsesWSBase<TSocket extends WebSocketLike> extends Res
+     const socket = this._createSocket(this.url, this._authHeaders());
+ 
+     socket.on('message', (data: string | ArrayBuffer | ArrayBufferView, isBinary: boolean) => {
+-      if (isBinary) {
+-        this._emit('raw', data);
+-        return;
+-      }
+-
+-      // Coerce to string in case the adapter delivers a typed-array for text frames.
+-      const text = typeof data === 'string' ? data : String(data);
++      const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
++      if (!text) return;
+ 
+       let event: ResponsesAPI.ResponsesServerEvent;
+       try {
+@@ -360,6 +355,10 @@ export abstract class ResponsesWSBase<TSocket extends WebSocketLike> extends Res
+         return;
+       }
+ 
++      if (event === null || typeof event !== 'object' || Array.isArray(event)) {
++        return;
++      }
++
+       this._emit('event', event);
+ 
+       if (event.type === 'error') {
