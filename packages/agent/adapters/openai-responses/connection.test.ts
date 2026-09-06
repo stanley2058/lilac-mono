@@ -5,6 +5,7 @@ import type { OpenAIResponsesConnectionOptions } from "@stanley2058/lilac-utils/
 import { AgentAdapterFailure } from "../../agent-adapter";
 import { createOpenAIResponsesConnectionPool } from "./connection";
 import type { OpenAIResponsesSocket } from "./socket";
+import type { ResponsesDiagnostics, ResponsesDiagnosticFields } from "./diagnostics";
 
 const settings: OpenAIResponsesConnectionOptions = {
   baseUrl: "https://example.com/v1",
@@ -364,4 +365,180 @@ test("official SDK socket remains usable across separate leases", async () => {
     pool.close();
     server.stop(true);
   }
+});
+
+test("pooled diagnostics follow current leases, isolate dedicated connections, and clear idle request attribution", async () => {
+  const records: Array<{ event: string; fields: ResponsesDiagnosticFields; wire?: boolean }> = [];
+  const diagnostic = (context: ResponsesDiagnosticFields): ResponsesDiagnostics => ({
+    withContext: (fields) => diagnostic({ ...context, ...fields }),
+    log: (event, fields) => {
+      records.push({ event, fields: { ...context, ...fields } });
+    },
+    wire: (event, _payload, fields) => {
+      records.push({ event, fields: { ...context, ...fields }, wire: true });
+    },
+    flush: async () => {},
+  });
+  const observers: ResponsesDiagnostics[] = [];
+  const timers: Array<() => void> = [];
+  const pool = createOpenAIResponsesConnectionPool({
+    connect: () => async (_signal, diagnostics) => {
+      observers.push(diagnostics!.withContext({ socketField: "retained" }));
+      return Result.ok(fakeSocket().socket);
+    },
+    scheduleIdleClose: (callback) => {
+      timers.push(callback);
+      return () => {};
+    },
+  });
+  const first = (
+    await pool.connect(
+      settings,
+      signal(),
+      diagnostic({
+        requestId: "first",
+        sessionId: "session-one",
+        attemptId: "a1",
+        provider: "codex",
+      }),
+    )
+  ).unwrap();
+  const dedicated = (
+    await pool.connect(
+      settings,
+      signal(),
+      diagnostic({
+        requestId: "dedicated",
+        sessionId: "session-two",
+        attemptId: "a2",
+        provider: "codex",
+      }),
+    )
+  ).unwrap();
+  observers[0]!.wire("received-first", {});
+  observers[1]!.wire("received-dedicated", {});
+  first.release({ reusable: true });
+  observers[0]!.wire("ignored-idle", {});
+  const second = (
+    await pool.connect(
+      settings,
+      signal(),
+      diagnostic({
+        requestId: "second",
+        sessionId: "session-three",
+        attemptId: "a3",
+        provider: "codex",
+      }),
+    )
+  ).unwrap();
+  observers[0]!.wire("received-second", {});
+  expect(records.find((record) => record.event === "received-first")?.fields).toMatchObject({
+    requestId: "first",
+    connectionId: first.connectionId,
+  });
+  expect(records.find((record) => record.event === "received-dedicated")?.fields).toMatchObject({
+    requestId: "dedicated",
+    connectionId: dedicated.connectionId,
+  });
+  expect(records.find((record) => record.event === "received-second")?.fields).toMatchObject({
+    requestId: "second",
+    sessionId: "session-three",
+    attemptId: "a3",
+    connectionId: first.connectionId,
+    socketField: "retained",
+  });
+  expect(records.some((record) => record.event === "ignored-idle")).toBe(false);
+  expect(
+    records.find(
+      (record) => record.event === "connection.acquired" && record.fields.requestId === "second",
+    )?.fields,
+  ).toMatchObject({ reused: true, dedicated: false });
+  dedicated.release({ reusable: false });
+  second.release({ reusable: true });
+  timers.at(-1)!();
+  const expired = records.find((record) => record.event === "connection.idle_expired");
+  expect(expired?.fields).toMatchObject({
+    provider: "codex",
+    connectionId: first.connectionId,
+    idleTimeoutMs: 30000,
+  });
+  expect(expired?.fields.requestId).toBeUndefined();
+  expect(expired?.fields.model).toBeUndefined();
+  expect(expired?.fields.sessionId).toBeUndefined();
+  expect(expired?.fields.attemptId).toBeUndefined();
+  expect(
+    records
+      .filter((record) => record.event === "connection.create")
+      .map((record) => record.fields.dedicated),
+  ).toEqual([false, true]);
+  pool.close();
+});
+
+for (const point of [
+  "connection.create",
+  "connection.acquired",
+  "connection.released",
+  "connection.retired",
+  "connection.idle_expired",
+]) {
+  test(`pool diagnostic Panic at ${point} preserves cleanup and reusable slot availability`, async () => {
+    const defect = new Panic({ message: `diagnostic defect: ${point}` });
+    let armed = true;
+    const diagnostics: ResponsesDiagnostics = {
+      withContext: () => diagnostics,
+      log(event) {
+        if (armed && event === point) {
+          armed = false;
+          throw defect;
+        }
+      },
+      wire() {},
+      flush: async () => {},
+    };
+    const { pool, sockets, timers } = harness();
+    if (point === "connection.create" || point === "connection.acquired") {
+      await expect(pool.connect(settings, signal(), diagnostics)).rejects.toBe(defect);
+    } else {
+      const lease = (await pool.connect(settings, signal(), diagnostics)).unwrap();
+      const pending = lease.events[Symbol.asyncIterator]().next();
+      if (point === "connection.idle_expired") {
+        lease.release({ reusable: true });
+        expect(() => timers.at(-1)!.callback()).toThrow(defect);
+      } else {
+        expect(() => lease.release({ reusable: point !== "connection.retired" })).toThrow(defect);
+      }
+      expect(await pending).toEqual({ done: true, value: undefined });
+    }
+    for (const socket of sockets) expect(socket.closes).toBe(1);
+    expect((await pool.connect(settings, signal())).unwrap().reusable).toBe(true);
+    pool.close();
+  });
+}
+
+test("idle SDK close diagnostic Panic reaches the fatal boundary without a lease consumer", async () => {
+  const script = `
+    import { Panic } from "better-result";
+    import { createOpenAIResponsesConnectionPool } from "./connection.ts";
+    const defect = new Panic({ message: "idle close diagnostic defect" });
+    process.on("unhandledRejection", (cause) => { process.exit(cause === defect ? 0 : 2); });
+    const remote = Promise.withResolvers();
+    const server = Bun.serve({
+      port: 0,
+      fetch(request, server) { if (server.upgrade(request)) return; return new Response(null, { status: 400 }); },
+      websocket: { open(socket) { remote.resolve(socket); }, message() {} },
+    });
+    const baseUrl = "http://localhost:" + server.port + "/v1";
+    const diagnostics = { withContext() { return diagnostics; }, log(event) { if (event === "socket.close") throw defect; }, wire() {}, async flush() {} };
+    const pool = createOpenAIResponsesConnectionPool();
+    const lease = (await pool.connect({ baseUrl, requestUrl: new URL(baseUrl + "/responses"), websocketUrl: "ws://localhost:" + server.port + "/v1/responses", headers: {}, mode: "websocket" }, new AbortController().signal, diagnostics)).unwrap();
+    lease.release({ reusable: true });
+    (await remote.promise).close(1011, "idle backend failure");
+  `;
+  const child = Bun.spawn([process.execPath, "--eval", script], {
+    cwd: import.meta.dir,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 3_000,
+  });
+  expect(await child.exited).toBe(0);
 });

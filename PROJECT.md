@@ -281,6 +281,15 @@ its canonical position. Socket, continuation, and steering state remain process-
 controls and checkpoints provide the recovery floor. Conversion preserves AI SDK-compatible durable
 messages and provider metadata, including IDs that Codex omits from its outgoing requests.
 
+Native Responses diagnostics use the `agent:responses` logging module. Core supplies request and session
+IDs; execution and connection scopes add attempt, connection, and response IDs where available. Logs
+cover adapter selection, connection reuse and retirement, continuation decisions, retries, steering,
+fallback, and termination. Opt-in `LILAC_LLM_WIRE_DEBUG` traces use the existing directory, byte limits,
+event limits, and shared redaction/writer in `packages/utils/llm-wire-debug.ts`. Native traces record
+outgoing events after request normalization and continuation selection and incoming SDK events before
+provider repairs. Reused connections attribute events to the current lease; idle events omit request
+ownership. Payloads belong to the opt-in traces, not operational logs.
+
 `AiSdkPiAgent` is a delegating compatibility facade. Mini retains its default AI SDK execution and
 existing Claude continuation and queued steering behavior. The WebSocket-to-SSE utility remains in use
 by Mini's provider resolution and legacy Codex OAuth consumers; native Core WebSocket execution does not

@@ -12,8 +12,17 @@ import { openAIRequestCodec } from "./input";
 import { openAIResponseCodec } from "./output";
 import type { OpenAIResponseRequest } from "./protocol";
 import type { OpenAIResponsesSocket } from "./socket";
+import {
+  createResponsesDiagnostics,
+  type ResponsesDiagnosticFields,
+  type ResponsesDiagnostics,
+} from "./diagnostics";
 import { createResponsesTransport } from "./transport";
-import { normalizeCodexWebSocketRequest, readCodexTurnState } from "../codex/compatibility";
+import {
+  createCodexWebSocketEventNormalizer,
+  normalizeCodexWebSocketRequest,
+  readCodexTurnState,
+} from "../codex/compatibility";
 
 const settings: OpenAIResponsesConnectionOptions = {
   baseUrl: "https://example.com/v1",
@@ -149,8 +158,8 @@ function harness(codex = false, options: Parameters<typeof createResponsesTransp
   return {
     sockets,
     transport,
-    connect: async (signal = new AbortController().signal) =>
-      (await transport.connect(settings, signal)).unwrap(),
+    connect: async (signal = new AbortController().signal, diagnostics?: ResponsesDiagnostics) =>
+      (await transport.connect(settings, signal, diagnostics)).unwrap(),
   };
 }
 
@@ -213,7 +222,17 @@ describe("Responses transport behavior parity", () => {
   test("retries stale response ids once before output and discards buffered created events", async () => {
     const h = harness();
     const next = await warm(h);
-    const socket = await h.connect();
+    const logs: Array<{ event: string; fields: ResponsesDiagnosticFields; level: string }> = [];
+    const diagnostics = createResponsesDiagnostics(
+      {
+        provider: "openai",
+        model: "gpt-6-astra",
+        requestId: "request-test",
+        sessionId: "session-test",
+      },
+      (level, event, fields) => logs.push({ level, event, fields }),
+    ).withContext({ attemptId: "attempt-test" });
+    const socket = await h.connect(undefined, diagnostics);
     socket.send(next).unwrap();
     h.sockets[0]!.emit(created("rejected"));
     h.sockets[0]!.emit(stale());
@@ -222,11 +241,77 @@ describe("Responses transport behavior parity", () => {
     const result = await untilTerminal(socket);
     expect(h.sockets[0]!.sent).toHaveLength(3);
     expect(h.sockets[0]!.sent[2]).toEqual(next);
+    expect(logs.find((log) => log.event === "response.continuation")).toMatchObject({
+      fields: {
+        requestId: "request-test",
+        sessionId: "session-test",
+        attemptId: "attempt-test",
+        connectionId: expect.any(Number),
+        optimizationEnabled: true,
+        optimizationReason: "incremental_replay",
+        inputItemsBefore: next.input.length,
+        inputItemsAfter: 1,
+        previousResponseId: "response-1",
+        turnStatePresent: false,
+      },
+    });
+    expect(logs.filter((log) => log.event === "response.retry_full_input")).toEqual([
+      expect.objectContaining({
+        level: "warn",
+        fields: expect.objectContaining({
+          requestId: "request-test",
+          attemptId: "attempt-test",
+          connectionId: expect.any(Number),
+          reason: "previous_response_not_found",
+          previousResponseId: "response-1",
+          inputItems: next.input.length,
+        }),
+      }),
+    ]);
+    expect(logs.find((log) => log.event === "response.finished")?.fields.responseId).toBe(
+      "accepted",
+    );
+    expect(JSON.stringify(logs)).not.toContain("Hello");
     expect(
       result.events
         .filter((value) => value.type === "response.created")
         .map((value) => value.response.id),
     ).toEqual(["accepted"]);
+    socket.close();
+    h.transport.close();
+  });
+
+  test("logs Codex normalization and repair without exposing turn state or response content", async () => {
+    const h = harness(true, { createEventNormalizer: createCodexWebSocketEventNormalizer });
+    const logs: Array<{ event: string; fields: ResponsesDiagnosticFields }> = [];
+    const diagnostics = createResponsesDiagnostics(
+      { provider: "codex", model: "gpt-6-astra", requestId: "request-test" },
+      (_level, event, fields) => logs.push({ event, fields }),
+    );
+    const socket = await h.connect(undefined, diagnostics);
+    socket.send(request()).unwrap();
+    h.sockets[0]!.emit(metadata());
+    h.sockets[0]!.emit(created("codex-response"));
+    h.sockets[0]!.emit(
+      event({ type: "response.done", response: { status: "completed", output: [message] } }),
+    );
+    const result = await untilTerminal(socket);
+    expect(result.error).toBeUndefined();
+    expect(logs.find((log) => log.event === "response.request_normalized")).toMatchObject({
+      fields: { provider: "codex", inputItemsBefore: 1, inputItemsAfter: 1, store: false },
+    });
+    expect(
+      logs.find(
+        (log) =>
+          log.event === "response.event_normalized" &&
+          log.fields.incomingEventType === "response.done",
+      ),
+    ).toBeDefined();
+    expect(logs.find((log) => log.event === "response.finished")).toMatchObject({
+      fields: { responseId: "codex-response", status: "completed", turnStatePresent: true },
+    });
+    expect(JSON.stringify(logs)).not.toContain("turn-1");
+    expect(JSON.stringify(logs)).not.toContain("Hello");
     socket.close();
     h.transport.close();
   });

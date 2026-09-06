@@ -11,6 +11,10 @@ import { OpenAIResponsesAgentAdapter } from "../openai-responses/adapter";
 import { openAIRequestCodec } from "../openai-responses/input";
 import type { OpenAIRequestCodec } from "../openai-responses/protocol";
 import { createResponsesTransport } from "../openai-responses/transport";
+import {
+  createResponsesDiagnostics,
+  type ResponsesDiagnostics,
+} from "../openai-responses/diagnostics";
 import { createCodexConnectionOptions } from "./connection";
 import {
   createCodexWebSocketEventNormalizer,
@@ -56,12 +60,22 @@ export type CodexAgentAdapterSettings = {
   transport: ResponsesTransportMode;
   resolveConnection?: ReturnType<typeof createCodexConnectionOptions>;
   transportClient?: ReturnType<typeof createResponsesTransport>;
+  diagnostics?: ResponsesDiagnostics;
 };
 
 export class CodexAgentAdapter implements AgentAdapter<AgentExecutionHost> {
   private readonly delegate: AgentAdapter<AgentExecutionHost>;
+  private readonly diagnostics: ResponsesDiagnostics;
+  private readonly usesSse: boolean;
 
   constructor(options: AiSdkPiAgentOptions<ToolSet>, settings: CodexAgentAdapterSettings) {
+    this.diagnostics =
+      settings.diagnostics ??
+      createResponsesDiagnostics({
+        provider: "codex",
+        model: settings.model,
+      });
+    this.usesSse = settings.transport === "sse";
     const fallback = new AiSdkAgentAdapter({
       ...options,
       model: codexSseProvider.responses(settings.model),
@@ -76,12 +90,17 @@ export class CodexAgentAdapter implements AgentAdapter<AgentExecutionHost> {
       model: settings.model,
       transport: settings.transport,
       nativeSteering: false,
+      diagnostics: this.diagnostics,
       requestCodec: codexRequestCodec,
       fallback,
-      connect: async (signal) => {
+      connect: async (signal, diagnostics) => {
         const connection = resultOutcome(await resolve(signal));
         if (!connection.ok) return Result.err(connection.error);
-        return transport.connect({ ...connection.value, mode: settings.transport }, signal);
+        return transport.connect(
+          { ...connection.value, mode: settings.transport },
+          signal,
+          diagnostics,
+        );
       },
     });
   }
@@ -89,6 +108,15 @@ export class CodexAgentAdapter implements AgentAdapter<AgentExecutionHost> {
   createExecution(
     context: Parameters<AgentAdapter<AgentExecutionHost>["createExecution"]>[0],
   ): AgentExecution {
+    if (this.usesSse) {
+      this.diagnostics
+        .withContext({ attemptId: context.attemptId })
+        .log("responses adapter selected", {
+          adapter: "ai-sdk",
+          transport: "sse",
+          steering: "boundary",
+        });
+    }
     return this.delegate.createExecution(context);
   }
 }

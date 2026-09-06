@@ -28,6 +28,10 @@ import { AiSdkAgentAdapter } from "@stanley2058/lilac-agent/adapters/ai-sdk/adap
 import { OpenAIResponsesAgentAdapter } from "@stanley2058/lilac-agent/adapters/openai-responses/adapter";
 import { createResponsesTransport } from "@stanley2058/lilac-agent/adapters/openai-responses/transport";
 import { CodexAgentAdapter } from "@stanley2058/lilac-agent/adapters/codex/adapter";
+import {
+  createResponsesDiagnostics,
+  type ResponsesDiagnosticContext,
+} from "@stanley2058/lilac-agent/adapters/openai-responses/diagnostics";
 import { ClaudeCodeAgentAdapter } from "@stanley2058/lilac-claude-code-bridge";
 import { env, type ResolvedModelRef, type CoreConfig } from "@stanley2058/lilac-utils";
 import { createOpenAIResponsesSseModelProvider } from "@stanley2058/lilac-utils/model-provider";
@@ -73,6 +77,7 @@ export function createCoreAgentAdapter(
     readonly resolved: ResolvedModelRef;
     readonly claude: CoreClaudeComposition;
     readonly openai?: Parameters<typeof resolveOpenAIResponsesConnectionOptions>[0];
+    readonly diagnosticContext?: ResponsesDiagnosticContext;
   },
 ) {
   const { resolved, claude } = input;
@@ -91,6 +96,11 @@ export function createCoreAgentAdapter(
     return new CodexAgentAdapter(options, {
       model: resolved.modelId,
       transport: env.providers.codex.responsesTransport,
+      diagnostics: createResponsesDiagnostics({
+        ...input.diagnosticContext,
+        provider: "codex",
+        model: resolved.modelId,
+      }),
     });
   const settings = input.openai ?? env.providers.openai;
   if (
@@ -98,7 +108,25 @@ export function createCoreAgentAdapter(
     settings.responsesTransport === "sse" ||
     options.model !== resolved.model
   ) {
-    return new AiSdkAgentAdapter(options);
+    const adapter = new AiSdkAgentAdapter(options);
+    if (resolved.provider !== "openai" || options.model !== resolved.model) return adapter;
+    const diagnostics = createResponsesDiagnostics({
+      ...input.diagnosticContext,
+      provider: "openai",
+      model: resolved.modelId,
+    });
+    return {
+      createExecution(context: Parameters<typeof adapter.createExecution>[0]) {
+        diagnostics
+          .withContext({ attemptId: context.attemptId })
+          .log("responses adapter selected", {
+            adapter: "ai-sdk",
+            transport: "sse",
+            steering: "boundary",
+          });
+        return adapter.createExecution(context);
+      },
+    };
   }
   const resolvedConnection = resolveOpenAIResponsesConnectionOptions(settings);
   const connection = resolvedConnection.match<
@@ -112,7 +140,13 @@ export function createCoreAgentAdapter(
   return new OpenAIResponsesAgentAdapter({
     model: resolved.modelId,
     transport: settings.responsesTransport,
-    connect: (signal) => openAIResponsesTransport.connect(connection.value, signal),
+    diagnostics: createResponsesDiagnostics({
+      ...input.diagnosticContext,
+      provider: "openai",
+      model: resolved.modelId,
+    }),
+    connect: (signal, diagnostics) =>
+      openAIResponsesTransport.connect(connection.value, signal, diagnostics),
     fallback: new AiSdkAgentAdapter({
       ...options,
       model: createOpenAIResponsesSseModelProvider().responses(resolved.modelId),
@@ -126,6 +160,7 @@ function signalCompositionHost(error: Error): never {
   );
 }
 export function createCoreAgentComposition(input: {
+  readonly diagnosticContext?: ResponsesDiagnosticContext;
   readonly getBinding: () => CoreAgentBinding;
   readonly claude: CoreClaudeComposition;
   readonly getAgent: () => AiSdkPiAgent<ToolSet>;
@@ -316,6 +351,7 @@ export function createCoreAgentComposition(input: {
       createCoreAgentAdapter(latest, {
         resolved: input.getBinding().resolved,
         claude: input.claude,
+        diagnosticContext: input.diagnosticContext,
       }),
     ...(host.hasModelFallback || runtime ? { streamTextMaxRetries: 0 } : {}),
     beforeStep:

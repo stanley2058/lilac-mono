@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { MockLanguageModelV4 } from "ai/test";
 import { AiSdkAgentAdapter } from "@stanley2058/lilac-agent/adapters/ai-sdk/adapter";
 import { OpenAIResponsesAgentAdapter } from "@stanley2058/lilac-agent/adapters/openai-responses/adapter";
+import type { AgentExecutionHost } from "@stanley2058/lilac-agent/agent-execution-host";
 import { ClaudeCodeAgentAdapter } from "@stanley2058/lilac-claude-code-bridge";
 import type { ResolvedModelRef } from "@stanley2058/lilac-utils";
 
@@ -31,7 +32,13 @@ describe("Core agent adapter selection", () => {
       { resolved, claude, openai: { ...openai, responsesTransport: "sse" } },
     );
 
-    expect(adapter).toBeInstanceOf(AiSdkAgentAdapter);
+    const execution = adapter.createExecution({
+      attemptId: "sse-attempt",
+      messages: [],
+      host: {} as AgentExecutionHost,
+    });
+    expect(execution.retryOwner).toBe("adapter");
+    expect(execution.capabilities.steering).toBe("boundary");
   });
 
   test.each(["auto", "websocket"] as const)(

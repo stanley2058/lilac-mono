@@ -4,6 +4,12 @@ import { CodexAgentAdapter, codexRequestCodec } from "./adapter";
 import { MockLanguageModelV4 } from "ai/test";
 import type { AgentExecutionHost } from "../../agent-execution-host";
 import { normalizeCodexWebSocketRequest } from "./compatibility";
+import { Result } from "better-result";
+import { AgentAdapterFailure } from "../../agent-adapter";
+import {
+  createResponsesDiagnostics,
+  type ResponsesDiagnosticFields,
+} from "../openai-responses/diagnostics";
 
 test("Codex encodes complete stateless replay before request normalization and preserves canonical metadata", async () => {
   const context: AgentPreparedContext = {
@@ -97,3 +103,57 @@ test("Codex never exposes native steering even for gpt-6-astra", () => {
   });
   expect(execution.capabilities.steering).toBe("boundary");
 });
+
+test.each(["sse", "websocket"] as const)(
+  "Codex %s diagnostics identify the provider and request attempt",
+  async (transport) => {
+    const records: { event: string; fields: ResponsesDiagnosticFields }[] = [];
+    const diagnostics = createResponsesDiagnostics(
+      {
+        provider: "codex",
+        model: "gpt-6-astra",
+        requestId: "request-codex",
+        sessionId: "session-codex",
+      },
+      (_level, event, fields) => records.push({ event, fields }),
+    );
+    const adapter = new CodexAgentAdapter(
+      { model: new MockLanguageModelV4(), system: "" },
+      {
+        model: "gpt-6-astra",
+        transport,
+        diagnostics,
+        resolveConnection: async () =>
+          Result.err(
+            new AgentAdapterFailure({
+              reason: "unavailable",
+              replaySafety: "safe",
+              message: "test connection unavailable",
+            }),
+          ),
+      },
+    );
+    const execution = adapter.createExecution({
+      attemptId: "attempt-codex",
+      messages: [],
+      host: {
+        signal: () => undefined,
+        controlBoundary: async () => "continue",
+      } as unknown as AgentExecutionHost,
+    });
+    if (transport === "websocket") {
+      execution.start().unwrap();
+      for await (const event of execution.events) {
+        if (event.type === "terminal") expect(event.outcome.status).toBe("failed");
+      }
+    }
+    expect(records[0]?.fields).toMatchObject({
+      provider: "codex",
+      requestId: "request-codex",
+      sessionId: "session-codex",
+      attemptId: "attempt-codex",
+      transport,
+      steering: "boundary",
+    });
+  },
+);

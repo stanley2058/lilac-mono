@@ -3,6 +3,7 @@ import { Panic } from "better-result";
 import { WebSocket as NodeWebSocket } from "ws";
 import type { AgentAdapterFailure } from "../../agent-adapter";
 import { createOpenAIResponsesConnect } from "./socket";
+import type { ResponsesDiagnostics, ResponsesDiagnosticFields } from "./diagnostics";
 
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
 afterEach(() => {
@@ -273,3 +274,266 @@ for (const defect of [new Error("transport failure"), new Panic({ message: "tran
     await harness.closed.promise;
   });
 }
+
+function recordDiagnostics() {
+  const logs: Array<{ event: string; fields?: ResponsesDiagnosticFields; level?: string }> = [];
+  const wires: Array<{
+    event: string;
+    payload: object | string;
+    fields?: ResponsesDiagnosticFields;
+  }> = [];
+  const closed = Promise.withResolvers<void>();
+  const diagnostics: ResponsesDiagnostics = {
+    withContext: () => diagnostics,
+    log(event, fields, level) {
+      logs.push({ event, fields, level });
+      if (event === "socket.close") closed.resolve();
+    },
+    wire: (event, payload, fields) => {
+      wires.push({ event, payload, fields });
+    },
+    flush: async () => {},
+  };
+  return { diagnostics, logs, wires, closed };
+}
+
+test("SDK diagnostics capture requests and raw provider events without token payloads in operational logs", async () => {
+  const recording = recordDiagnostics();
+  const incoming = {
+    type: "response.output_text.delta",
+    delta: "private generated text",
+    item_id: "m",
+    output_index: 0,
+    content_index: 0,
+    sequence_number: 1,
+    logprobs: [],
+  };
+  const harness = serve((ws) => {
+    ws.send(JSON.stringify(incoming));
+  });
+  const socket = (
+    await harness.connect(new AbortController().signal, recording.diagnostics)
+  ).unwrap();
+  const request = {
+    type: "response.create",
+    model: "gpt-6-astra",
+    input: "private prompt",
+    previous_response_id: "prior",
+  } as const;
+  socket.send(request).unwrap();
+  expect((await socket.events[Symbol.asyncIterator]().next()).value?.unwrap()).toEqual(incoming);
+  expect(recording.wires).toEqual([
+    { event: "websocket.send", payload: request, fields: { eventType: "response.create" } },
+    { event: "websocket.receive", payload: incoming, fields: { eventType: incoming.type } },
+  ]);
+  expect(recording.logs.map((entry) => entry.event)).toEqual([
+    "socket.connecting",
+    "socket.open",
+    "socket.send",
+  ]);
+  expect(JSON.stringify(recording.logs)).not.toContain("private");
+  expect(
+    recording.logs.find((entry) => entry.event === "socket.open")?.fields?.elapsedMs,
+  ).toBeGreaterThanOrEqual(0);
+  socket.close();
+  await recording.closed.promise;
+  expect(recording.logs.find((entry) => entry.event === "socket.close")?.fields).toEqual({
+    closeCode: 1000,
+    closeReason: "OK",
+    unsentCount: 0,
+    intentional: true,
+  });
+});
+
+test("server closes preserve close code reason and unsent count in diagnostics", async () => {
+  const recording = recordDiagnostics();
+  const harness = serve((ws) => {
+    ws.close(1011, "backend unavailable");
+  });
+  const socket = (
+    await harness.connect(new AbortController().signal, recording.diagnostics)
+  ).unwrap();
+  socket.send({ type: "response.create", input: [] }).unwrap();
+  expect((await socket.events[Symbol.asyncIterator]().next()).value?.isErr()).toBe(true);
+  await recording.closed.promise;
+  expect(recording.logs.find((entry) => entry.event === "socket.close")?.fields).toEqual({
+    closeCode: 1011,
+    closeReason: "backend unavailable",
+    unsentCount: 0,
+    intentional: false,
+  });
+  socket.close();
+});
+
+test("malformed frames are traced and retain reconciliation failure", async () => {
+  const recording = recordDiagnostics();
+  const harness = serve((ws) => {
+    ws.send("invalid JSON");
+  });
+  const socket = (
+    await harness.connect(new AbortController().signal, recording.diagnostics)
+  ).unwrap();
+  socket.send({ type: "response.create", input: [] }).unwrap();
+  expect((await socket.events[Symbol.asyncIterator]().next()).value?.isErr()).toBe(true);
+  expect(recording.wires.find((entry) => entry.event === "websocket.invalid_frame")?.payload).toBe(
+    "invalid JSON",
+  );
+  expect(recording.logs).toContainEqual({
+    event: "socket.invalid_frame",
+    fields: {},
+    level: "warn",
+  });
+  socket.close();
+});
+
+test("SDK server error diagnostics keep the unmodified provider event in the wire trace", async () => {
+  const recording = recordDiagnostics();
+  const error = {
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      code: "bad_request",
+      message: "backend rejected api_key=secret",
+      param: null,
+    },
+  };
+  const harness = serve((ws) => {
+    ws.send(JSON.stringify(error));
+  });
+  const socket = (
+    await harness.connect(new AbortController().signal, recording.diagnostics)
+  ).unwrap();
+  socket.send({ type: "response.create", input: [] }).unwrap();
+  expect((await socket.events[Symbol.asyncIterator]().next()).value?.unwrap()).toEqual(error);
+  expect(recording.wires.find((entry) => entry.event === "websocket.receive")?.payload).toEqual(
+    error,
+  );
+  expect(recording.logs).toContainEqual({
+    event: "socket.error",
+    fields: {
+      serverError: true,
+      errorTag: "Error",
+      errorMessage: "backend rejected api_key=<redacted>",
+    },
+    level: "warn",
+  });
+
+  socket.close();
+});
+
+for (const point of [
+  "websocket.receive",
+  "websocket.invalid_frame",
+  "socket.error",
+  "socket.close",
+]) {
+  test(`diagnostic Panic from ${point} reaches the owned SDK reader`, async () => {
+    const defect = new Panic({ message: `diagnostic defect: ${point}` });
+    const recording = recordDiagnostics();
+    const diagnostics: ResponsesDiagnostics = {
+      ...recording.diagnostics,
+      log(event, fields, level) {
+        recording.diagnostics.log(event, fields, level);
+        if (event === point) throw defect;
+      },
+      wire(event, payload, fields) {
+        if (event === point) throw defect;
+        recording.diagnostics.wire(event, payload, fields);
+      },
+    };
+    const harness = serve((ws) => {
+      if (point === "socket.close") {
+        ws.close(1011, "backend failure");
+        return;
+      }
+      if (point === "websocket.invalid_frame") {
+        ws.send("invalid JSON");
+        return;
+      }
+      if (point === "socket.error") {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            error: { message: "failed", type: "server_error", code: "failed", param: null },
+          }),
+        );
+        return;
+      }
+      ws.send(
+        JSON.stringify({
+          type: "response.output_text.delta",
+          delta: "text",
+          item_id: "m",
+          output_index: 0,
+          content_index: 0,
+          sequence_number: 0,
+          logprobs: [],
+        }),
+      );
+    });
+    const socket = (await harness.connect(new AbortController().signal, diagnostics)).unwrap();
+    socket.send({ type: "response.create", input: [] }).unwrap();
+    await expect(socket.events[Symbol.asyncIterator]().next()).rejects.toBe(defect);
+    socket.close();
+    await harness.closed.promise;
+  });
+}
+
+test("closing diagnostic Panic cannot prevent SDK cleanup", async () => {
+  const defect = new Panic({ message: "closing diagnostics failed" });
+  const recording = recordDiagnostics();
+  const diagnostics: ResponsesDiagnostics = {
+    ...recording.diagnostics,
+    log(event, fields, level) {
+      if (event === "socket.closing") throw defect;
+      recording.diagnostics.log(event, fields, level);
+    },
+  };
+  const harness = serve(() => {});
+  const socket = (await harness.connect(new AbortController().signal, diagnostics)).unwrap();
+  expect(() => socket.close()).toThrow(defect);
+  await harness.closed.promise;
+  expect(socket.isOpen?.()).toBe(false);
+  socket.close();
+});
+
+test("native close Panic wins over closing diagnostic Panic and still closes the socket", async () => {
+  const native = new Panic({ message: "native close defect" });
+  const diagnostic = new Panic({ message: "closing diagnostics failed" });
+  const recording = recordDiagnostics();
+  const diagnostics: ResponsesDiagnostics = {
+    ...recording.diagnostics,
+    log(event) {
+      if (event === "socket.closing") throw diagnostic;
+    },
+  };
+  const harness = serve(() => {});
+  const socket = (await harness.connect(new AbortController().signal, diagnostics)).unwrap();
+  const originalClose = NodeWebSocket.prototype.close;
+  const close = spyOn(NodeWebSocket.prototype, "close").mockImplementation(
+    function (this: NodeWebSocket, code, reason) {
+      originalClose.call(this, code, reason);
+      throw native;
+    },
+  );
+  try {
+    expect(() => socket.close()).toThrow(native);
+  } finally {
+    close.mockRestore();
+  }
+  await harness.closed.promise;
+});
+
+test("opening diagnostic Panic closes the newly connected SDK socket", async () => {
+  const defect = new Panic({ message: "open diagnostic failed" });
+  const recording = recordDiagnostics();
+  const diagnostics: ResponsesDiagnostics = {
+    ...recording.diagnostics,
+    log(event) {
+      if (event === "socket.open") throw defect;
+    },
+  };
+  const harness = serve(() => {});
+  await expect(harness.connect(new AbortController().signal, diagnostics)).rejects.toBe(defect);
+  await harness.closed.promise;
+});

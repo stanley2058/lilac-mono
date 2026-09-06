@@ -25,9 +25,11 @@ import type {
   OpenAIResponseRequest,
   OpenAIRequestCodec,
 } from "./protocol";
+import type { ResponsesDiagnostics } from "./diagnostics";
 import type { OpenAIResponsesConnect, OpenAIResponsesSocket } from "./socket";
 
 export type OpenAIResponsesAdapterOptions = {
+  readonly diagnostics?: ResponsesDiagnostics;
   readonly model: string;
   readonly transport: "auto" | "websocket";
   readonly connect: OpenAIResponsesConnect;
@@ -41,6 +43,7 @@ type EventPayload = AgentExecutionEvent extends infer Event
     ? Omit<Event, "attemptId" | "sequence">
     : never
   : never;
+type TerminalOutcome = Extract<AgentExecutionEvent, { type: "terminal" }>["outcome"];
 type ParentResponse = {
   readonly id: string;
   readonly prepared: AgentPreparedContext;
@@ -105,6 +108,7 @@ export class OpenAIResponsesAgentAdapter implements AgentAdapter<AgentExecutionH
 
 class OpenAIResponsesExecution implements AgentExecution {
   readonly attemptId: string;
+  private readonly diagnostics: ResponsesDiagnostics | undefined;
   private readonly channel = createAgentEventChannel();
   readonly events = this.channel.events;
   private sequence = 0;
@@ -138,7 +142,9 @@ class OpenAIResponsesExecution implements AgentExecution {
   private history: ModelMessage[];
   private committedLength: number;
   private fallback: AgentExecution | undefined;
+  private fallbackOutcome: TerminalOutcome | undefined;
   private interrupted = false;
+  private controlDiagnosticFailure: AgentAdapterFailure | undefined;
   private boundaryDeliveryRequired = false;
   private lengthRecoveryAttempted = false;
   constructor(
@@ -146,6 +152,7 @@ class OpenAIResponsesExecution implements AgentExecution {
     private readonly context: Parameters<AgentAdapter<AgentExecutionHost>["createExecution"]>[0],
   ) {
     this.attemptId = context.attemptId;
+    this.diagnostics = options.diagnostics?.withContext({ attemptId: context.attemptId });
     this.history = context.messages.map(snapshotAgentMessage);
     this.committedLength = this.history.length;
   }
@@ -180,19 +187,20 @@ class OpenAIResponsesExecution implements AgentExecution {
       return Result.err(
         failure("This OpenAI execution uses boundary input delivery", "invalid-state", "safe"),
       );
+    this.diagnostics?.log("execution.input_queued", { inputId: input.id, delivery: "native" });
     this.inputs.push({ ...input, messages: input.messages.map(snapshotAgentMessage) });
     this.enqueue({ type: "control" });
     return Result.ok(undefined);
   }
   async interrupt(): Promise<ResultType<void, AgentAdapterFailure>> {
     this.interrupted = true;
-    this.stop();
+    this.stop("execution.interrupt");
     if (this.fallback) return await this.fallback.interrupt();
     if (this.work) await this.work;
     return Result.ok(undefined);
   }
   async cancel(): Promise<ResultType<void, AgentAdapterFailure>> {
-    this.stop();
+    this.stop("execution.cancel");
     if (this.fallback) return await this.fallback.cancel();
     if (this.work) await this.work;
     return Result.ok(undefined);
@@ -206,9 +214,18 @@ class OpenAIResponsesExecution implements AgentExecution {
     this.channel.close();
     return disposal;
   }
-  private stop(): void {
+  private stop(event?: "execution.cancel" | "execution.interrupt"): void {
     this.controller.abort();
     this.enqueue({ type: "abort" });
+    if (!event) return;
+    const logged = resultOutcome(captureAgentOperation(() => this.diagnostics?.log(event)));
+    if (!logged.ok && isAgentPanic(logged.error))
+      this.controlDiagnosticFailure ??= new AgentAdapterFailure({
+        reason: "unavailable",
+        message: "Responses control diagnostics failed",
+        replaySafety: "reconcile",
+        cause: logged.error,
+      });
   }
   private get signal(): AbortSignal {
     const hostSignal = this.context.host.signal();
@@ -248,7 +265,8 @@ class OpenAIResponsesExecution implements AgentExecution {
     await Promise.all(this.hostWork);
     if (this.readerWork) await this.readerWork;
     signal.removeEventListener("abort", onAbort);
-    const outcome = result.ok
+    const flushed = resultOutcome(await captureAgentPromise(async () => this.diagnostics?.flush()));
+    let outcome = result.ok
       ? resultOutcome(result.value)
       : {
           ok: false as const,
@@ -260,6 +278,8 @@ class OpenAIResponsesExecution implements AgentExecution {
             cause: result.error,
           }),
         };
+    if (outcome.ok && this.fallbackOutcome?.status === "failed")
+      outcome = { ok: false, error: this.fallbackOutcome.error };
     if (!outcome.ok && isAgentPanic(outcome.error.cause)) {
       this.fail(outcome.error);
       return;
@@ -275,7 +295,22 @@ class OpenAIResponsesExecution implements AgentExecution {
       );
       return;
     }
+    if (!flushed.ok && isAgentPanic(flushed.error)) {
+      this.fail(
+        new AgentAdapterFailure({
+          reason: "unavailable",
+          message: "Responses diagnostics cleanup failed",
+          replaySafety: "reconcile",
+          cause: flushed.error,
+        }),
+      );
+      return;
+    }
     if (!outcome.ok) {
+      if (this.fallbackOutcome) {
+        this.settleTerminal(this.fallbackOutcome);
+        return;
+      }
       if (wasAborted && !isAgentPanic(outcome.error.cause)) {
         this.complete(this.interrupted ? "interrupted" : "cancelled");
         return;
@@ -295,6 +330,10 @@ class OpenAIResponsesExecution implements AgentExecution {
       return;
     }
     if (this.ended) return;
+    if (this.fallbackOutcome) {
+      this.settleTerminal(this.fallbackOutcome);
+      return;
+    }
     if (!wasAborted) {
       this.complete("completed");
       return;
@@ -302,24 +341,56 @@ class OpenAIResponsesExecution implements AgentExecution {
     this.complete(this.interrupted ? "interrupted" : "cancelled");
   }
   private complete(status: "completed" | "cancelled" | "interrupted"): void {
-    if (this.ended) return;
-    this.returnQueued();
-    if (this.submitting)
-      this.emit({ type: "delivery", status: "unresolved", inputIds: [this.submitting.input.id] });
-    this.ended = true;
-    this.emit({ type: "terminal", outcome: { status } });
-    this.channel.close();
+    this.settleTerminal({ status });
   }
   private fail(error: AgentAdapterFailure): void {
+    this.settleTerminal({ status: "failed", error });
+  }
+  private settleTerminal(outcome: TerminalOutcome): void {
     if (this.ended) return;
+    if (
+      this.controlDiagnosticFailure &&
+      !(outcome.status === "failed" && isAgentPanic(outcome.error.cause))
+    )
+      outcome = { status: "failed", error: this.controlDiagnosticFailure };
+    const logged = resultOutcome(
+      captureAgentOperation(() =>
+        this.diagnostics?.log(
+          "execution.finished",
+          {
+            status: outcome.status,
+            transport: this.fallback ? "sse" : "websocket",
+            ...(outcome.status === "failed"
+              ? {
+                  reason: outcome.error.reason,
+                  replaySafety: outcome.error.replaySafety,
+                }
+              : {}),
+          },
+          outcome.status === "failed" ? "warn" : "debug",
+        ),
+      ),
+    );
+    const originalPanic = outcome.status === "failed" && isAgentPanic(outcome.error.cause);
+    if (!logged.ok && isAgentPanic(logged.error) && !originalPanic)
+      outcome = {
+        status: "failed",
+        error: new AgentAdapterFailure({
+          reason: "unavailable",
+          message: "Responses terminal diagnostics failed",
+          replaySafety: "reconcile",
+          cause: logged.error,
+        }),
+      };
     this.returnQueued();
     if (this.submitting)
       this.emit({ type: "delivery", status: "unresolved", inputIds: [this.submitting.input.id] });
     this.ended = true;
-    this.emit({ type: "terminal", outcome: { status: "failed", error } });
+    this.emit({ type: "terminal", outcome });
     this.channel.close();
   }
-  private returnToBoundary(inputId: string): void {
+  private returnToBoundary(inputId: string, reason: string): void {
+    this.diagnostics?.log("execution.input_boundary", { inputId, reason, steering: "boundary" });
     this.boundaryDeliveryRequired = true;
     this.emit({ type: "delivery", status: "returned", inputIds: [inputId] });
     this.returnQueued();
@@ -329,13 +400,21 @@ class OpenAIResponsesExecution implements AgentExecution {
     if (inputIds.length > 0) this.emit({ type: "delivery", status: "returned", inputIds });
   }
   private async execute(signal: AbortSignal): Promise<ResultType<void, AgentAdapterFailure>> {
+    this.diagnostics?.log("execution.started", {
+      adapter: "responses",
+      model: this.options.model,
+      transport: "websocket",
+      transportMode: this.options.transport,
+      steering: this.capabilities.steering,
+      followUp: this.capabilities.followUp,
+    });
     let boundary = await this.context.host.controlBoundary();
     while (boundary === "again") boundary = await this.context.host.controlBoundary();
     if (boundary === "stop") return Result.ok(undefined);
-    const connected = resultOutcome(await this.options.connect(signal));
+    const connected = resultOutcome(await this.options.connect(signal, this.diagnostics));
     if (!connected.ok) {
       if (this.options.transport === "auto" && this.options.fallback && !signal.aborted)
-        return await this.runFallback();
+        return await this.runFallback(connected.error);
       return Result.err(connected.error);
     }
     this.socket = connected.value;
@@ -352,17 +431,29 @@ class OpenAIResponsesExecution implements AgentExecution {
     }
     return Result.ok(undefined);
   }
-  private async runFallback(): Promise<ResultType<void, AgentAdapterFailure>> {
+  private async runFallback(
+    connectionError: AgentAdapterFailure,
+  ): Promise<ResultType<void, AgentAdapterFailure>> {
+    this.diagnostics?.log(
+      "execution.fallback",
+      {
+        transport: "sse",
+        reason: connectionError.reason,
+        replaySafety: connectionError.replaySafety,
+        steering: "boundary",
+      },
+      "warn",
+    );
     this.returnQueued();
     this.fallback = this.options.fallback!.createExecution(this.context);
     const started = resultOutcome(this.fallback.start());
     if (!started.ok) return Result.err(started.error);
     for await (const event of this.fallback.events) {
+      if (event.type === "terminal") {
+        this.fallbackOutcome = event.outcome;
+        return Result.ok(undefined);
+      }
       this.channel.push({ ...event, sequence: this.sequence++ });
-      if (event.type !== "terminal") continue;
-      this.ended = true;
-      this.channel.close();
-      return Result.ok(undefined);
     }
     return Result.err(failure("Fallback execution ended without a terminal event"));
   }
@@ -553,6 +644,11 @@ class OpenAIResponsesExecution implements AgentExecution {
           return Result.err(failure("Uncorrelated OpenAI steering acceptance"));
         if (!pending.steerId)
           this.emit({ type: "delivery", status: "provider-owned", inputIds: [pending.input.id] });
+        this.diagnostics?.log("execution.input_accepted", {
+          inputId: pending.input.id,
+          responseId: pending.parentId,
+          steerId: event.steerId,
+        });
         pending.steerId = event.steerId;
         const parent = this.responses.get(pending.parentId);
         return parent ? await this.advance(parent, signal) : Result.ok("continue");
@@ -586,7 +682,7 @@ class OpenAIResponsesExecution implements AgentExecution {
           (event.steerId && pending.steerId && event.steerId !== pending.steerId)
         )
           return Result.err(failure("Uncorrelated OpenAI steering failure"));
-        this.returnToBoundary(pending.input.id);
+        this.returnToBoundary(pending.input.id, "provider_rejected");
         this.submitting = undefined;
         if (!this.current) return Result.ok("continue");
         return await this.advance(this.current, signal);
@@ -620,7 +716,7 @@ class OpenAIResponsesExecution implements AgentExecution {
         await (this.options.requestCodec ?? openAIRequestCodec).steer(input.messages),
       );
       if (!encoded.ok) {
-        this.returnToBoundary(input.id);
+        this.returnToBoundary(input.id, "input_encoding");
         return Result.ok(undefined);
       }
       const parent = this.current;
@@ -633,7 +729,7 @@ class OpenAIResponsesExecution implements AgentExecution {
         }),
       );
       if (!prepared.ok) {
-        this.returnToBoundary(input.id);
+        this.returnToBoundary(input.id, "continuation_preflight");
         return Result.ok(undefined);
       }
       const state = this.context.host.readState();
@@ -646,9 +742,14 @@ class OpenAIResponsesExecution implements AgentExecution {
         }),
       );
       if (!candidate.ok || !sameInheritedRequest(parent.request, candidate.value)) {
-        this.returnToBoundary(input.id);
+        this.returnToBoundary(input.id, "inherited_request_changed");
         return Result.ok(undefined);
       }
+      this.diagnostics?.log("execution.input_submitted", {
+        inputId: input.id,
+        responseId: parent.id,
+        delivery: "native",
+      });
       this.submitting = { input, parentId: parent.id, prepared: prepared.value };
       return this.socket!.send({
         type: "response.steer",

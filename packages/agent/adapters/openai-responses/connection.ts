@@ -1,11 +1,16 @@
 import { Result, type Result as ResultType } from "better-result";
 import type { ResponsesServerEvent } from "openai/resources/responses/responses";
 import type { OpenAIResponsesConnectionOptions } from "@stanley2058/lilac-utils/openai-responses-connection";
+import {
+  formatTaggedErrorForLog,
+  redactErrorTextForLog,
+} from "@stanley2058/lilac-utils/tagged-error-log";
 import { AgentAdapterFailure } from "../../agent-adapter";
 import { resultOutcome } from "../../agent-runtime-support";
 import {
   captureAgentOperation,
   captureAgentPromise,
+  isAgentPanic,
   rethrowAgentPanic,
   type OpaqueAgentValue,
 } from "../../failure-adapters";
@@ -14,6 +19,8 @@ import {
   type OpenAIResponsesConnect,
   type OpenAIResponsesSocket,
 } from "./socket";
+
+import type { ResponsesDiagnostics, ResponsesDiagnosticFields } from "./diagnostics";
 
 type SocketEvent = ResultType<ResponsesServerEvent, AgentAdapterFailure>;
 type Read =
@@ -31,6 +38,7 @@ type Connection = {
   key: string;
   socket: OpenAIResponsesSocket;
   healthy: boolean;
+  diagnostics: ReturnType<typeof connectionDiagnostics>;
   consumer?: Consumer;
 };
 
@@ -59,39 +67,59 @@ export function createOpenAIResponsesConnectionPool(options?: {
     cancelIdleClose = undefined;
   }
 
-  function closeConnection(connection: Connection) {
+  function closeConnection(connection: Connection, reason: string) {
+    connection.diagnostics.record("connection.retired", { reason });
     connection.healthy = false;
     connections.delete(connection);
     if (reusable === connection) reusable = undefined;
     releaseConsumer(connection);
     const closed = resultOutcome(captureAgentOperation(() => connection.socket.close()));
     if (!closed.ok) rethrowAgentPanic(closed.error);
+    connection.diagnostics.settle();
   }
 
   function scheduleIdleClose(connection: Connection) {
     clearIdleClose();
     if (idleTimeoutMs <= 0) {
-      closeConnection(connection);
+      connection.diagnostics.record("connection.idle_expired", { idleTimeoutMs });
+      closeConnection(connection, "idle_expired");
       return;
     }
     const schedule = options?.scheduleIdleClose ?? scheduleTimer;
     cancelIdleClose = schedule(() => {
       cancelIdleClose = undefined;
-      if (!busy && reusable === connection) closeConnection(connection);
+      if (busy || reusable !== connection) return;
+      connection.diagnostics.record("connection.idle_expired", { idleTimeoutMs });
+      closeConnection(connection, "idle_expired");
     }, idleTimeoutMs);
   }
 
-  function lease(connection: Connection, pooled: boolean): OpenAIResponsesLease {
+  function lease(
+    connection: Connection,
+    pooled: boolean,
+    diagnostics?: ResponsesDiagnostics,
+  ): OpenAIResponsesLease {
+    connection.diagnostics.bind(diagnostics);
     const consumer: Consumer = { queue: [], pending: [], released: false, ended: false };
     connection.consumer = consumer;
     const release = (reuse: boolean) => {
       if (consumer.released) return;
+      connection.diagnostics.record("connection.released", {
+        reusable: reuse && pooled && connection.healthy && !disposed,
+      });
       releaseConsumer(connection);
       if (pooled) busy = false;
-      if (!reuse || !pooled || !connection.healthy || disposed) {
-        closeConnection(connection);
+      if (
+        !reuse ||
+        !pooled ||
+        !connection.healthy ||
+        disposed ||
+        connection.diagnostics.hasFailure()
+      ) {
+        closeConnection(connection, disposed ? "pool_closed" : "lease_released");
         return;
       }
+      connection.diagnostics.bind(undefined);
       scheduleIdleClose(connection);
     };
     return {
@@ -121,7 +149,9 @@ export function createOpenAIResponsesConnectionPool(options?: {
   async function connect(
     settings: OpenAIResponsesConnectionOptions,
     signal: AbortSignal,
+    diagnostics?: ResponsesDiagnostics,
   ): Promise<ResultType<OpenAIResponsesLease, AgentAdapterFailure>> {
+    const started = performance.now();
     if (disposed || signal.aborted) {
       const reason: OpaqueAgentValue = signal.reason;
       rethrowAgentPanic(reason);
@@ -134,15 +164,33 @@ export function createOpenAIResponsesConnectionPool(options?: {
     }
     const key = connectionKey(settings);
     if (pooled && reusable && reusable.key === key && isOpen(reusable)) {
-      return Result.ok(lease(reusable, true));
+      const result = lease(reusable, true, diagnostics);
+      reusable.diagnostics.record("connection.acquired", {
+        reused: true,
+        dedicated: false,
+        elapsedMs: performance.now() - started,
+      });
+      if (reusable.diagnostics.hasFailure()) result.close();
+      return Result.ok(result);
     }
     if (pooled && reusable) {
       const previous = reusable;
-      const closed = resultOutcome(captureAgentOperation(() => closeConnection(previous)));
+      const closed = resultOutcome(
+        captureAgentOperation(() =>
+          closeConnection(previous, previous.key === key ? "unhealthy" : "settings_changed"),
+        ),
+      );
       if (!closed.ok) {
         busy = false;
         rethrowAgentPanic(closed.error);
       }
+    }
+    const id = ++nextId;
+    const observer = connectionDiagnostics(id, diagnostics);
+    observer.record("connection.create", { dedicated: !pooled });
+    if (observer.hasFailure()) {
+      if (pooled) busy = false;
+      observer.settle();
     }
     const controller = new AbortController();
     connecting.add(controller);
@@ -151,7 +199,10 @@ export function createOpenAIResponsesConnectionPool(options?: {
     if (signal.aborted) abort();
     const captured = resultOutcome(
       await captureAgentPromise(() =>
-        (options?.connect ?? createOpenAIResponsesConnect)(settings)(controller.signal),
+        (options?.connect ?? createOpenAIResponsesConnect)(settings)(
+          controller.signal,
+          observer.observer,
+        ),
       ),
     );
     signal.removeEventListener("abort", abort);
@@ -159,22 +210,43 @@ export function createOpenAIResponsesConnectionPool(options?: {
     if (!captured.ok) {
       if (pooled) busy = false;
       rethrowAgentPanic(captured.error);
+      observer.record(
+        "connection.acquire_failed",
+        {
+          elapsedMs: performance.now() - started,
+          errorMessage:
+            captured.error instanceof Error
+              ? redactErrorTextForLog(captured.error.message)
+              : undefined,
+        },
+        "warn",
+      );
+      observer.settle();
       return Result.err(unavailable("safe", captured.error));
     }
     const opened = resultOutcome(captured.value);
     if (!opened.ok) {
       if (pooled) busy = false;
+      observer.record(
+        "connection.acquire_failed",
+        { elapsedMs: performance.now() - started, ...formatTaggedErrorForLog(opened.error) },
+        "warn",
+      );
+      observer.settle();
       return Result.err(opened.error);
     }
     const connection: Connection = {
-      id: ++nextId,
+      id,
+      diagnostics: observer,
       key,
       socket: opened.value,
       healthy: true,
     };
     if (disposed || controller.signal.aborted) {
       if (pooled) busy = false;
-      const closed = resultOutcome(captureAgentOperation(() => closeConnection(connection)));
+      const closed = resultOutcome(
+        captureAgentOperation(() => closeConnection(connection, "acquisition_aborted")),
+      );
       const reason: OpaqueAgentValue = controller.signal.reason;
       rethrowAgentPanic(reason);
       if (!closed.ok) rethrowAgentPanic(closed.error);
@@ -182,7 +254,13 @@ export function createOpenAIResponsesConnectionPool(options?: {
     }
     connections.add(connection);
     if (pooled) reusable = connection;
-    const result = lease(connection, pooled);
+    const result = lease(connection, pooled, diagnostics);
+    observer.record("connection.acquired", {
+      reused: false,
+      dedicated: !pooled,
+      elapsedMs: performance.now() - started,
+    });
+    if (observer.hasFailure()) result.close();
     void pump(connection);
     return Result.ok(result);
   }
@@ -194,7 +272,9 @@ export function createOpenAIResponsesConnectionPool(options?: {
     for (const controller of connecting) controller.abort();
     const failures: OpaqueAgentValue[] = [];
     for (const connection of connections) {
-      const closed = resultOutcome(captureAgentOperation(() => closeConnection(connection)));
+      const closed = resultOutcome(
+        captureAgentOperation(() => closeConnection(connection, "pool_closed")),
+      );
       if (!closed.ok) failures.push(closed.error);
     }
     for (const failure of failures) rethrowAgentPanic(failure);
@@ -231,7 +311,10 @@ function releaseConsumer(connection: Connection) {
 
 function publish(connection: Connection, read: Read) {
   const consumer = connection.consumer;
-  if (!consumer || consumer.released) return;
+  if (!consumer || consumer.released) {
+    if (read.kind === "failure") rethrowAgentPanic(read.cause);
+    return;
+  }
   if (read.kind !== "event" || !resultOutcome(read.event).ok) consumer.ended = true;
   const resolve = consumer.pending.shift();
   if (resolve) resolve(read);
@@ -298,4 +381,43 @@ function unavailable(
     replaySafety,
     cause,
   });
+}
+
+function connectionDiagnostics(connectionId: number, initial?: ResponsesDiagnostics) {
+  let current = initial;
+  let failure: OpaqueAgentValue;
+  const idle = initial?.withContext({
+    requestId: undefined,
+    model: undefined,
+    sessionId: undefined,
+    attemptId: undefined,
+    responseId: undefined,
+  });
+  const child = (context: ResponsesDiagnosticFields): ResponsesDiagnostics => ({
+    withContext: (fields) => child({ ...context, ...fields }),
+    log: (event, fields, level) =>
+      (current ?? idle)?.log(event, { ...context, ...fields, connectionId }, level),
+    wire: (event, payload, fields) =>
+      current?.wire(event, payload, { ...context, ...fields, connectionId }),
+    flush: async () => {
+      await current?.flush();
+    },
+  });
+  const observer = child({});
+  return {
+    observer,
+    record(event: string, fields?: ResponsesDiagnosticFields, level?: "debug" | "warn") {
+      const logged = resultOutcome(captureAgentOperation(() => observer.log(event, fields, level)));
+      if (!logged.ok && isAgentPanic(logged.error)) failure ??= logged.error;
+    },
+    hasFailure: () => failure !== undefined,
+    settle() {
+      const retained = failure;
+      failure = undefined;
+      rethrowAgentPanic(retained);
+    },
+    bind(diagnostics: ResponsesDiagnostics | undefined) {
+      current = diagnostics;
+    },
+  };
 }

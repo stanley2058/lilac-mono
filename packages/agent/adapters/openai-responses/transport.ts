@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import type { ResponsesDiagnostics } from "./diagnostics";
 import { Result, type Result as ResultType } from "better-result";
 import type {
   ResponsesClientEvent,
@@ -33,8 +35,9 @@ export function createResponsesTransport(options: TransportOptions = {}) {
     async connect(
       settings: OpenAIResponsesConnectionOptions,
       signal: AbortSignal,
+      diagnostics?: ResponsesDiagnostics,
     ): Promise<ResultType<OpenAIResponsesSocket, AgentAdapterFailure>> {
-      const acquired = resultOutcome(await pool.connect(settings, signal));
+      const acquired = resultOutcome(await pool.connect(settings, signal, diagnostics));
       if (!acquired.ok) return Result.err(acquired.error);
       const lease = acquired.value;
       if (lease.reusable && connectionId !== lease.connectionId) {
@@ -47,6 +50,7 @@ export function createResponsesTransport(options: TransportOptions = {}) {
           lease.reusable ? continuation : new OpenAIResponsesContinuation(),
           options,
           signal,
+          diagnostics?.withContext({ connectionId: lease.connectionId }),
         ),
       );
     },
@@ -62,9 +66,11 @@ function observeLease(
   continuation: OpenAIResponsesContinuation,
   options: TransportOptions,
   signal: AbortSignal,
+  diagnostics?: ResponsesDiagnostics,
 ): OpenAIResponsesSocket {
   let fullRequest: OpenAIResponseRequest | undefined;
   let optimized = false;
+  let previousResponseId: string | undefined;
   let retried = false;
   let exposed = false;
   let failed = false;
@@ -112,7 +118,20 @@ function observeLease(
         return repair(normalizeEvent ? normalizeEvent(event) : event);
       }),
     );
-    if (captured.ok) return captured.value;
+    if (captured.ok) {
+      const repaired = resultOutcome(captured.value);
+      if (
+        diagnostics &&
+        repaired.ok &&
+        (repaired.value.length !== 1 || !isDeepStrictEqual(repaired.value[0], event))
+      )
+        diagnostics.log("response.event_normalized", {
+          incomingEventType: event.type,
+          emittedEventCount: repaired.value.length,
+          turnStatePresent: turnState !== null,
+        });
+      return captured.value;
+    }
     retainFailure();
     rethrowAgentPanic(captured.error);
     return Result.err(
@@ -149,8 +168,23 @@ function observeLease(
       );
       if (!normalized.ok) return Result.err(normalized.error);
       fullRequest = normalized.value;
+      if (diagnostics && !isDeepStrictEqual(event, fullRequest))
+        diagnostics.log("response.request_normalized", {
+          inputItemsBefore: event.input.length,
+          inputItemsAfter: fullRequest.input.length,
+          store: fullRequest.store ?? undefined,
+        });
       const prepared = continuation.prepare(fullRequest);
+      diagnostics?.log("response.continuation", {
+        optimizationEnabled: prepared.optimizationEnabled,
+        optimizationReason: prepared.optimizationReason,
+        inputItemsBefore: fullRequest.input.length,
+        inputItemsAfter: prepared.payload.input.length,
+        previousResponseId: prepared.payload.previous_response_id ?? undefined,
+        turnStatePresent: prepared.turnState !== null,
+      });
       optimized = prepared.optimizationEnabled;
+      previousResponseId = prepared.payload.previous_response_id ?? undefined;
       turnState = prepared.turnState;
       retried = false;
       exposed = false;
@@ -197,6 +231,16 @@ function observeLease(
               !steered &&
               isPreviousResponseNotFoundError(decoded.value)
             ) {
+              diagnostics?.log(
+                "response.retry_full_input",
+                {
+                  reason: "previous_response_not_found",
+                  previousResponseId,
+                  inputItems: fullRequest.input.length,
+                  turnStatePresent: turnState !== null,
+                },
+                "warn",
+              );
               retried = true;
               pending = [];
               repair = createResponsesEventNormalizer();
@@ -216,8 +260,26 @@ function observeLease(
             }
             for (const buffered of pending.splice(0)) yield Result.ok(buffered);
             exposed = true;
-            if (decoded.value.type === "error") retainFailure();
+            if (decoded.value.type === "error") {
+              diagnostics?.log(
+                "response.failed",
+                {
+                  responseId: decoded.value.response?.id,
+                  status: decoded.value.response?.status,
+                  errorCode: decoded.value.details?.code ?? undefined,
+                  turnStatePresent: turnState !== null,
+                },
+                "warn",
+              );
+              retainFailure();
+            }
             if (decoded.value.type === "finished") {
+              diagnostics?.log("response.finished", {
+                responseId: decoded.value.response.id,
+                status: decoded.value.response.status,
+                outputItems: decoded.value.response.output.length,
+                turnStatePresent: turnState !== null,
+              });
               active = false;
               if (
                 fullRequest &&

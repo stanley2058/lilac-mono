@@ -2488,6 +2488,10 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         category: "projection",
       },
       {
+        identity: { module: "llm-wire-debug.ts", exportName: "captureWireDebugSnapshot" },
+        category: "projection",
+      },
+      {
         identity: {
           module: "llm-wire-debug.ts",
           exportName: "projectWireDebugEventType",
@@ -2881,6 +2885,11 @@ const INTEGRATED_OPAQUE_UNKNOWN = new Map<string, readonly ReasonedSymbolExcepti
       {
         identity: { module: "llm-wire-debug.ts", exportName: "redactValue" },
         reason: "Redacts generic wire-debug values without interpreting application domain data.",
+      },
+      {
+        identity: { module: "llm-wire-debug.ts", exportName: "captureWireDebugSnapshot" },
+        reason:
+          "Snapshots and bounds redacted transport debug values without interpreting application domain data.",
       },
       ...[
         "MirroredLogger.log",
@@ -5892,7 +5901,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "6cff8432f284fb3c98499714399bc198f61322a318634963b939c47edfea739c";
+  "bebe929b0f0144fb4b307fa377da6793f79ffb6b605dfbcf77edfb5e90ecb003";
 
 export const architectureManifest = {
   version: 1,

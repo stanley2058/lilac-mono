@@ -6129,6 +6129,7 @@ export async function startBusAgentRunner(params: {
           corePrimaryClaudeRuntime = claudeComposition.primaryRuntime;
 
           const agentComposition = createCoreAgentComposition({
+            diagnosticContext: { requestId: headers.request_id, sessionId: headers.session_id },
             getBinding: () => activeBinding,
             claude: claudeComposition,
             getAgent: () => {

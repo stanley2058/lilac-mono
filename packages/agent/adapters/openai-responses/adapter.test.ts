@@ -12,6 +12,7 @@ import {
   AgentAdapterFailure,
   type AgentAdapter,
   type AgentExecutionEvent,
+  type AgentExecution,
 } from "../../agent-adapter";
 import { ToolExpansion } from "../../tool-call-expansion";
 import { AgentExecutor } from "../../agent-executor";
@@ -21,6 +22,11 @@ import {
   supportsOpenAINativeSteering,
   type OpenAIResponsesAdapterOptions,
 } from "./adapter";
+import {
+  createResponsesDiagnostics,
+  type ResponsesDiagnosticFields,
+  type ResponsesDiagnostics,
+} from "./diagnostics";
 import type { OpenAIResponsesSocket } from "./socket";
 
 class Mailbox<T> {
@@ -107,6 +113,8 @@ function fixture(
 ) {
   const socket = new SocketFixture();
   const events = new Mailbox<AgentExecutionEvent>();
+  const allEvents: AgentExecutionEvent[] = [];
+  let currentExecution: AgentExecution | undefined;
   const native = new OpenAIResponsesAgentAdapter({
     model: "gpt-6-astra",
     transport: "websocket",
@@ -116,6 +124,7 @@ function fixture(
   const adapter: AgentAdapter<AgentExecutionHost> = {
     createExecution(context) {
       const execution = native.createExecution(context);
+      currentExecution = execution;
       return {
         attemptId: execution.attemptId,
         get capabilities() {
@@ -124,6 +133,7 @@ function fixture(
         events: {
           async *[Symbol.asyncIterator]() {
             for await (const event of execution.events) {
+              allEvents.push(event);
               yield event;
               events.push(event);
             }
@@ -150,7 +160,17 @@ function fixture(
     for await (const event of events) if (event.type === type) return event;
     throw new Error(`No ${type} event`);
   }
-  return { socket, agent, retained, observed };
+  return {
+    socket,
+    agent,
+    retained,
+    observed,
+    allEvents,
+    getExecution: () => {
+      if (!currentExecution) throw new Error("Execution has not started");
+      return currentExecution;
+    },
+  };
 }
 
 function hasText(agent: AgentExecutor, text: string) {
@@ -159,7 +179,292 @@ function hasText(agent: AgentExecutor, text: string) {
   );
 }
 
+function diagnosticFixture(
+  flush: () => Promise<void> = async () => {},
+  writeLog: (event: string) => void = () => {},
+) {
+  const logs: Array<{ event: string; fields: ResponsesDiagnosticFields; level: string }> = [];
+  const base = createResponsesDiagnostics(
+    {
+      provider: "openai",
+      model: "gpt-6-astra",
+      requestId: "request-test",
+      sessionId: "session-test",
+    },
+    (level, event, fields) => {
+      logs.push({ level, event, fields });
+      writeLog(event);
+    },
+  );
+  const scoped = (diagnostics: ResponsesDiagnostics): ResponsesDiagnostics => ({
+    ...diagnostics,
+    withContext: (context) => scoped(diagnostics.withContext(context)),
+    flush,
+  });
+  return { logs, diagnostics: scoped(base) };
+}
+
 describe("OpenAI Responses native execution", () => {
+  for (const [model, steering] of [
+    ["gpt-6-astra", "native"],
+    ["gpt-5.4", "boundary"],
+  ] as const)
+    test(`logs ${steering} capability before any input delivery on ${model}`, async () => {
+      const { diagnostics, logs } = diagnosticFixture();
+      const { socket, agent } = fixture({}, { model, diagnostics });
+      const run = agent.prompt("private prompt content");
+      await socket.nextSend();
+      socket.created("r1");
+      socket.finished("r1", "private response content");
+      await run;
+      expect(logs.find((log) => log.event === "execution.started")).toMatchObject({
+        fields: {
+          requestId: "request-test",
+          sessionId: "session-test",
+          attemptId: expect.any(String),
+          model,
+          transport: "websocket",
+          steering,
+        },
+      });
+      expect(logs.find((log) => log.event === "execution.finished")).toMatchObject({
+        fields: { status: "completed" },
+      });
+      expect(JSON.stringify(logs)).not.toContain("private");
+    });
+
+  test("ordinary trace flush failures do not fail a completed response", async () => {
+    let flushes = 0;
+    const { diagnostics } = diagnosticFixture(async () => {
+      flushes++;
+      throw new Error("disk unavailable");
+    });
+    const { socket, agent } = fixture({}, { diagnostics });
+    const run = agent.prompt("question");
+    await socket.nextSend();
+    socket.created("r1");
+    socket.finished("r1", "answer");
+    await run;
+    expect(flushes).toBe(1);
+  });
+
+  for (const socketFails of [false, true])
+    test(`trace cleanup Panic preserves ${socketFails ? "socket cleanup" : "its own"} identity`, async () => {
+      const flushPanic = new Panic({ message: "trace cleanup" });
+      const socketPanic = new Panic({ message: "socket cleanup" });
+      const { diagnostics } = diagnosticFixture(async () => {
+        throw flushPanic;
+      });
+      const { socket, agent } = fixture({}, { diagnostics });
+      if (socketFails) socket.closeFailure = socketPanic;
+      const run = agent.prompt("question").then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await socket.nextSend();
+      socket.created("r1");
+      socket.finished("r1", "answer");
+      expect(await run).toBe(socketFails ? socketPanic : flushPanic);
+    });
+
+  test("original execution Panic wins over trace flush Panic", async () => {
+    const original = new Panic({ message: "original" });
+    const cleanup = new Panic({ message: "trace cleanup" });
+    const { diagnostics } = diagnosticFixture(async () => {
+      throw cleanup;
+    });
+    const { agent } = fixture(
+      {},
+      {
+        diagnostics,
+        connect: async () => {
+          throw original;
+        },
+      },
+    );
+    const error = await agent.prompt("question").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(error).toBe(original);
+  });
+
+  for (const failureSource of ["none", "execution", "socket", "flush"] as const)
+    test(`terminal logging Panic settles event consumption after ${failureSource} failure`, async () => {
+      const original = new Panic({ message: "original failure" });
+      const loggerPanic = new Panic({ message: "terminal logger failure" });
+      const { diagnostics, logs } = diagnosticFixture(
+        async () => {
+          if (failureSource === "flush") throw original;
+        },
+        (event) => {
+          if (event === "execution.finished") throw loggerPanic;
+        },
+      );
+      const { socket, agent, allEvents } = fixture(
+        {},
+        {
+          diagnostics,
+          ...(failureSource === "execution"
+            ? {
+                connect: async () => {
+                  throw original;
+                },
+              }
+            : {}),
+        },
+      );
+      if (failureSource === "socket") socket.closeFailure = original;
+      const run = agent.prompt("question").then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      if (failureSource !== "execution") {
+        await socket.nextSend();
+        socket.created("r1");
+        socket.finished("r1", "answer");
+      }
+      const expected = failureSource === "none" ? loggerPanic : original;
+      expect(await run).toBe(expected);
+      const terminal = allEvents.find((event) => event.type === "terminal");
+      expect(terminal).toMatchObject({ type: "terminal", outcome: { status: "failed" } });
+      if (terminal?.type === "terminal" && terminal.outcome.status === "failed")
+        expect(terminal.outcome.error.cause).toBe(expected);
+      expect(logs.filter((log) => log.event === "execution.finished")).toHaveLength(1);
+      expect(agent.state.isStreaming).toBe(false);
+    });
+
+  test("ordinary terminal logger failure does not change completion", async () => {
+    const { diagnostics } = diagnosticFixture(undefined, (event) => {
+      if (event === "execution.finished") throw new Error("log sink unavailable");
+    });
+    const { socket, agent, allEvents } = fixture({}, { diagnostics });
+    const run = agent.prompt("question");
+    await socket.nextSend();
+    socket.created("r1");
+    socket.finished("r1", "answer");
+    await run;
+    expect(allEvents.find((event) => event.type === "terminal")).toMatchObject({
+      outcome: { status: "completed" },
+    });
+  });
+
+  for (const control of ["cancel", "interrupt"] as const)
+    for (const failureKind of ["panic", "ordinary"] as const)
+      test(`${control} always closes the socket when its diagnostic throws ${failureKind}`, async () => {
+        const error =
+          failureKind === "panic"
+            ? new Panic({ message: "control log failed" })
+            : new Error("log sink unavailable");
+        const { diagnostics, logs } = diagnosticFixture(undefined, (event) => {
+          if (event === `execution.${control}`) throw error;
+        });
+        const { socket, agent, getExecution, allEvents } = fixture({}, { diagnostics });
+        let closed = false;
+        socket.onClose = () => {
+          closed = true;
+        };
+        const run = agent.prompt("question").then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        await socket.nextSend();
+        expect((await getExecution()[control]()).isOk()).toBe(true);
+        expect(await run).toBe(failureKind === "panic" ? error : undefined);
+        expect(closed).toBe(true);
+        expect(allEvents.find((event) => event.type === "terminal")).toMatchObject({
+          outcome: {
+            status:
+              failureKind === "panic"
+                ? "failed"
+                : control === "cancel"
+                  ? "cancelled"
+                  : "interrupted",
+          },
+        });
+        expect(logs.filter((log) => log.event === "execution.finished")).toHaveLength(1);
+      });
+
+  for (const fallbackFails of [false, true])
+    for (const flushFails of [false, true])
+      test(`fallback waits for diagnostic cleanup with fallback failure=${fallbackFails}, flush failure=${flushFails}`, async () => {
+        const original = new Panic({ message: "fallback execution failed" });
+        const cleanup = new Panic({ message: "trace flush failed" });
+        const terminalLog = new Panic({ message: "terminal log failed" });
+        const flushStarted = Promise.withResolvers<void>();
+        const releaseFlush = Promise.withResolvers<void>();
+        const failure = new AgentAdapterFailure({
+          reason: "unavailable",
+          replaySafety: "reconcile",
+          message: "fallback failure",
+          cause: original,
+        });
+        const fallback: AgentAdapter<AgentExecutionHost> = {
+          createExecution({ attemptId }) {
+            return {
+              attemptId,
+              capabilities: { steering: "boundary", followUp: "boundary", interruption: "restart" },
+              events: {
+                async *[Symbol.asyncIterator]() {
+                  yield {
+                    attemptId,
+                    sequence: 0,
+                    type: "terminal" as const,
+                    outcome: fallbackFails
+                      ? { status: "failed" as const, error: failure }
+                      : { status: "completed" as const },
+                  };
+                },
+              },
+              start: () => Result.ok(undefined),
+              submitInput: () => Result.err(failure),
+              interrupt: async () => Result.ok(undefined),
+              cancel: async () => Result.ok(undefined),
+              dispose: async () => Result.ok(undefined),
+            };
+          },
+        };
+        const { diagnostics, logs } = diagnosticFixture(
+          async () => {
+            flushStarted.resolve();
+            await releaseFlush.promise;
+            if (flushFails) throw cleanup;
+          },
+          (event) => {
+            if (event === "execution.finished") throw terminalLog;
+          },
+        );
+        const { agent, allEvents } = fixture(
+          {},
+          {
+            diagnostics,
+            fallback,
+            transport: "auto",
+            connect: async () =>
+              Result.err(
+                new AgentAdapterFailure({
+                  reason: "unavailable",
+                  replaySafety: "safe",
+                  message: "upgrade rejected",
+                }),
+              ),
+          },
+        );
+        const run = agent.prompt("question").then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        await flushStarted.promise;
+        expect(allEvents.some((event) => event.type === "terminal")).toBe(false);
+        releaseFlush.resolve();
+        const expected = fallbackFails ? original : flushFails ? cleanup : terminalLog;
+        expect(await run).toBe(expected);
+        expect(logs.filter((log) => log.event === "execution.finished")).toHaveLength(1);
+        expect(allEvents.find((event) => event.type === "terminal")).toMatchObject({
+          outcome: { status: "failed" },
+        });
+      });
+
   test("gates steering to exact Astra and compatible execution settings", () => {
     const eligible = { model: "gpt-6-astra", transport: "websocket" as const };
     expect(supportsOpenAINativeSteering(eligible, undefined)).toBe(true);
@@ -271,7 +576,8 @@ describe("OpenAI Responses native execution", () => {
   });
 
   test("returns a rejected steer for explicit boundary delivery", async () => {
-    const { socket, agent, retained } = fixture();
+    const { diagnostics, logs } = diagnosticFixture();
+    const { socket, agent, retained } = fixture({}, { diagnostics });
     const run = agent.prompt("question");
     await socket.nextSend();
     socket.created("r1");
@@ -290,6 +596,17 @@ describe("OpenAI Responses native execution", () => {
     socket.finished("r2", "done");
     await run;
     expect(retained).toEqual([id]);
+    expect(logs.find((log) => log.event === "execution.input_boundary")).toMatchObject({
+      fields: {
+        inputId: id,
+        reason: "provider_rejected",
+        steering: "boundary",
+        attemptId: expect.any(String),
+      },
+    });
+    expect(logs.find((log) => log.event === "execution.input_submitted")).toMatchObject({
+      fields: { inputId: id, responseId: "r1", delivery: "native" },
+    });
   });
 
   test("returns tool results once on the same socket despite repeated pending notifications", async () => {
@@ -429,15 +746,31 @@ describe("OpenAI Responses native execution", () => {
         message: "upgrade rejected",
         replaySafety: "safe",
       });
+      const { diagnostics, logs } = diagnosticFixture();
       const { agent } = fixture(
         {},
-        { transport, fallback, connect: async () => Result.err(error) },
+        { diagnostics, transport, fallback, connect: async () => Result.err(error) },
       );
       const outcome = await agent.prompt("question").then(
         () => "completed",
         (failure: unknown) => failure,
       );
       expect(fallbackStarts).toBe(transport === "auto" ? 1 : 0);
+      const fallbackLogs = logs.filter((log) => log.event === "execution.fallback");
+      expect(fallbackLogs).toHaveLength(transport === "auto" ? 1 : 0);
+      if (transport === "auto")
+        expect(fallbackLogs[0]).toMatchObject({
+          level: "warn",
+          fields: {
+            reason: "unavailable",
+            replaySafety: "safe",
+            transport: "sse",
+            steering: "boundary",
+            requestId: "request-test",
+            sessionId: "session-test",
+            attemptId: expect.any(String),
+          },
+        });
       if (transport === "auto")
         expect(agent.state.messages.at(-1)?.content).toBe("fallback answer");
       else expect(outcome).toBe(error);

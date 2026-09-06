@@ -3,6 +3,7 @@ import path from "node:path";
 import { Panic, Result } from "better-result";
 
 import { env } from "./env";
+import { createLogger } from "./logging";
 import { isPanic, isRecord, opaqueErrorMessage, settlePromiseResult } from "./runtime-utils";
 import { redactErrorTextForLog } from "./tagged-error-log";
 
@@ -11,6 +12,12 @@ type FetchInit = Parameters<typeof globalThis.fetch>[1];
 type FetchResponse = Awaited<ReturnType<typeof globalThis.fetch>>;
 
 type LogWarning = (message: string, details?: Record<string, unknown>) => void;
+type WireDebugContext = Readonly<Record<string, string | number | boolean | undefined>>;
+
+export type LlmWireDebugTrace = {
+  write(event: string, payload?: {} | null, details?: WireDebugContext): void;
+  flush(): Promise<void>;
+};
 
 type WireDebugEvent = {
   ts: string;
@@ -18,15 +25,18 @@ type WireDebugEvent = {
   traceId: string;
   event: string;
   data?: unknown;
+  context?: unknown;
+  details?: unknown;
 };
 
-const SENSITIVE_KEY_RE = /(authorization|api[_-]?key|token|secret|password|cookie)/i;
+const SENSITIVE_KEY_RE = /(authorization|api[_-]?key|token|secret|password|cookie|turn[_-]state)/i;
 const PREVIEW_TEXT_LIMIT = 2_000;
 
 class JsonlWriter {
   private queue: Promise<boolean> = Promise.resolve(true);
   private failed = false;
   private failureLogged = false;
+  private deferredPanic: Panic | undefined;
 
   constructor(
     private readonly filePath: string,
@@ -37,14 +47,23 @@ class JsonlWriter {
     if (this.failed) return;
 
     const line = `${JSON.stringify(entry)}\n`;
-    this.queue = this.queue.then(() => this.append(line));
+    this.queue = this.queue.then(async () => {
+      // Flush may run much later than the write, so retain defects without rejecting the queue.
+      const outcome = await settlePromiseResult(() => this.append(line));
+      if (outcome.kind === "value") return outcome.value;
+      this.failed = true;
+      if (outcome.kind === "panic") this.deferredPanic ??= outcome.panic;
+      return false;
+    });
   }
 
   async flush(): Promise<void> {
     await this.queue;
+    if (this.deferredPanic !== undefined) throw this.deferredPanic;
   }
 
   private async append(line: string): Promise<boolean> {
+    if (this.failed) return false;
     const outcome = await settlePromiseResult(() => fs.appendFile(this.filePath, line, "utf8"));
     if (outcome.kind === "value") return true;
     if (outcome.kind === "panic") throw outcome.panic;
@@ -54,6 +73,102 @@ class JsonlWriter {
       this.onError({ filePath: this.filePath, restoreError: outcome.restoreCause });
     }
     return false;
+  }
+}
+
+const disabledWireTrace: LlmWireDebugTrace = { write() {}, async flush() {} };
+
+export function createLlmWireDebugTrace(params: {
+  provider: string;
+  context?: WireDebugContext;
+  warn?: LogWarning;
+}): LlmWireDebugTrace {
+  if (!env.debug.llmWire.enabled) return disabledWireTrace;
+
+  const { maxBodyBytes, maxEvents } = env.debug.llmWire;
+  const traceId = createTraceId();
+  const context = captureWireDebugSnapshot(params.context, maxBodyBytes);
+  const logger = createLogger({ module: "llm-wire-debug" });
+  let writer: JsonlWriter | null | undefined;
+  let queue: Promise<void> = Promise.resolve();
+  let failed = false;
+  let deferredPanic: Panic | undefined;
+  let eventCount = 0;
+
+  return {
+    write(event, payload, details) {
+      eventCount += 1;
+      if (eventCount > maxEvents + 1) return;
+      const truncated = eventCount > maxEvents;
+      const entry: WireDebugEvent = {
+        ts: new Date().toISOString(),
+        provider: params.provider,
+        traceId,
+        event: truncated ? "trace.events_truncated" : event,
+        context,
+        details: truncated ? undefined : captureWireDebugSnapshot(details, maxBodyBytes),
+        data: truncated ? { maxEvents } : captureWireDebugSnapshot(payload, maxBodyBytes),
+      };
+      queue = queue.then(async () => {
+        if (failed) return;
+        const outcome = await settlePromiseResult(async () => {
+          if (writer === undefined) {
+            writer = await createWriter(
+              buildTraceFilePath(params.provider, traceId),
+              params.warn ?? ((message, details) => logger.warn(message, details)),
+              params.provider,
+              traceId,
+            );
+          }
+          writer?.write(entry);
+        });
+        if (outcome.kind === "value") return;
+        failed = true;
+        if (outcome.kind === "panic") deferredPanic ??= outcome.panic;
+      });
+    },
+    async flush() {
+      await queue;
+      if (deferredPanic !== undefined) throw deferredPanic;
+      await writer?.flush();
+    },
+  };
+}
+
+function captureWireDebugSnapshot(value: unknown, maxBytes: number): unknown {
+  const captured = Result.try({
+    try: () => {
+      const snapshot = redactValue(value);
+      const serialized = JSON.stringify(snapshot);
+      if (serialized === undefined) return undefined;
+      const preview = truncateUtf8(serialized, maxBytes);
+      if (!preview.truncated) return snapshot;
+      return {
+        truncated: true,
+        originalBytes: Buffer.byteLength(serialized, "utf8"),
+        preview: preview.text,
+      };
+    },
+    catch: (cause) => ({ cause }),
+  });
+  if (captured.isErr()) {
+    if (isPanic(captured.error.cause)) throw captured.error.cause;
+    return "<unserializable>";
+  }
+  return captured.match({ ok: (snapshot) => snapshot, err: () => "<unserializable>" });
+}
+
+function warnSafely(
+  warn: LogWarning | undefined,
+  message: string,
+  details: Record<string, unknown>,
+): void {
+  const captured = Result.try({
+    try: () => warn?.(message, details),
+    catch: (cause) => ({ cause }),
+  });
+  if (captured.isErr()) {
+    if (isPanic(captured.error.cause)) throw captured.error.cause;
   }
 }
 
@@ -183,7 +298,7 @@ async function createWriter(
   const outcome = await settlePromiseResult(async () => {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     return new JsonlWriter(filePath, ({ filePath: failedPath, restoreError }) => {
-      warn?.("llm wire debug append failed", {
+      warnSafely(warn, "llm wire debug append failed", {
         provider,
         traceId,
         filePath: failedPath,
@@ -195,7 +310,7 @@ async function createWriter(
   });
   if (outcome.kind === "value") return outcome.value;
   if (outcome.kind === "panic") throw outcome.panic;
-  warn?.("llm wire debug disabled for request (failed to create trace file)", {
+  warnSafely(warn, "llm wire debug disabled for request (failed to create trace file)", {
     provider,
     traceId,
     filePath,
@@ -479,7 +594,7 @@ function redactValue(value: unknown, depth = 0): unknown {
 
   if (typeof value === "string") {
     if (looksSensitiveText(value)) return "<redacted>";
-    return previewText(value, PREVIEW_TEXT_LIMIT);
+    return previewText(redactErrorTextForLog(value, value.length), PREVIEW_TEXT_LIMIT);
   }
 
   if (typeof value === "number" || typeof value === "boolean") return value;
@@ -526,7 +641,7 @@ function truncateUtf8(text: string, maxBytes: number): { text: string; truncated
 
   const sliced = bytes.subarray(0, maxBytes);
   return {
-    text: sliced.toString("utf8"),
+    text: new TextDecoder().decode(sliced, { stream: true }),
     truncated: true,
   };
 }
