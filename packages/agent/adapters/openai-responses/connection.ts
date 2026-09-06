@@ -60,7 +60,7 @@ export function createOpenAIResponsesConnectionPool(options?: {
   let busy = false;
   let disposed = false;
   let cancelIdleClose: (() => void) | undefined;
-  const idleTimeoutMs = options?.idleTimeoutMs ?? 30_000;
+  const idleTimeoutMs = options?.idleTimeoutMs ?? 300_000;
 
   function clearIdleClose() {
     cancelIdleClose?.();

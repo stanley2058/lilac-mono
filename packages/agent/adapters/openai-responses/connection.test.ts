@@ -110,7 +110,7 @@ test("clean leases reuse the SDK connection and preserve the stream after a cons
   await reader.return?.();
   first.release({ reusable: true });
   expect(await pending).toEqual({ done: true, value: undefined });
-  expect(timers[0]?.milliseconds).toBe(30_000);
+  expect(timers[0]?.milliseconds).toBe(300_000);
   const second = (await pool.connect(settings, signal())).unwrap();
   expect(second.connectionId).toBe(first.connectionId);
   expect(sockets).toHaveLength(1);
@@ -460,7 +460,7 @@ test("pooled diagnostics follow current leases, isolate dedicated connections, a
   expect(expired?.fields).toMatchObject({
     provider: "codex",
     connectionId: first.connectionId,
-    idleTimeoutMs: 30000,
+    idleTimeoutMs: 300000,
   });
   expect(expired?.fields.requestId).toBeUndefined();
   expect(expired?.fields.model).toBeUndefined();

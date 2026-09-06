@@ -274,7 +274,7 @@ turn boundaries. The OpenAI adapter gates native steering to exactly `gpt-6-astr
 single-agent settings. Conversation binding and automatic compaction use boundary delivery.
 
 Both adapters share the official OpenAI SDK transport, connection leases, continuation matching, and
-output reconstruction. A reusable socket survives executions with a 30-second idle expiry; concurrent
+output reconstruction. A reusable socket survives executions with a five-minute idle expiry; concurrent
 executions use dedicated sockets. Credentials and endpoint determine connection reuse. Cached response
 IDs expire after 30 minutes. A rejected internal previous-response optimization retries once with full
 input before exposing output. Codex turn state survives matching failed-request retries and pending tool
