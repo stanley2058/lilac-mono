@@ -83,6 +83,7 @@ is a routing key, not authentication. MCP transport session IDs remain separate.
 | `PORT_RANGE_START` | `17000` | First allowed viewer host port, inclusive |
 | `PORT_RANGE_END` | `17031` | Last allowed viewer host port, inclusive |
 | `RUNNER_IMAGE` | `lilac-computer:local` | Runner image available to the controlled daemon |
+| `RUNNER_TEMPLATE_PATH` | Unset | Optional YAML runner template, read at gateway startup |
 | `DATABASE_PATH` | `/data/computer-use.sqlite` | Gateway-owned SQLite database |
 | `SECCOMP_PATH` | `/opt/lilac/seccomp-chromium.json` | Chromium profile readable by the gateway's Docker CLI |
 | `GATEWAY_OWNER` | `lilac-computer-use` | Stable ownership label for this gateway's containers |
@@ -101,6 +102,58 @@ allocated port range through the intended firewall or proxy and preserve WebSock
 
 Loopback binding works for a browser on the Docker host. A remote user needs an operator-configured
 reachable binding or tunnel. The gateway does not publish raw VNC or arbitrary application ports.
+
+## Runner template
+
+Copy `apps/computer-use-gateway/runner-template.example.yaml` to `runner-template.yaml`.
+Uncomment `RUNNER_TEMPLATE_PATH` and the matching read-only template mount in
+`compose.computer-use.yaml`. The gateway reads and validates the file at startup. Without a template,
+runner creation keeps its existing defaults.
+
+```yaml
+image: lilac-computer:local
+environment:
+  TZ: Asia/Taipei
+  MY_CUSTOM_SETTING: "some-value"
+mounts:
+  - type: volume
+    source: lilac-nfs-shared
+    target: /shared
+    read_only: false
+```
+
+All fields are optional. `image` overrides `RUNNER_IMAGE`; `environment` and `mounts` default to empty.
+Environment values must be strings: quote numbers and booleans. Values are literal, with no shell or
+`${VAR}` expansion. The gateway reserves `VNC_PW` for its generated viewer password. Do not put secrets
+in the example or commit a template containing credentials. Runner code can read its environment.
+Unknown fields, duplicate mount targets, and invalid mount fields fail startup.
+
+Volume sources are existing Docker volume names, including any Compose project prefix. The gateway
+checks their existence at startup and before creation; it does not provision volumes. For the NFS
+volume shared with Core, keep its provisioning in your Core Compose file:
+
+```yaml
+volumes:
+  nfs_shared:
+    name: lilac-nfs-shared
+    driver_opts:
+      type: "nfs"
+      o: "addr=${NFS_IP},nolock,rw,soft,nfsvers=4.2"
+      device: ":/data/shared"
+```
+
+For an existing deployment, use the volume's current Docker name in the template. The gateway does
+not need that volume mounted into its own container. A bind mount instead uses `type: bind` and an
+absolute `source` directory on the Docker daemon host. Both mount types require an absolute `target`;
+`read_only` defaults to false. Mount paths cannot contain commas, newlines, or NUL characters.
+
+Every runner receives the configured mounts. Sharing `/shared` gives all those runners access to the
+same files; choose NFS permissions that allow Core and the runner's `cua` user to read and write.
+Shared files remain after runner termination and the gateway does not clean them up.
+
+Restart the gateway to reload the template. Existing desktops retain their original settings, including
+when reattached after restart. Terminate and provision a new desktop to apply changes. Container names,
+ownership labels, ports, credentials, and runtime limits remain gateway-controlled.
 
 ## Agent use
 

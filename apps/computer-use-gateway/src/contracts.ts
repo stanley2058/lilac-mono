@@ -95,6 +95,7 @@ export type GatewayConfig = {
   database: string;
   seccomp: string;
   owner: string;
+  runnerTemplatePath?: string;
 };
 
 const configSchema = z.object({
@@ -103,6 +104,7 @@ const configSchema = z.object({
   RENDERED_HOST: z.string().default("http://localhost"),
   PORT_RANGE_START: z.coerce.number().int().min(1).max(65535).default(17000),
   PORT_RANGE_END: z.coerce.number().int().min(1).max(65535).default(17031),
+  RUNNER_TEMPLATE_PATH: z.string().min(1).optional(),
   RUNNER_IMAGE: z.string().min(1).default("lilac-computer:local"),
   DATABASE_PATH: z.string().min(1).default("/data/computer-use.sqlite"),
   SECCOMP_PATH: z.string().min(1).default("/opt/lilac/seccomp-chromium.json"),
@@ -140,6 +142,7 @@ export function decodeConfig(env: Readonly<Record<string, string | undefined>>) 
     portStart: value.PORT_RANGE_START,
     portEnd: value.PORT_RANGE_END,
     image: value.RUNNER_IMAGE,
+    runnerTemplatePath: value.RUNNER_TEMPLATE_PATH,
     database: value.DATABASE_PATH,
     seccomp: value.SECCOMP_PATH,
     owner: value.GATEWAY_OWNER,

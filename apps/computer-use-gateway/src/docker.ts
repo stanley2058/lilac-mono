@@ -1,3 +1,4 @@
+import { runnerTemplateArgs, type RunnerTemplate } from "./runner-template";
 import { Result, type Result as ResultType } from "better-result";
 import { z } from "zod";
 import {
@@ -175,6 +176,7 @@ export class DockerCli implements RunnerDocker {
   constructor(
     private readonly config: GatewayConfig,
     private readonly run: typeof dockerCommand = dockerCommand,
+    private readonly template: RunnerTemplate = { environment: {}, mounts: [] },
   ) {}
 
   async list() {
@@ -198,7 +200,21 @@ export class DockerCli implements RunnerDocker {
     });
   }
 
+  async validateMounts(): Promise<ResultType<void, GatewayFailure>> {
+    for (const mount of this.template.mounts) {
+      if (mount.type !== "volume") continue;
+      const result = await this.run(["volume", "inspect", mount.source]);
+      const error = result.match({ ok: () => null, err: (error) => error });
+      if (error)
+        return Result.err(failure("invalid", `Runner volume is unavailable: ${mount.source}`));
+    }
+    return Result.ok(undefined);
+  }
+
   async create(record: RunnerRecord) {
+    const mounts = await this.validateMounts();
+    const mountError = mounts.match({ ok: () => null, err: (error) => error });
+    if (mountError) return Result.err(mountError);
     const host = this.config.bindAddress.includes(":")
       ? `[${this.config.bindAddress}]`
       : this.config.bindAddress;
@@ -222,7 +238,8 @@ export class DockerCli implements RunnerDocker {
         `${host}:${record.port}:6901`,
         "--env",
         "VNC_PW",
-        this.config.image,
+        ...runnerTemplateArgs(this.template),
+        this.template.image ?? this.config.image,
       ],
       { password: record.password, timeoutMs: 30000 },
     );

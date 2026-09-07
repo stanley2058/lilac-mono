@@ -1,3 +1,4 @@
+import { loadRunnerTemplate } from "./runner-template";
 import { Result } from "better-result";
 import { decodeConfig, failure } from "./contracts";
 import { DockerCli } from "./docker";
@@ -9,8 +10,11 @@ import { RunnerStore } from "./store";
 async function main() {
   return Result.gen(async function* () {
     const config = yield* decodeConfig(process.env);
+    const template = yield* Result.await(loadRunnerTemplate(config.runnerTemplatePath));
+    const docker = new DockerCli(config, undefined, template);
+    yield* Result.await(docker.validateMounts());
     const store = yield* RunnerStore.open(config.database);
-    const lifecycle = new ComputerLifecycle(store, new DockerCli(config), config);
+    const lifecycle = new ComputerLifecycle(store, docker, config);
     const reconciled = await lifecycle.reconcile();
     const error = reconciled.match({ ok: () => null, err: (value) => value });
     if (error) {

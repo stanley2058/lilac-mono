@@ -3602,6 +3602,10 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               category: "request" as const,
             },
             {
+              identity: { module: "src/runner-template.ts", exportName: "decodeRunnerTemplate" },
+              category: "request" as const,
+            },
+            {
               identity: { module: "src/contracts.ts", exportName: "decodeConfig" },
               category: "request" as const,
             },

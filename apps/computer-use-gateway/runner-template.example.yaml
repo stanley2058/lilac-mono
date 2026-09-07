@@ -1,0 +1,20 @@
+# Copy this file to runner-template.yaml and mount it into the gateway.
+# Omit image to use RUNNER_IMAGE.
+image: lilac-computer:local
+
+environment:
+  TZ: Asia/Taipei
+  LANG: en_US.UTF-8
+
+# The volume must already exist on the Docker daemon used by the gateway.
+mounts:
+  - type: volume
+    source: lilac-nfs-shared
+    target: /shared
+    read_only: false
+
+# For a directory on the Docker daemon host, use:
+#  - type: bind
+#    source: /mnt/nfs/shared
+#    target: /shared
+#    read_only: false

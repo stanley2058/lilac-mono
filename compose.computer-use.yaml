@@ -12,9 +12,12 @@ services:
       PORT_RANGE_START: ${PORT_RANGE_START:-17000}
       PORT_RANGE_END: ${PORT_RANGE_END:-17031}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-lilac-computer:local}
+      # Enable together with the template mount below.
+      # RUNNER_TEMPLATE_PATH: /etc/lilac/runner-template.yaml
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - computer-use-data:/data
+      # - ./runner-template.yaml:/etc/lilac/runner-template.yaml:ro
     ports:
       - "127.0.0.1:8081:8080"
     stop_grace_period: 180s
