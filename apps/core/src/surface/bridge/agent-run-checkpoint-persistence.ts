@@ -1,3 +1,4 @@
+import type { McpImageCheckpointRegistry } from "../../mcp/image-checkpoint";
 import type { ModelMessage } from "ai";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { isDeepStrictEqual } from "node:util";
@@ -195,6 +196,7 @@ async function projectCheckpointMessages(input: {
 
 /** Uploads and pins checkpoint blobs before atomically replacing the journal checkpoint. */
 export async function persistBlobBackedAgentRunCheckpoint(input: {
+  readonly mcpImages?: McpImageCheckpointRegistry;
   readonly handle: AgentRunJournalHandle;
   readonly journal: Pick<AgentRunJournal, "writeCheckpoint">;
   readonly messages: readonly ModelMessage[];
@@ -212,9 +214,16 @@ export async function persistBlobBackedAgentRunCheckpoint(input: {
     readonly outcome: RequestDeliveryTerminalOutcome;
   }[];
 }): Promise<ResultType<AgentRunCheckpointPersistenceSuccess, AgentRunCheckpointPersistenceError>> {
+  const imageProjection = input.mcpImages?.project(input.messages);
+  const previousCheckpoint = input.previousCheckpoint;
   const projected = await projectCheckpointMessages({
-    messages: input.messages,
-    previousCheckpoint: input.previousCheckpoint,
+    messages: imageProjection?.messages ?? input.messages,
+    previousCheckpoint: previousCheckpoint && {
+      ...previousCheckpoint,
+      providerMessages:
+        input.mcpImages?.project(previousCheckpoint.providerMessages).messages ??
+        previousCheckpoint.providerMessages,
+    },
     identityProjection: input.identityProjection,
     blobStore: input.blobStore,
     transcriptStore: input.transcriptStore,
@@ -272,6 +281,7 @@ export async function persistBlobBackedAgentRunCheckpoint(input: {
 
   const checkpoint = createAgentRunCheckpoint({
     messages,
+    mcpImages: imageProjection?.references,
     ...(input.corePrimaryLineage ? { corePrimaryLineage: input.corePrimaryLineage } : {}),
     ...(input.loadedCatalogIds ? { loadedCatalogIds: input.loadedCatalogIds } : {}),
     ...(input.currentTurnUserId ? { currentTurnUserId: input.currentTurnUserId } : {}),

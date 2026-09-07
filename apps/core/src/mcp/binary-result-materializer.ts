@@ -7,6 +7,7 @@ import type { CallToolResult } from "@ai-sdk/mcp";
 import { errorCode } from "@stanley2058/lilac-utils";
 import { Result } from "better-result";
 
+import type { McpImageCheckpointReference } from "./image-checkpoint";
 import type { McpConvertedTool } from "./registry-types";
 
 type McpToModelOutput = NonNullable<McpConvertedTool["toModelOutput"]>;
@@ -52,6 +53,7 @@ type ClaimedDirectory =
   | { readonly kind: "failure"; readonly cause: Error };
 
 type BinaryContent = {
+  readonly outputIndex: number;
   readonly data: string;
   readonly mediaType: string;
   readonly source: "image" | "resource";
@@ -74,6 +76,7 @@ export type McpBinaryResultMaterializer = {
 
 export type McpBinaryResultMaterializerOptions = {
   readonly requestId: string;
+  readonly onImageMaterialized?: (reference: McpImageCheckpointReference) => void;
   readonly rootDir?: string;
   readonly hashId?: (domain: "request" | "call", id: string) => string;
 };
@@ -100,15 +103,16 @@ function extensionFor(mediaType: string): string {
 
 function binaryContent(output: CallToolResult): BinaryContent[] {
   if (!("content" in output) || !Array.isArray(output.content)) return [];
-  return output.content.flatMap((part): BinaryContent[] => {
+  return output.content.flatMap((part, outputIndex): BinaryContent[] => {
     if (part.type === "image") {
-      return [{ data: part.data, mediaType: part.mimeType, source: "image" }];
+      return [{ outputIndex, data: part.data, mediaType: part.mimeType, source: "image" }];
     }
     if (part.type === "resource") {
       const blob = part.resource.blob;
       if (typeof blob !== "string") return [];
       return [
         {
+          outputIndex,
           data: blob,
           mediaType: part.resource.mimeType ?? "application/octet-stream",
           source: "resource",
@@ -275,6 +279,25 @@ export function createMcpBinaryResultMaterializer(
         if (written.kind === "failure") {
           failed += 1;
           continue;
+        }
+        const modelPart =
+          modelOutput.type === "content" ? modelOutput.value[item.outputIndex] : undefined;
+        if (
+          item.source === "image" &&
+          modelPart?.type === "file" &&
+          modelPart.data.type === "data" &&
+          modelPart.data.data === item.data &&
+          modelPart.mediaType === item.mediaType
+        ) {
+          options.onImageMaterialized?.({
+            toolCallId,
+            outputIndex: item.outputIndex,
+            localPath: written.value,
+            mediaType: item.mediaType,
+            byteLength: content.byteLength,
+            sha256: createHash("sha256").update(content).digest("hex"),
+            ...(modelPart.filename === undefined ? {} : { filename: modelPart.filename }),
+          });
         }
         files.push({
           bytes: content.byteLength,

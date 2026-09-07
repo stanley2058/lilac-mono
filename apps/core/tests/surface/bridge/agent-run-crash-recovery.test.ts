@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { openAIResponseCodec } from "@stanley2058/lilac-agent/adapters/openai-responses/output";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -40,7 +41,10 @@ import {
   type CoreAcceptedRequestWork,
 } from "../../../src/surface/bridge/request-delivery";
 import type { BuiltLevel1Toolset, CoreToolPluginManager } from "../../../src/plugins";
-import { projectStoredMessagesV1 } from "../../../src/transcript/stored-message-materialization";
+import {
+  createStoredMessageIdentityProjectionV1,
+  projectStoredMessagesV1,
+} from "../../../src/transcript/stored-message-materialization";
 import {
   joinAgentRunRecoveryHeads,
   removeFullyReconciledAgentRunTerminalHeads,
@@ -52,6 +56,9 @@ import {
   TranscriptStoreSqliteDriverFailure,
   type TranscriptStore,
 } from "../../../src/transcript/transcript-store";
+
+import { McpImageCheckpointRegistry } from "../../../src/mcp/image-checkpoint";
+import { persistBlobBackedAgentRunCheckpoint } from "../../../src/surface/bridge/agent-run-checkpoint-persistence";
 
 const directories: string[] = [];
 
@@ -496,6 +503,90 @@ async function waitForRecoveryState(predicate: () => boolean): Promise<void> {
 }
 
 describe("agent run hard-crash recovery", () => {
+  it.each([true, false])(
+    "restores MCP image checkpoints through model binding when the file survives: %s",
+    async (survives) => {
+      const first = await fixture();
+      const accepted = acceptWork(first.store, { label: "MCP screenshot recovery" }, 1);
+      const bytes = Buffer.from("screenshot-image-bytes");
+      const localPath = join(first.directory, "screenshot.png");
+      await writeFile(localPath, bytes);
+      const registry = new McpImageCheckpointRegistry();
+      registry.remember({
+        toolCallId: "screenshot-call",
+        outputIndex: 0,
+        localPath,
+        mediaType: "image/png",
+        byteLength: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      });
+      const messages: ModelMessage[] = [
+        { role: "user", content: "MCP screenshot recovery" },
+        {
+          role: "assistant",
+          content: [
+            { type: "tool-call", toolCallId: "screenshot-call", toolName: "builtin", input: {} },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "screenshot-call",
+              toolName: "builtin",
+              output: {
+                type: "content",
+                value: [
+                  {
+                    type: "file",
+                    mediaType: "image/png",
+                    data: { type: "data", data: bytes.toString("base64") },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ];
+      value(
+        await persistBlobBackedAgentRunCheckpoint({
+          journal: first.journal,
+          handle: value(first.journal.openRun(accepted.work)),
+          messages,
+          mcpImages: registry,
+          blobStore: first.blobStore,
+          identityProjection: createStoredMessageIdentityProjectionV1(),
+          retainedRequestDeliveries: [],
+        }),
+      );
+      first.journal.close();
+      first.store.close();
+      if (!survives) await rm(localPath);
+      let effects = 0;
+      const run = await reconstruct({
+        dbPath: first.dbPath,
+        blobStore: first.blobStore,
+        onEffect: () => {
+          effects += 1;
+        },
+      });
+      await waitForTerminal(run.store, [accepted.requestDeliveryId]);
+      const prompt = messagesFor(run, "MCP screenshot recovery");
+      if (survives) {
+        expect(prompt).toContain(bytes.toString("base64"));
+        expect(prompt).not.toContain("Image unavailable during recovery");
+      } else {
+        expect(prompt).toContain("Image unavailable during recovery");
+        expect(prompt).toContain(localPath);
+        expect(prompt).not.toContain(bytes.toString("base64"));
+      }
+      expect(effects).toBe(0);
+      await closeRecovered(run);
+      await resultValue(first.blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+    },
+  );
+
   it.each(["result", "throw"] as const)(
     "reports transcript save %s failures as failed durable outcomes",
     async (failureMode) => {

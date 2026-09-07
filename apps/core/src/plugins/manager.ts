@@ -48,6 +48,7 @@ import {
 } from "../mcp/catalog-identity";
 import {
   createMcpBinaryResultMaterializer,
+  type McpBinaryResultMaterializerOptions,
   wrapMcpToolWithBinaryMaterialization,
 } from "../mcp/binary-result-materializer";
 import { adaptToolResultToHost } from "../tools/tool-result-adapters";
@@ -96,6 +97,7 @@ function isMcpStructurallyAllowed(params: {
 }
 
 export type BuildLevel1ToolsetParams = {
+  onMcpImageMaterialized?: McpBinaryResultMaterializerOptions["onImageMaterialized"];
   cwd: string;
   runProfile: Level1RunProfile;
   editingToolMode: "apply_patch" | "edit_file" | "none";
@@ -361,7 +363,10 @@ export function createCoreToolPluginManager(params: {
     );
     const allMcpTools = params.runtime.mcpRegistry?.getTools() ?? [];
     const mcpBinaryMaterializer = buildParams.requestContext
-      ? createMcpBinaryResultMaterializer({ requestId: buildParams.requestContext.requestId })
+      ? createMcpBinaryResultMaterializer({
+          requestId: buildParams.requestContext.requestId,
+          onImageMaterialized: buildParams.onMcpImageMaterialized,
+        })
       : undefined;
     const identities = [
       ...externalSpecs.map((spec) => {

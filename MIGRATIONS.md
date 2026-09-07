@@ -3,6 +3,24 @@
 This file records persisted-data, wire, and protocol migrations. Manual `core-config.yaml` upgrades are
 documented separately in [`docs/core-config-migrations.md`](docs/core-config-migrations.md).
 
+## Agent-run checkpoint local MCP images
+
+Version-1 agent-run checkpoints now accept an optional `mcpImages` array. Each entry identifies a tool
+result content position and records its absolute local path, MIME type, byte length, SHA-256, and
+optional filename. The corresponding stored message contains a text path marker, not inline bytes or
+a managed blob reference. Only MCP `image` results successfully written by Core's existing local
+materializer use this representation. Embedded MCP resources and ordinary binary `read` results keep
+their existing behavior. Final transcript persistence still uses managed blobs for inline images.
+
+Recovery reads each surviving local file and restores its inline image only when its length and hash
+match. Missing, unreadable, or changed files become text notices without discarding the checkpoint.
+The local files remain temporary and gain no new retention or cleanup policy.
+
+Existing checkpoints without `mcpImages` decode unchanged. No database schema migration or old-image
+migration runs. Older Core builds reject checkpoints containing the new field and can discard that run's
+journal progress, then recover its original accepted work. Drain active runs before downgrading to avoid
+that loss of progress and repeated work.
+
 ## Computer-use gateway schema 1 and Core session header
 
 The optional gateway creates its own SQLite database, defaulting to `/data/computer-use.sqlite`, with

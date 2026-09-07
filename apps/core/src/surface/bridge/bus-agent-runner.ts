@@ -1,4 +1,9 @@
 import {
+  McpImageCheckpointRegistry,
+  materializeMcpImageCheckpoint,
+  type McpImageCheckpointReference,
+} from "../../mcp/image-checkpoint";
+import {
   createCoreAgentComposition,
   resolveStoredResourceProviderTarget,
   selectNextNativeModelFallback,
@@ -1719,6 +1724,7 @@ type Enqueued = {
     partialText: string;
   };
   storedRecoveryCheckpoint?: StoredMessageV1[];
+  recoveryMcpImages?: McpImageCheckpointReference[];
   previousRecoveryCheckpoint?: AgentRunCheckpointV1;
   loadedCatalogIds?: readonly string[];
   acceptedCorePrimaryLineage?: CorePrimaryLineageV2;
@@ -2448,6 +2454,7 @@ type SessionQueue = {
   queue: Enqueued[];
   activeRequestId: string | null;
   activeRun: {
+    mcpImages: McpImageCheckpointRegistry;
     requestDeliveryId?: string;
     requestId: string;
     sessionId: string;
@@ -2881,6 +2888,7 @@ export async function startBusAgentRunner(params: {
     const handle = run.journalHandle ?? openRunJournal(owner);
     if (!handle) return activeAgentRunJournal ? "kept-previous" : "written";
     const persisted = await persistBlobBackedAgentRunCheckpoint({
+      mcpImages: run.mcpImages,
       handle,
       journal,
       messages,
@@ -3161,6 +3169,7 @@ export async function startBusAgentRunner(params: {
   };
 
   const materializePreviousRunCheckpoint = async (input: {
+    readonly imageRegistry: McpImageCheckpointRegistry;
     readonly entry: Enqueued;
     readonly identityProjection: StoredMessageIdentityProjectionV1;
   }): Promise<
@@ -3174,7 +3183,9 @@ export async function startBusAgentRunner(params: {
   > => {
     const checkpoint = input.entry.previousRecoveryCheckpoint;
     if (!checkpoint) return { kind: "unavailable" };
-    const materialized = await materializeStoredMessagesV1({
+    const materialized = await materializeMcpImageCheckpoint({
+      imageRegistry: input.imageRegistry,
+      mcpImages: checkpoint.mcpImages,
       messages: checkpoint.messages,
       blobStore: params.blobStore,
       identityProjection: input.identityProjection,
@@ -3220,6 +3231,7 @@ export async function startBusAgentRunner(params: {
     });
     input.recovery.checkpointMessages = input.messages;
     input.entry.storedRecoveryCheckpoint = [...input.checkpoint.messages];
+    input.entry.recoveryMcpImages = input.checkpoint.mcpImages;
     input.entry.retainedRequestDeliveries = input.checkpoint.retainedRequestDeliveries;
     input.entry.journalHandle = input.handle;
     input.entry.corePrimaryLineage =
@@ -3258,6 +3270,7 @@ export async function startBusAgentRunner(params: {
     }
     delete input.entry.recovery;
     delete input.entry.storedRecoveryCheckpoint;
+    delete input.entry.recoveryMcpImages;
     delete input.entry.previousRecoveryCheckpoint;
     delete input.entry.retainedRequestDeliveries;
     delete input.entry.journalHandle;
@@ -4621,6 +4634,7 @@ export async function startBusAgentRunner(params: {
     if (!next) return;
     if (reservedQueueEntries.has(next)) return;
     state.queue.shift();
+    const mcpImages = new McpImageCheckpointRegistry();
     let recoveredQueuedControlStoredMessages: StoredMessageV1[] = [];
 
     if (next.messages.length === 0 && next.storedMessages.length > 0) {
@@ -4643,7 +4657,9 @@ export async function startBusAgentRunner(params: {
       });
     }
     if (next.recovery && next.storedRecoveryCheckpoint) {
-      const materialized = await materializeStoredMessagesV1({
+      const materialized = await materializeMcpImageCheckpoint({
+        imageRegistry: mcpImages,
+        mcpImages: next.recoveryMcpImages,
         messages: next.storedRecoveryCheckpoint,
         blobStore: params.blobStore,
         identityProjection: storedMessageIdentity,
@@ -4654,6 +4670,7 @@ export async function startBusAgentRunner(params: {
       });
       if (materializationError) {
         const previous = await materializePreviousRunCheckpoint({
+          imageRegistry: mcpImages,
           entry: next,
           identityProjection: storedMessageIdentity,
         });
@@ -5117,6 +5134,7 @@ export async function startBusAgentRunner(params: {
       ),
       retainedRequestDeliveryByInputId: new Map(),
       journalHandle: null,
+      mcpImages,
       checkpointWriter: {
         disabled: false,
         pending: null,
@@ -5906,6 +5924,7 @@ export async function startBusAgentRunner(params: {
                     maxDepth: subagents.maxDepth,
                   },
                   requestContext: level1RequestContext,
+                  onMcpImageMaterialized: (reference) => mcpImages.remember(reference),
                   onSelectCatalogIds: (catalogIds) => toolAuthority.select(catalogIds),
                   reportToolStatus: (update) => {
                     void publishAuxiliaryOutput("failed to publish batch tool status", () =>
@@ -5949,8 +5968,11 @@ export async function startBusAgentRunner(params: {
           const materializeForBinding = async (
             storedMessages: readonly StoredMessageV1[],
             binding: BuiltModelBinding,
+            imageReferences?: readonly McpImageCheckpointReference[],
           ): Promise<ModelMessage[]> =>
-            await materializeStoredMessagesV1({
+            await materializeMcpImageCheckpoint({
+              imageRegistry: mcpImages,
+              mcpImages: imageReferences,
               messages: storedMessages,
               blobStore: params.blobStore,
               identityProjection: storedMessageIdentity,
@@ -5970,6 +5992,7 @@ export async function startBusAgentRunner(params: {
             next.recovery.checkpointMessages = await materializeForBinding(
               next.storedRecoveryCheckpoint,
               activeBinding,
+              next.recoveryMcpImages,
             );
           }
           if (seededStoredMessages.length > 0) {
@@ -8793,6 +8816,7 @@ export async function startBusAgentRunner(params: {
         ? {
             recovery: { checkpointMessages: [], partialText: "" },
             storedRecoveryCheckpoint: [...recoveryHead.checkpoint.messages],
+            recoveryMcpImages: recoveryHead.checkpoint.mcpImages,
             ...(recoveryHead.checkpoint.loadedCatalogIds
               ? {
                   loadedCatalogIds: [...recoveryHead.checkpoint.loadedCatalogIds],

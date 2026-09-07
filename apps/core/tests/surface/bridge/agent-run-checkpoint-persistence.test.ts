@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,7 @@ import { Result, type Result as ResultType } from "better-result";
 
 import { persistBlobBackedAgentRunCheckpoint } from "../../../src/surface/bridge/agent-run-checkpoint-persistence";
 import {
+  agentRunCheckpointV1Schema,
   AgentRunJournalConflict,
   SqliteAgentRunJournal,
 } from "../../../src/surface/bridge/agent-run-journal";
@@ -22,6 +23,12 @@ import {
   CoreOwnedBlobIntegrityError,
   SqliteTranscriptStore,
 } from "../../../src/transcript/transcript-store";
+
+import { createMcpBinaryResultMaterializer } from "../../../src/mcp/binary-result-materializer";
+import {
+  McpImageCheckpointRegistry,
+  materializeMcpImageCheckpoint,
+} from "../../../src/mcp/image-checkpoint";
 
 const directories: string[] = [];
 
@@ -119,6 +126,8 @@ async function checkpointFixture() {
   const journal = new SqliteAgentRunJournal({ dbPath: journalDbPath });
   return {
     transcriptDbPath,
+    journalDbPath,
+    directory,
     blobStore,
     transcriptStore,
     owner,
@@ -553,5 +562,265 @@ describe("blob-backed agent run checkpoints", () => {
     journal.close();
     transcriptStore.close();
     resultValue(await blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+  });
+});
+
+async function mcpImageMessages(
+  directory: string,
+  registry: McpImageCheckpointRegistry,
+): Promise<ModelMessage[]> {
+  const data = Buffer.from("mcp-image-checkpoint-bytes").toString("base64");
+  const materializer = createMcpBinaryResultMaterializer({
+    requestId: "mcp-checkpoint-request",
+    rootDir: join(directory, "mcp-images"),
+    onImageMaterialized: (reference) => registry.remember(reference),
+  });
+  const output = await materializer.project({
+    toolCallId: "mcp-screenshot-call",
+    output: {
+      content: [
+        { type: "text", text: "Screenshot captured" },
+        { type: "image", data, mimeType: "image/png" },
+        { type: "image", data, mimeType: "image/png" },
+      ],
+    },
+    modelOutput: {
+      type: "content",
+      value: [
+        { type: "text", text: "Screenshot captured" },
+        { type: "file", data: { type: "data", data }, mediaType: "image/png" },
+        { type: "file", data: { type: "data", data }, mediaType: "image/png" },
+      ],
+    },
+  });
+  return [
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "mcp-screenshot-call",
+          toolName: "mcp_screenshot",
+          input: {},
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "mcp-screenshot-call",
+          toolName: "mcp_screenshot",
+          output,
+        },
+      ],
+    },
+  ];
+}
+
+describe("local MCP image checkpoints", () => {
+  it("checkpoints cloned MCP images without uploads and restores them after reopening the journal", async () => {
+    const fixture = await checkpointFixture();
+    const images = new McpImageCheckpointRegistry();
+    const messages = await mcpImageMessages(fixture.directory, images);
+    const original = structuredClone(messages);
+    const first = resultValue(
+      await persistBlobBackedAgentRunCheckpoint({
+        ...fixture,
+        handle: resultValue(fixture.journal.openRun(fixture.owner)),
+        mcpImages: images,
+        messages: structuredClone(messages),
+        retainedRequestDeliveries: [],
+      }),
+    );
+    expect(first.advanced).toBe(true);
+    expect(storedBlobs(first.messages)).toEqual([]);
+    expect(messages).toEqual(original);
+    fixture.journal.close();
+    const journal = new SqliteAgentRunJournal({ dbPath: fixture.journalDbPath });
+    const checkpoint = resultValue(journal.loadRecoveryHeads()).heads[0]!.checkpoint!;
+    expect(checkpoint.mcpImages).toHaveLength(2);
+    expect(checkpoint.mcpImages?.map((image) => image.outputIndex)).toEqual([1, 2]);
+    expect(JSON.stringify(checkpoint)).not.toContain(
+      Buffer.from("mcp-image-checkpoint-bytes").toString("base64"),
+    );
+    const registry = new McpImageCheckpointRegistry();
+    const identityProjection = createStoredMessageIdentityProjectionV1();
+    const restored = resultValue(
+      await materializeMcpImageCheckpoint({
+        ...checkpoint,
+        blobStore: fixture.blobStore,
+        imageRegistry: registry,
+        identityProjection,
+      }),
+    );
+    expect(restored).toEqual(original);
+    const nextMessages: ModelMessage[] = [
+      ...restored,
+      { role: "assistant", content: "Continued after restart" },
+    ];
+    const second = resultValue(
+      await persistBlobBackedAgentRunCheckpoint({
+        ...fixture,
+        journal,
+        handle: first.handle,
+        mcpImages: registry,
+        identityProjection,
+        messages: nextMessages,
+        previousCheckpoint: { providerMessages: restored, storedMessages: first.messages },
+        retainedRequestDeliveries: [],
+      }),
+    );
+    expect(second.advanced).toBe(true);
+    expect(storedBlobs(second.messages)).toEqual([]);
+    expect(resultValue(journal.loadRecoveryHeads()).heads[0]!.checkpoint!.mcpImages).toEqual(
+      checkpoint.mcpImages,
+    );
+    const finalTranscript = resultValue(
+      await identityProjection.projectForPersistence({
+        providerMessages: restored,
+        blobStore: fixture.blobStore,
+        retainUploadedFile: () => Result.ok(undefined),
+      }),
+    );
+    expect(finalTranscript.uploadedFiles).toHaveLength(2);
+    journal.close();
+    fixture.transcriptStore.close();
+    resultValue(await fixture.blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+  });
+
+  it.each(["missing", "changed", "truncated", "directory", "fifo"] as const)(
+    "restores a path notice for a %s image and keeps checkpointing",
+    async (failure) => {
+      const fixture = await checkpointFixture();
+      const registry = new McpImageCheckpointRegistry();
+      const messages = await mcpImageMessages(fixture.directory, registry);
+      const persisted = resultValue(
+        await persistBlobBackedAgentRunCheckpoint({
+          ...fixture,
+          handle: resultValue(fixture.journal.openRun(fixture.owner)),
+          mcpImages: registry,
+          messages,
+          retainedRequestDeliveries: [],
+        }),
+      );
+      const checkpoint = resultValue(fixture.journal.loadRecoveryHeads()).heads[0]!.checkpoint!;
+      const image = checkpoint.mcpImages![0]!;
+      if (failure === "missing" || failure === "directory" || failure === "fifo") {
+        await rm(image.localPath);
+      }
+      if (failure === "directory") await mkdir(image.localPath);
+      if (failure === "fifo") {
+        const created = Bun.spawn(["mkfifo", image.localPath], {
+          stdout: "ignore",
+          stderr: "pipe",
+        });
+        expect(await created.exited).toBe(0);
+      }
+      if (failure === "changed") await writeFile(image.localPath, "x".repeat(image.byteLength));
+      if (failure === "truncated") await writeFile(image.localPath, "x");
+      const recoveredRegistry = new McpImageCheckpointRegistry();
+      const restored = resultValue(
+        await materializeMcpImageCheckpoint({
+          ...checkpoint,
+          blobStore: fixture.blobStore,
+          imageRegistry: recoveredRegistry,
+        }),
+      );
+      expect(JSON.stringify(restored)).toContain("Image unavailable during recovery");
+      expect(JSON.stringify(restored)).toContain(image.localPath);
+      const second = resultValue(
+        await persistBlobBackedAgentRunCheckpoint({
+          ...fixture,
+          handle: persisted.handle,
+          mcpImages: recoveredRegistry,
+          messages: [
+            ...restored,
+            { role: "assistant", content: "Continue without the missing image" },
+          ],
+          retainedRequestDeliveries: [],
+        }),
+      );
+      expect(second.advanced).toBe(true);
+      expect(
+        resultValue(fixture.journal.loadRecoveryHeads()).heads[0]!.checkpoint!.mcpImages,
+      ).toEqual(checkpoint.mcpImages);
+      expect(storedBlobs(second.messages)).toEqual([]);
+      fixture.journal.close();
+      fixture.transcriptStore.close();
+      resultValue(await fixture.blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+    },
+  );
+
+  it("retains ordinary read blobs beside MCP references and reuses the checkpoint prefix", async () => {
+    const fixture = await checkpointFixture();
+    const registry = new McpImageCheckpointRegistry();
+    const mcp = await mcpImageMessages(fixture.directory, registry);
+    const read = localImageRead({
+      toolCallId: "read-crop",
+      path: "/tmp/crop.png",
+      filename: "crop.png",
+      bytes: new Uint8Array([1, 2, 3]),
+    });
+    const messages = [...mcp, ...read];
+    const first = resultValue(
+      await persistBlobBackedAgentRunCheckpoint({
+        ...fixture,
+        handle: resultValue(fixture.journal.openRun(fixture.owner)),
+        mcpImages: registry,
+        messages,
+        retainedRequestDeliveries: [],
+      }),
+    );
+    const second = resultValue(
+      await persistBlobBackedAgentRunCheckpoint({
+        ...fixture,
+        handle: first.handle,
+        mcpImages: registry,
+        messages: [...structuredClone(messages), { role: "assistant", content: "Next step" }],
+        previousCheckpoint: { providerMessages: messages, storedMessages: first.messages },
+        retainedRequestDeliveries: [],
+      }),
+    );
+    expect(storedBlobs(first.messages)).toHaveLength(1);
+    expect(storedBlobs(second.messages)).toEqual(storedBlobs(first.messages));
+    const checkpoint = resultValue(fixture.journal.loadRecoveryHeads()).heads[0]!.checkpoint!;
+    expect(
+      resultValue(
+        await materializeMcpImageCheckpoint({
+          ...checkpoint,
+          blobStore: fixture.blobStore,
+          imageRegistry: new McpImageCheckpointRegistry(),
+        }),
+      ),
+    ).toEqual([...messages, { role: "assistant", content: "Next step" }]);
+    expect(
+      agentRunCheckpointV1Schema.safeParse({
+        ...checkpoint,
+        mcpImages: [...checkpoint.mcpImages!, checkpoint.mcpImages![0]],
+      }).success,
+    ).toBe(false);
+    expect(
+      agentRunCheckpointV1Schema.safeParse({
+        ...checkpoint,
+        mcpImages: [{ ...checkpoint.mcpImages![0], outputIndex: 100 }],
+      }).success,
+    ).toBe(false);
+    expect(
+      agentRunCheckpointV1Schema.safeParse({
+        ...checkpoint,
+        mcpImages: [{ ...checkpoint.mcpImages![0], sha256: "invalid" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      agentRunCheckpointV1Schema.safeParse({
+        ...checkpoint,
+        mcpImages: [{ ...checkpoint.mcpImages![0], localPath: "relative.png" }],
+      }).success,
+    ).toBe(false);
+    fixture.journal.close();
+    fixture.transcriptStore.close();
+    resultValue(await fixture.blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
   });
 });

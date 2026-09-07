@@ -12,6 +12,12 @@ import { z } from "zod";
 
 import type { RequestDeliveryTerminalOutcome } from "../request-delivery";
 
+import {
+  mcpImageCheckpointReferenceSchema,
+  validMcpImageCheckpointReferences,
+  type McpImageCheckpointReference,
+} from "../../../mcp/image-checkpoint";
+
 const JOURNAL_SCHEMA_VERSION = 1 as const;
 
 const terminalOutcomeSchema = z.strictObject({
@@ -32,14 +38,19 @@ const retainedDeliverySchema = z.strictObject({
   outcome: terminalOutcomeSchema,
 });
 
-export const agentRunCheckpointV1Schema = z.strictObject({
-  version: z.literal(1),
-  messages: storedMessagesV1Schema,
-  corePrimaryLineage: corePrimaryLineageV2Schema.optional(),
-  loadedCatalogIds: z.array(z.string().min(1)).optional(),
-  currentTurnUserId: z.string().optional(),
-  retainedRequestDeliveries: z.array(retainedDeliverySchema),
-});
+export const agentRunCheckpointV1Schema = z
+  .strictObject({
+    version: z.literal(1),
+    messages: storedMessagesV1Schema,
+    mcpImages: z.array(mcpImageCheckpointReferenceSchema).optional(),
+    corePrimaryLineage: corePrimaryLineageV2Schema.optional(),
+    loadedCatalogIds: z.array(z.string().min(1)).optional(),
+    currentTurnUserId: z.string().optional(),
+    retainedRequestDeliveries: z.array(retainedDeliverySchema),
+  })
+  .refine(validMcpImageCheckpointReferences, {
+    message: "MCP image references must match unique checkpoint image markers",
+  });
 
 export type AgentRunCheckpointV1 = z.output<typeof agentRunCheckpointV1Schema>;
 
@@ -964,6 +975,7 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
 }
 
 export function createAgentRunCheckpoint(input: {
+  readonly mcpImages?: readonly McpImageCheckpointReference[];
   readonly messages: readonly StoredMessageV1[];
   readonly corePrimaryLineage?: CorePrimaryLineageV2;
   readonly loadedCatalogIds?: readonly string[];
@@ -976,6 +988,7 @@ export function createAgentRunCheckpoint(input: {
   return {
     version: 1,
     messages: [...input.messages],
+    ...(input.mcpImages?.length ? { mcpImages: [...input.mcpImages] } : {}),
     ...(input.corePrimaryLineage ? { corePrimaryLineage: input.corePrimaryLineage } : {}),
     ...(input.loadedCatalogIds ? { loadedCatalogIds: [...input.loadedCatalogIds] } : {}),
     ...(input.currentTurnUserId ? { currentTurnUserId: input.currentTurnUserId } : {}),
