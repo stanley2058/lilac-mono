@@ -60,11 +60,6 @@ export type ReadFileInstructionClaims = {
   forMessages(messages: readonly unknown[]): Set<string>;
 };
 
-export type InstructionLoadOptions = {
-  denyPaths?: readonly string[];
-  claimedInstructionPaths?: Set<string>;
-};
-
 export function createReadFileInstructionClaims(): ReadFileInstructionClaims {
   let currentMessages: readonly unknown[] | undefined;
   let currentMessageCount = -1;
@@ -237,21 +232,6 @@ async function loadInstructionsBetween(params: {
 
   if (loaded.length === 0) return null;
   return { loaded, text: snippets.join("\n\n") };
-}
-
-export async function loadWorkspaceInstructions(
-  cwd: string,
-  options: InstructionLoadOptions = {},
-): Promise<LoadedInstructionContext | null> {
-  const cwdAbsolute = await canonicalPath(cwd);
-  const boundaryDirectory = (await findGitRoot(cwdAbsolute)) ?? cwdAbsolute;
-  return loadInstructionsBetween({
-    startDirectory: cwdAbsolute,
-    boundaryDirectory,
-    alreadyLoaded: new Set(),
-    denyPaths: await canonicalPaths(options.denyPaths ?? []),
-    claimedInstructionPaths: options.claimedInstructionPaths,
-  });
 }
 
 export async function loadReadFileInstructions(params: {

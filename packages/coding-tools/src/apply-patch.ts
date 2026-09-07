@@ -6,7 +6,6 @@ import {
   expandTilde,
   type FileSystemOperationFailed,
 } from "@stanley2058/lilac-fs";
-import { tool, type ToolSet } from "ai";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
 import {
@@ -16,8 +15,6 @@ import {
   type CanonicalPathError,
   type CodingToolGuardrailViolation,
 } from "./guardrails";
-import { adaptCodingToolResultToHost } from "./host-compatibility";
-import { applyPatchInputSchema } from "./schemas";
 
 export type UpdateFileChunk = {
   oldLines: string[];
@@ -211,10 +208,6 @@ export function parsePatchResult(patchText: string): ResultType<PatchHunk[], Pat
     return Result.err(new PatchRejected({ message: "patch rejected: empty patch" }));
   }
   return Result.ok(hunks);
-}
-
-export function parsePatch(patchText: string): PatchHunk[] {
-  return adaptCodingToolResultToHost(parsePatchResult(patchText));
 }
 
 function normalizeUnicode(value: string): string {
@@ -534,31 +527,4 @@ export async function applyPatchResult(params: {
   }
 
   return Result.ok(`Success. Updated the following files:\n${touched.join("\n")}`);
-}
-
-export async function applyPatch(params: {
-  cwd: string;
-  patchText: string;
-  denyPaths: readonly string[];
-  dangerouslyAllow?: boolean;
-  allowGuardrailBypass?: boolean;
-  abortSignal?: AbortSignal;
-}): Promise<string> {
-  return adaptCodingToolResultToHost(await applyPatchResult(params));
-}
-
-export function createApplyPatchTool(params: {
-  cwd: string;
-  denyPaths: readonly string[];
-  allowGuardrailBypass?: boolean;
-}): ToolSet {
-  return {
-    patch: tool({
-      description:
-        "Apply a local *** Begin Patch with Add, Delete, Update, and optional Move to sections. Directory deletion is refused.",
-      inputSchema: applyPatchInputSchema,
-      execute: ({ cwd, ...input }, { abortSignal }) =>
-        applyPatch({ ...params, ...input, cwd: cwd ?? params.cwd, abortSignal }),
-    }),
-  };
 }

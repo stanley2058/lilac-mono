@@ -44,7 +44,7 @@ import {
 } from "@stanley2058/lilac-agent";
 import {
   ClaudeCodeRunExternalFailure,
-  materializeClaudeCodeRun,
+  materializeClaudeCodeRunResult,
   type ClaudeNativeAttemptObservation,
   type ClaudeNativeSessionStart,
   type MaterializedClaudeCodeRun,
@@ -8869,7 +8869,7 @@ describe("startBusAgentRunner Core-primary Claude production path", () => {
     const releaseFinalization = [deferred<void>(), deferred<void>()];
     const switchedModels: Array<string | undefined> = [];
     const materialize = async (
-      options: Parameters<typeof materializeClaudeCodeRun>[0],
+      options: Parameters<typeof materializeClaudeCodeRunResult>[0],
     ): Promise<MaterializedClaudeCodeRun> => {
       const start = options.nativeSession;
       if (!start || start.mode === "ephemeral") throw new Error("expected persistent Claude start");

@@ -147,10 +147,6 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY apps/core/package.json apps/core/package.json
 COPY apps/tool-bridge/package.json apps/tool-bridge/package.json
-COPY apps/acp-controller/package.json apps/acp-controller/package.json
-COPY apps/mini-lilac/package.json apps/mini-lilac/package.json
-COPY apps/mini-lilac-server/package.json apps/mini-lilac-server/package.json
-COPY apps/mini-lilac-tui/package.json apps/mini-lilac-tui/package.json
 COPY packages/agent/package.json packages/agent/package.json
 COPY packages/bash-safety/package.json packages/bash-safety/package.json
 COPY packages/blob-storage/package.json packages/blob-storage/package.json
@@ -158,8 +154,6 @@ COPY packages/claude-code-bridge/package.json packages/claude-code-bridge/packag
 COPY packages/coding-tools/package.json packages/coding-tools/package.json
 COPY packages/event-bus/package.json packages/event-bus/package.json
 COPY packages/fs/package.json packages/fs/package.json
-COPY packages/mini-lilac-client/package.json packages/mini-lilac-client/package.json
-COPY packages/mini-lilac-runtime/package.json packages/mini-lilac-runtime/package.json
 COPY packages/plugin-runtime/package.json packages/plugin-runtime/package.json
 COPY packages/remote-fs-runner/package.json packages/remote-fs-runner/package.json
 COPY packages/tool-results/package.json packages/tool-results/package.json

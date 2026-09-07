@@ -6,7 +6,7 @@ import path from "node:path";
 import { Panic } from "better-result";
 
 import {
-  clearCodexTokens,
+  clearCodexTokensResult,
   codexTokensCodecCases,
   decodeCodexTokens,
   exchangeCodeForTokens,
@@ -141,7 +141,7 @@ describe("Codex OAuth login", () => {
       expect(
         (await readdir(path.dirname(storagePath))).filter((file) => file.endsWith(".tmp")),
       ).toEqual([]);
-      await clearCodexTokens(storagePath);
+      expect((await clearCodexTokensResult(storagePath)).isOk()).toBe(true);
       expect(await readCodexTokens(storagePath)).toBeNull();
       const cleared = await readCodexTokensResult(storagePath);
       expect(cleared.status).toBe("ok");

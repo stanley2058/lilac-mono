@@ -74,28 +74,6 @@ function inlineMedia(
   return undefined;
 }
 
-export function toolResultContentDisplayValue(output: ContentOutput): unknown[] {
-  return output.value.map((item) => {
-    if (item.type === "file") {
-      const { data: _data, ...metadata } = item;
-      return metadata;
-    }
-    if (item.type === "file-data" || item.type === "image-data") {
-      const { data: _data, ...metadata } = item;
-      return metadata;
-    }
-    if (item.type === "file-url" && inlineDataUrl(item.url) !== undefined) {
-      const { url: _url, ...metadata } = item;
-      return metadata;
-    }
-    if (item.type === "image-url" && inlineDataUrl(item.url) !== undefined) {
-      const { url: _url, ...metadata } = item;
-      return metadata;
-    }
-    return item;
-  });
-}
-
 export function boundToolResultMediaForModelView(
   messages: readonly ModelMessage[],
   limits: { maxBytesPerPart: number; maxBytesTotal: number },

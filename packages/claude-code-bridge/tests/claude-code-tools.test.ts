@@ -13,7 +13,6 @@ import { z } from "zod";
 import {
   createClaudeCodeToolBridge,
   createClaudeCodeToolBridgeResult,
-  displayClaudeCodeToolName,
   mapToolResultOutputToMcpResult,
   validateClaudeCodeBuiltInToolsResult,
 } from "../claude-code-tools";
@@ -583,11 +582,5 @@ describe("Claude Code tool bridge", () => {
         "Description: Original scale description 4999",
       ].join("\n"),
     });
-  });
-
-  it("formats only the Lilac MCP namespace for display", () => {
-    expect(displayClaudeCodeToolName("mcp__lilac__read")).toBe("read");
-    expect(displayClaudeCodeToolName("mcp__lilac__read_file")).toBe("read");
-    expect(displayClaudeCodeToolName("mcp__other__read_file")).toBe("mcp__other__read_file");
   });
 });

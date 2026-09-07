@@ -23,7 +23,7 @@ export class AiSdkAgentAdapter<TOOLS extends ToolSet = ToolSet> implements Agent
 > {
   private model: LanguageModel;
   private modelSpecifier: string | undefined;
-  private prepareModelCall: PrepareModelCall | undefined;
+  private readonly prepareModelCall: PrepareModelCall | undefined;
   private download: DownloadFunction | undefined;
   private readonly sendTools: boolean;
   private readonly maxRetries: number | undefined;
@@ -41,9 +41,6 @@ export class AiSdkAgentAdapter<TOOLS extends ToolSet = ToolSet> implements Agent
   setModel(model: LanguageModel, modelSpecifier?: string): void {
     this.model = model;
     this.modelSpecifier = modelSpecifier;
-  }
-  setPrepareModelCall(handler: PrepareModelCall | undefined): void {
-    this.prepareModelCall = handler;
   }
   setExperimentalDownload(download: DownloadFunction | undefined): void {
     this.download = download;

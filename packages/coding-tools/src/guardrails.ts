@@ -7,8 +7,6 @@ import {
 } from "@stanley2058/lilac-fs";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
-import { adaptCodingToolResultToHost } from "./host-compatibility";
-
 export class CodingToolGuardrailViolation extends TaggedError("CodingToolGuardrailViolation")<{
   readonly message: string;
 }> {}
@@ -36,13 +34,6 @@ export function guardrailBypassAllowed(
   );
 }
 
-export function assertGuardrailBypassAllowed(
-  dangerouslyAllow: boolean | undefined,
-  allowGuardrailBypass: boolean,
-): void {
-  adaptCodingToolResultToHost(guardrailBypassAllowed(dangerouslyAllow, allowGuardrailBypass));
-}
-
 export function validateLocalCwd(cwd: string): ResultType<void, CodingToolGuardrailViolation> {
   const trimmed = cwd.trim();
   const isWindowsDrivePath = /^[A-Za-z]:[\\/]/u.test(trimmed);
@@ -54,10 +45,6 @@ export function validateLocalCwd(cwd: string): ResultType<void, CodingToolGuardr
     );
   }
   return Result.ok(undefined);
-}
-
-export function assertLocalCwd(cwd: string): void {
-  adaptCodingToolResultToHost(validateLocalCwd(cwd));
 }
 
 export async function canonicalizeAsFarAsExistsResult(
@@ -74,10 +61,6 @@ export async function canonicalizeAsFarAsExistsResult(
       message: error.message,
     });
   });
-}
-
-export async function canonicalizeAsFarAsExists(inputPath: string): Promise<string> {
-  return adaptCodingToolResultToHost(await canonicalizeAsFarAsExistsResult(inputPath));
 }
 
 export async function canonicalPathAllowed(params: {
@@ -109,15 +92,4 @@ export async function canonicalPathAllowed(params: {
     }
   }
   return Result.ok(undefined);
-}
-
-export async function assertCanonicalPathAllowed(
-  targetPath: string,
-  denyPaths: readonly string[],
-  operation: string,
-  dangerouslyAllow = false,
-): Promise<void> {
-  adaptCodingToolResultToHost(
-    await canonicalPathAllowed({ targetPath, denyPaths, operation, dangerouslyAllow }),
-  );
 }

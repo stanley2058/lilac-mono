@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Panic } from "better-result";
 import {
-  clearCodexTokens,
+  clearCodexTokensResult,
   readCodexTokens,
   writeCodexTokens,
   type CodexOAuthTokens,
@@ -119,7 +119,7 @@ test("default native and fallback factories share one refresh while callers canc
     expect((await readCodexTokens())?.refresh).toBe("shared-rotated");
   } finally {
     releaseRefresh.resolve(Response.json({ access_token: "cleanup" }));
-    await clearCodexTokens();
+    expect((await clearCodexTokensResult()).isOk()).toBe(true);
   }
 });
 

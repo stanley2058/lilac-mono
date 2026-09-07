@@ -7,7 +7,6 @@ import {
   applyPatchResult,
   canonicalPathAllowed,
   createBatchToolResult,
-  createCodingToolsetResult,
   decodePreviouslyLoadedInstructionPaths,
   guardrailBypassAllowed,
   parsePatchResult,
@@ -15,7 +14,7 @@ import {
 } from "../src";
 
 describe("Stage 7 Result boundaries", () => {
-  it("returns owned errors for invalid patch, batch, toolset, and guardrail inputs", () => {
+  it("returns owned errors for invalid patch, batch, and guardrail inputs", () => {
     const patch = parsePatchResult("not a patch");
     expect(patch.status).toBe("error");
     if (patch.status === "error") expect(patch.error._tag).toBe("PatchRejected");
@@ -23,10 +22,6 @@ describe("Stage 7 Result boundaries", () => {
     const batch = createBatchToolResult({ cwd: process.cwd(), getTools: () => ({}) });
     expect(batch.status).toBe("error");
     if (batch.status === "error") expect(batch.error._tag).toBe("BatchRejected");
-
-    const toolset = createCodingToolsetResult({ cwd: "host:/workspace" });
-    expect(toolset.status).toBe("error");
-    if (toolset.status === "error") expect(toolset.error._tag).toBe("CodingToolGuardrailViolation");
 
     expect(guardrailBypassAllowed(true, false).status).toBe("error");
     expect(validateLocalCwd("host:/workspace").status).toBe("error");

@@ -5,9 +5,9 @@ import { createClaudeCode, type ClaudeCodeSettings } from "ai-sdk-provider-claud
 import { Panic } from "better-result";
 import { z } from "zod";
 
-import { materializeClaudeCodeRun, materializeClaudeCodeRunResult } from "../claude-code-run";
+import { materializeClaudeCodeRunResult } from "../claude-code-run";
 
-describe("materializeClaudeCodeRun", () => {
+describe("materializeClaudeCodeRunResult", () => {
   it("returns invalid native-session configuration as an owned Result error", async () => {
     const materialized = await materializeClaudeCodeRunResult({
       modelId: "sonnet",
@@ -174,29 +174,31 @@ describe("materializeClaudeCodeRun", () => {
     const settings: ClaudeCodeSettings[] = [];
     const provider = createClaudeCode();
     const cwd = process.cwd();
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {
-        read: tool({
-          description: "Read a value",
-          inputSchema: z.object({ path: z.string() }),
-          execute: ({ path }) => path,
-        }),
-        batch: tool({
-          description: "Expand calls",
-          inputSchema: z.object({}),
-          execute: () => "not exposed",
-        }),
-      },
-      execute: () => {
-        throw new Error("not called");
-      },
-      createModel: (modelId, modelSettings) => {
-        settings.push(modelSettings);
-        return provider(modelId, modelSettings);
-      },
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {
+          read: tool({
+            description: "Read a value",
+            inputSchema: z.object({ path: z.string() }),
+            execute: ({ path }) => path,
+          }),
+          batch: tool({
+            description: "Expand calls",
+            inputSchema: z.object({}),
+            execute: () => "not exposed",
+          }),
+        },
+        execute: () => {
+          throw new Error("not called");
+        },
+        createModel: (modelId, modelSettings) => {
+          settings.push(modelSettings);
+          return provider(modelId, modelSettings);
+        },
+      })
+    ).unwrap();
 
     expect(settings).toHaveLength(1);
     expect(settings[0]).toMatchObject({
@@ -258,19 +260,21 @@ describe("materializeClaudeCodeRun", () => {
     const settings: ClaudeCodeSettings[] = [];
     const provider = createClaudeCode();
     const sessionId = "22222222-2222-4222-8222-222222222222";
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId },
-      execute: () => {
-        throw new Error("not called");
-      },
-      createModel: (modelId, modelSettings) => {
-        settings.push(modelSettings);
-        return provider(modelId, modelSettings);
-      },
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId },
+        execute: () => {
+          throw new Error("not called");
+        },
+        createModel: (modelId, modelSettings) => {
+          settings.push(modelSettings);
+          return provider(modelId, modelSettings);
+        },
+      })
+    ).unwrap();
 
     expect(run.continuationModel).toBeDefined();
     expect(settings[0]).toMatchObject({ persistSession: true, sessionId });
@@ -289,19 +293,21 @@ describe("materializeClaudeCodeRun", () => {
   it("preserves caller built-ins, appends ToolSearch once, and keeps utility tools empty", async () => {
     const settings: ClaudeCodeSettings[] = [];
     const provider = createClaudeCode();
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: { read: tool({ inputSchema: z.object({}), execute: () => "value" }) },
-      builtInTools: ["WebSearch", "ToolSearch"],
-      execute: () => {
-        throw new Error("not called");
-      },
-      createModel: (modelId, modelSettings) => {
-        settings.push(modelSettings);
-        return provider(modelId, modelSettings);
-      },
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: { read: tool({ inputSchema: z.object({}), execute: () => "value" }) },
+        builtInTools: ["WebSearch", "ToolSearch"],
+        execute: () => {
+          throw new Error("not called");
+        },
+        createModel: (modelId, modelSettings) => {
+          settings.push(modelSettings);
+          return provider(modelId, modelSettings);
+        },
+      })
+    ).unwrap();
 
     expect(settings[0]?.tools).toEqual(["WebSearch", "ToolSearch"]);
     expect(settings[0]?.env).toEqual({ ENABLE_TOOL_SEARCH: "true" });
@@ -315,19 +321,21 @@ describe("materializeClaudeCodeRun", () => {
   it("returns utility model construction failures from the mandatory Result API", async () => {
     const provider = createClaudeCode();
     let createCalls = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: {},
-      execute: () => {
-        throw new Error("not called");
-      },
-      createModel: (modelId, settings) => {
-        createCalls += 1;
-        if (createCalls > 1) throw new Error("utility provider unavailable");
-        return provider(modelId, settings);
-      },
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: {},
+        execute: () => {
+          throw new Error("not called");
+        },
+        createModel: (modelId, settings) => {
+          createCalls += 1;
+          if (createCalls > 1) throw new Error("utility provider unavailable");
+          return provider(modelId, settings);
+        },
+      })
+    ).unwrap();
 
     const utility = run.createUtilityModelResult();
     expect(utility.status).toBe("error");
@@ -345,19 +353,21 @@ describe("materializeClaudeCodeRun", () => {
     const provider = createClaudeCode();
     const panic = new Panic({ message: "utility model invariant" });
     let createCalls = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: {},
-      execute: () => {
-        throw new Error("not called");
-      },
-      createModel: (modelId, settings) => {
-        createCalls += 1;
-        if (createCalls > 1) throw panic;
-        return provider(modelId, settings);
-      },
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: {},
+        execute: () => {
+          throw new Error("not called");
+        },
+        createModel: (modelId, settings) => {
+          createCalls += 1;
+          if (createCalls > 1) throw panic;
+          return provider(modelId, settings);
+        },
+      })
+    ).unwrap();
 
     expect(() => run.createUtilityModelResult()).toThrow(panic);
     expect(() => run.createUtilityModel()).toThrow(panic);

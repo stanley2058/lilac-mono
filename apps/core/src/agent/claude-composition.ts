@@ -16,7 +16,6 @@ import {
 } from "@stanley2058/lilac-utils";
 import {
   materializeClaudeCodeRunResult,
-  type materializeClaudeCodeRun,
   type MaterializedClaudeCodeRun,
   type ClaudeCodeRunExternalFailure,
 } from "@stanley2058/lilac-claude-code-bridge";
@@ -138,7 +137,11 @@ export type CoreClaudeCompositionInput = {
     Parameters<typeof createCorePrimaryClaudeRuntimeResult>[0]["projectCanonicalStoredMessages"]
   >;
   readonly transcriptStore: TranscriptStore | undefined;
-  readonly materializeClaudeCodeRun: typeof materializeClaudeCodeRun | undefined;
+  readonly materializeClaudeCodeRun:
+    | ((
+        options: Parameters<typeof materializeClaudeCodeRunResult>[0],
+      ) => Promise<MaterializedClaudeCodeRun>)
+    | undefined;
   readonly getAgent: () => AiSdkPiAgent<ToolSet> | null;
   readonly waitForPreAgent: <T>(operation: Promise<T>) => Promise<T>;
 };

@@ -17,8 +17,8 @@ import {
   readFileInputSchema as sharedReadFileInputSchema,
 } from "@stanley2058/lilac-coding-tools/schemas";
 import {
-  applyPatch as applySharedPatch,
-  parsePatch as parseSharedPatch,
+  applyPatchResult as applySharedPatch,
+  parsePatchResult as parseSharedPatch,
 } from "@stanley2058/lilac-coding-tools/apply-patch";
 
 import { BUILTIN_LEVEL1_TOOLS, createLocalToolSpecs } from "../../src/plugins/builtin/local-tools";
@@ -158,8 +158,8 @@ describe("Core coding-tools parity", () => {
       await mkdir(sharedDir);
       await writeFile(path.join(coreDir, "file.txt"), "target\n");
       await writeFile(path.join(sharedDir, "file.txt"), "target\n");
-      await applyHunks(coreDir, parseSharedPatch(patchText));
-      await applySharedPatch({ cwd: sharedDir, patchText, denyPaths: [] });
+      await applyHunks(coreDir, parseSharedPatch(patchText).unwrap());
+      (await applySharedPatch({ cwd: sharedDir, patchText, denyPaths: [] })).unwrap();
       expect(await readFile(path.join(coreDir, "file.txt"), "utf8")).toBe("changed\n");
       expect(await readFile(path.join(sharedDir, "file.txt"), "utf8")).toBe("changed\n");
     } finally {

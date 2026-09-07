@@ -531,9 +531,3 @@ export function createBatchToolResult<TToolSpec extends BatchToolSpec = BatchToo
     });
   }
 }
-
-export function createBatchTool<TToolSpec extends BatchToolSpec = BatchToolSpec>(
-  params: Parameters<typeof createBatchToolResult<TToolSpec>>[0],
-): ToolSet {
-  return adaptCodingToolResultToHost(createBatchToolResult(params));
-}

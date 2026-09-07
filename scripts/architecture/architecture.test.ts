@@ -2558,41 +2558,16 @@ describe("permanent architecture governance", () => {
     );
 
     for (const required of [
-      "apps/acp-controller:run-store.ts#decodeRunRecord->run-store.ts#runRecordCodecCases",
       "apps/core:src/migration/frozen-graceful-restart-store.ts#decodeGracefulRestartSnapshot->src/migration/frozen-graceful-restart-store.ts#gracefulRestartSnapshotCodecCases",
       "apps/core:src/workflow/workflow-persistence-codec.ts#decodeWorkflowPersistenceRow->src/workflow/workflow-persistence-codec.ts#workflowPersistenceRowCodecCases",
-      "apps/mini-lilac-tui:src/preferences.ts#decodeBindingPreferences->src/preferences.ts#bindingPreferencesCodecCases",
-      "packages/mini-lilac-runtime:src/workspace-history-persistence-codec.ts#decodeWorkspaceHistorySnapshotManifest->src/workspace-history-persistence-codec.ts#workspaceHistorySnapshotManifestCodecCases",
-      "packages/mini-lilac-runtime:src/sqlite-history-persistence-codec.ts#decodeMiniLilacStructuralHistoryRow->src/sqlite-history-persistence-codec.ts#miniLilacStructuralHistoryRowCodecCases",
-      "packages/tool-results:src/tool-result-artifact-metadata-codec.ts#decodeToolResultArtifactMetadata->src/tool-result-artifact-metadata-codec.ts#toolResultArtifactMetadataCodecCases",
+      "packages/tool-results:src/blob-tool-result-artifact-metadata-codec.ts#decodeBlobToolResultArtifactMetadata->src/blob-tool-result-artifact-metadata-codec.ts#blobToolResultArtifactMetadataCodecCases",
       "packages/utils:codex-oauth.ts#decodeCodexTokens->codex-oauth.ts#codexTokensCodecCases",
     ]) {
       expect(registrations).toContain(required);
     }
   });
 
-  test("retains the Mini TUI tool registry and representative boundary decoders", () => {
-    const tui = architectureManifest.workspaces.find(({ name }) => name === "apps/mini-lilac-tui");
-    if (!tui) throw new Error("Mini TUI architecture workspace missing");
-
-    expect(tui.toolCodecRegistries).toContainEqual({
-      identity: {
-        module: "src/tool-observation-projection.ts",
-        exportName: "toolObservationCodecRegistry",
-      },
-      aliases: [
-        {
-          module: "src/tool-observation-projection.ts",
-          exportName: "knownToolCodecRegistry",
-        },
-      ],
-      canonicalTools: {
-        package: "@stanley2058/mini-lilac-client",
-        module: "tool-catalog.ts",
-        exportName: "MINI_LILAC_TOOL_NAMES",
-      },
-    });
-
+  test("retains representative boundary decoders", () => {
     const decoders = new Set(
       architectureManifest.workspaces.flatMap((workspace) =>
         workspace.boundaryDecoders.map(
@@ -2606,7 +2581,6 @@ describe("permanent architecture governance", () => {
       "apps/core:src/surface/bridge/bus-agent-runner/raw.ts#parseRequestControlFromRaw:projection",
       "apps/core:src/workflow/workflow-action-resolver.ts#decodeWorkflowActionOutboxEvent:persistence",
       "apps/tool-bridge:client.ts#projectBridgeFailure:wire",
-      "apps/mini-lilac-server:src/server.ts#decodeMiniLilacHttpRequest:request",
       "packages/fs:src/remote-runner-protocol.ts#decodeJson:wire",
       "packages/plugin-runtime:server-tool-result.ts#decodeServerToolResult:plugin",
       "packages/plugin-runtime:server-tool-result.ts#transform.<callback@1>@2:plugin",
