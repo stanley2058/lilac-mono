@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   fonts-liberation \
   fonts-noto-color-emoji \
   git \
+  golang-go \
   gzip \
   imagemagick \
   iproute2 \
@@ -176,12 +177,6 @@ WORKDIR /app
 COPY bunfig.toml tsconfig.json ./
 COPY apps ./apps
 COPY packages ./packages
-
-# Go is needed only to compile the small tools launcher. Keep the toolchain out
-# of the runtime image.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends golang-go \
-  && rm -rf /var/lib/apt/lists/*
 
 ARG LILAC_BUILD_VERSION=dev
 ARG LILAC_BUILD_COMMIT=dev
