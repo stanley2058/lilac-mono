@@ -353,6 +353,7 @@ const EMPTY_POLICY = {
 } as const;
 
 export const ACTIVE_WORKSPACES = [
+  ["apps/computer-use-gateway", "@stanley2058/lilac-computer-use-gateway"],
   ["packages/computer-use-runner", "@stanley2058/lilac-computer-use-runner"],
   ["apps/core", "@stanley2058/lilac-core"],
   ["apps/tool-bridge", "@stanley2058/lilac-tool-bridge"],
@@ -3571,6 +3572,26 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
           ]
         : [],
     boundaryDecoders: [
+      ...(root === "apps/computer-use-gateway"
+        ? [
+            {
+              identity: { module: "src/contracts.ts", exportName: "decodeRecords" },
+              category: "persistence" as const,
+            },
+            {
+              identity: { module: "src/contracts.ts", exportName: "decodeConfig" },
+              category: "request" as const,
+            },
+            {
+              identity: { module: "src/contracts.ts", exportName: "decodeRunnerReply" },
+              category: "wire" as const,
+            },
+            {
+              identity: { module: "src/docker.ts", exportName: "decodeContainers" },
+              category: "wire" as const,
+            },
+          ]
+        : []),
       ...(root === "packages/plugin-runtime"
         ? ([
             ...[

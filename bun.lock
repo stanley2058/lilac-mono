@@ -13,6 +13,14 @@
         "typescript-codegen": "npm:typescript@6.0.3",
       },
     },
+    "apps/computer-use-gateway": {
+      "name": "@stanley2058/lilac-computer-use-gateway",
+      "version": "0.0.0",
+      "dependencies": {
+        "better-result": "catalog:",
+        "zod": "^4.3.6",
+      },
+    },
     "apps/core": {
       "name": "@stanley2058/lilac-core",
       "dependencies": {
@@ -537,6 +545,8 @@
     "@stanley2058/lilac-claude-code-bridge": ["@stanley2058/lilac-claude-code-bridge@workspace:packages/claude-code-bridge"],
 
     "@stanley2058/lilac-coding-tools": ["@stanley2058/lilac-coding-tools@workspace:packages/coding-tools"],
+
+    "@stanley2058/lilac-computer-use-gateway": ["@stanley2058/lilac-computer-use-gateway@workspace:apps/computer-use-gateway"],
 
     "@stanley2058/lilac-computer-use-runner": ["@stanley2058/lilac-computer-use-runner@workspace:packages/computer-use-runner"],
 
