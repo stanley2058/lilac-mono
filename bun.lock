@@ -169,6 +169,10 @@
         "typescript": "^7.0.2",
       },
     },
+    "packages/computer-use-runner": {
+      "name": "@stanley2058/lilac-computer-use-runner",
+      "version": "0.0.0",
+    },
     "packages/event-bus": {
       "name": "@stanley2058/lilac-event-bus",
       "dependencies": {
@@ -533,6 +537,8 @@
     "@stanley2058/lilac-claude-code-bridge": ["@stanley2058/lilac-claude-code-bridge@workspace:packages/claude-code-bridge"],
 
     "@stanley2058/lilac-coding-tools": ["@stanley2058/lilac-coding-tools@workspace:packages/coding-tools"],
+
+    "@stanley2058/lilac-computer-use-runner": ["@stanley2058/lilac-computer-use-runner@workspace:packages/computer-use-runner"],
 
     "@stanley2058/lilac-core": ["@stanley2058/lilac-core@workspace:apps/core"],
 

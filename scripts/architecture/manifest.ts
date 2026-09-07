@@ -353,6 +353,7 @@ const EMPTY_POLICY = {
 } as const;
 
 export const ACTIVE_WORKSPACES = [
+  ["packages/computer-use-runner", "@stanley2058/lilac-computer-use-runner"],
   ["apps/core", "@stanley2058/lilac-core"],
   ["apps/tool-bridge", "@stanley2058/lilac-tool-bridge"],
   ["packages/agent", "@stanley2058/lilac-agent"],

@@ -7,7 +7,8 @@ facts are incorporated into those documents and remain available in Git history.
 
 ## Active
 
-None.
+- [Optional computer use](computer-use.md): add a containerized MCP gateway, ephemeral desktop
+  runners, session routing, and explicit lifecycle tools. Design agreed; implementation not started.
 
 Only plans listed under **Active** are repository-wide implementation plans. A task-specific plan is
 authoritative only when the user explicitly approves it for that task.

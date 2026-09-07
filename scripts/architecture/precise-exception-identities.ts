@@ -17,6 +17,7 @@ export const CORE_FATAL_SIGNAL_IDENTITIES = [
 ] as const;
 
 export const PRECISE_EXCEPTION_IDENTITIES = {
+  "packages/computer-use-runner": [],
   "apps/core": [
     ["src/agent/claude-composition.ts", "canonicalClaudeExecutionCwd", "signal"],
     ["src/surface/bridge/subscribe-from-bus.ts", "bridgeBusToAdapter.startRelay", "signal"],
