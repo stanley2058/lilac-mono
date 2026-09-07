@@ -6,6 +6,7 @@ import { RunnerStore } from "../src/store";
 import {
   decodeConfig,
   failure,
+  storageFailure,
   type GatewayConfig,
   type GatewayFailure,
   type RunnerRecord,
@@ -203,6 +204,21 @@ describe("computer lifecycle", () => {
     value(await narrowed.reconcile());
     expect(value(store.list()).map((row) => row.port)).toEqual([17001]);
     expect(docker.containers).toHaveLength(1);
+  });
+
+  test("startup preserves persisted failure classification without touching Docker", async () => {
+    const { lifecycle, store, docker } = await setup();
+    const error = storageFailure("corrupt_fields", "Invalid computer lifecycle records");
+    store.list = () => Result.err(error);
+    let inspections = 0;
+    docker.list = async () => {
+      inspections++;
+      return Result.ok([]);
+    };
+    const result = await lifecycle.reconcile();
+    expect(result.match({ ok: () => null, err: (value) => value })).toBe(error);
+    expect(inspections).toBe(0);
+    expect(lifecycle.isReady()).toBe(false);
   });
 
   test("Docker unavailability preserves reservations and fails readiness", async () => {

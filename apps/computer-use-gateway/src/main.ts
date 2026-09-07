@@ -1,6 +1,7 @@
 import { Result } from "better-result";
 import { decodeConfig, failure } from "./contracts";
 import { DockerCli } from "./docker";
+import { createExpiryTick } from "./expiry";
 import { ComputerLifecycle } from "./lifecycle";
 import { createGatewayHandler } from "./server";
 import { RunnerStore } from "./store";
@@ -33,16 +34,13 @@ async function main() {
       store.close();
       return Result.err(failure("unavailable", "Cannot listen on gateway port 8080"));
     }
-    let cleaning = false;
-    const timer = setInterval(async () => {
-      if (cleaning) return;
-      cleaning = true;
-      (await lifecycle.expire()).match({
-        ok: () => {},
-        err: (error) => console.error(error.message),
-      });
-      cleaning = false;
-    }, 10000);
+    const timer = setInterval(
+      createExpiryTick(
+        () => lifecycle.expire(),
+        (error) => console.error(error.message),
+      ),
+      10000,
+    );
     console.info("Computer-use gateway listening on port 8080");
     await new Promise<void>((resolve) => {
       process.once("SIGTERM", resolve);

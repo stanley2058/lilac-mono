@@ -12,10 +12,15 @@ export class GatewayFailure extends TaggedError("GatewayFailure")<{
     | "storage"
     | "binding";
   message: string;
+  storageReason?: "io" | "unsupported_version" | "corrupt_fields";
 }> {}
 
 export const failure = (code: GatewayFailure["code"], message: string) =>
   new GatewayFailure({ code, message });
+export const storageFailure = (
+  reason: NonNullable<GatewayFailure["storageReason"]>,
+  message: string,
+) => new GatewayFailure({ code: "storage", storageReason: reason, message });
 export const sessionSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const idleTimeoutSchema = z.number().int().min(1).max(86400);
 export const recordSchema = z.strictObject({
@@ -63,7 +68,8 @@ export type RunnerRequest =
 
 export function decodeRecords(value: unknown) {
   const parsed = z.array(recordSchema).safeParse(value);
-  if (!parsed.success) return Result.err(failure("storage", "Invalid computer lifecycle records"));
+  if (!parsed.success)
+    return Result.err(storageFailure("corrupt_fields", "Invalid computer lifecycle records"));
   return Result.ok(parsed.data);
 }
 

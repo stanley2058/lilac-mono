@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunnerStore } from "../src/store";
@@ -12,7 +12,15 @@ test("gateway database rejects unknown versions and malformed persisted rows", (
     const future = new Database(path);
     future.exec("PRAGMA user_version=99");
     future.close();
-    expect(RunnerStore.open(path).isErr()).toBe(true);
+    const before = readFileSync(path);
+    const unsupported = RunnerStore.open(path);
+    expect(unsupported.match({ ok: () => null, err: (error) => error.storageReason })).toBe(
+      "unsupported_version",
+    );
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(
+      RunnerStore.open(dir).match({ ok: () => null, err: (error) => error.storageReason }),
+    ).toBe("io");
     const reset = new Database(path);
     reset.exec("PRAGMA user_version=0");
     reset.close();
@@ -24,8 +32,13 @@ test("gateway database rejects unknown versions and malformed persisted rows", (
       "INSERT INTO runners VALUES ('invalid','invalid',NULL,NULL,17000,'ready','invalid',3600,1)",
     );
     corrupt.close();
-    expect(opened.value.list().isErr()).toBe(true);
+    expect(opened.value.list().match({ ok: () => null, err: (error) => error.storageReason })).toBe(
+      "corrupt_fields",
+    );
     opened.value.close();
+    expect(opened.value.list().match({ ok: () => null, err: (error) => error.storageReason })).toBe(
+      "io",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

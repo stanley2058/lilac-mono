@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Result } from "better-result";
-import { decodeRecords, failure, type RunnerRecord } from "./contracts";
+import { decodeRecords, storageFailure, type RunnerRecord } from "./contracts";
 
 export class RunnerStore {
   constructor(private readonly db: Database) {}
@@ -16,30 +16,35 @@ export class RunnerStore {
           if (path !== ":memory:") chmodSync(path, 0o600);
           return database;
         },
-        catch: () => failure("storage", "Cannot open computer lifecycle database"),
+        catch: () => storageFailure("io", "Cannot open computer lifecycle database"),
       });
       const setup = Result.try({
         try: () => {
           const version = db
             .query<{ user_version: number }, []>("PRAGMA user_version")
             .get()?.user_version;
-          if (version !== 0 && version !== 1) return false;
+          if (version !== 0 && version !== 1)
+            return Result.err(
+              storageFailure(
+                "unsupported_version",
+                "Unsupported computer lifecycle database version",
+              ),
+            );
           db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
           db.exec(`CREATE TABLE IF NOT EXISTS runners (
             session TEXT PRIMARY KEY, generation TEXT NOT NULL UNIQUE, containerId TEXT, runtimeId TEXT,
             port INTEGER NOT NULL UNIQUE, state TEXT NOT NULL, password TEXT NOT NULL,
             idleSeconds INTEGER NOT NULL, expiresAt INTEGER NOT NULL
           ); PRAGMA user_version=1;`);
-          return true;
+          return Result.ok(undefined);
         },
-        catch: () => failure("storage", "Cannot initialize computer lifecycle database"),
+        catch: () => storageFailure("io", "Cannot initialize computer lifecycle database"),
       });
-      const ready = setup.match({ ok: (value) => value, err: () => false });
-      if (!ready) {
+      const initialized = setup.andThen((result) => result);
+      const error = initialized.match({ ok: () => null, err: (value) => value });
+      if (error) {
         db.close();
-        return Result.err(
-          failure("storage", "Unsupported or inaccessible computer lifecycle database"),
-        );
+        return Result.err(error);
       }
       return Result.ok(new RunnerStore(db));
     });
@@ -50,7 +55,7 @@ export class RunnerStore {
     return Result.gen(function* () {
       const rows = yield* Result.try({
         try: () => db.query("SELECT * FROM runners").all(),
-        catch: () => failure("storage", "Cannot read computer lifecycle records"),
+        catch: () => storageFailure("io", "Cannot read computer lifecycle records"),
       });
       return decodeRecords(rows);
     });
@@ -73,7 +78,7 @@ export class RunnerStore {
             record.expiresAt,
           );
       },
-      catch: () => failure("storage", "Cannot reserve computer lifecycle record"),
+      catch: () => storageFailure("io", "Cannot reserve computer lifecycle record"),
     });
   }
 
@@ -93,7 +98,7 @@ export class RunnerStore {
             record.session,
             record.generation,
           ),
-      catch: () => failure("storage", "Cannot update computer lifecycle record"),
+      catch: () => storageFailure("io", "Cannot update computer lifecycle record"),
     }).map(() => undefined);
   }
 
@@ -104,7 +109,7 @@ export class RunnerStore {
           .query("DELETE FROM runners WHERE session=? AND generation=?")
           .run(record.session, record.generation);
       },
-      catch: () => failure("storage", "Cannot release computer lifecycle record"),
+      catch: () => storageFailure("io", "Cannot release computer lifecycle record"),
     });
   }
 
