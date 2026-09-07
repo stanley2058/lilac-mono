@@ -1,3 +1,4 @@
+import { hashMcpSession, withMcpSessionHeaders } from "../../src/mcp/session-context";
 import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -1370,6 +1371,25 @@ export default {
       },
     });
     await registry.init();
+    const observedHeaders: Array<string | null> = [];
+    const transport = withMcpSessionHeaders({
+      type: "http",
+      url: "http://example.test",
+      fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+        observedHeaders.push(new Request(input, init).headers.get("x-lilac-session-hash"));
+        return new Response("ok");
+      }, fetch),
+    });
+    if ("start" in transport || transport.type !== "http" || !transport.fetch)
+      throw new Error("Expected HTTP fetch");
+    const scopedFetch = transport.fetch;
+    client.executeTool = async () => {
+      await scopedFetch("http://example.test", {
+        method: "POST",
+        body: JSON.stringify({ method: "tools/call" }),
+      });
+      return { content: [{ type: "text", text: "ok" }] };
+    };
     const registryTool = registry.getTools()[0];
     if (!registryTool) throw new Error("missing shared MCP tool");
     registryTool.tool.toModelOutput = () => ({
@@ -1409,6 +1429,19 @@ export default {
     expect(Object.is(firstEntry.tool, secondEntry.tool)).toBe(false);
     expect(Object.is(first.tools[firstEntry.modelName], firstEntry.tool)).toBe(true);
     expect(Object.is(second.tools[secondEntry.modelName], secondEntry.tool)).toBe(true);
+    await Promise.all([
+      first.tools[firstEntry.modelName]!.execute!(
+        {},
+        { toolCallId: "first", messages: [], context: { sessionId: "forged" } },
+      ),
+      second.tools[secondEntry.modelName]!.execute!(
+        {},
+        { toolCallId: "second", messages: [], context: { sessionId: "forged" } },
+      ),
+    ]);
+    expect(observedHeaders.sort()).toEqual(
+      [hashMcpSession("first"), hashMcpSession("second")].sort(),
+    );
 
     await manager.destroy();
     await registry.shutdown();

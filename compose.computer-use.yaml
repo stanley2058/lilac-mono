@@ -1,0 +1,30 @@
+services:
+  computer-use-gateway:
+    profiles: [computer-use]
+    build:
+      context: .
+      dockerfile: apps/computer-use-gateway/Dockerfile
+    image: lilac-computer-gateway:local
+    environment:
+      MCP_BEARER_SECRET: ${MCP_BEARER_SECRET:?Set MCP_BEARER_SECRET for computer use}
+      BIND_ADDR: ${BIND_ADDR:-127.0.0.1}
+      RENDERED_HOST: ${RENDERED_HOST:-http://localhost}
+      PORT_RANGE_START: ${PORT_RANGE_START:-17000}
+      PORT_RANGE_END: ${PORT_RANGE_END:-17031}
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-lilac-computer:local}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - computer-use-data:/data
+    ports:
+      - "127.0.0.1:8081:8080"
+    stop_grace_period: 180s
+    healthcheck:
+      test: [CMD, bun, -e, "fetch('http://127.0.0.1:8080/health').then(r => process.exit(r.ok ? 0 : 1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  computer-use-data:

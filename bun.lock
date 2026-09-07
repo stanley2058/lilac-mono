@@ -13,6 +13,18 @@
         "typescript-codegen": "npm:typescript@6.0.3",
       },
     },
+    "apps/computer-use-gateway": {
+      "name": "@stanley2058/lilac-computer-use-gateway",
+      "version": "0.0.0",
+      "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
+        "better-result": "catalog:",
+        "zod": "^4.3.6",
+      },
+      "devDependencies": {
+        "@ai-sdk/mcp": "2.0.39",
+      },
+    },
     "apps/core": {
       "name": "@stanley2058/lilac-core",
       "dependencies": {
@@ -168,6 +180,10 @@
       "peerDependencies": {
         "typescript": "^7.0.2",
       },
+    },
+    "packages/computer-use-runner": {
+      "name": "@stanley2058/lilac-computer-use-runner",
+      "version": "0.0.0",
     },
     "packages/event-bus": {
       "name": "@stanley2058/lilac-event-bus",
@@ -533,6 +549,10 @@
     "@stanley2058/lilac-claude-code-bridge": ["@stanley2058/lilac-claude-code-bridge@workspace:packages/claude-code-bridge"],
 
     "@stanley2058/lilac-coding-tools": ["@stanley2058/lilac-coding-tools@workspace:packages/coding-tools"],
+
+    "@stanley2058/lilac-computer-use-gateway": ["@stanley2058/lilac-computer-use-gateway@workspace:apps/computer-use-gateway"],
+
+    "@stanley2058/lilac-computer-use-runner": ["@stanley2058/lilac-computer-use-runner@workspace:packages/computer-use-runner"],
 
     "@stanley2058/lilac-core": ["@stanley2058/lilac-core@workspace:apps/core"],
 

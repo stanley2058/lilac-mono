@@ -1,0 +1,10 @@
+{
+  "name": "@stanley2058/lilac-computer-use-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "build": "python3 -B -c \"import ast,pathlib; ast.parse(pathlib.Path('runtime.py').read_text())\""
+  }
+}

@@ -3,6 +3,36 @@
 This file records persisted-data, wire, and protocol migrations. Manual `core-config.yaml` upgrades are
 documented separately in [`docs/core-config-migrations.md`](docs/core-config-migrations.md).
 
+## Computer-use gateway schema 1 and Core session header
+
+The optional gateway creates its own SQLite database, defaulting to `/data/computer-use.sqlite`, with
+`PRAGMA user_version=1`. This does not migrate Core's databases. The `runners` table stores session
+hash, desktop generation, Docker container ID, Python runtime ID, reserved port, provisioning/ready/
+terminating state, viewer password, idle timeout, and absolute expiry. Session, generation, and port
+are unique. Runtime IDs distinguish a surviving interpreter from a restarted process. The database
+uses WAL and full synchronous commits; its file permissions are 0600.
+
+Startup rejects unknown schema versions or invalid records before admitting MCP calls. It retains only
+unexpired ready records matched to usable owned Docker containers and removes owned outliers. It never
+restores a missing desktop from metadata. Failed inspection retains unresolved reservations and fails
+readiness. Keep the database volume and gateway ownership label together. Removing the volume alone
+loses credentials and intent, and does not remove sibling runner containers. There is no downgrade path
+for gateway schema 1; stop and explicitly terminate its runners before removing the integration.
+
+Core's MCP configuration remains version 1. HTTP tool calls now reserve `x-lilac-session-hash` for a
+SHA-256 digest of `lilac:mcp-session:v1`, a NUL separator, and the trusted UTF-8 canonical session ID.
+Static configuration cannot supply this header. Initialization and discovery omit it; stdio is unchanged.
+Existing HTTP servers may ignore the added header. An older Core build can discover this gateway but
+cannot use its runner tools because it does not supply the required routing identity. Disable this MCP
+server before rolling Core back. Bearer authentication still uses the existing static-header contract.
+
+The runner's local newline-JSON protocol carries `info`, `health`, and `execute` requests through Docker
+exec and a persistent Unix socket. It is private to the gateway/runner image pair. Deploy compatible
+images together; replacing a runner always creates a new desktop generation and password. Existing
+runners continue using their original image until termination or expiry.
+
+See [computer-use operation](docs/computer-use.md) for rollout, retention, and verification commands.
+
 ## Workflow schema 27 and staged blob publication
 
 Schema 27 adds `workflow_artifact_publications` to the existing workflow database. Its columns are
