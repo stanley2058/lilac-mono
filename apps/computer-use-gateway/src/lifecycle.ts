@@ -64,50 +64,48 @@ export class ComputerLifecycle {
   }
 
   private async discard(record: RunnerRecord) {
-    const self = this;
-    return Result.gen(async function* () {
-      yield* self.store.update({ ...record, state: "terminating" });
-      const containers = yield* Result.await(self.docker.list());
+    return Result.gen(async function* (this: ComputerLifecycle) {
+      yield* this.store.update({ ...record, state: "terminating" });
+      const containers = yield* Result.await(this.docker.list());
       for (const container of containers) {
         if (container.generation !== record.generation || container.session !== record.session)
           continue;
-        yield* Result.await(self.docker.remove(container.id));
+        yield* Result.await(this.docker.remove(container.id));
       }
-      yield* self.store.remove(record);
+      yield* this.store.remove(record);
       return Result.ok(undefined);
-    });
+    }, this);
   }
 
   async reconcile() {
     this.ready = false;
-    const self = this;
-    return Result.gen(async function* () {
-      const records = yield* self.store.list();
-      const containers = yield* Result.await(self.docker.list());
+    return Result.gen(async function* (this: ComputerLifecycle) {
+      const records = yield* this.store.list();
+      const containers = yield* Result.await(this.docker.list());
       const retained = new Set<string>();
       for (const record of records) {
-        const container = containers.find((item) => self.matches(record, item));
+        const container = containers.find((item) => this.matches(record, item));
         if (
           record.state === "ready" &&
           record.runtimeId &&
-          record.expiresAt > self.now() &&
+          record.expiresAt > this.now() &&
           container
         ) {
-          const healthy = yield* Result.await(self.runtimeUsable(record, "health"));
+          const healthy = yield* Result.await(this.runtimeUsable(record, "health"));
           if (healthy) {
             retained.add(container.id);
             continue;
           }
         }
-        yield* Result.await(self.discard(record));
+        yield* Result.await(this.discard(record));
       }
       for (const container of containers) {
         if (retained.has(container.id)) continue;
-        yield* Result.await(self.docker.remove(container.id));
+        yield* Result.await(this.docker.remove(container.id));
       }
-      self.ready = true;
+      this.ready = true;
       return Result.ok(undefined);
-    });
+    }, this);
   }
 
   provision(session: string, idleSeconds?: number, signal?: AbortSignal) {
@@ -127,31 +125,30 @@ export class ComputerLifecycle {
   }
 
   private async provisionLocked(session: string, idleSeconds?: number, signal?: AbortSignal) {
-    const self = this;
-    return Result.gen(async function* () {
+    return Result.gen(async function* (this: ComputerLifecycle) {
       if (signal?.aborted) return Result.err(failure("cancelled", "Provisioning cancelled"));
-      const records = yield* self.store.list();
+      const records = yield* this.store.list();
       const existing = records.find((record) => record.session === session);
       if (existing) {
-        const live = yield* Result.await(self.existingInfo(existing));
+        const live = yield* Result.await(this.existingInfo(existing));
         if (live) {
           const refreshed = {
             ...existing,
             idleSeconds: idleSeconds ?? existing.idleSeconds,
-            expiresAt: self.now() + (idleSeconds ?? existing.idleSeconds) * 1000,
+            expiresAt: this.now() + (idleSeconds ?? existing.idleSeconds) * 1000,
           };
-          yield* self.store.update(refreshed);
+          yield* this.store.update(refreshed);
           return Result.ok({
-            ...viewerInfo(refreshed, self.config),
+            ...viewerInfo(refreshed, this.config),
             created: false,
             message: "Runner already exists",
             viewer_password: refreshed.password,
           });
         }
-        yield* Result.await(self.discard(existing));
+        yield* Result.await(this.discard(existing));
       }
-      for (let port = self.config.portStart; port <= self.config.portEnd; port++) {
-        const current = yield* self.store.list();
+      for (let port = this.config.portStart; port <= this.config.portEnd; port++) {
+        const current = yield* this.store.list();
         if (current.some((record) => record.port === port)) continue;
         const record: RunnerRecord = {
           session,
@@ -162,10 +159,10 @@ export class ComputerLifecycle {
           state: "provisioning",
           password: randomBytes(6).toString("base64url"),
           idleSeconds: idleSeconds ?? 3600,
-          expiresAt: self.now() + (idleSeconds ?? 3600) * 1000,
+          expiresAt: this.now() + (idleSeconds ?? 3600) * 1000,
         };
-        yield* self.store.reserve(record);
-        const created = await self.createRunner(record, signal);
+        yield* this.store.reserve(record);
+        const created = await this.createRunner(record, signal);
         const decision = created.match<{
           record: RunnerRecord | null;
           error: GatewayFailure | null;
@@ -175,47 +172,45 @@ export class ComputerLifecycle {
         });
         if (decision.record)
           return Result.ok({
-            ...viewerInfo(decision.record, self.config),
+            ...viewerInfo(decision.record, this.config),
             created: true,
             message: "Runner created",
             viewer_password: decision.record.password,
           });
-        yield* Result.await(self.discard(record));
+        yield* Result.await(this.discard(record));
         if (decision.error?.code === "binding") continue;
         return Result.err(decision.error ?? failure("unavailable", "Provisioning failed"));
       }
       return Result.err(failure("capacity", "No available runner port in the configured range"));
-    });
+    }, this);
   }
 
   private async createRunner(record: RunnerRecord, signal?: AbortSignal) {
-    const self = this;
-    return Result.gen(async function* () {
-      const containerId = yield* Result.await(self.docker.create(record));
-      yield* self.store.update({ ...record, containerId });
-      yield* Result.await(self.docker.start(containerId));
-      const runtimeId = yield* Result.await(self.waitForReady(containerId, signal));
+    return Result.gen(async function* (this: ComputerLifecycle) {
+      const containerId = yield* Result.await(this.docker.create(record));
+      yield* this.store.update({ ...record, containerId });
+      yield* Result.await(this.docker.start(containerId));
+      const runtimeId = yield* Result.await(this.waitForReady(containerId, signal));
       const ready: RunnerRecord = {
         ...record,
         containerId,
         runtimeId,
         state: "ready",
-        expiresAt: self.now() + record.idleSeconds * 1000,
+        expiresAt: this.now() + record.idleSeconds * 1000,
       };
-      yield* self.store.update(ready);
+      yield* this.store.update(ready);
       return Result.ok(ready);
-    });
+    }, this);
   }
 
   private async existingInfo(record: RunnerRecord) {
-    const self = this;
-    return Result.gen(async function* () {
-      if (record.state !== "ready" || record.expiresAt <= self.now() || !record.containerId)
+    return Result.gen(async function* (this: ComputerLifecycle) {
+      if (record.state !== "ready" || record.expiresAt <= this.now() || !record.containerId)
         return Result.ok(false);
-      const containers = yield* Result.await(self.docker.list());
-      if (!containers.some((item) => self.matches(record, item))) return Result.ok(false);
-      return await self.runtimeUsable(record, "info");
-    });
+      const containers = yield* Result.await(this.docker.list());
+      if (!containers.some((item) => this.matches(record, item))) return Result.ok(false);
+      return await this.runtimeUsable(record, "info");
+    }, this);
   }
 
   private async runtimeUsable(record: RunnerRecord, operation: "info" | "health") {
@@ -232,21 +227,20 @@ export class ComputerLifecycle {
   }
 
   private async executeLocked(session: string, code: string, signal?: AbortSignal) {
-    const self = this;
-    return Result.gen(async function* () {
+    return Result.gen(async function* (this: ComputerLifecycle) {
       if (signal?.aborted) return Result.err(failure("cancelled", "Execution cancelled"));
-      const records = yield* self.store.list();
+      const records = yield* this.store.list();
       const record = records.find((item) => item.session === session);
       if (!record)
         return Result.err(failure("not_provisioned", "Call provision before executing code"));
-      const live = yield* Result.await(self.existingInfo(record));
+      const live = yield* Result.await(this.existingInfo(record));
       if (!live || !record.containerId) {
-        yield* Result.await(self.discard(record));
+        yield* Result.await(this.discard(record));
         return Result.err(
           failure("not_provisioned", "Computer state was lost; call provision again"),
         );
       }
-      const execution = await self.docker.call(
+      const execution = await this.docker.call(
         record.containerId,
         { operation: "execute", code },
         signal,
@@ -260,20 +254,20 @@ export class ComputerLifecycle {
         outcome.reply.generation !== record.runtimeId ||
         !outcome.reply.content
       ) {
-        yield* Result.await(self.discard(record));
+        yield* Result.await(this.discard(record));
         return Result.err(
           outcome.error ??
             failure("unavailable", "Execution runtime was lost; call provision again"),
         );
       }
-      const refreshed = { ...record, expiresAt: self.now() + record.idleSeconds * 1000 };
-      yield* self.store.update(refreshed);
+      const refreshed = { ...record, expiresAt: this.now() + record.idleSeconds * 1000 };
+      yield* this.store.update(refreshed);
       const content: RunnerContent[] = [
         ...outcome.reply.content,
-        { type: "text", text: JSON.stringify(viewerInfo(refreshed, self.config)) },
+        { type: "text", text: JSON.stringify(viewerInfo(refreshed, this.config)) },
       ];
       return Result.ok({ content, isError: outcome.reply.isError ?? false });
-    });
+    }, this);
   }
 
   terminate(session: string) {
@@ -293,27 +287,25 @@ export class ComputerLifecycle {
   }
 
   async expire() {
-    const self = this;
-    return Result.gen(async function* () {
-      const records = yield* self.store.list();
+    return Result.gen(async function* (this: ComputerLifecycle) {
+      const records = yield* this.store.list();
       for (const record of records) {
-        if (self.sessions.has(record.session)) continue;
-        if (record.state === "ready" && record.expiresAt > self.now()) continue;
-        yield* Result.await(self.serial(record.session, () => self.expireSession(record.session)));
+        if (this.sessions.has(record.session)) continue;
+        if (record.state === "ready" && record.expiresAt > this.now()) continue;
+        yield* Result.await(this.serial(record.session, () => this.expireSession(record.session)));
       }
       return Result.ok(undefined);
-    });
+    }, this);
   }
 
   private async expireSession(session: string) {
-    const self = this;
-    return Result.gen(async function* () {
-      const records = yield* self.store.list();
+    return Result.gen(async function* (this: ComputerLifecycle) {
+      const records = yield* this.store.list();
       const current = records.find((record) => record.session === session);
-      if (!current || (current.state === "ready" && current.expiresAt > self.now()))
+      if (!current || (current.state === "ready" && current.expiresAt > this.now()))
         return Result.ok(undefined);
-      return await self.discard(current);
-    });
+      return await this.discard(current);
+    }, this);
   }
 
   async drain() {

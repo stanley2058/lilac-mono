@@ -9,7 +9,7 @@ export function createExpiryTick(
   return async () => {
     if (cleaning) return;
     cleaning = true;
-    using reset = {
+    using _reset = {
       [Symbol.dispose]() {
         cleaning = false;
       },

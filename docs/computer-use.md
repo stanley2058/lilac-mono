@@ -101,15 +101,19 @@ reachable binding or tunnel. The gateway does not publish raw VNC or arbitrary a
 
 ## Agent use
 
-1. Call `provision` before executing code. A new runner uses a one-hour idle timeout.
+The model-facing tool instructions live in [server.ts](../apps/computer-use-gateway/src/server.ts).
+Read them when reviewing or changing the agent's provisioning, execution, or cleanup sequence.
+
+1. Call `provision` and wait for success before executing code. A new runner uses a one-hour idle timeout.
 2. Read `generation`, `viewer_url`, and `viewer_password` from the result. Repeated `provision` returns
    the same desktop and credentials with `created: false`. It refreshes expiry and preserves the timeout
    unless `idle_timeout_seconds` is supplied. Accepted timeouts are 1 through 86,400 seconds.
-3. Call `execute` with Python code. Inspect the current desktop before acting and verify results after
-   short action sequences. Variables and desktop state survive calls and turns while the same runner
+3. Call `execute` with Python code. Discover command names with `cua_tools()` and read an unfamiliar
+   command's schema with `cua_tools(name)` before calling it. Inspect the current desktop before acting,
+   check each CUA result's `is_error` before dependent actions, and verify results after short sequences. Variables and desktop state survive calls and turns while the same runner
    and Python process remain alive.
-4. Call `terminate` when finished. If blocked and sharing the viewer URL with the user, leave the runner
-   alive until explicit termination or expiry. Repeating `terminate` succeeds.
+4. Call `terminate` when the desktop task is complete. Keep it alive while awaiting user input or
+   sharing the viewer for assistance. Repeating `terminate` succeeds.
 
 The execution namespace supports top-level `await` and these helpers:
 
@@ -122,8 +126,9 @@ answer = 40                              # Available to later execute calls
 ```
 
 `await cua(name, **arguments)` calls the installed driver's generic tool API. It returns a CUA
-`ToolResult` with `text`, `images`, `structured_json`, and `is_error`. The `lilac` CUA session already
-has desktop capture enabled. `display(result)` emits its text and images; `display(image_bytes,
+`ToolResult` with `text`, `images`, `structured_json`, and `is_error`. Provisioning initializes the
+`lilac` driver session with desktop capture enabled. The helpers are available without imports or
+client setup. `display(result)` emits its text and images; `display(image_bytes,
 mime_type="image/png")` emits raw image bytes. Coordinates use the actual returned screenshot pixels;
 there is no implicit scaling. Application launch inherits the desktop user's display and D-Bus setup.
 

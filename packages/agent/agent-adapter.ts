@@ -381,8 +381,7 @@ export class AgentAttempt {
     if (this.retired || this.terminal) return invalidState("Attempt is no longer active");
     if (inputIds.length === 0 || messages.length === 0)
       return invalidState("Prepared batch must contain inputs and canonical messages");
-    const attempt = this;
-    return Result.gen(function* () {
+    return Result.gen(function* (this: AgentAttempt) {
       const cloned = yield* Result.all(messages.map(cloneAgentMessage)).mapError(
         (error) =>
           new AgentAdapterFailure({
@@ -391,15 +390,15 @@ export class AgentAttempt {
             replaySafety: "safe",
           }),
       );
-      yield* attempt.transition(inputIds, ["reserved"], "reserved");
+      yield* this.transition(inputIds, ["reserved"], "reserved");
       const batchIds = [...inputIds];
-      for (const entry of attempt.inputs.values()) {
+      for (const entry of this.inputs.values()) {
         if (!batchIds.includes(entry.input.id)) continue;
         entry.preparedMessages = cloned;
         entry.preparedInputIds = batchIds;
       }
       return Result.ok(undefined);
-    });
+    }, this);
   }
 
   retire(): void {
@@ -480,8 +479,7 @@ export class AgentAttempt {
     if (invalid) return invalidState(invalid);
     const invalidInputs = this.validateCommittedInputs(messages, inputIds);
     if (invalidInputs) return invalidState(invalidInputs);
-    const attempt = this;
-    return Result.gen(function* () {
+    return Result.gen(function* (this: AgentAttempt) {
       const cloned = yield* Result.all(history.map(cloneAgentMessage)).mapError(
         (error) =>
           new AgentAdapterFailure({
@@ -490,10 +488,10 @@ export class AgentAttempt {
             replaySafety: "safe",
           }),
       );
-      yield* attempt.transition(inputIds, ["reserved", "provider-owned"], "committed");
-      attempt.history = cloned;
+      yield* this.transition(inputIds, ["reserved", "provider-owned"], "committed");
+      this.history = cloned;
       return Result.ok(undefined);
-    });
+    }, this);
   }
 
   private validateCommittedInputs(

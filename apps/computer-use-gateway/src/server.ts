@@ -7,9 +7,19 @@ import { z } from "zod";
 import { failure, idleTimeoutSchema, decodeSessionHeader, type GatewayFailure } from "./contracts";
 import type { ComputerLifecycle } from "./lifecycle";
 
-const usage =
-  "Call provision before execute. State and Python variables persist until idle expiry, termination, or runtime failure, across turns. Inspect current computer state before acting and verify after short action sequences. Manual intervention during agent execution has undefined behavior. Files are temporary. Terminate when finished; leave a blocked desktop alive when sharing its viewer URL.";
-const execution = `${usage} Execute Python directly in the desktop container as cua, with top-level await. Use await cua(name, **arguments) to call the pinned CUA driver; it returns a ToolResult with text, images, structured_json, and is_error. Use display(result) to emit its text and screenshots, or display(image_bytes, mime_type="image/png"). print emits text. A CUA session named lilac is already active with desktop capture. Inspect with display(await cua("get_desktop_state", session="lilac")). Coordinates are pixels in the returned full-resolution image, normally 1440x900; do not rescale them. Use print(await cua_tools()) to list installed CUA tool names and print(await cua_tools("click")) to inspect one tool and its argument schema. Variables persist, but pending Python async tasks are cancelled when a call ends. Limit each code argument to 32000 characters; execution has a 120-second deadline, text is limited to 64 KiB and images to eight / 12 MiB total base64. An uncertain execution destroys the runner; call provision explicitly for a fresh desktop and never replay uncertain actions automatically.`;
+const execution = `Run Python in the provisioned desktop with top-level await. The runtime provides cua, cua_tools, and display without imports or client setup.
+
+Start:
+1. Call provision and wait for success before executing code. Tool discovery alone does not establish that a desktop exists. Provisioning initializes a driver session named "lilac" with desktop capture; use that name where a command requires session.
+2. On first use, list commands with print(await cua_tools()) and inspect the desktop with display(await cua("get_desktop_state", session="lilac")). Read the returned state before choosing actions.
+3. Before using an unfamiliar command, read its argument schema with print(await cua_tools(name)), for example print(await cua_tools("click")). Call it with await cua(name, **arguments) using the discovered schema.
+4. Check each result's is_error before continuing dependent actions. After a short action sequence, inspect the desktop again and verify the intended change. Use coordinates from the returned screenshot pixels. After user intervention, inspect again before resuming.
+
+Output: cua returns a ToolResult with text, images, structured_json, and is_error. display(result) emits its text and screenshots; display(image_bytes, mime_type="image/png") emits raw image bytes. Use print for text and schemas.
+
+Lifetime: Desktop state, files, and Python variables persist across calls and turns until idle expiry, termination, or runtime failure. Pending Python async tasks are cancelled when a call ends. Use terminate when the desktop task is complete; keep the desktop alive while awaiting user input or sharing its viewer for assistance.
+
+Limits: Code is limited to 32000 characters, execution to 120 seconds, text to 64 KiB, and images to eight / 12 MiB total base64. An uncertain execution destroys the runner. Call provision for a fresh desktop, inspect the current application state, and determine what completed before continuing; never replay uncertain actions automatically.`;
 
 type Operations = Pick<ComputerLifecycle, "isReady" | "provision" | "execute" | "terminate">;
 
@@ -61,7 +71,8 @@ export function createGatewayHandler(lifecycle: Operations, bearer: string) {
     server.registerTool(
       "provision",
       {
-        description: `${usage} Provision a desktop or retrieve its current viewer URL and password. The default idle timeout is 3600 seconds; repeated calls refresh expiry and preserve the existing timeout unless supplied.`,
+        description:
+          "Create this Lilac session's desktop or retrieve its existing desktop. Wait for success before calling execute. Returns generation, viewer_url, and viewer_password; created: false means the existing desktop was reused. The default idle timeout is 3600 seconds. Repeated calls refresh expiry and preserve the existing timeout unless idle_timeout_seconds is supplied.",
         inputSchema: z.strictObject({ idle_timeout_seconds: idleTimeoutSchema.optional() }),
       },
       async (args, extra) => {
@@ -95,7 +106,7 @@ export function createGatewayHandler(lifecycle: Operations, bearer: string) {
       "terminate",
       {
         description:
-          "Remove this session's desktop and temporary files. Succeeds if already absent. A later provision creates a fresh desktop with new credentials.",
+          "Remove this Lilac session's desktop, files, and Python state when the desktop task is complete. Keep it alive while awaiting user input or sharing its viewer for assistance. Succeeds if already absent. A later provision creates a fresh desktop with new credentials.",
         inputSchema: z.strictObject({}),
       },
       async () => {
