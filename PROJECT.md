@@ -16,8 +16,7 @@ Current behavior is authoritative in production source, wire schemas, persisted 
 - `plan/README.md` identifies active implementation plans. Plans describe intended work, not current behavior until the code ships.
 - Component documentation owns operational detail. In particular, see the self-documenting
   `packages/utils/config-templates/core-config.example.yaml`, `docs/core-config-migrations.md`,
-  `docs/claude-code.md`, `docs/skill-authoring.md`, `docs/docker-deployment.md`, `PLUGIN_AUTHORING.md`,
-  `apps/mini-lilac/README.md`, and `apps/acp-controller/README.md`.
+  `docs/claude-code.md`, `docs/skill-authoring.md`, `docs/docker-deployment.md`, and `PLUGIN_AUTHORING.md`.
 
 `ref/` is vendored upstream reference material and is read-only unless a task explicitly says otherwise.
 
@@ -39,32 +38,13 @@ Current Core configuration is documented in
 
 `packages/event-bus/lilac-spec.ts` is the canonical event catalog and payload schema. `request_id`, `session_id`, and `request_client` are the correlation headers; request and output contracts require a request ID where specified by that catalog.
 
-### Mini Lilac
-
-Mini Lilac is a separate Redis-free local coding-agent product.
-
-1. `apps/mini-lilac` dispatches the installable `mini-lilac` command to the TUI or server.
-2. `apps/mini-lilac-tui` uses the strict client protocol in `packages/mini-lilac-client` to talk to `apps/mini-lilac-server` over HTTP and AI SDK-compatible SSE.
-3. `packages/mini-lilac-runtime` owns session actors, model/profile resolution, tools, subagents, compaction, todos, immutable transcript chains, SQLite persistence, and workspace-history capture.
-4. Active-run chunks and replay cursors are process-local. A disconnect detaches only the subscriber; explicit cancellation stops work. Finalized canonical model/UI history is durable, while a process crash loses partial active chunks and marks interrupted runs as errors.
-
-Mini does not depend on Core, Redis, Core's event bus, Core surfaces, or Core's tool server. It shares lower-level agent, coding-tool, filesystem, result, provider, Claude bridge, and skill primitives.
-
-### ACP Controller
-
-`apps/acp-controller` builds the independent `lilac-acp` CLI. It discovers and launches ACP harnesses, communicates through the ACP SDK, runs prompt turns in detached workers, and persists controller run records and session indexes. It does not route through Core or Mini.
-
 ## Workspace Ownership
 
 The fail-closed workspace inventory is `ACTIVE_WORKSPACES` in `scripts/architecture/manifest.ts`. Every current workspace has an explicit owner:
 
 ### Applications
 
-- `apps/acp-controller`: ACP harness controller, worker lifecycle, session discovery, and controller persistence.
 - `apps/core`: Core composition, surfaces, routing, tool adapters/server, workflows, recovery, and Core-owned persistence.
-- `apps/mini-lilac`: publishable command dispatcher and single-file Mini bundle.
-- `apps/mini-lilac-server`: Mini HTTP/SSE boundary, server authentication, process lock, and runtime composition.
-- `apps/mini-lilac-tui`: OpenTUI/Solid terminal client and interaction state.
 - `apps/tool-bridge`: the native `tools` launcher, its resident Bun HTTP client, and the reduced dev-mode Core tool server entry.
 
 ### Packages
@@ -79,8 +59,6 @@ The fail-closed workspace inventory is `ACTIVE_WORKSPACES` in `scripts/architect
 - `packages/coding-tools`: shared coding-tool schemas and implementations, patch/edit behavior, batching, instruction discovery, and tool guardrails.
 - `packages/event-bus`: event catalog, codecs, typed bus, delivery policy, dead letters, and Redis Streams transport.
 - `packages/fs`: local filesystem operations, search backends, edit/hashline primitives, and the remote filesystem protocol.
-- `packages/mini-lilac-client`: Mini wire schemas and reconnectable HTTP/SSE transport.
-- `packages/mini-lilac-runtime`: Mini domain, sessions, providers, tools, SQLite store, skills, and workspace history.
 - `packages/plugin-runtime`: generic Level 1/Level 2 plugin capability contracts, discovery, loading, lifecycle, and reload management.
 - `packages/remote-fs-runner`: short-lived publishable remote runner used by Core SSH filesystem tools.
 - `packages/tool-results`: bounded model-view output, media projection, and encrypted transient artifact storage.
@@ -125,7 +103,7 @@ Lilac uses progressive disclosure, but ownership is more important than the leve
 
 Level 1 tools are direct model-callable AI SDK tools assembled for each run. `packages/coding-tools`, `packages/fs`, `packages/bash-safety`, and `packages/tool-results` own portable behavior. Core-specific host, SSH, restricted execution, attachments, artifacts, logging, and bus delegation adapters live in `apps/core/src/tools`. Built-in exposure is declared in `apps/core/src/plugins/builtin`, and `apps/core/src/plugins/manager.ts` applies model, profile, safety, and request context.
 
-Native Bash executes with the Core or Mini service user's host authority. Static Bash checks, denied paths, redaction, `network`, and `workspaceWrites` are behavioral guardrails, not security boundaries. Use restricted execution or OS isolation when same-user files, secrets, or network access must be unavailable.
+Native Bash executes with the Core service user's host authority. Static Bash checks, denied paths, redaction, `network`, and `workspaceWrites` are behavioral guardrails, not security boundaries. Use restricted execution or OS isolation when same-user files, secrets, or network access must be unavailable.
 
 ### Level 2: Core Tool Server
 
@@ -158,11 +136,11 @@ Core transient tool results use `resource://t1_<128-bit-id>` through the same `r
 `resource.materialize`, and `attachment.add_files` entry points. The run-scoped transient adapter keeps
 session authority, TTL, quota eviction, encryption, and paging in `packages/tool-results`; it does not
 create retained resource rows or transcript references. Core still accepts `tool-result://<uuid>` as a
-compatibility input. Mini Lilac retains that older URI as its current contract.
+compatibility input.
 
 ### Level 3: Skills
 
-Skills are `SKILL.md` bundles discovered from product-owned state plus supported workspace/user compatibility roots. They are metadata-first instruction bundles loaded on demand; discovery does not execute scripts. Core parsing and broad compatibility discovery live in `packages/utils/skills.ts`; Mini's bounded catalog and Mini-specific roots live in `packages/mini-lilac-runtime/src/skills.ts`. See `docs/skill-authoring.md`.
+Skills are `SKILL.md` bundles discovered from Core-owned state plus supported workspace/user compatibility roots. They are metadata-first instruction bundles loaded on demand; discovery does not execute scripts. Parsing and discovery live in `packages/utils/skills.ts`. See `docs/skill-authoring.md`.
 
 Plugin code and skills are different extension mechanisms. Plugins execute trusted code and can contribute Level 1 and Level 2 capabilities. Skills contribute instructions and resources to an already-authorized agent. See `PLUGIN_AUTHORING.md` for the plugin contract.
 
@@ -252,14 +230,6 @@ blob-bearing snapshots; runtime code has no graceful-snapshot import path.
 
 Redis Streams is separate durable bus state. Project workflow source lives in each project's `.lilac/workflows`, outside `DATA_DIR`. The workspace operated on by tools is user data, not Lilac metadata.
 
-### Mini Lilac
-
-Mini centralizes server state under `$XDG_STATE_HOME/mini-lilac`, falling back to `~/.local/state/mini-lilac`. Categories include strict server/provider configuration and owner credentials, the SQLite session/transcript/todo database, model metadata cache, encrypted transient tool-result artifacts, and private workspace-history storage. The selected project worktree remains separate user data. Active SSE logs are memory-only and are released after durable finalization or process loss. If both finalization writes fail, the live process retains a terminal replay while the durable run remains active for startup recovery.
-
-### ACP Controller
-
-ACP Controller stores run records, cancellation records, and its session index under `$XDG_STATE_HOME/lilac-acp-controller`, falling back to `~/.local/state/lilac-acp-controller`. Harness-owned session storage remains owned by each external harness.
-
 ### Provider-Owned State
 
 `packages/agent/agent-executor.ts` owns logical runs, ordered input IDs, canonical commits, and host
@@ -296,23 +266,21 @@ outgoing events after request normalization and continuation selection and incom
 provider repairs. Reused connections attribute events to the current lease; idle events omit request
 ownership. Payloads belong to the opt-in traces, not operational logs.
 
-`AiSdkPiAgent` is a delegating compatibility facade. Mini retains its default AI SDK execution and
-existing Claude continuation and queued steering behavior. The WebSocket-to-SSE utility remains in use
-by Mini's provider resolution and legacy Codex OAuth consumers; native Core WebSocket execution does not
-depend on that emulation.
+`AiSdkPiAgent` is a delegating compatibility facade. The WebSocket-to-SSE utility remains in use
+by legacy Codex OAuth consumers; native Core WebSocket execution does not depend on that emulation.
 
-Claude native authentication, configuration, and transcripts live under `CLAUDE_CONFIG_DIR` or Claude's own default, outside Core and Mini stores. Lilac persists only its own bindings and attempt metadata and does not own Claude credentials or transcript retention. See `docs/claude-code.md` for the continuation and deployment contract.
+Claude native authentication, configuration, and transcripts live under `CLAUDE_CONFIG_DIR` or Claude's own default, outside Core stores. Lilac persists only its own bindings and attempt metadata and does not own Claude credentials or transcript retention. See `docs/claude-code.md` for the continuation and deployment contract.
 
 Persisted formats are trust boundaries. Their codecs distinguish current, migrated, valid missing-defaulted, unsupported-version, malformed-serialization, and corrupt-field outcomes as applicable. Reads do not silently rewrite data. SQLite state transitions that pair domain changes with outbox records must remain atomic. Read `MIGRATIONS.md` and `scripts/architecture/README.md` before changing any stored contract.
 
 ## Trust And Failure Boundaries
 
-- External HTTP, Redis, SDK, MCP, ACP, SSH, filesystem, subprocess, and persistence values are decoded or projected at registered boundaries before entering domain code.
+- External HTTP, Redis, SDK, MCP, SSH, filesystem, subprocess, and persistence values are decoded or projected at registered boundaries before entering domain code.
 - Open protocol values are normalized into closed local unions with explicit fallbacks. Internal services should not carry domain-bearing `unknown`.
 - Expected failures use domain-owned `Result` error unions, including terminal errors for fallible streams. Production code composes Results declaratively rather than reading their branch discriminants. A positive `isErr()` guard may settle only an immutable local produced directly by object-form `Result.try` or `Result.tryPromise`; the registered SQLite rollback adapter separately owns its direct Err check required before driver commit. `Panic` is reserved for registered hard invariants and defects and must not be converted into an ordinary error.
 - Object-form `Result.try` and `Result.tryPromise` are the intrinsic external-exception capture boundaries; their catch functions return closed data and never throw, reject, or signal a host. Production `TryStatement` syntax is forbidden. Framework signaling, rollback sentinels, compatibility output, and defect supervision remain allowed only at exact registrations in `scripts/architecture/manifest.ts`. Cleanup uses lexical disposal when its suppression semantics are valid, or explicit Result settlement when failure precedence matters. The manifest also registers event delivery, persisted codecs, SQLite transactions, tool codecs, and cross-workspace consumers.
 - Presentation receives closed render-ready projections, not raw SDK/tool payloads or ad hoc parsers.
-- Mini's loopback server may omit HTTP authentication; a non-loopback listener requires its configured bearer token. Core's Level 2 server has no equivalent public authentication contract and must remain on a trusted network.
+- Core's Level 2 server has no public authentication contract and must remain on a trusted network.
 - Plugins, native tools, workflow agent processes, and other same-user processes are trusted code with service-user authority unless an explicit restricted or OS-isolated boundary says otherwise.
 
 Run `bun run lint:architecture` for the semantic and production-syntax architecture gate. The root `bun run check` overlaps generated-code, lint, tests, typecheck, architecture, and format gates; `bun run ci` runs the conservative serial sequence.
@@ -347,10 +315,8 @@ These invariants matter more than a fragile numbered list. Update this section o
 - Core Level 1 or Level 2 exposure: `apps/core/src/plugins/builtin`, `apps/core/src/plugins/manager.ts`, and the implementation under `apps/core/src/tools` or `apps/core/src/tool-server/tools`.
 - Plugin contract, loading, or lifecycle: `packages/plugin-runtime` and `PLUGIN_AUTHORING.md`.
 - Core HTTP tool serving, request capability, or health: `apps/core/src/tool-server/create-tool-server.ts`, `request-control-authority.ts`, and `health-state.ts`.
-- Skills parsing and Core discovery: `packages/utils/skills.ts`; Mini catalog behavior: `packages/mini-lilac-runtime/src/skills.ts`; authoring guidance: `docs/skill-authoring.md`.
+- Skills parsing and Core discovery: `packages/utils/skills.ts`; authoring guidance: `docs/skill-authoring.md`.
 - Workflow definition, runtime, persistence, scheduling, waits, or progress: the corresponding owner in `apps/core/src/workflow`; Level 2 adaptation is `apps/core/src/tool-server/tools/programmatic-workflow.ts`.
-- Mini protocol: `packages/mini-lilac-client`; Mini domain/persistence/tools: `packages/mini-lilac-runtime`; HTTP boundary: `apps/mini-lilac-server`; terminal UX: `apps/mini-lilac-tui`; bundle/dispatch: `apps/mini-lilac`.
-- ACP harness behavior or controller persistence: `apps/acp-controller`.
 - Core config/model/provider/prompt behavior: `packages/utils`; config version changes also require
   `docs/core-config-migrations.md`.
 - Core managed opaque bytes, adapter behavior, handle/reference codecs, integrity, or expiry:

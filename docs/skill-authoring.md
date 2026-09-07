@@ -45,20 +45,11 @@ loaded instructions request it and the active tool/profile grants that execution
 Treat skill content as instructions, not a security boundary. Avoid download-and-execute flows, minimize
 credential and filesystem access, and make destructive actions and required confirmation explicit.
 
-## Product Compatibility
+## Discovery
 
-Installation locations are product-specific:
+Core scans `DATA_DIR/skills` first, then its supported project and user compatibility directories,
+then built-in skills. Core exposes metadata and bounded `SKILL.md` bodies through `skills.list`,
+`skills.brief`, and `skills.full`.
 
-- Core scans `DATA_DIR/skills` first, then its supported project and user compatibility directories,
-  then built-in skills. Core exposes metadata and bounded `SKILL.md` bodies through `skills.list`,
-  `skills.brief`, and `skills.full`.
-- Mini scans `$XDG_STATE_HOME/mini-lilac/skills`, workspace `.agents/skills`, and user
-  `~/.agents/skills`, in that precedence order. Mini requires regular, non-symlink skill files and
-  directories, limits `SKILL.md` to 128 KiB and its instruction body to 32,000 characters, and returns a
-  bounded top-level resource listing.
-
-Author against the stricter Mini limits when the same bundle must work in both products.
-
-Implementation references: [shared parsing and discovery](../packages/utils/skills.ts),
-[Core skill tools](../apps/core/src/tool-server/tools/skills.ts), and
-[Mini skill catalog](../packages/mini-lilac-runtime/src/skills.ts).
+Implementation references: [shared parsing and discovery](../packages/utils/skills.ts) and
+[Core skill tools](../apps/core/src/tool-server/tools/skills.ts).

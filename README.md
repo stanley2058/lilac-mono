@@ -4,11 +4,7 @@
 
 # Lilac Monorepo
 
-Lilac contains three related agent products built on shared Bun workspaces:
-
-- **Core** is the Redis-backed, event-driven runtime for Discord and optional GitHub ingress. It owns surface routing, agent execution, output relays, durable workflows, and the internal HTTP tool server.
-- **Mini Lilac** is a Redis-free local coding agent. A terminal client talks to an HTTP/SSE server with durable SQLite sessions and workspace history.
-- **ACP Controller** is the independent `lilac-acp` CLI for launching and continuing sessions through Agent Client Protocol harnesses. It is not a Core surface or a Mini client.
+Lilac Core is the Redis-backed, event-driven runtime for Discord and optional GitHub ingress. It owns surface routing, agent execution, output relays, durable workflows, and the internal HTTP tool server.
 
 Architecture and ownership are documented in [`PROJECT.md`](PROJECT.md). Repository rules for coding agents are in [`AGENTS.md`](AGENTS.md).
 
@@ -36,30 +32,11 @@ docker compose up --build -d
 bun run docker:verify
 ```
 
-Initialize and run Mini Lilac from source:
-
-```sh
-bun apps/mini-lilac/src/main.ts server init
-bun apps/mini-lilac/src/main.ts server
-```
-
-Start its client from the target workspace in another terminal, using the absolute path to this checkout:
-
-```sh
-bun /path/to/lilac-mono/apps/mini-lilac/src/main.ts
-```
-
-Build and inspect the standalone CLIs:
+Build and inspect the standalone tool CLI:
 
 ```sh
 bun --cwd apps/tool-bridge run build
 ./apps/tool-bridge/dist/tools --list
-
-bun --cwd apps/acp-controller run build
-./apps/acp-controller/dist/index.js --help
-
-bun --cwd apps/mini-lilac run build
-./apps/mini-lilac/dist/main.js --help
 ```
 
 On Linux, `dist/tools` is a Go launcher backed by a resident Bun worker. Other platforms build a
@@ -78,7 +55,6 @@ bun apps/tool-bridge/index.ts
 bun run check              # concurrent local repository gates
 bun run ci                 # conservative serial CI sequence
 bun run test:core          # Core, Tool Bridge, and shared dependencies
-bun run test:mini          # Mini applications and shared dependencies
 bun run test:all           # every test, including architecture and lint rules
 bun run lint
 bun run typecheck
@@ -96,8 +72,6 @@ bun run fmt:check
 - [`docs/claude-code.md`](docs/claude-code.md): Claude Code authentication, tools, continuation, and storage
 - [`docs/skill-authoring.md`](docs/skill-authoring.md): skill format, discovery, and authoring guidance
 - [`PLUGIN_AUTHORING.md`](PLUGIN_AUTHORING.md): Core tool plugin contract
-- [`apps/mini-lilac/README.md`](apps/mini-lilac/README.md): Mini Lilac installation and first run
-- [`apps/acp-controller/README.md`](apps/acp-controller/README.md): `lilac-acp` usage
 
 ## License
 
