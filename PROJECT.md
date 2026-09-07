@@ -38,12 +38,30 @@ Current Core configuration is documented in
 
 `packages/event-bus/lilac-spec.ts` is the canonical event catalog and payload schema. `request_id`, `session_id`, and `request_client` are the correlation headers; request and output contracts require a request ID where specified by that catalog.
 
+### Computer use
+
+The optional computer-use gateway exposes HTTP MCP `provision`, `execute`, and `terminate` tools.
+Core binds each tool invocation to its trusted canonical session ID and sends a domain-separated
+SHA-256 digest in `x-lilac-session-hash`. Discovery omits that header; shared clients keep call context
+isolated and preserve bearer/OAuth headers. Configured routing headers cannot override it.
+
+The gateway owns one ephemeral runner per session, serializes its operations, publishes a noVNC port,
+and persists lifecycle metadata in a separate SQLite database. Startup retains only the intersection
+of unexpired ready records and matching usable owned containers; it never respawns missing desktops.
+Python variables survive calls and gateway reconnects while the runtime remains alive. Cancellation or
+uncertain execution removes the desktop before another call can execute. The gateway does not call a
+model. Runners receive neither its Docker socket nor bearer secret.
+
+See [computer-use deployment and operation](docs/computer-use.md) for image builds, optional Compose,
+limits, agent instructions, verification, and deferred work. The default Core deployment is unchanged.
+
 ## Workspace Ownership
 
 The fail-closed workspace inventory is `ACTIVE_WORKSPACES` in `scripts/architecture/manifest.ts`. Every current workspace has an explicit owner:
 
 ### Applications
 
+- `apps/computer-use-gateway`: optional authenticated MCP desktop gateway, Docker lifecycle, and session/port SQLite bookkeeping.
 - `apps/core`: Core composition, surfaces, routing, tool adapters/server, workflows, recovery, and Core-owned persistence.
 - `apps/tool-bridge`: the native `tools` launcher, its resident Bun HTTP client, and the reduced dev-mode Core tool server entry.
 
@@ -57,6 +75,7 @@ The fail-closed workspace inventory is `ACTIVE_WORKSPACES` in `scripts/architect
 - `packages/claude-code-bridge`: Claude agent adapter, runtime integration, in-process MCP tool bridge,
   native input delivery, attempt settlement, and continuation metadata.
 - `packages/coding-tools`: shared coding-tool schemas and implementations, patch/edit behavior, batching, instruction discovery, and tool guardrails.
+- `packages/computer-use-runner`: pinned CUA desktop image, Chromium seccomp profile, persistent Python runtime, and runner checks.
 - `packages/event-bus`: event catalog, codecs, typed bus, delivery policy, dead letters, and Redis Streams transport.
 - `packages/fs`: local filesystem operations, search backends, edit/hashline primitives, and the remote filesystem protocol.
 - `packages/plugin-runtime`: generic Level 1/Level 2 plugin capability contracts, discovery, loading, lifecycle, and reload management.
@@ -229,6 +248,14 @@ migration keeps a frozen graceful-snapshot decoder only so it can classify and d
 blob-bearing snapshots; runtime code has no graceful-snapshot import path.
 
 Redis Streams is separate durable bus state. Project workflow source lives in each project's `.lilac/workflows`, outside `DATA_DIR`. The workspace operated on by tools is user data, not Lilac metadata.
+
+### Computer use
+
+The gateway owns `/data/computer-use.sqlite`, separate from Core storage. Schema 1 stores session and
+runtime identities, port reservations, lifecycle state, viewer credentials, idle timeouts, and expiry.
+Its Docker containers own the temporary desktop filesystem. Startup retains only matching usable,
+unexpired ready runners and removes owned outliers; SQLite does not restore a lost desktop. See
+[computer-use operation](docs/computer-use.md) for cleanup, volume ownership, and deployment.
 
 ### Provider-Owned State
 

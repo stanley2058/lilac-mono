@@ -100,6 +100,22 @@ test.skipIf(process.env.LILAC_COMPUTER_DOCKER_TEST !== "1")(
       expect(value(await docker.list())).toEqual([]);
       expect((await lifecycle.execute(session, "print(answer)")).isErr()).toBe(true);
       value(await lifecycle.terminate(session));
+      const shortDeadline = new DockerCli(config, (args, options) =>
+        dockerCommand(args, {
+          ...options,
+          ...(options?.input?.includes('"operation":"execute"') ? { timeoutMs: 250 } : {}),
+        }),
+      );
+      lifecycle = new ComputerLifecycle(store, shortDeadline, config);
+      value(await lifecycle.reconcile());
+      value(await lifecycle.provision(session));
+      const timedOut = await lifecycle.execute(
+        session,
+        "import asyncio\nawait asyncio.Event().wait()",
+      );
+      expect(timedOut.match({ ok: () => null, err: (error) => error.code })).toBe("timeout");
+      expect(value(await docker.list())).toEqual([]);
+      expect(value(store.list())).toEqual([]);
     } finally {
       for (const container of value(await docker.list())) value(await docker.remove(container.id));
       store.close();

@@ -79,3 +79,8 @@ docker compose exec -T lilac /usr/bin/id
 ```
 
 The service process and its subprocesses run as `lilac`; `docker compose exec` defaults to root so the operator CLI can read its token. Add `--user lilac` when diagnosing the service user's filesystem access.
+
+## Optional computer use
+
+The desktop gateway and runner have separate image builds and an opt-in Compose file. See
+[computer-use deployment](computer-use.md). The standard Compose stack does not enable them.

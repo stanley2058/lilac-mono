@@ -195,6 +195,16 @@ describe("computer lifecycle", () => {
     expect(docker.containers).toEqual([]);
   });
 
+  test("startup removes published ports outside a narrowed allowed range", async () => {
+    const { lifecycle, store, docker, now } = await setup();
+    value(await lifecycle.provision(sessionA));
+    value(await lifecycle.provision(sessionB));
+    const narrowed = new ComputerLifecycle(store, docker, { ...config, portStart: 17001 }, now);
+    value(await narrowed.reconcile());
+    expect(value(store.list()).map((row) => row.port)).toEqual([17001]);
+    expect(docker.containers).toHaveLength(1);
+  });
+
   test("Docker unavailability preserves reservations and fails readiness", async () => {
     const { lifecycle, docker, store } = await setup();
     value(await lifecycle.provision(sessionA));

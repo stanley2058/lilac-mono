@@ -56,6 +56,8 @@ export class ComputerLifecycle {
       record.generation === container.generation &&
       record.session === container.session &&
       record.port === container.port &&
+      record.port >= this.config.portStart &&
+      record.port <= this.config.portEnd &&
       this.config.bindAddress === container.bindAddress &&
       container.running
     );

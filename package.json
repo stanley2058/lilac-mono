@@ -45,7 +45,10 @@
     "typecheck:workspaces": "set -e; pids=''; for dir in apps/* packages/*; do if [ -f \"$dir/tsconfig.json\" ]; then bunx tsc -p \"$dir/tsconfig.json\" --noEmit & pids=\"$pids $!\"; fi; done; for pid in $pids; do wait \"$pid\"; done",
     "fmt": "oxfmt --write \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"scripts/generate-provider-option-shapes.ts\" \"scripts/architecture/**/*.{ts,mts,json}\" \"scripts/oxlint-plugins/**/*.{ts,mts}\" \"examples/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\"",
     "fmt:check": "oxfmt --check \"apps/**/*.{ts,tsx,js,cjs,mjs,json}\" \"packages/**/*.{ts,tsx,js,cjs,mjs,json}\" \"scripts/generate-provider-option-shapes.ts\" \"scripts/architecture/**/*.{ts,mts,json}\" \"scripts/oxlint-plugins/**/*.{ts,mts}\" \"examples/**/*.{ts,tsx,js,cjs,mjs,json}\" \"__tests__/**/*.{ts,tsx,js,cjs,mjs,json}\" \"*.json\"",
-    "ci": "bun run codegen:model-options:check && bun run lint && bun run test:ci && bun run typecheck && bun run fmt:check && echo 'check passed'"
+    "ci": "bun run codegen:model-options:check && bun run lint && bun run test:ci && bun run typecheck && bun run fmt:check && echo 'check passed'",
+    "docker:build:computer-use": "docker build -t lilac-computer:local packages/computer-use-runner && docker build -t lilac-computer-gateway:local -f apps/computer-use-gateway/Dockerfile .",
+    "test:computer-use": "bun run --filter='@stanley2058/lilac-computer-use-gateway' --filter='@stanley2058/lilac-computer-use-runner' test",
+    "test:computer-use:docker": "LILAC_COMPUTER_DOCKER_TEST=1 bun run --filter='@stanley2058/lilac-computer-use-gateway' test"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.75.0",
