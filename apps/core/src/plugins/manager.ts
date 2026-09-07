@@ -1,3 +1,4 @@
+import { bindMcpToolToSession } from "../mcp/session-context";
 import type { ToolSet } from "ai";
 import type { ClaudeCodeToolCatalogMetadataMap } from "@stanley2058/lilac-claude-code-bridge";
 import {
@@ -551,14 +552,15 @@ export function createCoreToolPluginManager(params: {
     }
     for (const entry of mcpTools) {
       const namespaceSummary = mcpNamespaceSummaryByServerId.get(entry.serverId);
+      const scopedTool = bindMcpToolToSession(entry.tool, buildParams.requestContext?.sessionId);
       candidates.push({
         identity: entry.identity,
         ...(entry.title === undefined ? {} : { title: entry.title }),
         ...(entry.description === undefined ? {} : { description: entry.description }),
         ...(namespaceSummary === undefined ? {} : { namespaceSummary }),
         tool: mcpBinaryMaterializer
-          ? wrapMcpToolWithBinaryMaterialization(entry.tool, mcpBinaryMaterializer)
-          : entry.tool,
+          ? wrapMcpToolWithBinaryMaterialization(scopedTool, mcpBinaryMaterializer)
+          : scopedTool,
       });
     }
 

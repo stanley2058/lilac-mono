@@ -2245,6 +2245,14 @@ const INTEGRATED_OPAQUE_UNKNOWN = new Map<string, readonly ReasonedSymbolExcepti
   [
     "apps/core",
     [
+      {
+        identity: {
+          module: "src/mcp/session-context.ts",
+          exportName: "bindMcpToolToSession.execute",
+        },
+        reason:
+          "Forwards SDK tool arguments unchanged to the MCP-owned schema boundary while binding trusted session context.",
+      },
       ...CORE_FINAL_REVIEWED_OPAQUE_IDENTITIES.map(([module, exportName]) => ({
         identity: { module, exportName },
         reason:
@@ -3572,6 +3580,17 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
           ]
         : [],
     boundaryDecoders: [
+      ...(root === "apps/core"
+        ? [
+            {
+              identity: {
+                module: "src/mcp/session-context.ts",
+                exportName: "decodeMcpRequestMethod",
+              },
+              category: "wire" as const,
+            },
+          ]
+        : []),
       ...(root === "apps/computer-use-gateway"
         ? [
             {

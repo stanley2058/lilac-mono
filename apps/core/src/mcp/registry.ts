@@ -1,3 +1,4 @@
+import { withMcpSessionHeaders } from "./session-context";
 import { captureError } from "../shared/error-capture.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -721,9 +722,12 @@ export class McpRegistry implements McpRegistryApi {
             ok: (resolved) => async () => {
               sensitiveValues = resolved.sensitiveValues;
               const transport = enforceModernMcpResultContract(
-                observeHttpSessionExpiration(this.createTransport(resolved.input), () => {
-                  holder.sessionExpired = true;
-                }),
+                observeHttpSessionExpiration(
+                  withMcpSessionHeaders(this.createTransport(resolved.input)),
+                  () => {
+                    holder.sessionExpired = true;
+                  },
+                ),
               );
               phase = "connection";
 
