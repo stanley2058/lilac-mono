@@ -299,9 +299,20 @@ export class ComputerLifecycle {
       for (const record of records) {
         if (self.sessions.has(record.session)) continue;
         if (record.state === "ready" && record.expiresAt > self.now()) continue;
-        yield* Result.await(self.serial(record.session, () => self.discard(record)));
+        yield* Result.await(self.serial(record.session, () => self.expireSession(record.session)));
       }
       return Result.ok(undefined);
+    });
+  }
+
+  private async expireSession(session: string) {
+    const self = this;
+    return Result.gen(async function* () {
+      const records = yield* self.store.list();
+      const current = records.find((record) => record.session === session);
+      if (!current || (current.state === "ready" && current.expiresAt > self.now()))
+        return Result.ok(undefined);
+      return await self.discard(current);
     });
   }
 

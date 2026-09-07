@@ -255,6 +255,42 @@ describe("computer lifecycle", () => {
     expect(value(store.list())).toHaveLength(1);
   });
 
+  test("expiry rechecks a refreshed session after waiting for another session's cleanup", async () => {
+    const { lifecycle, docker, store, advance } = await setup();
+    value(await lifecycle.provision(sessionA, 1));
+    value(await lifecycle.provision(sessionB, 1));
+    const records = value(store.list());
+    const a = records.find((record) => record.session === sessionA)!;
+    const b = records.find((record) => record.session === sessionB)!;
+    const executing = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<ResultType<RunnerReply, GatewayFailure>>();
+    docker.execution = () => {
+      executing.resolve();
+      return finish.promise;
+    };
+    const execution = lifecycle.execute(sessionB, "code");
+    await executing.promise;
+    advance(2000);
+    const removing = Promise.withResolvers<void>();
+    const remove = Promise.withResolvers<void>();
+    const originalRemove = docker.remove.bind(docker);
+    docker.remove = async (id) => {
+      if (id === a.containerId) {
+        removing.resolve();
+        await remove.promise;
+      }
+      return originalRemove(id);
+    };
+    const cleanup = lifecycle.expire();
+    await removing.promise;
+    finish.resolve(Result.ok({ ok: true, generation: b.runtimeId!, content: [] }));
+    value(await execution);
+    remove.resolve();
+    value(await cleanup);
+    expect(value(store.list()).map((record) => record.generation)).toEqual([b.generation]);
+    expect(docker.containers.map((container) => container.session)).toEqual([sessionB]);
+  });
+
   test("uncertain execution removes the runner without replay", async () => {
     const { lifecycle, docker, store } = await setup();
     value(await lifecycle.provision(sessionA));
