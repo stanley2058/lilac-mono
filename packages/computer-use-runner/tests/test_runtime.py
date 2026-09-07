@@ -7,6 +7,9 @@ from runtime import MAX_REQUEST, Runtime, read_message
 
 
 class Driver:
+    async def list_tools_json(self):
+        return '{"tools":[{"name":"get_desktop_state","inputSchema":{"type":"object"}}]}'
+
     async def call_tool(self, name, arguments_json):
         return SimpleNamespace(text="desktop", images=[SimpleNamespace(mime_type="image/png", data_base64="aGVsbG8=")], is_error=False)
 
@@ -41,6 +44,12 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["isError"])
         self.assertEqual(sum(part["type"] == "image" for part in result["content"]), 8)
         self.assertFalse((await self.execute("object()"))["isError"])
+
+    async def test_inventory_uses_installed_driver(self):
+        result = await self.execute("print(await cua_tools())")
+        self.assertIn("get_desktop_state", result["content"][0]["text"])
+        schema = await self.execute('print(await cua_tools("get_desktop_state"))')
+        self.assertIn("inputSchema", schema["content"][0]["text"])
 
     async def test_info_does_not_reset_namespace(self):
         await self.execute("a = 3")

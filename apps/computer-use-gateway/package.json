@@ -9,6 +9,10 @@
   },
   "dependencies": {
     "better-result": "catalog:",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/mcp": "2.0.39"
   }
 }

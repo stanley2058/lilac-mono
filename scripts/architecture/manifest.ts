@@ -3579,6 +3579,10 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               category: "persistence" as const,
             },
             {
+              identity: { module: "src/contracts.ts", exportName: "decodeSessionHeader" },
+              category: "request" as const,
+            },
+            {
               identity: { module: "src/contracts.ts", exportName: "decodeConfig" },
               category: "request" as const,
             },

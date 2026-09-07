@@ -152,3 +152,8 @@ export function viewerInfo(record: RunnerRecord, config: GatewayConfig) {
     expires_at: new Date(record.expiresAt).toISOString(),
   };
 }
+
+export function decodeSessionHeader(value: string | null) {
+  const parsed = sessionSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}

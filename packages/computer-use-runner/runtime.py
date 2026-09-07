@@ -43,8 +43,17 @@ class Runtime:
         self.generation = str(uuid.uuid4())
         self.images = []
         self.image_bytes = 0
-        self.namespace = {"cua": self.cua, "display": self.display}
+        self.namespace = {"cua": self.cua, "display": self.display, "cua_tools": self.cua_tools}
         self.started = False
+
+    async def cua_tools(self, name=None):
+        tools = json.loads(await self.driver.list_tools_json())["tools"]
+        if name is None:
+            return [tool["name"] for tool in tools]
+        for tool in tools:
+            if tool["name"] == name:
+                return tool
+        raise ValueError("Unknown CUA tool")
 
     async def cua(self, name, **arguments):
         return await self.driver.call_tool(name, json.dumps(arguments))

@@ -17,8 +17,12 @@
       "name": "@stanley2058/lilac-computer-use-gateway",
       "version": "0.0.0",
       "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "better-result": "catalog:",
         "zod": "^4.3.6",
+      },
+      "devDependencies": {
+        "@ai-sdk/mcp": "2.0.39",
       },
     },
     "apps/core": {
