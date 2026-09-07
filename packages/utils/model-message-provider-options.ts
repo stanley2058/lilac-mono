@@ -1,4 +1,3 @@
-import type { ModelMessage } from "ai";
 import { z } from "zod";
 
 export const openAICompactionPartSchema = z
@@ -31,63 +30,4 @@ export function decodeOpenAICompactionPart(value: unknown): OpenAICompactionPart
 /** Compatibility predicate for consumers that narrow AI SDK message parts. */
 export function isOpenAICompactionPart(value: unknown): value is OpenAICompactionPart {
   return decodeOpenAICompactionPart(value) !== undefined;
-}
-
-function withoutOpenAIItemId(
-  providerOptions: ModelMessage["providerOptions"],
-): ModelMessage["providerOptions"] {
-  const openai = providerOptions?.openai;
-  if (!openai || !("itemId" in openai)) return providerOptions;
-
-  const { itemId: _itemId, ...openaiWithoutItemId } = openai;
-  return { ...providerOptions, openai: openaiWithoutItemId };
-}
-
-/**
- * Clones model messages for stateless OpenAI Responses replay without changing
- * the canonical transcript or discarding other provider metadata.
- */
-export function withoutOpenAIItemIds(messages: readonly ModelMessage[]): ModelMessage[] {
-  return messages.map((message) => {
-    if (message.role === "assistant" && Array.isArray(message.content)) {
-      return {
-        ...message,
-        content: message.content.map((part) =>
-          "providerOptions" in part
-            ? Object.assign(structuredClone(part), {
-                providerOptions: isOpenAICompactionPart(part)
-                  ? part.providerOptions
-                  : withoutOpenAIItemId(part.providerOptions),
-              })
-            : structuredClone(part),
-        ),
-      };
-    }
-
-    if (message.role === "tool") {
-      return {
-        ...message,
-        content: message.content.map((part) =>
-          "providerOptions" in part
-            ? Object.assign(structuredClone(part), {
-                providerOptions: withoutOpenAIItemId(part.providerOptions),
-              })
-            : structuredClone(part),
-        ),
-      };
-    }
-
-    if (message.role === "user" && Array.isArray(message.content)) {
-      return {
-        ...message,
-        content: message.content.map((part) =>
-          Object.assign(structuredClone(part), {
-            providerOptions: withoutOpenAIItemId(part.providerOptions),
-          }),
-        ),
-      };
-    }
-
-    return { ...message };
-  });
 }

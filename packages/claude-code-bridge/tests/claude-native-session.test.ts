@@ -10,7 +10,7 @@ import { Panic } from "better-result";
 
 import {
   ClaudeNativeSessionPreflightError,
-  materializeClaudeCodeRun,
+  materializeClaudeCodeRunResult,
   projectClaudeSdkMessage,
   type ClaudeNativeSessionLifecycle,
   type MaterializedClaudeCodeRun,
@@ -19,7 +19,7 @@ import {
 const SOURCE_ID = "11111111-1111-4111-8111-111111111111";
 const CANDIDATE_ID = "22222222-2222-4222-8222-222222222222";
 type ClaudeCodeSettings = Parameters<
-  NonNullable<Parameters<typeof materializeClaudeCodeRun>[0]["createModel"]>
+  NonNullable<Parameters<typeof materializeClaudeCodeRunResult>[0]["createModel"]>
 >[1];
 
 class FakeSpawnedProcess extends EventEmitter implements SpawnedProcess {
@@ -132,15 +132,17 @@ describe("Claude native session lifecycle", () => {
 
   it("keeps omitted session mode ephemeral and rejects ephemeral finalization", async () => {
     const settings: ClaudeCodeSettings[] = [];
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: {},
-      execute: () => {
-        throw new Error("not called");
-      },
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: {},
+        execute: () => {
+          throw new Error("not called");
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
 
     expect(settings[0]).toMatchObject({ persistSession: false });
     expect(settings[0]?.sessionId).toBeUndefined();
@@ -165,29 +167,31 @@ describe("Claude native session lifecycle", () => {
     const cwd = process.cwd();
     let usageCalls = 0;
     let injectorClosed = false;
-    const run = await materializeClaudeCodeRun({
-      modelId: "opus",
-      reasoning: "xhigh",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => {
-          usageCalls += 1;
-          return { totalTokens: 1_250, maxTokens: 200_000 };
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "opus",
+        reasoning: "xhigh",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
         },
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async (sessionId, options) => {
-        expect(options).toEqual({ dir: cwd });
-        return { sessionId, cwd, lastModified: 50 };
-      },
-      createModel: createModelCapture(settings),
-    });
+        controller: {
+          getContextUsage: async () => {
+            usageCalls += 1;
+            return { totalTokens: 1_250, maxTokens: 200_000 };
+          },
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async (sessionId, options) => {
+          expect(options).toEqual({ dir: cwd });
+          return { sessionId, cwd, lastModified: 50 };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
 
@@ -257,22 +261,24 @@ describe("Claude native session lifecycle", () => {
   it("interrupts only through the supported query controller", async () => {
     const settings: ClaudeCodeSettings[] = [];
     let interrupts = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: {},
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 0, maxTokens: 1 }),
-        interrupt: async () => {
-          interrupts += 1;
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: {},
+        execute: () => {
+          throw new Error("not called");
         },
-        settle: async () => undefined,
-      },
-      createModel: createModelCapture(settings),
-    });
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 0, maxTokens: 1 }),
+          interrupt: async () => {
+            interrupts += 1;
+          },
+          settle: async () => undefined,
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
 
     expect(await run.control.interrupt()).toBe(true);
     expect(interrupts).toBe(1);
@@ -285,36 +291,38 @@ describe("Claude native session lifecycle", () => {
     const settings: ClaudeCodeSettings[] = [];
     const cwd = process.cwd();
     const reads: string[] = [];
-    const run = await materializeClaudeCodeRun({
-      modelId: "opus",
-      reasoning: "high",
-      cwd,
-      tools: {},
-      nativeSession: {
-        mode: "fork",
-        baseSessionId: SOURCE_ID,
-        sessionId: CANDIDATE_ID,
-        expectedSourceLastModified: 10,
-      },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 5_000, maxTokens: 200_000 }),
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async (sessionId, options) => {
-        reads.push(sessionId);
-        expect(options).toEqual({ dir: cwd });
-        return {
-          sessionId,
-          cwd,
-          lastModified: sessionId === SOURCE_ID ? 10 : 20,
-        };
-      },
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "opus",
+        reasoning: "high",
+        cwd,
+        tools: {},
+        nativeSession: {
+          mode: "fork",
+          baseSessionId: SOURCE_ID,
+          sessionId: CANDIDATE_ID,
+          expectedSourceLastModified: 10,
+        },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 5_000, maxTokens: 200_000 }),
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async (sessionId, options) => {
+          reads.push(sessionId);
+          expect(options).toEqual({ dir: cwd });
+          return {
+            sessionId,
+            cwd,
+            lastModified: sessionId === SOURCE_ID ? 10 : 20,
+          };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
 
@@ -359,31 +367,33 @@ describe("Claude native session lifecycle", () => {
     const events: string[] = [];
     let injectorClosed = false;
     let lastModified = 30;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: () => {
-          events.push("usage-requested");
-          return usage.promise;
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
         },
-        interrupt: async () => undefined,
-        settle: async () => {
-          events.push("query-settled");
-          lastModified = 31;
+        controller: {
+          getContextUsage: () => {
+            events.push("usage-requested");
+            return usage.promise;
+          },
+          interrupt: async () => undefined,
+          settle: async () => {
+            events.push("query-settled");
+            lastModified = 31;
+          },
         },
-      },
-      getSessionInfo: async (sessionId) => {
-        events.push("session-read");
-        return { sessionId, cwd, lastModified };
-      },
-      createModel: createModelCapture(settings),
-    });
+        getSessionInfo: async (sessionId) => {
+          events.push("session-read");
+          return { sessionId, cwd, lastModified };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     agentSettings.onStreamStart?.({
@@ -415,21 +425,23 @@ describe("Claude native session lifecycle", () => {
     const childProcess = new FakeSpawnedProcess();
     const queryReturned = Promise.withResolvers<void>();
     let metadataReads = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      spawnClaudeCodeProcess: () => childProcess,
-      getSessionInfo: async (sessionId) => {
-        metadataReads += 1;
-        return { sessionId, cwd, lastModified: 31 };
-      },
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        spawnClaudeCodeProcess: () => childProcess,
+        getSessionInfo: async (sessionId) => {
+          metadataReads += 1;
+          return { sessionId, cwd, lastModified: 31 };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     expect(spawnTrackedProcess(agentSettings, cwd)).toBe(childProcess);
@@ -456,24 +468,26 @@ describe("Claude native session lifecycle", () => {
     const cwd = process.cwd();
     const childProcess = new FakeSpawnedProcess();
     let metadataReads = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      spawnClaudeCodeProcess: () => childProcess,
-      waitForProcessExit: async () => {
-        throw new Error("test exit proof unavailable");
-      },
-      getSessionInfo: async (sessionId) => {
-        metadataReads += 1;
-        return { sessionId, cwd, lastModified: 31 };
-      },
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        spawnClaudeCodeProcess: () => childProcess,
+        waitForProcessExit: async () => {
+          throw new Error("test exit proof unavailable");
+        },
+        getSessionInfo: async (sessionId) => {
+          metadataReads += 1;
+          return { sessionId, cwd, lastModified: 31 };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     spawnTrackedProcess(agentSettings, cwd);
@@ -495,25 +509,27 @@ describe("Claude native session lifecycle", () => {
     const secondProcess = new FakeSpawnedProcess();
     const processes = [firstProcess, secondProcess];
     const events: string[] = [];
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      spawnClaudeCodeProcess: () => {
-        const process = processes.shift();
-        if (!process) throw new Error("unexpected process spawn");
-        return process;
-      },
-      getSessionInfo: async (sessionId) => {
-        events.push("metadata-read");
-        return { sessionId, cwd, lastModified: 31 };
-      },
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        spawnClaudeCodeProcess: () => {
+          const process = processes.shift();
+          if (!process) throw new Error("unexpected process spawn");
+          return process;
+        },
+        getSessionInfo: async (sessionId) => {
+          events.push("metadata-read");
+          return { sessionId, cwd, lastModified: 31 };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     spawnTrackedProcess(agentSettings, cwd);
@@ -544,21 +560,23 @@ describe("Claude native session lifecycle", () => {
     const childProcess = new FakeSpawnedProcess();
     let injectorClosed = false;
     let metadataReads = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      spawnClaudeCodeProcess: () => childProcess,
-      getSessionInfo: async (sessionId) => {
-        metadataReads += 1;
-        return { sessionId, cwd, lastModified: 31 };
-      },
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        spawnClaudeCodeProcess: () => childProcess,
+        getSessionInfo: async (sessionId) => {
+          metadataReads += 1;
+          return { sessionId, cwd, lastModified: 31 };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     const mcp = agentSettings.mcpServers?.["lilac"];
@@ -608,24 +626,26 @@ describe("Claude native session lifecycle", () => {
       const clearPanic = new Panic({ message: `${operation} clear panic` });
       const bridgePanic = new Panic({ message: `${operation} bridge panic` });
       const events: string[] = [];
-      const run = await materializeClaudeCodeRun({
-        modelId: "sonnet",
-        cwd: process.cwd(),
-        tools: {},
-        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-        execute: () => {
-          throw new Error("not called");
-        },
-        controller: {
-          getContextUsage: async () => ({ totalTokens: 1, maxTokens: 10 }),
-          interrupt: async () => undefined,
-          settle: async () => {
-            events.push("query-settled");
+      const run = (
+        await materializeClaudeCodeRunResult({
+          modelId: "sonnet",
+          cwd: process.cwd(),
+          tools: {},
+          nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+          execute: () => {
+            throw new Error("not called");
           },
-        },
-        onSdkMessage: () => observer.promise,
-        createModel: createModelCapture(settings),
-      });
+          controller: {
+            getContextUsage: async () => ({ totalTokens: 1, maxTokens: 10 }),
+            interrupt: async () => undefined,
+            settle: async () => {
+              events.push("query-settled");
+            },
+          },
+          onSdkMessage: () => observer.promise,
+          createModel: createModelCapture(settings),
+        })
+      ).unwrap();
       const agentSettings = settings[0];
       if (!agentSettings) throw new Error("agent settings were not captured");
       const mcp = agentSettings.mcpServers?.["lilac"];
@@ -674,29 +694,31 @@ describe("Claude native session lifecycle", () => {
     const childProcess = new FakeSpawnedProcess();
     const events: string[] = [];
     let metadataReads = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 700, maxTokens: 100_000 }),
-        interrupt: async () => undefined,
-        settle: () => {
-          events.push("injected-settle");
-          throw new Error("synchronous settle failure");
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
         },
-      },
-      spawnClaudeCodeProcess: () => childProcess,
-      getSessionInfo: async (sessionId) => {
-        metadataReads += 1;
-        return { sessionId, cwd, lastModified: 31 };
-      },
-      createModel: createModelCapture(settings),
-    });
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 700, maxTokens: 100_000 }),
+          interrupt: async () => undefined,
+          settle: () => {
+            events.push("injected-settle");
+            throw new Error("synchronous settle failure");
+          },
+        },
+        spawnClaudeCodeProcess: () => childProcess,
+        getSessionInfo: async (sessionId) => {
+          metadataReads += 1;
+          return { sessionId, cwd, lastModified: 31 };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     const mcp = agentSettings.mcpServers?.["lilac"];
@@ -766,34 +788,36 @@ describe("Claude native session lifecycle", () => {
     const processes = [new FakeSpawnedProcess(), new FakeSpawnedProcess()];
     let exitWaitCalls = 0;
     let metadataReads = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 700, maxTokens: 100_000 }),
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      spawnClaudeCodeProcess: () => {
-        const childProcess = processes.shift();
-        if (!childProcess) throw new Error("unexpected process spawn");
-        return childProcess;
-      },
-      waitForProcessExit: () => {
-        exitWaitCalls += 1;
-        throw new Error(`synchronous exit wait failure ${exitWaitCalls}`);
-      },
-      getSessionInfo: async (sessionId) => {
-        metadataReads += 1;
-        return { sessionId, cwd, lastModified: 31 };
-      },
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 700, maxTokens: 100_000 }),
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        spawnClaudeCodeProcess: () => {
+          const childProcess = processes.shift();
+          if (!childProcess) throw new Error("unexpected process spawn");
+          return childProcess;
+        },
+        waitForProcessExit: () => {
+          exitWaitCalls += 1;
+          throw new Error(`synchronous exit wait failure ${exitWaitCalls}`);
+        },
+        getSessionInfo: async (sessionId) => {
+          metadataReads += 1;
+          return { sessionId, cwd, lastModified: 31 };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     const mcp = agentSettings.mcpServers?.["lilac"];
@@ -824,33 +848,35 @@ describe("Claude native session lifecycle", () => {
     const settings: ClaudeCodeSettings[] = [];
     const cwd = process.cwd();
     let sourceLastModified = 10;
-    const run = await materializeClaudeCodeRun({
-      modelId: "opus",
-      cwd,
-      tools: {},
-      nativeSession: {
-        mode: "fork",
-        baseSessionId: SOURCE_ID,
-        sessionId: CANDIDATE_ID,
-        expectedSourceLastModified: sourceLastModified,
-      },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 700, maxTokens: 100_000 }),
-        interrupt: async () => undefined,
-        settle: async () => {
-          sourceLastModified += 1;
-        },
-      },
-      getSessionInfo: async (sessionId) => ({
-        sessionId,
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "opus",
         cwd,
-        lastModified: sessionId === SOURCE_ID ? sourceLastModified : 20,
-      }),
-      createModel: createModelCapture(settings),
-    });
+        tools: {},
+        nativeSession: {
+          mode: "fork",
+          baseSessionId: SOURCE_ID,
+          sessionId: CANDIDATE_ID,
+          expectedSourceLastModified: sourceLastModified,
+        },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 700, maxTokens: 100_000 }),
+          interrupt: async () => undefined,
+          settle: async () => {
+            sourceLastModified += 1;
+          },
+        },
+        getSessionInfo: async (sessionId) => ({
+          sessionId,
+          cwd,
+          lastModified: sessionId === SOURCE_ID ? sourceLastModified : 20,
+        }),
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     await emitSdkMessage(agentSettings, successfulInit(CANDIDATE_ID));
@@ -869,34 +895,36 @@ describe("Claude native session lifecycle", () => {
     const settings: ClaudeCodeSettings[] = [];
     const cwd = process.cwd();
     let sourceReadCount = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: {
-        mode: "fork",
-        baseSessionId: SOURCE_ID,
-        sessionId: CANDIDATE_ID,
-        expectedSourceLastModified: 1,
-      },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 800, maxTokens: 100_000 }),
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async (sessionId) => {
-        if (sessionId === SOURCE_ID) sourceReadCount += 1;
-        return {
-          sessionId,
-          cwd,
-          lastModified: sessionId === SOURCE_ID ? sourceReadCount : 25,
-        };
-      },
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: {
+          mode: "fork",
+          baseSessionId: SOURCE_ID,
+          sessionId: CANDIDATE_ID,
+          expectedSourceLastModified: 1,
+        },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 800, maxTokens: 100_000 }),
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async (sessionId) => {
+          if (sessionId === SOURCE_ID) sourceReadCount += 1;
+          return {
+            sessionId,
+            cwd,
+            lastModified: sessionId === SOURCE_ID ? sourceReadCount : 25,
+          };
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
 
@@ -929,7 +957,7 @@ describe("Claude native session lifecycle", () => {
 
     for (const metadata of cases) {
       let createCalls = 0;
-      const promise = materializeClaudeCodeRun({
+      const result = await materializeClaudeCodeRunResult({
         modelId: "sonnet",
         cwd,
         tools: {},
@@ -949,7 +977,10 @@ describe("Claude native session lifecycle", () => {
         },
       });
 
-      await expect(promise).rejects.toBeInstanceOf(ClaudeNativeSessionPreflightError);
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.error).toBeInstanceOf(ClaudeNativeSessionPreflightError);
+      }
       expect(createCalls).toBe(0);
     }
   });
@@ -970,50 +1001,56 @@ describe("Claude native session lifecycle", () => {
       createModel,
     };
 
-    await expect(
-      materializeClaudeCodeRun({
-        ...base,
-        nativeSession: { mode: "fresh", sessionId: "not-a-uuid" },
-      }),
-    ).rejects.toThrow();
-    await expect(
-      materializeClaudeCodeRun({
-        ...base,
-        nativeSession: {
-          mode: "fork",
-          baseSessionId: SOURCE_ID,
-          sessionId: SOURCE_ID,
-          expectedSourceLastModified: 10,
-        },
-      }),
-    ).rejects.toThrow("must be distinct");
+    const malformed = await materializeClaudeCodeRunResult({
+      ...base,
+      nativeSession: { mode: "fresh", sessionId: "not-a-uuid" },
+    });
+    expect(malformed.status).toBe("error");
+    if (malformed.status === "error") {
+      expect(malformed.error._tag).toBe("ClaudeCodeRunInvalidConfiguration");
+    }
+    const selfFork = await materializeClaudeCodeRunResult({
+      ...base,
+      nativeSession: {
+        mode: "fork",
+        baseSessionId: SOURCE_ID,
+        sessionId: SOURCE_ID,
+        expectedSourceLastModified: 10,
+      },
+    });
+    expect(selfFork.status).toBe("error");
+    if (selfFork.status === "error") {
+      expect(selfFork.error.message).toContain("must be distinct");
+    }
     expect(createCalls).toBe(0);
   });
 
   it("turns missing native state and callback failures into bounded observations", async () => {
     const settings: ClaudeCodeSettings[] = [];
     const longError = "x".repeat(5_000);
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => {
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => {
+            throw new Error(longError);
+          },
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async () => undefined,
+        onSdkMessage: () => {
           throw new Error(longError);
         },
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async () => undefined,
-      onSdkMessage: () => {
-        throw new Error(longError);
-      },
-      createModel: createModelCapture(settings),
-    });
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
 
@@ -1048,22 +1085,24 @@ describe("Claude native session lifecycle", () => {
   it("ignores realistic unrelated SDK messages without subtype", async () => {
     const settings: ClaudeCodeSettings[] = [];
     const cwd = process.cwd();
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 10, maxTokens: 1_000 }),
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 10, maxTokens: 1_000 }),
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
 
@@ -1086,22 +1125,24 @@ describe("Claude native session lifecycle", () => {
   it("does not promote after a required observability callback failure", async () => {
     const settings: ClaudeCodeSettings[] = [];
     const cwd = process.cwd();
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 10, maxTokens: 1_000 }),
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 10, maxTokens: 1_000 }),
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
 
@@ -1121,25 +1162,27 @@ describe("Claude native session lifecycle", () => {
   it("keeps optional SDK message callback failures promotable", async () => {
     const settings: ClaudeCodeSettings[] = [];
     const cwd = process.cwd();
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 10, maxTokens: 1_000 }),
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
-      onSdkMessage: () => {
-        throw new Error("optional observer failed");
-      },
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 10, maxTokens: 1_000 }),
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
+        onSdkMessage: () => {
+          throw new Error("optional observer failed");
+        },
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
 
@@ -1156,26 +1199,28 @@ describe("Claude native session lifecycle", () => {
   it("returns explicit candidate metadata validation issues", async () => {
     const settings: ClaudeCodeSettings[] = [];
     const cwd = process.cwd();
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 1, maxTokens: 10 }),
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async () => ({
-        sessionId: SOURCE_ID,
-        cwd: `${cwd}/other`,
-        lastModified: 100,
-      }),
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 1, maxTokens: 10 }),
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async () => ({
+          sessionId: SOURCE_ID,
+          cwd: `${cwd}/other`,
+          lastModified: 100,
+        }),
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     await emitSdkMessage(agentSettings, successfulInit(CANDIDATE_ID));
@@ -1199,26 +1244,28 @@ describe("Claude native session lifecycle", () => {
     const settings: ClaudeCodeSettings[] = [];
     const cwd = process.cwd();
     let usageCall = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => {
-          usageCall += 1;
-          if (usageCall === 2) throw new Error("terminal usage unavailable");
-          return { totalTokens: 12, maxTokens: 1_000 };
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
         },
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
-      createModel: createModelCapture(settings),
-    });
+        controller: {
+          getContextUsage: async () => {
+            usageCall += 1;
+            if (usageCall === 2) throw new Error("terminal usage unavailable");
+            return { totalTokens: 12, maxTokens: 1_000 };
+          },
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
     await emitSdkMessage(agentSettings, successfulInit(CANDIDATE_ID));
@@ -1253,22 +1300,24 @@ describe("Claude native session lifecycle", () => {
   it("delivers init and result identities only when freshly observed for that outer call", async () => {
     const settings: ClaudeCodeSettings[] = [];
     const cwd = process.cwd();
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd,
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
-      execute: () => {
-        throw new Error("not called");
-      },
-      controller: {
-        getContextUsage: async () => ({ totalTokens: 25, maxTokens: 1_000 }),
-        interrupt: async () => undefined,
-        settle: async () => undefined,
-      },
-      getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd,
+        tools: {},
+        nativeSession: { mode: "fresh", sessionId: CANDIDATE_ID },
+        execute: () => {
+          throw new Error("not called");
+        },
+        controller: {
+          getContextUsage: async () => ({ totalTokens: 25, maxTokens: 1_000 }),
+          interrupt: async () => undefined,
+          settle: async () => undefined,
+        },
+        getSessionInfo: async (sessionId) => ({ sessionId, cwd, lastModified: 100 }),
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const agentSettings = settings[0];
     if (!agentSettings) throw new Error("agent settings were not captured");
 
@@ -1311,16 +1360,18 @@ describe("Claude native session lifecycle", () => {
 
     for (const reasoning of reasonings) {
       const settings: ClaudeCodeSettings[] = [];
-      const run = await materializeClaudeCodeRun({
-        modelId: "sonnet",
-        reasoning,
-        cwd: process.cwd(),
-        tools: {},
-        execute: () => {
-          throw new Error("not called");
-        },
-        createModel: createModelCapture(settings),
-      });
+      const run = (
+        await materializeClaudeCodeRunResult({
+          modelId: "sonnet",
+          reasoning,
+          cwd: process.cwd(),
+          tools: {},
+          execute: () => {
+            throw new Error("not called");
+          },
+          createModel: createModelCapture(settings),
+        })
+      ).unwrap();
 
       expect(nativeSession(run).getObservation().requestedReasoning).toBe(reasoning);
       expect(nativeSession(run).getObservation()).not.toHaveProperty("initializedReasoning");
@@ -1334,16 +1385,18 @@ describe("Claude reusable execution settlement", () => {
     const settings: ClaudeCodeSettings[] = [];
     const processes = [new FakeSpawnedProcess(), new FakeSpawnedProcess()];
     let spawned = 0;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: {},
-      execute: async () => {
-        throw new Error("not called");
-      },
-      spawnClaudeCodeProcess: () => processes[spawned++]!,
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: {},
+        execute: async () => {
+          throw new Error("not called");
+        },
+        spawnClaudeCodeProcess: () => processes[spawned++]!,
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const modelSettings = settings[0]!;
     const firstReturned = Promise.withResolvers<void>();
     spawnTrackedProcess(modelSettings, process.cwd());
@@ -1386,16 +1439,18 @@ describe("Claude reusable execution settlement", () => {
     const child = new FakeSpawnedProcess();
     const panic = new Panic({ message: "injector settlement defect" });
     let querySettled = false;
-    const run = await materializeClaudeCodeRun({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: {},
-      execute: async () => {
-        throw new Error("not called");
-      },
-      spawnClaudeCodeProcess: () => child,
-      createModel: createModelCapture(settings),
-    });
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: {},
+        execute: async () => {
+          throw new Error("not called");
+        },
+        spawnClaudeCodeProcess: () => child,
+        createModel: createModelCapture(settings),
+      })
+    ).unwrap();
     const modelSettings = settings[0]!;
     modelSettings.onStreamStart?.({
       inject() {},

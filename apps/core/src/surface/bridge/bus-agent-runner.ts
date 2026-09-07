@@ -231,7 +231,7 @@ import {
 import { latestUserInput, shouldRunAutoInjectedThreadSearch } from "./bus-agent-runner/text-units";
 import { createTransientModelRetryController } from "./bus-agent-runner/transient-retry";
 import {
-  materializeClaudeCodeRun,
+  type materializeClaudeCodeRunResult,
   type MaterializedClaudeCodeRun,
 } from "@stanley2058/lilac-claude-code-bridge";
 import {
@@ -2691,7 +2691,9 @@ export async function startBusAgentRunner(params: {
   /** Injection seam for exercising the complete bus runner with deterministic model transports. */
   createAgent?: (options: AiSdkPiAgentOptions<ToolSet>) => AiSdkPiAgent<ToolSet>;
   /** Injection seam for deterministic Claude native lifecycle/observation coverage. */
-  materializeClaudeCodeRun?: typeof materializeClaudeCodeRun;
+  materializeClaudeCodeRun?: (
+    options: Parameters<typeof materializeClaudeCodeRunResult>[0],
+  ) => Promise<MaterializedClaudeCodeRun>;
   reportFatalPanic: (panic: Panic) => void;
 }) {
   const { bus, subscriptionId } = params;

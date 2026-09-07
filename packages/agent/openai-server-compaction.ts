@@ -398,21 +398,3 @@ export async function compactWithOpenAIResponsesResult(
   }
   return Result.ok(artifact);
 }
-
-/** Compatibility adapter for provider integrations that use rejection as their failure contract. */
-export async function compactWithOpenAIResponses(
-  request: OpenAIServerCompactionRequest,
-): Promise<OpenAIServerCompactionArtifact> {
-  const result = await compactWithOpenAIResponsesResult(request);
-  const outcome = result.match<
-    | { type: "ok"; value: OpenAIServerCompactionArtifact }
-    | { type: "error"; error: OpenAIServerCompactionError }
-  >({
-    ok: (value) => ({ type: "ok" as const, value }),
-    err: (error) => ({ type: "error" as const, error }),
-  });
-  if (outcome.type === "error") {
-    throw new Error(outcome.error.message, { cause: outcome.error });
-  }
-  return outcome.value;
-}

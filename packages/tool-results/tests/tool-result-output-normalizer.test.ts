@@ -6,19 +6,25 @@ import { Panic, Result } from "better-result";
 
 import {
   adaptToolResultArtifactReadToAvailability,
-  createToolResultArtifactStore,
   ToolResultArtifactStorageFailure,
 } from "../src/tool-result-artifact-store";
+import { createMemoryBlobStore, type BlobStore } from "@stanley2058/lilac-blob-storage";
+import { createBlobBackedToolResultArtifactStore } from "../src/blob-tool-result-artifact-store";
 import { createOverflowReferenceNormalizer } from "../src/tool-result-output-normalizer";
 
 describe("tool result output normalizer", () => {
   let baseDir: string;
+  let blobs: BlobStore;
 
   beforeEach(async () => {
     baseDir = await mkdtemp(path.join(tmpdir(), "lilac-output-normalizer-"));
+    const created = await createMemoryBlobStore();
+    if (created.status === "error") throw created.error;
+    blobs = created.value;
   });
 
   afterEach(async () => {
+    await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
     await rm(baseDir, { recursive: true, force: true });
   });
 
@@ -38,7 +44,10 @@ describe("tool result output normalizer", () => {
   }
 
   it("preserves small output and replaces large output with an idempotent reference", async () => {
-    const artifacts = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "tool-results"),
+      blobs,
+    );
     await artifacts.init();
     const normalize = createOverflowReferenceNormalizer({
       artifacts,
@@ -258,7 +267,10 @@ describe("tool result output normalizer", () => {
   });
 
   it("does not trust an overflow marker substring in untrusted output", async () => {
-    const artifacts = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "tool-results"),
+      blobs,
+    );
     await artifacts.init();
     const normalize = createOverflowReferenceNormalizer({
       artifacts,
@@ -287,7 +299,10 @@ describe("tool result output normalizer", () => {
   });
 
   it("sanitizes controls and recognizable credentials before reference and persistence", async () => {
-    const artifacts = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "tool-results"),
+      blobs,
+    );
     await artifacts.init();
     const normalize = createOverflowReferenceNormalizer({
       artifacts,
@@ -322,7 +337,10 @@ describe("tool result output normalizer", () => {
   });
 
   it("converts oversized JSON to a textual reference", async () => {
-    const artifacts = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "tool-results"),
+      blobs,
+    );
     await artifacts.init();
     const normalize = createOverflowReferenceNormalizer({
       artifacts,
@@ -404,7 +422,10 @@ describe("tool result output normalizer", () => {
   });
 
   it("does not let a public built-in tool name bypass overflow handling", async () => {
-    const artifacts = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "tool-results"),
+      blobs,
+    );
     await artifacts.init();
     const normalize = createOverflowReferenceNormalizer({
       artifacts,
@@ -416,7 +437,7 @@ describe("tool result output normalizer", () => {
       { toolCallId: "external", toolName: "read" },
     );
     expect(normalized.type).toBe("text");
-    expect(await readdir(artifacts.rootDir)).toHaveLength(2);
+    expect(await readdir(artifacts.rootDir)).toHaveLength(1);
   });
 
   it("keeps execution success independent when artifact writes fail", async () => {
@@ -445,7 +466,10 @@ describe("tool result output normalizer", () => {
   });
 
   it("returns a bounded failure reference when the captured output exceeds the hard limit", async () => {
-    const artifacts = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "tool-results"),
+      blobs,
+    );
     await artifacts.init();
     const normalize = createOverflowReferenceNormalizer({
       artifacts,
@@ -583,7 +607,10 @@ describe("tool result output normalizer", () => {
   });
 
   it("spills only oversized content text while preserving media and content semantics", async () => {
-    const artifacts = createToolResultArtifactStore(path.join(baseDir, "tool-results"));
+    const artifacts = createBlobBackedToolResultArtifactStore(
+      path.join(baseDir, "tool-results"),
+      blobs,
+    );
     await artifacts.init();
     const normalize = createOverflowReferenceNormalizer({
       artifacts,

@@ -1513,12 +1513,3 @@ export async function materializeClaudeCodeRunResult(options: {
     }),
   );
 }
-
-/** Compatibility adapter for callers that consume materialization failures as rejections. */
-export async function materializeClaudeCodeRun(
-  options: Parameters<typeof materializeClaudeCodeRunResult>[0],
-): Promise<MaterializedClaudeCodeRun> {
-  const materialized = resultOutcome(await materializeClaudeCodeRunResult(options));
-  if (!materialized.ok) throw materialized.error;
-  return materialized.value;
-}

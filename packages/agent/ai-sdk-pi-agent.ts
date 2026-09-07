@@ -2,11 +2,7 @@ import type { LanguageModel, ToolSet, Experimental_DownloadFunction as DownloadF
 import type { ModelReasoningEffort } from "@stanley2058/lilac-utils/core-config/types";
 import { AgentExecutor } from "./agent-executor";
 import { AiSdkAgentAdapter } from "./adapters/ai-sdk/adapter";
-import type {
-  AiSdkPiAgentOptions,
-  AiSdkPiAgentState,
-  PrepareModelCall,
-} from "./adapters/ai-sdk/support";
+import type { AiSdkPiAgentOptions, AiSdkPiAgentState } from "./adapters/ai-sdk/support";
 import type { JSONObject } from "./agent-runtime-support";
 export * from "./agent-runtime-support";
 export * from "./adapters/ai-sdk/support";
@@ -25,14 +21,12 @@ export type {
 export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   private readonly executor: AgentExecutor<TOOLS>;
   private model: LanguageModel;
-  private prepareModelCall: PrepareModelCall | undefined;
   private download: DownloadFunction | undefined;
   readonly state: AiSdkPiAgentState<TOOLS>;
   constructor(options: AiSdkPiAgentOptions<TOOLS>) {
     const { adapterFactory = (settings) => new AiSdkAgentAdapter(settings), ...initialOptions } =
       options;
     this.model = options.model;
-    this.prepareModelCall = options.prepareModelCall;
     this.download = options.experimentalDownload;
     this.executor = new AgentExecutor({
       ...options,
@@ -47,7 +41,6 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
             messages: this.state.messages,
             providerOptions: this.state.providerOptions,
             reasoning: this.state.reasoning,
-            prepareModelCall: this.prepareModelCall,
             experimentalDownload: this.download,
           }).createExecution(context),
       },
@@ -76,10 +69,6 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
     this.state.modelSpecifier = modelSpecifier;
     this.state.providerOptions = providerOptions;
     this.state.reasoning = reasoning;
-  }
-  setPrepareModelCall(handler: PrepareModelCall | undefined): void {
-    this.prepareModelCall = handler;
-    this.executor.requestAdapterRebind();
   }
   setExperimentalDownload(download: DownloadFunction | undefined): void {
     this.download = download;

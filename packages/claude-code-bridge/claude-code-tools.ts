@@ -711,9 +711,3 @@ export async function createClaudeCodeToolBridge(
   if (!created.ok) throw created.error;
   return created.value;
 }
-
-export function displayClaudeCodeToolName(toolName: string): string {
-  return toolName.startsWith(NAMESPACED_PREFIX)
-    ? canonicalLilacToolName(toolName.slice(NAMESPACED_PREFIX.length))
-    : toolName;
-}

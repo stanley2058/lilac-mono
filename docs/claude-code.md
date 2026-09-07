@@ -1,7 +1,6 @@
 # Claude Code Provider
 
-This is the shared provider reference for Core and Mini Lilac. Product documentation should contain
-only the setup and behavior specific to that product.
+This reference describes the Claude Code provider used by Core.
 
 ## Authentication Ownership
 
@@ -10,9 +9,8 @@ does not read, store, refresh, or revoke Claude credentials. The operator must p
 through an existing authenticated Claude configuration, `claude auth login`,
 `CLAUDE_CODE_OAUTH_TOKEN`, or platform secure storage supported by Claude.
 
-Mini treats `claude-code` as credentialless from Lilac's perspective: its provider must not have an
-`auth.json` entry. Core likewise passes Claude authentication directly to the runtime rather than
-loading it through Lilac's normal provider-key configuration.
+Core passes Claude authentication directly to the runtime rather than loading it through Lilac's
+normal provider-key configuration.
 
 ## Core Model Selection
 
@@ -33,14 +31,12 @@ complete current configuration.
 
 ## Executable Resolution
 
-Both products prefer an official `claude` executable found on `PATH`. When none is found, they leave
+Core prefers an official `claude` executable found on `PATH`. When none is found, it leaves
 resolution to the Claude Agent SDK so its own fallback and diagnostics remain intact.
 
 The deployment artifact determines whether that SDK fallback can succeed:
 
 - Core's Docker image includes the SDK dependency tree and can resolve the SDK-bundled executable.
-- The published single-file `mini-lilac` executable has no dependency tree from which to resolve the
-  SDK's optional executable. It therefore requires an external official `claude` on `PATH`.
 - Source-based local runs may use either an external executable or an SDK-bundled executable that is
   present in that installation.
 
@@ -53,21 +49,15 @@ continuation is admitted only from exact Lilac-owned proof.
 - An exact continuation resumes the last clean native session as a fork and sends only the canonical
   suffix. The source session is retained and never advanced in place.
 - The fork receives a distinct candidate session ID. Native session IDs are internal operational data,
-  not part of Core or Mini's user-facing protocol.
+  not part of Core's user-facing protocol.
 - Missing, changed, compacted, incompatible, or unverifiable native state does not receive a best-effort
   resume. It starts fresh from canonical history instead.
 
 The cwd, execution scope, Claude storage namespace, and continuation metadata must remain compatible.
 A failed attempt is not a clean continuation head.
 
-### Eligibility By Product
+### Eligibility
 
-- Mini main sessions are eligible when the exact selected retained history state owns a clean binding.
-  Undo and redo select that state's binding; prompting after undo branches from it when the binding is
-  still exact.
-- Mini named subagents are eligible when the named child's current history state and hash match its
-  binding. `subagent_delegate` may receive a stable `sessionName` or generate and return one; reuse that
-  name to address the same child.
 - Core named subagents are eligible when delegation supplied a stable continuation identity and the
   marked request-client/session transcript has the exact canonical message count and hash.
 - Core primary sessions are eligible only on Discord. The binding must identify a retained terminal
@@ -80,7 +70,7 @@ check changes only the start mode to fresh; it does not discard Lilac's canonica
 ## Cross-Family Model Changes
 
 An explicit model selection may cross between `claude-code` and the AI SDK provider family only at a
-new-turn boundary. Mini requires the session to be quiescent for this binding change.
+new-turn boundary.
 
 Cross-family history is replayed as deliberately lossy text. It preserves visible conversation text and
 bounded, labeled historical tool facts. It does not preserve hidden reasoning, provider metadata, binary
@@ -89,7 +79,7 @@ native-continuation proof.
 
 Automatic fallback never performs this conversion. Core automatic fallback stays within the AI SDK
 provider family: it skips `claude-code` fallback candidates, and a run whose head model is
-`claude-code` has automatic fallback disabled. Mini does not implement Core's automatic fallback chain.
+`claude-code` has automatic fallback disabled.
 
 ## Storage, Retention, And Security
 
@@ -97,14 +87,10 @@ Claude stores authentication/configuration and native transcripts under `CLAUDE_
 `~/.claude` when the variable is unset. An explicit `CLAUDE_CONFIG_DIR` must be a non-empty absolute
 writable path. Persistently mount it when continuation must survive container replacement.
 
-Native transcripts contain conversation data outside Core's transcript database and Mini's SQLite and
-workspace-history stores. Exact continuations retain their source and create forks, so fork-heavy native
-history can grow roughly quadratically with conversation length. Lilac bounds its attempt metadata but
-does not delete Claude's native transcript files:
-
-- Core primary and named owners keep one current binding.
-- Mini named children keep one current binding.
-- Mini main bindings remain attached to retained history states and can grow with that history.
+Native transcripts contain conversation data outside Core's transcript database. Exact continuations
+retain their source and create forks, so fork-heavy native history can grow roughly quadratically with
+conversation length. Lilac bounds its attempt metadata but
+does not delete Claude's native transcript files. Core primary and named owners keep one current binding.
 
 Retention and deletion of native files are operator responsibilities and otherwise follow Claude's own
 policy. A dedicated directory provides storage organization and independent retention, not an
@@ -112,5 +98,4 @@ access-control or privacy boundary. Claude credentials and transcripts remain ac
 with the same service-user authority; use a separate UID, container, or OS boundary when agent-executed
 code must not access them.
 
-For deployment-specific setup, see [Docker Deployment](docker-deployment.md). For Mini provider
-configuration, see the [Mini Lilac Server README](../apps/mini-lilac-server/README.md).
+For deployment-specific setup, see [Docker Deployment](docker-deployment.md).

@@ -9,7 +9,6 @@ import {
 } from "@stanley2058/lilac-utils/server-compaction-request";
 
 import {
-  compactWithOpenAIResponses,
   compactWithOpenAIResponsesResult,
   declarationOnlyServerCompactionTools,
   materializeOpenAIServerCompaction,
@@ -102,7 +101,7 @@ describe("OpenAI server compaction artifacts", () => {
       },
     });
 
-    const artifact = await compactWithOpenAIResponses({
+    const result = await compactWithOpenAIResponsesResult({
       model,
       replayKey: "openai:openai/gpt-test",
       portableSummary: "Portable summary with enough text to estimate.",
@@ -119,6 +118,9 @@ describe("OpenAI server compaction artifacts", () => {
       },
       providerOptions: { openai: { store: true, include: ["file_search_call.results"] } },
     });
+
+    expect(result.isOk()).toBe(true);
+    const artifact = result.unwrap();
 
     expect(toolExecutions).toBe(0);
     expect(artifact.metadata.estimatedTokens).toBeGreaterThan(1);

@@ -353,11 +353,7 @@ const EMPTY_POLICY = {
 } as const;
 
 export const ACTIVE_WORKSPACES = [
-  ["apps/acp-controller", "@stanley2058/lilac-acp-controller"],
   ["apps/core", "@stanley2058/lilac-core"],
-  ["apps/mini-lilac", "@stanley2058/mini-lilac"],
-  ["apps/mini-lilac-server", "@stanley2058/mini-lilac-server"],
-  ["apps/mini-lilac-tui", "@stanley2058/mini-lilac-tui"],
   ["apps/tool-bridge", "@stanley2058/lilac-tool-bridge"],
   ["packages/agent", "@stanley2058/lilac-agent"],
   ["packages/bash-safety", "@stanley2058/lilac-bash-safety"],
@@ -366,8 +362,6 @@ export const ACTIVE_WORKSPACES = [
   ["packages/coding-tools", "@stanley2058/lilac-coding-tools"],
   ["packages/event-bus", "@stanley2058/lilac-event-bus"],
   ["packages/fs", "@stanley2058/lilac-fs"],
-  ["packages/mini-lilac-client", "@stanley2058/mini-lilac-client"],
-  ["packages/mini-lilac-runtime", "@stanley2058/mini-lilac-runtime"],
   ["packages/plugin-runtime", "@stanley2058/lilac-plugin-runtime"],
   ["packages/remote-fs-runner", "@stanley2058/lilac-remote-fs-runner"],
   ["packages/tool-results", "@stanley2058/lilac-tool-results"],
@@ -656,14 +650,6 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
     "packages/tool-results",
     [
       {
-        module: "src/tool-result-artifact-store.ts",
-        exportName: "createToolResultArtifactStore.captureOperation",
-      },
-      {
-        module: "src/tool-result-artifact-store.ts",
-        exportName: "validateHardLimit",
-      },
-      {
         module: "src/tool-result-output-normalizer.ts",
         exportName: "serializeOutput",
       },
@@ -673,7 +659,6 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
     "packages/coding-tools",
     [
       { module: "src/apply-patch.ts", exportName: "parsePatchResult" },
-      { module: "src/apply-patch.ts", exportName: "applyPatchResult" },
       {
         module: "src/batch.ts",
         exportName: "collectApplyPatchTouchedPathsResult",
@@ -683,14 +668,7 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         exportName: "collectEditFileTouchedPathsResult",
       },
       { module: "src/batch.ts", exportName: "createBatchToolResult" },
-      { module: "src/guardrails.ts", exportName: "guardrailBypassAllowed" },
       { module: "src/guardrails.ts", exportName: "validateLocalCwd" },
-      {
-        module: "src/guardrails.ts",
-        exportName: "canonicalizeAsFarAsExistsResult",
-      },
-      { module: "src/guardrails.ts", exportName: "canonicalPathAllowed" },
-      { module: "src/index.ts", exportName: "createCodingToolsetResult" },
     ],
   ],
   [
@@ -738,39 +716,6 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
       },
       { module: "lilac-bus.ts", exportName: "LilacBus.subscribeTopic" },
       { module: "lilac-bus.ts", exportName: "LilacBus.getOutputStreamExpiry" },
-    ],
-  ],
-  [
-    "packages/mini-lilac-client",
-    [
-      {
-        module: "mini-lilac-transport.ts",
-        exportName: "decodeMiniLilacBoundary",
-      },
-      ...[
-        "sendMessagesResult",
-        "reconnectToStreamResult",
-        "getSessionResult",
-        "getSessionResumeResult",
-        "listSessionsResult",
-        "getMessagesResult",
-        "streamSessionResult",
-        "getTodosResult",
-        "listModelsResult",
-        "listProfilesResult",
-        "listSkillsResult",
-        "updateSessionBindingsResult",
-        "steerResult",
-        "interruptQueuedSteeringResult",
-        "cancelResult",
-        "undoResult",
-        "redoResult",
-        "cancelCompactionResult",
-        "compactResult",
-      ].map((method) => ({
-        module: "mini-lilac-transport.ts",
-        exportName: `MiniLilacTransport.${method}`,
-      })),
     ],
   ],
   [
@@ -1133,56 +1078,6 @@ const CORE_TOOL_SERVER_BOUNDARY_DECODERS = [
 
 const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>([
   [
-    "apps/acp-controller",
-    [
-      {
-        identity: {
-          module: "external-adapters.ts",
-          exportName: "projectExternalFailure",
-        },
-        category: "projection",
-      },
-      ...["decodeRunRecord", "decodeRunCancellation", "decodeSessionIndex"].map((exportName) => ({
-        identity: { module: "run-store.ts", exportName },
-        category: "persistence" as const,
-      })),
-      {
-        identity: {
-          module: "external-adapters.ts",
-          exportName: "replaceExternalFailureMessage",
-        },
-        category: "projection",
-      },
-    ],
-  ],
-  [
-    "apps/mini-lilac",
-    [
-      {
-        identity: { module: "build.ts", exportName: "decodeSourcePackage" },
-        category: "request",
-      },
-      {
-        identity: {
-          module: "install-local.ts",
-          exportName: "decodeNpmPackOutput",
-        },
-        category: "wire",
-      },
-      {
-        identity: { module: "build.ts", exportName: "signalBuildFailure" },
-        category: "projection",
-      },
-      {
-        identity: {
-          module: "install-local.ts",
-          exportName: "signalLocalInstallFailure",
-        },
-        category: "projection",
-      },
-    ],
-  ],
-  [
     "apps/tool-bridge",
     [
       ...[
@@ -1320,7 +1215,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         "repairTranscriptForCompaction",
         "renderMessageForSummary",
         "computeOverflowRecoveryDecision",
-        "isAbortError",
         "attachAutoCompaction.notifyUnknownCapability",
       ].map((exportName) => ({
         identity: { module: "auto-compaction.ts", exportName },
@@ -1383,140 +1277,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "transient-model-retry.ts", exportName },
         category: "projection" as const,
       })),
-    ],
-  ],
-  [
-    "packages/mini-lilac-runtime",
-    [
-      {
-        identity: {
-          module: "src/config.ts",
-          exportName: "decodeRuntimeConfig",
-        },
-        category: "request",
-      },
-      ...[
-        "decodeProviderConfig",
-        "decodeProviderAuth",
-        "writeProviderAuthResult",
-        "writeProviderAuth",
-      ].map((exportName) => ({
-        identity: { module: "src/providers.ts", exportName },
-        category: "plugin" as const,
-      })),
-      ...[
-        "parseModelRefResult",
-        "decodeModelsDevRegistry",
-        "decodeModelsDevCache",
-        "decodeV1ModelsResponse",
-        "modelsDevProvider",
-      ].map((exportName) => ({
-        identity: { module: "src/model-catalog.ts", exportName },
-        category: "wire" as const,
-      })),
-      {
-        identity: {
-          module: "src/sqlite-transcript-projection.ts",
-          exportName: "acceptsMiniLilacPersistedSuperJsonValue",
-        },
-        category: "persistence",
-      },
-      ...[
-        "decodeMiniLilacStoreRow",
-        "decodeMiniLilacStoreRows",
-        "decodeStoredHistoryNavigationResult",
-        "decodeStoredUIMessageChunk",
-        "decodeStoredSessionSnapshot",
-        "parseStoredUIMessageChunk",
-        "serialize",
-        "serializeStoreValueResult",
-        "canonicalJsonValue",
-        "canonicalCommandPayloadResult",
-        "decodeCanonicalStoredCommandRequest",
-        "decodeCanonicalRootPromptCommand",
-        "serializeOptionalTerminalResult",
-        "canonicalValuesEqual",
-        "isCanonicalPrefix",
-        "decodeSessionRowSnapshot",
-        "decodeRunRow",
-        "decodeMiniMainClaudeBindingRow",
-        "decodeMiniMainClaudeAttemptRow",
-        "MiniLilacSqliteStore.decodeStructuralHistoryRow",
-        "MiniLilacSqliteStore.decodeStructuralHistoryRows",
-        "MiniLilacSqliteStore.parseHistoryNavigationResult",
-        "MiniLilacSqliteStore.saveCommandResult",
-        "MiniLilacSqliteStore.saveCommandResultResult",
-        "throwPrimaryAfterCleanup",
-      ].map((exportName) => ({
-        identity: { module: "src/sqlite-store.ts", exportName },
-        category: "persistence" as const,
-      })),
-      ...[
-        "parseSessionConfig",
-        "compactionEventFor",
-        "generateSubagentSessionName",
-        "toolOutputDisplayValue",
-        "serializedUtf8Bytes",
-        "controlCommandRequest",
-        "browserSafeUsage",
-        "browserSafeProviderMetadata",
-        "splitFinalAnswerUIMessage",
-        "chunkMatchesRollback",
-        "SessionActor.startPrompt.withLock.<callback@1>",
-        "SessionActor.commitRunFinalization.<callback>",
-        "SessionActor.handleAgentEvent",
-        "SessionActor.buildAgent.decideTurnError",
-        "SessionActor.buildAgent.onCompactionEnd",
-        "SessionActor.appendToolResultChunk",
-        "SessionActor.queueAutomaticCompaction",
-        "SessionActor.steer.withLock.<callback@1>",
-        "SessionActor.cancel.withLock.<callback@1>",
-        "SessionActor.undo.withLock.<callback@1>",
-        "SessionActor.redo.withLock.<callback@1>",
-        "SessionActor.replayHistoryNavigation",
-        "SessionActor.compact.withLock.<callback@1>",
-        "SessionActor.runCompaction.event",
-        "SessionActor.summarizeForCompaction",
-        "SessionActor.updateBindings.withLock.<callback@1>",
-        "SessionService.constructor",
-        "SessionService.collectDelegatedRun",
-        "SessionService.interruptQueuedSteering",
-      ].map((exportName) => ({
-        identity: { module: "src/session-service.ts", exportName },
-        category: "projection" as const,
-      })),
-      {
-        identity: {
-          module: "src/session-service.ts",
-          exportName: "SessionActor.interruptQueuedSteering.withLock.<callback@1>@1",
-        },
-        category: "persistence",
-      },
-      {
-        identity: {
-          module: "src/session-service.ts",
-          exportName: "SessionActor.interruptQueuedSteering.withLock.<callback@1>@2",
-        },
-        category: "projection",
-      },
-      ...["decodeWebfetchInput", "executeWebfetchResult", "executeWebfetch"].map((exportName) => ({
-        identity: { module: "src/webfetch.ts", exportName },
-        category: "plugin" as const,
-      })),
-      {
-        identity: {
-          module: "src/workspace-history-store.ts",
-          exportName: "WorkspaceHistoryStoreError.constructor",
-        },
-        category: "projection",
-      },
-      {
-        identity: {
-          module: "src/workspace-history-store.ts",
-          exportName: "runWorkspaceHistoryCleanup",
-        },
-        category: "projection",
-      },
     ],
   ],
   [
@@ -1819,15 +1579,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
   [
     "packages/coding-tools",
     [
-      ...[
-        "createFilesystemTools.toModelOutput@1",
-        "createFilesystemTools.toModelOutput@2",
-        "createFilesystemTools.toModelOutput@3",
-        "createFilesystemTools.toModelOutput@4",
-      ].map((exportName) => ({
-        identity: { module: "src/filesystem.ts", exportName },
-        category: "projection" as const,
-      })),
       {
         identity: {
           module: "src/batch.ts",
@@ -1851,10 +1602,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
           module: "src/instructions.ts",
           exportName: "decodePreviouslyLoadedInstructionPaths",
         },
-        category: "projection",
-      },
-      {
-        identity: { module: "src/bash.ts", exportName: "bashFailureMessage" },
         category: "projection",
       },
     ],
@@ -1967,123 +1714,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "redis-event-dead-letter.ts", exportName },
         category: "persistence" as const,
       })),
-    ],
-  ],
-  [
-    "apps/mini-lilac-tui",
-    [
-      {
-        identity: {
-          module: "src/opentui-boundary.ts",
-          exportName: "decodeDraftExtmarkData",
-        },
-        category: "plugin",
-      },
-      {
-        identity: {
-          module: "src/preferences.ts",
-          exportName: "decodeBindingPreferences",
-        },
-        category: "persistence",
-      },
-      {
-        identity: {
-          module: "src/ui-message-chunk-projection.ts",
-          exportName: "projectMiniLilacStreamChunk",
-        },
-        category: "projection",
-      },
-      {
-        identity: {
-          module: "src/terminal-runtime-adapter.ts",
-          exportName: "resolveTerminalShutdownOutcome",
-        },
-        category: "projection",
-      },
-      ...[
-        "parseInput",
-        "decodeBash",
-        "decodeEditFile",
-        "decodeSubagentDelegate",
-        "decodeWebsearch",
-        "projectToolObservation",
-      ].map((exportName) => ({
-        identity: { module: "src/tool-observation-projection.ts", exportName },
-        category: "projection" as const,
-      })),
-      ...["observationFromCanonicalPart", "UIMessageChunkProjectionState.toolChunk"].map(
-        (exportName) => ({
-          identity: { module: "src/ui-message-chunk-projection.ts", exportName },
-          category: "projection" as const,
-        }),
-      ),
-    ],
-  ],
-  [
-    "apps/mini-lilac-server",
-    [
-      ...["decodeMiniLilacHttpRequest", "decodeMiniLilacUiMessages"].map((exportName) => ({
-        identity: { module: "src/server.ts", exportName },
-        category: "request" as const,
-      })),
-      {
-        identity: {
-          module: "src/main.ts",
-          exportName: "decodeMiniLilacCliOptions",
-        },
-        category: "request",
-      },
-      {
-        identity: { module: "src/main.ts", exportName: "parseCliArgs" },
-        category: "request",
-      },
-      {
-        identity: {
-          module: "src/server.ts",
-          exportName: "adaptMiniLilacPersistenceResult",
-        },
-        category: "projection",
-      },
-      {
-        identity: {
-          module: "src/server.ts",
-          exportName: "classifyHttpOperationFailure",
-        },
-        category: "projection",
-      },
-    ],
-  ],
-  [
-    "packages/mini-lilac-client",
-    [
-      {
-        identity: {
-          module: "mini-lilac-transport.ts",
-          exportName: "decodeMiniLilacBoundary",
-        },
-        category: "wire",
-      },
-      {
-        identity: {
-          module: "mini-lilac-transport.ts",
-          exportName: "resultToMiniLilacClientValue",
-        },
-        category: "projection",
-      },
-      {
-        identity: {
-          module: "mini-lilac-transport.ts",
-          exportName: "resultToMiniLilacCompatibilityFailure",
-        },
-        category: "projection",
-      },
-      {
-        identity: {
-          module: "mini-lilac-transport.ts",
-          exportName: "normalizeStreamChunkResult",
-        },
-        category: "wire",
-      },
     ],
   ],
   [
@@ -2346,7 +1976,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         "projectLegacyCodexOAuthFailure",
         "projectLegacyCodexOAuthLoginFailure",
         "readCodexTokens",
-        "clearCodexTokens",
       ].map((exportName) => ({
         identity: { module: "codex-oauth.ts", exportName },
         category: "projection" as const,
@@ -2419,13 +2048,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "model-message-provider-options.ts", exportName },
         category: "projection" as const,
       })),
-      {
-        identity: {
-          module: "model-message-provider-options.ts",
-          exportName: "withoutOpenAIItemIds.map.<callback@1>.map.<callback@1>",
-        },
-        category: "projection",
-      },
       ...[
         ["decodeCodexRequestBody", "request"],
         ["decodeCodexResponsesRequestBody", "request"],
@@ -2578,18 +2200,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
 
 const INTEGRATED_OPAQUE_UNKNOWN = new Map<string, readonly ReasonedSymbolException[]>([
   [
-    "apps/acp-controller",
-    [
-      {
-        identity: {
-          module: "external-adapters.ts",
-          exportName: "replaceExternalFailureMessage",
-        },
-        reason: "Carries the already-owned external failure cause without reinterpreting it.",
-      },
-    ],
-  ],
-  [
     "apps/tool-bridge",
     [
       {
@@ -2627,41 +2237,6 @@ const INTEGRATED_OPAQUE_UNKNOWN = new Map<string, readonly ReasonedSymbolExcepti
         },
         reason:
           "Carries a server-compaction callback failure opaquely to the caller-owned observer.",
-      },
-    ],
-  ],
-  [
-    "packages/mini-lilac-runtime",
-    [
-      {
-        identity: {
-          module: "src/session-service.ts",
-          exportName: "sha256Fingerprint",
-        },
-        reason:
-          "Serializes an opaque provider-owned value only to derive a stable content fingerprint.",
-      },
-      {
-        identity: {
-          module: "src/workspace-history-store.ts",
-          exportName: "WorkspaceHistoryStore.withWorkspaceLock",
-        },
-        reason:
-          "Carries a supervised defect opaquely through the public legacy lock host contract.",
-      },
-      {
-        identity: {
-          module: "src/session-service.ts",
-          exportName: "rethrowSessionPanic",
-        },
-        reason: "Observes an opaque failure only to preserve Panic identity.",
-      },
-      {
-        identity: {
-          module: "src/session-service.ts",
-          exportName: "SessionActor.reportEventFailure",
-        },
-        reason: "Carries an opaque agent event failure to bounded diagnostics and cancellation.",
       },
     ],
   ],
@@ -2728,10 +2303,6 @@ const INTEGRATED_OPAQUE_UNKNOWN = new Map<string, readonly ReasonedSymbolExcepti
   [
     "packages/coding-tools",
     [
-      {
-        identity: { module: "src/batch.ts", exportName: "createBatchTool" },
-        reason: "Carries an AI SDK tool-call payload opaquely to the selected child tool boundary.",
-      },
       {
         identity: {
           module: "src/batch.ts",
@@ -2909,35 +2480,9 @@ const INTEGRATED_OPAQUE_UNKNOWN = new Map<string, readonly ReasonedSymbolExcepti
       })),
     ],
   ],
-  [
-    "packages/mini-lilac-client",
-    [
-      {
-        identity: {
-          module: "mini-lilac-transport.ts",
-          exportName: "MiniLilacParsedStream.cleanupSource",
-        },
-        reason:
-          "Carries the ReadableStream cancellation reason opaquely to the registered source cleanup adapter.",
-      },
-    ],
-  ],
 ]);
 
 const INTEGRATED_CAPABILITY_PREDICATES = new Map<string, readonly ReasonedSymbolException[]>([
-  [
-    "apps/acp-controller",
-    [
-      {
-        identity: {
-          module: "acp-harness-client.ts",
-          exportName: "isAuthRequiredError",
-        },
-        reason:
-          "Checks the exact ACP RequestError authorization code on an owned external failure.",
-      },
-    ],
-  ],
   [
     "packages/agent",
     [
@@ -2989,27 +2534,6 @@ const INTEGRATED_CAPABILITY_PREDICATES = new Map<string, readonly ReasonedSymbol
         },
         reason:
           "Checks the closed model-message role capability after the structure-preserving clone.",
-      },
-    ],
-  ],
-  [
-    "packages/mini-lilac-runtime",
-    [
-      {
-        identity: {
-          module: "src/sqlite-transcript-projection.ts",
-          exportName: "acceptsMiniLilacPersistedSuperJsonValue",
-        },
-        reason:
-          "Checks only whether a persisted opaque value survives the exact SuperJSON representation round trip.",
-      },
-      {
-        identity: {
-          module: "src/workspace-history-store.ts",
-          exportName: "isMissingExecutable",
-        },
-        reason:
-          "Checks only the exact Node filesystem ENOENT capability on an opaque process failure.",
       },
     ],
   ],
@@ -3091,46 +2615,10 @@ const INTEGRATED_OPEN_PROTOCOL_ADAPTERS = new Map<string, readonly OpenProtocolA
       },
     ],
   ],
-  [
-    "apps/acp-controller",
-    [
-      {
-        identity: {
-          module: "session-history.ts",
-          exportName: "projectSessionUpdate",
-        },
-        externalProtocol: {
-          package: "@agentclientprotocol/sdk",
-          exportName: "SessionUpdate",
-        },
-        protocolParameter: 0,
-        fallbackVariant: { discriminant: "type", value: "unsupported" },
-        reason:
-          "Defense-in-depth projection for runtime ACP version skew; the SDK normally validates SessionUpdate before this adapter runs.",
-      },
-    ],
-  ],
-  [
-    "apps/mini-lilac-tui",
-    [
-      {
-        identity: {
-          module: "src/ui-message-chunk-projection.ts",
-          exportName: "projectUIMessageChunk",
-        },
-        externalProtocol: { package: "ai", exportName: "UIMessageChunk" },
-        protocolParameter: 0,
-        fallbackVariant: { discriminant: "kind", value: "unsupported" },
-        reason: "Projects the open AI SDK stream protocol into local TUI chunk variants.",
-      },
-    ],
-  ],
 ]);
 
 const OPEN_PROTOCOL_RULE_ZONES = new Map<string, readonly RuleZone[]>([
   ["packages/agent", [{ include: "adapters/ai-sdk/support.ts" }]],
-  ["apps/acp-controller", [{ include: "session-history.ts" }]],
-  ["apps/mini-lilac-tui", [{ include: "src/ui-message-chunk-projection.ts" }]],
 ]);
 
 const EVENT_BUS_CODEC_REGISTRY: EventCodecRegistryRegistration = {
@@ -3147,33 +2635,6 @@ const EVENT_BUS_CODEC_REGISTRY: EventCodecRegistryRegistration = {
     module: "define-lilac-events.ts",
     exportName: "createLilacEventCodecRegistry",
   },
-};
-
-const TUI_TOOL_CODEC_REGISTRY: ToolCodecRegistryRegistration = {
-  identity: {
-    module: "src/tool-observation-projection.ts",
-    exportName: "toolObservationCodecRegistry",
-  },
-  aliases: [
-    {
-      module: "src/tool-observation-projection.ts",
-      exportName: "knownToolCodecRegistry",
-    },
-  ],
-  canonicalTools: {
-    package: "@stanley2058/mini-lilac-client",
-    module: "tool-catalog.ts",
-    exportName: "MINI_LILAC_TOOL_NAMES",
-  },
-};
-
-const TUI_RESULT_DECODER: ResultDecoderRegistration = {
-  identity: {
-    module: "src/tool-observation-projection.ts",
-    exportName: "decodeKnownToolObservation",
-  },
-  category: "projection",
-  inputParameter: 0,
 };
 
 const WAVE_2_RESULT_DECODERS = new Map<string, readonly ResultDecoderRegistration[]>([
@@ -3231,170 +2692,7 @@ const UTILS_CODEX_TOKENS_PERSISTED_CONSUMER = {
   codecs: [UTILS_CODEX_TOKENS_PERSISTED_CODEC.identity],
 } as const satisfies PersistedStoreConsumerRegistration;
 
-const ACP_RUN_RECORD_PERSISTED_CODEC = {
-  identity: { module: "run-store.ts", exportName: "decodeRunRecord" },
-  inputParameter: 0,
-  fixtureCatalog: { module: "run-store.ts", exportName: "runRecordCodecCases" },
-  provenance: ["current", "migrated"],
-} as const satisfies PersistedCodecRegistration;
-
-const ACP_RUN_CANCELLATION_PERSISTED_CODEC = {
-  identity: { module: "run-store.ts", exportName: "decodeRunCancellation" },
-  inputParameter: 0,
-  fixtureCatalog: {
-    module: "run-store.ts",
-    exportName: "runCancellationCodecCases",
-  },
-  provenance: ["current", "migrated"],
-} as const satisfies PersistedCodecRegistration;
-
-const ACP_SESSION_INDEX_PERSISTED_CODEC = {
-  identity: { module: "run-store.ts", exportName: "decodeSessionIndex" },
-  inputParameter: 0,
-  fixtureCatalog: {
-    module: "run-store.ts",
-    exportName: "sessionIndexCodecCases",
-  },
-  provenance: ["current", "migrated", "missing-defaulted"],
-} as const satisfies PersistedCodecRegistration;
-
-const ACP_PERSISTED_CONSUMERS = [
-  {
-    identity: { module: "run-store.ts", exportName: "loadRunRecord" },
-    codecs: [ACP_RUN_RECORD_PERSISTED_CODEC.identity],
-  },
-  {
-    identity: { module: "run-store.ts", exportName: "loadRunCancellation" },
-    codecs: [ACP_RUN_CANCELLATION_PERSISTED_CODEC.identity],
-  },
-  {
-    identity: { module: "run-store.ts", exportName: "loadSessionIndex" },
-    codecs: [ACP_SESSION_INDEX_PERSISTED_CODEC.identity],
-  },
-] as const satisfies readonly PersistedStoreConsumerRegistration[];
-
-const TUI_BINDING_PREFERENCES_PERSISTED_CODEC = {
-  identity: {
-    module: "src/preferences.ts",
-    exportName: "decodeBindingPreferences",
-  },
-  inputParameter: 0,
-  fixtureCatalog: {
-    module: "src/preferences.ts",
-    exportName: "bindingPreferencesCodecCases",
-  },
-  provenance: ["current", "migrated", "missing-defaulted"],
-} as const satisfies PersistedCodecRegistration;
-
-const TUI_BINDING_PREFERENCES_PERSISTED_CONSUMER = {
-  identity: {
-    module: "src/preferences.ts",
-    exportName: "loadBindingPreferences",
-  },
-  codecs: [TUI_BINDING_PREFERENCES_PERSISTED_CODEC.identity],
-} as const satisfies PersistedStoreConsumerRegistration;
-
 const WAVE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[]>([
-  [
-    "apps/acp-controller",
-    [
-      ["external-adapters.ts", "captureExternal"],
-      ["session-index-lock.ts", "acquireSessionIndexLock"],
-      ["session-index-lock.ts", "waitForLock"],
-      ...[
-        "decodeRunRecord",
-        "decodeRunCancellation",
-        "decodeSessionIndex",
-        "saveRunRecord",
-        "saveWorkerRunRecord",
-        "commitRunCancellationRequest",
-        "requestRunCancellation",
-        "observeRunCancellation",
-        "loadRunCancellation",
-        "loadRunRecord",
-        "loadSessionIndex",
-        "upsertSessionIndexEntries",
-        "setLocalSessionTitle",
-      ].map((exportName) => ["run-store.ts", exportName]),
-    ].map(([module, exportName]) => ({ module, exportName })),
-  ],
-  [
-    "apps/mini-lilac",
-    [
-      ["build.ts", "captureBuildOperation"],
-      ["build.ts", "decodeSourcePackage"],
-      ["build.ts", "buildMiniLilac"],
-      ["install-local.ts", "captureInstallOperation"],
-      ["install-local.ts", "decodeNpmPackOutput"],
-      ["install-local.ts", "installLocalPackage"],
-      ["src/main.ts", "captureCommand"],
-      ["src/main.ts", "runMiniLilac"],
-    ].map(([module, exportName]) => ({ module, exportName })),
-  ],
-  [
-    "apps/mini-lilac-server",
-    [
-      ...[
-        "captureServerOperation",
-        "captureServerCleanup",
-        "acquireDatabaseLockResult",
-        "shutdownMiniLilacServerResult",
-        "shutdownMiniLilacServerAndReleaseLockResult",
-        "runServeCommand",
-        "decodeMiniLilacCliOptions",
-        "captureNodeCliParsing",
-        "parseCliArgsResult",
-        "canonicalWorkspaceResult",
-        "runHistoryRecoveryCommandResult",
-        "initializeMiniLilacStateResult",
-        "runAuthCommandResult",
-        "mainResult",
-      ].map((exportName) => ["src/main.ts", exportName]),
-      ...[
-        "decodeMiniLilacHttpRequest",
-        "decodeMiniLilacUiMessages",
-        "adaptMiniLilacPersistenceResult",
-        "captureHttpOperation",
-        "captureSessionCreation",
-        "canonicalDirectory",
-      ].map((exportName) => ["src/server.ts", exportName]),
-    ].map(([module, exportName]) => ({ module, exportName })),
-  ],
-  [
-    "apps/mini-lilac-tui",
-    [
-      ["src/cli.ts", "parseCliOptions"],
-      ["src/clipboard.ts", "spawnClipboardCommand"],
-      ["src/clipboard.ts", "openClipboardFile"],
-      ["src/clipboard.ts", "statClipboardFile"],
-      ["src/clipboard.ts", "readClipboardFile"],
-      ["src/clipboard.ts", "closeClipboardFile"],
-      ["src/clipboard.ts", "runAppleScript"],
-      ["src/clipboard.ts", "removeClipboardFile"],
-      ["src/clipboard.ts", "readClipboardImage"],
-      ["src/preferences.ts", "decodeBindingPreferences"],
-      ["src/preferences.ts", "bindingPreferencesFileExists"],
-      ["src/preferences.ts", "readBindingPreferencesFile"],
-      ["src/preferences.ts", "createBindingPreferencesDirectory"],
-      ["src/preferences.ts", "writeBindingPreferencesFile"],
-      ["src/preferences.ts", "renameBindingPreferencesFile"],
-      ["src/preferences.ts", "removeTemporaryBindingPreferences"],
-      ["src/preferences.ts", "loadBindingPreferences"],
-      ["src/preferences.ts", "saveBindingPreferences"],
-      ["src/startup.ts", "verifySessionCwd"],
-      ["src/terminal-runtime-adapter.ts", "createTerminalRenderer"],
-      ["src/terminal-runtime-adapter.ts", "readTerminalPalette"],
-      ["src/terminal-runtime-adapter.ts", "setTerminalBackground"],
-      ["src/terminal-runtime-adapter.ts", "renderTerminalApp"],
-      ["src/terminal-runtime-adapter.ts", "destroyTerminalRenderer"],
-      ["src/terminal-runtime-adapter.ts", "resolveTerminalShutdownOutcome"],
-      ["src/terminal-runtime-adapter.ts", "runWithOwnedTerminalRenderer"],
-      ["src/terminal-runtime-adapter.ts", "runTerminalEntrypoint"],
-      ["src/terminal-stream-adapter.ts", "readTerminalStream"],
-      ["src/terminal-stream-adapter.ts", "cancelTerminalStream"],
-      ["src/terminal-stream-adapter.ts", "releaseTerminalStreamLock"],
-    ].map(([module, exportName]) => ({ module, exportName })),
-  ],
   [
     "apps/tool-bridge",
     [
@@ -3433,11 +2731,6 @@ const WAVE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[]
     ],
   ],
 ]);
-
-const TUI_UNKNOWN_FREE_MODULES = [
-  { module: "src/render.ts" },
-  { module: "src/transcript-buffer.ts" },
-] as const satisfies readonly UnknownFreeModuleRegistration[];
 
 const CORE_THREAD_PERSISTED_CODECS = [
   {
@@ -3685,27 +2978,6 @@ const CORE_WORKFLOW_ARTIFACT_PERSISTED_CONSUMER = {
   codecs: [CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC.identity],
 } as const satisfies PersistedStoreConsumerRegistration;
 
-const TOOL_RESULT_ARTIFACT_METADATA_CODEC = {
-  identity: {
-    module: "src/tool-result-artifact-metadata-codec.ts",
-    exportName: "decodeToolResultArtifactMetadata",
-  },
-  inputParameter: 0,
-  fixtureCatalog: {
-    module: "src/tool-result-artifact-metadata-codec.ts",
-    exportName: "toolResultArtifactMetadataCodecCases",
-  },
-  provenance: ["current", "migrated", "missing-defaulted"],
-} as const satisfies PersistedCodecRegistration;
-
-const TOOL_RESULT_ARTIFACT_METADATA_CONSUMER = {
-  identity: {
-    module: "src/tool-result-artifact-store.ts",
-    exportName: "createToolResultArtifactStore.readMetadata",
-  },
-  codecs: [TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity],
-} as const satisfies PersistedStoreConsumerRegistration;
-
 const BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC = {
   identity: {
     module: "src/blob-tool-result-artifact-metadata-codec.ts",
@@ -3843,325 +3115,6 @@ const CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER = {
   codecs: [CORE_GRACEFUL_RESTART_PERSISTED_CODEC.identity],
 } as const satisfies PersistedStoreConsumerRegistration;
 
-const MINI_WORKSPACE_HISTORY_PERSISTED_CODECS = (
-  [
-    [
-      "decodeWorkspaceHistoryOwnership",
-      "workspaceHistoryOwnershipCodecCases",
-      ["current", "migrated"],
-    ],
-    [
-      "decodeWorkspaceHistorySnapshotManifest",
-      "workspaceHistorySnapshotManifestCodecCases",
-      ["current", "migrated"],
-    ],
-    [
-      "decodeWorkspaceHistoryCaptureCache",
-      "workspaceHistoryCaptureCacheCodecCases",
-      ["current", "migrated", "missing-defaulted"],
-    ],
-    [
-      "decodeWorkspaceHistoryRestorePlan",
-      "workspaceHistoryRestorePlanCodecCases",
-      ["current", "migrated", "missing-defaulted"],
-    ],
-    [
-      "decodeWorkspaceHistorySnapshotRefCreated",
-      "workspaceHistorySnapshotRefCreatedCodecCases",
-      ["current", "migrated", "missing-defaulted"],
-    ],
-    [
-      "decodeWorkspaceHistoryRestoreOwnership",
-      "workspaceHistoryRestoreOwnershipCodecCases",
-      ["current", "migrated", "missing-defaulted"],
-    ],
-  ] as const
-).map(
-  ([exportName, fixtureExportName, provenance]): PersistedCodecRegistration => ({
-    identity: {
-      module: "src/workspace-history-persistence-codec.ts",
-      exportName,
-    },
-    inputParameter: 0,
-    fixtureCatalog: {
-      module: "src/workspace-history-persistence-codec.ts",
-      exportName: fixtureExportName,
-    },
-    provenance,
-  }),
-);
-
-const MINI_WORKSPACE_HISTORY_PERSISTED_CONSUMERS = (
-  [
-    ["WorkspaceHistoryStore.decodeOwnership", 0],
-    ["WorkspaceHistoryStore.decodeSnapshotManifest", 1],
-    ["WorkspaceHistoryStore.readCaptureCache", 2],
-    ["WorkspaceHistoryStore.decodeRestorePlan", 3],
-    ["WorkspaceHistoryStore.decodeSnapshotRefCreationMetadata", 4],
-    ["WorkspaceHistoryStore.decodeRestoreOwnership", 5],
-  ] as const
-).map(
-  ([exportName, codecIndex]): PersistedStoreConsumerRegistration => ({
-    identity: { module: "src/workspace-history-store.ts", exportName },
-    codecs: [MINI_WORKSPACE_HISTORY_PERSISTED_CODECS[codecIndex]!.identity],
-  }),
-);
-
-const MINI_SQLITE_TRANSCRIPT_PERSISTED_CODECS = [
-  ["decodeMiniLilacModelTranscript", "miniLilacModelTranscriptCodecCases"],
-  ["decodeMiniLilacUiTranscript", "miniLilacUiTranscriptCodecCases"],
-  ["decodeMiniLilacCommandRequest", "miniLilacCommandRequestCodecCases"],
-].map(
-  ([exportName, fixtureExportName]): PersistedCodecRegistration => ({
-    identity: { module: "src/sqlite-persistence-codec.ts", exportName },
-    inputParameter: 0,
-    fixtureCatalog: {
-      module: "src/sqlite-persistence-codec.ts",
-      exportName: fixtureExportName,
-    },
-    provenance: ["current", "migrated", "missing-defaulted"],
-  }),
-);
-
-const MINI_SQLITE_TODO_PERSISTED_CODEC = {
-  identity: {
-    module: "src/sqlite-todo-persistence-codec.ts",
-    exportName: "decodeMiniLilacTodos",
-  },
-  inputParameter: 0,
-  fixtureCatalog: {
-    module: "src/sqlite-todo-persistence-codec.ts",
-    exportName: "miniLilacTodosCodecCases",
-  },
-  provenance: ["current", "migrated", "missing-defaulted"],
-} as const satisfies PersistedCodecRegistration;
-
-const MINI_SQLITE_TODO_PERSISTED_CONSUMER = {
-  identity: {
-    module: "src/sqlite-todo-persistence-codec.ts",
-    exportName: "readMiniLilacTodos",
-  },
-  codecs: [MINI_SQLITE_TODO_PERSISTED_CODEC.identity],
-} as const satisfies PersistedStoreConsumerRegistration;
-
-const MINI_SQLITE_TODO_STORE_PERSISTED_CONSUMER = {
-  identity: {
-    module: "src/sqlite-store.ts",
-    exportName: "decodeMiniLilacTodos",
-  },
-  codecs: [MINI_SQLITE_TODO_PERSISTED_CODEC.identity],
-} as const satisfies PersistedStoreConsumerRegistration;
-
-const MINI_SQLITE_STRUCTURAL_HISTORY_PERSISTED_CODEC = {
-  identity: {
-    module: "src/sqlite-history-persistence-codec.ts",
-    exportName: "decodeMiniLilacStructuralHistoryRow",
-  },
-  inputParameter: 0,
-  fixtureCatalog: {
-    module: "src/sqlite-history-persistence-codec.ts",
-    exportName: "miniLilacStructuralHistoryRowCodecCases",
-  },
-  provenance: ["current", "migrated", "missing-defaulted"],
-} as const satisfies PersistedCodecRegistration;
-
-const MINI_SQLITE_MIGRATION_RUN_RESULT_DECODER = {
-  identity: {
-    module: "src/sqlite-history-persistence-codec.ts",
-    exportName: "decodeMiniLilacMigrationRunRow",
-  },
-  category: "persistence",
-  inputParameter: 0,
-} as const satisfies ResultDecoderRegistration;
-
-const MINI_SQLITE_STRUCTURAL_HISTORY_PERSISTED_CONSUMER = {
-  identity: {
-    module: "src/sqlite-store.ts",
-    exportName: "MiniLilacSqliteStore.decodeStructuralHistoryRow",
-  },
-  codecs: [MINI_SQLITE_STRUCTURAL_HISTORY_PERSISTED_CODEC.identity],
-} as const satisfies PersistedStoreConsumerRegistration;
-
-const MINI_SQLITE_STRUCTURAL_HISTORY_ROWS_PERSISTED_CONSUMERS = [
-  {
-    identity: {
-      module: "src/sqlite-history-persistence-codec.ts",
-      exportName: "decodeMiniLilacStructuralHistoryRows",
-    },
-    codecs: [MINI_SQLITE_STRUCTURAL_HISTORY_PERSISTED_CODEC.identity],
-  },
-] as const satisfies readonly PersistedStoreConsumerRegistration[];
-
-const MINI_SQLITE_HISTORY_RECOVERY_PERSISTED_CONSUMER = {
-  identity: {
-    module: "src/sqlite-store.ts",
-    exportName: "readMiniLilacHistoryRecoveryStatusResult",
-  },
-  codecs: [MINI_SQLITE_STRUCTURAL_HISTORY_PERSISTED_CODEC.identity],
-} as const satisfies PersistedStoreConsumerRegistration;
-
-const MINI_SQLITE_TRANSCRIPT_PERSISTED_CONSUMERS = (
-  [
-    ["decodeMiniLilacModelTranscript", [0]],
-    ["decodeMiniLilacUiTranscript", [1]],
-  ] as const
-).map(
-  ([exportName, codecIndexes]): PersistedStoreConsumerRegistration => ({
-    identity: { module: "src/sqlite-store.ts", exportName },
-    codecs: codecIndexes.map((index) => MINI_SQLITE_TRANSCRIPT_PERSISTED_CODECS[index]!.identity),
-  }),
-);
-
-const MINI_SQLITE_BOUNDARY_DECODER_IDENTITIES = [
-  ...[
-    "decodePlainJson",
-    "decodeSuperJson",
-    "decodeTranscript",
-    "decodeMiniLilacDatabaseVersion",
-    "migrateMiniLilacUiMessageValue",
-    "decodeMiniLilacTranscriptChain",
-    "decodeMiniLilacMigrationTranscriptRows",
-    "decodeMiniLilacMigrationUiTranscript",
-    "decodeMiniLilacMigrationUserUiMessage",
-    "decodeMiniLilacMigrationModelPrefix",
-    "decodeMiniLilacMigrationUiPrefix",
-    "decodeMiniLilacModelTranscript",
-    "decodeMiniLilacUiTranscript",
-    "decodeMiniLilacHistoryUserMessage",
-    "decodeMiniLilacCommandRequest",
-    "decodeMiniLilacSteeringCommandRequest",
-    "decodeMiniLilacSuperJsonPayload",
-    "decodeMiniMainClaudeBindingPromotion",
-    "decodeMiniNamedClaudeBindingPromotion",
-  ].map((exportName) => ({
-    module: "src/sqlite-persistence-codec.ts",
-    exportName,
-  })),
-  {
-    module: "src/sqlite-transcript-projection.ts",
-    exportName: "validateMiniLilacPersistedSuperJsonValue",
-  },
-  {
-    module: "src/sqlite-history-persistence-codec.ts",
-    exportName: "decodeMiniLilacStructuralHistoryRow",
-  },
-  {
-    module: "src/sqlite-history-persistence-codec.ts",
-    exportName: "decodeMiniLilacStructuralHistoryRows",
-  },
-  MINI_SQLITE_MIGRATION_RUN_RESULT_DECODER.identity,
-];
-
-const MINI_SQLITE_STORE_RESULT_APIS = [
-  "MiniLilacSqliteStore.decodeStructuralHistoryRow",
-  "MiniLilacSqliteStore.decodeStructuralHistoryRows",
-  "MiniLilacSqliteStore.getTodosResult",
-  "MiniLilacSqliteStore.getModelMessagesResult",
-  "MiniLilacSqliteStore.getModelTranscriptResult",
-  "MiniLilacSqliteStore.getUiMessagesResult",
-  "MiniLilacSqliteStore.getUiTranscriptResult",
-  "MiniLilacSqliteStore.getHistoryStoreMetadataResult",
-  "MiniLilacSqliteStore.getWorkspaceForSessionResult",
-  "MiniLilacSqliteStore.listWorkspacesResult",
-  "MiniLilacSqliteStore.listWorkspaceSnapshotsResult",
-  "MiniLilacSqliteStore.listWorkspaceSnapshotGroupsResult",
-  "MiniLilacSqliteStore.getWorkspaceSnapshotResult",
-  "MiniLilacSqliteStore.getHistoryStateResult",
-  "MiniLilacSqliteStore.getHistoryStateModelMessagesResult",
-  "MiniLilacSqliteStore.getHistoryStateUiMessagesResult",
-  "MiniLilacSqliteStore.getCurrentHistoryStateResult",
-  "MiniLilacSqliteStore.getSessionHistoryResult",
-  "MiniLilacSqliteStore.getHistoryNavigationResult",
-  "MiniLilacSqliteStore.findLatestUndoableUserTransitionResult",
-  "MiniLilacSqliteStore.peekHistoryRedoResult",
-  "MiniLilacSqliteStore.listHistoryTopologyResult",
-  "MiniLilacSqliteStore.getHistoryAccountingResult",
-  "MiniLilacSqliteStore.getHistoryOperationResult",
-  "MiniLilacSqliteStore.listHistoryOperationsResult",
-  "MiniLilacSqliteStore.getPendingRunFinalizationResult",
-  "MiniLilacSqliteStore.listPendingRunFinalizationsResult",
-  "MiniLilacSqliteStore.listRecoverableOpenRootRunsResult",
-  "MiniLilacSqliteStore.getHistoryTransitionResult",
-  "readMiniLilacHistoryRecoveryStatusResult",
-].map((exportName) => ({ module: "src/sqlite-store.ts", exportName }));
-
-const MINI_SESSION_SERVICE_RESULT_APIS = [
-  "SessionService.capturePersistenceResult",
-  "SessionService.capturePersistencePromise",
-  "SessionService.createSessionResult",
-  "SessionService.getSnapshotResult",
-  "SessionService.listSessionsResult",
-  "SessionService.getMessagesResult",
-  "SessionService.getSessionResumeResult",
-  "SessionService.getTodosResult",
-  "SessionService.getRunResult",
-  "SessionService.startPromptResult",
-  "SessionService.replayRunResult",
-  "SessionService.steerResult",
-  "SessionService.interruptQueuedSteeringResult",
-  "SessionService.cancelResult",
-  "SessionService.undoResult",
-  "SessionService.redoResult",
-  "SessionService.compactResult",
-  "SessionService.cancelCompactionResult",
-  "SessionService.updateSessionBindingsResult",
-].map((exportName) => ({ module: "src/session-service.ts", exportName }));
-
-const MINI_RUNTIME_OPERATIONAL_RESULT_APIS = [
-  ...["decodeRuntimeConfig", "decodeRuntimeConfigYaml", "loadRuntimeConfigResult"].map(
-    (exportName) => ({ module: "src/config.ts", exportName }),
-  ),
-  ...[
-    "decodeProviderConfig",
-    "decodeProviderAuth",
-    "decodeProviderConfigYaml",
-    "loadProviderConfigResult",
-    "loadProviderAuthResult",
-    "writeProviderAuthResult",
-    "createAiProviderRegistryResult",
-    "loadProviderRegistryResult",
-  ].map((exportName) => ({ module: "src/providers.ts", exportName })),
-  ...[
-    "parseModelRefResult",
-    "resolveLanguageModelResult",
-    "ModelCatalog.getResult",
-    "createModelCatalogResult",
-  ].map((exportName) => ({ module: "src/model-catalog.ts", exportName })),
-  ...["MiniLilacSkillCatalogSnapshot.loadResult", "MiniLilacSkillCatalog.discoverResult"].map(
-    (exportName) => ({ module: "src/skills.ts", exportName }),
-  ),
-  ...["decodeWebfetchInput", "executeWebfetchResult"].map((exportName) => ({
-    module: "src/webfetch.ts",
-    exportName,
-  })),
-  {
-    module: "src/workspace-history-store.ts",
-    exportName: "createWorkspaceHistoryStore",
-  },
-  ...[
-    "WorkspaceHistoryStore.capabilityResult",
-    "WorkspaceHistoryStore.withWorkspaceLockResult",
-    "WorkspaceHistoryStore.withWorkspaceLockOutcome.withStoreLock.<callback@2>.captureResult",
-    "WorkspaceHistoryStore.withWorkspaceLockOutcome.withStoreLock.<callback@2>.lockedStore.invalidateCaptureCacheResult",
-    "WorkspaceHistoryStore.captureResult",
-    "WorkspaceHistoryStore.restoreResult",
-    "WorkspaceHistoryStore.resumeRestoreResult",
-    "WorkspaceHistoryStore.deleteRestorePlanResult",
-    "WorkspaceHistoryStore.cleanupRestorePlansResult",
-    "WorkspaceHistoryStore.verifySnapshotResult",
-    "WorkspaceHistoryStore.objectExistsResult",
-    "WorkspaceHistoryStore.reconcileSnapshotRefResult",
-    "WorkspaceHistoryStore.reconcileExpectedSnapshotRefsResult",
-    "WorkspaceHistoryStore.cleanupOrphanSnapshotRefsResult",
-    "WorkspaceHistoryStore.getObjectAccountingResult",
-    "WorkspaceHistoryStore.runMaintenanceResult",
-    "WorkspaceHistoryStore.cleanupStaleRestoreArtifactsResult",
-  ].map((exportName) => ({
-    module: "src/workspace-history-store.ts",
-    exportName,
-  })),
-] as const satisfies readonly SymbolIdentity[];
-
 const UTILS_SQLITE_TRANSACTION_ADAPTER_IDENTITY = {
   package: "@stanley2058/lilac-utils",
   module: "persistence.ts",
@@ -4247,23 +3200,6 @@ const CORE_SQLITE_TRANSACTION_CONSUMERS = [
     adapter: UTILS_SQLITE_TRANSACTION_ADAPTER_IDENTITY,
   }),
 );
-
-const MINI_SQLITE_TRANSACTION_CONSUMERS = [
-  {
-    identity: {
-      module: "src/sqlite-store.ts",
-      exportName: "MiniLilacSqliteStore.initializeSchemaResult",
-    },
-    adapter: UTILS_SQLITE_TRANSACTION_ADAPTER_IDENTITY,
-  },
-  {
-    identity: {
-      module: "src/sqlite-store.ts",
-      exportName: "MiniLilacSqliteStore.runStoreTransactionResult",
-    },
-    adapter: UTILS_SQLITE_TRANSACTION_ADAPTER_IDENTITY,
-  },
-] as const satisfies readonly SqliteTransactionConsumerRegistration[];
 
 const CORE_EVENT_DELIVERY_CONSUMERS = [
   {
@@ -4378,137 +3314,89 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
     "architecture/open-protocol-normalization": OPEN_PROTOCOL_RULE_ZONES.get(root) ?? [],
     "architecture/complete-event-codec-registry":
       root === "packages/event-bus" ? [{ include: "lilac-codecs.ts" }] : [],
-    "architecture/complete-tool-codec-registry":
-      root === "apps/mini-lilac-tui" ? [{ include: "src/tool-observation-projection.ts" }] : [],
-    "architecture/result-decoder-contract":
-      root === "apps/mini-lilac-tui"
-        ? [{ include: "src/tool-observation-projection.ts" }]
-        : root === "packages/mini-lilac-runtime"
+    "architecture/complete-tool-codec-registry": [],
+    "architecture/result-decoder-contract": [
+      ...new Set((WAVE_2_RESULT_DECODERS.get(root) ?? []).map(({ identity }) => identity.module)),
+    ].map((include) => ({ include })),
+    "architecture/unknown-free-module": [],
+    "architecture/persisted-codec-contract":
+      root === "packages/tool-results"
+        ? [
+            {
+              include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity.module,
+            },
+            {
+              include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CONSUMER.identity.module,
+            },
+          ]
+        : root === "apps/core"
           ? [
               {
-                include: MINI_SQLITE_MIGRATION_RUN_RESULT_DECODER.identity.module,
+                include: "src/conversation/thread-summary-persistence-codec.ts",
+              },
+              { include: "src/conversation/thread-store.ts" },
+              { include: "src/transcript/transcript-persistence-codec.ts" },
+              { include: "src/transcript/transcript-store.ts" },
+              { include: CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER.identity.module },
+              { include: "src/surface/bridge/agent-run-journal/index.ts" },
+              { include: "src/migration/frozen-graceful-restart-store.ts" },
+              {
+                include: "src/workflow/workflow-artifact-persistence-codec.ts",
+              },
+              { include: "src/workflow/workflow-persistence-codec.ts" },
+              { include: "src/workflow/workflow-artifact-store.ts" },
+              { include: "src/workflow/durable-workflow-store.ts" },
+              {
+                include: "scripts/legacy-graceful-restart-blob-migration.ts",
+              },
+              { include: "scripts/legacy-workflow-blob-migration.ts" },
+              {
+                include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC.identity.module,
+              },
+              {
+                include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER.identity.module,
               },
             ]
-          : [
-              ...new Set(
-                (WAVE_2_RESULT_DECODERS.get(root) ?? []).map(({ identity }) => identity.module),
-              ),
-            ].map((include) => ({ include })),
-    "architecture/unknown-free-module":
-      root === "apps/mini-lilac-tui"
-        ? TUI_UNKNOWN_FREE_MODULES.map(({ module }) => ({ include: module }))
-        : [],
-    "architecture/persisted-codec-contract":
-      root === "apps/acp-controller"
-        ? [{ include: "run-store.ts" }]
-        : root === "apps/mini-lilac-tui"
-          ? [{ include: "src/preferences.ts" }]
-          : root === "packages/tool-results"
+          : root === "packages/utils"
             ? [
                 {
-                  include: TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity.module,
+                  include: UTILS_CODEX_TOKENS_PERSISTED_CODEC.identity.module,
                 },
                 {
-                  include: TOOL_RESULT_ARTIFACT_METADATA_CONSUMER.identity.module,
-                },
-                {
-                  include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity.module,
-                },
-                {
-                  include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CONSUMER.identity.module,
+                  include: UTILS_CODEX_TOKENS_PERSISTED_CONSUMER.identity.module,
                 },
               ]
-            : root === "apps/core"
-              ? [
-                  {
-                    include: "src/conversation/thread-summary-persistence-codec.ts",
-                  },
-                  { include: "src/conversation/thread-store.ts" },
-                  { include: "src/transcript/transcript-persistence-codec.ts" },
-                  { include: "src/transcript/transcript-store.ts" },
-                  { include: CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER.identity.module },
-                  { include: "src/surface/bridge/agent-run-journal/index.ts" },
-                  { include: "src/migration/frozen-graceful-restart-store.ts" },
-                  {
-                    include: "src/workflow/workflow-artifact-persistence-codec.ts",
-                  },
-                  { include: "src/workflow/workflow-persistence-codec.ts" },
-                  { include: "src/workflow/workflow-artifact-store.ts" },
-                  { include: "src/workflow/durable-workflow-store.ts" },
-                  {
-                    include: "scripts/legacy-graceful-restart-blob-migration.ts",
-                  },
-                  { include: "scripts/legacy-workflow-blob-migration.ts" },
-                  {
-                    include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC.identity.module,
-                  },
-                  {
-                    include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER.identity.module,
-                  },
-                ]
-              : root === "packages/mini-lilac-runtime"
-                ? [
-                    { include: "src/workspace-history-persistence-codec.ts" },
-                    { include: "src/workspace-history-store.ts" },
-                    { include: "src/sqlite-persistence-codec.ts" },
-                    { include: "src/sqlite-history-persistence-codec.ts" },
-                    { include: "src/sqlite-store.ts" },
-                    { include: "src/sqlite-todo-persistence-codec.ts" },
-                  ]
-                : root === "packages/utils"
-                  ? [
-                      {
-                        include: UTILS_CODEX_TOKENS_PERSISTED_CODEC.identity.module,
-                      },
-                      {
-                        include: UTILS_CODEX_TOKENS_PERSISTED_CONSUMER.identity.module,
-                      },
-                    ]
-                  : [],
+            : [],
     "architecture/persisted-codec-fixture-catalog":
-      root === "apps/acp-controller"
-        ? [{ include: "run-store.ts" }]
-        : root === "apps/mini-lilac-tui"
-          ? [{ include: "src/preferences.ts" }]
-          : root === "packages/tool-results"
+      root === "packages/tool-results"
+        ? [
+            {
+              include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity.module,
+            },
+          ]
+        : root === "apps/core"
+          ? [
+              {
+                include: "src/conversation/thread-summary-persistence-codec.ts",
+              },
+              { include: "src/transcript/transcript-persistence-codec.ts" },
+              { include: "src/surface/bridge/agent-run-journal/index.ts" },
+              { include: "src/migration/frozen-graceful-restart-store.ts" },
+              {
+                include: "src/workflow/workflow-artifact-persistence-codec.ts",
+              },
+              { include: "src/workflow/workflow-persistence-codec.ts" },
+              {
+                include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC.identity.module,
+              },
+            ]
+          : root === "packages/utils"
             ? [
                 {
-                  include: TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity.module,
-                },
-                {
-                  include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity.module,
+                  include: UTILS_CODEX_TOKENS_PERSISTED_CODEC.identity.module,
                 },
               ]
-            : root === "apps/core"
-              ? [
-                  {
-                    include: "src/conversation/thread-summary-persistence-codec.ts",
-                  },
-                  { include: "src/transcript/transcript-persistence-codec.ts" },
-                  { include: "src/surface/bridge/agent-run-journal/index.ts" },
-                  { include: "src/migration/frozen-graceful-restart-store.ts" },
-                  {
-                    include: "src/workflow/workflow-artifact-persistence-codec.ts",
-                  },
-                  { include: "src/workflow/workflow-persistence-codec.ts" },
-                  {
-                    include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC.identity.module,
-                  },
-                ]
-              : root === "packages/mini-lilac-runtime"
-                ? [
-                    { include: "src/workspace-history-persistence-codec.ts" },
-                    { include: "src/sqlite-persistence-codec.ts" },
-                    { include: "src/sqlite-history-persistence-codec.ts" },
-                    { include: "src/sqlite-todo-persistence-codec.ts" },
-                  ]
-                : root === "packages/utils"
-                  ? [
-                      {
-                        include: UTILS_CODEX_TOKENS_PERSISTED_CODEC.identity.module,
-                      },
-                    ]
-                  : [],
+            : [],
     "architecture/sqlite-transaction-adapter-contract":
       root === "packages/utils" ? [{ include: "persistence.ts" }] : [],
     "architecture/sqlite-transaction-consumer":
@@ -4516,11 +3404,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
         ? [
             ...new Set(CORE_SQLITE_TRANSACTION_CONSUMERS.map(({ identity }) => identity.module)),
           ].map((include) => ({ include }))
-        : root === "packages/mini-lilac-runtime"
-          ? [
-              ...new Set(MINI_SQLITE_TRANSACTION_CONSUMERS.map(({ identity }) => identity.module)),
-            ].map((include) => ({ include }))
-          : [],
+        : [],
     "architecture/no-result-err-in-sqlite-callback":
       root === "apps/core"
         ? [
@@ -4533,11 +3417,9 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             { include: "src/workflow/durable-workflow-store.ts" },
             { include: "src/workflow/workflow-migrations.ts" },
           ]
-        : root === "packages/mini-lilac-runtime"
-          ? [{ include: "src/sqlite-store.ts" }]
-          : root === "packages/utils"
-            ? [{ include: "persistence.ts" }]
-            : [],
+        : root === "packages/utils"
+          ? [{ include: "persistence.ts" }]
+          : [],
     "architecture/raw-event-message-boundary":
       root === "packages/event-bus"
         ? [{ include: "raw-bus.ts" }, { include: "redis-streams-bus.ts" }]
@@ -4551,84 +3433,50 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
     ...EMPTY_POLICY,
     ruleZones,
     eventCodecRegistries: root === "packages/event-bus" ? [EVENT_BUS_CODEC_REGISTRY] : [],
-    toolCodecRegistries: root === "apps/mini-lilac-tui" ? [TUI_TOOL_CODEC_REGISTRY] : [],
-    resultDecoders:
-      root === "apps/mini-lilac-tui"
-        ? [TUI_RESULT_DECODER]
-        : root === "packages/mini-lilac-runtime"
-          ? [MINI_SQLITE_MIGRATION_RUN_RESULT_DECODER]
-          : (WAVE_2_RESULT_DECODERS.get(root) ?? []),
-    unknownFreeModules: root === "apps/mini-lilac-tui" ? TUI_UNKNOWN_FREE_MODULES : [],
+    toolCodecRegistries: [],
+    resultDecoders: WAVE_2_RESULT_DECODERS.get(root) ?? [],
+    unknownFreeModules: [],
     persistedCodecs:
-      root === "apps/acp-controller"
-        ? [
-            ACP_RUN_RECORD_PERSISTED_CODEC,
-            ACP_RUN_CANCELLATION_PERSISTED_CODEC,
-            ACP_SESSION_INDEX_PERSISTED_CODEC,
-          ]
-        : root === "apps/mini-lilac-tui"
-          ? [TUI_BINDING_PREFERENCES_PERSISTED_CODEC]
-          : root === "packages/tool-results"
-            ? [TOOL_RESULT_ARTIFACT_METADATA_CODEC, BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC]
-            : root === "packages/utils"
-              ? [UTILS_CODEX_TOKENS_PERSISTED_CODEC]
-              : root === "apps/core"
-                ? [
-                    ...CORE_THREAD_PERSISTED_CODECS,
-                    ...CORE_TRANSCRIPT_PERSISTED_CODECS,
-                    CORE_RESOURCE_PERSISTED_CODEC,
-                    CORE_AGENT_RUN_OPENED_PERSISTED_CODEC,
-                    CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC,
-                    CORE_AGENT_RUN_TERMINAL_PERSISTED_CODEC,
-                    CORE_GRACEFUL_RESTART_PERSISTED_CODEC,
-                    CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC,
-                    CORE_WORKFLOW_ROW_PERSISTED_CODEC,
-                    CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC,
-                  ]
-                : root === "packages/mini-lilac-runtime"
-                  ? [
-                      ...MINI_WORKSPACE_HISTORY_PERSISTED_CODECS,
-                      ...MINI_SQLITE_TRANSCRIPT_PERSISTED_CODECS,
-                      MINI_SQLITE_TODO_PERSISTED_CODEC,
-                      MINI_SQLITE_STRUCTURAL_HISTORY_PERSISTED_CODEC,
-                    ]
-                  : [],
+      root === "packages/tool-results"
+        ? [BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC]
+        : root === "packages/utils"
+          ? [UTILS_CODEX_TOKENS_PERSISTED_CODEC]
+          : root === "apps/core"
+            ? [
+                ...CORE_THREAD_PERSISTED_CODECS,
+                ...CORE_TRANSCRIPT_PERSISTED_CODECS,
+                CORE_RESOURCE_PERSISTED_CODEC,
+                CORE_AGENT_RUN_OPENED_PERSISTED_CODEC,
+                CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC,
+                CORE_AGENT_RUN_TERMINAL_PERSISTED_CODEC,
+                CORE_GRACEFUL_RESTART_PERSISTED_CODEC,
+                CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC,
+                CORE_WORKFLOW_ROW_PERSISTED_CODEC,
+                CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC,
+              ]
+            : [],
     persistedStoreConsumers:
-      root === "apps/acp-controller"
-        ? ACP_PERSISTED_CONSUMERS
-        : root === "apps/mini-lilac-tui"
-          ? [TUI_BINDING_PREFERENCES_PERSISTED_CONSUMER]
-          : root === "packages/tool-results"
-            ? [TOOL_RESULT_ARTIFACT_METADATA_CONSUMER, BLOB_TOOL_RESULT_ARTIFACT_METADATA_CONSUMER]
-            : root === "packages/utils"
-              ? [UTILS_CODEX_TOKENS_PERSISTED_CONSUMER]
-              : root === "apps/core"
-                ? [
-                    ...CORE_THREAD_PERSISTED_CONSUMERS,
-                    ...CORE_TRANSCRIPT_PERSISTED_CONSUMERS,
-                    CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER,
-                    CORE_RESOURCE_PERSISTED_CONSUMER,
-                    CORE_AGENT_RUN_JOURNAL_PERSISTED_CONSUMER,
-                    CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER,
-                    CORE_AGENT_RUN_PREVIOUS_CHECKPOINT_PERSISTED_CONSUMER,
-                    ...CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS,
-                    CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER,
-                    CORE_WORKFLOW_ARTIFACT_PERSISTED_CONSUMER,
-                    CORE_LEGACY_WORKFLOW_BLOB_MIGRATION_PERSISTED_CONSUMER,
-                    CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER,
-                    ...CORE_WORKFLOW_ROW_PERSISTED_CONSUMERS,
-                  ]
-                : root === "packages/mini-lilac-runtime"
-                  ? [
-                      ...MINI_WORKSPACE_HISTORY_PERSISTED_CONSUMERS,
-                      ...MINI_SQLITE_TRANSCRIPT_PERSISTED_CONSUMERS,
-                      MINI_SQLITE_TODO_PERSISTED_CONSUMER,
-                      MINI_SQLITE_TODO_STORE_PERSISTED_CONSUMER,
-                      MINI_SQLITE_STRUCTURAL_HISTORY_PERSISTED_CONSUMER,
-                      ...MINI_SQLITE_STRUCTURAL_HISTORY_ROWS_PERSISTED_CONSUMERS,
-                      MINI_SQLITE_HISTORY_RECOVERY_PERSISTED_CONSUMER,
-                    ]
-                  : [],
+      root === "packages/tool-results"
+        ? [BLOB_TOOL_RESULT_ARTIFACT_METADATA_CONSUMER]
+        : root === "packages/utils"
+          ? [UTILS_CODEX_TOKENS_PERSISTED_CONSUMER]
+          : root === "apps/core"
+            ? [
+                ...CORE_THREAD_PERSISTED_CONSUMERS,
+                ...CORE_TRANSCRIPT_PERSISTED_CONSUMERS,
+                CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER,
+                CORE_RESOURCE_PERSISTED_CONSUMER,
+                CORE_AGENT_RUN_JOURNAL_PERSISTED_CONSUMER,
+                CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER,
+                CORE_AGENT_RUN_PREVIOUS_CHECKPOINT_PERSISTED_CONSUMER,
+                ...CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS,
+                CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER,
+                CORE_WORKFLOW_ARTIFACT_PERSISTED_CONSUMER,
+                CORE_LEGACY_WORKFLOW_BLOB_MIGRATION_PERSISTED_CONSUMER,
+                CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER,
+                ...CORE_WORKFLOW_ROW_PERSISTED_CONSUMERS,
+              ]
+            : [],
     sqliteTransactionAdapters:
       root === "packages/utils"
         ? [
@@ -4654,12 +3502,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             },
           ]
         : [],
-    sqliteTransactionConsumers:
-      root === "apps/core"
-        ? CORE_SQLITE_TRANSACTION_CONSUMERS
-        : root === "packages/mini-lilac-runtime"
-          ? MINI_SQLITE_TRANSACTION_CONSUMERS
-          : [],
+    sqliteTransactionConsumers: root === "apps/core" ? CORE_SQLITE_TRANSACTION_CONSUMERS : [],
     rawEventMessageBoundaries:
       root === "packages/event-bus"
         ? [
@@ -4814,10 +3657,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
       ...(root === "packages/tool-results"
         ? ([
             {
-              identity: TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity,
-              category: "persistence",
-            },
-            {
               identity: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity,
               category: "persistence",
             },
@@ -4842,29 +3681,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                 exportName: "normalizeLegacyBatchArguments",
               },
               category: "request",
-            },
-          ] satisfies readonly BoundaryDecoder[])
-        : []),
-      ...(root === "packages/mini-lilac-runtime"
-        ? ([
-            ...MINI_WORKSPACE_HISTORY_PERSISTED_CODECS.map(({ identity }) => ({
-              identity,
-              category: "persistence" as const,
-            })),
-            ...MINI_SQLITE_BOUNDARY_DECODER_IDENTITIES.map((identity) => ({
-              identity,
-              category: "persistence" as const,
-            })),
-            {
-              identity: MINI_SQLITE_TODO_PERSISTED_CODEC.identity,
-              category: "persistence" as const,
-            },
-            {
-              identity: {
-                module: "src/workspace-history-persistence-codec.ts",
-                exportName: "detectFormatVersion",
-              },
-              category: "persistence" as const,
             },
           ] satisfies readonly BoundaryDecoder[])
         : []),
@@ -5196,18 +4012,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               },
               reason: "Carries or formats only an opaque bundled-runner exception value.",
             })),
-          ]
-        : []),
-      ...(root === "packages/mini-lilac-runtime"
-        ? [
-            {
-              identity: {
-                module: "src/session-service.ts",
-                exportName: "mapMiniLilacPersistenceFailure",
-              },
-              reason:
-                "Classifies an opaque caught persistence exception without treating it as domain data.",
-            },
           ]
         : []),
       ...(INTEGRATED_OPAQUE_UNKNOWN.get(root) ?? []),
@@ -5549,22 +4353,8 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
         : []),
       ...(root === "packages/tool-results"
         ? [
-            TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity,
-            TOOL_RESULT_ARTIFACT_METADATA_CONSUMER.identity,
             BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity,
             BLOB_TOOL_RESULT_ARTIFACT_METADATA_CONSUMER.identity,
-            ...[
-              "init",
-              "create",
-              "createFromFile",
-              "createFromStream",
-              "read",
-              "readWindow",
-              "maintain",
-            ].map((method) => ({
-              module: "src/tool-result-artifact-store.ts",
-              exportName: `createToolResultArtifactStore.${method}`,
-            })),
             ...[
               "init",
               "create",
@@ -5579,21 +4369,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             })),
           ]
         : []),
-      ...(root === "packages/mini-lilac-runtime"
-        ? [
-            ...MINI_RUNTIME_OPERATIONAL_RESULT_APIS,
-            ...MINI_SQLITE_TRANSACTION_CONSUMERS.map(({ identity }) => identity),
-            ...MINI_WORKSPACE_HISTORY_PERSISTED_CODECS.map(({ identity }) => identity),
-            ...MINI_WORKSPACE_HISTORY_PERSISTED_CONSUMERS.map(({ identity }) => identity),
-            ...MINI_SQLITE_BOUNDARY_DECODER_IDENTITIES,
-            ...MINI_SQLITE_TRANSCRIPT_PERSISTED_CONSUMERS.map(({ identity }) => identity),
-            ...MINI_SQLITE_STORE_RESULT_APIS,
-            ...MINI_SESSION_SERVICE_RESULT_APIS,
-            MINI_SQLITE_TODO_PERSISTED_CODEC.identity,
-            MINI_SQLITE_TODO_PERSISTED_CONSUMER.identity,
-            MINI_SQLITE_TODO_STORE_PERSISTED_CONSUMER.identity,
-          ]
-        : []),
       ...(root === "packages/utils"
         ? [{ module: "persistence.ts", exportName: "runBunSqliteTransaction" }]
         : []),
@@ -5602,14 +4377,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             {
               module: "claude-code-run.ts",
               exportName: "MaterializedClaudeCodeRun.createUtilityModelResult",
-            },
-          ]
-        : []),
-      ...(root === "apps/mini-lilac-tui"
-        ? [
-            {
-              module: "src/tool-observation-projection.ts",
-              exportName: "decodeKnownToolObservation",
             },
           ]
         : []),
@@ -5901,7 +4668,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "bebe929b0f0144fb4b307fa377da6793f79ffb6b605dfbcf77edfb5e90ecb003";
+  "a31e7b6b4e1bb9ecfeeee89a6aa7e3128ade2df183407adb18289e50e823701a";
 
 export const architectureManifest = {
   version: 1,

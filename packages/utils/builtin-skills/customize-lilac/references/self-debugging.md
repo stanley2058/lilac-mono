@@ -8,8 +8,8 @@ Use the deployed instance as the ground truth for what code exists and what stat
    the current Lilac repository root.
 2. Read `<source-root>/build/build-info.json` when present. Record its version, commit, dirty flag, and
    build time without inventing values for absent fields.
-3. Confirm the relevant process or command when the question depends on which product is running. Core's
-   container command starts `apps/core/src/runtime/main.ts`; Mini and ACP have separate owners.
+3. Confirm the relevant process or command when the question depends on the running entry point. Core's
+   container command starts `apps/core/src/runtime/main.ts`.
 
 This step is complete when the answer names the inspected source root and build identity, or states which
 identity evidence is unavailable.

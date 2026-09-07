@@ -23,31 +23,28 @@ const workspacePackages: readonly PackageManifest[] = await Promise.all(
 const packagesByName = new Map(workspacePackages.map((manifest) => [manifest.name, manifest]));
 
 describe("product test workspace selections", () => {
-  test.each(["test:core", "test:mini"])(
-    "%s includes every selected workspace dependency",
-    (script) => {
-      const command = rootPackage.scripts?.[script];
-      expect(command).toBeDefined();
-      const selected = new Set(
-        [...(command ?? "").matchAll(/--filter='([^']+)'/gu)].map((match) => match[1]),
-      );
-      expect(selected.size).toBeGreaterThan(0);
-      const missing: string[] = [];
-      for (const name of selected) {
-        const manifest = name ? packagesByName.get(name) : undefined;
-        expect(manifest, `Unknown workspace selected by ${script}: ${name}`).toBeDefined();
-        const dependencies = {
-          ...manifest?.dependencies,
-          ...manifest?.devDependencies,
-          ...manifest?.peerDependencies,
-          ...manifest?.optionalDependencies,
-        };
-        for (const dependency of Object.keys(dependencies)) {
-          if (!packagesByName.has(dependency) || selected.has(dependency)) continue;
-          missing.push(`${name} -> ${dependency}`);
-        }
+  test.each(["test:core"])("%s includes every selected workspace dependency", (script) => {
+    const command = rootPackage.scripts?.[script];
+    expect(command).toBeDefined();
+    const selected = new Set(
+      [...(command ?? "").matchAll(/--filter='([^']+)'/gu)].map((match) => match[1]),
+    );
+    expect(selected.size).toBeGreaterThan(0);
+    const missing: string[] = [];
+    for (const name of selected) {
+      const manifest = name ? packagesByName.get(name) : undefined;
+      expect(manifest, `Unknown workspace selected by ${script}: ${name}`).toBeDefined();
+      const dependencies = {
+        ...manifest?.dependencies,
+        ...manifest?.devDependencies,
+        ...manifest?.peerDependencies,
+        ...manifest?.optionalDependencies,
+      };
+      for (const dependency of Object.keys(dependencies)) {
+        if (!packagesByName.has(dependency) || selected.has(dependency)) continue;
+        missing.push(`${name} -> ${dependency}`);
       }
-      expect(missing, `${script} omits workspace dependencies`).toEqual([]);
-    },
-  );
+    }
+    expect(missing, `${script} omits workspace dependencies`).toEqual([]);
+  });
 });

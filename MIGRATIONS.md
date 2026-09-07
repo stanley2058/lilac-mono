@@ -196,8 +196,7 @@ S3 credentials are names of environment variables in config; literal credentials
 Core now emits transient tool-result references as `resource://t1_<128-bit-id>`. Existing
 `tool-result://<uuid>` references remain readable by Core until their ordinary TTL or eviction removes
 them, so this URI change needs no persisted-data migration. Tool-result metadata, session scope,
-encryption, quota accounting, and expiry remain separate from retained `resource://r1_` records. Mini
-Lilac continues to emit and consume `tool-result://` references.
+encryption, quota accounting, and expiry remain separate from retained `resource://r1_` records.
 
 ## Redis Managed Event Delivery V2
 
@@ -215,122 +214,6 @@ export it before switching versions.
 Durable subscriptions no longer accept a start offset and always handle only entries added after their v2
 physical group is created. Publisher-supplied approximate `MAXLEN` retention is removed. Expiring output
 streams remain tail-only, and supported trimming preserves all managed pending frontiers.
-
-## Historical Mini Lilac Database Schema 3
-
-The schema 2-to-3 step preserves sessions, runs, commands, and todos, and replaces mutable full
-transcript rows and full-prefix undo checkpoint blobs with immutable, hash-chained model/UI nodes.
-Session heads and undo checkpoints reference those chains, so common prefixes are shared while legacy
-divergent checkpoint branches remain usable. The step drops `run_chunks`, `model_transcript`, and
-`ui_messages` and does not run `VACUUM`. When schema 3 was current, the transaction set `user_version`
-to 3 only after migration succeeded and versions other than 0, 2, and 3 were rejected. The current
-schema 8 startup path described below supersedes that version acceptance and final-version behavior.
-
-Stream chunks are no longer durable SQLite state. An active session actor keeps a monotonic live log
-for replay, tail reconnect, resume projection, and final UI reconstruction. The log is discarded at
-run finalization. A process crash therefore retains no partial chunks and startup marks interrupted
-runs as errors; finalized canonical transcripts remain durable.
-
-## Historical Mini Lilac Database Schema 4
-
-The schema 3-to-4 step rebuilds the
-`sessions` table to widen its status `CHECK` with `compacting` and to add
-`input_tokens_estimated`. Every other table cascades from `sessions`, so the rebuild follows
-SQLite's documented recipe: `foreign_keys` off and `legacy_alter_table` on around the transaction,
-with `PRAGMA foreign_key_check` verified afterwards. No row content changes; existing sessions get
-`input_tokens_estimated = 0`. When schema 4 was current, versions other than 0, 2, 3, and 4 were
-rejected, and a schema 2 database migrated through 3 to 4 in one startup.
-
-Behaviour changes that accompany the schema:
-
-- Manual compaction sets the session status to `compacting` for its duration instead of leaving it
-  `idle`, and `commitCompaction` accepts `compacting` as a valid pre-commit state. An interrupted
-  compaction is recovered to `idle` at startup rather than to `error`, because compaction commits
-  only on success and therefore never leaves a partial transcript.
-- A committed manual compaction now writes the post-compaction token estimate to `input_tokens`
-  with `input_tokens_estimated = 1`, where it previously wrote `NULL`. The next turn's reported
-  usage clears the flag.
-
-## Historical Mini Lilac Database Schema 5
-
-The schema 4-to-5 step introduces workspace-owned durable history while preserving sessions, runs,
-commands, todos, and readable transcripts. It recomputes every transcript-node hash from its parent
-hash and serialized value, canonicalizes stored session working directories, creates one `workspaces`
-row per canonical directory, and rebuilds session/run ownership around that workspace identity.
-
-Legacy user checkpoints become immutable history states and prompt/steer transitions. Because schema
-4 had no workspace snapshots, every migrated state records `workspace_status = unavailable` and
-`workspace_unavailable_reason = legacy-migration`; migration does not claim that the filesystem can be
-restored. A linear active prompt remains an open transition and can recover. A readable quiescent
-history with no checkpoints, or with unusual checkpoint ordering, is preserved as one current
-migration state with undo disabled; unusual ordering while a run is active is rejected. Structural
-foreign-key, transcript-parent, active-run ownership, and unreadable persisted-data failures abort and
-roll back the migration. After successful conversion, `user_checkpoints` is dropped.
-
-The legacy migration codec also removes persisted `data-session` UI parts, converts the old
-`data-compaction.data.status` discriminant to `phase` (adding `outcome: compacted` for completed
-events), and removes non-user UI messages left empty by that normalization. This compatibility is
-specific to legacy database migration; it does not make the old protocol shape valid for current
-transcript writes or reads.
-
-## Historical Mini Lilac Database Schema 6
-
-The schema 5-to-6 step rebuilds `history_states` and `history_operations` without changing their rows.
-It widens the unavailable/skip reason `CHECK` constraints to admit `platform-unsupported`, preserving
-rowids, indexes, history topology, and all existing content. Fresh databases in the current startup
-path are created directly with the schema 6 table set before later migrations are applied.
-
-## Mini Lilac Protocol: compaction lifecycle
-
-`miniLilacCompactionEventSchema` replaces its terminal-only `status: "completed" | "failed"` field
-with a `phase` discriminant (`started`, `progress`, `completed`, `failed`, `cancelled`) plus
-`outcome`, `progress`, `summary`, `elapsedMs`, `durationMs`, and `modelCalls`. Persisted
-`data-compaction` UI parts written by older builds carry `status` and no longer parse; they are
-rejected at the current transcript boundary rather than silently dropped. The legacy database
-migration normalization described under schema 5 is the only compatibility exception.
-
-`POST /sessions/:id/compact` returns a UI message event stream instead of a JSON body. Admission
-still happens before the stream opens, so a non-quiescent session is still a 409.
-
-The response stream is a view of the compaction, not its owner. Abandoning the request only detaches
-the client: the compaction continues and still commits, and reattaching to it is not supported.
-Stopping it is `POST /sessions/:id/compact/cancel`, which answers `{"status":"cancelling"}` or
-`{"status":"inactive"}`; the terminal `cancelled` event then arrives on any stream still attached.
-Clients that previously cancelled by aborting the request will no longer stop anything.
-
-`compacting` is a session status, and every admission path — prompts included — now requires
-`idle`/`error`. A prompt sent during a compaction is rejected rather than raced.
-
-## Mini Lilac Database Schema 7
-
-Schema 7 adds provider-family metadata to history states and pending finalizations, plus
-exact-history-state Claude bindings and bounded attempt records for Mini main sessions. Existing
-history has unknown provider-family metadata and no native binding, so its next Claude turn starts a
-fresh persisted session rather than guessing that native state is synchronized.
-
-Successful Claude turns promote a binding only with their committed terminal history state. Main
-bindings remain attached to retained history states, allowing restart, undo, redo, and branch
-navigation to select an exact clean native base. Active attempts left by a crash become uncertain at
-startup and are never promoted.
-
-## Mini Lilac Database Schema 8
-
-Mini Lilac migrates schema 7 databases to schema 8 transactionally at startup. Schema 8 adds one
-current Claude binding and bounded attempt records for named delegated sessions, together
-with pending-finalization promotion metadata. Existing named sessions receive no inferred native
-binding and start fresh on their next eligible Claude turn. Both caller-supplied and generated names
-are eligible; callers continue an automatically named child by reusing the returned name.
-
-Main-session schema 7 behavior is unchanged. Startup recovery marks interrupted named attempts
-uncertain and can finish a canonically verified pending success. Foreign keys are checked before
-`user_version` becomes 8.
-
-The current startup path accepts a fresh version 0 database and persisted schemas 2 through 8;
-schema 1 and every other version are rejected. Fresh databases are created at
-the schema 6 table set, and every supported older database receives all applicable steps through 8
-in one transaction. Migration uses `foreign_keys = OFF` and `legacy_alter_table = ON` for the required
-table rebuilds, verifies foreign keys before setting `user_version = 8`, restores both pragmas, and
-does not expose an intermediate schema as the completed startup state.
 
 <a id="core-transcript-database-schemas-1-9"></a>
 

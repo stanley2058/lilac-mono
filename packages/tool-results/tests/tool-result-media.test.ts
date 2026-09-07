@@ -1,10 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ModelMessage } from "ai";
 
-import {
-  boundToolResultMediaForModelView,
-  toolResultContentDisplayValue,
-} from "../src/tool-result-media";
+import { boundToolResultMediaForModelView } from "../src/tool-result-media";
 
 describe("tool result media", () => {
   it("bounds every inline media representation while preserving remote URLs", () => {
@@ -44,16 +41,6 @@ describe("tool result media", () => {
     });
     expect(JSON.stringify(view)).not.toContain(encoded);
     expect(JSON.stringify(view)).toContain(remoteUrl);
-
-    const toolMessage = messages[0];
-    if (toolMessage?.role !== "tool") throw new Error("missing tool message");
-    const part = toolMessage.content[0];
-    if (part?.type !== "tool-result" || part.output.type !== "content") {
-      throw new Error("missing content output");
-    }
-    const display = JSON.stringify(toolResultContentDisplayValue(part.output));
-    expect(display).not.toContain(encoded);
-    expect(display).toContain(remoteUrl);
   });
 
   it("retains newest media while enforcing the decoded aggregate limit", () => {

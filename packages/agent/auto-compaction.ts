@@ -1420,78 +1420,6 @@ export type AutoCompactionOptions = {
   onCompactionEnd?: (params: AutoCompactionEndEvent) => void;
 } & CompactionStreamHooks;
 
-export type ManualCompactionOptions = {
-  /** Idle persisted transcript to compact. The input array is not mutated. */
-  messages: readonly ModelMessage[];
-
-  /** Model currently associated with the transcript. */
-  currentModel: LanguageModel;
-
-  /** Current model context-window limit. */
-  contextLimit: number;
-
-  /** Context window of `summaryModel`; defaults to `contextLimit`. */
-  summaryContextLimit?: number;
-
-  /** Current model output limit, used to reserve response capacity. */
-  outputLimit?: number;
-
-  /** Compact to this fraction of the context window, clamped to 0.05-0.95 (default: 0.8). */
-  thresholdFraction?: number;
-
-  /** Maximum continuable user/tool turns retained verbatim (default: 2). */
-  keepRecentTurns?: number;
-
-  /** Tail token ceiling; also capped at 25% of the post-compaction input budget (default: 20k). */
-  keepRecentTokens?: number;
-
-  /** Summary model or per-request factory. `current` uses `currentModel` (default: `current`). */
-  summaryModel?: CompactionSummaryModel;
-
-  /** Provider-specific options forwarded to summary model calls. */
-  providerOptions?: { [x: string]: JSONObject };
-
-  /** Optional provider-native compaction lane; local summary remains the portable fallback. */
-  serverCompaction?: ServerCompactionFn;
-
-  /** Model request context supplied to the provider-native compaction lane. */
-  serverCompactionContext?: TransformMessagesContext;
-
-  /** Reports native-lane failure before the local compaction result is used. */
-  onServerCompactionError?: ServerCompactionErrorHandler;
-
-  /** Override summary system prompt. */
-  summarySystem?: string;
-
-  /** Builds initial summary prompt from transcript text. */
-  buildSummaryPrompt?: (prefix: string) => string;
-
-  /** Builds update prompt from previous summary + new transcript chunk. */
-  buildSummaryUpdatePrompt?: (previousSummary: string, nextTranscript: string) => string;
-
-  abortSignal?: AbortSignal;
-} & CompactionStreamHooks;
-
-type ManualCompactionMetrics = {
-  messages: ModelMessage[];
-  /** Summary text written into the transcript; absent when nothing was summarized. */
-  summary?: string;
-  messageCountBefore: number;
-  messageCountAfter: number;
-  estimatedTokensBefore: number;
-  estimatedTokensAfter: number;
-  budget: CompactionBudget;
-};
-
-export type ManualCompactionResult =
-  | (ManualCompactionMetrics & {
-      status: "compacted";
-    })
-  | (ManualCompactionMetrics & {
-      status: "noop";
-      reason: "empty" | "no-compactable-messages" | "already-minimal";
-    });
-
 type CompactRepairedMessagesOptions = {
   messages: readonly ModelMessage[];
   budget: InputCompactionBudget;
@@ -1700,24 +1628,12 @@ async function compactRepairedMessages(
 }
 
 /**
- * Whether a thrown value is an abort rather than a genuine failure.
- *
- * `AbortSignal.throwIfAborted()` and the AI SDK both surface aborts as an error
- * named `AbortError`, but neither is an instance of a shared class, so the name
- * is the only portable discriminator.
- */
-export function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
-/**
  * Provider options for summarization calls.
  *
  * Summarization reads only the response text, so reasoning summaries are
  * generated and thrown away. The auto path forwards the agent's turn options
  * wholesale, which for a codex session requests `reasoningSummary: "detailed"`
- * on every summarization request; strip it so both paths agree and neither pays
- * for output nobody reads.
+ * on every summarization request; strip this unused output.
  */
 export function buildSummaryProviderOptions(
   providerOptions: { [x: string]: JSONObject } | undefined,
@@ -1740,81 +1656,6 @@ function pickSummaryContextLimit(params: {
     return Math.max(1, Math.floor(summaryLimit));
   }
   return Math.max(1, Math.floor(params.fallbackContextLimit));
-}
-
-/**
- * Compact an idle persisted transcript without constructing an `AiSdkPiAgent`.
- * The input messages are never mutated; callers should persist `result.messages`.
- */
-export async function compactMessages(
-  options: ManualCompactionOptions,
-): Promise<ManualCompactionResult> {
-  const messageCountBefore = options.messages.length;
-  const estimatedTokensBefore = estimateMessagesTokens(options.messages);
-  const budget = computeInputCompactionBudget({
-    contextLimit: options.contextLimit,
-    outputLimit: options.outputLimit ?? 0,
-    thresholdFraction: normalizeThresholdFraction(options.thresholdFraction),
-  });
-  const noop = (
-    reason: "empty" | "no-compactable-messages" | "already-minimal",
-  ): ManualCompactionResult => {
-    const messages = cloneMessages(options.messages);
-    return {
-      status: "noop",
-      reason,
-      messages,
-      messageCountBefore,
-      messageCountAfter: messages.length,
-      estimatedTokensBefore,
-      estimatedTokensAfter: estimateMessagesTokens(messages),
-      budget,
-    };
-  };
-
-  if (options.messages.length === 0) return noop("empty");
-
-  const compactableMessages = repairTranscriptForCompaction(options.messages).messages;
-  if (compactableMessages.length === 0) return noop("no-compactable-messages");
-
-  const summaryModel = options.summaryModel ?? "current";
-  const compactedResult = await compactRepairedMessages({
-    messages: compactableMessages,
-    budget,
-    summaryContextLimit: pickSummaryContextLimit({
-      summaryContextLimit: options.summaryContextLimit,
-      fallbackContextLimit: options.contextLimit,
-    }),
-    resolveModel: () => resolveSummaryModel(summaryModel, options.currentModel),
-    providerOptions: buildSummaryProviderOptions(options.providerOptions),
-    serverCompaction: options.serverCompaction,
-    serverCompactionContext: options.serverCompactionContext,
-    onServerCompactionError: options.onServerCompactionError,
-    keepRecentTurns: options.keepRecentTurns ?? DEFAULT_KEEP_RECENT_TURNS,
-    keepRecentTokens: options.keepRecentTokens ?? DEFAULT_KEEP_RECENT_TOKENS,
-    summarySystem: options.summarySystem ?? DEFAULT_SUMMARY_SYSTEM,
-    buildSummaryPrompt: options.buildSummaryPrompt ?? DEFAULT_SUMMARY_PROMPT,
-    buildSummaryUpdatePrompt: options.buildSummaryUpdatePrompt ?? DEFAULT_SUMMARY_UPDATE_PROMPT,
-    abortSignal: options.abortSignal,
-    onProgress: options.onProgress,
-    onSummaryDelta: options.onSummaryDelta,
-  });
-  const compactedOutcome = resultOutcome(compactedResult);
-  if (!compactedOutcome.ok) return signalAutoCompactionHost(compactedOutcome.error);
-  const compacted = compactedOutcome.value;
-  if (!compacted) return noop("already-minimal");
-
-  const messages = cloneMessages(compacted.messages);
-  return {
-    status: "compacted",
-    messages,
-    summary: compacted.summary,
-    messageCountBefore,
-    messageCountAfter: messages.length,
-    estimatedTokensBefore,
-    estimatedTokensAfter: estimateMessagesTokens(messages),
-    budget,
-  };
 }
 
 async function resolveContextLimit(params: {

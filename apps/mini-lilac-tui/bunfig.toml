@@ -1,4 +1,0 @@
-preload = ["@opentui/solid/preload"]
-
-[test]
-preload = ["../../__tests__/test-data-dir-preload.ts", "@opentui/solid/preload"]

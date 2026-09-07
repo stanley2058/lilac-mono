@@ -579,27 +579,6 @@ export async function clearCodexTokensResult(
   return writeSecretFileResult(storagePath, "{}\n");
 }
 
-export async function clearCodexTokens(storagePath: string = STORAGE_PATH): Promise<void> {
-  const result = await clearCodexTokensResult(storagePath);
-  const resolved = result.match<
-    | { readonly value: void }
-    | {
-        readonly error:
-          | CodexTokensReadFailed
-          | CodexTokensWriteFailed
-          | CodexTokensCleanupFailed
-          | CodexTokensWriteAndCleanupFailed;
-      }
-  >({
-    ok: (value) => ({ value }),
-    err: (error) => ({ error }),
-  });
-  if ("error" in resolved) {
-    if (resolved.error._tag === "CodexTokensReadFailed") throw resolved.error.cause;
-    throw projectLegacyCodexTokenWriteFailure(resolved.error);
-  }
-}
-
 function projectLegacyCodexTokenWriteFailure(
   error:
     | CodexTokensWriteInvalid
