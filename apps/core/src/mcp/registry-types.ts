@@ -24,6 +24,7 @@ export type McpServerInfo = {
 
 export type McpCatalogServer = {
   readonly serverId: string;
+  readonly allowSubagents: boolean;
   readonly serverInfo: McpServerInfo;
   /** Configured description first, then the server-advertised description. */
   readonly description?: string;

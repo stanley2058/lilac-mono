@@ -41,6 +41,7 @@ export type McpTransportConfig = McpStdioTransportConfig | McpHttpTransportConfi
 
 export type McpServerDefinition = {
   readonly id: string;
+  readonly allowSubagents: boolean;
   readonly description?: string;
   readonly transportConfig: McpTransportConfig;
 };

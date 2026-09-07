@@ -364,6 +364,7 @@ agent:
       general:
         modelSlot: main
         # "*" includes every globally enabled built-in or external contribution.
+        # MCP servers must also set allowSubagents: true in mcp-config.yaml.
         level1: { tools: ["*"], plugins: ["*"] }
         level2: { callables: ["*"], plugins: ["*"] }
         network: true

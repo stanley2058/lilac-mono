@@ -44,6 +44,7 @@ afterEach(async () => {
 function stdioServer(id: string, command = "bun"): McpServerDefinition {
   return {
     id,
+    allowSubagents: false,
     transportConfig: { transport: "stdio", command, args: [], env: {} },
   };
 }
@@ -140,6 +141,43 @@ servers:
     expect(parseMcpConfigYaml("# empty\n").ok).toBe(false);
     expect(parseMcpConfigYaml("configVersion: 2\nservers: {}\n").ok).toBe(false);
   });
+
+  for (const transport of ["stdio", "http"] as const) {
+    for (const allowSubagents of [undefined, false, true]) {
+      it(`round-trips ${transport} subagent access ${String(allowSubagents)}`, () => {
+        const source = [
+          "configVersion: 1",
+          "servers:",
+          "  docs:",
+          `    transport: ${transport}`,
+          transport === "stdio" ? "    command: bun" : "    url: https://example.invalid/mcp",
+          ...(allowSubagents === undefined ? [] : [`    allowSubagents: ${allowSubagents}`]),
+        ].join("\n");
+        const parsed = parseMcpConfigYaml(source);
+        expect(parsed.ok).toBe(true);
+        if (!parsed.ok) throw new Error(parsed.issues.join("\n"));
+        expect(parsed.config.servers.docs?.allowSubagents).toBe(allowSubagents ?? false);
+        expect(parseMcpConfigYaml(serializeMcpConfigYaml(parsed.config))).toEqual(parsed);
+      });
+    }
+
+    for (const invalid of ['"true"', "null", "1", "[]"]) {
+      it(`rejects ${transport} non-boolean subagent access ${invalid}`, () => {
+        const parsed = parseMcpConfigYaml(
+          [
+            "configVersion: 1",
+            "servers:",
+            "  docs:",
+            `    transport: ${transport}`,
+            transport === "stdio" ? "    command: bun" : "    url: https://example.invalid/mcp",
+            `    allowSubagents: ${invalid}`,
+          ].join("\n"),
+        );
+        expect(parsed.ok).toBe(false);
+        if (!parsed.ok) expect(parsed.issues.join("\n")).toContain("allowSubagents");
+      });
+    }
+  }
 
   it("rejects unsupported HTTP forms and ambiguous authorization", () => {
     const unsupported = parseMcpConfigYaml(`

@@ -134,6 +134,7 @@ process.stdin.on("data", (chunk) => {
 function realStdioDefinition(id: string, mode: StdioServerMode) {
   return {
     id,
+    allowSubagents: false,
     transportConfig: {
       transport: "stdio" as const,
       command: process.execPath,
@@ -295,6 +296,7 @@ describe("McpRegistry startup and discovery", () => {
     const config: UniversalMcpConfig = mcpConfig([
       {
         id: "local",
+        allowSubagents: false,
         transportConfig: {
           transport: "stdio",
           command: "bun",
@@ -304,6 +306,7 @@ describe("McpRegistry startup and discovery", () => {
       },
       {
         id: "remote",
+        allowSubagents: false,
         transportConfig: {
           transport: "http",
           url: "https://example.invalid/mcp",
@@ -756,6 +759,7 @@ describe("McpRegistry startup and discovery", () => {
     });
     const definition = {
       id: "oauth-panic",
+      allowSubagents: false,
       transportConfig: {
         transport: "http" as const,
         url: server.url.toString(),
@@ -1091,6 +1095,7 @@ describe("McpRegistry startup and discovery", () => {
     let clientCalls = 0;
     const authServer = {
       id: "auth",
+      allowSubagents: false,
       transportConfig: {
         transport: "http" as const,
         url: "https://example.invalid/mcp",
@@ -1166,6 +1171,7 @@ describe("McpRegistry startup and discovery", () => {
     const client = new FakeMcpClient();
     const authServer = {
       id: "auth",
+      allowSubagents: false,
       transportConfig: {
         transport: "http" as const,
         url: "https://example.invalid/mcp",
@@ -1310,6 +1316,7 @@ describe("McpRegistry startup and discovery", () => {
             mcpConfig([
               {
                 id: "auth",
+                allowSubagents: false,
                 transportConfig: {
                   transport: "http",
                   url: "https://example.invalid/mcp",
@@ -1439,6 +1446,7 @@ describe("McpRegistry startup and discovery", () => {
     expect(initial).toEqual([
       {
         serverId: "advertised",
+        allowSubagents: false,
         serverInfo: {
           name: "advertised-server",
           version: "2.0.0",
@@ -1448,6 +1456,7 @@ describe("McpRegistry startup and discovery", () => {
       },
       {
         serverId: "configured",
+        allowSubagents: false,
         serverInfo: {
           name: "configured-server",
           title: "Configured Server",
@@ -1815,6 +1824,7 @@ describe("McpRegistry reload and terminal failures", () => {
     let readMode: "ok" | "error" | "panic" = "ok";
     const definition = {
       id: "resolved",
+      allowSubagents: false,
       transportConfig: {
         transport: "stdio" as const,
         command: "bun",
@@ -1991,6 +2001,7 @@ describe("McpRegistry reload and terminal failures", () => {
     let secret = "first-secret";
     const definition = {
       id: "resolved",
+      allowSubagents: false,
       transportConfig: {
         transport: "stdio" as const,
         command: "bun",
@@ -2084,6 +2095,7 @@ describe("McpRegistry reload and terminal failures", () => {
     const client = new FakeMcpClient();
     const authServer = {
       id: "auth",
+      allowSubagents: false,
       transportConfig: {
         transport: "http" as const,
         url: "https://example.invalid/mcp",
@@ -2521,6 +2533,7 @@ describe("McpRegistry reload and terminal failures", () => {
             mcpConfig([
               {
                 id: "remote",
+                allowSubagents: false,
                 transportConfig: {
                   transport: "http",
                   url: "https://example.invalid/mcp",

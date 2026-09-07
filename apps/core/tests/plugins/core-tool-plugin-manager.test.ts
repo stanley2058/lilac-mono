@@ -16,6 +16,7 @@ import { createCoreToolPluginManager as createCoreToolPluginManagerResult } from
 import { decodeCoreToolRequestMetadata } from "../../src/plugins/builtin/local-tools";
 import { McpRegistry } from "../../src/mcp";
 import { catalogToolStableId } from "../../src/mcp/catalog-identity";
+import { selectedLevel1ToolNames } from "../../src/surface/bridge/bus-agent-runner";
 import type { ConversationThreadToolService } from "../../src/conversation/thread-service";
 import type { DiscoveryService } from "../../src/discovery/discovery-service";
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
@@ -1303,11 +1304,13 @@ export default {
           getCatalogServers: () => [
             {
               serverId: "allowed",
+              allowSubagents: true,
               serverInfo: { name: "allowed", version: "1.0.0" },
               description: "Allowed server tools.",
             },
             {
               serverId: "blocked",
+              allowSubagents: true,
               serverInfo: { name: "blocked", version: "1.0.0" },
               description: "Blocked server tools.",
             },
@@ -1349,6 +1352,83 @@ export default {
     );
     expect(getToolDescription(general.tools, "find_tools")).not.toContain("mcp_blocked.*");
     expect(general.directToolNames.has("find_tools")).toBe(true);
+  });
+
+  it("requires server opt-in for every subagent profile, including saved tool selections", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const cfg = testConfig({});
+    const client = new FakeMcpClient({ first: { tools: [mcpToolDefinition("lookup")] } });
+    let config = mcpConfig([stdioDefinition("docs")]);
+    let createCount = 0;
+    const registry = new McpRegistry({
+      configPath: path.join(dataDir, "mcp-config.yaml"),
+      reportFatalError: (error) => {
+        throw error;
+      },
+      dependencies: {
+        readConfig: async () => configSnapshot(config),
+        createClient: async () => {
+          createCount += 1;
+          return client;
+        },
+      },
+    });
+    await registry.init();
+    const manager = createCoreToolPluginManager({
+      runtime: { config: cfg, mcpRegistry: registry },
+      dataDir,
+    });
+    await manager.init();
+    const build = (runProfile: "primary" | "general" | "self" | "explore") =>
+      manager.buildLevel1Toolset({
+        cwd: dataDir,
+        runProfile,
+        editingToolMode: "none",
+        subagentDepth: runProfile === "primary" ? 0 : 1,
+        subagentConfig: cfg.agent.subagents,
+      });
+    const expectMcpExecution = async (
+      toolset: Awaited<ReturnType<typeof build>>,
+      modelName: string,
+    ) => {
+      const tools = toolset.tools as Record<
+        string,
+        { execute?: (...args: readonly unknown[]) => unknown }
+      >;
+      const result = await getExecutableTool(tools, modelName).execute(
+        {},
+        { toolCallId: "lookup", messages: [] },
+      );
+      expect(result).toMatchObject({ content: [{ type: "text" }] });
+    };
+    try {
+      const primary = await build("primary");
+      const entry = primary.catalog.find((entry) => entry.source === "mcp");
+      if (!entry) throw new Error("missing primary MCP tool");
+      const selectedIds = [entry.stableId];
+      for (const allowSubagents of [false, true, false]) {
+        config = mcpConfig([{ ...stdioDefinition("docs"), allowSubagents }]);
+        expect((await registry.reload("docs")).status).toBe("ok");
+        expect(registry.getCatalogServers()[0]?.allowSubagents).toBe(allowSubagents);
+        for (const profile of ["primary", "general", "self", "explore"] as const) {
+          const toolset = await build(profile);
+          const allowed = profile === "primary" || (allowSubagents && profile !== "explore");
+          expect(toolset.catalog.some((tool) => tool.stableId === entry.stableId)).toBe(allowed);
+          expect(toolset.tools[entry.modelName] !== undefined).toBe(allowed);
+          expect(toolset.catalogMetadata[entry.modelName] !== undefined).toBe(allowed);
+          expect(selectedLevel1ToolNames(toolset, selectedIds).has(entry.modelName)).toBe(allowed);
+          expect(toolset.directToolNames.has("find_tools")).toBe(allowed);
+          if (allowed) await expectMcpExecution(toolset, entry.modelName);
+          await toolset.release();
+        }
+      }
+      expect(createCount).toBe(1);
+      await primary.release();
+    } finally {
+      await manager.destroy();
+      await registry.shutdown();
+    }
   });
 
   it("reuses one registry client while creating run-scoped MCP model projections", async () => {

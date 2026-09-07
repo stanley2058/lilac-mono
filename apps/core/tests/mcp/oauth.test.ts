@@ -33,6 +33,7 @@ function oauthConfig(scopes: readonly string[] = ["read", "write"]): UniversalMc
     servers: {
       docs: {
         id: "docs",
+        allowSubagents: false,
         transportConfig: {
           transport: "http",
           url: SERVER_URL,

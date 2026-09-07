@@ -2,10 +2,16 @@ configVersion: 1
 
 servers: {}
 
+# Each server defaults to allowSubagents: false. Set it to true to make its tools
+# eligible for subagents, subject to their core-config level1 plugin/tool allowlists.
+# Profile wildcards never override allowSubagents: false.
+# This controls Lilac tool access, not host/network isolation for native Bash.
+
 # Replace `servers: {}` with entries such as:
 # servers:
 #   docs:
 #     description: Search and retrieve the documentation library.
+#     allowSubagents: true
 #     transport: http
 #     url: https://mcp.example.com/mcp
 #     headers:

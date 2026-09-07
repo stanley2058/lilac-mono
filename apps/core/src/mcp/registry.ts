@@ -1385,6 +1385,7 @@ export class McpRegistry implements McpRegistryApi {
         return [
           Object.freeze({
             serverId: entry.definition.id,
+            allowSubagents: entry.definition.allowSubagents,
             serverInfo: entry.serverInfo,
             ...(description === undefined ? {} : { description }),
           } satisfies McpCatalogServer),

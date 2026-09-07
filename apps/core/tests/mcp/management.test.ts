@@ -240,6 +240,9 @@ describe("MCP management calls", () => {
       url: "https://mcp.example.test/service",
       headers: {},
     });
+    expect((await readConfigValue(setup.configPath)).config.servers.docs?.allowSubagents).toBe(
+      false,
+    );
     expect((await readConfigValue(setup.configPath)).config.servers.docs?.description).toBe(
       "Documentation search and retrieval.",
     );
@@ -284,6 +287,26 @@ describe("MCP management calls", () => {
     expect(setup.providers.reconciledConfigs).toHaveLength(3);
     expect(setup.registry.reloadCalls).toEqual(["docs", undefined, "docs"]);
   });
+
+  for (const transport of ["http", "stdio"] as const) {
+    it(`persists and replaces ${transport} subagent access through mcp.add`, async () => {
+      const setup = await createTool();
+      const input =
+        transport === "http"
+          ? { serverId: "docs", transport, url: "https://example.invalid/mcp" }
+          : { serverId: "docs", transport, command: "bun" };
+      for (const allowSubagents of [true, false]) {
+        const result = await callValue(setup.tool, "mcp.add", { ...input, allowSubagents });
+        expect(result).toMatchObject({ mutation: { changed: true } });
+        expect((await readConfigValue(setup.configPath)).config.servers.docs?.allowSubagents).toBe(
+          allowSubagents,
+        );
+        expect(setup.providers.reconciledConfigs.at(-1)?.servers.docs?.allowSubagents).toBe(
+          allowSubagents,
+        );
+      }
+    });
+  }
 
   it("normalizes flattened stdio input and reconciles exactly once even for no-op mutations", async () => {
     const setup = await createTool();

@@ -24,6 +24,7 @@ export function mcpToolDefinition(
 export function stdioDefinition(id: string, command = "bun"): McpServerDefinition {
   return {
     id,
+    allowSubagents: false,
     transportConfig: { transport: "stdio", command, args: [], env: {} },
   };
 }
@@ -34,6 +35,7 @@ export function httpDefinition(
 ): McpServerDefinition {
   return {
     id,
+    allowSubagents: false,
     transportConfig: { transport: "http", url, headers: {} },
   };
 }

@@ -79,12 +79,14 @@ function isStructurallyAllowed(
 
 function isMcpStructurallyAllowed(params: {
   serverId: string;
+  allowSubagents: boolean;
   rawName: string;
   modelName: string;
   runProfile: Level1RunProfile;
   config: CoreConfig;
 }): boolean {
   if (params.runProfile === "primary") return true;
+  if (!params.allowSubagents) return false;
   const profile = resolveNativeSubagentProfile(params.config, params.runProfile);
   const serverAllowed =
     profileIncludes(profile.level1.plugins, "mcp") ||
@@ -400,6 +402,12 @@ export function createCoreToolPluginManager(params: {
         }),
       );
     }
+    const mcpCatalogServerById = new Map(
+      (params.runtime.mcpRegistry?.getCatalogServers() ?? []).map((server) => [
+        server.serverId,
+        server,
+      ]),
+    );
     const mcpTools: Array<(typeof allMcpTools)[number]> = [];
     for (const entry of allMcpTools) {
       const modelName = nameAssignment.byStableId.get(entry.stableId);
@@ -413,6 +421,7 @@ export function createCoreToolPluginManager(params: {
       if (
         isMcpStructurallyAllowed({
           serverId: entry.serverId,
+          allowSubagents: mcpCatalogServerById.get(entry.serverId)?.allowSubagents === true,
           rawName: entry.rawName,
           modelName,
           runProfile: buildParams.runProfile,
@@ -422,12 +431,6 @@ export function createCoreToolPluginManager(params: {
         mcpTools.push(entry);
       }
     }
-    const mcpCatalogServerById = new Map(
-      (params.runtime.mcpRegistry?.getCatalogServers() ?? []).map((server) => [
-        server.serverId,
-        server,
-      ]),
-    );
     const mcpToolCountsByServerId = new Map<string, number>();
     for (const entry of mcpTools) {
       mcpToolCountsByServerId.set(

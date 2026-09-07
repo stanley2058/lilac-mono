@@ -55,6 +55,7 @@ export const mcpAuthConfigSchema = authorizationCodeAuthSchema;
 
 const stdioServerInputSchemaV1 = z.strictObject({
   transport: z.literal("stdio"),
+  allowSubagents: z.boolean().default(false),
   description: z.string().trim().min(1).optional(),
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
@@ -64,6 +65,7 @@ const stdioServerInputSchemaV1 = z.strictObject({
 
 const httpServerInputObjectSchemaV1 = z.strictObject({
   transport: z.literal("http"),
+  allowSubagents: z.boolean().default(false),
   description: z.string().trim().min(1).optional(),
   url: z.string().min(1),
   headers: z.record(z.string().min(1), mcpValueSourceSchema).optional(),
@@ -146,6 +148,7 @@ function toUniversalConfig(input: McpConfigInputV1): UniversalMcpConfig {
 
     servers[id] = {
       id,
+      allowSubagents: server.allowSubagents,
       ...(server.description === undefined ? {} : { description: server.description }),
       transportConfig:
         server.transport === "stdio"
@@ -198,6 +201,7 @@ function toConfigInputV1(
       transport.transport === "stdio"
         ? {
             transport: "stdio",
+            allowSubagents: server.allowSubagents,
             ...(server.description === undefined ? {} : { description: server.description }),
             command: transport.command,
             ...(transport.args.length === 0 ? {} : { args: [...transport.args] }),
@@ -206,6 +210,7 @@ function toConfigInputV1(
           }
         : {
             transport: "http",
+            allowSubagents: server.allowSubagents,
             ...(server.description === undefined ? {} : { description: server.description }),
             url: transport.url,
             ...(Object.keys(transport.headers).length === 0

@@ -144,6 +144,7 @@ test.skipIf(process.env.LILAC_COMPUTER_DOCKER_TEST !== "1")(
                 servers: {
                   computer_use: {
                     id: "computer_use",
+                    allowSubagents: false,
                     transportConfig: {
                       transport: "http",
                       url,

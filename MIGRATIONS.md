@@ -3,6 +3,26 @@
 This file records persisted-data, wire, and protocol migrations. Manual `core-config.yaml` upgrades are
 documented separately in [`docs/core-config-migrations.md`](docs/core-config-migrations.md).
 
+## MCP subagent access defaults to disabled
+
+Each server in `mcp-config.yaml` now accepts `allowSubagents`, a boolean that defaults to `false`.
+The file remains `configVersion: 1`. Existing files still parse, but their MCP tools are no longer
+available to subagents, including `general` and `self` profiles with wildcard permissions.
+
+Add `allowSubagents: true` to each server whose subagent access should continue, then reload it with
+`mcp.reload` or restart Core. The server flag and the profile's Level 1 plugin/tool allowlists must all
+permit access. A profile wildcard cannot override `false`. Primary-agent access is unchanged.
+Leave computer-use disabled unless subagents should be able to operate their own desktops.
+
+The restriction applies when Core assembles a run's toolset, including resumed runs. Saved catalog
+selections cannot restore tools excluded from that toolset. Existing active toolsets retain their
+snapshot; finish or interrupt those runs before relying on a changed policy. A failed reload retains
+the previous server configuration, so check the reload outcome before starting new work.
+
+Older builds reject server entries containing `allowSubagents`. Remove the field before downgrading;
+the older build will again grant MCP access according to profile allowlists alone. This is a tool
+access policy, not OS isolation from MCP endpoints for subagents with native host execution.
+
 ## Agent-run checkpoint local MCP images
 
 Version-1 agent-run checkpoints now accept an optional `mcpImages` array. Each entry identifies a tool

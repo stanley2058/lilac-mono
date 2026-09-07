@@ -51,6 +51,7 @@ Add this server to `DATA_DIR/mcp-config.yaml`, preserving other configured serve
 configVersion: 1
 servers:
   computer_use:
+    allowSubagents: false
     transport: http
     url: http://computer-use-gateway:8080/mcp
     headers:
@@ -62,7 +63,9 @@ The referenced file contains the complete `Bearer <secret>` header value. Restri
 the Core service user. Existing MCP environment-value sources also work. Reload with Core's `mcp.reload`
 operator tool, or restart Core. Discovery exposes `mcp_computer_use_provision`,
 `mcp_computer_use_execute`, and `mcp_computer_use_terminate` through the normal tool catalog and profile
-policy. No separate plugin installation or Core config-version migration is needed.
+policy. The server is available only to the primary agent by default. Setting `allowSubagents: true`
+also makes it eligible for subagent profiles that allow its tools. No separate plugin installation or
+Core config-version migration is needed.
 
 Core derives `x-lilac-session-hash` from the trusted canonical session ID using SHA-256 over
 `lilac:mcp-session:v1`, a NUL separator, and the UTF-8 session ID. The header is reserved. Core strips
