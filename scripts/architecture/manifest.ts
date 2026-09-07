@@ -659,7 +659,6 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
     "packages/coding-tools",
     [
       { module: "src/apply-patch.ts", exportName: "parsePatchResult" },
-      { module: "src/apply-patch.ts", exportName: "applyPatchResult" },
       {
         module: "src/batch.ts",
         exportName: "collectApplyPatchTouchedPathsResult",
@@ -669,13 +668,7 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         exportName: "collectEditFileTouchedPathsResult",
       },
       { module: "src/batch.ts", exportName: "createBatchToolResult" },
-      { module: "src/guardrails.ts", exportName: "guardrailBypassAllowed" },
       { module: "src/guardrails.ts", exportName: "validateLocalCwd" },
-      {
-        module: "src/guardrails.ts",
-        exportName: "canonicalizeAsFarAsExistsResult",
-      },
-      { module: "src/guardrails.ts", exportName: "canonicalPathAllowed" },
     ],
   ],
   [

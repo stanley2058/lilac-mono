@@ -1,8 +1,9 @@
+import * as fs from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import {
   createEditFileInputSchema,
   createGrepInputSchema,
@@ -16,13 +17,12 @@ import {
   grepInputSchema as sharedGrepInputSchema,
   readFileInputSchema as sharedReadFileInputSchema,
 } from "@stanley2058/lilac-coding-tools/schemas";
-import {
-  applyPatchResult as applySharedPatch,
-  parsePatchResult as parseSharedPatch,
-} from "@stanley2058/lilac-coding-tools/apply-patch";
+import { parsePatchResult as parseSharedPatch } from "@stanley2058/lilac-coding-tools/apply-patch";
 
 import { BUILTIN_LEVEL1_TOOLS, createLocalToolSpecs } from "../../src/plugins/builtin/local-tools";
-import { applyHunks } from "../../src/tools/apply-patch/apply-patch-core";
+import { Panic } from "better-result";
+
+import { applyHunks, applyHunksResult } from "../../src/tools/apply-patch/apply-patch-core";
 import { bashInputSchema } from "../../src/tools/bash";
 import {
   editFileInputZod,
@@ -139,10 +139,9 @@ describe("Core coding-tools parity", () => {
     ).toBe(false);
   });
 
-  it("keeps package and Core patch execution aligned for trailing empty old lines", async () => {
+  it("executes the shared parser output with Core for trailing empty old lines", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "lilac-patch-parity-"));
     const coreDir = path.join(root, "core");
-    const sharedDir = path.join(root, "shared");
     const patchText = [
       "*** Begin Patch",
       "*** Update File: file.txt",
@@ -155,15 +154,85 @@ describe("Core coding-tools parity", () => {
 
     try {
       await mkdir(coreDir);
-      await mkdir(sharedDir);
       await writeFile(path.join(coreDir, "file.txt"), "target\n");
-      await writeFile(path.join(sharedDir, "file.txt"), "target\n");
       await applyHunks(coreDir, parseSharedPatch(patchText).unwrap());
-      (await applySharedPatch({ cwd: sharedDir, patchText, denyPaths: [] })).unwrap();
       expect(await readFile(path.join(coreDir, "file.txt"), "utf8")).toBe("changed\n");
-      expect(await readFile(path.join(sharedDir, "file.txt"), "utf8")).toBe("changed\n");
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+  it("applies add, move, and delete hunks and refuses directory deletion", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "lilac-core-patch-mutations-"));
+    try {
+      await writeFile(path.join(root, "old.txt"), "old\n");
+      const hunks = parseSharedPatch(
+        [
+          "*** Begin Patch",
+          "*** Add File: added.txt",
+          "+added",
+          "*** Update File: old.txt",
+          "*** Move to: moved.txt",
+          "@@",
+          "-old",
+          "+new",
+          "*** Delete File: added.txt",
+          "*** End Patch",
+        ].join("\n"),
+      ).unwrap();
+      (await applyHunksResult(root, hunks)).unwrap();
+      expect(await readFile(path.join(root, "moved.txt"), "utf8")).toBe("new\n");
+      await expect(readFile(path.join(root, "old.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(path.join(root, "added.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      await mkdir(path.join(root, "directory"));
+      expect(await applyHunksResult(root, [{ type: "delete", path: "directory" }])).toMatchObject({
+        status: "error",
+        error: { _tag: "ApplyPatchDirectoryDeleteDenied" },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stops before the next hunk when cancelled after a completed write", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "lilac-core-patch-cancellation-"));
+    const controller = new AbortController();
+    const originalWriteFile = fs.writeFile;
+    const write = spyOn(fs, "writeFile").mockImplementationOnce(async (file, data, options) => {
+      await originalWriteFile(file, data, options);
+      controller.abort();
+    });
+    try {
+      const result = await applyHunksResult(
+        root,
+        [
+          { type: "add", path: "first.txt", contents: "first" },
+          { type: "add", path: "later.txt", contents: "later" },
+        ],
+        { signal: controller.signal },
+      );
+      expect(result).toMatchObject({ status: "error", error: { _tag: "ApplyPatchCancelled" } });
+      expect(await readFile(path.join(root, "first.txt"), "utf8")).toBe("first");
+      await expect(readFile(path.join(root, "later.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      write.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves Panic identity when inspecting a patch deletion target", async () => {
+    const panic = new Panic({ message: "patch deletion invariant" });
+    const stat = spyOn(fs, "stat").mockRejectedValueOnce(panic);
+    try {
+      await expect(
+        applyHunksResult(process.cwd(), [{ type: "delete", path: "panic-fixture.txt" }]),
+      ).rejects.toBe(panic);
+    } finally {
+      stat.mockRestore();
     }
   });
 });
