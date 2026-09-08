@@ -883,6 +883,13 @@ class OpenAIResponsesExecution implements AgentExecution {
       !parent.prepared.nativeToolSearch
     )
       return Result.err(failure("Tool search was not advertised for this request"));
+    for (const item of response.output) {
+      if (item.type !== "tool_search_call") continue;
+      this.diagnostics?.log("tool_search.triggered", {
+        responseId: response.id,
+        toolCallId: item.call_id ?? undefined,
+      });
+    }
     parent.complete = projected.value;
     parent.response = response;
     this.emit({ type: "message", phase: "end", message: projected.value.assistant });
