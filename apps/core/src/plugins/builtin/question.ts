@@ -8,7 +8,8 @@ import { Result } from "better-result";
 const QUESTION_TOOL: CoreLevel1ToolSpec = markBoundedBuiltinOutput({
   name: "question",
   supportsBatch: false,
-  isEnabled: ({ runtime, requestContext }) => {
+  isEnabled: ({ runtime, requestContext, runProfile }) => {
+    if (runProfile !== "primary") return false;
     if (!runtime.questions || !requestContext?.requestDeliveryId) return false;
     const initiator = requestContext.requestInitiator;
     if (!initiator || initiator.platform !== requestContext.requestClient) return false;

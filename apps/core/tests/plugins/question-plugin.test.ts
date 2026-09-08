@@ -4,7 +4,7 @@ import type { QuestionService } from "../../src/question/question-service";
 import { createBuiltinQuestionPlugin } from "../../src/plugins/builtin/question";
 
 describe("built-in question plugin", () => {
-  it("advertises an ordinary Level 1 tool that is excluded only from batch", async () => {
+  it("advertises a Level 1 tool that does not support batch", async () => {
     const plugin = createBuiltinQuestionPlugin();
     const instance = await plugin.create({} as never);
     const spec = instance.level1?.[0];
@@ -13,7 +13,7 @@ describe("built-in question plugin", () => {
     expect(spec?.supportsBatch).toBe(false);
   });
 
-  it("enables the tool for authenticated requests on a supported surface", async () => {
+  it("enables the tool only for primary runs with authenticated requests on a supported surface", async () => {
     const plugin = createBuiltinQuestionPlugin();
     const instance = await plugin.create({} as never);
     const spec = instance.level1?.[0];
@@ -45,6 +45,8 @@ describe("built-in question plugin", () => {
       },
     } as Parameters<typeof spec.isEnabled>[0];
     expect(spec.isEnabled(githubContext)).toBe(false);
-    expect(spec.isEnabled({ ...discordContext, subagentDepth: 1 })).toBe(true);
+    for (const runProfile of ["explore", "general", "self"] as const) {
+      expect(spec.isEnabled({ ...discordContext, runProfile, subagentDepth: 1 })).toBe(false);
+    }
   });
 });
