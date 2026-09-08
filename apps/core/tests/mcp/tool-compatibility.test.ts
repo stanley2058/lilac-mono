@@ -138,6 +138,131 @@ async function execute(registry: McpRegistry) {
 }
 
 describe("MCP tool compatibility through registry and executor", () => {
+  it("validates draft 2020-12 references and conditionals without changing valid results", async () => {
+    const transport = new ToolTransport(true);
+    transport.definitions[0]!.outputSchema = {
+      $defs: { count: { type: "integer", minimum: 1 } },
+      type: "object",
+      properties: { kind: { const: "count" }, count: { $ref: "#/$defs/count" } },
+      required: ["kind"],
+      if: { properties: { kind: { const: "count" } } },
+      then: { required: ["count"] },
+      unevaluatedProperties: false,
+    };
+    const structuredContent = { kind: "count", count: 42 };
+    transport.result = { content: [{ type: "text", text: "counted" }], structuredContent };
+    const registry = await connect(transport);
+    const valid = await execute(registry);
+    expect(valid.outcome.isError).toBe(false);
+    expect(valid.outcome.result).toMatchObject({ structuredContent });
+    expect(valid.outcome.toolOutput).toEqual({
+      type: "content",
+      value: [
+        { type: "text", text: "counted" },
+        { type: "text", text: JSON.stringify(structuredContent) },
+      ],
+    });
+    for (const invalid of [
+      { kind: "count" },
+      { kind: "count", count: "42" },
+      { kind: "count", count: 42, extra: true },
+    ]) {
+      transport.result = { content: [], structuredContent: invalid };
+      const { outcome } = await execute(registry);
+      expect(outcome.isError).toBe(true);
+      expect(JSON.stringify(outcome.toolOutput)).toContain("does not match");
+      expect(registry.list()[0]?.status).toBe("available");
+    }
+  });
+
+  it("validates an explicit draft-07 schema using its declared dialect", async () => {
+    const transport = new ToolTransport(true);
+    transport.definitions[0]!.outputSchema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "array",
+      items: [{ type: "integer" }, { type: "string" }],
+      additionalItems: false,
+    };
+    transport.result = { content: [], structuredContent: [1, "one"] };
+    const registry = await connect(transport);
+    expect((await execute(registry)).outcome.isError).toBe(false);
+    transport.result = { content: [], structuredContent: [1, 2] };
+    expect((await execute(registry)).outcome.isError).toBe(true);
+  });
+
+  it("requires structuredContent for successful results but preserves server errors", async () => {
+    const transport = new ToolTransport(true);
+    transport.definitions[0]!.outputSchema = { type: "object", required: ["count"] };
+    transport.result = { content: [{ type: "text", text: '{"count":42}' }] };
+    const registry = await connect(transport);
+    expect(JSON.stringify((await execute(registry)).outcome.toolOutput)).toContain(
+      "no structuredContent",
+    );
+    transport.result = { isError: true, content: [{ type: "text", text: "upstream refused" }] };
+    const { outcome } = await execute(registry);
+    expect(outcome.isError).toBe(true);
+    expect(JSON.stringify(outcome.toolOutput)).toContain("upstream refused");
+    expect(JSON.stringify(outcome.toolOutput)).not.toContain("no structuredContent");
+  });
+
+  it("accepts null structured content when allowed by the schema", async () => {
+    const transport = new ToolTransport(true);
+    transport.definitions[0]!.outputSchema = { type: "null" };
+    transport.result = { content: [], structuredContent: null };
+    const { outcome } = await execute(await connect(transport));
+    expect(outcome.isError).toBe(false);
+    expect(outcome.toolOutput).toEqual({
+      type: "content",
+      value: [{ type: "text", text: "null" }],
+    });
+  });
+
+  for (const outputSchema of [
+    { type: "invalid-type" },
+    { $async: true, type: "object" },
+    { $schema: "https://example.invalid/unknown-dialect", type: "object" },
+  ]) {
+    it(`rejects unsupported output schemas before calling the affected tool: ${JSON.stringify(outputSchema)}`, async () => {
+      const transport = new ToolTransport(true);
+      transport.definitions[0]!.outputSchema = outputSchema;
+      transport.definitions.push({ name: "healthy", inputSchema: { type: "object" } });
+      const registry = await connect(transport);
+      expect((await execute(registry)).outcome.isError).toBe(true);
+      expect(transport.calls).not.toContain("tools/call");
+      expect(registry.list()[0]).toMatchObject({ status: "available", toolCount: 2 });
+      const healthy = registry.getTools().find((entry) => entry.rawName === "healthy")!;
+      await expect(
+        healthy.tool.execute!({}, { toolCallId: "healthy", messages: [], context: {} }),
+      ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+    });
+  }
+
+  it("does not fetch external schema references", async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => {
+        requests++;
+        return Response.json({ type: "object" });
+      },
+    });
+    try {
+      const transport = new ToolTransport(true);
+      transport.definitions[0]!.outputSchema = { $ref: server.url.toString() };
+      const registry = await connect(transport);
+      const { outcome } = await execute(registry);
+      expect(outcome.isError).toBe(true);
+      expect(JSON.stringify(outcome.toolOutput)).toContain(
+        "Remote schema references are not fetched",
+      );
+      expect(requests).toBe(0);
+      expect(transport.calls).not.toContain("tools/call");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   for (const modern of [false, true]) {
     it(`connects a server without tools using ${modern ? "modern" : "legacy"} discovery`, async () => {
       const transport = new ToolTransport(modern);

@@ -19,6 +19,7 @@ import type { McpServerDefinition } from "./config-types";
 import { McpConfigError, readMcpConfigFile } from "./config-file";
 import { rethrowPanic, safeMcpErrorText } from "./error-format";
 import { enforceModernMcpResultContract, retainTransportPanic } from "./modern-result-validation";
+import { wrapMcpToolWithOutputValidation } from "./output-validation";
 import type {
   McpCatalogTool,
   McpCatalogServer,
@@ -1076,7 +1077,10 @@ export class McpRegistry implements McpRegistryApi {
               : { description: toolDefinition.description }),
             identity,
             stableId: catalogToolStableId(identity),
-            tool: this.wrapToolExecution(definition.id, client, sdkTool),
+            tool: wrapMcpToolWithOutputValidation(
+              this.wrapToolExecution(definition.id, client, sdkTool),
+              toolDefinition.outputSchema,
+            ),
           } satisfies McpCatalogTool),
         );
       }

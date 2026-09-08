@@ -45,6 +45,7 @@
     "@types/jsdom": "^28.0.1",
     "@types/turndown": "^5.0.6",
     "ai": "^7.0.22",
+    "ajv": "^8.20.0",
     "better-result": "catalog:",
     "cron-parser": "^5.5.0",
     "discord.js": "^14.26.2",

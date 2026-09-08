@@ -1,4 +1,9 @@
 export const CORE_FINAL_BOUNDARY_IDENTITIES = [
+  ["src/mcp/output-validation.ts", "compileOutputSchema"],
+  ["src/mcp/output-validation.ts", "compileOutputSchema.try"],
+  ["src/mcp/output-validation.ts", "validateOutput"],
+  ["src/mcp/output-validation.ts", "validateOutput.try"],
+  ["src/mcp/output-validation.ts", "wrapMcpToolWithOutputValidation.execute"],
   ["src/surface/adapter.ts", "surfaceExternalFallback"],
   ["src/surface/adapter.ts", "surfaceExternalFallback.<callback>"],
   ["src/surface/discord/discord-embed-text.ts", "normalizeDiscordEmbeds"],
