@@ -78,6 +78,7 @@ function supportedItem(item: ResponseOutputItem): boolean {
     item.type === "message" ||
     item.type === "reasoning" ||
     item.type === "function_call" ||
+    item.type === "tool_search_call" ||
     item.type === "compaction"
   );
 }
@@ -248,6 +249,20 @@ function projectResponse(
             },
           });
         break;
+      case "tool_search_call": {
+        if (item.execution !== "client" || !item.call_id || item.status !== "completed")
+          return Result.err(protocolFailure("Invalid client tool-search call"));
+        const input = normalizeToolCallInputValue(item.arguments);
+        calls.push({ callId: item.call_id, name: "find_tools", inputJson: JSON.stringify(input) });
+        content.push({
+          type: "tool-call",
+          toolCallId: item.call_id,
+          toolName: "find_tools",
+          input,
+          providerOptions: { openai: { itemId: item.id, toolSearchCall: true } },
+        });
+        break;
+      }
       case "function_call": {
         const input = normalizeToolCallInputValue(item.arguments);
         calls.push({ callId: item.call_id, name: item.name, inputJson: item.arguments });

@@ -77,7 +77,11 @@ export type OpenAIRequestCodec = {
   }): Promise<ResultType<OpenAIResponseRequest, AgentAdapterFailure>>;
   messages(
     messages: readonly ModelMessage[],
-    options?: { outputSchemaToolNames?: readonly string[]; store?: boolean },
+    options?: {
+      outputSchemaToolNames?: readonly string[];
+      store?: boolean;
+      nativeToolSearch?: boolean;
+    },
   ): Promise<ResultType<OpenAIInputItem[], AgentAdapterFailure>>;
   steer(
     messages: readonly ModelMessage[],

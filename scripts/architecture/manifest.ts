@@ -1197,6 +1197,19 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "adapters/openai-responses/input.ts", exportName },
         category: "request" as const,
       })),
+      ...[
+        "readToolLoadingDefinitions",
+        "loadSearchResult",
+        "portableToolLoadingMessages",
+        "searchResultValue",
+      ].map((exportName) => ({
+        identity: { module: "adapters/openai-responses/tool-search.ts", exportName },
+        category: "projection" as const,
+      })),
+      {
+        identity: { module: "adapters/openai-responses/output.ts", exportName: "projectResponse" },
+        category: "wire",
+      },
       ...["visit", "isLikelyContextOverflowError"].map((exportName) => ({
         identity: { module: "context-overflow.ts", exportName },
         category: "projection" as const,

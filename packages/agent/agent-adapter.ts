@@ -47,26 +47,35 @@ export type AgentToolResult = {
   readonly executedCallCount?: number;
 };
 
+export type AgentToolDefinition = {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchemaJson: string;
+  readonly strict?: boolean;
+  readonly providerOptions?: ModelMessage["providerOptions"];
+  readonly outputSchemaJson?: string;
+};
+
 export type AgentPreparedContext = {
   readonly scopeId: string;
   readonly step: number;
   readonly canonicalMessages: readonly ModelMessage[];
   readonly messages: readonly ModelMessage[];
   readonly system: string | SystemModelMessage | readonly SystemModelMessage[];
-  readonly tools: readonly {
-    readonly name: string;
-    readonly description: string;
-    readonly inputSchemaJson: string;
-    readonly strict?: boolean;
-    readonly providerOptions?: ModelMessage["providerOptions"];
-    readonly outputSchemaJson?: string;
-  }[];
+  readonly tools: readonly AgentToolDefinition[];
+  readonly deferredTools?: readonly AgentToolDefinition[];
+  readonly nativeToolSearch?: boolean;
 };
+
+export type AgentToolContextProjection = (
+  context: AgentPreparedContext,
+) => ResultType<AgentPreparedContext, AgentAdapterFailure>;
 
 export interface AgentHostServices {
   prepareContinuation(context: {
     readonly attemptId: string;
     readonly scopeId: string;
+    readonly projectToolContext?: AgentToolContextProjection;
     readonly signal: AbortSignal;
   }): Promise<ResultType<AgentPreparedContext, AgentAdapterFailure>>;
   beginContinuation(context: {
@@ -99,6 +108,7 @@ export interface AgentHostServices {
   prepareContext(context: {
     readonly attemptId: string;
     readonly messages: readonly ModelMessage[];
+    readonly projectToolContext?: AgentToolContextProjection;
     readonly step: number;
     readonly signal: AbortSignal;
   }): Promise<ResultType<AgentPreparedContext, AgentAdapterFailure>>;
@@ -107,7 +117,10 @@ export interface AgentHostServices {
     readonly scopeId: string;
     readonly calls: readonly AgentToolRequest[];
     readonly signal: AbortSignal;
-    readonly onSettled?: (result: AgentToolResult) => void | Promise<void>;
+    readonly onSettled?: (
+      result: AgentToolResult,
+      outcome?: { readonly result: OpaqueAgentValue; readonly isError: boolean },
+    ) => void | Promise<void>;
   }): Promise<ResultType<readonly AgentToolResult[], AgentAdapterFailure>>;
 }
 

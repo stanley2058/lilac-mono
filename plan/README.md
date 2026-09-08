@@ -12,6 +12,11 @@ No active repository-wide implementation plans.
 Only plans listed under **Active** are repository-wide implementation plans. A task-specific plan is
 authoritative only when the user explicitly approves it for that task.
 
+## Drafts
+
+- [Native tool loading for OpenAI and Codex](openai-native-tool-loading.md): client-executed discovery,
+  prefix-lineage reuse, and portable fallback. Awaiting plan approval.
+
 ## Confirmed Residuals
 
 These are confirmed non-active residuals only. They are not approved implementation plans or

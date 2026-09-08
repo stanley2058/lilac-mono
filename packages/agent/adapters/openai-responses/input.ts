@@ -1,3 +1,5 @@
+import { readToolLoadingDefinitions, portableToolLoadingMessages } from "./tool-search";
+import type { AgentToolDefinition } from "../../agent-adapter";
 import type { FilePart, ImagePart, ModelMessage, ToolResultPart } from "ai";
 import { Result, type Result as ResultType } from "better-result";
 import { z } from "zod";
@@ -7,6 +9,7 @@ import type {
   ResponseInputItem,
   ResponseReasoningItem,
   FunctionTool,
+  Tool,
 } from "openai/resources/responses/responses";
 import { captureResultOutcome } from "@stanley2058/lilac-utils/runtime-utils";
 import { AgentAdapterFailure } from "../../agent-adapter";
@@ -22,6 +25,7 @@ type ToolResultOutput = ToolResultPart["output"];
 type Encoded<T> = ResultType<T, AgentAdapterFailure>;
 type Options = NonNullable<ModelMessage["providerOptions"]>[string];
 type EncodingPolicy = {
+  nativeToolSearch?: boolean;
   store: boolean;
   hasConversation?: boolean;
   hasPreviousResponseId?: boolean;
@@ -332,6 +336,19 @@ function assistantMessage(
         const encodedArguments = captureResultOutcome(jsonText(part.input ?? {}));
         if (!encodedArguments.ok) return Result.err(encodedArguments.error);
         const argumentsJson = encodedArguments.value;
+        if (policy.nativeToolSearch && options.toolSearchCall === true) {
+          const argumentsValue = captureResultOutcome(parseJson(argumentsJson));
+          if (!argumentsValue.ok) return Result.err(argumentsValue.error);
+          items.push({
+            type: "tool_search_call",
+            id,
+            call_id: part.toolCallId,
+            execution: "client",
+            status: "completed",
+            arguments: argumentsValue.value,
+          });
+          break;
+        }
         items.push({
           type: "function_call",
           id,
@@ -378,7 +395,20 @@ function encodeMessages(
   policy: EncodingPolicy,
 ): Encoded<OpenAIInputItem[]> {
   const items: OpenAIInputItem[] = [];
-  for (const message of messages) {
+  for (const message of policy.nativeToolSearch
+    ? messages
+    : portableToolLoadingMessages(messages)) {
+    if (policy.nativeToolSearch) {
+      const seed = captureResultOutcome(
+        readToolLoadingDefinitions(message.providerOptions, "toolSearchSeed"),
+      );
+      if (!seed.ok) return Result.err(seed.error);
+      if (seed.value) {
+        const definitions = captureResultOutcome(encodeToolDefinitions(seed.value));
+        if (!definitions.ok) return Result.err(definitions.error);
+        items.push({ type: "additional_tools", role: "developer", tools: definitions.value });
+      }
+    }
     switch (message.role) {
       case "system": {
         if (policy.systemMode !== "remove")
@@ -418,6 +448,24 @@ function encodeMessages(
         for (const part of message.content) {
           if (part.type !== "tool-result")
             return unsupported("Provider approval messages require the AI SDK adapter");
+          if (policy.nativeToolSearch) {
+            const loaded = captureResultOutcome(
+              readToolLoadingDefinitions(part.providerOptions, "toolSearchTools"),
+            );
+            if (!loaded.ok) return Result.err(loaded.error);
+            if (loaded.value) {
+              const definitions = captureResultOutcome(encodeToolDefinitions(loaded.value));
+              if (!definitions.ok) return Result.err(definitions.error);
+              items.push({
+                type: "tool_search_output",
+                call_id: part.toolCallId,
+                execution: "client",
+                status: "completed",
+                tools: definitions.value.map((tool) => ({ ...tool, defer_loading: true })),
+              });
+              continue;
+            }
+          }
           const encodedOutput = captureResultOutcome(
             toolOutput(part.output, policy.outputSchemaToolNames?.includes(part.toolName) ?? false),
           );
@@ -501,42 +549,11 @@ function assignRequestOption<K extends keyof OpenAIResponseRequest>(
   request[key] = value as OpenAIResponseRequest[K];
 }
 
-function encodeRequest(
-  input: Parameters<OpenAIRequestCodec["request"]>[0],
-): Encoded<OpenAIResponseRequest> {
-  const options = input.providerOptions?.openai ?? {};
-  for (const name of Object.keys(options)) {
-    if (!directOptions[name] && !localOptions.has(name))
-      return unsupported(`Unsupported OpenAI request option: ${name}`);
-  }
-  const systemMode =
-    options.systemMessageMode ?? defaultSystemMode(input.model, options.forceReasoning);
-  if (systemMode !== "system" && systemMode !== "developer" && systemMode !== "remove")
-    return unsupported("Invalid OpenAI system message mode");
-  const systemMessages = systemPromptMessages(input.context.system);
-  const encodedMessages = captureResultOutcome(
-    encodeMessages([...systemMessages, ...input.context.messages], {
-      store: options.store !== false,
-      hasConversation: options.conversation != null,
-      hasPreviousResponseId: options.previousResponseId != null,
-      systemMode,
-      passThroughUnsupportedFiles: options.passThroughUnsupportedFiles === true,
-      outputSchemaToolNames: input.context.tools
-        .filter((tool) => tool.outputSchemaJson !== undefined)
-        .map((tool) => tool.name),
-    }),
-  );
-  if (!encodedMessages.ok) return Result.err(encodedMessages.error);
-  const messages = encodedMessages.value;
-  const request: OpenAIResponseRequest = {
-    type: "response.create",
-    model: input.model,
-    input: messages,
-  };
-  for (const [name, wireName] of Object.entries(directOptions))
-    if (options[name] !== undefined) assignRequestOption(request, wireName, options[name]);
+function encodeToolDefinitions(
+  definitions: readonly AgentToolDefinition[],
+): Encoded<FunctionTool[]> {
   const tools: FunctionTool[] = [];
-  for (const tool of input.context.tools) {
+  for (const tool of definitions) {
     const encodedParameters = captureResultOutcome(parseJson(tool.inputSchemaJson));
     if (!encodedParameters.ok) return Result.err(encodedParameters.error);
     const parameters = encodedParameters.value;
@@ -568,6 +585,61 @@ function encodeRequest(
         : { allowed_callers: toolOptions.allowedCallers as FunctionTool["allowed_callers"] }),
     });
   }
+  return Result.ok(tools);
+}
+
+function encodeRequest(
+  input: Parameters<OpenAIRequestCodec["request"]>[0],
+): Encoded<OpenAIResponseRequest> {
+  const options = input.providerOptions?.openai ?? {};
+  for (const name of Object.keys(options)) {
+    if (!directOptions[name] && !localOptions.has(name))
+      return unsupported(`Unsupported OpenAI request option: ${name}`);
+  }
+  const systemMode =
+    options.systemMessageMode ?? defaultSystemMode(input.model, options.forceReasoning);
+  if (systemMode !== "system" && systemMode !== "developer" && systemMode !== "remove")
+    return unsupported("Invalid OpenAI system message mode");
+  const systemMessages = systemPromptMessages(input.context.system);
+  const encodedMessages = captureResultOutcome(
+    encodeMessages([...systemMessages, ...input.context.messages], {
+      nativeToolSearch: input.context.nativeToolSearch,
+      store: options.store !== false,
+      hasConversation: options.conversation != null,
+      hasPreviousResponseId: options.previousResponseId != null,
+      systemMode,
+      passThroughUnsupportedFiles: options.passThroughUnsupportedFiles === true,
+      outputSchemaToolNames: input.context.tools
+        .filter((tool) => tool.outputSchemaJson !== undefined)
+        .map((tool) => tool.name),
+    }),
+  );
+  if (!encodedMessages.ok) return Result.err(encodedMessages.error);
+  const messages = encodedMessages.value;
+  const request: OpenAIResponseRequest = {
+    type: "response.create",
+    model: input.model,
+    input: messages,
+  };
+  for (const [name, wireName] of Object.entries(directOptions))
+    if (options[name] !== undefined) assignRequestOption(request, wireName, options[name]);
+  const deferred = new Set(
+    input.context.nativeToolSearch ? input.context.deferredTools?.map((tool) => tool.name) : [],
+  );
+  const encodedTools = captureResultOutcome(
+    encodeToolDefinitions(input.context.tools.filter((tool) => !deferred.has(tool.name))),
+  );
+  if (!encodedTools.ok) return Result.err(encodedTools.error);
+  const tools: Tool[] = encodedTools.value.map((tool) =>
+    input.context.nativeToolSearch && tool.name === "find_tools"
+      ? {
+          type: "tool_search",
+          execution: "client",
+          description: tool.description,
+          parameters: tool.parameters,
+        }
+      : tool,
+  );
   if (tools.length) request.tools = tools;
   if (options.compactionTrigger === true) request.input.push({ type: "compaction_trigger" });
   const effort = options.reasoningEffort ?? input.reasoning;
@@ -635,6 +707,7 @@ export const openAIRequestCodec: OpenAIRequestCodec = {
   async messages(messages, options) {
     return encodeMessages(messages, {
       ...defaultPolicy,
+      nativeToolSearch: options?.nativeToolSearch,
       store: options?.store ?? defaultPolicy.store,
       outputSchemaToolNames: options?.outputSchemaToolNames,
     });
