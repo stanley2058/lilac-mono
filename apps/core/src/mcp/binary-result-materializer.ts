@@ -56,7 +56,7 @@ type BinaryContent = {
   readonly outputIndex: number;
   readonly data: string;
   readonly mediaType: string;
-  readonly source: "image" | "resource";
+  readonly source: "image" | "audio" | "resource";
 };
 
 type MaterializedBinary = {
@@ -104,8 +104,8 @@ function extensionFor(mediaType: string): string {
 function binaryContent(output: CallToolResult): BinaryContent[] {
   if (!("content" in output) || !Array.isArray(output.content)) return [];
   return output.content.flatMap((part, outputIndex): BinaryContent[] => {
-    if (part.type === "image") {
-      return [{ outputIndex, data: part.data, mediaType: part.mimeType, source: "image" }];
+    if (part.type === "image" || part.type === "audio") {
+      return [{ outputIndex, data: part.data, mediaType: part.mimeType, source: part.type }];
     }
     if (part.type === "resource") {
       const blob = part.resource.blob;
@@ -202,11 +202,14 @@ function appendMaterializationNotice(
   files: readonly MaterializedBinary[],
   failed: number,
 ): McpModelOutput {
-  if (modelOutput.type !== "content") return modelOutput;
   const notice = {
-    mcpBinaryFiles: files,
+    mcpBinaryFiles: files.map((file) => ({ ...file })),
     ...(failed === 0 ? {} : { materializationFailures: failed }),
   };
+  if (modelOutput.type === "error-json") {
+    return { type: "error-json", value: { error: modelOutput.value, ...notice } };
+  }
+  if (modelOutput.type !== "content") return modelOutput;
   return {
     ...modelOutput,
     value: [

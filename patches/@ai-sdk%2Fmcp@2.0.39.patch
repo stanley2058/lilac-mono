@@ -1,8 +1,31 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 742e4bdd1585b848c9975f1cc871969ba80c3c84..6b495b0fc971e4547214f869de956ec547b16a09 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -504,6 +504,10 @@ declare const CallToolResultSchema: z.ZodUnion<[z.ZodObject<{
+         type: z.ZodLiteral<"image">;
+         data: z.ZodBase64;
+         mimeType: z.ZodString;
++    }, z.core.$loose>, z.ZodObject<{
++        type: z.ZodLiteral<"audio">;
++        data: z.ZodBase64;
++        mimeType: z.ZodString;
+     }, z.core.$loose>, z.ZodObject<{
+         type: z.ZodLiteral<"resource">;
+         resource: z.ZodUnion<readonly [z.ZodObject<{
 diff --git a/dist/index.js b/dist/index.js
-index 74705ccb9df35c39471c13c7de971a2b3f2826a6..a0c1211523f1c5ac7d8181f405688f674a95c0d4 100644
+index 74705ccb9df35c39471c13c7de971a2b3f2826a6..530dc9126946ad392108769a66fd294e7cdc11a8 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -2388,7 +2388,7 @@ async function readMCPAppResource({
+@@ -158,6 +158,7 @@ var CallToolResultSchema = ResultSchema.extend({
+     z.union([
+       TextContentSchema,
+       ImageContentSchema,
++      ImageContentSchema.extend({ type: z.literal("audio") }),
+       EmbeddedResourceSchema,
+       ResourceLinkContentSchema
+     ])
+@@ -2388,7 +2389,7 @@ async function readMCPAppResource({
  // src/tool/mcp-client.ts
  var CLIENT_VERSION = "1.0.0";
  var DEFAULT_MAX_TOOL_CALL_RETRIES = 0;
@@ -11,14 +34,187 @@ index 74705ccb9df35c39471c13c7de971a2b3f2826a6..a0c1211523f1c5ac7d8181f405688f67
  var MODERN_PROTOCOL_ERROR_CODES = [-32020, -32021, -32022];
  var DEFAULT_RETRY_ERROR_CODES = [
    "ConnectionRefused",
+@@ -2495,9 +2496,18 @@ function mcpToModelOutput({
+           data: { type: "data", data: part.data }
+         };
+       }
++      if (part.type === "audio") {
++        return { type: "text", text: JSON.stringify({ type: "audio", mimeType: part.mimeType }) };
++      }
+       return { type: "text", text: JSON.stringify(part) };
+     }
+   );
++  if ("structuredContent" in result && result.structuredContent !== undefined) {
++    convertedContent.push({ type: "text", text: JSON.stringify(result.structuredContent) });
++  }
++  if (result.isError) {
++    return { type: "error-json", value: { content: convertedContent } };
++  }
+   return { type: "content", value: convertedContent };
+ }
+ async function createMCPClient(config) {
+@@ -2548,12 +2558,6 @@ var DefaultMCPClient = class {
+       if ("method" in message) {
+         if ("id" in message) {
+           this.onRequestMessage(message);
+-        } else {
+-          this.onError(
+-            new MCPClientError({
+-              message: "Unsupported message type"
+-            })
+-          );
+         }
+         return;
+       }
+@@ -2889,6 +2893,7 @@ var DefaultMCPClient = class {
+     params,
+     options
+   } = {}) {
++    if (!this.serverCapabilities.tools) return { tools: [] };
+     const result = await this.request({
+       request: { method: "tools/list", params },
+       resultSchema: ListToolsResultSchema,
+@@ -2908,7 +2913,8 @@ var DefaultMCPClient = class {
+       if (!result.success) {
+         this.onError(
+           new MCPClientError({
+-            message: `Ignoring MCP tool "${toolDefinition.name}": ${result.error}`
++            message: `Ignoring MCP tool "${toolDefinition.name}": ${result.error}`,
++            code: -32602
+           })
+         );
+         return false;
+@@ -3147,11 +3153,7 @@ var DefaultMCPClient = class {
+         description,
+         title: resolvedTitle,
+         metadata,
+-        inputSchema: jsonSchema({
+-          ...inputSchema,
+-          properties: (_b3 = inputSchema.properties) != null ? _b3 : {},
+-          additionalProperties: false
+-        }),
++        inputSchema: jsonSchema(inputSchema),
+         execute,
+         toModelOutput: mcpToModelOutput
+       }) : tool({
+@@ -3345,13 +3347,7 @@ var DefaultMCPClient = class {
+     }
+     const messageId = Number(response.id);
+     const handler = this.responseHandlers.get(messageId);
+-    if (handler === void 0) {
+-      throw new MCPClientError({
+-        message: `Protocol error: Received a response for an unknown message ID: ${JSON.stringify(
+-          response
+-        )}`
+-      });
+-    }
++    if (handler === void 0) return;
+     this.responseHandlers.delete(messageId);
+     handler(
+       "result" in response ? response : new MCPClientError({
 diff --git a/src/tool/mcp-client.ts b/src/tool/mcp-client.ts
-index 54f420ffd60763bab60951e9b5cb49ed7a10266c..54580d673d9dcf6074ba41f9b05b8d5f7dcd3a0e 100644
+index 54f420ffd60763bab60951e9b5cb49ed7a10266c..b3d5aec92a75b89725387b73b9f7de04c794d68d 100644
 --- a/src/tool/mcp-client.ts
 +++ b/src/tool/mcp-client.ts
-@@ -78,5 +78,5 @@ import {
+@@ -78,7 +78,7 @@ import {
  } from './types';
  const CLIENT_VERSION = '1.0.0';
  const DEFAULT_MAX_TOOL_CALL_RETRIES = 0;
 -const DEFAULT_PROTOCOL_DISCOVERY_TIMEOUT = 1000;
 +const DEFAULT_PROTOCOL_DISCOVERY_TIMEOUT = 3000;
  const MODERN_PROTOCOL_ERROR_CODES = [-32020, -32021, -32022];
+
+ const DEFAULT_RETRY_ERROR_CODES = [
+@@ -231,10 +231,19 @@ function mcpToModelOutput({
+           data: { type: 'data' as const, data: part.data as string },
+         };
+       }
++      if (part.type === 'audio') {
++        return { type: 'text' as const, text: JSON.stringify({ type: 'audio', mimeType: part.mimeType }) };
++      }
+       return { type: 'text' as const, text: JSON.stringify(part) };
+     },
+   );
+
++  if ('structuredContent' in result && result.structuredContent !== undefined) {
++    convertedContent.push({ type: 'text', text: JSON.stringify(result.structuredContent) });
++  }
++  if (result.isError) {
++    return { type: 'error-json', value: { content: convertedContent } as JSONValue };
++  }
+   return { type: 'content', value: convertedContent };
+ }
+
+@@ -468,13 +477,9 @@ class DefaultMCPClient implements MCPClient {
+       if ('method' in message) {
+         if ('id' in message) {
+           this.onRequestMessage(message);
+-        } else {
+-          this.onError(
+-            new MCPClientError({
+-              message: 'Unsupported message type',
+-            }),
+-          );
+         }
++        // Notifications do not invalidate the connection. This client does not subscribe
++        // to catalog changes or expose progress/logging to callers.
+         return;
+       }
+
+@@ -912,6 +917,7 @@ class DefaultMCPClient implements MCPClient {
+     params?: PaginatedRequest['params'];
+     options?: RequestOptions;
+   } = {}): Promise<ListToolsResult> {
++    if (!this.serverCapabilities.tools) return { tools: [] };
+     const result = await this.request({
+       request: { method: 'tools/list', params },
+       resultSchema: ListToolsResultSchema,
+@@ -940,6 +946,7 @@ class DefaultMCPClient implements MCPClient {
+         this.onError(
+           new MCPClientError({
+             message: `Ignoring MCP tool "${toolDefinition.name}": ${result.error}`,
++            code: -32602,
+           }),
+         );
+         return false;
+@@ -1255,11 +1262,7 @@ class DefaultMCPClient implements MCPClient {
+               description,
+               title: resolvedTitle,
+               metadata,
+-              inputSchema: jsonSchema({
+-                ...inputSchema,
+-                properties: inputSchema.properties ?? {},
+-                additionalProperties: false,
+-              } as JSONSchema7),
++              inputSchema: jsonSchema(inputSchema as JSONSchema7),
+               execute,
+               toModelOutput: mcpToModelOutput,
+             })
+@@ -1519,13 +1522,8 @@ class DefaultMCPClient implements MCPClient {
+     const messageId = Number(response.id);
+     const handler = this.responseHandlers.get(messageId);
+
+-    if (handler === undefined) {
+-      throw new MCPClientError({
+-        message: `Protocol error: Received a response for an unknown message ID: ${JSON.stringify(
+-          response,
+-        )}`,
+-      });
+-    }
++    // Completed or cancelled requests can still receive a late reply.
++    if (handler === undefined) return;
+
+     this.responseHandlers.delete(messageId);
+
+diff --git a/src/tool/types.ts b/src/tool/types.ts
+index 2ae8faef0d7ce3b039e1432ecf2a82f261ebf56d..3d06c0c88ec31bce9e7b3e44ce4828baf2b6a447 100644
+--- a/src/tool/types.ts
++++ b/src/tool/types.ts
+@@ -268,6 +268,7 @@ export const CallToolResultSchema = ResultSchema.extend({
+     z.union([
+       TextContentSchema,
+       ImageContentSchema,
++      ImageContentSchema.extend({ type: z.literal('audio') }),
+       EmbeddedResourceSchema,
+       ResourceLinkContentSchema,
+     ]),

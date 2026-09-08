@@ -307,11 +307,12 @@ function observeHttpSessionExpiration(
   };
 }
 
-function isOptionalHttpInboundSseError(
+function isNonTerminalInboundMcpError(
   definition: McpServerDefinition,
   sessionExpired: boolean,
   error: unknown,
 ): boolean {
+  if (mcpNonTerminalExecutionErrorSchema.safeParse(error).success) return true;
   if (definition.transportConfig.transport !== "http" || sessionExpired) return false;
   const parsed = optionalHttpInboundSseErrorSchema.safeParse(error);
   return parsed.success && parsed.data.url === new URL(definition.transportConfig.url).href;
@@ -741,7 +742,7 @@ export class McpRegistry implements McpRegistryApi {
                     protocolVersionDiscovery: true,
                     onUncaughtError: <TError>(error: TError) => {
                       if (
-                        isOptionalHttpInboundSseError(
+                        isNonTerminalInboundMcpError(
                           definition,
                           holder.sessionExpired === true,
                           error,
@@ -1108,7 +1109,10 @@ export class McpRegistry implements McpRegistryApi {
           if (outcome.kind === "success") return outcome.value;
           const cause = outcome.failure.cause;
           rethrowPanic(cause);
-          if (!mcpNonTerminalExecutionErrorSchema.safeParse(cause).success) {
+          if (
+            !args[1]?.abortSignal?.aborted &&
+            !mcpNonTerminalExecutionErrorSchema.safeParse(cause).success
+          ) {
             const current = this.entries.get(serverId);
             if (current?.client === client) {
               this.handleTerminalFailure(
@@ -1138,7 +1142,10 @@ export class McpRegistry implements McpRegistryApi {
           if (captured.isErr()) {
             const error = captured.error.cause;
             rethrowPanic(error);
-            if (!mcpNonTerminalExecutionErrorSchema.safeParse(error).success) {
+            if (
+              !args[1]?.abortSignal?.aborted &&
+              !mcpNonTerminalExecutionErrorSchema.safeParse(error).success
+            ) {
               const current = this.entries.get(serverId);
               if (current?.client === client) {
                 this.handleTerminalFailure(

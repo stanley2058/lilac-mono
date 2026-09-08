@@ -550,6 +550,14 @@ async function settleAtomicToolCallImpl(
       }
 
       assertNotAborted();
+      if (
+        outcome === "success" &&
+        (toolOutput.type === "error-text" || toolOutput.type === "error-json")
+      ) {
+        isError = true;
+        outcome = "error";
+      }
+
       return {
         result,
         isError,
