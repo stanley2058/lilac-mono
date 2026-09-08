@@ -118,6 +118,7 @@ function fixture(
   const native = new OpenAIResponsesAgentAdapter({
     model: "gpt-6-astra",
     transport: "websocket",
+    nativeToolSearch: true,
     connect: async () => Result.ok(socket),
     ...nativeOptions,
   });
@@ -1391,4 +1392,259 @@ describe("OpenAI Responses native execution", () => {
       ),
     ).toBe(failure);
   });
+});
+
+describe("native deferred tool loading", () => {
+  test("search loads schemas through history while local authority and the request prefix stay stable", async () => {
+    const selected = new Set(["find_tools"]);
+    let calls = 0;
+    const { agent, socket } = fixture({
+      deferredToolNames: () => ["mcp_echo"],
+      tools: {
+        find_tools: tool({
+          description: "Search deferred tools",
+          inputSchema: z.object({ query: z.string() }),
+          execute: () => {
+            selected.add("mcp_echo");
+            return { matches: [{ name: "mcp_echo" }] };
+          },
+        }),
+        mcp_echo: tool({
+          description: "Echo",
+          inputSchema: z.object({ text: z.string() }),
+          execute: ({ text }) => {
+            calls++;
+            return text;
+          },
+        }),
+      },
+      beforeStep: () => agent.setActiveTools(selected),
+    });
+    const run = agent.prompt("Find echo and use it");
+    const first = await socket.nextSend();
+    expect(first.tools).toEqual([
+      expect.objectContaining({ type: "tool_search", execution: "client" }),
+    ]);
+    socket.created("search-response");
+    socket.finished("search-response", "", false, [
+      {
+        type: "tool_search_call",
+        id: "search-item",
+        call_id: "search-call",
+        execution: "client",
+        status: "completed",
+        arguments: { query: "echo" },
+      },
+    ]);
+    const second = await socket.nextSend();
+    expect(second.tools).toEqual(first.tools);
+    expect(second.input).toContainEqual(
+      expect.objectContaining({
+        type: "tool_search_output",
+        call_id: "search-call",
+        tools: [
+          expect.objectContaining({ type: "function", name: "mcp_echo", defer_loading: true }),
+        ],
+      }),
+    );
+    socket.created("echo-response");
+    socket.finished("echo-response", "", false, [
+      {
+        type: "function_call",
+        id: "echo-item",
+        call_id: "echo-call",
+        name: "mcp_echo",
+        arguments: '{"text":"hello"}',
+      },
+    ]);
+    const third = await socket.nextSend();
+    expect(third.tools).toEqual(first.tools);
+    expect(calls).toBe(1);
+    socket.created("final-response");
+    socket.finished("final-response", "done");
+    await run;
+    const result = agent.state.messages.find(
+      (message) =>
+        message.role === "tool" &&
+        message.content.some(
+          (part) => part.type === "tool-result" && part.toolCallId === "search-call",
+        ),
+    );
+    expect(result).toMatchObject({
+      content: [
+        expect.objectContaining({
+          providerOptions: {
+            openai: {
+              toolSearchTools: [expect.objectContaining({ name: "mcp_echo" })],
+            },
+          },
+        }),
+      ],
+    });
+  });
+
+  test("unselected calls do not gain execution authority from the local catalog", async () => {
+    let calls = 0;
+    const { agent, socket } = fixture({
+      deferredToolNames: () => ["hidden"],
+      tools: {
+        find_tools: tool({ inputSchema: z.object({}), execute: () => ({ matches: [] }) }),
+        hidden: tool({
+          inputSchema: z.object({}),
+          execute: () => {
+            calls++;
+            return "bad";
+          },
+        }),
+      },
+    });
+    agent.setActiveTools(new Set(["find_tools"]));
+    const run = agent.prompt("test");
+    await socket.nextSend();
+    socket.created("r1");
+    socket.finished("r1", "", false, [
+      { type: "function_call", id: "i", call_id: "c", name: "hidden", arguments: "{}" },
+    ]);
+    await socket.nextSend();
+    expect(calls).toBe(0);
+    socket.created("r2");
+    socket.finished("r2", "done");
+    await run;
+  });
+});
+
+test("accepted steering across a delayed search refreshes authority and returns native search output", async () => {
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const selected = new Set(["find_tools"]);
+  let calls = 0;
+  const { agent, socket } = fixture({
+    deferredToolNames: () => ["mcp_echo"],
+    tools: {
+      find_tools: tool({
+        inputSchema: z.object({ query: z.string() }),
+        execute: async () => {
+          started.resolve();
+          await release.promise;
+          selected.add("mcp_echo");
+          return { matches: [{ name: "mcp_echo" }] };
+        },
+      }),
+      mcp_echo: tool({
+        inputSchema: z.object({}),
+        execute: () => {
+          calls++;
+          return "hello";
+        },
+      }),
+    },
+    beforeStep: () => agent.setActiveTools(selected),
+  });
+  const run = agent.prompt("Find echo");
+  const first = await socket.nextSend();
+  socket.created("r1");
+  agent.steer("Use the result");
+  expect((await socket.nextSend()).type).toBe("response.steer");
+  socket.accepted("r1");
+  socket.finished("r1", "", true, [
+    {
+      type: "tool_search_call",
+      id: "search",
+      call_id: "s1",
+      execution: "client",
+      status: "completed",
+      arguments: { query: "echo" },
+    },
+  ]);
+  await started.promise;
+  socket.emit({
+    type: "response.steer.pending",
+    steer: { id: "s1", previous_response_id: "r1" },
+    required_input: [{ type: "tool_search_output", call_id: "s1" }],
+  });
+  release.resolve();
+  const continuation = await socket.nextSend();
+  expect(continuation.tools).toEqual(first.tools);
+  expect(continuation.input).toContainEqual(
+    expect.objectContaining({ type: "tool_search_output", call_id: "s1" }),
+  );
+  socket.created("r2", "r1");
+  socket.finished("r2", "", false, [
+    { type: "function_call", id: "echo", call_id: "e1", name: "mcp_echo", arguments: "{}" },
+  ]);
+  await socket.nextSend();
+  expect(calls).toBe(1);
+  socket.created("r3");
+  socket.finished("r3", "done");
+  await run;
+  expect(hasText(agent, "Use the result")).toBe(true);
+});
+
+test("inherited native seed is committed to canonical history and remains stable on the next step", async () => {
+  const { agent, socket } = fixture({
+    deferredToolNames: () => ["echo"],
+    tools: {
+      find_tools: tool({ inputSchema: z.object({}), execute: () => ({ matches: [] }) }),
+      echo: tool({ inputSchema: z.object({}), execute: () => "echo" }),
+    },
+  });
+  agent.setActiveTools(new Set(["find_tools", "echo"]));
+  const run = agent.prompt("Resume");
+  const first = await socket.nextSend();
+  expect(first.input).toContainEqual(expect.objectContaining({ type: "additional_tools" }));
+  expect(agent.state.messages[0]?.providerOptions?.openai?.toolSearchSeed).toBeDefined();
+  socket.created("r1");
+  socket.finished("r1", "", false, [
+    { type: "function_call", id: "echo", call_id: "e1", name: "echo", arguments: "{}" },
+  ]);
+  const second = await socket.nextSend();
+  expect(second.tools).toEqual(first.tools);
+  socket.created("r2");
+  socket.finished("r2", "done");
+  await run;
+  expect(agent.state.messages[0]?.providerOptions?.openai?.toolSearchSeed).toBeDefined();
+});
+
+test("native search snapshots use original results even when the model view is truncated", async () => {
+  const selected = new Set(["find_tools"]);
+  const { agent, socket } = fixture({
+    deferredToolNames: () => ["echo"],
+    tools: {
+      find_tools: tool({
+        inputSchema: z.object({}),
+        execute: () => {
+          selected.add("echo");
+          return { matches: [{ name: "echo" }] };
+        },
+      }),
+      echo: tool({ inputSchema: z.object({}), execute: () => "echo" }),
+    },
+    beforeStep: () => agent.setActiveTools(selected),
+    normalizeToolResultOutput: async () => ({ type: "text", value: "Truncated; see artifact" }),
+  });
+  const run = agent.prompt("Search");
+  const first = await socket.nextSend();
+  socket.created("r1");
+  socket.finished("r1", "", false, [
+    {
+      type: "tool_search_call",
+      id: "i",
+      call_id: "s",
+      execution: "client",
+      status: "completed",
+      arguments: {},
+    },
+  ]);
+  const next = await socket.nextSend();
+  expect(next.tools).toEqual(first.tools);
+  expect(next.input).toContainEqual(
+    expect.objectContaining({
+      type: "tool_search_output",
+      tools: [expect.objectContaining({ name: "echo" })],
+    }),
+  );
+  expect(next.input).not.toContainEqual(expect.objectContaining({ type: "additional_tools" }));
+  socket.created("r2");
+  socket.finished("r2", "done");
+  await run;
 });

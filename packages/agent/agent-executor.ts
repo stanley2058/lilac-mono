@@ -37,6 +37,7 @@ import {
   type AgentExecution,
   type AgentExecutionEvent,
   type AgentPreparedContext,
+  type AgentToolContextProjection,
 } from "./agent-adapter";
 import {
   type SystemPrompt,
@@ -173,6 +174,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
   private turnCounter = 0;
   private readonly captureModelViewMessages: boolean;
 
+  private readonly deferredToolNames: (() => readonly string[]) | undefined;
   /** `null` authorizes every tool in the current toolset. */
   private activeToolNames: ReadonlySet<string> | null = null;
   private lastStepToolSnapshot: StepToolSnapshot<TOOLS> | null = null;
@@ -213,6 +215,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
 
   /** Create a new agent instance. */
   constructor(options: AgentExecutorOptions<TOOLS>) {
+    this.deferredToolNames = options.deferredToolNames;
     this.prepareFullModelView = options.prepareFullModelView;
     this.prepareFullBudgetView = options.prepareFullBudgetView;
     this.canonicalModelCallPreflight = options.canonicalModelCallPreflight;
@@ -2164,6 +2167,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     attemptId: string,
     signal: AbortSignal,
     inherited: boolean,
+    projectToolContext?: AgentToolContextProjection,
   ): Promise<AgentPreparedContext> {
     signal.throwIfAborted();
     const prepared = await this.prepareExecutionRequest({
@@ -2178,8 +2182,17 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     });
     this.requireActiveAttempt(attemptId);
     this.scopes.set(prepared.scopeId, this.lastStepToolSnapshot!);
-    const tools = await Promise.all(
-      Object.entries(prepared.tools).map(async ([name, definition]) => ({
+    const deferredNames = new Set(this.deferredToolNames?.());
+    const declarations = projectToolContext
+      ? {
+          ...prepared.tools,
+          ...Object.fromEntries(
+            Object.entries(this.state.tools).filter(([name]) => deferredNames.has(name)),
+          ),
+        }
+      : prepared.tools;
+    const definitions = await Promise.all(
+      Object.entries(declarations).map(async ([name, definition]) => ({
         name,
         description:
           typeof definition.description === "function"
@@ -2199,15 +2212,27 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
             }),
       })),
     );
-    this.synchronizeCanonicalHistory();
-    return {
+    const tools = definitions.filter((tool) => tool.name in prepared.tools);
+    const context: AgentPreparedContext = {
       scopeId: prepared.scopeId,
       step: prepared.step,
       messages: prepared.messages,
       canonicalMessages: this.state.messages.map(cloneMessage),
       system: this.snapshotSystemPrompt(prepared.system),
       tools,
+      ...(projectToolContext
+        ? {
+            deferredTools: definitions.filter((tool) => deferredNames.has(tool.name)),
+          }
+        : {}),
     };
+    const seeded = resultOutcome(
+      projectToolContext ? projectToolContext(context) : Result.ok(context),
+    );
+    if (!seeded.ok) this.failAdapter(seeded.error);
+    if (!inherited) this.state.messages = seeded.value.canonicalMessages.map(cloneMessage);
+    this.synchronizeCanonicalHistory();
+    return seeded.value;
   }
   private createExecutionHost(attemptId: string): AgentExecutionHost<TOOLS> {
     const active = () => this.requireActiveAttempt(attemptId);
@@ -2218,7 +2243,12 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
           active();
           this.requireSuppliedAttempt(attemptId, context.attemptId);
           this.requireCurrentScope(context.scopeId);
-          const prepared = await this.prepareNativeContext(attemptId, context.signal, true);
+          const prepared = await this.prepareNativeContext(
+            attemptId,
+            context.signal,
+            true,
+            context.projectToolContext,
+          );
           this.requireCurrentScope(context.scopeId);
           this.continuationScopes.set(prepared.scopeId, {
             parentScopeId: context.scopeId,
@@ -2347,7 +2377,12 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         this.hostResult(async () => {
           active();
           this.requireSuppliedAttempt(attemptId, context.attemptId);
-          const prepared = await this.prepareNativeContext(attemptId, context.signal, false);
+          const prepared = await this.prepareNativeContext(
+            attemptId,
+            context.signal,
+            false,
+            context.projectToolContext,
+          );
           this.activeExecutionScopeId = prepared.scopeId;
           this.continuationScopes.clear();
           return prepared;
@@ -2401,7 +2436,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
               },
             };
             results.push(settled);
-            await context.onSettled?.(settled);
+            await context.onSettled?.(settled, outcome);
           }
           return results;
         }),

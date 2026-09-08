@@ -270,6 +270,24 @@ stateless request normalization, backend event repairs, and its SSE fallback. Co
 turn boundaries. The OpenAI adapter gates native steering to exactly `gpt-6-astra` in compatible
 single-agent settings. Conversation binding and automatic compaction use boundary delivery.
 
+Native tool discovery uses client-executed OpenAI `tool_search` on the official OpenAI API and
+Codex native paths for the supported GPT-5.4, GPT-5.5, GPT-5.6, and GPT-6 Astra model families.
+The runner supplies deferred catalog declarations through the agent context; local execution still
+uses direct-plus-selected tool authority. Search reuses Core's `find_tools` ranking and lineage
+selection, while the adapter appends schema-bearing `tool_search_output` items instead of changing
+top-level tool declarations. Search-call and schema-snapshot metadata lives in existing message-part
+`providerOptions`. Inherited selections missing from retained loading records receive a stable
+`additional_tools` seed attached to the new prefix's first message. Replay uses the original snapshots
+even after catalog reload; current local authority and validators still decide whether a call can run.
+The adapter owns loading projection, and the executor commits its prepared canonical metadata.
+
+AI SDK paths, including OpenAI and Codex SSE, keep portable discovery. Their model-view projection
+removes native search metadata and item IDs while retaining ordinary `find_tools` exchanges and
+selected declarations. Unknown endpoints/models, explicit conversation/previous-response binding,
+tool-choice restrictions, configured server compaction, and retained opaque compaction items also
+keep portable discovery. Local compaction can restore inherited selections through a new native seed.
+Claude Code continues to own discovery through its existing `ToolSearch` bridge.
+
 Both adapters share the official OpenAI SDK transport, connection leases, continuation matching, and
 output reconstruction. A reusable socket survives executions with a five-minute idle expiry; concurrent
 executions use dedicated sockets. Credentials and endpoint determine connection reuse. Cached response

@@ -90,6 +90,7 @@ export class CodexAgentAdapter implements AgentAdapter<AgentExecutionHost> {
       model: settings.model,
       transport: settings.transport,
       nativeSteering: false,
+      nativeToolSearch: true,
       diagnostics: this.diagnostics,
       requestCodec: codexRequestCodec,
       fallback,

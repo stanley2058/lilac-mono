@@ -1,3 +1,4 @@
+import { portableToolLoadingMessages } from "../openai-responses/tool-search";
 import type { LanguageModel, ToolSet, Experimental_DownloadFunction as DownloadFunction } from "ai";
 import { Result } from "better-result";
 import { AgentAdapterFailure, type AgentAdapter, type AgentExecution } from "../../agent-adapter";
@@ -184,7 +185,7 @@ export class AiSdkAgentAdapter<TOOLS extends ToolSet = ToolSet> implements Agent
             },
           });
           const messages = normalizeModelMessagesToolCallIds({
-            messages: prepared.messages,
+            messages: portableToolLoadingMessages(prepared.messages),
             modelSpecifier: runtime.modelSpecifier,
           });
           const state = host.readState();

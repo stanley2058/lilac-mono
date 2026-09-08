@@ -236,3 +236,54 @@ describe("provider metadata durable roundtrip", () => {
     expect(replayed).toEqual(messages);
   });
 });
+
+it("round-trips native tool-loading seeds and schema snapshots through the stored codec", async () => {
+  const definition = {
+    name: "mcp_echo",
+    description: "Echo",
+    inputSchemaJson: '{"type":"object","properties":{}}',
+    strict: false,
+  };
+  const messages: ModelMessage[] = [
+    {
+      role: "user",
+      content: "resume",
+      providerOptions: { openai: { toolSearchSeed: [definition] } },
+    },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "search",
+          toolName: "find_tools",
+          input: { query: "echo" },
+          providerOptions: { openai: { itemId: "search-item", toolSearchCall: true } },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "search",
+          toolName: "find_tools",
+          output: { type: "json", value: { matches: [{ name: "mcp_echo" }] } },
+          providerOptions: { openai: { toolSearchTools: [definition] } },
+        },
+      ],
+    },
+  ];
+  const expected = value(await openAIRequestCodec.messages(messages, { nativeToolSearch: true }));
+  const replayed = await persistAndReplay(messages);
+  expect(value(await openAIRequestCodec.messages(replayed, { nativeToolSearch: true }))).toEqual(
+    expected,
+  );
+  expect(expected.map((item) => item.type)).toEqual([
+    "additional_tools",
+    undefined,
+    "tool_search_call",
+    "tool_search_output",
+  ]);
+});

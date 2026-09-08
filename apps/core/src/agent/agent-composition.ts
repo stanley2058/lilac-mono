@@ -140,6 +140,7 @@ export function createCoreAgentAdapter(
   return new OpenAIResponsesAgentAdapter({
     model: resolved.modelId,
     transport: settings.responsesTransport,
+    nativeToolSearch: /^https:\/\/api\.openai\.com(?:\/|$)/u.test(connection.value.baseUrl),
     diagnostics: createResponsesDiagnostics({
       ...input.diagnosticContext,
       provider: "openai",

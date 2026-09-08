@@ -495,6 +495,7 @@ export type AgentOptions<TOOLS extends ToolSet> = {
   modelSpecifier?: string;
   /** Optional toolset (defaults to empty). */
   tools?: TOOLS;
+  deferredToolNames?: () => readonly string[];
   /** Optional initial transcript (defaults to empty). */
   messages?: ModelMessage[];
   prepareFullModelView?: PrepareFullModelView;

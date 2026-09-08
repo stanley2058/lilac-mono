@@ -1,3 +1,8 @@
+import {
+  loadSearchResult,
+  supportsNativeToolSearch,
+  prepareToolLoadingContext,
+} from "./tool-search";
 import type { ResponseOutputItem } from "openai/resources/responses/responses";
 import { isDeepStrictEqual } from "node:util";
 import type { ModelMessage } from "ai";
@@ -36,6 +41,7 @@ export type OpenAIResponsesAdapterOptions = {
   readonly fallback?: AgentAdapter<AgentExecutionHost>;
   readonly executionMode?: "single-agent" | "multi-agent";
   readonly nativeSteering?: boolean;
+  readonly nativeToolSearch?: boolean;
   readonly requestCodec?: OpenAIRequestCodec;
 };
 type EventPayload = AgentExecutionEvent extends infer Event
@@ -494,6 +500,14 @@ class OpenAIResponsesExecution implements AgentExecution {
       await this.context.host.prepareContext({
         attemptId: this.attemptId,
         messages: this.history,
+        projectToolContext:
+          this.options.nativeToolSearch === true &&
+          supportsNativeToolSearch(
+            this.options.model,
+            this.context.host.readState().providerOptions,
+          )
+            ? prepareToolLoadingContext
+            : undefined,
         step: this.responses.size + 1,
         signal,
       }),
@@ -664,7 +678,11 @@ class OpenAIResponsesExecution implements AgentExecution {
         )
           return Result.err(failure("Uncorrelated OpenAI pending steering notification"));
         for (const required of event.requiredInput) {
-          if (required.type !== "function_call_output" || typeof required.call_id !== "string")
+          if (
+            (required.type !== "function_call_output" &&
+              !(parent.prepared.nativeToolSearch && required.type === "tool_search_output")) ||
+            typeof required.call_id !== "string"
+          )
             return Result.err(failure("OpenAI steering requested unsupported client input"));
           if (
             parent.complete &&
@@ -695,7 +713,9 @@ class OpenAIResponsesExecution implements AgentExecution {
     const index = parent.completedItems.findIndex((existing) => existing.id === item.id);
     if (index < 0) parent.completedItems.push(item);
     else parent.completedItems[index] = item;
-    const pendingTool = parent.completedItems.findIndex((entry) => entry.type === "function_call");
+    const pendingTool = parent.completedItems.findIndex(
+      (entry) => entry.type === "function_call" || entry.type === "tool_search_call",
+    );
     const output =
       pendingTool < 0 ? parent.completedItems : parent.completedItems.slice(0, pendingTool);
     const projected = resultOutcome(
@@ -725,6 +745,9 @@ class OpenAIResponsesExecution implements AgentExecution {
         await this.context.host.prepareContinuation({
           attemptId: this.attemptId,
           scopeId: parent.prepared.scopeId,
+          projectToolContext: parent.prepared.nativeToolSearch
+            ? prepareToolLoadingContext
+            : undefined,
           signal,
         }),
       );
@@ -855,6 +878,11 @@ class OpenAIResponsesExecution implements AgentExecution {
       return Result.err(failure("OpenAI completed an unknown or inactive response"));
     const projected = resultOutcome(openAIResponseCodec.project(response));
     if (!projected.ok) return Result.err(projected.error);
+    if (
+      response.output.some((item) => item.type === "tool_search_call") &&
+      !parent.prepared.nativeToolSearch
+    )
+      return Result.err(failure("Tool search was not advertised for this request"));
     parent.complete = projected.value;
     parent.response = response;
     this.emit({ type: "message", phase: "end", message: projected.value.assistant });
@@ -899,7 +927,21 @@ class OpenAIResponsesExecution implements AgentExecution {
           scopeId: parent.prepared.scopeId,
           calls: parent.complete!.calls,
           signal,
-          onSettled: (result) => this.checkpointTool(parent, result),
+          onSettled: (result, outcome) => {
+            const isSearch = parent.response?.output.some(
+              (item) => item.type === "tool_search_call" && item.call_id === result.callId,
+            );
+            const loaded = resultOutcome(
+              isSearch
+                ? loadSearchResult(result, parent.prepared.deferredTools ?? [], outcome)
+                : Result.ok(result),
+            );
+            if (!loaded.ok) {
+              this.enqueue({ type: "failure", error: loaded.error });
+              return;
+            }
+            this.checkpointTool(parent, loaded.value);
+          },
         }),
       ),
     );
@@ -926,7 +968,9 @@ class OpenAIResponsesExecution implements AgentExecution {
       return Result.err(failure("Tool result references an inactive OpenAI response"));
     const result = resultOutcome(task.result);
     if (!result.ok) return Result.err(result.error);
-    parent.results = result.value;
+    parent.results = result.value.map(
+      (entry) => parent.settledResults.find((settled) => settled.callId === entry.callId) ?? entry,
+    );
     parent.toolsSettled = true;
     return await this.advance(parent, signal);
   }
@@ -972,7 +1016,7 @@ class OpenAIResponsesExecution implements AgentExecution {
     if (!steered.ok) return Result.err(steered.error);
     if (parent.complete.calls.length > 0 && !parent.continuationSent) {
       if (this.submitting && !this.submitting.steerId) return Result.ok("continue");
-      if (this.submitting) return await this.continueTools(parent);
+      if (this.submitting) return await this.continueTools(parent, signal);
       return await this.boundary(parent, signal);
     }
     if (this.submitting || this.inputs.length > 0) return Result.ok("continue");
@@ -982,13 +1026,27 @@ class OpenAIResponsesExecution implements AgentExecution {
   }
   private async continueTools(
     parent: ParentResponse,
+    signal: AbortSignal,
   ): Promise<ResultType<"continue" | "complete", AgentAdapterFailure>> {
+    if (parent.prepared.nativeToolSearch) {
+      const refreshed = resultOutcome(
+        await this.context.host.prepareContinuation({
+          attemptId: this.attemptId,
+          scopeId: parent.prepared.scopeId,
+          signal,
+          projectToolContext: prepareToolLoadingContext,
+        }),
+      );
+      if (!refreshed.ok) return Result.err(refreshed.error);
+      this.submitting = { ...this.submitting!, prepared: refreshed.value };
+    }
     const results = (parent.results ?? []).flatMap((result) => [
       result.message,
       ...(result.expansionMessages ?? []),
     ]);
     const encoded = resultOutcome(
       await (this.options.requestCodec ?? openAIRequestCodec).messages(results, {
+        nativeToolSearch: parent.prepared.nativeToolSearch,
         outputSchemaToolNames: parent.prepared.tools
           .filter((tool) => tool.outputSchemaJson !== undefined)
           .map((tool) => tool.name),

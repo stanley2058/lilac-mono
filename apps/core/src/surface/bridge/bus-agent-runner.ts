@@ -6200,6 +6200,8 @@ export async function startBusAgentRunner(params: {
               modelSpecifier: activeBinding.resolved.spec,
               messages: next.recovery?.checkpointMessages ?? seededSessionMessages,
               tools: activeBinding.toolset.tools,
+              deferredToolNames: () =>
+                activeBinding.toolset.catalog.map((entry) => entry.modelName),
               providerOptions: activeBinding.providerOptionsForAgent,
               reasoning: activeBinding.resolved.reasoning,
               turnErrorHandler,
