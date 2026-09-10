@@ -42,6 +42,8 @@ bun --cwd apps/tool-bridge run build
 On Linux, `dist/tools` is a Go launcher backed by a resident Bun worker. Other platforms build a
 standalone Bun executable and run the client directly; the resident Unix-socket fast path is
 Linux-only.
+When installing the built CLI elsewhere, keep `tools`, `tools-worker`, `tools-build-id`, and
+`tools-build-info.json` together in the same directory.
 
 The Core tool server can also run without the event bus and surfaces for development:
 

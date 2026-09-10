@@ -39,6 +39,7 @@ home/
 # build artifacts
 **/dist
 !apps/tool-bridge/dist/
+apps/tool-bridge/dist/*
 !apps/tool-bridge/dist/index.js
 **/*.tsbuildinfo
 

@@ -3,33 +3,22 @@ import { basename } from "node:path";
 
 import { getBuildInfo } from "@stanley2058/lilac-utils/build-info";
 
-const BUILD_ID_PLACEHOLDER = "00000000";
-const buildInfo = getBuildInfo({ cwd: import.meta.dir });
+const buildDefines = {
+  __LILAC_TOOL_COMPILED__: "true",
+  __LILAC_TOOL_AUTOSTART__: "false",
+};
 
-function buildDefines(buildId: string): Record<string, string> {
-  return {
-    __LILAC_TOOL_BUILD_ID__: JSON.stringify(buildId),
-    __LILAC_TOOL_BUILD_VERSION__: JSON.stringify(buildInfo.version),
-    __LILAC_TOOL_BUILD_COMMIT__: JSON.stringify(buildInfo.commit),
-    __LILAC_TOOL_BUILD_DIRTY__:
-      buildInfo.dirty === undefined ? "undefined" : JSON.stringify(buildInfo.dirty),
-    __LILAC_TOOL_BUILT_AT__:
-      buildInfo.builtAt === undefined ? "undefined" : JSON.stringify(buildInfo.builtAt),
-    __LILAC_TOOL_AUTOSTART__: "false",
-  };
-}
-
-async function buildProbe(buildId: string): Promise<Bun.BuildOutput> {
+async function buildProbe(): Promise<Bun.BuildOutput> {
   return await Bun.build({
     entrypoints: ["./launcher.ts"],
     target: "bun",
     splitting: true,
     minify: true,
-    define: buildDefines(buildId),
+    define: buildDefines,
   });
 }
 
-async function buildWorkerExecutable(buildId: string): Promise<Bun.BuildOutput> {
+async function buildWorkerExecutable(): Promise<Bun.BuildOutput> {
   return await Bun.build({
     entrypoints: ["./launcher.ts"],
     target: "bun",
@@ -41,11 +30,11 @@ async function buildWorkerExecutable(buildId: string): Promise<Bun.BuildOutput> 
       autoloadBunfig: false,
       autoloadPackageJson: false,
     },
-    define: buildDefines(buildId),
+    define: buildDefines,
   });
 }
 
-async function buildLauncher(buildId: string): Promise<void> {
+async function buildLauncher(): Promise<void> {
   if (process.platform !== "linux") {
     const portable = await Bun.build({
       entrypoints: ["./launcher.ts"],
@@ -58,7 +47,7 @@ async function buildLauncher(buildId: string): Promise<void> {
         autoloadBunfig: false,
         autoloadPackageJson: false,
       },
-      define: buildDefines(buildId),
+      define: buildDefines,
     });
     requireSuccessfulBuild(portable);
     return;
@@ -76,7 +65,7 @@ async function buildLauncher(buildId: string): Promise<void> {
       "-buildvcs=false",
       "-buildmode=pie",
       "-ldflags",
-      `-s -w -X main.buildID=${buildId}`,
+      "-s -w",
       "-o",
       "./dist/tools",
       "./native-launcher.go",
@@ -94,7 +83,7 @@ function requireSuccessfulBuild(output: Bun.BuildOutput): void {
   process.exit(1);
 }
 
-const probe = await buildProbe(BUILD_ID_PLACEHOLDER);
+const probe = await buildProbe();
 requireSuccessfulBuild(probe);
 const hasher = createHash("sha256");
 for (const artifact of probe.outputs.toSorted((left, right) =>
@@ -108,7 +97,14 @@ for (const artifact of probe.outputs.toSorted((left, right) =>
 hasher.update("native-launcher.go\0");
 hasher.update(new Uint8Array(await Bun.file("./native-launcher.go").arrayBuffer()));
 hasher.update("\0");
-const buildId = hasher.digest("hex").slice(0, BUILD_ID_PLACEHOLDER.length);
-const written = await buildWorkerExecutable(buildId);
+const buildId = hasher.digest("hex").slice(0, 8);
+const written = await buildWorkerExecutable();
 requireSuccessfulBuild(written);
-await buildLauncher(buildId);
+await Bun.write("./dist/tools-build-id", `${buildId}\n`);
+if (!process.argv.includes("--worker-only")) {
+  await buildLauncher();
+  await Bun.write(
+    "./dist/tools-build-info.json",
+    `${JSON.stringify(getBuildInfo({ cwd: import.meta.dir }), null, 2)}\n`,
+  );
+}

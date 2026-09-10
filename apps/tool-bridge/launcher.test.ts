@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -56,10 +57,18 @@ async function runLauncher(params: {
   return { stdout, stderr, exitCode };
 }
 
+function workerSocketName(directory: string, id: string): string {
+  const identity = createHash("sha256")
+    .update(`${path.join(directory, "tools-worker")}\0${id}`)
+    .digest("hex")
+    .slice(0, 8);
+  return `${identity}.sock`;
+}
+
 async function readWorkerHealth(workerDir: string): Promise<WorkerHealth> {
   const uid = process.getuid?.() ?? 0;
   const response = await fetch("http://localhost/health", {
-    unix: path.join(workerDir, String(uid), "dev.sock"),
+    unix: path.join(workerDir, String(uid), workerSocketName(nativeFixtureRoot, "dev")),
   });
   expect(response.ok).toBe(true);
   return (await response.json()) as WorkerHealth;
@@ -84,7 +93,7 @@ describe("resident tools worker", () => {
         "-buildvcs=false",
         "-buildmode=pie",
         "-ldflags",
-        "-s -w -X main.buildID=dev",
+        "-s -w",
         "-o",
         nativeLauncherPath,
         NATIVE_LAUNCHER_SOURCE,
@@ -93,6 +102,7 @@ describe("resident tools worker", () => {
     );
     expect(compiled.stderr.toString()).toBe("");
     expect(compiled.exitCode).toBe(0);
+    await fs.writeFile(path.join(nativeFixtureRoot, "tools-build-id"), "dev\n");
     await fs.writeFile(
       path.join(nativeFixtureRoot, "tools-worker"),
       `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(LAUNCHER_ENTRY)} "$@"\n`,
@@ -113,6 +123,148 @@ describe("resident tools worker", () => {
     expect(buildInfo.exitCode).toBe(0);
     expect(buildInfo.stdout.toString()).toContain("CGO_ENABLED=0");
   });
+
+  it("reads installed metadata on demand and switches workers when the shared ID changes", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "ltbi-"));
+    const executable = path.join(root, "tools");
+    const workerExecutable = path.join(root, "tools-worker");
+    const workerDir = path.join(root, "run");
+    const metadataPath = path.join(root, "tools-build-info.json");
+    const idPath = path.join(root, "tools-build-id");
+    const workers = new Set<number>();
+    const backend = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch() {
+        return Response.json({ ok: true, version: "dev", commit: "backend" });
+      },
+    });
+    async function invoke(launcher = executable): Promise<LauncherResult> {
+      const child = Bun.spawn([launcher, "--version"], {
+        cwd: tmpdir(),
+        env: {
+          ...process.env,
+          LILAC_TOOL_WORKER_DIR: workerDir,
+          TOOL_SERVER_BACKEND_URL: `http://127.0.0.1:${backend.port}`,
+          TOOL_SERVER_BACKEND_SOCKET: "",
+          NO_COLOR: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      return { stdout, stderr, exitCode };
+    }
+    async function health(id: string, installation = root): Promise<WorkerHealth> {
+      const response = await fetch("http://localhost/health", {
+        unix: path.join(
+          workerDir,
+          String(process.getuid?.() ?? 0),
+          workerSocketName(installation, id),
+        ),
+      });
+      const value = (await response.json()) as WorkerHealth;
+      workers.add(value.pid);
+      return value;
+    }
+    try {
+      await fs.copyFile(nativeLauncherPath, executable);
+      const built = await Bun.build({
+        entrypoints: [LAUNCHER_ENTRY],
+        target: "bun",
+        minify: true,
+        bytecode: true,
+        compile: {
+          outfile: workerExecutable,
+          autoloadDotenv: false,
+          autoloadBunfig: false,
+          autoloadPackageJson: false,
+        },
+        define: { __LILAC_TOOL_COMPILED__: "true", __LILAC_TOOL_AUTOSTART__: "false" },
+      });
+      expect(built.success).toBe(true);
+      await fs.writeFile(idPath, "deadbeef\n");
+      await fs.writeFile(metadataPath, JSON.stringify({ version: "v1", commit: "first" }));
+      const first = await invoke();
+      expect(first.exitCode).toBe(0);
+      expect(first.stderr).toBe("");
+      expect(first.stdout).toContain("[commit: first] [build: deadbeef]");
+      const original = await health("deadbeef");
+
+      await fs.writeFile(
+        metadataPath,
+        JSON.stringify({ version: "v2", commit: "second", dirty: true }),
+      );
+      const second = await invoke();
+      expect(second.exitCode).toBe(0);
+      expect(second.stdout).toContain("[commit: second] [build: deadbeef] [dirty]");
+      expect((await health("deadbeef")).pid).toBe(original.pid);
+
+      const otherRoot = path.join(root, "other");
+      await fs.mkdir(otherRoot);
+      await fs.copyFile(executable, path.join(otherRoot, "tools"));
+      await fs.copyFile(workerExecutable, path.join(otherRoot, "tools-worker"));
+      await fs.copyFile(idPath, path.join(otherRoot, "tools-build-id"));
+      await fs.writeFile(
+        path.join(otherRoot, "tools-build-info.json"),
+        JSON.stringify({ version: "v3", commit: "other-installation" }),
+      );
+      const other = await invoke(path.join(otherRoot, "tools"));
+      expect(other.exitCode).toBe(0);
+      expect(other.stdout).toContain("[commit: other-installation] [build: deadbeef]");
+      const otherWorker = await health("deadbeef", otherRoot);
+      expect(otherWorker.pid).not.toBe(original.pid);
+      expect((await invoke()).stdout).toContain("[commit: second] [build: deadbeef]");
+
+      await fs.writeFile(idPath, "cafefeed\n");
+      const changed = await invoke();
+      expect(changed.exitCode).toBe(0);
+      expect(changed.stdout).toContain("[commit: second] [build: cafefeed]");
+      const replacement = await health("cafefeed");
+      expect(replacement.pid).not.toBe(original.pid);
+      expect(replacement.buildId).toBe("cafefeed");
+
+      const mismatch = await fetch("http://localhost/invoke", {
+        unix: path.join(
+          workerDir,
+          String(process.getuid?.() ?? 0),
+          workerSocketName(root, "cafefeed"),
+        ),
+        method: "POST",
+        body: JSON.stringify({ buildId: "deadbeef" }),
+      });
+      expect(mismatch.status).toBe(400);
+
+      for (const id of ["", "../wrong", "ABCDEFGH", "123456789"]) {
+        await fs.writeFile(idPath, id);
+        const invalid = await invoke();
+        expect(invalid.exitCode).toBe(1);
+        expect(invalid.stderr).toContain("bridge_launcher_defect");
+        const worker = Bun.spawn([workerExecutable, "--version"], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        expect(await worker.exited).toBe(1);
+        expect(await new Response(worker.stderr).text()).toContain("bridge_launcher_defect");
+      }
+      await fs.rm(idPath);
+      expect((await invoke()).exitCode).toBe(1);
+    } finally {
+      for (const pid of workers) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      backend.stop(true);
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it("keeps operator credentials scoped to one invocation", async () => {
     const root = await fs.mkdtemp(path.join(tmpdir(), "ltwo-"));
@@ -364,7 +516,7 @@ describe("resident tools worker", () => {
     const uid = process.getuid?.() ?? 0;
     const runtimeDir = path.join(workerDir, String(uid));
     await fs.mkdir(runtimeDir, { mode: 0o700 });
-    const lockPath = path.join(runtimeDir, "dev.sock.lock");
+    const lockPath = path.join(runtimeDir, `${workerSocketName(nativeFixtureRoot, "dev")}.lock`);
     await fs.mkdir(lockPath);
     const server = Bun.serve({
       port: 0,

@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,7 +29,7 @@ const (
 	maxSocketPath = 107
 )
 
-var buildID = "dev"
+var buildID string
 
 var forwardedEnvironment = [...]string{
 	"TOOL_SERVER_BACKEND_URL",
@@ -281,7 +282,12 @@ func workerSocketPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(absolute, buildID+".sock")
+	workerPath, err := workerExecutablePath()
+	if err != nil {
+		return "", err
+	}
+	identity := sha256.Sum256([]byte(workerPath + "\x00" + buildID))
+	path := filepath.Join(absolute, fmt.Sprintf("%x.sock", identity[:4]))
 	if len(path) > maxSocketPath {
 		return "", fmt.Errorf("worker socket path is too long")
 	}
@@ -557,7 +563,36 @@ func startAndInvokeWorker(socketPath string, payload []byte) (int, error) {
 	return response.exitCode, writeResponse(response)
 }
 
+func readBuildID() (string, error) {
+	workerPath, err := workerExecutablePath()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(workerPath), "tools-build-id"))
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(string(data))
+	if id == "dev" {
+		return id, nil
+	}
+	if len(id) != 8 {
+		return "", fmt.Errorf("invalid tools build ID")
+	}
+	for _, char := range id {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') {
+			return "", fmt.Errorf("invalid tools build ID")
+		}
+	}
+	return id, nil
+}
+
 func run() (int, error) {
+	id, err := readBuildID()
+	if err != nil {
+		return 1, err
+	}
+	buildID = id
 	args := os.Args[1:]
 	stdinIsTTY := terminalState(os.Stdin)
 	stdoutState := terminalState(os.Stdout)

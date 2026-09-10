@@ -1,14 +1,14 @@
-declare const __LILAC_TOOL_BUILD_ID__: string | undefined;
-
 import { chmodSync, rmSync } from "node:fs";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
+
+import { readToolBuildId } from "./build-artifacts";
 
 import type { CliInvocationRequest } from "./invocation-runtime";
 
 const WORKER_ARG = "--__lilac-tools-worker";
 const DIRECT_ARG = "--__lilac-tools-direct";
 const CAPTURED_ARG = "--__lilac-tools-captured";
-const BUILD_ID = typeof __LILAC_TOOL_BUILD_ID__ === "string" ? __LILAC_TOOL_BUILD_ID__ : "dev";
+const BUILD_ID = readToolBuildId();
 
 class LauncherProtocolInvalid extends TaggedError("LauncherProtocolInvalid")<{
   readonly message: string;
@@ -44,7 +44,7 @@ export function decodeInvocationRequest(
     return protocolInvalid();
   }
   const record = value as Record<string, unknown>;
-  if (record.buildId !== BUILD_ID) return protocolInvalid();
+  if (!BUILD_ID || record.buildId !== BUILD_ID) return protocolInvalid();
   if (!Array.isArray(record.args) || !record.args.every((arg) => typeof arg === "string")) {
     return protocolInvalid();
   }
@@ -154,6 +154,10 @@ async function runDirectEntrypoint(): Promise<void> {
 }
 
 async function runEntrypoint(): Promise<void> {
+  if (!BUILD_ID) {
+    reportLauncherDefect();
+    return;
+  }
   if (process.argv[2] === DIRECT_ARG) {
     await runDirectEntrypoint();
     return;

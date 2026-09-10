@@ -5,7 +5,7 @@ ARG CONTAINER_UID=1000
 ############################
 # Stage 1: runtime tools
 ############################
-FROM ${BASE_IMAGE} AS tools
+FROM ${BASE_IMAGE} AS toolchain
 ARG NODE_MAJOR
 ENV LILAC_USER=lilac
 ENV DEBIAN_FRONTEND=noninteractive
@@ -124,6 +124,7 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:${BUN_INSTALL_BIN}:${NPM_CONFIG_PREFIX}/
 RUN mkdir -p $DATA_DIR $DATA_DIR/secret
 RUN chown -R ${LILAC_USER}:$(id -gn "${LILAC_USER}") $DATA_DIR
 
+FROM toolchain AS tools
 USER ${LILAC_USER}
 
 # uv (user-level)
@@ -137,6 +138,15 @@ USER root
 RUN install -o root -g root -m 0755 \
      /home/${LILAC_USER}/.bun/bin/bun \
      /usr/local/bin/bun
+
+# Isolate Go compilation from Bun, dependency manifests, and application metadata.
+FROM toolchain AS native-launcher
+WORKDIR /build
+COPY apps/tool-bridge/native-launcher.go ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    GOCACHE=/root/.cache/go-build CGO_ENABLED=0 go build \
+      -trimpath -buildvcs=false -buildmode=pie -ldflags "-s -w" \
+      -o /build/tools ./native-launcher.go
 
 ############################
 # Stage 2: deps
@@ -178,13 +188,9 @@ COPY bunfig.toml tsconfig.json ./
 COPY apps ./apps
 COPY packages ./packages
 
-ARG LILAC_BUILD_VERSION=dev
-ARG LILAC_BUILD_COMMIT=dev
-ARG LILAC_BUILD_DIRTY=false
-ARG LILAC_BUILD_AT=
+COPY --from=native-launcher /build/tools /app/apps/tool-bridge/dist/tools
 
-# Build the client bundles and tools executable
-RUN (cd apps/tool-bridge && bun run build)
+RUN (cd apps/tool-bridge && bun build.ts --worker-only)
 RUN (cd apps/core && bun run build:remote-runner)
 RUN (cd packages/remote-fs-runner && bun run build)
 
@@ -201,6 +207,9 @@ COPY --from=build /app/packages ./packages
 # Keep the launcher and resident worker outside the lilac-writable application build tree.
 COPY --from=build --chmod=0755 /app/apps/tool-bridge/dist/tools /usr/local/bin/tools
 COPY --from=build --chmod=0755 /app/apps/tool-bridge/dist/tools-worker /usr/local/bin/tools-worker
+COPY --from=build --chmod=0644 /app/apps/tool-bridge/dist/tools-build-id /usr/local/bin/tools-build-id
+RUN ln -s /app/build/build-info.json /usr/local/bin/tools-build-info.json \
+  && ln -s /app/build/build-info.json /app/apps/tool-bridge/dist/tools-build-info.json
 
 COPY --chmod=0755 docker/direct-entrypoint.sh /usr/local/sbin/lilac-entrypoint
 COPY docker/create-operator-token.mjs /usr/local/libexec/create-operator-token.mjs
@@ -212,7 +221,7 @@ RUN writable_path="$(find /app ! -type l -perm /022 -print -quit)" \
        exit 1; \
      fi
 
-# Keep Core's runtime metadata file aligned with the values embedded in the tool bridge.
+# Core and the tool client read the same image metadata without recompiling executables.
 ARG LILAC_BUILD_VERSION=dev
 ARG LILAC_BUILD_COMMIT=dev
 ARG LILAC_BUILD_DIRTY=false

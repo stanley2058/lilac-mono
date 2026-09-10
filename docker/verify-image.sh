@@ -92,13 +92,16 @@ operator_output=$(docker exec \
 docker exec --user lilac "$container_name" /usr/local/bin/bun --version >/dev/null ||
   fail "Bun smoke failed"
 
-for path in /app /usr/local/bin/bun /usr/local/bin/tools /usr/local/bin/tools-worker; do
+for path in /app /usr/local/bin/bun /usr/local/bin/tools /usr/local/bin/tools-worker \
+  /usr/local/bin/tools-build-id /usr/local/bin/tools-build-info.json; do
   if docker exec --user lilac "$container_name" /usr/bin/test -w "$path"; then
     fail "$path is writable by lilac"
   fi
 done
 for path in \
   /app/build/build-info.json \
+  /usr/local/bin/tools-build-id \
+  /usr/local/bin/tools-build-info.json \
   /app/packages/utils/builtin-skills/customize-lilac/SKILL.md \
   /app/packages/utils/builtin-skills/customize-lilac/references/self-debugging.md \
   /app/packages/utils/builtin-skills/customize-lilac/references/core-config.md \

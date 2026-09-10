@@ -1,10 +1,5 @@
 /* oxlint-disable eslint/no-control-regex */
 
-declare const __LILAC_TOOL_BUILD_ID__: string | undefined;
-declare const __LILAC_TOOL_BUILD_VERSION__: string | undefined;
-declare const __LILAC_TOOL_BUILD_COMMIT__: string | undefined;
-declare const __LILAC_TOOL_BUILD_DIRTY__: boolean | undefined;
-declare const __LILAC_TOOL_BUILT_AT__: string | undefined;
 declare const __LILAC_TOOL_AUTOSTART__: boolean | undefined;
 
 import {
@@ -15,7 +10,7 @@ import {
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 import type { z } from "zod";
 import { homedir } from "node:os";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 
 import {
   applyToolPositionals,
@@ -24,6 +19,8 @@ import {
   toolFieldFlag as camelToKebabCase,
   type ToolPrimaryPositional as PrimaryPositional,
 } from "@stanley2058/lilac-core/tool-server/client-arguments";
+
+import { readToolBuildId, readToolBuildInfo } from "./build-artifacts";
 
 import {
   captureCliInvocation,
@@ -46,29 +43,8 @@ import {
 } from "./invocation-runtime";
 
 const DEFAULT_BACKEND_URL = "http://localhost:8080";
-const DEV_BUILD_ID = "dev";
-const DEFAULT_BUILD_VERSION = "dev";
-const DEFAULT_BUILD_COMMIT = "dev";
 const VERSION_FETCH_TIMEOUT_MS = 1_500;
-const CURRENT_FILE = import.meta.path;
 const DEFAULT_OPERATOR_TOKEN_FILE = "/run/lilac/operator-token";
-const INLINE_BUILD_ID =
-  typeof __LILAC_TOOL_BUILD_ID__ === "string" ? __LILAC_TOOL_BUILD_ID__ : undefined;
-const INLINE_BUILD_INFO: BuildInfo = {
-  version:
-    typeof __LILAC_TOOL_BUILD_VERSION__ === "string"
-      ? __LILAC_TOOL_BUILD_VERSION__
-      : DEFAULT_BUILD_VERSION,
-  commit:
-    typeof __LILAC_TOOL_BUILD_COMMIT__ === "string"
-      ? __LILAC_TOOL_BUILD_COMMIT__
-      : DEFAULT_BUILD_COMMIT,
-  ...(typeof __LILAC_TOOL_BUILD_DIRTY__ === "boolean" ? { dirty: __LILAC_TOOL_BUILD_DIRTY__ } : {}),
-  ...(typeof __LILAC_TOOL_BUILT_AT__ === "string" ? { builtAt: __LILAC_TOOL_BUILT_AT__ } : {}),
-};
-
-let buildIdPromise: Promise<string> | undefined;
-let localVersionInfoPromise: Promise<LocalVersionInfo> | undefined;
 let wireCodecsPromise: Promise<typeof import("./wire-codecs")> | undefined;
 
 type ToolOutputFull = {
@@ -880,27 +856,11 @@ function section(title: string, lines: string[]) {
   return [hdr, ...body].join("\n");
 }
 
-export async function resolveBuildId(
-  currentFile = CURRENT_FILE,
-  inlineBuildId = INLINE_BUILD_ID,
-): Promise<string> {
-  const currentBase = basename(currentFile);
-  if (currentBase === "client.ts") return DEV_BUILD_ID;
-  return inlineBuildId ?? DEV_BUILD_ID;
-}
-
-async function getBuildId(): Promise<string> {
-  buildIdPromise ??= resolveBuildId();
-  return await buildIdPromise;
-}
-
 async function getLocalVersionInfo(): Promise<LocalVersionInfo> {
-  localVersionInfoPromise ??= Promise.resolve({
-    ...INLINE_BUILD_INFO,
-    build: await getBuildId(),
-  });
-
-  return await localVersionInfoPromise;
+  return {
+    ...readToolBuildInfo(),
+    build: readToolBuildId() ?? "dev",
+  };
 }
 
 function formatTag(label: string, value: string): string {

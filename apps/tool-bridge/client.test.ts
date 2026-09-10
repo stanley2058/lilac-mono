@@ -4,13 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 
-import {
-  buildToolInput,
-  buildVersionTags,
-  parseArgs,
-  parseGlobalArgs,
-  resolveBuildId,
-} from "./client";
+import { buildToolInput, buildVersionTags, parseArgs, parseGlobalArgs } from "./client";
 
 const CLIENT_ENTRY = path.join(import.meta.dir, "client.ts");
 
@@ -71,21 +65,6 @@ async function runToolBridgeCli(params: {
 }
 
 describe("tool-bridge build id", () => {
-  it("uses the build-time ID for built entrypoints", async () => {
-    await expect(
-      resolveBuildId("/workspace/apps/tool-bridge/dist/client.js", "deadbeef"),
-    ).resolves.toBe("deadbeef");
-    await expect(
-      resolveBuildId("/workspace/apps/tool-bridge/dist/index.js", "deadbeef"),
-    ).resolves.toBe("deadbeef");
-  });
-
-  it("falls back to dev when running from source", async () => {
-    await expect(resolveBuildId("/workspace/apps/tool-bridge/client.ts", "deadbeef")).resolves.toBe(
-      "dev",
-    );
-  });
-
   it("shows backend dirty state even when commits match", () => {
     expect(
       buildVersionTags(

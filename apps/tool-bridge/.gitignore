@@ -7,6 +7,8 @@ dist/client.js
 dist/chunk-*.js
 dist/tools
 dist/tools-worker
+dist/tools-build-id
+dist/tools-build-info.json
 *.tgz
 
 # code coverage

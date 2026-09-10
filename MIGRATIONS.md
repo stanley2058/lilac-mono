@@ -3,6 +3,18 @@
 This file records persisted-data, wire, and protocol migrations. Manual `core-config.yaml` upgrades are
 documented separately in [`docs/core-config-migrations.md`](docs/core-config-migrations.md).
 
+## Tool launcher build artifacts
+
+Built tool installations now include `tools-build-id` and `tools-build-info.json` beside
+`tools` and `tools-worker`. Install all four artifacts together. The launcher and worker
+read the shared ID at startup; a missing or malformed ID prevents startup. The ID remains
+part of the invocation protocol. Socket names hash the installation path and worker ID
+so separate installations cannot share a worker with different metadata.
+
+Docker writes version metadata only in `/app/build/build-info.json` and links the tool
+metadata file to it. Local tool builds write their metadata beside the executables.
+Metadata changes no longer change the worker ID or require recompiling either executable.
+
 ## Skill read tool replacement
 
 `skills.read` replaces `skills.brief` and `skills.full`; both old callables are removed without aliases.
