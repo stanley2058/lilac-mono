@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import { z } from "zod";
 import { Fzf } from "fzf";
 import { Panic, Result, type Result as ResultType } from "better-result";
@@ -14,9 +13,15 @@ import {
   parseSkillMarkdownResult,
   type DiscoveredSkill,
   env,
-  findWorkspaceRootResult,
 } from "@stanley2058/lilac-utils";
 import { preserveToolPanic } from "../../tools/tool-result-adapters";
+import { requestInvocationCwd } from "../request-invocation-cwd";
+
+function skillDiscoveryCwd(opts: ServerToolCallOptions | undefined): string {
+  const context = opts?.context;
+  if (!context) return process.cwd();
+  return requestInvocationCwd(context) ?? context.cwd ?? process.cwd();
+}
 
 function skillsFailure(kind: ServerToolFailure["kind"], message: string): ServerToolFailure {
   return serverToolFailure({
@@ -54,49 +59,7 @@ const listInputSchema = z.object({
 
 const readInputSchema = z.object({
   name: z.string().min(1).describe("Skill name"),
-  maxChars: z.coerce
-    .number()
-    .int()
-    .positive()
-    .max(200_000)
-    .optional()
-    .describe("Max characters of SKILL.md body to return"),
 });
-
-type SkillIncludeSummary = {
-  baseDir: string;
-  dirs: string[];
-  files: string[];
-};
-
-async function listTopLevelEntries(baseDir: string): Promise<SkillIncludeSummary> {
-  const entries = await fs.readdir(baseDir, { withFileTypes: true });
-
-  const dirs: string[] = [];
-  const files: string[] = [];
-
-  for (const ent of entries) {
-    const name = ent.name;
-    if (name === "node_modules" || name === ".git") continue;
-
-    if (ent.isDirectory()) {
-      dirs.push(`${name}/`);
-    } else if (ent.isFile()) {
-      files.push(name);
-    }
-  }
-
-  dirs.sort();
-  files.sort();
-
-  return { baseDir, dirs, files };
-}
-
-function truncateText(text: string, maxChars: number | undefined) {
-  const cap = maxChars ?? 50_000;
-  if (text.length <= cap) return { text, truncated: false as const };
-  return { text: text.slice(0, cap), truncated: true as const };
-}
 
 function scoreAndFilter(
   skills: DiscoveredSkill[],
@@ -133,16 +96,13 @@ function requireSkillByName(
   return Result.ok(found);
 }
 
-async function loadSkillsForToolHost(): Promise<
-  ResultType<Awaited<ReturnType<typeof discoverSkills>>, ServerToolFailure>
-> {
+async function loadSkillsForToolHost(
+  cwd: string,
+): Promise<ResultType<Awaited<ReturnType<typeof discoverSkills>>, ServerToolFailure>> {
   return Result.gen(async function* () {
-    const workspaceRoot = yield* findWorkspaceRootResult().mapError((error) =>
-      skillsFailure("not_found", error.message),
-    );
     const discovered = yield* Result.await(
       Result.tryPromise({
-        try: () => discoverSkills({ workspaceRoot, dataDir: env.dataDir }),
+        try: () => discoverSkills({ workspaceRoot: cwd, dataDir: env.dataDir }),
         catch: (cause) => ({ cause }),
       }).then((result) =>
         result.mapError(({ cause }) => {
@@ -160,10 +120,10 @@ async function loadSkillsForToolHost(): Promise<
 
 async function readSkillForToolHost(
   input: z.output<typeof readInputSchema>,
-  mode: "brief" | "full",
+  cwd: string,
 ): Promise<ServerToolResult> {
   return Result.gen(async function* () {
-    const { skills } = yield* Result.await(loadSkillsForToolHost());
+    const { skills } = yield* Result.await(loadSkillsForToolHost(cwd));
     const found = yield* requireSkillByName(skills, input.name);
     const raw = yield* Result.await(
       Result.tryPromise({
@@ -187,33 +147,11 @@ async function readSkillForToolHost(
     const parsed = yield* parseSkillMarkdownResult(raw).mapError((error) =>
       skillsFailure("unavailable", error.message),
     );
-    const defaultCap = mode === "brief" ? 8000 : 50_000;
-    const { text, truncated } = truncateText(parsed.body, input.maxChars ?? defaultCap);
-    const includes = yield* Result.await(
-      Result.tryPromise({
-        try: () => listTopLevelEntries(found.baseDir),
-        catch: (cause) => ({ cause }),
-      }).then((result) =>
-        result.mapError(({ cause }) => {
-          if (Panic.is(cause)) return preserveToolPanic(cause);
-          return skillsFailure(
-            "unavailable",
-            cause instanceof Error ? cause.message : "Skill resources could not be listed",
-          );
-        }),
-      ),
-    );
-
     return Result.ok({
-      name: found.name,
-      description: found.description,
-      source: found.source,
-      location: found.location,
-      baseDir: found.baseDir,
-      frontmatter: parsed.frontmatter,
-      body: text,
-      truncated,
-      includes: mode === "full" ? includes : undefined,
+      path: found.location,
+      length: raw.length,
+      metadata: parsed.frontmatter,
+      content: raw,
     });
   });
 }
@@ -228,43 +166,37 @@ export class Skills implements ServerTool {
         inputSchema: listInputSchema,
         validation: "zod",
         primaryPositional: "query",
-        async run(input) {
-          return (await loadSkillsForToolHost()).map(({ skills, warnings }) => {
-            let filtered = skills;
-            if (input.sources && input.sources.length > 0) {
-              const allowed = new Set(input.sources);
-              filtered = filtered.filter((skill) => allowed.has(skill.source));
-            }
+        async run(input, opts) {
+          return (await loadSkillsForToolHost(skillDiscoveryCwd(opts))).map(
+            ({ skills, warnings }) => {
+              let filtered = skills;
+              if (input.sources && input.sources.length > 0) {
+                const allowed = new Set(input.sources);
+                filtered = filtered.filter((skill) => allowed.has(skill.source));
+              }
 
-            const ranked = scoreAndFilter(filtered, input.query, input.limit);
-            return {
-              skills: ranked.map((skill) => ({
-                name: skill.name,
-                description: skill.description,
-                source: skill.source,
-                location: skill.location,
-              })),
-              warnings,
-            };
-          });
+              const ranked = scoreAndFilter(filtered, input.query, input.limit);
+              return {
+                skills: ranked.map((skill) => ({
+                  name: skill.name,
+                  description: skill.description,
+                  source: skill.source,
+                  location: skill.location,
+                })),
+                warnings,
+              };
+            },
+          );
         },
       }),
-      "skills.brief": callable({
-        name: "Skills Brief",
-        description: "Load a skill's frontmatter + a truncated SKILL.md body.",
-        inputSchema: readInputSchema,
-        validation: "zod",
-        primaryPositional: "name",
-        run: (input) => readSkillForToolHost(input, "brief"),
-      }),
-      "skills.full": callable({
-        name: "Skills Full",
+      "skills.read": callable({
+        name: "Skills Read",
         description:
-          "Load a skill's frontmatter + a larger SKILL.md body, plus a top-level directory listing.",
+          "Read a complete SKILL.md. Returns path, length in characters, metadata, and full file content.",
         inputSchema: readInputSchema,
         validation: "zod",
         primaryPositional: "name",
-        run: (input) => readSkillForToolHost(input, "full"),
+        run: (input, opts) => readSkillForToolHost(input, skillDiscoveryCwd(opts)),
       }),
     }),
   });

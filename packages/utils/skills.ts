@@ -32,6 +32,7 @@ export type DiscoveredSkill = {
   location: string;
   baseDir: string;
   source: SkillSource;
+  disableModelInvocation?: boolean;
 };
 
 export type SkillWarning = {
@@ -44,8 +45,7 @@ export type DiscoverSkillsResult = {
   warnings: SkillWarning[];
 };
 
-export const DEFAULT_SKILL_DESCRIPTION_MAX_CHARS = 160;
-export const DEFAULT_SKILLS_SECTION_MAX_CHARS = 20000;
+export const DEFAULT_SKILL_DESCRIPTION_MAX_CHARS = 512;
 
 const NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_NAME_LENGTH = 64;
@@ -215,6 +215,7 @@ export type ParsedSkillFile = {
   frontmatter: Record<string, unknown>;
   name: string;
   description: string;
+  disableModelInvocation: boolean;
   body: string;
 };
 
@@ -269,6 +270,7 @@ export function parseSkillMarkdownResult(
     frontmatter: parsed.data,
     name: parsed.data.name,
     description: parsed.data.description,
+    disableModelInvocation: parsed.data["disable-model-invocation"] === true,
     body: parts.body.trimStart(),
   });
 }
@@ -314,6 +316,11 @@ export function defaultSkillScanRoots(params: {
     },
 
     // Project-level compatibility dirs
+    {
+      pattern: path.join(ws, ".agents", "skills", "**", "SKILL.md"),
+      source: "agent-project",
+      precedence: 200,
+    },
     {
       pattern: path.join(ws, ".claude", "skills", "*", "SKILL.md"),
       source: "claude-project",
@@ -454,52 +461,31 @@ function truncateWithEllipsis(raw: string, maxChars: number): string {
  * Returns null when no skills are provided.
  */
 export function formatAvailableSkillsSection(
-  skills: readonly Pick<DiscoveredSkill, "name" | "description">[],
+  skills: readonly Pick<DiscoveredSkill, "name" | "description" | "disableModelInvocation">[],
   options?: {
     maxDescriptionChars?: number;
-    maxSectionChars?: number;
   },
 ): string | null {
-  if (skills.length === 0) return null;
+  const advertisedSkills = skills.filter((skill) => skill.disableModelInvocation !== true);
+  if (advertisedSkills.length === 0) return null;
 
   const maxDescriptionChars = options?.maxDescriptionChars ?? DEFAULT_SKILL_DESCRIPTION_MAX_CHARS;
-  const maxSectionChars = options?.maxSectionChars ?? DEFAULT_SKILLS_SECTION_MAX_CHARS;
+  const lines = ["## Available Skills"];
+  let descriptionChars = 0;
 
-  const header = "## Available Skills";
-  const lines: string[] = [header];
-
-  for (const s of skills) {
-    const desc = truncateWithEllipsis(s.description, maxDescriptionChars);
-    const line = `- ${s.name}: ${desc}`;
-
-    const candidate = [...lines, line].join("\n");
-    if (candidate.length > maxSectionChars) {
-      break;
-    }
-
-    lines.push(line);
+  for (const skill of advertisedSkills) {
+    const description = truncateWithEllipsis(skill.description, maxDescriptionChars);
+    descriptionChars += description.length;
+    lines.push(`- ${skill.name}: ${description}`);
   }
 
-  // If any skills were omitted due to the overall cap, add a final line.
-  // Ensure the omission line itself fits by removing trailing skill lines if needed.
-  while (true) {
-    const included = Math.max(0, lines.length - 1);
-    const omitted = skills.length - included;
-    if (omitted <= 0) break;
-
-    const omittedLine = `(...and ${omitted} more skills omitted)`;
-    const candidate = [...lines, omittedLine].join("\n");
-    if (candidate.length <= maxSectionChars) {
-      lines.push(omittedLine);
-      break;
-    }
-
-    // If we can't fit the omission line, drop the last included skill.
-    if (lines.length <= 1) {
-      // Extremely small maxSectionChars; return a best-effort truncated header.
-      return header.slice(0, Math.max(0, maxSectionChars));
-    }
-    lines.pop();
+  if (advertisedSkills.length > 100) {
+    lines.push(`Warning: skill catalog contains ${advertisedSkills.length} skills, exceeding 100.`);
+  }
+  if (descriptionChars > 50_000) {
+    lines.push(
+      `Warning: inserted skill descriptions total ${descriptionChars} characters, exceeding 50,000.`,
+    );
   }
 
   return lines.join("\n");
@@ -622,7 +608,14 @@ export async function discoverSkills(params: {
       }
 
       // Precedence: since roots are ordered high-to-low, keep the first seen.
-      if (byName.has(parsed.name)) continue;
+      const existing = byName.get(parsed.name);
+      if (existing) {
+        warnings.push({
+          location: skillPath,
+          message: `duplicate skill name "${parsed.name}"; keeping "${existing.location}" and ignoring "${skillPath}"`,
+        });
+        continue;
+      }
 
       byName.set(parsed.name, {
         name: parsed.name,
@@ -630,6 +623,7 @@ export async function discoverSkills(params: {
         location: skillPath,
         baseDir: skillBaseDir,
         source: root.source,
+        disableModelInvocation: parsed.disableModelInvocation,
       });
       if (params.maxSkills !== undefined && byName.size >= params.maxSkills) {
         warnings.push({

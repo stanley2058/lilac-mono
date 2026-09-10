@@ -3,6 +3,19 @@
 This file records persisted-data, wire, and protocol migrations. Manual `core-config.yaml` upgrades are
 documented separately in [`docs/core-config-migrations.md`](docs/core-config-migrations.md).
 
+## Skill read tool replacement
+
+`skills.read` replaces `skills.brief` and `skills.full`; both old callables are removed without aliases.
+Update scripts, prompt tool maps, and explicit callable allowlists to use `skills.read`. The generated
+config and both versioned parsers' default allowlists use the replacement callable. Existing explicit
+allowlists are not rewritten.
+
+The new tool accepts `name`, with no `maxChars` option. Its response fields are `path`, `length`,
+`metadata`, and `content`, in that order. `content` is the complete raw `SKILL.md`, including frontmatter;
+`length` counts its UTF-16 code units. The old body, truncation, and resource-listing fields are removed.
+Bash output limits continue to apply. See [skill authoring](docs/skill-authoring.md) for discovery and
+catalog behavior.
+
 ## MCP subagent access defaults to disabled
 
 Each server in `mcp-config.yaml` now accepts `allowSubagents`, a boolean that defaults to `false`.

@@ -9,7 +9,7 @@ import {
   parseSkillMarkdown,
   parseSkillMarkdownResult,
 } from "../skills";
-import { formatAvailableSkillsSection, type DiscoveredSkill } from "../skills";
+import { formatAvailableSkillsSection } from "../skills";
 
 async function mkdirp(p: string) {
   await fs.mkdir(p, { recursive: true });
@@ -57,12 +57,17 @@ describe("skills discovery", () => {
       "utf8",
     );
 
-    const { skills } = await discoverSkills({
+    const { skills, warnings } = await discoverSkills({
       workspaceRoot,
       dataDir,
       homeDir: path.join(tmpRoot, "home"),
     });
 
+    expect(warnings).toContainEqual({
+      location: path.join(workspaceRoot, ".claude", "skills", "dup-skill", "SKILL.md"),
+      message: expect.stringContaining('duplicate skill name "dup-skill"'),
+    });
+    expect(warnings[0]?.message).toContain(path.join(dataDir, "skills", "dup-skill", "SKILL.md"));
     const skill = skills.find((candidate) => candidate.name === "dup-skill");
     expect(skill?.description).toBe("from data");
     expect(skill?.source).toBe("lilac-data");
@@ -89,6 +94,41 @@ describe("skills discovery", () => {
     });
 
     expect(skills.some((skill) => skill.name === "Bad_Name")).toBe(false);
+  });
+
+  it("discovers project .agents skills and retains invocation flags without hiding discovery", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-skills-"));
+    for (const [name, flag] of [
+      ["manual-skill", "true"],
+      ["automatic-skill", "false"],
+      ["string-flag-skill", '"true"'],
+    ]) {
+      const directory = path.join(tmpRoot, ".agents", "skills", name!);
+      await mkdirp(directory);
+      await fs.writeFile(
+        path.join(directory, "SKILL.md"),
+        `---
+name: ${name}
+description: ${name}
+disable-model-invocation: ${flag}
+---
+Instructions
+`,
+      );
+    }
+    const { skills } = await discoverSkills({
+      workspaceRoot: tmpRoot,
+      dataDir: path.join(tmpRoot, "data"),
+      homeDir: path.join(tmpRoot, "home"),
+    });
+    expect(skills.find((skill) => skill.name === "manual-skill")).toMatchObject({
+      source: "agent-project",
+      disableModelInvocation: true,
+    });
+    const section = formatAvailableSkillsSection(skills);
+    expect(section).not.toContain("manual-skill");
+    expect(section).toContain("automatic-skill");
+    expect(section).toContain("string-flag-skill");
   });
 
   it("discovers skills from ~/.agents/skills", async () => {
@@ -335,28 +375,53 @@ describe("skills prompt formatting", () => {
     expect(formatAvailableSkillsSection([])).toBe(null);
   });
 
-  it("truncates descriptions and caps total size with omission line", () => {
-    const skills: DiscoveredSkill[] = Array.from({ length: 10 }).map((_, i) => ({
+  it("caps each description at 512 characters without omitting skills", () => {
+    const skills = Array.from({ length: 101 }, (_, i) => ({
+      name: `skill-${i}`,
+      description: "x".repeat(600),
+    }));
+    const section = formatAvailableSkillsSection(skills)!;
+    expect(section).toContain(`- skill-0: ${"x".repeat(509)}...`);
+    expect(section).toContain("- skill-100:");
+    expect(section.length).toBeGreaterThan(50_000);
+    expect(section).toContain("101 skills, exceeding 100");
+    expect(section).toContain("51712 characters, exceeding 50,000");
+  });
+
+  it("warns independently at strictly greater than the count and description thresholds", () => {
+    const atThreshold = Array.from({ length: 100 }, (_, i) => ({
       name: `skill-${i}`,
       description: "x".repeat(500),
-      location: `/tmp/skill-${i}/SKILL.md`,
-      baseDir: `/tmp/skill-${i}`,
-      source: "lilac-data",
     }));
+    expect(formatAvailableSkillsSection(atThreshold)).not.toContain("Warning:");
+    const countOnly = formatAvailableSkillsSection(
+      Array.from({ length: 101 }, (_, i) => ({ name: `skill-${i}`, description: "short" })),
+    );
+    expect(countOnly).toContain("101 skills, exceeding 100");
+    expect(countOnly).not.toContain("exceeding 50,000");
+    const descriptionsOnly = formatAvailableSkillsSection(
+      Array.from({ length: 98 }, (_, i) => ({
+        name: `skill-${i}`,
+        description: "x".repeat(512),
+      })),
+    );
+    expect(descriptionsOnly).toContain("50176 characters, exceeding 50,000");
+    expect(descriptionsOnly).not.toContain("exceeding 100");
+  });
 
-    const section = formatAvailableSkillsSection(skills, {
-      maxDescriptionChars: 20,
-      maxSectionChars: 180,
-    });
-
-    expect(section).not.toBe(null);
-    expect(section!).toContain("## Available Skills");
-    expect(section!).toContain("- skill-0:");
-    // Description truncation
-    expect(section!).toContain("...");
-    // Omission line
-    expect(section!).toContain("(...and ");
-    expect(section!.length).toBeLessThanOrEqual(180);
+  it("excludes disabled skills from the catalog and its warning thresholds", () => {
+    const disabled = Array.from({ length: 101 }, (_, i) => ({
+      name: `manual-${i}`,
+      description: "x".repeat(512),
+      disableModelInvocation: true,
+    }));
+    expect(formatAvailableSkillsSection(disabled)).toBeNull();
+    expect(
+      formatAvailableSkillsSection([
+        ...disabled,
+        { name: "automatic", description: "Always available." },
+      ]),
+    ).toBe("## Available Skills\n- automatic: Always available.");
   });
 });
 

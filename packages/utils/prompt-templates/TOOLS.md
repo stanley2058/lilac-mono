@@ -6,7 +6,7 @@ Keep a compact existence map for tools hidden behind the `tools` CLI. Add detail
 
 - `fetch` extracts ordinary webpages; `search` discovers pages. Use raw HTTP or browser tooling for headers, status, raw content, or interaction.
 - `generate.{image,video}` creates media.
-- `skills.{list,brief,full}` finds and loads installed skills.
+- `skills.{list,read}` finds and loads installed skills.
 - `ssh.{hosts,probe,run}` discovers hosts and runs remote shell work.
 - `attachment.add_files` attaches local files or `resource://` references to a reply; `resource.materialize` writes resources locally.
 - `discovery.search` finds exact phrases and raw prompt or transcript context.
