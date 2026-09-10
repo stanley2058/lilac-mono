@@ -11,8 +11,79 @@ import {
   type DiscordRequestDeliveryPort,
 } from "../../../src/surface/discord/discord-request-router/publish";
 import { getTestBlobStore } from "../../helpers/blob-store";
+import type { SurfaceMessage } from "../../../src/surface/types";
+import { projectAuthenticatedRequest } from "../../../src/surface/authenticated-request";
+import { resolveAuthenticatedRequestSafetyMode } from "../../../src/surface/builtin-surface-protocols";
+import { lilacEventTypes } from "@stanley2058/lilac-event-bus";
 
 describe("Discord prepared request publication", () => {
+  it.each(["prompt", "followUp", "steer", "interrupt"] as const)(
+    "preserves origin and configured safety for %s publication",
+    async (queue) => {
+      const originMessage: SurfaceMessage = {
+        ref: { platform: "discord", channelId: "channel", messageId: "message" },
+        session: { platform: "discord", channelId: "channel" },
+        userId: "sender",
+        text: "continue",
+        ts: 1,
+      };
+      for (const origin of [originMessage, null]) {
+        let publications = 0;
+        const result = await publishBusRequest({
+          logger: new Logger({ module: "discord-request-origin-test" }),
+          blobStore: await getTestBlobStore(),
+          requestDelivery: {
+            prepareAndPublish: async ({ envelope }) => {
+              publications += 1;
+              const projection = projectAuthenticatedRequest({
+                id: "event-1",
+                topic: "cmd.request",
+                type: lilacEventTypes.CmdRequestMessage,
+                key: "discord:channel:message",
+                ts: 1,
+                headers: envelope.headers,
+                data: envelope.data,
+              }).unwrap();
+              expect(projection?.authenticatedOrigin?.userId).toBe(origin?.userId);
+              expect(projection?.verifiedIngress).toBe(origin !== null);
+              for (const safetyMode of ["trusted", "restricted"] as const) {
+                expect(
+                  resolveAuthenticatedRequestSafetyMode({
+                    projection: projection!,
+                    assertedSafetyMode: safetyMode,
+                    correlatedAuthority: true,
+                  }),
+                ).toBe(origin ? safetyMode : "restricted");
+              }
+              return Result.ok(undefined);
+            },
+          },
+          input: {
+            requestDeliveryId: crypto.randomUUID(),
+            requestId: "discord:channel:message",
+            sessionId: "channel",
+            sessionConfigId: "channel",
+            queue,
+            triggerType: "reply",
+            sessionMode: "mention",
+            messages: [{ role: "user", content: "continue" }],
+            inputHandles: [],
+            corePrimaryLineage: {
+              state: "fresh-only",
+              lineageVersion: 2,
+              currentCanonicalStart: 0,
+              reason: "test",
+            },
+            originMessage: origin,
+            raw: { authenticatedOrigin: { ...originMessage, userId: "stale-sender" } },
+          },
+        });
+        expect(result.isOk()).toBe(true);
+        expect(publications).toBe(1);
+      }
+    },
+  );
+
   it("validates the envelope and derives pending input handles before delivery", async () => {
     const requestDeliveryId = crypto.randomUUID();
     const handle: BlobHandleV1 = {
@@ -69,6 +140,7 @@ describe("Discord prepared request publication", () => {
           currentCanonicalStart: 0,
           reason: "test",
         },
+        originMessage: null,
         raw: {},
       },
     });
@@ -123,6 +195,7 @@ describe("Discord prepared request publication", () => {
           currentCanonicalStart: 0,
           reason: "test",
         },
+        originMessage: null,
         raw: {},
       },
     });
@@ -177,6 +250,7 @@ describe("Discord prepared request publication", () => {
           currentCanonicalStart: 0,
           reason: "test",
         },
+        originMessage: null,
         raw: {},
       },
     });
@@ -232,6 +306,7 @@ describe("Discord prepared request publication", () => {
           currentCanonicalStart: 0,
           reason: "test",
         },
+        originMessage: null,
         raw: {},
       },
     });

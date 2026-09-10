@@ -6080,6 +6080,7 @@ export async function startBusAgentRunner(params: {
             );
 
             activeBinding = nextBinding;
+            setCurrentTurnContext(currentTurnUserId, currentTurnMessageRef);
             activeModelIndex = nextFallback.index;
             didSwitchModel = true;
             modelCapabilityInfo = nextBinding.capabilityInfo;

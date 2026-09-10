@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, jest } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, jest, spyOn } from "bun:test";
 import path from "node:path";
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5746,149 +5746,142 @@ describe("startBusAgentRunner production path", () => {
     }
   });
 
-  it("keeps the initiator and updates tool context for a different-user follow-up", async () => {
-    const config = parseCoreConfigV2ToUniversal({});
-    config.models.main = { model: "openai/current-turn-user" };
-    const bus = createLilacBus(createInMemoryRawBus());
-    const requestMessageCache = createRequestMessageCache();
-    const firstCallStarted = deferred<void>();
-    const releaseFirstCall = deferred<void>();
-    const followUpApplied = deferred<void>();
-    const toolContexts: unknown[] = [];
-    let level1RequestContext:
-      | Parameters<CoreToolPluginManager["buildLevel1ToolsetResult"]>[0]["requestContext"]
-      | undefined;
-    const toolset = level1TestToolset();
-    toolset.tools.builtin = tool({
-      inputSchema: jsonSchema<Record<string, never>>({
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      }),
-      execute: (_input, options) => {
-        toolContexts.push(options.context);
-        const metadata = (
-          options.context as {
-            readonly metadata?: {
-              readonly onActivity?: (source: "tool" | "subagent") => void;
-            };
-          }
-        ).metadata;
-        metadata?.onActivity?.("tool");
-        return "ok";
-      },
-    });
-    const pluginManager = corePrimaryTestPluginManager((requestContext) => {
-      level1RequestContext = requestContext;
-    }, toolset);
-    let modelCalls = 0;
-    const runner = await startBusAgentRunner({
-      bus,
-      subscriptionId: "current-turn-user",
-      reportFatalPanic: () => undefined,
-      config,
-      pluginManager,
-      requestMessageCache,
-      resolveDiscordSessionContext: () => ({
-        parentChannelId: null,
-        guildId: null,
-      }),
-      issueControlCapability: (input) => ({
-        capability: "current-turn-capability",
-        principal: input.authenticatedOrigin
-          ? {
-              platform: input.authenticatedOrigin.platform,
-              userId: input.authenticatedOrigin.userId,
+  it.each(["followUp", "steer"] as const)(
+    "keeps the initiator and updates tool context for different-user %s",
+    async (queue) => {
+      const config = parseCoreConfigV2ToUniversal({});
+      config.models.main = { model: "openai/current-turn-user" };
+      const bus = createLilacBus(createInMemoryRawBus());
+      const requestMessageCache = createRequestMessageCache();
+      const firstCallStarted = deferred<void>();
+      const releaseFirstCall = deferred<void>();
+      const inputApplied = deferred<void>();
+      const toolContexts: unknown[] = [];
+      let level1RequestContext:
+        | Parameters<CoreToolPluginManager["buildLevel1ToolsetResult"]>[0]["requestContext"]
+        | undefined;
+      const toolset = level1TestToolset();
+      toolset.tools.builtin = tool({
+        inputSchema: jsonSchema<Record<string, never>>({
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        }),
+        execute: (_input, options) => {
+          toolContexts.push(options.context);
+          const metadata = (
+            options.context as {
+              readonly metadata?: {
+                readonly onActivity?: (source: "tool" | "subagent") => void;
+              };
             }
-          : null,
-        authenticatedOrigin: input.authenticatedOrigin ?? null,
-        safetyMode: input.safetyMode,
-      }),
-      createAgent: (options) => {
-        const agent = new AiSdkPiAgent({
-          ...options,
-          model: new MockLanguageModelV4({
-            modelId: "current-turn-user",
-            doStream: async () => {
-              modelCalls += 1;
-              if (modelCalls === 1) {
-                firstCallStarted.resolve(undefined);
-                await releaseFirstCall.promise;
-                return level1TextStep("first response");
+          ).metadata;
+          metadata?.onActivity?.("tool");
+          return "ok";
+        },
+      });
+      const pluginManager = corePrimaryTestPluginManager((requestContext) => {
+        level1RequestContext = requestContext;
+      }, toolset);
+      let modelCalls = 0;
+      const runner = await startBusAgentRunner({
+        bus,
+        subscriptionId: "current-turn-user",
+        reportFatalPanic: () => undefined,
+        config,
+        pluginManager,
+        requestMessageCache,
+        resolveDiscordSessionContext: () => ({
+          parentChannelId: null,
+          guildId: null,
+        }),
+        issueControlCapability: (input) => ({
+          capability: "current-turn-capability",
+          principal: input.authenticatedOrigin
+            ? {
+                platform: input.authenticatedOrigin.platform,
+                userId: input.authenticatedOrigin.userId,
               }
-              return modelCalls === 2
-                ? level1ToolCallStep([{ toolCallId: "current-turn", toolName: "builtin" }])
-                : level1TextStep("done");
+            : null,
+          authenticatedOrigin: input.authenticatedOrigin ?? null,
+          safetyMode: input.safetyMode,
+        }),
+        createAgent: (options) => {
+          const agent = new AiSdkPiAgent({
+            ...options,
+            model: new MockLanguageModelV4({
+              modelId: "current-turn-user",
+              doStream: async () => {
+                modelCalls += 1;
+                if (modelCalls === 1) {
+                  firstCallStarted.resolve(undefined);
+                  await releaseFirstCall.promise;
+                  return level1TextStep("first response");
+                }
+                return modelCalls === 2
+                  ? level1ToolCallStep([{ toolCallId: "current-turn", toolName: "builtin" }])
+                  : level1TextStep("done");
+              },
+            }),
+          });
+          const enqueue = agent[queue].bind(agent);
+          spyOn(agent, queue).mockImplementation((message) => {
+            const id = enqueue(message);
+            inputApplied.resolve(undefined);
+            return id;
+          });
+          return agent;
+        },
+      });
+      const requestId = "discord:turn-session:first-message";
+      const lifecycle = await observeRequestLifecycle(bus, requestId);
+      try {
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          sessionId: "turn-session",
+          requestClient: "discord",
+          text: "first",
+          raw: {
+            authenticatedOrigin: {
+              platform: "discord",
+              userId: "user-a",
+              messageRef: {
+                platform: "discord",
+                channelId: "turn-session",
+                messageId: "first-message",
+              },
             },
-          }),
+          },
         });
-        const followUp = agent.followUp.bind(agent);
-        agent.followUp = (message) => {
-          const id = followUp(message);
-          followUpApplied.resolve(undefined);
-          return id;
-        };
-        return agent;
-      },
-    });
-    const requestId = "discord:turn-session:first-message";
-    const lifecycle = await observeRequestLifecycle(bus, requestId);
-    try {
-      await publishRunnerRequest({
-        bus,
-        requestId,
-        sessionId: "turn-session",
-        requestClient: "discord",
-        text: "first",
-        raw: {
-          authenticatedOrigin: {
-            platform: "discord",
-            userId: "user-a",
-            messageRef: {
+        await firstCallStarted.promise;
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          sessionId: "turn-session",
+          requestClient: "discord",
+          queue,
+          text: "second",
+          raw: {
+            authenticatedOrigin: {
               platform: "discord",
-              channelId: "turn-session",
-              messageId: "first-message",
+              userId: "user-b",
+              messageRef: {
+                platform: "discord",
+                channelId: "turn-session",
+                messageId: "second-message",
+              },
             },
           },
-        },
-      });
-      await firstCallStarted.promise;
-      await publishRunnerRequest({
-        bus,
-        requestId,
-        sessionId: "turn-session",
-        requestClient: "discord",
-        queue: "followUp",
-        text: "second",
-        raw: {
-          authenticatedOrigin: {
-            platform: "discord",
-            userId: "user-b",
-            messageRef: {
-              platform: "discord",
-              channelId: "turn-session",
-              messageId: "second-message",
-            },
-          },
-        },
-      });
-      expect(requestMessageCache.getOrigin(requestId)?.authenticatedOrigin?.userId).toBe("user-a");
-      await followUpApplied.promise;
-      releaseFirstCall.resolve(undefined);
+        });
+        expect(requestMessageCache.getOrigin(requestId)?.authenticatedOrigin?.userId).toBe(
+          "user-a",
+        );
+        await inputApplied.promise;
+        releaseFirstCall.resolve(undefined);
 
-      await expect(lifecycle.terminal).resolves.toBe("resolved");
-      expect(level1RequestContext).toMatchObject({
-        requestInitiator: { platform: "discord", userId: "user-a" },
-        requestInitiatorSessionId: "turn-session",
-        currentTurnUserId: "user-b",
-        currentTurnMessageRef: {
-          platform: "discord",
-          channelId: "turn-session",
-          messageId: "second-message",
-        },
-      });
-      expect(toolContexts).toEqual([
-        expect.objectContaining({
+        await expect(lifecycle.terminal).resolves.toBe("resolved");
+        expect(level1RequestContext).toMatchObject({
           requestInitiator: { platform: "discord", userId: "user-a" },
           requestInitiatorSessionId: "turn-session",
           currentTurnUserId: "user-b",
@@ -5897,20 +5890,32 @@ describe("startBusAgentRunner production path", () => {
             channelId: "turn-session",
             messageId: "second-message",
           },
-          metadata: expect.objectContaining({
-            onActivity: expect.any(Function),
+        });
+        expect(toolContexts).toEqual([
+          expect.objectContaining({
+            requestInitiator: { platform: "discord", userId: "user-a" },
+            requestInitiatorSessionId: "turn-session",
+            currentTurnUserId: "user-b",
+            currentTurnMessageRef: {
+              platform: "discord",
+              channelId: "turn-session",
+              messageId: "second-message",
+            },
+            metadata: expect.objectContaining({
+              onActivity: expect.any(Function),
+            }),
           }),
-        }),
-      ]);
-    } finally {
-      releaseFirstCall.resolve(undefined);
-      await lifecycle.stop();
-      await runner.stop();
-      await requestMessageCache.stop();
-      await pluginManager.destroy();
-      await bus.close();
-    }
-  });
+        ]);
+      } finally {
+        releaseFirstCall.resolve(undefined);
+        await lifecycle.stop();
+        await runner.stop();
+        await requestMessageCache.stop();
+        await pluginManager.destroy();
+        await bus.close();
+      }
+    },
+  );
 
   it("admits the work subscription while paused and releases retained delivery synchronously", async () => {
     const config = parseCoreConfigV2ToUniversal({});
@@ -7552,9 +7557,35 @@ describe("startBusAgentRunner production path", () => {
     });
     const bus = createLilacBus(createInMemoryRawBus());
     const switchedSpecs: Array<string | undefined> = [];
+    const bindingContexts: unknown[] = [];
+    const toolContexts: unknown[] = [];
+    const buildToolset = pluginManager.buildLevel1ToolsetResult.bind(pluginManager);
+    spyOn(pluginManager, "buildLevel1ToolsetResult").mockImplementation(async (input) => {
+      bindingContexts.push(input.requestContext);
+      const built = await buildToolset(input);
+      return built.map((toolset) => ({
+        ...toolset,
+        tools: {
+          ...toolset.tools,
+          bash: tool({
+            inputSchema: jsonSchema<Record<string, never>>({ type: "object", properties: {} }),
+            execute: (_input, options) => {
+              toolContexts.push(options.context);
+              return "ok";
+            },
+          }),
+        },
+      }));
+    });
+    let fallbackCalls = 0;
     const successModel = new MockLanguageModelV4({
       modelId: "fallback",
-      doStream: async () => level1TextStep("fallback response"),
+      doStream: async () => {
+        fallbackCalls += 1;
+        return fallbackCalls === 1
+          ? level1ToolCallStep([{ toolCallId: "fallback-context", toolName: "bash" }])
+          : level1TextStep("fallback response");
+      },
     });
     const runner = await startBusAgentRunner({
       bus,
@@ -7604,12 +7635,197 @@ describe("startBusAgentRunner production path", () => {
       details: [undefined, undefined],
     });
     expect(switchedSpecs).toEqual(["openai/fallback"]);
+    expect(bindingContexts).toHaveLength(2);
+    expect(toolContexts).toHaveLength(1);
+    expect(toolContexts[0]).toBe(bindingContexts[1]);
+    expect(toolContexts[0]).toMatchObject({
+      requestId,
+      sessionId: "fallback-session",
+      safetyMode: "trusted",
+      metadata: { controlCapability: "test-capability", onActivity: expect.any(Function) },
+    });
 
     await lifecycle.stop();
     await runner.stop();
     await pluginManager.destroy();
     await bus.close();
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it("keeps a follow-up sender admitted while fallback attachments materialize", async () => {
+    const config = parseCoreConfigV2ToUniversal({});
+    config.models.main = { model: "openai/primary", fallback: ["openai/fallback"] };
+    config.agent.retry = { enabled: false, maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0 };
+    const fallbackReadStarted = deferred<void>();
+    const releaseFallbackRead = deferred<void>();
+    const followUpApplied = deferred<void>();
+    const bindingContexts: unknown[] = [];
+    const toolContexts: unknown[] = [];
+    const baseBlobStore = transcriptResultValue(await createMemoryBlobStore());
+    const upload = transcriptResultValue(
+      await baseBlobStore.startUpload({
+        source: new TextEncoder().encode("fallback attachment"),
+        retention: { kind: "durable" },
+      }),
+    );
+    const attachment = transcriptResultValue(await upload.completion);
+    let fallbackReadPaused = false;
+    const blobStore: BlobStore = {
+      startUpload: (input) => baseBlobStore.startUpload(input),
+      startStagedUpload: (input) => baseBlobStore.startStagedUpload(input),
+      adopt: (handle) => baseBlobStore.adopt(handle),
+      resolve: (handle, options) => baseBlobStore.resolve(handle, options),
+      open: async (ref) => {
+        if (bindingContexts.length === 2 && !fallbackReadPaused) {
+          fallbackReadPaused = true;
+          fallbackReadStarted.resolve(undefined);
+          await releaseFallbackRead.promise;
+        }
+        return baseBlobStore.open(ref);
+      },
+      delete: (target) => baseBlobStore.delete(target),
+      maintain: (input) => baseBlobStore.maintain(input),
+      close: (input) => baseBlobStore.close(input),
+    };
+    const toolset = level1TestToolset();
+    toolset.tools.builtin = tool({
+      inputSchema: jsonSchema<Record<string, never>>({ type: "object", properties: {} }),
+      execute: (_input, options) => {
+        toolContexts.push(options.context);
+        return "ok";
+      },
+    });
+    const pluginManager = corePrimaryTestPluginManager((context) => {
+      bindingContexts.push(context);
+    }, toolset);
+    const bus = createLilacBus(createInMemoryRawBus());
+    let fallbackCalls = 0;
+    const fallbackModel = new MockLanguageModelV4({
+      modelId: "fallback",
+      doStream: async () => {
+        fallbackCalls += 1;
+        return fallbackCalls === 1
+          ? level1ToolCallStep([{ toolCallId: "fallback-sender", toolName: "builtin" }])
+          : level1TextStep("done");
+      },
+    });
+    const runner = await startBusAgentRunner({
+      bus,
+      blobStore,
+      config,
+      pluginManager,
+      subscriptionId: "fallback-concurrent-follow-up",
+      reportFatalPanic: () => undefined,
+      resolveDiscordSessionContext: () => ({ parentChannelId: null, guildId: null }),
+      issueControlCapability: (input) => ({
+        capability: "test-capability",
+        principal: input.authenticatedOrigin
+          ? {
+              platform: input.authenticatedOrigin.platform,
+              userId: input.authenticatedOrigin.userId,
+            }
+          : null,
+        authenticatedOrigin: input.authenticatedOrigin ?? null,
+        safetyMode: input.safetyMode,
+      }),
+      createAgent: (options) => {
+        const agent = new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "primary",
+            doStream: async () => {
+              throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+            },
+          }),
+        });
+        const setModel = agent.setModel.bind(agent);
+        spyOn(agent, "setModel").mockImplementation((_model, options, spec, reasoning) => {
+          setModel(fallbackModel, options, spec, reasoning);
+        });
+        const followUp = agent.followUp.bind(agent);
+        spyOn(agent, "followUp").mockImplementation((message) => {
+          const id = followUp(message);
+          followUpApplied.resolve(undefined);
+          return id;
+        });
+        return agent;
+      },
+    });
+    const sessionId = "fallback-concurrent-follow-up";
+    const requestId = `discord:${sessionId}:first`;
+    const origin = (userId: string, messageId: string) => ({
+      authenticatedOrigin: {
+        platform: "discord",
+        userId,
+        messageRef: { platform: "discord", channelId: sessionId, messageId },
+      },
+    });
+    const lifecycle = await observeRequestLifecycle(bus, requestId);
+    try {
+      transcriptResultValue(
+        await runner.resumeAcceptedDelivery(
+          acceptedRunnerDelivery({
+            requestDeliveryId: crypto.randomUUID(),
+            requestId,
+            sessionId,
+            requestClient: "discord",
+            queue: "prompt",
+            raw: origin("user-a", "first"),
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: "first" },
+                  {
+                    type: "blob",
+                    blob: attachment,
+                    mediaType: "text/plain",
+                    filename: "context.txt",
+                  },
+                ],
+              },
+            ],
+          }),
+        ),
+      );
+      expect(
+        await Promise.race([
+          fallbackReadStarted.promise.then(() => "fallback-read"),
+          lifecycle.terminal,
+        ]),
+      ).toBe("fallback-read");
+      await publishRunnerRequest({
+        bus,
+        requestId,
+        sessionId,
+        requestClient: "discord",
+        queue: "followUp",
+        text: "second",
+        raw: origin("user-b", "second"),
+      });
+      expect(
+        await Promise.race([followUpApplied.promise.then(() => "follow-up"), lifecycle.terminal]),
+      ).toBe("follow-up");
+      releaseFallbackRead.resolve(undefined);
+      await expect(lifecycle.terminal).resolves.toBe("resolved");
+      expect(bindingContexts).toHaveLength(2);
+      expect(toolContexts).toHaveLength(1);
+      expect(toolContexts[0]).toBe(bindingContexts[1]);
+      expect(toolContexts[0]).toMatchObject({
+        requestInitiator: { platform: "discord", userId: "user-a" },
+        currentTurnUserId: "user-b",
+        currentTurnMessageRef: { platform: "discord", channelId: sessionId, messageId: "second" },
+        safetyMode: "trusted",
+        metadata: { controlCapability: "test-capability", onActivity: expect.any(Function) },
+      });
+    } finally {
+      releaseFallbackRead.resolve(undefined);
+      await lifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+      transcriptResultValue(await blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+    }
   });
 
   it("publishes OpenAI phases and honors a final-answer NO_REPLY", async () => {

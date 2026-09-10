@@ -48,6 +48,7 @@ export type PublishBusRequestInput = {
   messages: BusMessageV2[];
   inputHandles: readonly BlobHandleV1[];
   corePrimaryLineage: CorePrimaryLineageV2;
+  originMessage: SurfaceMessage | null;
   raw: unknown;
 };
 
@@ -94,7 +95,7 @@ function isExactMessageRef(message: SurfaceMessage, ref: MsgRef): boolean {
   );
 }
 
-async function resolveCorrelatedOriginMessage(input: {
+export async function resolveCorrelatedOriginMessage(input: {
   adapter: SurfaceAdapter;
   ref: MsgRef;
   ingressMessages?: readonly SurfaceMessage[];
@@ -171,6 +172,13 @@ export async function publishBusRequest(params: {
     ...(params.input.modelOverride ? { modelOverride: params.input.modelOverride } : {}),
     raw: {
       ...(params.input.raw && typeof params.input.raw === "object" ? params.input.raw : {}),
+      authenticatedOrigin: params.input.originMessage
+        ? {
+            platform: "discord",
+            userId: params.input.originMessage.userId,
+            messageRef: params.input.originMessage.ref,
+          }
+        : undefined,
       sessionMode: params.input.sessionMode,
       sessionConfigId: params.input.sessionConfigId,
       ...(params.input.parentChannelId ? { parentChannelId: params.input.parentChannelId } : {}),
@@ -309,16 +317,8 @@ export async function publishComposedRequest(
               messages: composition.messages,
               inputHandles: composition.inputHandles,
               corePrimaryLineage: composition.corePrimaryLineage,
+              originMessage,
               raw: {
-                ...(originMessage
-                  ? {
-                      authenticatedOrigin: {
-                        platform: "discord" as const,
-                        userId: originMessage.userId,
-                        messageRef: params.input.msgRef,
-                      },
-                    }
-                  : {}),
                 triggerType: params.input.triggerType,
                 chainMessageIds: composition.chainMessageIds,
                 mergedGroups: composition.mergedGroups,
@@ -453,16 +453,8 @@ export async function publishActiveChannelPrompt(
               messages: composition.messages,
               inputHandles: composition.inputHandles,
               corePrimaryLineage: composition.corePrimaryLineage,
+              originMessage,
               raw: {
-                ...(originMessage && params.input.triggerMsgRef
-                  ? {
-                      authenticatedOrigin: {
-                        platform: "discord",
-                        userId: originMessage.userId,
-                        messageRef: params.input.triggerMsgRef,
-                      },
-                    }
-                  : {}),
                 triggerType: params.input.triggerType ?? "active",
                 chainMessageIds: composition.chainMessageIds,
                 mergedGroups: composition.mergedGroups,
@@ -562,16 +554,8 @@ export async function publishSingleMessageToActiveRequest(
               messages: composition.messages,
               inputHandles: composition.inputHandles,
               corePrimaryLineage: composition.corePrimaryLineage,
+              originMessage: surfaceMessage,
               raw: {
-                ...(surfaceMessage
-                  ? {
-                      authenticatedOrigin: {
-                        platform: "discord",
-                        userId: surfaceMessage.userId,
-                        messageRef: params.input.msgRef,
-                      },
-                    }
-                  : {}),
                 triggerType: "active",
                 participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {
                   exclude: self.userId,
@@ -668,16 +652,8 @@ export async function publishSingleMessagePrompt(
               messages: composition.messages,
               inputHandles: composition.inputHandles,
               corePrimaryLineage: composition.corePrimaryLineage,
+              originMessage: surfaceMessage,
               raw: {
-                ...(surfaceMessage
-                  ? {
-                      authenticatedOrigin: {
-                        platform: "discord",
-                        userId: surfaceMessage.userId,
-                        messageRef: params.input.msgRef,
-                      },
-                    }
-                  : {}),
                 triggerType: "active",
                 chainMessageIds: [params.input.msgRef.messageId],
                 participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {

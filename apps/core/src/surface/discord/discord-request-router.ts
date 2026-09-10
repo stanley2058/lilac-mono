@@ -91,6 +91,7 @@ import {
   publishSingleMessagePrompt as publishSingleMessagePromptImpl,
   publishSingleMessageToActiveRequest as publishSingleMessageToActiveRequestImpl,
   publishSurfaceOutputReanchor as publishSurfaceOutputReanchorImpl,
+  resolveCorrelatedOriginMessage,
 } from "./discord-request-router/publish";
 import type { DiscordAttachmentCacheAccess } from "./discord-attachment";
 import type { DiscordMessageCacheAccess } from "../store/discord-search-store";
@@ -1916,6 +1917,22 @@ export async function startDiscordRequestRouter(
     };
 
     const last = batch.items[batch.items.length - 1]!;
+    const originResult = await resolveCorrelatedOriginMessage({
+      adapter,
+      ref: last.msgRef,
+      ingressMessages: last.ingressMessage ? [last.ingressMessage] : undefined,
+    });
+    const { originMessage, originError } = originResult.match<{
+      originMessage: SurfaceMessage | null;
+      originError: RequestCompositionError | null;
+    }>({
+      ok: (message) => ({ originMessage: message, originError: null }),
+      err: (error) => ({ originMessage: null, originError: error }),
+    });
+    if (originError) {
+      restoreBatch();
+      return Result.err(requestPublishRoutingError(originError));
+    }
     const requestId = formatDiscordMessageRequestId({
       channelId: input.sessionId,
       messageId: last.msgRef.messageId,
@@ -2114,6 +2131,7 @@ export async function startDiscordRequestRouter(
         ...extraCompositions.flatMap((value) => value.inputHandles),
       ],
       corePrimaryLineage: finalLineage,
+      originMessage,
       raw: {
         triggerType: "reply",
         chainMessageIds: [...chainMessageIds],

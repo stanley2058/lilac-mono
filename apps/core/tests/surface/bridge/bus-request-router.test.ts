@@ -24,6 +24,8 @@ import {
 } from "@stanley2058/lilac-event-bus";
 import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
+import { projectAuthenticatedRequest } from "../../../src/surface/authenticated-request";
+import { resolveAuthenticatedRequestSafetyMode } from "../../../src/surface/builtin-surface-protocols";
 
 import {
   adaptDiscordRequestRouterStartOutcomeToHost,
@@ -5759,6 +5761,27 @@ describe("startBusRequestRouter", () => {
     expect(received[0].data.queue).toBe("prompt");
     expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:${followMsgId}`);
     expect(received[0].data.raw?.pendingMentionReplyBatch?.size).toBe(1);
+    expect(received[0].data.raw?.authenticatedOrigin).toEqual({
+      platform: "discord",
+      userId: "u1",
+      messageRef: { platform: "discord", channelId: sessionId, messageId: followMsgId },
+    });
+    const projection = projectAuthenticatedRequest(received[0]).unwrap();
+    expect(projection?.verifiedIngress).toBe(true);
+    expect(
+      resolveAuthenticatedRequestSafetyMode({
+        projection: projection!,
+        assertedSafetyMode: "trusted",
+        correlatedAuthority: true,
+      }),
+    ).toBe("trusted");
+    expect(
+      resolveAuthenticatedRequestSafetyMode({
+        projection: projection!,
+        assertedSafetyMode: "restricted",
+        correlatedAuthority: true,
+      }),
+    ).toBe("restricted");
     expect(received[0].data.raw?.participantUserIds).toEqual(["u1"]);
     expect(collectUserText(received[0].data.messages)).toContain("B one");
 
@@ -5938,6 +5961,11 @@ describe("startBusRequestRouter", () => {
     expect(received[0].data.queue).toBe("prompt");
     expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:${followMsgTwo}`);
     expect(received[0].data.raw?.pendingMentionReplyBatch?.size).toBe(2);
+    expect(received[0].data.raw?.authenticatedOrigin).toEqual({
+      platform: "discord",
+      userId: "u2",
+      messageRef: { platform: "discord", channelId: sessionId, messageId: followMsgTwo },
+    });
     expect([...(received[0].data.raw?.participantUserIds ?? [])].sort()).toEqual(["u1", "u2"]);
 
     const userText = collectUserText(received[0].data.messages);
