@@ -3,6 +3,28 @@
 This file records persisted-data, wire, and protocol migrations. Manual `core-config.yaml` upgrades are
 documented separately in [`docs/core-config-migrations.md`](docs/core-config-migrations.md).
 
+## Image generation script interface
+
+`generate.image` now accepts only `{ code: string }`, with JavaScript executed by Bun in the calling
+CLI's cwd and Core's inherited container environment. Replace calls using `prompt`, `model`, `size`,
+`aspectRatio`, `inputImages`, `maskImage`, or `outputDir` with scripts. The injected global `providers`
+maps configured `openai`, `openrouter`, and `xai` connections to `{ baseURL, apiKey? }`. Tool discovery
+advertises configured provider names; model choices and request examples live in the built-in
+`image-generation` skill.
+
+Successful execution collection returns `{ stdout, stderr, exitCode, truncated }` inside the existing
+Level 2 Result envelope, including when a script exits nonzero. Callers must check `exitCode`. Scripts
+own image decoding and file writes and should print saved paths. The former image path, MIME, model,
+and warning result fields are removed. Each stream is capped at 40 Ki characters and configured image
+provider keys are redacted. Scripts have a 10-minute limit and receive caller cancellation through
+process termination. A failed or interrupted script is not automatically retried.
+
+The callable now has native container execution authority and is removed from restricted-session
+allowances. Trusted callers with permission to call it can execute arbitrary code and access the
+container environment. There is no additional sandbox. `generate.video` keeps its existing contract.
+No stored data or configuration version changes are needed. Rollback requires restoring old callers
+alongside the old tool implementation.
+
 ## Tool launcher build artifacts
 
 Built tool installations now include `tools-build-id` and `tools-build-info.json` beside

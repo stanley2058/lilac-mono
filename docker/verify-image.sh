@@ -103,6 +103,10 @@ for path in \
   /usr/local/bin/tools-build-id \
   /usr/local/bin/tools-build-info.json \
   /app/packages/utils/builtin-skills/customize-lilac/SKILL.md \
+  /app/packages/utils/builtin-skills/image-generation/SKILL.md \
+  /app/packages/utils/builtin-skills/image-generation/references/openai.md \
+  /app/packages/utils/builtin-skills/image-generation/references/openrouter.md \
+  /app/packages/utils/builtin-skills/image-generation/references/xai.md \
   /app/packages/utils/builtin-skills/customize-lilac/references/self-debugging.md \
   /app/packages/utils/builtin-skills/customize-lilac/references/core-config.md \
   /app/packages/utils/config-templates/core-config.example.yaml \

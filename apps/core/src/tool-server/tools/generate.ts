@@ -33,17 +33,17 @@ function captureGenerateFailure(cause: unknown): { readonly cause: Error | Panic
   if (cause instanceof Error) return { cause };
   return { cause: new Error("Unknown image generation failure", { cause }) };
 }
-import {
-  experimental_generateVideo as generateVideo,
-  generateImage,
-  type DataContent,
-  type GenerateVideoPrompt,
-  type ImageModel,
-} from "ai";
+import { experimental_generateVideo as generateVideo, type GenerateVideoPrompt } from "ai";
 import { fileTypeFromBuffer } from "file-type";
 import fs from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { z } from "zod";
+import {
+  imageScriptInputSchema,
+  imageScriptDescription,
+  configuredImageProviders,
+  runImageScript,
+} from "./image-script";
 import {
   formatToolPathForRequestContext,
   inferExtensionFromMimeType,
@@ -60,51 +60,6 @@ function generateFailure(kind: ServerToolFailure["kind"], message: string): Serv
   });
 }
 
-type SupportedImageModelId =
-  /**
-   * - Recommended default
-   * - Aspect ratio: 1:1, 3:2, 2:3
-   * - Generation sizes: arbitrary dimensions within the model limits
-   * - Edit sizes: 1024x1024, 1536x1024, 1024x1536
-   */
-  | "gpt-image-2"
-  /**
-   * - Aspect ratio: 1:1, 3:2, 2:3
-   * - Sizes: 1024x1024 (1:1); 1536x1024 (3:2 landscape); 1024x1536 (2:3 portrait)
-   */
-  | "gpt-5-image"
-  /**
-   * - Aspect ratio: 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16
-   */
-  | "nanobanana"
-  /**
-   * - Provider/slug: openrouter/google/gemini-3.1-flash-image-preview
-   * - Aspect ratio: 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16, 1:4, 4:1, 1:8, 8:1
-   * - Supported resolution tiers: 1K, 2K, 4K
-   */
-  | "nanobanana-2"
-  /**
-   * - Provider/slug: openrouter/google/gemini-3.1-flash-lite-image
-   * - Aspect ratio: 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16, 1:4, 4:1, 1:8, 8:1
-   * - Resolution: 1K
-   */
-  | "nanobanana-2-lite"
-  /**
-   * - Aspect ratio: 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16
-   * - Supported resolution tiers: 1K, 2K, 4K
-   */
-  | "nanobanana-pro"
-  /**
-   * - Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2, 19.5:9,
-   *   9:19.5, 20:9, 9:20
-   */
-  | "grok-imagine-image"
-  /**
-   * - Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2, 19.5:9,
-   *   9:19.5, 20:9, 9:20
-   */
-  | "grok-imagine-image-pro";
-
 type SupportedVideoModelId =
   /**
    * - Modes: text-to-video, image-to-video
@@ -113,61 +68,6 @@ type SupportedVideoModelId =
    * - Resolution: 1280x720, 854x480, 640x480
    */
   "grok-imagine-video";
-
-const GPT_IMAGE_ALLOWED_ASPECT_RATIOS = ["1:1", "3:2", "2:3"] as const;
-const GPT_IMAGE_STANDARD_SIZES = ["1024x1024", "1536x1024", "1024x1536"] as const;
-const GPT_IMAGE_2_MIN_PIXELS = 655_360;
-const GPT_IMAGE_2_MAX_PIXELS = 8_294_400;
-const GPT_IMAGE_2_MAX_EDGE = 3840;
-const GPT_IMAGE_2_MAX_ASPECT_RATIO = 3;
-
-const NANOBANANA_ALLOWED_ASPECT_RATIOS = [
-  "21:9",
-  "16:9",
-  "3:2",
-  "4:3",
-  "5:4",
-  "1:1",
-  "4:5",
-  "3:4",
-  "2:3",
-  "9:16",
-] as const;
-
-const NANOBANANA_2_ALLOWED_ASPECT_RATIOS = [
-  ...NANOBANANA_ALLOWED_ASPECT_RATIOS,
-  "1:4",
-  "4:1",
-  "1:8",
-  "8:1",
-] as const;
-
-const GROK_IMAGE_ALLOWED_ASPECT_RATIOS = [
-  "1:1",
-  "16:9",
-  "9:16",
-  "4:3",
-  "3:4",
-  "3:2",
-  "2:3",
-  "2:1",
-  "1:2",
-  "19.5:9",
-  "9:19.5",
-  "20:9",
-  "9:20",
-] as const;
-
-export const DEFAULT_IMAGE_MODEL_FALLBACK_ORDER: readonly SupportedImageModelId[] = [
-  "gpt-image-2",
-  "nanobanana-2",
-  "nanobanana-pro",
-  "gpt-5-image",
-  "grok-imagine-image-pro",
-  "grok-imagine-image",
-  "nanobanana-2-lite",
-  "nanobanana",
-];
 
 const GROK_VIDEO_ALLOWED_ASPECT_RATIOS = [
   "1:1",
@@ -180,94 +80,6 @@ const GROK_VIDEO_ALLOWED_ASPECT_RATIOS = [
 ] as const;
 const GROK_VIDEO_ALLOWED_RESOLUTIONS = ["1280x720", "854x480", "640x480"] as const;
 const DEFAULT_VIDEO_MODEL_FALLBACK_ORDER: readonly SupportedVideoModelId[] = ["grok-imagine-video"];
-const DEFAULT_IMAGE_OUTPUT_BASENAME = "generated-image";
-
-const optionalNonEmptyStringListInputSchema = z
-  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
-  .optional()
-  .transform((value) => {
-    if (value === undefined) return undefined;
-    return Array.isArray(value) ? value : [value];
-  });
-
-export const imageGenerateInputSchema = z
-  .object({
-    outputDir: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        "Optional output directory. Defaults to current working directory. File extension is inferred from returned MIME type.",
-      ),
-
-    prompt: z.string().min(1).describe("Text prompt for image generation/editing"),
-
-    inputImages: optionalNonEmptyStringListInputSchema.describe(
-      "Optional local input image path(s) for image editing/variations.",
-    ),
-
-    maskImage: z
-      .string()
-      .min(1)
-      .optional()
-      .describe("Optional local mask image path for inpainting (applies to first input image)."),
-
-    model: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        "Image model to use. Recommended/default: gpt-image-2 when available; otherwise picks the first configured fallback.",
-      ),
-
-    size: z
-      .string()
-      .regex(/^\d+x\d+$/)
-      .optional()
-      .describe(
-        [
-          "Optional output size as '{width}x{height}'. (Use only one of --size or --aspect-ratio)",
-          "- For gpt-image-2 generation: both edges must be multiples of 16 and <=3840, ratio <=3:1, and total pixels 655360-8294400. Edits use 1024x1024 | 1536x1024 | 1024x1536.",
-          "- For gpt-5-image: 1024x1024 | 1536x1024 | 1024x1536.",
-          "- For nanobanana(-2|-pro): calculate based-on 1K, 2K, 4K. E.g.,",
-          "  - 1:1 @ 1K/2K/4K: 1024^2 / 2048^2 / 4096^2",
-          "  - 16:9 @ 4K: about 7282 x 4096",
-          "  - 9:16 @ 4K: about 4096 x 7282",
-        ].join("\n"),
-      ),
-
-    aspectRatio: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        [
-          "Optional aspect ratio. (Use only one of --size or --aspect-ratio)",
-          "- For gpt-image-2/gpt-5-image: 1:1 | 3:2 | 2:3.",
-          "- For nanobanana/nanobanana-pro: 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16.",
-          "- For nanobanana-2/nanobanana-2-lite: 21:9 | 16:9 | 3:2 | 4:3 | 5:4 | 1:1 | 4:5 | 3:4 | 2:3 | 9:16 | 1:4 | 4:1 | 1:8 | 8:1.",
-          "- For grok-imagine-image(-pro): 1:1 | 16:9 | 9:16 | 4:3 | 3:4 | 3:2 | 2:3 | 2:1 | 1:2 | 19.5:9 | 9:19.5 | 20:9 | 9:20.",
-        ].join("\n"),
-      ),
-  })
-  .strict()
-  .superRefine((input, ctx) => {
-    if (input.size && input.aspectRatio) {
-      ctx.addIssue({
-        code: "custom",
-        message: "Provide only one of size or aspectRatio (not both).",
-      });
-    }
-
-    if (input.maskImage && (!input.inputImages || input.inputImages.length === 0)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["maskImage"],
-        message: "maskImage requires inputImages.",
-      });
-    }
-  });
-
 export const videoGenerateInputSchema = z.object({
   path: z.string().min(1).describe("Output file path to write the generated video"),
 
@@ -306,16 +118,7 @@ export const videoGenerateInputSchema = z.object({
     .describe("Optional duration in seconds. For grok-imagine-video: 1-15."),
 });
 
-type ImageGenerateInput = z.infer<typeof imageGenerateInputSchema>;
 type VideoGenerateInput = z.infer<typeof videoGenerateInputSchema>;
-
-type ImageGenerationPrompt =
-  | string
-  | {
-      text: string;
-      images: DataContent[];
-      mask?: DataContent;
-    };
 
 type VideoModelObject = Exclude<Parameters<typeof generateVideo>[0]["model"], string>;
 type GenerationProvider = "openai" | "openrouter" | "xai" | "vercel";
@@ -326,7 +129,6 @@ type ModelDescriptor<TId extends string, TModel, TInput> = {
   validateInput: (input: TInput) => ResultType<void, ServerToolFailure>;
 };
 
-type ImageModelDescriptor = ModelDescriptor<SupportedImageModelId, ImageModel, ImageGenerateInput>;
 type VideoModelDescriptor = ModelDescriptor<
   SupportedVideoModelId,
   VideoModelObject,
@@ -356,232 +158,6 @@ function isConfiguredProvider(provider: GenerationProvider): boolean {
 function isOneOf<const T extends readonly string[]>(allowed: T, value: string): value is T[number] {
   return (allowed as readonly string[]).includes(value);
 }
-
-function validateGptImageInput(
-  input: ImageGenerateInput,
-  modelId: "gpt-image-2" | "gpt-5-image",
-): ResultType<void, ServerToolFailure> {
-  if (input.aspectRatio && !isOneOf(GPT_IMAGE_ALLOWED_ASPECT_RATIOS, input.aspectRatio)) {
-    return Result.err(
-      generateFailure(
-        "usage",
-        `Unsupported aspectRatio '${input.aspectRatio}' for ${modelId}. Allowed: ${GPT_IMAGE_ALLOWED_ASPECT_RATIOS.join(", ")}.`,
-      ),
-    );
-  }
-
-  if (!input.size) return Result.ok(undefined);
-
-  if (modelId === "gpt-5-image" || (input.inputImages?.length ?? 0) > 0) {
-    if (isOneOf(GPT_IMAGE_STANDARD_SIZES, input.size)) return Result.ok(undefined);
-
-    const context = modelId === "gpt-image-2" ? " image edits" : "";
-    return Result.err(
-      generateFailure(
-        "usage",
-        `Unsupported size '${input.size}' for ${modelId}${context}. Allowed: ${GPT_IMAGE_STANDARD_SIZES.join(" | ")}.`,
-      ),
-    );
-  }
-
-  const separatorIndex = input.size.indexOf("x");
-  const width = Number(input.size.slice(0, separatorIndex));
-  const height = Number(input.size.slice(separatorIndex + 1));
-  const pixels = width * height;
-  if (
-    width % 16 !== 0 ||
-    height % 16 !== 0 ||
-    width > GPT_IMAGE_2_MAX_EDGE ||
-    height > GPT_IMAGE_2_MAX_EDGE ||
-    Math.max(width, height) / Math.min(width, height) > GPT_IMAGE_2_MAX_ASPECT_RATIO ||
-    pixels < GPT_IMAGE_2_MIN_PIXELS ||
-    pixels > GPT_IMAGE_2_MAX_PIXELS
-  ) {
-    return Result.err(
-      generateFailure(
-        "usage",
-        `Unsupported size '${input.size}' for gpt-image-2. Both edges must be multiples of 16 and at most ${GPT_IMAGE_2_MAX_EDGE}px, the aspect ratio must not exceed 3:1, and total pixels must be ${GPT_IMAGE_2_MIN_PIXELS}-${GPT_IMAGE_2_MAX_PIXELS}.`,
-      ),
-    );
-  }
-  return Result.ok(undefined);
-}
-
-function validateNanobananaInput(
-  input: ImageGenerateInput,
-  modelId: "nanobanana" | "nanobanana-2" | "nanobanana-2-lite" | "nanobanana-pro",
-): ResultType<void, ServerToolFailure> {
-  const allowedAspectRatios =
-    modelId === "nanobanana-2" || modelId === "nanobanana-2-lite"
-      ? NANOBANANA_2_ALLOWED_ASPECT_RATIOS
-      : NANOBANANA_ALLOWED_ASPECT_RATIOS;
-
-  if (input.aspectRatio && !isOneOf(allowedAspectRatios, input.aspectRatio)) {
-    return Result.err(
-      generateFailure(
-        "usage",
-        `Unsupported aspectRatio '${input.aspectRatio}' for ${modelId}. Allowed: ${allowedAspectRatios.join(", ")}.`,
-      ),
-    );
-  }
-
-  if (modelId === "nanobanana-2-lite" && input.size) {
-    return Result.err(
-      generateFailure(
-        "usage",
-        "nanobanana-2-lite produces 1K output; use aspectRatio instead of size.",
-      ),
-    );
-  }
-
-  if (modelId === "nanobanana-2-lite" && input.maskImage) {
-    return Result.err(generateFailure("usage", "nanobanana-2-lite does not support maskImage."));
-  }
-  return Result.ok(undefined);
-}
-
-export function validateImageGenerationInputForModel(
-  modelId: SupportedImageModelId,
-  input: ImageGenerateInput,
-): ResultType<void, ServerToolFailure> {
-  switch (modelId) {
-    case "gpt-image-2":
-    case "gpt-5-image":
-      return validateGptImageInput(input, modelId);
-    case "nanobanana":
-    case "nanobanana-2":
-    case "nanobanana-2-lite":
-    case "nanobanana-pro":
-      return validateNanobananaInput(input, modelId);
-    case "grok-imagine-image":
-    case "grok-imagine-image-pro":
-      return validateGrokImagineInput(input, modelId);
-  }
-}
-
-function validateGrokImagineInput(
-  input: ImageGenerateInput,
-  modelId: "grok-imagine-image" | "grok-imagine-image-pro",
-): ResultType<void, ServerToolFailure> {
-  if (input.size) {
-    return Result.err(
-      generateFailure("usage", `${modelId} does not support size. Use aspectRatio instead.`),
-    );
-  }
-
-  if (input.aspectRatio && !isOneOf(GROK_IMAGE_ALLOWED_ASPECT_RATIOS, input.aspectRatio)) {
-    return Result.err(
-      generateFailure(
-        "usage",
-        `Unsupported aspectRatio '${input.aspectRatio}' for ${modelId}. Allowed: ${GROK_IMAGE_ALLOWED_ASPECT_RATIOS.join(", ")}.`,
-      ),
-    );
-  }
-
-  if (input.maskImage) {
-    return Result.err(generateFailure("usage", `${modelId} does not support maskImage.`));
-  }
-
-  if ((input.inputImages?.length ?? 0) > 1) {
-    return Result.err(generateFailure("usage", `${modelId} supports only one input image.`));
-  }
-  return Result.ok(undefined);
-}
-
-const IMAGE_MODEL_DESCRIPTORS: readonly ImageModelDescriptor[] = [
-  {
-    id: "gpt-image-2",
-    createModel: (providers) => {
-      if (isConfiguredProvider("openai")) {
-        const model = providers.openai?.image("gpt-image-2");
-        if (model) return model;
-      }
-
-      if (isConfiguredProvider("openrouter")) {
-        return providers.openrouter?.imageModel("openai/gpt-image-2");
-      }
-
-      return undefined;
-    },
-    validateInput: (input) => validateImageGenerationInputForModel("gpt-image-2", input),
-  },
-  {
-    id: "gpt-5-image",
-    createModel: (providers) => {
-      if (isConfiguredProvider("openai")) {
-        const model = providers.openai?.image("gpt-image-1.5");
-        if (model) return model;
-      }
-
-      if (isConfiguredProvider("openrouter")) {
-        return providers.openrouter?.imageModel("openai/gpt-5-image");
-      }
-
-      return undefined;
-    },
-    validateInput: (input) => validateImageGenerationInputForModel("gpt-5-image", input),
-  },
-  {
-    id: "nanobanana",
-    createModel: (providers) => {
-      if (isConfiguredProvider("openrouter")) {
-        return providers.openrouter?.imageModel("google/gemini-2.5-flash-image");
-      }
-      return undefined;
-    },
-    validateInput: (input) => validateImageGenerationInputForModel("nanobanana", input),
-  },
-  {
-    id: "nanobanana-2",
-    createModel: (providers) => {
-      if (isConfiguredProvider("openrouter")) {
-        return providers.openrouter?.imageModel("google/gemini-3.1-flash-image-preview");
-      }
-      return undefined;
-    },
-    validateInput: (input) => validateImageGenerationInputForModel("nanobanana-2", input),
-  },
-  {
-    id: "nanobanana-2-lite",
-    createModel: (providers) => {
-      if (isConfiguredProvider("openrouter")) {
-        return providers.openrouter?.imageModel("google/gemini-3.1-flash-lite-image");
-      }
-      return undefined;
-    },
-    validateInput: (input) => validateImageGenerationInputForModel("nanobanana-2-lite", input),
-  },
-  {
-    id: "nanobanana-pro",
-    createModel: (providers) => {
-      if (isConfiguredProvider("openrouter")) {
-        return providers.openrouter?.imageModel("google/gemini-3-pro-image-preview");
-      }
-      return undefined;
-    },
-    validateInput: (input) => validateImageGenerationInputForModel("nanobanana-pro", input),
-  },
-  {
-    id: "grok-imagine-image",
-    createModel: (providers) => {
-      if (!isConfiguredProvider("xai")) {
-        return undefined;
-      }
-      return providers.xai?.image("grok-imagine-image");
-    },
-    validateInput: (input) => validateImageGenerationInputForModel("grok-imagine-image", input),
-  },
-  {
-    id: "grok-imagine-image-pro",
-    createModel: (providers) => {
-      if (!isConfiguredProvider("xai")) {
-        return undefined;
-      }
-      return providers.xai?.image("grok-imagine-image-pro");
-    },
-    validateInput: (input) => validateImageGenerationInputForModel("grok-imagine-image-pro", input),
-  },
-];
 
 function validateGrokVideoInput(input: VideoGenerateInput): ResultType<void, ServerToolFailure> {
   if (input.aspectRatio && !isOneOf(GROK_VIDEO_ALLOWED_ASPECT_RATIOS, input.aspectRatio)) {
@@ -655,11 +231,6 @@ function resolveAvailableModels<TId extends string, TModel, TInput>(
   };
 }
 
-function getAvailableImageModels() {
-  const providers = getModelProviders();
-  return resolveAvailableModels(IMAGE_MODEL_DESCRIPTORS, providers);
-}
-
 function getAvailableVideoModels() {
   const providers = getModelProviders();
   return resolveAvailableModels(VIDEO_MODEL_DESCRIPTORS, providers);
@@ -701,48 +272,6 @@ function pickModel<TId extends string, TModel>(
       `No ${modalityLabel} generation models are configured. Configure at least one provider for ${modalityLabel} generation.`,
     ),
   );
-}
-
-export function gptAspectRatioToSize(
-  aspectRatio: (typeof GPT_IMAGE_ALLOWED_ASPECT_RATIOS)[number],
-): (typeof GPT_IMAGE_STANDARD_SIZES)[number] {
-  switch (aspectRatio) {
-    case "1:1":
-      return "1024x1024";
-    case "3:2":
-      return "1536x1024";
-    case "2:3":
-      return "1024x1536";
-  }
-}
-
-export function orderImageModelIds(ids: readonly SupportedImageModelId[]): SupportedImageModelId[] {
-  const available = new Set(ids);
-  return DEFAULT_IMAGE_MODEL_FALLBACK_ORDER.filter((id) => available.has(id));
-}
-
-export function resolveImageDimensions(
-  modelId: SupportedImageModelId,
-  input: Pick<ImageGenerateInput, "size" | "aspectRatio">,
-): {
-  size?: `${number}x${number}`;
-  aspectRatio?: `${number}:${number}`;
-} {
-  if (input.size) {
-    return { size: input.size as `${number}x${number}` };
-  }
-
-  if (!input.aspectRatio) return {};
-
-  if (modelId === "gpt-image-2" || modelId === "gpt-5-image") {
-    return {
-      size: gptAspectRatioToSize(
-        input.aspectRatio as (typeof GPT_IMAGE_ALLOWED_ASPECT_RATIOS)[number],
-      ),
-    };
-  }
-
-  return { aspectRatio: input.aspectRatio as `${number}:${number}` };
 }
 
 function looksLikeSvg(bytes: Buffer): boolean {
@@ -797,93 +326,6 @@ async function readImageDataFromPath(
       generateFailure("usage", `Input file '${displayPath}' is not a valid image file.`),
     );
   });
-}
-
-export async function resolveImageEditInputs(
-  cwd: string,
-  input: {
-    inputImages?: readonly string[];
-    maskImage?: string;
-  },
-  context?: RequestContext,
-): Promise<
-  ResultType<
-    | {
-        images: DataContent[];
-        mask?: DataContent;
-      }
-    | undefined,
-    ServerToolFailure
-  >
-> {
-  if (!input.inputImages || input.inputImages.length === 0) {
-    return Result.ok(undefined);
-  }
-
-  return Result.gen(async function* () {
-    const images: DataContent[] = [];
-    for (const imagePath of input.inputImages ?? []) {
-      const resolved = yield* settleCapturedError(
-        Result.try({
-          try: () => resolveToolPathForRequestContext({ cwd, inputPath: imagePath, context }),
-          catch: captureGenerateFailure,
-        }),
-        (cause) => {
-          if (Panic.is(cause)) return preserveToolPanic(cause);
-          return generateFailure("denied", errorMessage(cause));
-        },
-      );
-      images.push(
-        yield* Result.await(
-          readImageDataFromPath(
-            resolved,
-            formatToolPathForRequestContext({ path: resolved, context }),
-          ),
-        ),
-      );
-    }
-
-    if (!input.maskImage) return Result.ok({ images });
-
-    const resolvedMask = yield* settleCapturedError(
-      Result.try({
-        try: () =>
-          resolveToolPathForRequestContext({
-            cwd,
-            inputPath: input.maskImage!,
-            context,
-          }),
-        catch: captureGenerateFailure,
-      }),
-      (cause) => {
-        if (Panic.is(cause)) return preserveToolPanic(cause);
-        return generateFailure("denied", errorMessage(cause));
-      },
-    );
-    const mask = yield* Result.await(
-      readImageDataFromPath(
-        resolvedMask,
-        formatToolPathForRequestContext({ path: resolvedMask, context }),
-      ),
-    );
-    return Result.ok({ images, mask });
-  });
-}
-
-export async function buildImageGenerationPrompt(
-  cwd: string,
-  input: {
-    prompt: string;
-    inputImages?: readonly string[];
-    maskImage?: string;
-  },
-  context?: RequestContext,
-): Promise<ResultType<ImageGenerationPrompt, ServerToolFailure>> {
-  return (await resolveImageEditInputs(cwd, input, context)).map((editInputs) =>
-    editInputs
-      ? { text: input.prompt, images: editInputs.images, mask: editInputs.mask }
-      : input.prompt,
-  );
 }
 
 export async function buildVideoGenerationPrompt(
@@ -963,24 +405,6 @@ async function writeFileWithUniqueName(
   );
 }
 
-export function generateImageWithModel(
-  model: ImageModel,
-  prompt: ImageGenerationPrompt,
-  opts?: {
-    abortSignal?: AbortSignal;
-    size?: `${number}x${number}`;
-    aspectRatio?: `${number}:${number}`;
-  },
-) {
-  return generateImage({
-    model,
-    prompt,
-    abortSignal: opts?.abortSignal,
-    size: opts?.size,
-    aspectRatio: opts?.aspectRatio,
-  });
-}
-
 export function generateVideoWithModel(
   model: VideoModelObject,
   prompt: GenerateVideoPrompt,
@@ -1009,23 +433,16 @@ export class Generate implements ServerTool {
     callables: ({ callable }) => ({
       "generate.image": callable({
         name: "Generate Image",
-        description:
-          "Generate or edit an image with a configured provider and write it to a local file in outputDir (or cwd). Returns absolute output path + MIME type. " +
-          "Recommended/default: gpt-image-2 when available.",
-        inputSchema: imageGenerateInputSchema,
+        description: imageScriptDescription(),
+        inputSchema: imageScriptInputSchema,
         validation: "zod",
-        primaryPositional: "prompt",
+        primaryPositional: "code",
         catalog: () => {
-          const imageModels = orderImageModelIds(getAvailableImageModels().ids);
-          if (imageModels.length === 0) return false;
-          return {
-            description:
-              "Generate or edit an image with a configured provider and write it to a local file in outputDir (or cwd). Returns absolute output path + MIME type. " +
-              "Recommended/default: gpt-image-2 when available. " +
-              `Available models: ${imageModels.join(", ")}`,
-          };
+          const providers = configuredImageProviders();
+          if (Object.keys(providers).length === 0) return false;
+          return { description: imageScriptDescription(providers) };
         },
-        run: (input, opts) => this.callGenerateImage(input, opts),
+        run: (input, opts) => runImageScript(input, opts),
       }),
       "generate.video": callable({
         name: "Generate Video",
@@ -1064,105 +481,6 @@ export class Generate implements ServerTool {
     opts?: ServerToolCallOptions,
   ): Promise<ServerToolResult> {
     return this.tool.call(callableId, input, opts);
-  }
-
-  private async callGenerateImage(
-    payload: ImageGenerateInput,
-    opts?: ServerToolCallOptions,
-  ): Promise<ServerToolResult> {
-    return Result.gen(
-      async function* (this: Generate) {
-        const availableModels = getAvailableImageModels();
-        const picked = yield* pickModel(
-          availableModels.available,
-          payload.model,
-          DEFAULT_IMAGE_MODEL_FALLBACK_ORDER,
-          "image",
-        );
-
-        const descriptor = availableModels.byId.get(picked.id);
-        if (!descriptor) {
-          return Result.err(
-            generateFailure("internal", `Model descriptor not found for '${picked.id}'.`),
-          );
-        }
-        yield* descriptor.validateInput(payload);
-
-        const cwd = opts?.context?.cwd ?? process.cwd();
-        const resolvedOutputDir = yield* settleCapturedError(
-          Result.try({
-            try: () =>
-              resolveToolPathForRequestContext({
-                cwd,
-                inputPath:
-                  payload.outputDir ?? (opts?.context?.safetyMode === "restricted" ? "/tmp" : "."),
-                context: opts?.context,
-              }),
-            catch: captureGenerateFailure,
-          }),
-          (cause) => {
-            if (Panic.is(cause)) return preserveToolPanic(cause);
-            return generateFailure("denied", errorMessage(cause));
-          },
-        );
-
-        const { size, aspectRatio } = resolveImageDimensions(picked.id, payload);
-        const prompt = yield* Result.await(buildImageGenerationPrompt(cwd, payload, opts?.context));
-
-        const res = yield* Result.await(
-          settleCapturedPromise(
-            Result.tryPromise({
-              try: () =>
-                generateImageWithModel(picked.model, prompt, {
-                  abortSignal: opts?.signal,
-                  size,
-                  aspectRatio,
-                }),
-              catch: captureGenerateFailure,
-            }),
-            (cause) => {
-              if (Panic.is(cause)) return preserveToolPanic(cause);
-              return generateFailure(
-                opts?.signal?.aborted ? "cancelled" : "unavailable",
-                errorMessage(cause),
-              );
-            },
-          ),
-        );
-
-        const image = res.image;
-        const inferredExt = inferExtensionFromMimeType(image.mediaType) || ".png";
-        const targetWithExt = join(
-          resolvedOutputDir,
-          `${DEFAULT_IMAGE_OUTPUT_BASENAME}${inferredExt}`,
-        );
-
-        yield* Result.await(
-          settleCapturedPromise(
-            Result.tryPromise({
-              try: () => fs.mkdir(dirname(targetWithExt), { recursive: true }),
-              catch: captureGenerateFailure,
-            }),
-            (cause) => {
-              if (Panic.is(cause)) return preserveToolPanic(cause);
-              return generateFailure("unavailable", errorMessage(cause));
-            },
-          ),
-        );
-        const outPath = yield* Result.await(
-          writeFileWithUniqueName(targetWithExt, image.uint8Array),
-        );
-
-        return Result.ok({
-          ok: true as const,
-          path: formatToolPathForRequestContext({ path: outPath, context: opts?.context }),
-          bytes: image.uint8Array.byteLength,
-          mimeType: image.mediaType,
-          model: picked.id,
-          warnings: res.warnings,
-        });
-      }.bind(this),
-    );
   }
 
   private async callGenerateVideo(

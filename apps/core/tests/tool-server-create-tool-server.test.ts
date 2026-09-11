@@ -1882,14 +1882,6 @@ describe("createToolServer", () => {
           hidden: undefined,
         },
         {
-          callableId: "generate.image",
-          name: "Generate Image",
-          description: "Generate image",
-          shortInput: [],
-          primaryPositional: undefined,
-          hidden: undefined,
-        },
-        {
           callableId: "generate.video",
           name: "Generate Video",
           description: "Generate video",
@@ -1951,6 +1943,21 @@ describe("createToolServer", () => {
         message: "Tool 'onboarding.restart' is not allowed in restricted public-session mode",
         retryable: false,
       },
+    });
+
+    const imageScriptRes = await server.app.handle(
+      new Request("http://localhost/call", {
+        method: "POST",
+        headers: { ...restrictedHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          callableId: "generate.image",
+          input: { code: "console.log('blocked')" },
+        }),
+      }),
+    );
+    expect(await imageScriptRes.json()).toMatchObject({
+      status: "error",
+      error: { kind: "denied", code: "restricted_mode_denied" },
     });
 
     const crossSessionRes = await server.app.handle(

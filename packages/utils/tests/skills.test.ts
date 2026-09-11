@@ -191,6 +191,7 @@ Instructions
       "coding-agent",
       "customize-lilac",
       "mcp-management",
+      "image-generation",
       "workflow-authoring",
     ]) {
       expect(bundled.skills.find((skill) => skill.name === name)).toMatchObject({

@@ -329,7 +329,6 @@ const RESTRICTED_LEVEL2_ALLOWED = new Set([
   "fetch",
   "search",
   "discovery.search",
-  "generate.image",
   "generate.video",
   "attachment.add_files",
   "attachment.download",

@@ -140,6 +140,13 @@ codes. Successfully produced report and diagnostic payloads remain successes eve
 findings are negative. See `PLUGIN_AUTHORING.md` for authoring details and `MIGRATIONS.md` for the
 clean-break migration.
 
+`generate.image` executes caller-written JavaScript in a fresh Bun process with the caller's cwd and
+Core's container environment. Discovery lists configured OpenAI, OpenRouter, and xAI providers; the
+script's `providers` global supplies resolved endpoints and credentials. The built-in `image-generation`
+skill owns the default model catalog and native request recipes. Scripts save images and print paths;
+the tool returns bounded stdout/stderr, exit status, and truncation state. This is trusted native
+execution and is unavailable to restricted sessions. `generate.video` retains its model-based interface.
+
 Request capabilities bind request context, cwd, profile, callable authority, and expiry. They constrain agent calls but are not general public HTTP authentication. The Core tool server belongs on a trusted host/network. Core also owns configured MCP clients process-wide; MCP tools join the run-scoped catalog only through the Core manager and profile policy.
 
 Core ingress resources use opaque `resource://r1_<128-bit-id>` capabilities. The shared Core resource
