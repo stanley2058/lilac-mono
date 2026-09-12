@@ -171,8 +171,7 @@ COPY packages/tool-results/package.json packages/tool-results/package.json
 COPY packages/utils/package.json packages/utils/package.json
 COPY patches patches
 
-# Install only the main container's workspace graph. Other app sources remain
-# available in /app, but their dependencies are not included in the image.
+# Install only the main container's workspace graph.
 RUN bun install --frozen-lockfile \
       --filter '@stanley2058/lilac-tool-bridge' \
       --filter '@stanley2058/lilac-remote-fs-runner' \
@@ -182,16 +181,44 @@ RUN bun install --frozen-lockfile \
 # Stage 3: build + runtime entry
 ############################
 
-FROM deps AS build
+FROM deps AS tool-worker
 WORKDIR /app
-COPY bunfig.toml tsconfig.json ./
-COPY apps ./apps
-COPY packages ./packages
-
-COPY --from=native-launcher /build/tools /app/apps/tool-bridge/dist/tools
-
+COPY tsconfig.json ./
+COPY apps/tool-bridge/build.ts apps/tool-bridge/launcher.ts apps/tool-bridge/client.ts \
+     apps/tool-bridge/build-artifacts.ts apps/tool-bridge/invocation-runtime.ts \
+     apps/tool-bridge/wire-codecs.ts apps/tool-bridge/native-launcher.go \
+     apps/tool-bridge/tsconfig.json apps/tool-bridge/
+COPY apps/core/tsconfig.json apps/core/
+COPY apps/core/src/tool-server/client-arguments.ts apps/core/src/tool-server/client-protocol.ts \
+     apps/core/src/tool-server/
+COPY packages/plugin-runtime/types.ts packages/plugin-runtime/tsconfig.json packages/plugin-runtime/
+COPY packages/utils/build-info.ts packages/utils/find-root.ts packages/utils/runtime-utils.ts \
+     packages/utils/tsconfig.json packages/utils/
 RUN (cd apps/tool-bridge && bun build.ts --worker-only)
+
+FROM deps AS remote-runner
+WORKDIR /app
+COPY tsconfig.json ./
+COPY apps/core/build-remote-runner.ts apps/core/tsconfig.json apps/core/
+COPY apps/core/src/shared/error-capture.ts apps/core/src/shared/
+COPY apps/core/src/ssh/remote-js/*.ts apps/core/src/ssh/remote-js/
+COPY apps/core/src/tools/apply-patch/apply-patch-core.ts apps/core/src/tools/apply-patch/
+COPY apps/core/src/tools/tool-result-adapters.ts apps/core/src/tools/
+COPY packages/coding-tools/src/apply-patch.ts packages/coding-tools/src/
+COPY packages/coding-tools/tsconfig.json packages/coding-tools/
+COPY packages/fs/tsconfig.json packages/fs/
+COPY packages/fs/src packages/fs/src
+COPY packages/utils/*.ts packages/utils/tsconfig.json packages/utils/
+COPY packages/utils/core-config packages/utils/core-config
 RUN (cd apps/core && bun run build:remote-runner)
+
+FROM deps AS remote-fs-runner
+WORKDIR /app
+COPY tsconfig.json ./
+COPY packages/fs/tsconfig.json packages/fs/
+COPY packages/fs/src packages/fs/src
+COPY packages/remote-fs-runner/build.ts packages/remote-fs-runner/tsconfig.json packages/remote-fs-runner/
+COPY packages/remote-fs-runner/src packages/remote-fs-runner/src
 RUN (cd packages/remote-fs-runner && bun run build)
 
 ############################
@@ -200,14 +227,29 @@ RUN (cd packages/remote-fs-runner && bun run build)
 
 FROM deps AS runtime
 WORKDIR /app
-COPY --from=build /app/bunfig.toml /app/tsconfig.json ./
-COPY --from=build /app/apps ./apps
-COPY --from=build /app/packages ./packages
+COPY bunfig.toml tsconfig.json ./
+COPY apps/core apps/core
+COPY apps/tool-bridge apps/tool-bridge
+COPY packages/agent packages/agent
+COPY packages/bash-safety packages/bash-safety
+COPY packages/blob-storage packages/blob-storage
+COPY packages/claude-code-bridge packages/claude-code-bridge
+COPY packages/coding-tools packages/coding-tools
+COPY packages/event-bus packages/event-bus
+COPY packages/fs packages/fs
+COPY packages/plugin-runtime packages/plugin-runtime
+COPY packages/remote-fs-runner packages/remote-fs-runner
+COPY packages/tool-results packages/tool-results
+COPY packages/utils packages/utils
+COPY --from=native-launcher /build/tools /app/apps/tool-bridge/dist/tools
+COPY --from=tool-worker /app/apps/tool-bridge/dist/ /app/apps/tool-bridge/dist/
+COPY --from=remote-runner /app/apps/core/src/ssh/remote-js/remote-runner.cjs /app/apps/core/src/ssh/remote-js/
+COPY --from=remote-fs-runner /app/packages/remote-fs-runner/dist/ /app/packages/remote-fs-runner/dist/
 
 # Keep the launcher and resident worker outside the lilac-writable application build tree.
-COPY --from=build --chmod=0755 /app/apps/tool-bridge/dist/tools /usr/local/bin/tools
-COPY --from=build --chmod=0755 /app/apps/tool-bridge/dist/tools-worker /usr/local/bin/tools-worker
-COPY --from=build --chmod=0644 /app/apps/tool-bridge/dist/tools-build-id /usr/local/bin/tools-build-id
+COPY --from=native-launcher --chmod=0755 /build/tools /usr/local/bin/tools
+COPY --from=tool-worker --chmod=0755 /app/apps/tool-bridge/dist/tools-worker /usr/local/bin/tools-worker
+COPY --from=tool-worker --chmod=0644 /app/apps/tool-bridge/dist/tools-build-id /usr/local/bin/tools-build-id
 RUN ln -s /app/build/build-info.json /usr/local/bin/tools-build-info.json \
   && ln -s /app/build/build-info.json /app/apps/tool-bridge/dist/tools-build-info.json
 
