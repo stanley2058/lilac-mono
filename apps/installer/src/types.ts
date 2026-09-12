@@ -32,4 +32,5 @@ export type SetupDraft = {
   stagingDir: string;
   readExistingFile(relativePath: string): Promise<string | undefined>;
   computerEnabled: boolean;
+  computerConfigured?: boolean;
 };

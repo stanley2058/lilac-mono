@@ -174,7 +174,7 @@ async function configureInstallation(
     }
 
     yield* validateConfigDocument(loaded.document);
-    yield* validateDeploymentInputs(draft, images);
+    yield* validateDeploymentInputs(draft, images, existing);
     const deployment = createDeployment(
       root,
       draft,

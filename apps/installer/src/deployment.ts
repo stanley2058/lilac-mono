@@ -33,7 +33,49 @@ const referenceSchema = z
   .min(1)
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$/);
 
-export function validateDeploymentInputs(draft: SetupDraft, images: ImageReferences) {
+const serviceNetworkingSchema = z.object({ network_mode: z.string().nullable().optional() });
+const computerNetworkingSchema = z.object({
+  services: z.object({
+    lilac: serviceNetworkingSchema,
+    "computer-use-gateway": serviceNetworkingSchema.optional(),
+  }),
+});
+
+function validateComputerNetworking(
+  draft: SetupDraft,
+  existing?: Document,
+): Result<void, InstallerDeploymentFailed> {
+  if (!draft.computerConfigured || !existing) return Result.ok(undefined);
+  const invalidNetworking = () =>
+    new InstallerDeploymentFailed({
+      message:
+        "Could not read computer-use networking from compose.yaml. Repair its service definitions before configuring computer use.",
+    });
+  return Result.gen(function* () {
+    const source = yield* Result.try({
+      try: (): unknown =>
+        parseDocument(existing.toString(), { merge: true }).toJS({ maxAliasCount: 100 }),
+      catch: invalidNetworking,
+    });
+    const parsed = computerNetworkingSchema.safeParse(source);
+    if (!parsed.success) return Result.err(invalidNetworking());
+    for (const [service, definition] of Object.entries(parsed.data.services)) {
+      if (definition?.network_mode === undefined) continue;
+      return Result.err(
+        new InstallerDeploymentFailed({
+          message: `Guided computer-use setup requires Compose networks, but services.${service}.network_mode is set. Remove network_mode and use Compose networks for Core and the gateway, or rerun setup and skip computer use to preserve your existing configuration.`,
+        }),
+      );
+    }
+    return Result.ok(undefined);
+  });
+}
+
+export function validateDeploymentInputs(
+  draft: SetupDraft,
+  images: ImageReferences,
+  existing?: Document,
+): Result<void, InstallerDeploymentFailed> {
   for (const image of Object.values(images)) {
     if (!referenceSchema.safeParse(image).success)
       return Result.err(
@@ -65,7 +107,7 @@ export function validateDeploymentInputs(draft: SetupDraft, images: ImageReferen
       );
     }
   }
-  return Result.ok(undefined);
+  return validateComputerNetworking(draft, existing);
 }
 
 export function resolveImages(existing?: Document): ImageReferences {

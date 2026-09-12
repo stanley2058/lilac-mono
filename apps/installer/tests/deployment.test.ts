@@ -83,6 +83,57 @@ describe("installer deployment", () => {
     expect(parseDeployment("services:\n  unrelated:\n    image: example\n").isErr()).toBe(true);
   });
 
+  for (const service of ["lilac", "computer-use-gateway"]) {
+    for (const mode of ["host", "none", "service:network-helper", "container:custom-container"]) {
+      it(`rejects guided computer setup with ${service} network_mode ${mode}`, () => {
+        const existing = parseDocument("services:\n  lilac:\n    image: existing-core\n");
+        existing.setIn(["services", service, "network_mode"], mode);
+        const original = existing.toString();
+        const state = draft();
+        state.computerEnabled = true;
+        state.computerConfigured = true;
+        const result = validateDeploymentInputs(state, images, existing);
+        expect(result.isErr()).toBe(true);
+        const message = result.match({
+          ok: () => "unexpected success",
+          err: (error) => error.message,
+        });
+        expect(message).toContain(`services.${service}.network_mode`);
+        expect(message).toContain("skip computer use");
+        expect(existing.toString()).toBe(original);
+        state.computerConfigured = false;
+        expect(validateDeploymentInputs(state, images, existing).isOk()).toBe(true);
+        expect(existing.toString()).toBe(original);
+      });
+    }
+  }
+
+  it.each([
+    "x-network: &network\n  network_mode: host\nservices:\n  lilac:\n    <<: *network\n    image: existing-core\n",
+    "x-gateway: &gateway\n  image: existing-gateway\n  network_mode: none\nservices:\n  lilac:\n    image: existing-core\n  computer-use-gateway: *gateway\n",
+  ])("validates effective networking inherited through YAML aliases and merges", (source) => {
+    const state = draft();
+    state.computerEnabled = true;
+    state.computerConfigured = true;
+    const existing = parseDocument(source);
+    const original = existing.toString();
+    expect(validateDeploymentInputs(state, images, existing).isErr()).toBe(true);
+    expect(existing.toString()).toBe(original);
+  });
+
+  it("accepts guided computer setup on default and named Compose networks", () => {
+    const state = draft();
+    state.computerEnabled = true;
+    state.computerConfigured = true;
+    expect(validateDeploymentInputs(state, images).isOk()).toBe(true);
+    const existing = parseDocument(
+      "services:\n  lilac:\n    image: existing-core\n    networks: [agents]\nnetworks:\n  agents: {}\n",
+    );
+    expect(validateDeploymentInputs(state, images, existing).isOk()).toBe(true);
+    const updated = createDeployment("/example/instance", state, images, existing);
+    expect(updated.toJS().services["computer-use-gateway"].networks).toEqual(["agents"]);
+  });
+
   it("keeps existing image and credentials readable when private data preparation fails", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "installer-failed-update-"));
     const previousCompose = "services:\n  lilac:\n    image: registry.example/previous:release\n";

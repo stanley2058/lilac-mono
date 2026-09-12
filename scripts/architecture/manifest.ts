@@ -473,6 +473,7 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
       ...[
         "parseDeployment",
         "validateDeploymentInputs",
+        "validateComputerNetworking",
         "writeInstallation",
         "startDeployment",
         "clearStaging",
@@ -1153,10 +1154,12 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
           category: "request" as const,
         }),
       ),
-      ...["validateDeploymentInputs", "startDeployment"].map((exportName) => ({
-        identity: { module: "src/deployment.ts", exportName },
-        category: "request" as const,
-      })),
+      ...["validateDeploymentInputs", "validateComputerNetworking", "startDeployment"].map(
+        (exportName) => ({
+          identity: { module: "src/deployment.ts", exportName },
+          category: "request" as const,
+        }),
+      ),
       ...[
         "cloneDeploymentAlias",
         "detachDeploymentAliases",

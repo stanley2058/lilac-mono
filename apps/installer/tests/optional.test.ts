@@ -89,6 +89,7 @@ describe("optional installer setup", () => {
     expect(draft.secrets).toEqual({ EXA_API_KEY: "saved-test-key" });
     expect(draft.files).toEqual([]);
     expect(draft.computerEnabled).toBe(true);
+    expect(draft.computerConfigured).not.toBe(true);
     expect(draft.configuredEnvironmentKeys?.size).toBe(0);
     ui.assertComplete();
   });
@@ -107,6 +108,7 @@ describe("optional installer setup", () => {
     expect(draft.configuredEnvironmentKeys?.size).toBe(0);
     expect(draft.files).toEqual([]);
     expect(draft.computerEnabled).toBe(true);
+    expect(draft.computerConfigured).not.toBe(true);
     ui.assertComplete();
   });
 
@@ -137,6 +139,7 @@ describe("optional installer setup", () => {
       "PORT_RANGE_START",
       "RENDERED_HOST",
     ]);
+    expect(draft.computerConfigured).toBe(true);
     expect(draft.secrets.MCP_BEARER_SECRET).toBe("existing-test-secret");
     ui.assertComplete();
   });
@@ -153,6 +156,7 @@ describe("optional installer setup", () => {
     ]);
     await configureOptional(ui.prompt, draft);
     expect([...(draft.configuredEnvironmentKeys ?? [])]).toEqual(["MCP_BEARER_SECRET"]);
+    expect(draft.computerConfigured).toBe(true);
     ui.assertComplete();
   });
 

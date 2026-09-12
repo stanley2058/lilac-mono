@@ -119,6 +119,7 @@ export async function configureComputerUse(prompt: Prompt, draft: SetupDraft): P
   });
   setSetupSecret(draft, "MCP_BEARER_SECRET", secret);
   draft.computerEnabled = true;
+  draft.computerConfigured = true;
   prompt.note(
     "Computer use is selected. The gateway and desktop images will be pulled after review.",
   );
