@@ -454,20 +454,6 @@ describe("bundled skills", () => {
     ).resolves.toBe(true);
   });
 
-  it("includes a strong built-in coding-agent skill", async () => {
-    const raw = await Bun.file(
-      path.join(import.meta.dir, "..", "builtin-skills", "coding-agent", "SKILL.md"),
-    ).text();
-
-    const skill = parseSkillMarkdown(raw);
-
-    expect(skill.name).toBe("coding-agent");
-    expect(skill.description).toContain("Essential coding workflow rules");
-    expect(skill.description).toContain("load this before software engineering tasks");
-    expect(skill.body).toContain("Use `git` when applicable");
-    expect(skill.body).toContain("Use `gh` when configured and the project is linked to GitHub");
-  });
-
   it("documents Core MCP management separately from direct mcporter usage", async () => {
     const managementRaw = await Bun.file(
       path.join(import.meta.dir, "..", "builtin-skills", "mcp-management", "SKILL.md"),

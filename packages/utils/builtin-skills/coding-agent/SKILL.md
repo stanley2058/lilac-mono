@@ -1,62 +1,52 @@
 ---
 name: coding-agent
-description: Essential coding workflow rules for agents doing code changes, reviews, git work, commits, PRs, or GitHub issue work; load this before software engineering tasks.
+description: Use for repository implementation, debugging, code review, and Git/GitHub work.
 ---
 
-# coding-agent
+# Coding agent
 
-Use this skill before software engineering work: implementing changes, debugging, refactoring, reviewing code, working with tests, using git, creating commits, or interacting with GitHub issues and pull requests.
+Carry the requested engineering work through to completion. For analysis,
+planning, or review requests, deliver that result without starting implementation.
 
-## Working Style
+## Project context
 
-- Build context from the repository before deciding on a fix.
-- Prefer small, correct changes over broad rewrites.
-- Follow the existing architecture, naming, formatting, and testing patterns in the files you touch.
-- Ask only when blocked by missing requirements, ambiguity that changes behavior, or an irreversible action.
-- If the user asks for a review, prioritize bugs, regressions, missing tests, and risks. Put findings first, ordered by severity, with file and line references when possible.
+The auto-injected skill catalog uses Core's workspace for project discovery;
+it does not track the target project. From the target project's root, use
+`tools skills.list` to discover skills; search with `--query=<text>` if results
+reach the list limit. Read and follow applicable skills with
+`tools skills.read <name>` from that same directory. Repeat discovery when
+moving to another project.
 
-## Codebase Style
+Follow applicable repository instructions. Read code and supporting docs
+as the task requires.
 
-- Treat repository instructions such as `AGENTS.md`, package docs, and nearby code as authoritative.
-- Read relevant local instructions before editing when they apply to files you touch.
-- Do not introduce new dependencies, exported names, compatibility layers, or large abstractions unless the task needs them.
-- Preserve user or other-agent work in the same tree. Never revert unrelated changes.
-- Avoid comments unless they clarify non-obvious logic.
+## Execution
 
-## Git And GitHub
+Resolve routine choices from the request and repository. Continue authorized
+work under Lilac's action policy. Ask when a missing answer changes behavior,
+scope, or authority; continue independent work while waiting.
 
-- Use `git` when applicable for repository status, diffs, history, branches, and commits.
-- Use `gh` when configured and the project is linked to GitHub.
-- Use `gh` directly for GitHub issues, pull requests, comments, checks, releases, and repository metadata.
-- Treat configured GitHub authentication as the agent's outbound identity.
-- If `gh` is unavailable, unauthenticated, or the repository is not linked to GitHub, state that limitation and continue with local `git` and code work where possible.
-- Do not use destructive git commands, force pushes, stash, reset hard, or branch switching unless explicitly requested.
+Preserve unrelated changes, including within files you edit. Keep the change
+within the requested scope.
 
-## Commits
+Implementation is complete when the requested behavior works, appropriate
+and repository-required checks pass, and failures caused by the change are
+fixed. If blocked, state what remains and why.
 
-- Never commit unless the user explicitly asks.
-- Before committing, inspect current changes and recent commit history so the commit matches the repository style.
-- Stage only files changed for the current task unless the user says to commit everything.
-- Do not include secrets, credentials, or unrelated generated files.
-- If a commit is tied to a GitHub issue, include the repository's preferred closing syntax only when the relationship is clear.
-- If commit hooks modify files, inspect the result and include only relevant follow-up changes.
+Add tests when they establish behavior or catch a regression. Once appropriate
+checks pass, expand verification only for further changes or unresolved risks.
 
-## Pull Requests
+## Git and GitHub
 
-- Before creating a PR, understand the full branch diff and commit history since the base branch.
-- Use the repository's PR template when present.
-- Write PR titles and summaries around user-visible intent and risk, not just file-level changes.
-- Return the PR URL after creation.
+Use configured `gh` for GitHub work. Commit only when explicitly requested.
+Inspect the diff and repository conventions before committing; include only
+task changes. For PRs, inspect the full branch diff and follow the template
+when present.
 
-## Verification
+## Results
 
-- Run the most relevant tests, typechecks, builds, linters, or formatters for the changed surface.
-- Prefer targeted validation first, then broader checks when the change can affect shared behavior.
-- If a required check cannot run, report the exact command and blocker.
-- Do not claim a check passed unless it was run successfully in the current worktree.
+Lead with the outcome and verification evidence. Report checks actually run,
+their results, and material blockers.
 
-## Safety
-
-- Keep private data private. Do not print secrets.
-- Do not publish, release, send external messages, or mutate remote state unless the task clearly requests it.
-- Stop and ask if the next action is destructive, irreversible, or would affect unrelated work.
+For reviews, lead with actionable findings ordered by severity, with file
+references and consequences. State when no findings were found.
