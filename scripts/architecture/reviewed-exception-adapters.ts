@@ -3,6 +3,14 @@ import type { ExceptionAdapter } from "./manifest.ts";
 export const REVIEWED_EXCEPTION_ADAPTERS: Readonly<Record<string, readonly ExceptionAdapter[]>> = {
   "apps/installer": [
     {
+      identity: { module: "src/prompt.ts", exportName: "resolvePromptValue" },
+      category: "compatibility",
+      externalApi: { package: "@clack/prompts", exportName: "isCancel" },
+      direction: "signal-host",
+      reason:
+        "Translates Clack's cancellation sentinel to AbortError so the installer unwinds through terminal and staging cleanup before returning exit status 130.",
+    },
+    {
       identity: { module: "src/failure.ts", exportName: "withInstallerCleanup" },
       category: "compatibility",
       externalApi: { package: "global", exportName: "Promise rejection" },

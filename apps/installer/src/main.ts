@@ -2,6 +2,7 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Result } from "better-result";
+import { cancel, intro, log, outro } from "@clack/prompts";
 import { checkMachine } from "./system";
 import { installerVersion, installerCommit, clearStaging } from "./deployment";
 import { runInstallerHost, withInstallerCleanup } from "./failure";
@@ -16,10 +17,18 @@ async function runStagedWizard(
   const compiled = !["bun", "bun.exe"].includes(path.basename(process.execPath));
   const result = await runWizard(stagingDir, compiled);
   const outcome = result.match({
-    ok: () => ({ code: 0, message: "" }),
-    err: (error) => ({ code: error.cancelled ? 130 : 1, message: error.message }),
+    ok: (value) => ({ code: 0, message: "", installed: value.installed }),
+    err: (error) => ({
+      code: error.cancelled ? 130 : 1,
+      message: error.message,
+      installed: false,
+    }),
   });
-  if (outcome.message) process.stderr.write(`${outcome.message}\n`);
+  if (outcome.message) {
+    cancel(outcome.message, { output: process.stderr });
+    return outcome.code;
+  }
+  outro(outcome.installed ? "Setup complete." : "Setup cancelled.");
   return outcome.code;
 }
 
@@ -44,7 +53,8 @@ async function main(): Promise<number> {
     process.stderr.write("Unknown option. Run lilac --help.\n");
     return 2;
   }
-  process.stdout.write(`\nLilac setup · ${installerVersion}\n\nChecking this machine…\n`);
+  intro(`Lilac setup · ${installerVersion}`);
+  log.step("Checking this machine…");
   const machine = (await checkMachine()).match({
     ok: () => ({ ready: true, message: "" }),
     err: (error) => ({ ready: false, message: error.message }),
@@ -59,7 +69,7 @@ async function main(): Promise<number> {
     );
     return 1;
   }
-  process.stdout.write("Docker and Compose are ready.\n");
+  log.success("Docker and Compose are ready.");
   const staged = await Result.tryPromise({
     try: () => mkdtemp(path.join(tmpdir(), "lilac-setup-")),
     catch: () => "Cannot create a temporary setup directory.",

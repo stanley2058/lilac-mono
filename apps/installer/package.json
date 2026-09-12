@@ -8,6 +8,7 @@
     "build": "bun build.ts"
   },
   "dependencies": {
+    "@clack/prompts": "1.7.0",
     "@stanley2058/lilac-utils": "workspace:*",
     "better-result": "catalog:",
     "yaml": "2.9.0",

@@ -6,7 +6,7 @@ export function captureInstallerException(cause: unknown): Error {
 
 export function isInstallerCancellation(error: Error): boolean {
   if (error.name === "AbortError") return true;
-  // Result.gen wraps a rejected readline question in Panic before setup can handle cancellation.
+  // Result.gen wraps prompt cancellation in Panic before setup can handle it.
   if (Panic.is(error) && error.message === "generator body threw" && error.cause instanceof Error) {
     return isInstallerCancellation(error.cause);
   }

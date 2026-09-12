@@ -28,6 +28,10 @@ The script resolves one published release, downloads the binary for your machine
 SHA-256 checksum. Interactive input comes from the terminal, so the piped shell script does not consume
 your prompt responses.
 
+Use the arrow keys to navigate menus and Enter to select. Press Escape or Ctrl+C to cancel.
+Text fields show editable defaults. Credentials are masked; when updating an existing credential,
+press Enter without typing to keep it.
+
 Setup follows this sequence:
 
 1. Check Docker and Compose.

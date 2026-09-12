@@ -94,7 +94,7 @@ describe("installer failure boundaries", () => {
     expect(outcome.match({ ok: () => undefined, err: (error) => error })).toBe(failure);
   });
 
-  it("recognizes readline cancellation wrapped by the installed Result.gen", async () => {
+  it("recognizes prompt cancellation wrapped by the installed Result.gen", async () => {
     const aborted = await Result.tryPromise({
       try: () =>
         Result.gen(async function* () {
