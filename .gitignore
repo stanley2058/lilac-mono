@@ -3,6 +3,7 @@ node_modules
 
 # output
 out
+apps/installer/dist/
 *.tgz
 packages/remote-fs-runner/dist/cli.js
 
@@ -21,6 +22,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .env.test.local
 .env.production.local
 .env.local
+secrets.env
 
 # caches
 .eslintcache

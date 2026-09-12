@@ -1,6 +1,24 @@
 import type { ExceptionAdapter } from "./manifest.ts";
 
 export const REVIEWED_EXCEPTION_ADAPTERS: Readonly<Record<string, readonly ExceptionAdapter[]>> = {
+  "apps/installer": [
+    {
+      identity: { module: "src/failure.ts", exportName: "withInstallerCleanup" },
+      category: "compatibility",
+      externalApi: { package: "global", exportName: "Promise rejection" },
+      direction: "signal-host",
+      reason:
+        "Preserves operation or cleanup failure identity after cleanup has settled, with Panic taking precedence over cancellation.",
+    },
+    {
+      identity: { module: "src/wizard.ts", exportName: "runWizard" },
+      category: "compatibility",
+      externalApi: { package: "global", exportName: "Promise rejection" },
+      direction: "signal-host",
+      reason:
+        "Forwards unexpected setup defects to the sanitized installer host after closing the terminal, while returning recognized cancellation as an exit result.",
+    },
+  ],
   "apps/core": [
     {
       identity: {

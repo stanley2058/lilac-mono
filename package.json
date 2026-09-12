@@ -48,7 +48,10 @@
     "ci": "bun run codegen:model-options:check && bun run lint && bun run test:ci && bun run typecheck && bun run fmt:check && echo 'check passed'",
     "docker:build:computer-use": "docker build -t lilac-computer:local packages/computer-use-runner && docker build -t lilac-computer-gateway:local -f apps/computer-use-gateway/Dockerfile .",
     "test:computer-use": "bun run --filter='@stanley2058/lilac-computer-use-gateway' --filter='@stanley2058/lilac-computer-use-runner' test",
-    "test:computer-use:docker": "LILAC_COMPUTER_DOCKER_TEST=1 bun run --filter='@stanley2058/lilac-computer-use-gateway' test"
+    "test:computer-use:docker": "LILAC_COMPUTER_DOCKER_TEST=1 bun run --filter='@stanley2058/lilac-computer-use-gateway' test",
+    "build:installer": "bun apps/installer/build.ts",
+    "test:installer": "bun run --filter=@stanley2058/lilac-installer test",
+    "typecheck:installer": "bunx tsc -p apps/installer/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.75.0",

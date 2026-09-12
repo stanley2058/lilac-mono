@@ -356,6 +356,7 @@ export const ACTIVE_WORKSPACES = [
   ["apps/computer-use-gateway", "@stanley2058/lilac-computer-use-gateway"],
   ["packages/computer-use-runner", "@stanley2058/lilac-computer-use-runner"],
   ["apps/core", "@stanley2058/lilac-core"],
+  ["apps/installer", "@stanley2058/lilac-installer"],
   ["apps/tool-bridge", "@stanley2058/lilac-tool-bridge"],
   ["packages/agent", "@stanley2058/lilac-agent"],
   ["packages/bash-safety", "@stanley2058/lilac-bash-safety"],
@@ -444,6 +445,40 @@ export const BLOB_STORAGE_ARCHITECTURE_POLICY = {
 export type ActiveWorkspaceRoot = (typeof ACTIVE_WORKSPACES)[number][0];
 
 const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[]>([
+  [
+    "apps/installer",
+    [
+      ...["validateConfigDocument", "parseConfigDocument", "readConfigDocument"].map(
+        (exportName) => ({
+          module: "src/config-document.ts",
+          exportName,
+        }),
+      ),
+      ...["readExistingCodexLogin", "validateProvider"].map((exportName) => ({
+        module: "src/providers.ts",
+        exportName,
+      })),
+      { module: "src/discord.ts", exportName: "requestDiscord" },
+      ...["runDataHelper", "readDataFileResult", "readSetupFiles", "writeDataFiles"].map(
+        (exportName) => ({
+          module: "src/data-files.ts",
+          exportName,
+        }),
+      ),
+      ...["command", "checkMachine"].map((exportName) => ({ module: "src/system.ts", exportName })),
+      ...[
+        "parseDeployment",
+        "validateDeploymentInputs",
+        "writeInstallation",
+        "startDeployment",
+        "clearStaging",
+      ].map((exportName) => ({ module: "src/deployment.ts", exportName })),
+      ...["runWizard", "configureInstallation"].map((exportName) => ({
+        module: "src/wizard.ts",
+        exportName,
+      })),
+    ],
+  ],
   [
     "packages/blob-storage",
     [
@@ -763,7 +798,8 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         exportName: "startCodexOAuthLogin.exchangeResult",
       },
       { module: "core-config.ts", exportName: "decodeCoreConfigYaml" },
-      { module: "core-config.ts", exportName: "readCoreConfigVersionResult" },
+      { module: "core-config/parse.ts", exportName: "readCoreConfigVersionResult" },
+      { module: "core-config/parse.ts", exportName: "parseCoreConfigResult" },
       { module: "core-config.ts", exportName: "parseCoreConfigResult" },
       { module: "core-config.ts", exportName: "resolveDiscordTokenResult" },
       { module: "core-config/v1.ts", exportName: "decodeCoreConfigV1" },
@@ -1078,6 +1114,47 @@ const CORE_TOOL_SERVER_BOUNDARY_DECODERS = [
 ] as const satisfies readonly BoundaryDecoder[];
 
 const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>([
+  [
+    "apps/installer",
+    [
+      ...[
+        "validateConfigDocument",
+        "parseConfigDocument",
+        "readConfigDocument",
+        "getConfigValue",
+        "expandMergedParent",
+      ].map((exportName) => ({
+        identity: { module: "src/config-document.ts", exportName },
+        category: "request" as const,
+      })),
+      ...["captureInstallerException", "isInstallerCancellation"].map((exportName) => ({
+        identity: { module: "src/failure.ts", exportName },
+        category: "projection" as const,
+      })),
+      ...["validateProvider", "existingModel"].map((exportName) => ({
+        identity: { module: "src/providers.ts", exportName },
+        category: "request" as const,
+      })),
+      ...["requestDiscord", "stringList"].map((exportName) => ({
+        identity: { module: "src/discord.ts", exportName },
+        category: "wire" as const,
+      })),
+      {
+        identity: { module: "src/optional-github.ts", exportName: "readSavedJson" },
+        category: "persistence",
+      },
+      ...["configuredWebProviders", "orderWebProviders", "configureConversationThreads"].map(
+        (exportName) => ({
+          identity: { module: "src/optional.ts", exportName },
+          category: "request" as const,
+        }),
+      ),
+      ...["validateDeploymentInputs", "startDeployment"].map((exportName) => ({
+        identity: { module: "src/deployment.ts", exportName },
+        category: "request" as const,
+      })),
+    ],
+  ],
   [
     "apps/tool-bridge",
     [
@@ -1994,16 +2071,16 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "codex-oauth.ts", exportName },
         category: "projection" as const,
       })),
-      ...[
-        "readCoreConfigVersionResult",
-        "readCoreConfigVersion",
-        "parseCoreConfigResult",
-        "parseCoreConfig",
-        "getCoreConfig",
-      ].map((exportName) => ({
-        identity: { module: "core-config.ts", exportName },
+      ...["readCoreConfigVersionResult", "parseCoreConfigResult"].map((exportName) => ({
+        identity: { module: "core-config/parse.ts", exportName },
         category: "request" as const,
       })),
+      ...["readCoreConfigVersion", "parseCoreConfigResult", "parseCoreConfig", "getCoreConfig"].map(
+        (exportName) => ({
+          identity: { module: "core-config.ts", exportName },
+          category: "request" as const,
+        }),
+      ),
       {
         identity: {
           module: "core-config.ts",
@@ -2714,6 +2791,11 @@ const UTILS_CODEX_TOKENS_PERSISTED_CONSUMER = {
   codecs: [UTILS_CODEX_TOKENS_PERSISTED_CODEC.identity],
 } as const satisfies PersistedStoreConsumerRegistration;
 
+const INSTALLER_CODEX_TOKENS_PERSISTED_CONSUMER = {
+  identity: { module: "src/providers.ts", exportName: "readExistingCodexLogin" },
+  codecs: [{ package: "@stanley2058/lilac-utils", ...UTILS_CODEX_TOKENS_PERSISTED_CODEC.identity }],
+} as const satisfies PersistedStoreConsumerRegistration;
+
 const WAVE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[]>([
   [
     "apps/tool-bridge",
@@ -3342,53 +3424,55 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
     ].map((include) => ({ include })),
     "architecture/unknown-free-module": [],
     "architecture/persisted-codec-contract":
-      root === "packages/tool-results"
-        ? [
-            {
-              include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity.module,
-            },
-            {
-              include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CONSUMER.identity.module,
-            },
-          ]
-        : root === "apps/core"
+      root === "apps/installer"
+        ? [{ include: INSTALLER_CODEX_TOKENS_PERSISTED_CONSUMER.identity.module }]
+        : root === "packages/tool-results"
           ? [
               {
-                include: "src/conversation/thread-summary-persistence-codec.ts",
-              },
-              { include: "src/conversation/thread-store.ts" },
-              { include: "src/transcript/transcript-persistence-codec.ts" },
-              { include: "src/transcript/transcript-store.ts" },
-              { include: CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER.identity.module },
-              { include: "src/surface/bridge/agent-run-journal/index.ts" },
-              { include: "src/migration/frozen-graceful-restart-store.ts" },
-              {
-                include: "src/workflow/workflow-artifact-persistence-codec.ts",
-              },
-              { include: "src/workflow/workflow-persistence-codec.ts" },
-              { include: "src/workflow/workflow-artifact-store.ts" },
-              { include: "src/workflow/durable-workflow-store.ts" },
-              {
-                include: "scripts/legacy-graceful-restart-blob-migration.ts",
-              },
-              { include: "scripts/legacy-workflow-blob-migration.ts" },
-              {
-                include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC.identity.module,
+                include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CODEC.identity.module,
               },
               {
-                include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER.identity.module,
+                include: BLOB_TOOL_RESULT_ARTIFACT_METADATA_CONSUMER.identity.module,
               },
             ]
-          : root === "packages/utils"
+          : root === "apps/core"
             ? [
                 {
-                  include: UTILS_CODEX_TOKENS_PERSISTED_CODEC.identity.module,
+                  include: "src/conversation/thread-summary-persistence-codec.ts",
+                },
+                { include: "src/conversation/thread-store.ts" },
+                { include: "src/transcript/transcript-persistence-codec.ts" },
+                { include: "src/transcript/transcript-store.ts" },
+                { include: CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER.identity.module },
+                { include: "src/surface/bridge/agent-run-journal/index.ts" },
+                { include: "src/migration/frozen-graceful-restart-store.ts" },
+                {
+                  include: "src/workflow/workflow-artifact-persistence-codec.ts",
+                },
+                { include: "src/workflow/workflow-persistence-codec.ts" },
+                { include: "src/workflow/workflow-artifact-store.ts" },
+                { include: "src/workflow/durable-workflow-store.ts" },
+                {
+                  include: "scripts/legacy-graceful-restart-blob-migration.ts",
+                },
+                { include: "scripts/legacy-workflow-blob-migration.ts" },
+                {
+                  include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC.identity.module,
                 },
                 {
-                  include: UTILS_CODEX_TOKENS_PERSISTED_CONSUMER.identity.module,
+                  include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER.identity.module,
                 },
               ]
-            : [],
+            : root === "packages/utils"
+              ? [
+                  {
+                    include: UTILS_CODEX_TOKENS_PERSISTED_CODEC.identity.module,
+                  },
+                  {
+                    include: UTILS_CODEX_TOKENS_PERSISTED_CONSUMER.identity.module,
+                  },
+                ]
+              : [],
     "architecture/persisted-codec-fixture-catalog":
       root === "packages/tool-results"
         ? [
@@ -3478,27 +3562,29 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               ]
             : [],
     persistedStoreConsumers:
-      root === "packages/tool-results"
-        ? [BLOB_TOOL_RESULT_ARTIFACT_METADATA_CONSUMER]
-        : root === "packages/utils"
-          ? [UTILS_CODEX_TOKENS_PERSISTED_CONSUMER]
-          : root === "apps/core"
-            ? [
-                ...CORE_THREAD_PERSISTED_CONSUMERS,
-                ...CORE_TRANSCRIPT_PERSISTED_CONSUMERS,
-                CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER,
-                CORE_RESOURCE_PERSISTED_CONSUMER,
-                CORE_AGENT_RUN_JOURNAL_PERSISTED_CONSUMER,
-                CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER,
-                CORE_AGENT_RUN_PREVIOUS_CHECKPOINT_PERSISTED_CONSUMER,
-                ...CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS,
-                CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER,
-                CORE_WORKFLOW_ARTIFACT_PERSISTED_CONSUMER,
-                CORE_LEGACY_WORKFLOW_BLOB_MIGRATION_PERSISTED_CONSUMER,
-                CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER,
-                ...CORE_WORKFLOW_ROW_PERSISTED_CONSUMERS,
-              ]
-            : [],
+      root === "apps/installer"
+        ? [INSTALLER_CODEX_TOKENS_PERSISTED_CONSUMER]
+        : root === "packages/tool-results"
+          ? [BLOB_TOOL_RESULT_ARTIFACT_METADATA_CONSUMER]
+          : root === "packages/utils"
+            ? [UTILS_CODEX_TOKENS_PERSISTED_CONSUMER]
+            : root === "apps/core"
+              ? [
+                  ...CORE_THREAD_PERSISTED_CONSUMERS,
+                  ...CORE_TRANSCRIPT_PERSISTED_CONSUMERS,
+                  CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER,
+                  CORE_RESOURCE_PERSISTED_CONSUMER,
+                  CORE_AGENT_RUN_JOURNAL_PERSISTED_CONSUMER,
+                  CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER,
+                  CORE_AGENT_RUN_PREVIOUS_CHECKPOINT_PERSISTED_CONSUMER,
+                  ...CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS,
+                  CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER,
+                  CORE_WORKFLOW_ARTIFACT_PERSISTED_CONSUMER,
+                  CORE_LEGACY_WORKFLOW_BLOB_MIGRATION_PERSISTED_CONSUMER,
+                  CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER,
+                  ...CORE_WORKFLOW_ROW_PERSISTED_CONSUMERS,
+                ]
+              : [],
     sqliteTransactionAdapters:
       root === "packages/utils"
         ? [
@@ -4729,7 +4815,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "a31e7b6b4e1bb9ecfeeee89a6aa7e3128ade2df183407adb18289e50e823701a";
+  "491d45e093d7a3706d167da2ec7fb8ddc8e58cf7bb938cb35978f3ed3952fc4e";
 
 export const architectureManifest = {
   version: 1,

@@ -80,6 +80,16 @@
         "typescript": "^7.0.2",
       },
     },
+    "apps/installer": {
+      "name": "@stanley2058/lilac-installer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@stanley2058/lilac-utils": "workspace:*",
+        "better-result": "catalog:",
+        "yaml": "2.9.0",
+        "zod": "^4.3.6",
+      },
+    },
     "apps/tool-bridge": {
       "name": "@stanley2058/lilac-tool-bridge",
       "version": "0.0.1",
@@ -560,6 +570,8 @@
     "@stanley2058/lilac-event-bus": ["@stanley2058/lilac-event-bus@workspace:packages/event-bus"],
 
     "@stanley2058/lilac-fs": ["@stanley2058/lilac-fs@workspace:packages/fs"],
+
+    "@stanley2058/lilac-installer": ["@stanley2058/lilac-installer@workspace:apps/installer"],
 
     "@stanley2058/lilac-plugin-runtime": ["@stanley2058/lilac-plugin-runtime@workspace:packages/plugin-runtime"],
 
