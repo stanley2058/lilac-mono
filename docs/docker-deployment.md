@@ -1,5 +1,8 @@
 # Docker Deployment
 
+For a guided installation using published images, see [the installation guide](installation.md).
+The commands below describe source builds and manual container operation.
+
 Lilac runs `tini` as container PID 1 to reap orphaned children and forward signals. Its child is the root entrypoint, which performs startup setup and then replaces itself with Core as the unprivileged `lilac` user. The image does not run systemd, a user manager, or Bubblewrap, and it does not require writable cgroups, user namespaces, privileged mode, or unconfined security profiles. Core and its children write directly to the container's stdout and stderr.
 
 ## Start And Verify

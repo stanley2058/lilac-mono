@@ -10,7 +10,21 @@ Architecture and ownership are documented in [`PROJECT.md`](PROJECT.md). Reposit
 
 ## Install
 
-This is one Bun workspace. Install once from the repository root:
+Install Docker with Compose 2.30 or newer, open a terminal in the directory where you want to keep
+Lilac, and run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/stanley2058/lilac-mono/main/install.sh | bash
+```
+
+The installer checks your machine, downloads a standalone CLI, and guides you through model-provider
+authentication and Discord setup. Optional integrations can wait. Review the generated configuration
+before it pulls the published images and starts Lilac with Redis.
+
+See the [installation guide](docs/installation.md) for supported systems, configuration updates,
+reinstalls, and release overrides. Published images run Core as UID `1000`.
+
+For source development, this is one Bun workspace. Install once from the repository root:
 
 ```sh
 bun install
@@ -71,6 +85,7 @@ bun run fmt:check
 - [`plan/README.md`](plan/README.md): active implementation plans
 - [`MIGRATIONS.md`](MIGRATIONS.md): persisted-data, wire, and protocol migrations
 - [`docs/docker-deployment.md`](docs/docker-deployment.md): container deployment and diagnostics
+- [`docs/installation.md`](docs/installation.md): guided installation, updates, and scheduled releases
 - [`docs/claude-code.md`](docs/claude-code.md): Claude Code authentication, tools, continuation, and storage
 - [`docs/skill-authoring.md`](docs/skill-authoring.md): skill format, discovery, and authoring guidance
 - [`PLUGIN_AUTHORING.md`](PLUGIN_AUTHORING.md): Core tool plugin contract

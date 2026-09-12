@@ -1,0 +1,298 @@
+name: Scheduled release
+
+on:
+  schedule:
+    - cron: "17 */12 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: scheduled-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-info:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.info.outputs.version }}
+      owner: ${{ steps.info.outputs.owner }}
+    steps:
+      - name: Select one release identity
+        id: info
+        shell: bash
+        run: |
+          echo "version=build-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+  images:
+    needs: release-info
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [lilac-mono, lilac-computer-gateway, lilac-computer]
+        include:
+          - image: lilac-mono
+            context: .
+            dockerfile: Dockerfile
+          - image: lilac-computer-gateway
+            context: .
+            dockerfile: apps/computer-use-gateway/Dockerfile
+          - image: lilac-computer
+            context: packages/computer-use-runner
+            dockerfile: packages/computer-use-runner/Dockerfile
+        architecture: [amd64, arm64]
+    runs-on: ${{ matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push native image by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.architecture }}
+          outputs: type=image,name=ghcr.io/${{ needs.release-info.outputs.owner }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            CONTAINER_UID=1000
+            LILAC_BUILD_VERSION=${{ needs.release-info.outputs.version }}
+            LILAC_BUILD_COMMIT=${{ github.sha }}
+            LILAC_BUILD_DIRTY=false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.release-info.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+          cache-from: type=gha,scope=release-${{ matrix.image }}-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.image }}-${{ matrix.architecture }}
+
+      - name: Smoke-test image on its native architecture
+        env:
+          IMAGE: ghcr.io/${{ needs.release-info.outputs.owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+          IMAGE_NAME: ${{ matrix.image }}
+        shell: bash
+        run: |
+          docker pull "$IMAGE"
+          case "$IMAGE_NAME" in
+            lilac-mono)
+              bash docker/verify-image.sh "$IMAGE"
+              ;;
+            lilac-computer-gateway)
+              docker run --rm --network none --entrypoint sh "$IMAGE" -c 'bun --version && docker --version && test -s /opt/lilac/gateway.js && test -s /opt/lilac/seccomp-chromium.json'
+              ;;
+            lilac-computer)
+              docker run --rm --network none --entrypoint python3 "$IMAGE" -B -c 'import ast, pathlib; from cua_driver import CuaDriver; ast.parse(pathlib.Path("/opt/lilac-computer/runtime.py").read_text())'
+              ;;
+          esac
+
+      - name: Record image digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST_FILE: ${{ matrix.image }}-${{ matrix.architecture }}.digest
+        run: |
+          mkdir -p digests
+          printf '%s\n' "$DIGEST" > "digests/$DIGEST_FILE"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.architecture }}
+          path: digests/*.digest
+          if-no-files-found: error
+          retention-days: 2
+
+  image-manifests:
+    needs: [release-info, images]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      core: ${{ steps.merge.outputs.core }}
+      gateway: ${{ steps.merge.outputs.gateway }}
+      runner: ${{ steps.merge.outputs.runner }}
+    steps:
+      - name: Download platform digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish versioned manifests
+        id: merge
+        env:
+          OWNER: ${{ needs.release-info.outputs.owner }}
+          VERSION: ${{ needs.release-info.outputs.version }}
+        shell: bash
+        run: |
+          for image in lilac-mono lilac-computer-gateway lilac-computer; do
+            repository="ghcr.io/$OWNER/$image"
+            docker buildx imagetools create --tag "$repository:$VERSION" \
+              "$repository@$(cat "digests/$image-amd64.digest")" \
+              "$repository@$(cat "digests/$image-arm64.digest")"
+            digest=$(docker buildx imagetools inspect "$repository:$VERSION" --format '{{json .Manifest}}' | jq -er .digest)
+            case "$image" in
+              lilac-mono) key=core ;;
+              lilac-computer-gateway) key=gateway ;;
+              lilac-computer) key=runner ;;
+            esac
+            echo "$key=$repository@$digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Verify images are publicly accessible
+        env:
+          CORE: ${{ steps.merge.outputs.core }}
+          GATEWAY: ${{ steps.merge.outputs.gateway }}
+          RUNNER: ${{ steps.merge.outputs.runner }}
+        run: |
+          docker logout ghcr.io
+          for image in "$CORE" "$GATEWAY" "$RUNNER"; do
+            docker buildx imagetools inspect "$image" >/dev/null || {
+              echo 'Make all three GHCR packages public in package settings, then rerun this workflow.' >&2
+              exit 1
+            }
+          done
+
+  cli:
+    needs: [release-info, image-manifests]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build standalone installer with matching image digests
+        env:
+          LILAC_INSTALLER_VERSION: ${{ needs.release-info.outputs.version }}
+          LILAC_INSTALLER_COMMIT: ${{ github.sha }}
+          LILAC_DEFAULT_IMAGE: ${{ needs.image-manifests.outputs.core }}
+          LILAC_DEFAULT_COMPUTER_GATEWAY_IMAGE: ${{ needs.image-manifests.outputs.gateway }}
+          LILAC_DEFAULT_COMPUTER_RUNNER_IMAGE: ${{ needs.image-manifests.outputs.runner }}
+        run: bun run build:installer --target ${{ matrix.target }}
+
+      - name: Run standalone binary outside the source checkout
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.release-info.outputs.version }}
+        shell: bash
+        run: |
+          binary="$GITHUB_WORKSPACE/apps/installer/dist/lilac-$TARGET"
+          smoke_dir=$(mktemp -d)
+          trap 'rm -rf "$smoke_dir"' EXIT
+          cd "$smoke_dir"
+          "$binary" --version | grep -F "$VERSION"
+          "$binary" --help
+
+      - name: Upload standalone installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: apps/installer/dist/lilac-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 2
+
+  publish:
+    needs: [release-info, image-manifests, cli]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download standalone installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: release
+          merge-multiple: true
+
+      - name: Prepare checksums and release notes
+        env:
+          VERSION: ${{ needs.release-info.outputs.version }}
+          CORE: ${{ needs.image-manifests.outputs.core }}
+          GATEWAY: ${{ needs.image-manifests.outputs.gateway }}
+          RUNNER: ${{ needs.image-manifests.outputs.runner }}
+        shell: bash
+        run: |
+          cp install.sh release/install.sh
+          cd release
+          sha256sum lilac-linux-x64 lilac-linux-arm64 lilac-darwin-x64 lilac-darwin-arm64 install.sh > SHA256SUMS
+          printf 'Scheduled build from commit %s.\n\nThe standalone installers use these image digests:\n\n- Core: %s\n- Computer-use gateway: %s\n- Computer-use runner: %s\n\nSee the installation guide in the repository for setup instructions.\n' "$GITHUB_SHA" "$CORE" "$GATEWAY" "$RUNNER" > notes.md
+
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.release-info.outputs.version }}
+        run: |
+          gh release create "$VERSION" --draft --target "$GITHUB_SHA" --title "Lilac $VERSION" --notes-file release/notes.md release/lilac-* release/SHA256SUMS release/install.sh
+          gh release edit "$VERSION" --draft=false --latest
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update convenience image tags
+        env:
+          CORE: ${{ needs.image-manifests.outputs.core }}
+          GATEWAY: ${{ needs.image-manifests.outputs.gateway }}
+          RUNNER: ${{ needs.image-manifests.outputs.runner }}
+        run: |
+          for image in "$CORE" "$GATEWAY" "$RUNNER"; do
+            docker buildx imagetools create --tag "${image%@*}:latest" "$image"
+          done
