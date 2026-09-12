@@ -6,7 +6,8 @@ This is the durable map of the current Lilac monorepo: product boundaries, termi
 
 Current behavior is authoritative in production source, wire schemas, persisted codecs, `scripts/architecture/manifest.ts`, and root `package.json` scripts. This guide summarizes those contracts; it does not replace them.
 
-- `README.md` is the repository landing page and command index.
+- `README.md` covers installation, personalization, everyday use, and documentation routing.
+- `DEVELOPMENT.md` covers source setup, development commands, builds, and checks.
 - `PROJECT.md` is the durable current-system and ownership guide.
 - `AGENTS.md` defines repository-wide working constraints.
 - `packages/utils/config-templates/core-config.example.yaml` documents current Core configuration, and

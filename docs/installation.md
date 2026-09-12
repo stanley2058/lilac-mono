@@ -45,6 +45,9 @@ Setup follows this sequence:
 Once setup finishes, mention the bot in an allowed Discord channel to try it. Container health means
 the services started successfully; your first Discord request also exercises model generation.
 
+Next, [personalize Lilac's prompt files](../README.md#after-installation-make-lilac-your-own).
+Edit them yourself or ask Lilac on Discord to walk you through your preferences and update the files.
+
 ### Model providers
 
 Model slugs and reasoning levels are separate fields. Setup offers these initial choices:
