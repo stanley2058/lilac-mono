@@ -1,0 +1,17 @@
+{
+  "name": "@stanley2058/lilac-installer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "build": "bun build.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "1.7.0",
+    "@stanley2058/lilac-utils": "workspace:*",
+    "better-result": "catalog:",
+    "yaml": "2.9.0",
+    "zod": "^4.3.6"
+  }
+}

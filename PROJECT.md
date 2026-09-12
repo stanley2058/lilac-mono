@@ -6,7 +6,8 @@ This is the durable map of the current Lilac monorepo: product boundaries, termi
 
 Current behavior is authoritative in production source, wire schemas, persisted codecs, `scripts/architecture/manifest.ts`, and root `package.json` scripts. This guide summarizes those contracts; it does not replace them.
 
-- `README.md` is the repository landing page and command index.
+- `README.md` covers installation, personalization, everyday use, and documentation routing.
+- `DEVELOPMENT.md` covers source setup, development commands, builds, and checks.
 - `PROJECT.md` is the durable current-system and ownership guide.
 - `AGENTS.md` defines repository-wide working constraints.
 - `packages/utils/config-templates/core-config.example.yaml` documents current Core configuration, and
@@ -63,6 +64,7 @@ The fail-closed workspace inventory is `ACTIVE_WORKSPACES` in `scripts/architect
 
 - `apps/computer-use-gateway`: optional authenticated MCP desktop gateway, Docker lifecycle, and session/port SQLite bookkeeping.
 - `apps/core`: Core composition, surfaces, routing, tool adapters/server, workflows, recovery, and Core-owned persistence.
+- `apps/installer`: standalone setup CLI, provider and Discord onboarding, configuration updates, and published-image Compose deployment. See `docs/installation.md` for installation and release operations.
 - `apps/tool-bridge`: the native `tools` launcher, its resident Bun HTTP client, and the reduced dev-mode Core tool server entry.
 
 ### Packages

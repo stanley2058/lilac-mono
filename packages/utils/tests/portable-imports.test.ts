@@ -6,6 +6,7 @@ import path from "node:path";
 const portableModules = [
   "utils/logging.ts",
   "utils/runtime-utils.ts",
+  "utils/core-config/parse.ts",
   "utils/claude-code-executable.ts",
   "agent/index.ts",
   "claude-code-bridge/index.ts",
