@@ -124,6 +124,30 @@ describe("resident tools worker", () => {
     expect(buildInfo.stdout.toString()).toContain("CGO_ENABLED=0");
   });
 
+  it.each(["amd64", "arm64"])(
+    "builds the native launcher for Linux %s",
+    (architecture) => {
+      const compiled = Bun.spawnSync(
+        [
+          "go",
+          "build",
+          "-trimpath",
+          "-buildvcs=false",
+          "-buildmode=pie",
+          "-ldflags",
+          "-s -w",
+          "-o",
+          path.join(nativeFixtureRoot, `tools-${architecture}`),
+          NATIVE_LAUNCHER_SOURCE,
+        ],
+        { env: { ...process.env, CGO_ENABLED: "0", GOOS: "linux", GOARCH: architecture } },
+      );
+      expect(compiled.stderr.toString()).toBe("");
+      expect(compiled.exitCode).toBe(0);
+    },
+    120_000,
+  );
+
   it("reads installed metadata on demand and switches workers when the shared ID changes", async () => {
     const root = await fs.mkdtemp(path.join(tmpdir(), "ltbi-"));
     const executable = path.join(root, "tools");

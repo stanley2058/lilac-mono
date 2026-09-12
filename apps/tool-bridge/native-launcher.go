@@ -545,7 +545,7 @@ func runCapturedDirect(payload []byte) error {
 	if err := os.Remove(input.Name()); err != nil {
 		return err
 	}
-	if err := syscall.Dup2(int(input.Fd()), int(os.Stdin.Fd())); err != nil {
+	if err := syscall.Dup3(int(input.Fd()), int(os.Stdin.Fd()), 0); err != nil {
 		return err
 	}
 	return syscall.Exec(workerPath, []string{workerPath, capturedArg}, os.Environ())
