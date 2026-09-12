@@ -63,6 +63,8 @@ function composePrefix(root: string) {
     path.resolve(root, "compose.yaml"),
     "--project-name",
     "lilac_acceptance-1",
+    "--profile",
+    "",
   ];
 }
 
@@ -94,7 +96,7 @@ describe("installer deployment lifecycle targeting", () => {
           expect(result.isOk()).toBe(true);
           const services = computerEnabled ? ["lilac", "computer-use-gateway"] : ["lilac"];
           const expected = [
-            [...composePrefix(root), "pull", "--include-deps", ...services],
+            [...composePrefix(root), "pull", "--include-deps", "--ignore-buildable", ...services],
             [
               ...composePrefix(root),
               "up",
@@ -136,6 +138,7 @@ describe("installer deployment lifecycle targeting", () => {
         ...composePrefix(root),
         "pull",
         "--include-deps",
+        "--ignore-buildable",
         "lilac",
       ]);
     });
@@ -182,8 +185,8 @@ describe("installer deployment lifecycle input failures", () => {
       source: "name: -lilac\nservices:\n  lilac:\n    image: lilac\n",
     },
     {
-      label: "missing Lilac service",
-      source: "name: valid\nservices:\n  unrelated:\n    image: unrelated\n",
+      label: "non-mapping Compose document",
+      source: "[]\n",
     },
   ])("rejects $label before running Docker", async ({ source }) => {
     await withDeployment(source, async (root) => {

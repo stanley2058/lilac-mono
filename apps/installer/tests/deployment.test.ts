@@ -2,19 +2,47 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseDocument } from "yaml";
+import { parseDocument, type Document } from "yaml";
 import { Result } from "better-result";
 import { InstallerDataFailed, type DataFileWriter } from "../src/data-files";
 import type { SetupFile } from "../src/types";
 import {
-  createDeployment,
+  createDeployment as createResolvedDeployment,
   parseDeployment,
   readEnvironment,
   serializeEnvironment,
-  validateDeploymentInputs,
+  validateDeploymentInputs as validateResolvedDeploymentInputs,
   writeInstallation,
+  type ImageReferences,
 } from "../src/deployment";
 import type { SetupDraft } from "../src/types";
+import { existingDeploymentFixture } from "./compose-fixture";
+
+function createDeployment(
+  root: string,
+  state: SetupDraft,
+  selectedImages: ImageReferences,
+  existing?: Document,
+) {
+  return createResolvedDeployment(
+    root,
+    state,
+    selectedImages,
+    existing ? existingDeploymentFixture(existing) : undefined,
+  );
+}
+
+function validateDeploymentInputs(
+  state: SetupDraft,
+  selectedImages: ImageReferences,
+  existing?: Document,
+) {
+  return validateResolvedDeploymentInputs(
+    state,
+    selectedImages,
+    existing ? existingDeploymentFixture(existing).resolved : undefined,
+  );
+}
 
 function draft(): SetupDraft {
   return {
@@ -80,7 +108,7 @@ describe("installer deployment", () => {
     state.files.push({ relativePath: "../outside", content: "no" });
     expect(validateDeploymentInputs(state, images).isErr()).toBe(true);
     expect(parseDeployment("services: [").isErr()).toBe(true);
-    expect(parseDeployment("services:\n  unrelated:\n    image: example\n").isErr()).toBe(true);
+    expect(parseDeployment("[]").isErr()).toBe(true);
   });
 
   for (const service of ["lilac", "computer-use-gateway"]) {

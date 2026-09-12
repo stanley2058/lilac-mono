@@ -25,6 +25,7 @@ import {
   validateDeploymentInputs,
 } from "./deployment";
 import { readSetupEnvironment } from "./environment";
+import { inspectDeployment } from "./compose-inspection";
 import type { Prompt, SetupDraft } from "./types";
 import { readSetupFiles } from "./data-files";
 import {
@@ -123,12 +124,13 @@ async function configureInstallation(
     );
     const dataDir = path.join(root, "data");
     const composeSource = await readOptionalFile(path.join(root, "compose.yaml"));
-    const existing =
+    const document =
       composeSource === undefined ? undefined : yield* parseDeployment(composeSource);
-    const images = resolveImages(existing);
-    const existingImage = existing?.getIn(["services", "lilac", "image"]);
-    const dataImage = typeof existingImage === "string" ? existingImage : images.core;
-    const setupFiles = yield* Result.await(readSetupFiles(dataDir, dataImage));
+    const existing = document
+      ? { document, resolved: yield* Result.await(inspectDeployment(root, document)) }
+      : undefined;
+    const images = resolveImages(existing?.resolved);
+    const setupFiles = yield* Result.await(readSetupFiles(dataDir, images.core));
     const configSource = setupFiles["core-config.yaml"];
     const loaded = {
       exists: configSource !== undefined,
@@ -138,7 +140,7 @@ async function configureInstallation(
           : yield* parseConfigDocument(configSource),
     };
     const secretsSource = await readOptionalFile(path.join(root, "secrets.env"));
-    const environment = yield* Result.await(readSetupEnvironment(root, existing, secretsSource));
+    const environment = readSetupEnvironment(existing?.resolved, secretsSource);
     const draft: SetupDraft = {
       get: (key) => getConfigValue(loaded.document, key),
       set: (key, value) => setConfigValue(loaded.document, key, value),
@@ -148,7 +150,7 @@ async function configureInstallation(
       files: [],
       stagingDir,
       readExistingFile: (filename) => Promise.resolve(setupFiles[filename]),
-      computerEnabled: existing?.hasIn(["services", "computer-use-gateway"]) ?? false,
+      computerEnabled: existing?.resolved.services["computer-use-gateway"] !== undefined,
     };
     let reinstall = false;
     if (existing || loaded.exists) {
@@ -176,7 +178,7 @@ async function configureInstallation(
     }
 
     yield* validateConfigDocument(loaded.document);
-    yield* validateDeploymentInputs(draft, images, existing);
+    yield* validateDeploymentInputs(draft, images, existing?.resolved);
     const deployment = createDeployment(
       root,
       draft,
@@ -191,6 +193,11 @@ async function configureInstallation(
     prompt.note(`Directory: ${root}\nContainer UID: 1000\nCore image: ${images.core}`);
     if (draft.computerEnabled)
       prompt.note(`Computer gateway: ${images.gateway}\nComputer runner: ${images.runner}`);
+    if (
+      existing?.resolved.services.lilac.build ||
+      existing?.resolved.services["computer-use-gateway"]?.build
+    )
+      prompt.note("Existing source builds will be replaced by the published images shown above.");
     prompt.note(
       Bun.YAML.stringify(redactConfig(current ?? {}, Object.values(draft.secrets)), null, 2),
     );

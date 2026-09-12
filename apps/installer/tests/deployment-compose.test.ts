@@ -1,13 +1,33 @@
 import { describe, expect, it } from "bun:test";
 import { isScalar, parseDocument, type Document } from "yaml";
-import { createDeployment as assembleDeployment, type ImageReferences } from "../src/deployment";
+import {
+  createDeployment as assembleResolvedDeployment,
+  type ImageReferences,
+} from "../src/deployment";
 import type { SetupDraft } from "../src/types";
+import { existingDeploymentFixture } from "./compose-fixture";
 
 const images = {
   core: "registry.example/lilac:release",
   gateway: "registry.example/gateway:release",
   runner: "registry.example/runner:release",
 };
+
+function assembleDeployment(
+  root: string,
+  state: SetupDraft,
+  selectedImages: ImageReferences,
+  existing?: Document,
+  managedKeys?: ReadonlySet<string>,
+) {
+  return assembleResolvedDeployment(
+    root,
+    state,
+    selectedImages,
+    existing ? existingDeploymentFixture(existing) : undefined,
+    managedKeys,
+  );
+}
 
 function createDeployment(
   root: string,

@@ -130,8 +130,22 @@ You can also rerun the original `curl` command to download the current setup CLI
 installation directory to update configuration or reinstall. Existing values are loaded before the
 prompts, and config updates preserve unrelated YAML values and comments. Confirmed updates and
 reinstalls recreate containers so startup-only settings take effect, while retaining credentials and
-data. Image references already recorded in Compose remain selected unless you provide explicit
-overrides.
+data. Setup reads Compose's resolved configuration, including environment files, interpolation,
+profiles, and list-form settings. Existing environment files keep their contents and format;
+confirmed credential changes are written as explicit Compose environment values.
+
+Guided setup manages a writable bind mount from the installation's `data` directory to Core's `/data`,
+with Core running as UID `1000`. It checks this layout before accessing configuration. Named data
+volumes, different data directories, and mounts that cover part of `/data` require manual Compose
+management. Setup stops with instructions when it cannot manage the existing layout.
+Core and gateway definitions must also live in `compose.yaml`. YAML anchors and merges are supported;
+managed services loaded through `extends` or external includes require manual Compose management.
+
+Image-backed services keep their resolved image references unless you provide explicit overrides.
+Source-built Core and gateway services switch to the installer's published images; setup shows this
+change before confirmation. A source-built gateway also switches to the matching published runner.
+Use the image overrides below to select a different release. Core and gateway use published images;
+other dependencies retain their existing Compose build definitions.
 
 If image pulling or startup fails, fix the reported problem and rerun setup. You can inspect the
 deployment directly from its directory:

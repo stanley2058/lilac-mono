@@ -18,6 +18,7 @@ import type { SetupDraft } from "./types";
 import { writeDataFiles, type DataFileWriter } from "./data-files";
 import { command } from "./system";
 import { withInstallerCleanup } from "./failure";
+import type { ExistingDeployment, ResolvedDeployment } from "./compose-inspection";
 
 export class InstallerDeploymentFailed extends TaggedError("InstallerDeploymentFailed")<{
   readonly message: string;
@@ -33,48 +34,26 @@ const referenceSchema = z
   .min(1)
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$/);
 
-const serviceNetworkingSchema = z.object({ network_mode: z.string().nullable().optional() });
-const computerNetworkingSchema = z.object({
-  services: z.object({
-    lilac: serviceNetworkingSchema,
-    "computer-use-gateway": serviceNetworkingSchema.optional(),
-  }),
-});
-
 function validateComputerNetworking(
   draft: SetupDraft,
-  existing?: Document,
+  existing?: ResolvedDeployment,
 ): Result<void, InstallerDeploymentFailed> {
   if (!draft.computerConfigured || !existing) return Result.ok(undefined);
-  const invalidNetworking = () =>
-    new InstallerDeploymentFailed({
-      message:
-        "Could not read computer-use networking from compose.yaml. Repair its service definitions before configuring computer use.",
-    });
-  return Result.gen(function* () {
-    const source = yield* Result.try({
-      try: (): unknown =>
-        parseDocument(existing.toString(), { merge: true }).toJS({ maxAliasCount: 100 }),
-      catch: invalidNetworking,
-    });
-    const parsed = computerNetworkingSchema.safeParse(source);
-    if (!parsed.success) return Result.err(invalidNetworking());
-    for (const [service, definition] of Object.entries(parsed.data.services)) {
-      if (definition?.network_mode === undefined) continue;
-      return Result.err(
-        new InstallerDeploymentFailed({
-          message: `Guided computer-use setup requires Compose networks, but services.${service}.network_mode is set. Remove network_mode and use Compose networks for Core and the gateway, or rerun setup and skip computer use to preserve your existing configuration.`,
-        }),
-      );
-    }
-    return Result.ok(undefined);
-  });
+  for (const [service, definition] of Object.entries(existing.services)) {
+    if (definition?.network_mode === undefined) continue;
+    return Result.err(
+      new InstallerDeploymentFailed({
+        message: `Guided computer-use setup requires Compose networks, but services.${service}.network_mode is set. Remove network_mode and use Compose networks for Core and the gateway, or rerun setup and skip computer use to preserve your existing configuration.`,
+      }),
+    );
+  }
+  return Result.ok(undefined);
 }
 
 export function validateDeploymentInputs(
   draft: SetupDraft,
   images: ImageReferences,
-  existing?: Document,
+  existing?: ResolvedDeployment,
 ): Result<void, InstallerDeploymentFailed> {
   for (const image of Object.values(images)) {
     if (!referenceSchema.safeParse(image).success)
@@ -115,25 +94,23 @@ export function validateDeploymentInputs(
   return validateComputerNetworking(draft, existing);
 }
 
-export function resolveImages(existing?: Document): ImageReferences {
-  const stringAt = (parts: string[]) => {
-    const value = existing?.getIn(parts);
-    return typeof value === "string" ? value : undefined;
-  };
+export function resolveImages(existing?: ResolvedDeployment): ImageReferences {
+  const core = existing?.services.lilac;
+  const gateway = existing?.services["computer-use-gateway"];
   return {
     core:
       process.env.LILAC_IMAGE ??
-      stringAt(["services", "lilac", "image"]) ??
+      (core?.build ? undefined : core?.image) ??
       process.env.LILAC_DEFAULT_IMAGE ??
       "ghcr.io/stanley2058/lilac-mono:latest",
     gateway:
       process.env.LILAC_COMPUTER_GATEWAY_IMAGE ??
-      stringAt(["services", "computer-use-gateway", "image"]) ??
+      (gateway?.build ? undefined : gateway?.image) ??
       process.env.LILAC_DEFAULT_COMPUTER_GATEWAY_IMAGE ??
       "ghcr.io/stanley2058/lilac-computer-gateway:latest",
     runner:
       process.env.LILAC_COMPUTER_RUNNER_IMAGE ??
-      stringAt(["services", "computer-use-gateway", "environment", "RUNNER_IMAGE"]) ??
+      (gateway?.build ? undefined : gateway?.environment.RUNNER_IMAGE) ??
       process.env.LILAC_DEFAULT_COMPUTER_RUNNER_IMAGE ??
       "ghcr.io/stanley2058/lilac-computer:latest",
   };
@@ -165,7 +142,7 @@ export function readOptionalFile(filename: string): Promise<string | undefined> 
 
 export function parseDeployment(source: string) {
   const document = parseDocument(source);
-  if (document.errors.length || document.getIn(["services", "lilac"]) === undefined) {
+  if (document.errors.length || !isMap(document.contents)) {
     return Result.err(
       new InstallerDeploymentFailed({
         message:
@@ -206,18 +183,18 @@ function editableServiceField(document: Document, service: string, field: string
   return replacement;
 }
 
-function expandEnvironmentMerges(
+function expandDeploymentMerges(
   document: Document,
-  environment: unknown,
+  mapping: unknown,
   ancestors: ReadonlySet<unknown> = new Set(),
 ): void {
-  if (!isMap(environment)) return;
-  const merges = environment.items.filter(
+  if (!isMap(mapping)) return;
+  const merges = mapping.items.filter(
     (pair) => isScalar(pair.key) && (pair.key.value === "<<" || typeof pair.key.value === "symbol"),
   );
   if (!merges.length) return;
   for (const merge of merges) detachDeploymentAliases(document, merge.value);
-  environment.items = environment.items.filter((pair) => !merges.includes(pair));
+  mapping.items = mapping.items.filter((pair) => !merges.includes(pair));
   for (const merge of merges) {
     const value = isAlias(merge.value) ? merge.value.resolve(document) : merge.value;
     const sources = isSeq(value) ? value.items : [value];
@@ -226,9 +203,9 @@ function expandEnvironmentMerges(
       if (!isMap(resolved) || ancestors.has(resolved)) continue;
       const inherited = resolved.clone();
       if (!isMap(inherited)) continue;
-      expandEnvironmentMerges(document, inherited, new Set([...ancestors, resolved]));
+      expandDeploymentMerges(document, inherited, new Set([...ancestors, resolved]));
       for (const pair of inherited.items) {
-        if (!environment.has(pair.key)) environment.items.push(pair.clone());
+        if (!mapping.has(pair.key)) mapping.items.push(pair.clone());
       }
     }
   }
@@ -274,7 +251,7 @@ function removeCredentialOverrides(
   if (!keys.size) return;
   const environment = editableServiceField(document, service, "environment");
   if (isMap(environment)) {
-    expandEnvironmentMerges(document, environment);
+    expandDeploymentMerges(document, environment);
     for (const key of keys) {
       detachDeploymentAliases(document, environment.get(key, true));
       environment.delete(key);
@@ -345,39 +322,58 @@ function configureServiceEnvironment(
   }
 }
 
-function serviceNetworkNames(document: Document, service: string): string[] {
-  const networks = cloneDeploymentAlias(
-    document,
-    document.getIn(["services", service, "networks"], true),
-  );
-  const names: string[] = [];
-  if (isMap(networks)) {
-    for (const pair of networks.items) {
-      if (isScalar(pair.key) && typeof pair.key.value === "string") names.push(pair.key.value);
-    }
-  }
-  if (isSeq(networks)) {
-    for (const entry of networks.items) {
-      const name = cloneDeploymentAlias(document, entry);
-      if (isScalar(name) && typeof name.value === "string") names.push(name.value);
-    }
-  }
-  return names.length ? names : ["default"];
+function prepareServiceForEditing(document: Document, service: string): void {
+  const services = editableServicesMap(document);
+  if (!isMap(services)) return;
+  const original = services.get(service, true);
+  detachDeploymentAliases(document, original);
+  const editable = cloneDeploymentAlias(document, original);
+  if (editable !== original) services.set(service, editable);
+  expandDeploymentMerges(document, editable);
 }
 
-function connectComputerGateway(document: Document, created: boolean): void {
-  if (
-    document.hasIn(["services", "lilac", "network_mode"]) ||
-    document.hasIn(["services", "computer-use-gateway", "network_mode"])
-  )
-    return;
+function configureServiceImage(
+  document: Document,
+  service: string,
+  image: string,
+  built: boolean,
+): void {
+  prepareServiceForEditing(document, service);
+  editableServiceField(document, service, "image");
+  editableServiceField(document, service, "build");
+  document.setIn(["services", service, "image"], image);
+  document.deleteIn(["services", service, "build"]);
+  if (!built) return;
+  editableServiceField(document, service, "pull_policy");
+  document.deleteIn(["services", service, "pull_policy"]);
+}
+
+function editableServicesMap(document: Document): unknown {
+  const original = document.get("services", true);
+  detachDeploymentAliases(document, original);
+  const editable = cloneDeploymentAlias(document, original);
+  if (editable !== original) document.set("services", editable);
+  expandDeploymentMerges(document, editable);
+  return editable;
+}
+
+function connectComputerGateway(
+  document: Document,
+  created: boolean,
+  existing?: ResolvedDeployment,
+): void {
+  const core = existing?.services.lilac;
+  const gateway = existing?.services["computer-use-gateway"];
+  if (core?.network_mode !== undefined || gateway?.network_mode !== undefined) return;
   const keyPath = ["services", "computer-use-gateway", "networks"];
-  const coreNetworks = serviceNetworkNames(document, "lilac");
+  const coreNames = Object.keys(core?.networks ?? {});
+  const coreNetworks = coreNames.length ? coreNames : ["default"];
   if (created) {
     document.setIn(keyPath, document.createNode(coreNetworks));
     return;
   }
-  const gatewayNetworks = serviceNetworkNames(document, "computer-use-gateway");
+  const gatewayNames = Object.keys(gateway?.networks ?? {});
+  const gatewayNetworks = gatewayNames.length ? gatewayNames : ["default"];
   if (coreNetworks.some((network) => gatewayNetworks.includes(network))) return;
   const connection = coreNetworks[0];
   if (!connection) return;
@@ -400,10 +396,10 @@ export function createDeployment(
   root: string,
   draft: SetupDraft,
   images: ImageReferences,
-  existing?: Document,
+  existing?: ExistingDeployment,
   managedEnvironmentKeys: ReadonlySet<string> = new Set(),
 ) {
-  const document = existing?.clone() ?? new Document();
+  const document = existing?.document.clone() ?? new Document();
   if (!document.has("name"))
     document.set("name", `lilac-${createHash("sha256").update(root).digest("hex").slice(0, 10)}`);
   if (!existing) {
@@ -469,8 +465,7 @@ export function createDeployment(
     );
     document.set("volumes", document.createNode({ "redis-data": {} }));
   }
-  document.setIn(["services", "lilac", "image"], images.core);
-  document.deleteIn(["services", "lilac", "build"]);
+  configureServiceImage(document, "lilac", images.core, !!existing?.resolved.services.lilac.build);
   configureServiceEnvironment(
     document,
     root,
@@ -481,7 +476,7 @@ export function createDeployment(
   );
   document.set("x-lilac-installer", { version: installerVersion, commit: installerCommit });
   if (!draft.computerEnabled) return document;
-  const createdGateway = !document.hasIn(["services", "computer-use-gateway"]);
+  const createdGateway = existing?.resolved.services["computer-use-gateway"] === undefined;
   if (createdGateway) {
     document.setIn(
       ["services", "computer-use-gateway"],
@@ -513,8 +508,12 @@ export function createDeployment(
     );
     document.setIn(["volumes", "computer-use-data"], {});
   }
-  document.setIn(["services", "computer-use-gateway", "image"], images.gateway);
-  document.deleteIn(["services", "computer-use-gateway", "build"]);
+  configureServiceImage(
+    document,
+    "computer-use-gateway",
+    images.gateway,
+    !!existing?.resolved.services["computer-use-gateway"]?.build,
+  );
   configureServiceEnvironment(
     document,
     root,
@@ -524,7 +523,7 @@ export function createDeployment(
     draft.preservedEnvironmentSource !== undefined,
   );
   setServiceEnvironment(document, "computer-use-gateway", "RUNNER_IMAGE", images.runner);
-  connectComputerGateway(document, createdGateway);
+  connectComputerGateway(document, createdGateway, existing?.resolved);
   return document;
 }
 
@@ -686,7 +685,7 @@ export async function startDeployment(
       }),
     );
     const deployment = yield* parseDeployment(source);
-    const compose = yield* composeArguments(root, deployment);
+    const compose = [...(yield* composeArguments(root, deployment)), "--profile", ""];
     const services = computerEnabled ? ["lilac", "computer-use-gateway"] : ["lilac"];
     if (computerEnabled) {
       const runner = yield* Result.await(
@@ -701,7 +700,7 @@ export async function startDeployment(
         );
     }
     const pull = yield* Result.await(
-      run([...compose, "pull", "--include-deps", ...services], {
+      run([...compose, "pull", "--include-deps", "--ignore-buildable", ...services], {
         cwd: root,
         inherit: true,
         timeoutMs: 20 * 60_000,

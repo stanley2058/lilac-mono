@@ -470,7 +470,10 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         exportName,
       })),
       ...["command", "checkMachine"].map((exportName) => ({ module: "src/system.ts", exportName })),
-      { module: "src/environment.ts", exportName: "readSetupEnvironment" },
+      ...["inspectDeployment", "validateManagedLayout"].map((exportName) => ({
+        module: "src/compose-inspection.ts",
+        exportName,
+      })),
       ...[
         "parseDeployment",
         "validateDeploymentInputs",
@@ -1157,7 +1160,7 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         }),
       ),
       {
-        identity: { module: "src/environment.ts", exportName: "readSetupEnvironment" },
+        identity: { module: "src/compose-inspection.ts", exportName: "inspectDeployment" },
         category: "persistence",
       },
       ...[
@@ -1172,12 +1175,13 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
       ...[
         "cloneDeploymentAlias",
         "detachDeploymentAliases",
-        "expandEnvironmentMerges",
+        "expandDeploymentMerges",
         "isManagedEnvironmentFile",
         "attachManagedEnvironmentFile",
         "removeCredentialOverrides",
         "setServiceEnvironment",
-        "serviceNetworkNames",
+        "prepareServiceForEditing",
+        "editableServicesMap",
       ].map((exportName) => ({
         identity: { module: "src/deployment.ts", exportName },
         category: "projection" as const,
