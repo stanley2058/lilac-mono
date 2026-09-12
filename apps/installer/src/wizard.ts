@@ -142,6 +142,7 @@ async function configureInstallation(
       set: (key, value) => setConfigValue(loaded.document, key, value),
       remove: (key) => deleteConfigValue(loaded.document, key),
       secrets: readEnvironment(secretsSource ?? ""),
+      configuredEnvironmentKeys: new Set(),
       files: [],
       stagingDir,
       readExistingFile: (filename) => Promise.resolve(setupFiles[filename]),
@@ -174,14 +175,22 @@ async function configureInstallation(
 
     yield* validateConfigDocument(loaded.document);
     yield* validateDeploymentInputs(draft, images);
-    const deployment = createDeployment(root, draft, images, existing);
+    const deployment = createDeployment(
+      root,
+      draft,
+      images,
+      existing,
+      draft.configuredEnvironmentKeys,
+    );
     const config = serializeConfigDocument(loaded.document);
     const current = getConfigValue(loaded.document, []);
     prompt.note("Review installation");
     prompt.note(`Directory: ${root}\nContainer UID: 1000\nCore image: ${images.core}`);
     if (draft.computerEnabled)
       prompt.note(`Computer gateway: ${images.gateway}\nComputer runner: ${images.runner}`);
-    prompt.note(Bun.YAML.stringify(redactConfig(current ?? {}, Object.values(draft.secrets))));
+    prompt.note(
+      Bun.YAML.stringify(redactConfig(current ?? {}, Object.values(draft.secrets)), null, 2),
+    );
     prompt.note(
       `Credentials: ${Object.keys(draft.secrets).sort().join(", ") || "none"} (values hidden)`,
     );

@@ -1,12 +1,23 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, chmod, copyFile, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, chmod, copyFile, rm } from "node:fs/promises";
 import { Result, TaggedError } from "better-result";
-import { parseDocument, Document } from "yaml";
+import {
+  parseDocument,
+  Document,
+  YAMLSeq,
+  isAlias,
+  isMap,
+  isNode,
+  isScalar,
+  isSeq,
+  visit,
+} from "yaml";
 import { z } from "zod";
 import type { SetupDraft } from "./types";
 import { writeDataFiles, type DataFileWriter } from "./data-files";
 import { command } from "./system";
+import { withInstallerCleanup } from "./failure";
 
 export class InstallerDeploymentFailed extends TaggedError("InstallerDeploymentFailed")<{
   readonly message: string;
@@ -118,11 +129,242 @@ export function parseDeployment(source: string) {
   return Result.ok(document);
 }
 
+function cloneDeploymentAlias(document: Document, node: unknown): unknown {
+  if (!isAlias(node)) return node;
+  const replacement = node.resolve(document)?.clone();
+  if (!replacement) return node;
+  if ("anchor" in replacement) replacement.anchor = undefined;
+  replacement.comment = node.comment ?? replacement.comment;
+  replacement.commentBefore = node.commentBefore ?? replacement.commentBefore;
+  return replacement;
+}
+
+function detachDeploymentAliases(document: Document, node: unknown): void {
+  if (!isNode(node) || !("anchor" in node) || !node.anchor) return;
+  visit(document, {
+    Alias: (_key, alias) => {
+      if (alias.resolve(document) !== node) return;
+      const replacement = cloneDeploymentAlias(document, alias);
+      if (isNode(replacement)) return replacement;
+    },
+  });
+}
+
+function editableServiceField(document: Document, service: string, field: string): unknown {
+  const keyPath = ["services", service, field];
+  const existing = document.getIn(keyPath, true);
+  detachDeploymentAliases(document, existing);
+  const replacement = cloneDeploymentAlias(document, existing);
+  if (replacement !== existing) document.setIn(keyPath, replacement);
+  return replacement;
+}
+
+function expandEnvironmentMerges(
+  document: Document,
+  environment: unknown,
+  ancestors: ReadonlySet<unknown> = new Set(),
+): void {
+  if (!isMap(environment)) return;
+  const merges = environment.items.filter(
+    (pair) => isScalar(pair.key) && (pair.key.value === "<<" || typeof pair.key.value === "symbol"),
+  );
+  if (!merges.length) return;
+  for (const merge of merges) detachDeploymentAliases(document, merge.value);
+  environment.items = environment.items.filter((pair) => !merges.includes(pair));
+  for (const merge of merges) {
+    const value = isAlias(merge.value) ? merge.value.resolve(document) : merge.value;
+    const sources = isSeq(value) ? value.items : [value];
+    for (const source of sources) {
+      const resolved = isAlias(source) ? source.resolve(document) : source;
+      if (!isMap(resolved) || ancestors.has(resolved)) continue;
+      const inherited = resolved.clone();
+      if (!isMap(inherited)) continue;
+      expandEnvironmentMerges(document, inherited, new Set([...ancestors, resolved]));
+      for (const pair of inherited.items) {
+        if (!environment.has(pair.key)) environment.items.push(pair.clone());
+      }
+    }
+  }
+}
+
+function isManagedEnvironmentFile(document: Document, entry: unknown, root: string): boolean {
+  const node = cloneDeploymentAlias(document, entry);
+  let filename: unknown;
+  if (isMap(node)) filename = node.get("path");
+  if (isScalar(node)) filename = node.value;
+  return (
+    typeof filename === "string" && path.resolve(root, filename) === path.join(root, "secrets.env")
+  );
+}
+
+function attachManagedEnvironmentFile(document: Document, root: string, service: string): boolean {
+  const keyPath = ["services", service, "env_file"];
+  const existing = editableServiceField(document, service, "env_file");
+  const files = isSeq(existing) ? existing : new YAMLSeq(document.schema);
+  if (!isSeq(existing) && isNode(existing)) files.add(existing);
+  let lastManaged = -1;
+  for (let index = 0; index < files.items.length; index += 1) {
+    const entry = files.items[index];
+    if (!isManagedEnvironmentFile(document, entry, root)) continue;
+    const previous = cloneDeploymentAlias(document, entry);
+    const managed = isMap(previous)
+      ? previous
+      : document.createNode({ path: "./secrets.env", format: "raw" });
+    detachDeploymentAliases(document, entry);
+    detachDeploymentAliases(document, managed.get("path", true));
+    detachDeploymentAliases(document, managed.get("format", true));
+    managed.set("path", "./secrets.env");
+    managed.set("format", "raw");
+    if (isScalar(previous)) {
+      managed.comment = previous.comment;
+      managed.commentBefore = previous.commentBefore;
+    }
+    files.items[index] = managed;
+    lastManaged = index;
+  }
+  if (lastManaged < 0) {
+    files.add(document.createNode({ path: "./secrets.env", format: "raw" }));
+    lastManaged = files.items.length - 1;
+  }
+  document.setIn(keyPath, files);
+  return lastManaged < files.items.length - 1;
+}
+
+function removeCredentialOverrides(
+  document: Document,
+  service: string,
+  keys: ReadonlySet<string>,
+): void {
+  if (!keys.size) return;
+  const environment = editableServiceField(document, service, "environment");
+  if (isMap(environment)) {
+    expandEnvironmentMerges(document, environment);
+    for (const key of keys) {
+      detachDeploymentAliases(document, environment.get(key, true));
+      environment.delete(key);
+    }
+    return;
+  }
+  if (!isSeq(environment)) return;
+  environment.items = environment.items.filter((entry) => {
+    const value = cloneDeploymentAlias(document, entry);
+    if (!isScalar(value) || typeof value.value !== "string") return true;
+    const key = value.value.split("=", 1)[0];
+    if (key === undefined || !keys.has(key)) return true;
+    detachDeploymentAliases(document, entry);
+    return false;
+  });
+}
+
+function setServiceEnvironment(
+  document: Document,
+  service: string,
+  key: string,
+  value: string,
+): void {
+  const keyPath = ["services", service, "environment"];
+  const environment = editableServiceField(document, service, "environment");
+  if (!isSeq(environment)) {
+    if (isMap(environment)) detachDeploymentAliases(document, environment.get(key, true));
+    document.setIn([...keyPath, key], value);
+    return;
+  }
+  let replaced = false;
+  environment.items = environment.items.map((entry) => cloneDeploymentAlias(document, entry));
+  environment.items = environment.items.filter((entry) => {
+    if (!isScalar(entry) || typeof entry.value !== "string") return true;
+    if (entry.value !== key && !entry.value.startsWith(`${key}=`)) return true;
+    detachDeploymentAliases(document, entry);
+    if (replaced) return false;
+    entry.value = `${key}=${value}`;
+    replaced = true;
+    return true;
+  });
+  if (!replaced) environment.add(document.createNode(`${key}=${value}`));
+}
+
+function configureServiceEnvironment(
+  document: Document,
+  root: string,
+  service: string,
+  secrets: Readonly<Record<string, string>>,
+  configuredKeys: ReadonlySet<string>,
+): void {
+  const hasLaterFiles = attachManagedEnvironmentFile(document, root, service);
+  if (!hasLaterFiles) {
+    removeCredentialOverrides(document, service, configuredKeys);
+    return;
+  }
+  for (const key of configuredKeys) {
+    const value = secrets[key];
+    if (value === undefined) continue;
+    // Compose interpolates even quoted YAML values; $$ preserves a literal dollar.
+    setServiceEnvironment(
+      document,
+      service,
+      key,
+      value.replaceAll("$", () => "$$"),
+    );
+  }
+}
+
+function serviceNetworkNames(document: Document, service: string): string[] {
+  const networks = cloneDeploymentAlias(
+    document,
+    document.getIn(["services", service, "networks"], true),
+  );
+  const names: string[] = [];
+  if (isMap(networks)) {
+    for (const pair of networks.items) {
+      if (isScalar(pair.key) && typeof pair.key.value === "string") names.push(pair.key.value);
+    }
+  }
+  if (isSeq(networks)) {
+    for (const entry of networks.items) {
+      const name = cloneDeploymentAlias(document, entry);
+      if (isScalar(name) && typeof name.value === "string") names.push(name.value);
+    }
+  }
+  return names.length ? names : ["default"];
+}
+
+function connectComputerGateway(document: Document, created: boolean): void {
+  if (
+    document.hasIn(["services", "lilac", "network_mode"]) ||
+    document.hasIn(["services", "computer-use-gateway", "network_mode"])
+  )
+    return;
+  const keyPath = ["services", "computer-use-gateway", "networks"];
+  const coreNetworks = serviceNetworkNames(document, "lilac");
+  if (created) {
+    document.setIn(keyPath, document.createNode(coreNetworks));
+    return;
+  }
+  const gatewayNetworks = serviceNetworkNames(document, "computer-use-gateway");
+  if (coreNetworks.some((network) => gatewayNetworks.includes(network))) return;
+  const connection = coreNetworks[0];
+  if (!connection) return;
+  const networks = editableServiceField(document, "computer-use-gateway", "networks");
+  if (isMap(networks)) {
+    networks.set(document.createNode(connection), null);
+    return;
+  }
+  if (isSeq(networks)) {
+    networks.add(document.createNode(connection));
+    return;
+  }
+  document.setIn(keyPath, document.createNode([...gatewayNetworks, connection]));
+  if (gatewayNetworks.includes("default") && !document.hasIn(["networks", "default"])) {
+    document.setIn(["networks", "default"], {});
+  }
+}
+
 export function createDeployment(
   root: string,
   draft: SetupDraft,
   images: ImageReferences,
   existing?: Document,
+  managedEnvironmentKeys: ReadonlySet<string> = new Set(),
 ) {
   const document = existing?.clone() ?? new Document();
   if (!document.has("name"))
@@ -193,9 +435,11 @@ export function createDeployment(
   }
   document.setIn(["services", "lilac", "image"], images.core);
   document.deleteIn(["services", "lilac", "build"]);
+  configureServiceEnvironment(document, root, "lilac", draft.secrets, managedEnvironmentKeys);
   document.set("x-lilac-installer", { version: installerVersion, commit: installerCommit });
   if (!draft.computerEnabled) return document;
-  if (!document.hasIn(["services", "computer-use-gateway"])) {
+  const createdGateway = !document.hasIn(["services", "computer-use-gateway"]);
+  if (createdGateway) {
     document.setIn(
       ["services", "computer-use-gateway"],
       document.createNode({
@@ -224,10 +468,15 @@ export function createDeployment(
   }
   document.setIn(["services", "computer-use-gateway", "image"], images.gateway);
   document.deleteIn(["services", "computer-use-gateway", "build"]);
-  document.setIn(
-    ["services", "computer-use-gateway", "environment", "RUNNER_IMAGE"],
-    images.runner,
+  configureServiceEnvironment(
+    document,
+    root,
+    "computer-use-gateway",
+    draft.secrets,
+    managedEnvironmentKeys,
   );
+  setServiceEnvironment(document, "computer-use-gateway", "RUNNER_IMAGE", images.runner);
+  connectComputerGateway(document, createdGateway);
   return document;
 }
 
@@ -242,58 +491,102 @@ export async function writeInstallation(
   },
   writeData: DataFileWriter = writeDataFiles,
 ) {
-  return Result.gen(async function* () {
-    yield* Result.await(
-      writeData(
-        path.join(options.root, "data"),
-        [
-          { relativePath: "core-config.yaml", content: options.config, mode: 0o600 },
-          ...options.draft.files,
-        ],
-        options.image,
-      ),
-    );
-    yield* Result.await(
-      Result.tryPromise({
-        try: async () => {
-          const { root, draft } = options;
-          await mkdir(root, { recursive: true });
-          const files = [
-            {
-              filename: path.join(root, "secrets.env"),
-              content: serializeEnvironment(draft.secrets),
-              mode: 0o600,
+  const files: { filename: string; content?: string; mode: number }[] = [
+    {
+      filename: path.join(options.root, "secrets.env"),
+      content: serializeEnvironment(options.draft.secrets),
+      mode: 0o600,
+    },
+    { filename: path.join(options.root, "compose.yaml"), content: options.compose, mode: 0o600 },
+  ];
+  const executable = path.join(options.root, "bin", "lilac");
+  if (options.installExecutable && process.execPath !== executable)
+    files.push({ filename: executable, mode: 0o755 });
+  const staged = files.map((file) => ({
+    ...file,
+    temporary: `${file.filename}.${crypto.randomUUID()}.tmp`,
+  }));
+  const temporaryFiles: string[] = [];
+  const writeFailure = () =>
+    new InstallerDeploymentFailed({
+      message:
+        "Could not write installation files. Check directory permissions and free disk space, then rerun setup.",
+    });
+  let cleanupResult: Result<void, InstallerDeploymentFailed> = Result.ok(undefined);
+  const installation = await withInstallerCleanup(
+    () =>
+      Result.gen(async function* () {
+        for (const directory of new Set(files.map((file) => path.dirname(file.filename)))) {
+          const entries = yield* Result.await(
+            Result.tryPromise({
+              try: async () => {
+                await mkdir(directory, { recursive: true, mode: 0o700 });
+                return readdir(directory, { withFileTypes: true });
+              },
+              catch: writeFailure,
+            }),
+          );
+          if (
+            files.some(
+              (file) =>
+                path.dirname(file.filename) === directory &&
+                entries.some(
+                  (entry) => entry.name === path.basename(file.filename) && entry.isDirectory(),
+                ),
+            )
+          )
+            return Result.err(writeFailure());
+        }
+        yield* Result.await(
+          Result.tryPromise({
+            try: async () => {
+              for (const file of staged) {
+                temporaryFiles.push(file.temporary);
+                if (file.content === undefined) await copyFile(process.execPath, file.temporary);
+                else await Bun.write(file.temporary, file.content, { mode: file.mode });
+                await chmod(file.temporary, file.mode);
+              }
             },
-            { filename: path.join(root, "compose.yaml"), content: options.compose, mode: 0o600 },
-          ];
-          for (const file of files) {
-            await mkdir(path.dirname(file.filename), { recursive: true, mode: 0o700 });
-            const temporary = `${file.filename}.${crypto.randomUUID()}.tmp`;
-            await Bun.write(temporary, file.content, { mode: file.mode });
-            await chmod(temporary, file.mode);
-            await rename(temporary, file.filename);
-          }
-          if (options.installExecutable) {
-            const binaryDir = path.join(root, "bin");
-            await mkdir(binaryDir, { recursive: true });
-            const destination = path.join(binaryDir, "lilac");
-            if (process.execPath !== destination) {
-              const temporary = `${destination}.tmp`;
-              await copyFile(process.execPath, temporary);
-              await chmod(temporary, 0o755);
-              await rename(temporary, destination);
-            }
-          }
-        },
-        catch: () =>
-          new InstallerDeploymentFailed({
-            message:
-              "Could not write installation files. Check directory permissions and free disk space, then rerun setup.",
+            catch: writeFailure,
           }),
+        );
+        yield* Result.await(
+          writeData(
+            path.join(options.root, "data"),
+            [
+              { relativePath: "core-config.yaml", content: options.config, mode: 0o600 },
+              ...options.draft.files,
+            ],
+            options.image,
+          ),
+        );
+        yield* Result.await(
+          Result.tryPromise({
+            try: async () => {
+              for (const file of staged) await rename(file.temporary, file.filename);
+            },
+            catch: writeFailure,
+          }),
+        );
+        return Result.ok(undefined);
       }),
-    );
-    return Result.ok(undefined);
-  });
+    async () => {
+      const removed = await Promise.all(
+        temporaryFiles.map((temporary) =>
+          Result.tryPromise({
+            try: () => rm(temporary, { force: true }),
+            catch: () =>
+              new InstallerDeploymentFailed({
+                message:
+                  "Could not remove temporary installation files. Check directory permissions before rerunning setup.",
+              }),
+          }),
+        ),
+      );
+      cleanupResult = Result.all(removed).map(() => undefined);
+    },
+  );
+  return installation.andThen(() => cleanupResult);
 }
 
 export async function startDeployment(

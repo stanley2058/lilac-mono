@@ -11,6 +11,7 @@ import {
   MODEL_REASONING_EFFORTS,
   type ModelReasoningEffort,
 } from "../../../packages/utils/core-config/types";
+import { setSetupSecret } from "./setup-draft";
 import type { Prompt, SetupDraft } from "./types";
 
 export const PROVIDERS = [
@@ -205,11 +206,18 @@ async function configureApi(
   let baseUrl = draft.secrets[provider.baseEnv] ?? provider.base;
   while (true) {
     if (provider.id === "openai-compatible") {
-      baseUrl = await prompt.text({
+      const nextBaseUrl = await prompt.text({
         message: "API base URL, including /v1 where required",
         initial: baseUrl,
         required: true,
       });
+      if (nextBaseUrl.replace(/\/$/, "") !== baseUrl.replace(/\/$/, "")) {
+        key = "";
+        prompt.note(
+          "Enter an API key for this endpoint, or leave it blank for a local server without authentication.",
+        );
+      }
+      baseUrl = nextBaseUrl;
       prompt.note(
         "Use an address reachable from the Docker container. For a service on this machine, use host.docker.internal instead of localhost. The service must listen on an interface reachable from Docker, not only the host's loopback address.",
       );
@@ -227,8 +235,8 @@ async function configureApi(
       if (await prompt.confirm("Retry this provider?", true)) continue;
       return false;
     }
-    draft.secrets[provider.key] = key;
-    if (provider.id === "openai-compatible") draft.secrets[provider.baseEnv] = baseUrl;
+    setSetupSecret(draft, provider.key, key);
+    if (provider.id === "openai-compatible") setSetupSecret(draft, provider.baseEnv, baseUrl);
     prompt.note(`${provider.label} connection checked.`);
     return true;
   }

@@ -83,11 +83,7 @@ function validDataPath(relativePath: string): boolean {
   );
 }
 
-async function runDataHelper(
-  dataDir: string,
-  image: string,
-  request: DataRequest,
-): Promise<ResultType<{ code: number; stdout: string }, InstallerDataFailed>> {
+async function prepareDataImage(image: string): Promise<ResultType<void, InstallerDataFailed>> {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$/.test(image)) {
     return Result.err(
       new InstallerDataFailed({
@@ -95,6 +91,32 @@ async function runDataHelper(
       }),
     );
   }
+  const prepared = await Result.gen(async function* () {
+    const available = yield* Result.await(
+      command(["docker", "image", "inspect", image, "--format", "{{.Id}}"]),
+    );
+    if (available.code === 0) return Result.ok(undefined);
+    const pulled = yield* Result.await(
+      command(["docker", "pull", image], { inherit: true, timeoutMs: 20 * 60_000 }),
+    );
+    if (pulled.code !== 0) {
+      return Result.err(
+        new InstallerDataFailed({
+          message:
+            "Could not pull the Core image needed to access private data files. Check registry access, then rerun setup.",
+        }),
+      );
+    }
+    return Result.ok(undefined);
+  });
+  return prepared.mapError((failure) => new InstallerDataFailed({ message: failure.message }));
+}
+
+async function runDataHelper(
+  dataDir: string,
+  image: string,
+  request: DataRequest,
+): Promise<ResultType<{ code: number; stdout: string }, InstallerDataFailed>> {
   const mount = `type=bind,"source=${dataDir.replaceAll('"', '""')}",target=/data${request.action === "read" ? ",readonly" : ""}`;
   return Result.tryPromise({
     try: async () => {
@@ -168,14 +190,17 @@ export async function readDataFileResult(
   });
   if (decision.kind === "found") return Result.ok(decision.content);
   if (decision.kind === "missing") return Result.ok(undefined);
-  const helper = await runDataHelper(dataDir, image, { action: "read", relativePath });
-  return helper.andThen(({ code, stdout }) => {
+  return Result.gen(async function* () {
+    yield* Result.await(prepareDataImage(image));
+    const { code, stdout } = yield* Result.await(
+      runDataHelper(dataDir, image, { action: "read", relativePath }),
+    );
     if (code === 0) return Result.ok(stdout);
     if (code === 44) return Result.ok(undefined);
     return Result.err(
       new InstallerDataFailed({
         message:
-          "Could not read the existing Lilac data. The installed Core image must be available locally and Docker must have access to the data directory.",
+          "Could not read the existing Lilac data. Check Docker access to the data directory and the installed Core image.",
       }),
     );
   });
@@ -209,7 +234,7 @@ export async function writeDataFiles(
   files: readonly SetupFile[],
   image: string,
 ): Promise<ResultType<void, InstallerDataFailed>> {
-  const prepared = await Result.gen(async function* () {
+  return Result.gen(async function* () {
     yield* Result.await(
       Result.tryPromise({
         try: () => mkdir(dataDir, { recursive: true, mode: 0o700 }),
@@ -219,21 +244,7 @@ export async function writeDataFiles(
           }),
       }),
     );
-    const available = yield* Result.await(
-      command(["docker", "image", "inspect", image, "--format", "{{.Id}}"]),
-    );
-    if (available.code !== 0) {
-      const pulled = yield* Result.await(
-        command(["docker", "pull", image], { inherit: true, timeoutMs: 20 * 60_000 }),
-      );
-      if (pulled.code !== 0)
-        return Result.err(
-          new InstallerDataFailed({
-            message:
-              "Could not pull the Core image needed to prepare private data files. Check registry access, then rerun setup.",
-          }),
-        );
-    }
+    yield* Result.await(prepareDataImage(image));
     const helper = yield* Result.await(runDataHelper(dataDir, image, { action: "write", files }));
     if (helper.code !== 0)
       return Result.err(
@@ -244,7 +255,6 @@ export async function writeDataFiles(
       );
     return Result.ok(undefined);
   });
-  return prepared.mapError((failure) => new InstallerDataFailed({ message: failure.message }));
 }
 
 export type DataFileWriter = typeof writeDataFiles;

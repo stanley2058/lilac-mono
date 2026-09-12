@@ -459,12 +459,16 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         exportName,
       })),
       { module: "src/discord.ts", exportName: "requestDiscord" },
-      ...["runDataHelper", "readDataFileResult", "readSetupFiles", "writeDataFiles"].map(
-        (exportName) => ({
-          module: "src/data-files.ts",
-          exportName,
-        }),
-      ),
+      ...[
+        "prepareDataImage",
+        "runDataHelper",
+        "readDataFileResult",
+        "readSetupFiles",
+        "writeDataFiles",
+      ].map((exportName) => ({
+        module: "src/data-files.ts",
+        exportName,
+      })),
       ...["command", "checkMachine"].map((exportName) => ({ module: "src/system.ts", exportName })),
       ...[
         "parseDeployment",
@@ -1152,6 +1156,19 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
       ...["validateDeploymentInputs", "startDeployment"].map((exportName) => ({
         identity: { module: "src/deployment.ts", exportName },
         category: "request" as const,
+      })),
+      ...[
+        "cloneDeploymentAlias",
+        "detachDeploymentAliases",
+        "expandEnvironmentMerges",
+        "isManagedEnvironmentFile",
+        "attachManagedEnvironmentFile",
+        "removeCredentialOverrides",
+        "setServiceEnvironment",
+        "serviceNetworkNames",
+      ].map((exportName) => ({
+        identity: { module: "src/deployment.ts", exportName },
+        category: "projection" as const,
       })),
     ],
   ],

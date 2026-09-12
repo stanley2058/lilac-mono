@@ -27,6 +27,7 @@ export type SetupDraft = {
   set(path: string[], value: JSONValue): void;
   remove(path: string[]): void;
   secrets: Record<string, string>;
+  configuredEnvironmentKeys?: Set<string>;
   files: SetupFile[];
   stagingDir: string;
   readExistingFile(relativePath: string): Promise<string | undefined>;

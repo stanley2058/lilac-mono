@@ -1,4 +1,5 @@
 import type { Prompt, SetupDraft, SetupFile } from "./types";
+import { setSetupSecret } from "./setup-draft";
 
 export function currentString(draft: SetupDraft, path: string[], fallback = ""): string {
   const value = draft.get(path);
@@ -58,10 +59,11 @@ export async function credential(
   name: string,
   label: string,
 ): Promise<void> {
-  draft.secrets[name] = await prompt.text({
+  const value = await prompt.text({
     message: label,
     initial: draft.secrets[name],
     secret: true,
     required: true,
   });
+  setSetupSecret(draft, name, value);
 }

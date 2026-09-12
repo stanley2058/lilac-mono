@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import type { SetupFetch } from "./providers";
 import type { Prompt, SetupDraft } from "./types";
+import { setSetupSecret } from "./setup-draft";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const INVITE_PERMISSIONS = 1024n | 2048n | 65536n | 16384n | 32768n | 64n | 262144n | 274877906944n;
@@ -165,7 +166,7 @@ async function validatedToken(
       prompt.note(application.message);
       continue;
     }
-    draft.secrets[key] = token;
+    setSetupSecret(draft, key, token);
     draft.set(["surface", "discord", "tokenEnv"], key);
     prompt.note(`Connected as ${bot.username}.`);
     return { token, identity: { bot, application } };

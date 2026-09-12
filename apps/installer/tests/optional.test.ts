@@ -63,6 +63,7 @@ function fixture(source = "configVersion: 2\n", files: Record<string, string> = 
     set: (path, value) => setConfigValue(document, path, value),
     remove: (path) => deleteConfigValue(document, path),
     secrets: {},
+    configuredEnvironmentKeys: new Set(),
     files: [],
     stagingDir: "unused",
     async readExistingFile(relativePath) {
@@ -88,6 +89,87 @@ describe("optional installer setup", () => {
     expect(draft.secrets).toEqual({ EXA_API_KEY: "saved-test-key" });
     expect(draft.files).toEqual([]);
     expect(draft.computerEnabled).toBe(true);
+    expect(draft.configuredEnvironmentKeys?.size).toBe(0);
+    ui.assertComplete();
+  });
+
+  it("does not mark computer environment keys when its setup is declined", async () => {
+    const { draft } = fixture();
+    draft.computerEnabled = true;
+    draft.secrets.MCP_BEARER_SECRET = "existing-test-secret";
+    draft.secrets.BIND_ADDR = "127.0.0.1";
+    const ui = fakePrompt([
+      { message: "Optional setup", value: "computer" },
+      { message: "Enable computer use?", value: false },
+      finish,
+    ]);
+    await configureOptional(ui.prompt, draft);
+    expect(draft.configuredEnvironmentKeys?.size).toBe(0);
+    expect(draft.files).toEqual([]);
+    expect(draft.computerEnabled).toBe(true);
+    ui.assertComplete();
+  });
+
+  it("marks confirmed computer values even when their values remain unchanged", async () => {
+    const { draft } = fixture();
+    Object.assign(draft.secrets, {
+      MCP_BEARER_SECRET: "existing-test-secret",
+      BIND_ADDR: "127.0.0.1",
+      RENDERED_HOST: "http://localhost",
+      PORT_RANGE_START: "17000",
+      PORT_RANGE_END: "17031",
+    });
+    const ui = fakePrompt([
+      { message: "Optional setup", value: "computer" },
+      { message: "Enable computer use?", value: true },
+      { message: "Customize the desktop address and port range?", value: true },
+      { message: "Desktop port bind address", value: "127.0.0.1" },
+      { message: "Desktop viewer URL host", value: "http://localhost" },
+      { message: "First desktop port", value: "17000" },
+      { message: "Last desktop port", value: "17031" },
+      finish,
+    ]);
+    await configureOptional(ui.prompt, draft);
+    expect([...(draft.configuredEnvironmentKeys ?? [])].sort()).toEqual([
+      "BIND_ADDR",
+      "MCP_BEARER_SECRET",
+      "PORT_RANGE_END",
+      "PORT_RANGE_START",
+      "RENDERED_HOST",
+    ]);
+    expect(draft.secrets.MCP_BEARER_SECRET).toBe("existing-test-secret");
+    ui.assertComplete();
+  });
+
+  it("does not mark viewer keys when enabling computer use without editing the viewer", async () => {
+    const { draft } = fixture();
+    draft.secrets.MCP_BEARER_SECRET = "existing-test-secret";
+    draft.secrets.BIND_ADDR = "127.0.0.1";
+    const ui = fakePrompt([
+      { message: "Optional setup", value: "computer" },
+      { message: "Enable computer use?", value: true },
+      { message: "Customize the desktop address and port range?", value: false },
+      finish,
+    ]);
+    await configureOptional(ui.prompt, draft);
+    expect([...(draft.configuredEnvironmentKeys ?? [])]).toEqual(["MCP_BEARER_SECRET"]);
+    ui.assertComplete();
+  });
+
+  it("marks an unchanged optional credential only after it is confirmed", async () => {
+    const { draft } = fixture();
+    draft.secrets.EXA_API_KEY = "existing-test-key";
+    draft.secrets.FIRECRAWL_API_KEY = "other-test-key";
+    const ui = fakePrompt([
+      { message: "Optional setup", value: "web" },
+      { message: "Web tools providers", value: "exa" },
+      { message: "Exa API key", value: "existing-test-key" },
+      { message: "Web tools providers", value: "done" },
+      finish,
+    ]);
+    await configureOptional(ui.prompt, draft);
+    expect([...(draft.configuredEnvironmentKeys ?? [])]).toEqual(["EXA_API_KEY"]);
+    expect(draft.secrets.EXA_API_KEY).toBe("existing-test-key");
     ui.assertComplete();
   });
 

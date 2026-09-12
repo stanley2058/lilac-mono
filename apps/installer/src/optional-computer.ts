@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { isMap, parseDocument } from "yaml";
 
 import { savedFile, stageFile, validatedText, validateHttpUrl } from "./optional-input";
+import { setSetupSecret } from "./setup-draft";
 import type { Prompt, SetupDraft } from "./types";
 
 function validatePort(value: string): string | undefined {
@@ -24,25 +25,28 @@ function validateRenderedHost(value: string): string | undefined {
 }
 
 async function configureViewer(prompt: Prompt, draft: SetupDraft): Promise<void> {
-  draft.secrets.BIND_ADDR = await validatedText(
+  const bindAddress = await validatedText(
     prompt,
     "Desktop port bind address",
     draft.secrets.BIND_ADDR ?? "127.0.0.1",
     (value) => (isIP(value) ? undefined : "Enter an IPv4 or IPv6 address."),
   );
-  draft.secrets.RENDERED_HOST = await validatedText(
+  setSetupSecret(draft, "BIND_ADDR", bindAddress);
+  const renderedHost = await validatedText(
     prompt,
     "Desktop viewer URL host",
     draft.secrets.RENDERED_HOST ?? "http://localhost",
     validateRenderedHost,
   );
-  draft.secrets.PORT_RANGE_START = await validatedText(
+  setSetupSecret(draft, "RENDERED_HOST", renderedHost);
+  const firstPort = await validatedText(
     prompt,
     "First desktop port",
     draft.secrets.PORT_RANGE_START ?? "17000",
     validatePort,
   );
-  draft.secrets.PORT_RANGE_END = await validatedText(
+  setSetupSecret(draft, "PORT_RANGE_START", firstPort);
+  const lastPort = await validatedText(
     prompt,
     "Last desktop port",
     draft.secrets.PORT_RANGE_END ?? "17031",
@@ -55,6 +59,7 @@ async function configureViewer(prompt: Prompt, draft: SetupDraft): Promise<void>
       return undefined;
     },
   );
+  setSetupSecret(draft, "PORT_RANGE_END", lastPort);
 }
 
 export async function configureComputerUse(prompt: Prompt, draft: SetupDraft): Promise<void> {
@@ -99,7 +104,6 @@ export async function configureComputerUse(prompt: Prompt, draft: SetupDraft): P
   const existingSecret = currentAuthorization?.trim().replace(/^Bearer\s+/, "");
   const secret =
     draft.secrets.MCP_BEARER_SECRET || existingSecret || randomBytes(32).toString("base64url");
-  draft.secrets.MCP_BEARER_SECRET = secret;
   const allowSubagents = document.getIn(["servers", "computer_use", "allowSubagents"]) === true;
   document.setIn(["servers", "computer_use"], {
     allowSubagents,
@@ -113,6 +117,7 @@ export async function configureComputerUse(prompt: Prompt, draft: SetupDraft): P
     content: `Bearer ${secret}\n`,
     mode: 0o600,
   });
+  setSetupSecret(draft, "MCP_BEARER_SECRET", secret);
   draft.computerEnabled = true;
   prompt.note(
     "Computer use is selected. The gateway and desktop images will be pulled after review.",

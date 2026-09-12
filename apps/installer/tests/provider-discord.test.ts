@@ -347,6 +347,141 @@ describe("provider setup", () => {
     prompt.done();
   });
 
+  for (const scenario of [
+    {
+      name: "clears the old key when a changed endpoint uses no authentication",
+      baseUrl: "http://new-provider/v1",
+      key: undefined,
+      expectedKey: "",
+    },
+    {
+      name: "uses the replacement key when the endpoint changes",
+      baseUrl: "http://new-provider/v1",
+      key: "replacement-key",
+      expectedKey: "replacement-key",
+    },
+    {
+      name: "keeps the existing key when Enter retains the endpoint and credentials",
+      baseUrl: undefined,
+      key: undefined,
+      expectedKey: "existing-key",
+    },
+    {
+      name: "keeps the existing key when only the endpoint's trailing slash changes",
+      baseUrl: "http://existing-provider/v1/",
+      key: undefined,
+      expectedKey: "existing-key",
+    },
+  ]) {
+    test(scenario.name, async () => {
+      const state = draft();
+      state.secrets.OPENAI_COMPATIBLE_BASE_URL = "http://existing-provider/v1";
+      state.secrets.OPENAI_COMPATIBLE_API_KEY = "existing-key";
+      const prompt = new ScriptedPrompt([
+        select("openai-compatible"),
+        text(scenario.baseUrl),
+        text(scenario.key),
+        text("local-model"),
+        select(),
+        text(),
+        select("done"),
+      ]);
+      const requests: { url: string; authorization: string | null }[] = [];
+      await configureProviders(prompt, state, {
+        fetch: async (url, init) => {
+          requests.push({ url, authorization: new Headers(init?.headers).get("Authorization") });
+          return Response.json({ data: [] });
+        },
+      });
+      const expectedBase = scenario.baseUrl ?? "http://existing-provider/v1";
+      expect(requests).toEqual([
+        {
+          url: `${expectedBase.replace(/\/$/, "")}/models`,
+          authorization: scenario.expectedKey ? `Bearer ${scenario.expectedKey}` : null,
+        },
+      ]);
+      expect(state.secrets.OPENAI_COMPATIBLE_BASE_URL).toBe(expectedBase);
+      expect(state.secrets.OPENAI_COMPATIBLE_API_KEY).toBe(scenario.expectedKey);
+      prompt.done();
+    });
+  }
+
+  test("keeps a replacement key when retrying the same changed endpoint", async () => {
+    const state = draft();
+    state.secrets.OPENAI_COMPATIBLE_BASE_URL = "http://existing-provider/v1";
+    state.secrets.OPENAI_COMPATIBLE_API_KEY = "existing-key";
+    const prompt = new ScriptedPrompt([
+      select("openai-compatible"),
+      text("http://new-provider/v1"),
+      text("replacement-key"),
+      confirm(true),
+      text(),
+      text(),
+      text("local-model"),
+      select(),
+      text(),
+      select("done"),
+    ]);
+    const authorizations: (string | null)[] = [];
+    await configureProviders(prompt, state, {
+      fetch: async (_url, init) => {
+        authorizations.push(new Headers(init?.headers).get("Authorization"));
+        return new Response("", { status: authorizations.length === 1 ? 503 : 200 });
+      },
+    });
+    expect(authorizations).toEqual(["Bearer replacement-key", "Bearer replacement-key"]);
+    expect(state.secrets.OPENAI_COMPATIBLE_API_KEY).toBe("replacement-key");
+    prompt.done();
+  });
+
+  test("tracks explicitly configured provider credentials and endpoint even when unchanged", async () => {
+    const state = draft();
+    state.configuredEnvironmentKeys = new Set();
+    state.secrets.OPENAI_COMPATIBLE_BASE_URL = "http://existing-provider/v1";
+    state.secrets.OPENAI_COMPATIBLE_API_KEY = "existing-key";
+    const prompt = new ScriptedPrompt([
+      select("openai-compatible"),
+      text(),
+      text(),
+      text("local-model"),
+      select(),
+      text(),
+      select("done"),
+    ]);
+    await configureProviders(prompt, state, { fetch: async () => Response.json({ data: [] }) });
+    expect(state.configuredEnvironmentKeys).toEqual(
+      new Set(["OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_BASE_URL"]),
+    );
+    expect(state.secrets.OPENAI_COMPATIBLE_API_KEY).toBe("existing-key");
+    expect(state.secrets.OPENAI_COMPATIBLE_BASE_URL).toBe("http://existing-provider/v1");
+    prompt.done();
+  });
+
+  test("does not track provider credentials after failed validation", async () => {
+    const state = draft();
+    state.configuredEnvironmentKeys = new Set();
+    state.secrets.OPENAI_API_KEY = "existing-key";
+    const prompt = new ScriptedPrompt([
+      select("openai"),
+      text("rejected-key"),
+      confirm(false),
+      select("anthropic"),
+      text("accepted-key"),
+      text(),
+      select(),
+      text(),
+      select(),
+      select("done"),
+    ]);
+    await configureProviders(prompt, state, {
+      fetch: async (url) =>
+        new Response("", { status: url.includes("api.openai.com") ? 401 : 200 }),
+    });
+    expect(state.configuredEnvironmentKeys).toEqual(new Set(["ANTHROPIC_API_KEY"]));
+    expect(state.secrets.OPENAI_API_KEY).toBe("existing-key");
+    prompt.done();
+  });
+
   test("keeps unchanged model aliases and their inherited settings on rerun", async () => {
     const state = draft(
       "models:\n  def:\n    custom:\n      model: openai/custom-model\n      reasoning: high\n      fallback: ['openai/fallback-model']\n  main:\n    model: custom\n  fast:\n    model: custom\n",
@@ -485,6 +620,7 @@ describe("Discord setup", () => {
       "surface:\n  discord:\n    tokenEnv: MY_BOT_TOKEN\n    allowedChannelIds: ['111']\n    allowedGuildIds: ['999']\n  router:\n    defaultMode: active\n",
     );
     state.secrets.MY_BOT_TOKEN = "fixture-token";
+    state.configuredEnvironmentKeys = new Set();
     const prompt = new ScriptedPrompt([
       text(),
       confirm(true),
@@ -498,6 +634,7 @@ describe("Discord setup", () => {
     expect(state.get(["surface", "discord", "allowedGuildIds"])).toEqual(["999"]);
     expect(state.get(["surface", "router", "defaultMode"])).toBe("active");
     expect(state.secrets.DISCORD_TOKEN).toBeUndefined();
+    expect(state.configuredEnvironmentKeys).toEqual(new Set(["MY_BOT_TOKEN"]));
     expect(fixture.requests).toHaveLength(2);
     expect(prompt.notes.join("\n")).toContain(
       "Also enable Server Members Intent and Presence Intent",
