@@ -64,17 +64,19 @@ describe("installer reused Compose credential wiring", () => {
         "    env_file:\n      - ./operator.env # operator environment\n      - path: ./secrets.env\n        required: false\n      - path: ./overrides.env # optional overrides\n        required: false\n",
       expected: [
         "./operator.env",
-        { path: "./secrets.env", required: false, format: "raw" },
+        { path: "./secrets.env", required: false },
         { path: "./overrides.env", required: false },
       ],
+      preservedEnvironmentSource: 'DISCORD_TOKEN="saved-token"\n',
     },
   ])(
-    "loads raw credentials while preserving $label order on both services",
-    ({ source, expected }) => {
+    "connects credentials while preserving $label order and formats on both services",
+    ({ source, expected, preservedEnvironmentSource }) => {
       const existing = parseDocument(
         `services:\n  lilac:\n    image: old-core\n${source}  computer-use-gateway:\n    image: old-gateway\n${source}`,
       );
       const state = draft();
+      state.preservedEnvironmentSource = preservedEnvironmentSource;
       const updated = createDeployment("/example/instance", state, images, existing);
       for (const service of ["lilac", "computer-use-gateway"]) {
         expect(updated.toJS().services[service].env_file).toEqual(expected);
@@ -360,16 +362,18 @@ describe("installer reused Compose aliases", () => {
       extension:
         "x-env-files: &env-files\n  path: ./secrets.env # shared environment file\n  format: dotenv\n",
       field: "    env_file:\n      - *env-files\n      - ./operator.env\n",
-      expected: [{ path: "./secrets.env", format: "raw" }, "./operator.env"],
+      expected: [{ path: "./secrets.env", format: "dotenv" }, "./operator.env"],
+      preservedEnvironmentSource: 'DISCORD_TOKEN="saved-token"\n',
     },
   ])(
     "extends env_file $label aliases without changing shared definitions",
-    ({ extension, field, expected }) => {
+    ({ extension, field, expected, preservedEnvironmentSource }) => {
       const existing = parseDocument(
         `${extension}services:\n  lilac:\n    image: old-core\n${field}  computer-use-gateway:\n    image: old-gateway\n${field}  unrelated:\n    image: unrelated\n${field}`,
       );
       const original = existing.toJS();
       const state = draft();
+      state.preservedEnvironmentSource = preservedEnvironmentSource;
       const updated = createDeployment("/example/instance", state, images, existing);
       const output = parseDocument(updated.toString()).toJS();
       for (const service of ["lilac", "computer-use-gateway"]) {
@@ -499,30 +503,34 @@ describe("installer reused Compose source anchors", () => {
       label: "sequence",
       field:
         "    env_file: &files\n      - ./operator.env # shared source file\n      - path: ./secrets.env\n        format: dotenv\n",
+      preservedEnvironmentSource: 'DISCORD_TOKEN="saved-token"\n',
+      expected: ["./operator.env", { path: "./secrets.env", format: "dotenv" }],
     },
     {
       label: "scalar",
       field: "    env_file: &files ./operator.env # shared source file\n",
+      expected: ["./operator.env", { path: "./secrets.env", format: "raw" }],
     },
-  ])("updates Core's env_file $label anchor without changing its consumers", ({ field }) => {
-    const existing = parseDocument(
-      `services:\n  lilac:\n    image: old-core\n${field}  unrelated:\n    image: unrelated\n    env_file: *files\n`,
-    );
-    const original = existing.toJS();
-    const state = draft(false);
-    const updated = createDeployment("/example/instance", state, images, existing);
-    const output = parseDocument(updated.toString()).toJS();
-    expect(output.services.lilac.env_file).toEqual([
-      "./operator.env",
-      { path: "./secrets.env", format: "raw" },
-    ]);
-    expect(output.services.unrelated).toEqual(original.services.unrelated);
-    expect(updated.toString()).toContain("# shared source file");
-    expect(existing.toJS()).toEqual(original);
-    expect(createDeployment("/example/instance", state, images, updated).toString()).toBe(
-      updated.toString(),
-    );
-  });
+  ])(
+    "preserves Core's env_file $label anchor consumers and existing formats",
+    ({ field, expected, preservedEnvironmentSource }) => {
+      const existing = parseDocument(
+        `services:\n  lilac:\n    image: old-core\n${field}  unrelated:\n    image: unrelated\n    env_file: *files\n`,
+      );
+      const original = existing.toJS();
+      const state = draft(false);
+      state.preservedEnvironmentSource = preservedEnvironmentSource;
+      const updated = createDeployment("/example/instance", state, images, existing);
+      const output = parseDocument(updated.toString()).toJS();
+      expect(output.services.lilac.env_file).toEqual(expected);
+      expect(output.services.unrelated).toEqual(original.services.unrelated);
+      expect(updated.toString()).toContain("# shared source file");
+      expect(existing.toJS()).toEqual(original);
+      expect(createDeployment("/example/instance", state, images, updated).toString()).toBe(
+        updated.toString(),
+      );
+    },
+  );
 
   it.each([
     {
@@ -709,7 +717,7 @@ describe("installer selective environment updates", () => {
 });
 
 describe("installer reused Compose nested source anchors", () => {
-  it("changes a managed env_file entry without changing aliases to that mapping", () => {
+  it("preserves a managed env_file format and aliases while updating credentials", () => {
     const existing = parseDocument(`services:
   lilac:
     image: old-core
@@ -723,9 +731,12 @@ describe("installer reused Compose nested source anchors", () => {
       - *file
 `);
     const original = existing.toJS();
-    const updated = createDeployment("/example/instance", draft(false), images, existing);
+    const state = draft(false);
+    state.preservedEnvironmentSource = 'DISCORD_TOKEN="saved-token"\n';
+    const updated = createDeployment("/example/instance", state, images, existing);
     const output = parseDocument(updated.toString()).toJS();
-    expect(output.services.lilac.env_file).toEqual([{ path: "./secrets.env", format: "raw" }]);
+    expect(output.services.lilac.env_file).toEqual([{ path: "./secrets.env", format: "dotenv" }]);
+    expect(output.services.lilac.environment).toEqual(state.secrets);
     expect(output.services.extra).toEqual(original.services.extra);
     expect(updated.toString()).toContain("# original format");
   });

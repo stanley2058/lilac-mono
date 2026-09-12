@@ -470,11 +470,13 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         exportName,
       })),
       ...["command", "checkMachine"].map((exportName) => ({ module: "src/system.ts", exportName })),
+      { module: "src/environment.ts", exportName: "readSetupEnvironment" },
       ...[
         "parseDeployment",
         "validateDeploymentInputs",
         "validateComputerNetworking",
         "writeInstallation",
+        "composeArguments",
         "startDeployment",
         "clearStaging",
       ].map((exportName) => ({ module: "src/deployment.ts", exportName })),
@@ -1154,12 +1156,19 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
           category: "request" as const,
         }),
       ),
-      ...["validateDeploymentInputs", "validateComputerNetworking", "startDeployment"].map(
-        (exportName) => ({
-          identity: { module: "src/deployment.ts", exportName },
-          category: "request" as const,
-        }),
-      ),
+      {
+        identity: { module: "src/environment.ts", exportName: "readSetupEnvironment" },
+        category: "persistence",
+      },
+      ...[
+        "validateDeploymentInputs",
+        "validateComputerNetworking",
+        "composeArguments",
+        "startDeployment",
+      ].map((exportName) => ({
+        identity: { module: "src/deployment.ts", exportName },
+        category: "request" as const,
+      })),
       ...[
         "cloneDeploymentAlias",
         "detachDeploymentAliases",

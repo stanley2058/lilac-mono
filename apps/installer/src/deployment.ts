@@ -86,6 +86,11 @@ export function validateDeploymentInputs(
   }
   for (const [key, value] of Object.entries(draft.secrets)) {
     if (
+      draft.preservedEnvironmentSource !== undefined &&
+      !draft.configuredEnvironmentKeys?.has(key)
+    )
+      continue;
+    if (
       !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ||
       value.includes("\r") ||
       value.includes("\n") ||
@@ -232,7 +237,10 @@ function expandEnvironmentMerges(
 function isManagedEnvironmentFile(document: Document, entry: unknown, root: string): boolean {
   const node = cloneDeploymentAlias(document, entry);
   let filename: unknown;
-  if (isMap(node)) filename = node.get("path");
+  if (isMap(node)) {
+    const value = cloneDeploymentAlias(document, node.get("path", true));
+    filename = isScalar(value) ? value.value : value;
+  }
   if (isScalar(node)) filename = node.value;
   return (
     typeof filename === "string" && path.resolve(root, filename) === path.join(root, "secrets.env")
@@ -248,20 +256,6 @@ function attachManagedEnvironmentFile(document: Document, root: string, service:
   for (let index = 0; index < files.items.length; index += 1) {
     const entry = files.items[index];
     if (!isManagedEnvironmentFile(document, entry, root)) continue;
-    const previous = cloneDeploymentAlias(document, entry);
-    const managed = isMap(previous)
-      ? previous
-      : document.createNode({ path: "./secrets.env", format: "raw" });
-    detachDeploymentAliases(document, entry);
-    detachDeploymentAliases(document, managed.get("path", true));
-    detachDeploymentAliases(document, managed.get("format", true));
-    managed.set("path", "./secrets.env");
-    managed.set("format", "raw");
-    if (isScalar(previous)) {
-      managed.comment = previous.comment;
-      managed.commentBefore = previous.commentBefore;
-    }
-    files.items[index] = managed;
     lastManaged = index;
   }
   if (lastManaged < 0) {
@@ -331,9 +325,10 @@ function configureServiceEnvironment(
   service: string,
   secrets: Readonly<Record<string, string>>,
   configuredKeys: ReadonlySet<string>,
+  preserveSource: boolean,
 ): void {
-  const hasLaterFiles = attachManagedEnvironmentFile(document, root, service);
-  if (!hasLaterFiles) {
+  const hasLaterFiles = !preserveSource && attachManagedEnvironmentFile(document, root, service);
+  if (!hasLaterFiles && !preserveSource) {
     removeCredentialOverrides(document, service, configuredKeys);
     return;
   }
@@ -418,7 +413,6 @@ export function createDeployment(
         lilac: {
           image: images.core,
           depends_on: { redis: { condition: "service_healthy" } },
-          env_file: [{ path: "./secrets.env", format: "raw" }],
           environment: {
             REDIS_URL: "redis://redis:6379",
             DATA_DIR: "/data",
@@ -477,7 +471,14 @@ export function createDeployment(
   }
   document.setIn(["services", "lilac", "image"], images.core);
   document.deleteIn(["services", "lilac", "build"]);
-  configureServiceEnvironment(document, root, "lilac", draft.secrets, managedEnvironmentKeys);
+  configureServiceEnvironment(
+    document,
+    root,
+    "lilac",
+    draft.secrets,
+    managedEnvironmentKeys,
+    draft.preservedEnvironmentSource !== undefined,
+  );
   document.set("x-lilac-installer", { version: installerVersion, commit: installerCommit });
   if (!draft.computerEnabled) return document;
   const createdGateway = !document.hasIn(["services", "computer-use-gateway"]);
@@ -486,7 +487,11 @@ export function createDeployment(
       ["services", "computer-use-gateway"],
       document.createNode({
         image: images.gateway,
-        env_file: [{ path: "./secrets.env", format: "raw" }],
+        env_file: [
+          draft.preservedEnvironmentSource === undefined
+            ? { path: "./secrets.env", format: "raw" }
+            : { path: "./secrets.env" },
+        ],
         environment: { RUNNER_IMAGE: images.runner },
         volumes: ["/var/run/docker.sock:/var/run/docker.sock", "computer-use-data:/data"],
         ports: ["127.0.0.1:8081:8080"],
@@ -516,6 +521,7 @@ export function createDeployment(
     "computer-use-gateway",
     draft.secrets,
     managedEnvironmentKeys,
+    draft.preservedEnvironmentSource !== undefined,
   );
   setServiceEnvironment(document, "computer-use-gateway", "RUNNER_IMAGE", images.runner);
   connectComputerGateway(document, createdGateway);
@@ -536,7 +542,8 @@ export async function writeInstallation(
   const files: { filename: string; content?: string; mode: number }[] = [
     {
       filename: path.join(options.root, "secrets.env"),
-      content: serializeEnvironment(options.draft.secrets),
+      content:
+        options.draft.preservedEnvironmentSource ?? serializeEnvironment(options.draft.secrets),
       mode: 0o600,
     },
     { filename: path.join(options.root, "compose.yaml"), content: options.compose, mode: 0o600 },
@@ -631,10 +638,32 @@ export async function writeInstallation(
   return installation.andThen(() => cleanupResult);
 }
 
+export function composeArguments(root: string, deployment: Document) {
+  const projectName = deployment.has("name")
+    ? deployment.get("name")
+    : `lilac-${createHash("sha256").update(root).digest("hex").slice(0, 10)}`;
+  if (typeof projectName !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(projectName))
+    return Result.err(
+      new InstallerDeploymentFailed({
+        message:
+          "The installation's Compose project name is invalid. Set a literal name in compose.yaml and rerun setup.",
+      }),
+    );
+  return Result.ok([
+    "docker",
+    "compose",
+    "--file",
+    path.resolve(root, "compose.yaml"),
+    "--project-name",
+    projectName,
+  ]);
+}
+
 export async function startDeployment(
   root: string,
   images: ImageReferences,
   computerEnabled: boolean,
+  run: typeof command = command,
 ) {
   return Result.gen(async function* () {
     for (const image of Object.values(images)) {
@@ -645,9 +674,23 @@ export async function startDeployment(
           }),
         );
     }
+    const composeFile = path.resolve(root, "compose.yaml");
+    const source = yield* Result.await(
+      Result.tryPromise({
+        try: () => readFile(composeFile, "utf8"),
+        catch: () =>
+          new InstallerDeploymentFailed({
+            message:
+              "Could not read the installation's compose.yaml. Check the file and rerun setup.",
+          }),
+      }),
+    );
+    const deployment = yield* parseDeployment(source);
+    const compose = yield* composeArguments(root, deployment);
+    const services = computerEnabled ? ["lilac", "computer-use-gateway"] : ["lilac"];
     if (computerEnabled) {
       const runner = yield* Result.await(
-        command(["docker", "pull", images.runner], { inherit: true, timeoutMs: 20 * 60_000 }),
+        run(["docker", "pull", images.runner], { inherit: true, timeoutMs: 20 * 60_000 }),
       );
       if (runner.code !== 0)
         return Result.err(
@@ -658,7 +701,11 @@ export async function startDeployment(
         );
     }
     const pull = yield* Result.await(
-      command(["docker", "compose", "pull"], { cwd: root, inherit: true, timeoutMs: 20 * 60_000 }),
+      run([...compose, "pull", "--include-deps", ...services], {
+        cwd: root,
+        inherit: true,
+        timeoutMs: 20 * 60_000,
+      }),
     );
     if (pull.code !== 0)
       return Result.err(
@@ -667,17 +714,17 @@ export async function startDeployment(
         }),
       );
     const args = [
-      "docker",
-      "compose",
+      ...compose,
       "up",
       "--detach",
       "--wait",
       "--wait-timeout",
       "180",
       "--force-recreate",
+      ...services,
     ];
     const started = yield* Result.await(
-      command(args, { cwd: root, inherit: true, timeoutMs: 20 * 60_000 }),
+      run(args, { cwd: root, inherit: true, timeoutMs: 20 * 60_000 }),
     );
     if (started.code !== 0)
       return Result.err(

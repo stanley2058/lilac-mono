@@ -30,6 +30,25 @@ function settings(root: string) {
 }
 
 describe("installation write preparation", () => {
+  it("preserves an existing dotenv file byte for byte when confirmed credentials use Compose overrides", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "installer-preserved-environment-"));
+    const source =
+      "# operator credentials\r\nPROVIDER_KEY=\"old-key\" # keep comment\r\nREF=${PROVIDER_KEY}\r\nMULTILINE='first\nsecond'\r\n";
+    const options = settings(root);
+    options.installExecutable = false;
+    options.draft.preservedEnvironmentSource = source;
+    try {
+      await Bun.write(path.join(root, "secrets.env"), source);
+      const result = await writeInstallation(options, async () => Result.ok(undefined));
+      expect(result.isOk()).toBe(true);
+      expect(await readFile(path.join(root, "secrets.env"), "utf8")).toBe(source);
+      expect((await stat(path.join(root, "secrets.env"))).mode & 0o777).toBe(0o600);
+      expect(await readFile(path.join(root, "compose.yaml"), "utf8")).toBe(options.compose);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps live data unchanged and removes staged credentials if a later host write fails", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "installer-host-write-failure-"));
     const writeFile = Bun.write;

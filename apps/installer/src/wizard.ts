@@ -15,7 +15,7 @@ import {
   validateConfigDocument,
 } from "./config-document";
 import {
-  readEnvironment,
+  composeArguments,
   readOptionalFile,
   parseDeployment,
   resolveImages,
@@ -24,6 +24,7 @@ import {
   startDeployment,
   validateDeploymentInputs,
 } from "./deployment";
+import { readSetupEnvironment } from "./environment";
 import type { Prompt, SetupDraft } from "./types";
 import { readSetupFiles } from "./data-files";
 import {
@@ -137,11 +138,12 @@ async function configureInstallation(
           : yield* parseConfigDocument(configSource),
     };
     const secretsSource = await readOptionalFile(path.join(root, "secrets.env"));
+    const environment = yield* Result.await(readSetupEnvironment(root, existing, secretsSource));
     const draft: SetupDraft = {
       get: (key) => getConfigValue(loaded.document, key),
       set: (key, value) => setConfigValue(loaded.document, key, value),
       remove: (key) => deleteConfigValue(loaded.document, key),
-      secrets: readEnvironment(secretsSource ?? ""),
+      ...environment,
       configuredEnvironmentKeys: new Set(),
       files: [],
       stagingDir,
@@ -182,6 +184,7 @@ async function configureInstallation(
       existing,
       draft.configuredEnvironmentKeys,
     );
+    yield* composeArguments(root, deployment);
     const config = serializeConfigDocument(loaded.document);
     const current = getConfigValue(loaded.document, []);
     prompt.note("Review installation");
