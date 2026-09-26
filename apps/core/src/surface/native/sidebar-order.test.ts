@@ -97,6 +97,18 @@ describe("personal sidebar queues", () => {
     expect(f.list("active")).toEqual([a, c]);
     f.store.close();
   });
+  test("reordering within a section does not delay auto settling", () => {
+    const f = fixture();
+    const a = f.create("a"),
+      b = f.create("b");
+    f.advance(2);
+    f.move(a, "active", b);
+    expect(f.list("active")).toEqual([a, b]);
+    f.advance(1);
+    expect(f.list("active")).toEqual([]);
+    expect(new Set(f.list("settled"))).toEqual(new Set([a, b]));
+    f.store.close();
+  });
   test("rename does not reactivate; settle is personal and does not archive", () => {
     const f = fixture();
     const a = f.create("a");

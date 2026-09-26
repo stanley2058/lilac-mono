@@ -724,9 +724,9 @@ export class NativeStore {
         }
         this.db
           .query(
-            "UPDATE native_thread_preferences SET section=?,position=?,touched_at=? WHERE user_id=? AND thread_id=?",
+            "UPDATE native_thread_preferences SET section=?,position=?,touched_at=CASE WHEN section=? THEN touched_at ELSE ? END WHERE user_id=? AND thread_id=?",
           )
-          .run(input.section, position, this.now(), actorId, input.threadId);
+          .run(input.section, position, input.section, this.now(), actorId, input.threadId);
         return Result.ok({ ok: true as const });
       }, this),
     );
