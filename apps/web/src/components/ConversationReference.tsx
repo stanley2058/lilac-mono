@@ -1,6 +1,6 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { MessageSquare, Link2, ExternalLink } from "lucide-react";
+import { MessageSquare, Link2, ExternalLink, Check } from "lucide-react";
 import { referenceHref, type ConversationReference } from "@stanley2058/lilac-client-protocol";
 import { useOptionalWorkspace } from "../workspace-context";
 import { useFileViewer } from "./file-viewer-context";
@@ -36,32 +36,49 @@ export function ConversationIcon({ surface }: { surface: ConversationReference["
 export function CopyReferenceButton({
   target,
   disabled = false,
+  label = "Copy link",
+  resolveTarget,
+  children,
 }: {
   target?: ConversationReference;
   disabled?: boolean;
+  label?: string;
+  resolveTarget?: () => Promise<ConversationReference | undefined>;
+  children?: ReactNode;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copiedAt, setCopiedAt] = useState(0);
+  const copied = copiedAt > 0;
+  useEffect(() => {
+    if (!copiedAt) return;
+    const timer = setTimeout(() => setCopiedAt(0), 2000);
+    return () => clearTimeout(timer);
+  }, [copiedAt]);
+  const [copying, setCopying] = useState(false);
   return (
     <IconButton
-      label="Copy link"
-      tooltip={copied ? "Link copied" : "Copy link"}
-      disabled={disabled || !target}
-      onPointerLeave={() => setCopied(false)}
-      onBlur={() => setCopied(false)}
+      label={label}
+      tooltip={copied ? "Link copied" : label}
+      disabled={disabled || copying || (!target && !resolveTarget)}
       onClick={() => {
-        if (!target) return;
+        if (!target && !resolveTarget) return;
+        setCopying(true);
         void attempt(
           async () => {
+            const resolved = resolveTarget ? await resolveTarget() : target;
+            if (!resolved) {
+              toast.add({ title: "Conversation unavailable", type: "error" });
+              return;
+            }
             await navigator.clipboard.writeText(
-              new URL(referenceHref(target), location.origin).href,
+              new URL(referenceHref(resolved), location.origin).href,
             );
-            setCopied(true);
+            setCopiedAt(Date.now());
           },
           () => toast.add({ title: "Copy unavailable", type: "error" }),
-        );
+        ).finally(() => setCopying(false));
       }}
     >
-      <Link2 />
+      {copied ? <Check /> : (children ?? <Link2 />)}
     </IconButton>
   );
 }
@@ -126,7 +143,7 @@ export function ConversationBadge({ target }: { target: ConversationReference })
   const workspace = useOptionalWorkspace();
   const viewer = useFileViewer();
   const query = useQuery({
-    queryKey: ["reference", target.surface, target.sessionId, target.messageId],
+    queryKey: ["reference", referenceHref(target)],
     queryFn: ({ signal }) => workspace!.client.rpc!.references.resolve(target, { signal }),
     enabled: !!workspace?.client.rpc,
     retry: false,
@@ -164,7 +181,7 @@ export function ConversationBadge({ target }: { target: ConversationReference })
             >
               <ConversationIcon surface={target.surface} />
               <span className="truncate">{title}</span>
-              {target.messageId ? <Link2 className="size-3 shrink-0" /> : null}
+              {target.messageId || target.range ? <Link2 className="size-3 shrink-0" /> : null}
             </Button>
           }
         />
@@ -174,6 +191,11 @@ export function ConversationBadge({ target }: { target: ConversationReference })
             <div>{{ native: "Native", discord: "Discord", github: "GitHub" }[target.surface]}</div>
             <div className="break-all">Conversation: {target.sessionId}</div>
             {target.messageId ? <div className="break-all">Message: {target.messageId}</div> : null}
+            {target.range ? (
+              <div className="break-all">
+                Range: {target.range.startMessageId} to {target.range.endMessageId}
+              </div>
+            ) : null}
           </div>
         </TooltipContent>
       </Tooltip>

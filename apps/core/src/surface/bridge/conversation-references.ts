@@ -22,6 +22,7 @@ export function expandConversationReferencesForModel(
         client: target.surface,
         sessionId: target.sessionId,
         ...(target.messageId ? { messageId: target.messageId } : {}),
+        ...(target.range ? { range: target.range } : {}),
         ...(target.surface === "native"
           ? { conversationThreadId: `native:${target.sessionId}` }
           : {}),

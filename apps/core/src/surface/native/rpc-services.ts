@@ -33,7 +33,7 @@ import type { NativeSearchStore } from "./store-search";
 import type { NativeSurfaceStore } from "./store-surface";
 
 export type NativeRpcServiceOptions = {
-  references?: Pick<NativeReferences, "resolve" | "read">;
+  references?: Pick<NativeReferences, "resolve" | "read" | "range">;
   files?: Pick<NativeLiveFileService, "resolve">;
   subagents?: Pick<NativeSubagents, "list" | "read">;
   store: NativeStore;
@@ -836,6 +836,9 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
       },
     },
     references: {
+      range: (principal, target) =>
+        options.references?.range(principal.userId, target) ??
+        Result.err(nativeFailure("not-found", "References unavailable")),
       resolve: (principal, target) =>
         options.references?.resolve(principal.userId, target) ??
         Result.err(nativeFailure("not-found", "References unavailable")),

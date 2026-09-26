@@ -362,6 +362,7 @@ export const nativeContract = {
     reloadMcp: procedure.input(z.strictObject({})).output(mcpReloadReplySchema),
   },
   references: {
+    range: procedure.input(conversationReferenceSchema).output(conversationReferenceSchema),
     resolve: procedure.input(conversationReferenceSchema).output(
       z.strictObject({
         title: z.string().max(512),

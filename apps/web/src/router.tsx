@@ -13,6 +13,7 @@ import {
 const workspaceSearchSchema = z.object({
   ref: z.string().min(1).max(1024).optional(),
   message: z.string().min(1).max(128).optional(),
+  range: z.string().min(1).max(258).optional(),
   view: z.enum(["archived", "others"]).optional(),
   otherThread: z.string().min(1).optional(),
   settings: z

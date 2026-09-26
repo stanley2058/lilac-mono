@@ -1012,7 +1012,7 @@ const MessageBody = memo(function MessageBody(
       : conversation);
   const copyReference =
     conversation?.surface === "native" && !timeline
-      ? { ...conversation, messageId: message.id }
+      ? { surface: conversation.surface, sessionId: conversation.sessionId, messageId: message.id }
       : reference;
   const [copyError, setCopyError] = useState<string>();
   const [copiedAt, setCopiedAt] = useState(0);

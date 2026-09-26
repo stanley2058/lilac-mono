@@ -33,7 +33,10 @@ export function createNativeExecution(options: {
   blobStore?: BlobStore;
   runner: () => NativeRunnerControl | undefined;
   customCommands?: CustomCommandManager;
-  expandReferences?: (userId: string, text: string) => ResultType<string, Error>;
+  expandReferences?: (
+    userId: string,
+    text: string,
+  ) => Promise<ResultType<string, Error>> | ResultType<string, Error>;
   validateSkill?: (skillId: string, starterId: string) => boolean;
   getOldMessageSelectionMaxAgeMs?: () => number | undefined;
   now?: () => number;
@@ -162,8 +165,10 @@ export function createNativeExecution(options: {
     });
   }
 
-  function inputMessages(input: NativeInputRecord): ResultType<StoredMessageV1[], Error> {
-    return Result.gen(function* () {
+  async function inputMessages(
+    input: NativeInputRecord,
+  ): Promise<ResultType<StoredMessageV1[], Error>> {
+    return Result.gen(async function* () {
       const thread = yield* store.getThreadRecord(input.threadId);
       for (const skillId of input.skillIds) {
         if (!options.validateSkill?.(skillId, thread.starterId))
@@ -180,7 +185,9 @@ export function createNativeExecution(options: {
         message_time: new Date(input.createdAt).toISOString(),
       });
       const expanded = options.expandReferences
-        ? yield* options.expandReferences(thread.starterId, input.text)
+        ? yield* Result.await(
+            Promise.resolve(options.expandReferences(thread.starterId, input.text)),
+          )
         : input.text;
       const body = skillText ? `${skillText}\n\n${expanded}` : expanded;
       const text = `${header}\n${escapeSurfaceMetadataTags(body)}`;
@@ -248,7 +255,7 @@ export function createNativeExecution(options: {
   async function publishInput(input: NativeInputRecord): Promise<ResultType<void, Error>> {
     return Result.gen(async function* () {
       const thread = yield* store.getThreadRecord(input.threadId);
-      const messages = yield* inputMessages(input);
+      const messages = yield* Result.await(inputMessages(input));
       const custom = yield* commandMetadata(input);
       const requestId = input.mode === "steer" ? input.runId : input.requestId;
       if (!input.turnId || !requestId)

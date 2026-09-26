@@ -435,3 +435,18 @@ it("preserves conversation reference chips through drafts, send, edit and paste"
   captureComposerPaste(pasted).insert(sent);
   expect(referencedConversations(composerMarkdown(pasted))).toEqual(referencedConversations(sent));
 });
+
+it("preserves inclusive range references through composer paste and submission", () => {
+  const markdown = "[Discussion](/?ref=discord%3Achannel&range=first..last)";
+  const editor = createComposerEditor("Before ");
+  captureComposerPaste(editor).insert(markdown);
+  const sent = composerSubmissionMarkdown(editor);
+  expect(referencedConversations(sent)).toEqual([
+    {
+      surface: "discord",
+      sessionId: "channel",
+      range: { startMessageId: "first", endMessageId: "last" },
+    },
+  ]);
+  expect(composerSubmissionMarkdown(createComposerEditor(sent))).toBe(sent);
+});

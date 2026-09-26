@@ -4,6 +4,7 @@ import { externalReadOptions, useNativeOnline } from "../queries";
 import { RefreshCw, MessageSquare, ExternalLink } from "lucide-react";
 import { ErrorNotice, IconButton } from "./ui";
 import { mergeExternalPage, type ExternalPage } from "../external-pages";
+import { CopyReferenceButton } from "./ConversationReference";
 import { ExternalMessages } from "./ExternalMessages";
 import { Button } from "./ui/button";
 import { ExternalSkeleton } from "./ExternalSidebar";
@@ -19,6 +20,8 @@ export function External({ threadId }: { threadId?: string }) {
     (previous, page) => mergeExternalPage(previous, page, true),
     undefined,
   );
+  const reference = view?.messages.find((message) => message.metadata?.reference)?.metadata
+    ?.reference;
   if (!threadId)
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
@@ -41,6 +44,12 @@ export function External({ threadId }: { threadId?: string }) {
             <ExternalLink /> Open in {view.thread.surface === "discord" ? "Discord" : "GitHub"}
           </Button>
         ) : null}
+        <CopyReferenceButton
+          label="Copy conversation link"
+          target={
+            reference ? { surface: reference.surface, sessionId: reference.sessionId } : undefined
+          }
+        />
         <IconButton
           label="Refresh conversation"
           disabled={read.isFetching}

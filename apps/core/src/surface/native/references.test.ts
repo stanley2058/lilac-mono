@@ -87,12 +87,12 @@ test("reference titles and model expansion respect the executing principal", asy
   const text = `[thread](${referenceHref(target)})`;
   expect((await f.references.resolve("reader", target)).isErr()).toBe(true);
   expect((await f.references.read("reader", { target })).isErr()).toBe(true);
-  const expanded = f.references.expand("owner", text).unwrap();
-  expect(expanded).toContain(`"conversationThreadId":"native:${f.thread.id}"`);
-  expect(expanded).toContain('"messageId":"message"');
-  expect(expanded).not.toContain("Secret");
-  const denied = f.references.expand("reader", text).unwrap();
-  expect(denied).toContain('"unavailable":true');
+  const expanded = (await f.references.expand("owner", text)).unwrap();
+  expect(expanded).toContain(`"sessionId":"${f.thread.id}"`);
+  expect(expanded).toContain("messageId: message");
+  expect(expanded).toContain("Secret");
+  const denied = (await f.references.expand("reader", text)).unwrap();
+  expect(denied).toContain("unavailable");
   expect(denied).not.toContain("Private thread");
   expect(denied).not.toContain("conversationThreadId");
 });
@@ -123,17 +123,101 @@ test("exact native preview page boundaries do not advertise an empty newer page"
   expect(fullPage.messages.some((message) => message.id === target.messageId)).toBe(true);
 });
 
-test("absolute native references retain principal checks and missing-message failures", () => {
+test("absolute native references retain principal checks and missing-message failures", async () => {
   using f = fixture();
   const url = `https://chat.example${referenceHref({ surface: "native", sessionId: f.thread.id })}`;
-  const expanded = f.references.expand("owner", url, "https://chat.example").unwrap();
+  const expanded = (await f.references.expand("owner", url, "https://chat.example")).unwrap();
   expect(expanded).toContain('"client":"native"');
-  expect(expanded).not.toContain('"unavailable":true');
-  expect(f.references.expand("reader", url, "https://chat.example").unwrap()).toContain(
-    '"unavailable":true',
+  expect(expanded).not.toContain("unavailable");
+  expect((await f.references.expand("reader", url, "https://chat.example")).unwrap()).toContain(
+    "unavailable",
   );
   expect(
-    f.references.expand("owner", `${url}&message=missing`, "https://chat.example").unwrap(),
-  ).toContain('"unavailable":true');
-  expect(f.references.expand("owner", url, "https://other.example").unwrap()).toBe(url);
+    (await f.references.expand("owner", `${url}&message=missing`, "https://chat.example")).unwrap(),
+  ).toContain("unavailable");
+  expect((await f.references.expand("owner", url, "https://other.example")).unwrap()).toBe(url);
+});
+
+test("native range references are inclusive, paginated, and exclude later replies", async () => {
+  using f = fixture();
+  for (let i = 0; i < 230; i++)
+    f.store
+      .postMessage("owner", f.thread.id, {
+        id: `message-${i}`,
+        role: "assistant",
+        parts: [{ type: "text", text: `Message ${i}` }],
+      })
+      .unwrap();
+  const target = {
+    surface: "native" as const,
+    sessionId: f.thread.id,
+    range: { startMessageId: "message-20", endMessageId: "message-220" },
+  };
+  const first = (await f.references.read("owner", { target })).unwrap();
+  expect(first.messages).toHaveLength(100);
+  expect(first.messages[0]?.id).toBe("message-121");
+  expect(first.messages.at(-1)?.id).toBe("message-220");
+  const second = (await f.references.read("owner", { target, cursor: first.nextCursor })).unwrap();
+  expect(second.messages[0]?.id).toBe("message-21");
+  const third = (await f.references.read("owner", { target, cursor: second.nextCursor })).unwrap();
+  expect(third.messages.map((message) => message.id)).toEqual(["message-20"]);
+  expect(third.nextCursor).toBeUndefined();
+  expect((await f.references.read("reader", { target })).isErr()).toBe(true);
+  for (const range of [
+    { startMessageId: "missing", endMessageId: "message-220" },
+    { startMessageId: "message-220", endMessageId: "message-20" },
+  ])
+    expect((await f.references.read("owner", { target: { ...target, range } })).isErr()).toBe(true);
+});
+
+test("message previews exclude neighbors and session previews retain the latest text", async () => {
+  using f = fixture();
+  for (let i = 0; i < 4; i++)
+    f.store
+      .postMessage("owner", f.thread.id, {
+        id: `message-${i}`,
+        role: "assistant",
+        parts: [{ type: "text", text: `content-${i} ` + "x".repeat(5000) }],
+      })
+      .unwrap();
+  const session = { surface: "native" as const, sessionId: f.thread.id };
+  const message = (
+    await f.references.expand("owner", referenceHref({ ...session, messageId: "message-1" }))
+  ).unwrap();
+  expect(message).toContain("content-1");
+  expect(message).not.toContain("content-0");
+  expect(message).not.toContain("content-2");
+  const input = referenceHref(session);
+  const expanded = (await f.references.expand("owner", input)).unwrap();
+  expect(expanded).toContain("content-3");
+  expect(expanded).toContain("content-2");
+  expect(expanded).not.toContain("content-0");
+  expect(expanded.indexOf("Preview truncated")).toBeLessThan(expanded.indexOf("content-2"));
+  expect(expanded.indexOf("content-2")).toBeLessThan(expanded.indexOf("content-3"));
+  expect(expanded.length - input.length).toBeLessThan(12_200);
+});
+
+test("complete discussion endpoints are resolved on the server across both paging directions", async () => {
+  using f = fixture();
+  for (let i = 0; i < 310; i++)
+    f.store
+      .postMessage("owner", f.thread.id, {
+        id: `message-${i}`,
+        role: "assistant",
+        parts: [{ type: "text", text: `Message ${i}` }],
+      })
+      .unwrap();
+  const target = { surface: "native" as const, sessionId: f.thread.id, messageId: "message-150" };
+  expect((await f.references.range("owner", target)).unwrap()).toEqual({
+    surface: "native",
+    sessionId: f.thread.id,
+    range: { startMessageId: "message-0", endMessageId: "message-309" },
+  });
+  expect((await f.references.range("reader", target)).isErr()).toBe(true);
+  expect((await f.references.range("owner", { ...target, messageId: "missing" })).isErr()).toBe(
+    true,
+  );
+  expect(
+    (await f.references.range("owner", { surface: "native", sessionId: f.thread.id })).isErr(),
+  ).toBe(true);
 });

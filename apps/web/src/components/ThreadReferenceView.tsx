@@ -52,7 +52,8 @@ export function ThreadReferenceView({
   const page = error ? undefined : read.data?.pages[0];
   const found = !target.messageId || read.data?.pages.some((page) => page.messageFound);
   useEffect(() => {
-    if (!loaded || !active || !online || target.surface !== "native" || !client.rpc) return;
+    if (!loaded || !active || !online || target.surface !== "native" || target.range || !client.rpc)
+      return;
     const controller = new AbortController();
     const queryKey = ["reference-messages", key];
     setWatchError(undefined);

@@ -171,7 +171,7 @@ function Workspace(props: AppProps) {
     }) ?? {};
   const reference = search.ref
     ? parseReferenceHref(
-        `/?${new URLSearchParams({ ref: search.ref, ...(search.message ? { message: search.message } : {}) })}`,
+        `/?${new URLSearchParams({ ref: search.ref, ...(search.message ? { message: search.message } : {}), ...(search.range ? { range: search.range } : {}) })}`,
       )
     : undefined;
   const settings = search.settings;

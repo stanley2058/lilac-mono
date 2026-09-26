@@ -3,7 +3,7 @@ import { FloatingChatMenu } from "./components/FloatingChatMenu";
 import { useAppShortcuts, useThreadTargets } from "./shortcuts";
 import { KeybindingsSettings } from "./components/KeybindingsSettings";
 import { createKeybindings } from "./keybindings";
-import { CopyReferenceButton } from "./components/ConversationReference";
+import { ConversationContext, CopyReferenceButton } from "./components/ConversationReference";
 import { Switch } from "./components/ui/switch";
 import { NotificationSettings } from "./components/NotificationSettings";
 import { AppearanceSettings } from "./components/AppearanceSettings";
@@ -37,6 +37,7 @@ import {
   FileText,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
 } from "lucide-react";
 import type { DisplayMessage } from "@stanley2058/lilac-client-protocol";
@@ -524,95 +525,109 @@ function Threads() {
           <ExternalSkeleton conversation />
         </Specimen>
         <Specimen title="Discord conversation">
-          <div className="h-80 flex flex-col">
-            <ExternalMessages
-              messages={[
-                {
-                  id: "discord-preview-1",
-                  role: "user",
-                  metadata: {
-                    externalRunId: "preview-thread-1",
-                    authorDisplayName: "Stanley (Discord)",
-                    createdAt: now - 60_000,
+          <ConversationContext value={{ surface: "discord", sessionId: "preview-channel" }}>
+            <div className="h-80 flex flex-col">
+              <div className="flex items-center justify-end gap-2 px-6">
+                <CopyReferenceButton
+                  label="Copy conversation link"
+                  target={{ surface: "discord", sessionId: "preview-channel" }}
+                />
+                <IconButton
+                  label="Refresh conversation"
+                  onClick={() => toast.add({ title: "Conversation refreshed" })}
+                >
+                  <RefreshCw />
+                </IconButton>
+              </div>
+              <ExternalMessages
+                messages={[
+                  {
+                    id: "discord-preview-1",
+                    role: "user",
+                    metadata: {
+                      externalRunId: "preview-thread-1",
+                      authorDisplayName: "Stanley (Discord)",
+                      createdAt: now - 60_000,
+                    },
+                    parts: [{ type: "text", text: "Can we meet in the afternoon?" }],
                   },
-                  parts: [{ type: "text", text: "Can we meet in the afternoon?" }],
-                },
-                {
-                  id: "discord-preview-2",
-                  role: "assistant",
-                  metadata: {
-                    externalRunId: "preview-thread-1",
-                    authorDisplayName: "Lilac (Discord)",
-                    createdAt: now - 60_000,
+                  {
+                    id: "discord-preview-2",
+                    role: "assistant",
+                    metadata: {
+                      externalRunId: "preview-thread-1",
+                      authorDisplayName: "Lilac (Discord)",
+                      createdAt: now - 60_000,
+                    },
+                    parts: [{ type: "text", text: "Yes, the afternoon works." }],
                   },
-                  parts: [{ type: "text", text: "Yes, the afternoon works." }],
-                },
-                {
-                  id: "discord-preview-followup-user",
-                  role: "user",
-                  metadata: {
-                    externalRunId: "preview-thread-1",
-                    authorDisplayName: "Stanley (Discord)",
-                    createdAt: now - 30_000,
+                  {
+                    id: "discord-preview-followup-user",
+                    role: "user",
+                    metadata: {
+                      externalRunId: "preview-thread-1",
+                      authorDisplayName: "Stanley (Discord)",
+                      createdAt: now - 30_000,
+                    },
+                    parts: [{ type: "text", text: "Does three o'clock work?" }],
                   },
-                  parts: [{ type: "text", text: "Does three o'clock work?" }],
-                },
-                {
-                  id: "discord-preview-followup-assistant",
-                  role: "assistant",
-                  metadata: {
-                    externalRunId: "preview-thread-1",
-                    authorDisplayName: "Lilac (Discord)",
-                    createdAt: now - 30_000,
+                  {
+                    id: "discord-preview-followup-assistant",
+                    role: "assistant",
+                    metadata: {
+                      externalRunId: "preview-thread-1",
+                      authorDisplayName: "Lilac (Discord)",
+                      createdAt: now - 30_000,
+                    },
+                    parts: [{ type: "text", text: "Yes, see you at three." }],
                   },
-                  parts: [{ type: "text", text: "Yes, see you at three." }],
-                },
-                {
-                  id: "discord-preview-3",
-                  role: "user",
-                  metadata: {
-                    externalRunId: "preview-thread-2",
-                    authorDisplayName: "Stanley (Discord)",
-                    createdAt: now,
-                  },
-                  parts: [
-                    { type: "text", text: "Here is the agenda." },
-                    {
-                      type: "data-resource",
-                      id: "missing-external-image",
-                      data: {
-                        resourceId: "missing-external-image",
-                        name: "agenda.png",
-                        mediaType: "image/png",
-                        size: 1024,
-                        state: "ready",
+                  {
+                    id: "discord-preview-3",
+                    role: "user",
+                    metadata: {
+                      externalRunId: "preview-thread-2",
+                      authorDisplayName: "Stanley (Discord)",
+                      createdAt: now,
+                    },
+                    parts: [
+                      { type: "text", text: "Here is the agenda." },
+                      {
+                        type: "data-resource",
+                        id: "missing-external-image",
+                        data: {
+                          resourceId: "missing-external-image",
+                          name: "agenda.png",
+                          mediaType: "image/png",
+                          size: 1024,
+                          state: "ready",
+                        },
                       },
-                    },
-                  ],
-                },
-                {
-                  id: "discord-preview-4",
-                  role: "assistant",
-                  metadata: {
-                    externalRunId: "preview-thread-2",
-                    authorDisplayName: "Lilac (Discord)",
-                    createdAt: now,
+                    ],
                   },
-                  parts: [
-                    {
-                      type: "text",
-                      text: "I'll review it before the meeting. This reply appears as one assistant message even when Discord splits it.",
+                  {
+                    id: "discord-preview-4",
+                    role: "assistant",
+                    metadata: {
+                      externalRunId: "preview-thread-2",
+                      authorDisplayName: "Lilac (Discord)",
+                      createdAt: now,
                     },
-                  ],
-                },
-              ]}
-              resourceUrl={(id) => id}
-              loadDirection="start"
-              hasMore={false}
-              loading={false}
-              onLoadMore={noop}
-            />
-          </div>
+                    parts: [
+                      {
+                        type: "text",
+                        text: "I'll review it before the meeting. This reply appears as one assistant message even when Discord splits it.",
+                      },
+                    ],
+                  },
+                ]}
+                resourceUrl={(id) => id}
+                loadDirection="start"
+                hasMore={false}
+                loading={false}
+                onLoadMore={noop}
+              />
+            </div>
+          </ConversationContext>
         </Specimen>
         <Specimen title="Empty conversation lists">
           <div className="grid gap-3 sm:grid-cols-3">

@@ -1,24 +1,37 @@
 import { z } from "zod";
 
-export const conversationReferenceSchema = z.strictObject({
-  surface: z.enum(["native", "discord", "github"]),
-  sessionId: z
-    .string()
-    .min(1)
-    .max(512)
-    .regex(/^[^\s?&]+$/u),
-  messageId: z
-    .string()
-    .min(1)
-    .max(128)
-    .regex(/^[A-Za-z0-9_-]+$/u)
-    .optional(),
-});
+const messageIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/u);
+
+export const conversationReferenceSchema = z
+  .strictObject({
+    surface: z.enum(["native", "discord", "github"]),
+    sessionId: z
+      .string()
+      .min(1)
+      .max(512)
+      .regex(/^[^\s?&]+$/u),
+    messageId: messageIdSchema.optional(),
+    range: z
+      .strictObject({
+        startMessageId: messageIdSchema,
+        endMessageId: messageIdSchema,
+      })
+      .optional(),
+  })
+  .refine((target) => !target.messageId || !target.range, {
+    message: "A reference selects either a message or a range",
+  });
 export type ConversationReference = z.infer<typeof conversationReferenceSchema>;
 
 export function referenceHref(target: ConversationReference): string {
   const query = new URLSearchParams({ ref: `${target.surface}:${target.sessionId}` });
   if (target.messageId) query.set("message", target.messageId);
+  if (target.range)
+    query.set("range", `${target.range.startMessageId}..${target.range.endMessageId}`);
   return `/?${query}`;
 }
 
@@ -33,7 +46,10 @@ export function parseReferenceHref(
   const ref = url.searchParams.get("ref");
   const separator = ref?.indexOf(":") ?? -1;
   if (!ref || separator < 1) return;
+  const range = url.searchParams.get("range")?.split("..");
+  if (range && range.length !== 2) return;
   const decoded = conversationReferenceSchema.safeParse({
+    ...(range ? { range: { startMessageId: range[0], endMessageId: range[1] } } : {}),
     surface: ref.slice(0, separator),
     sessionId: ref.slice(separator + 1),
     ...(url.searchParams.has("message") ? { messageId: url.searchParams.get("message") } : {}),

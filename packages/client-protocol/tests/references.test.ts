@@ -85,3 +85,15 @@ test("absolute references preserve code exclusion and reject malformed targets",
     ),
   ).toEqual([{ surface: "github", sessionId: "owner/repo#45", messageId: "99" }]);
 });
+
+test("range links round trip without changing session or message link semantics", () => {
+  const target = {
+    surface: "discord" as const,
+    sessionId: "123",
+    range: { startMessageId: "xm_start_0", endMessageId: "xm_end_0" },
+  };
+  expect(parseReferenceHref(referenceHref(target))).toEqual(target);
+  expect(referencedConversations(`[thread](${referenceHref(target)})`)).toEqual([target]);
+  for (const suffix of ["a", "a..", "..b", "a..b..c", "a..b&message=c", "a%20b..c"])
+    expect(parseReferenceHref(`/?ref=discord:123&range=${suffix}`)).toBeUndefined();
+});

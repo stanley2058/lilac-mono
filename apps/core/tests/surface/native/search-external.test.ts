@@ -795,3 +795,33 @@ test("a link to a later Discord output chunk highlights the assistant, not its i
     page.messages.find((message) => message.role === "assistant")?.metadata?.reference?.messageId,
   ).toBe("reply-split");
 });
+
+test("display message anchors keep pagination within their complete conversation", async () => {
+  const service = fixture([
+    snapshot(
+      "first",
+      1,
+      Array.from({ length: 220 }, (_, i) => ({
+        role: "assistant" as const,
+        content: `First ${i}`,
+      })),
+    ),
+    snapshot("second", 2, [{ role: "assistant", content: "Unrelated" }]),
+  ]).service;
+  const session = (
+    await service.readReference("owner", { target: { surface: "discord", sessionId: "123" } })
+  ).unwrap();
+  const anchor = session.messages.find((message) =>
+    message.parts.some((part) => part.type === "text" && part.text === "First 219"),
+  )!;
+  const target = { surface: "discord" as const, sessionId: "123", messageId: anchor.id };
+  let page = (await service.readReference("owner", { target })).unwrap();
+  const messages = [...page.messages];
+  while (page.nextCursor) {
+    page = (await service.readReference("owner", { target, cursor: page.nextCursor })).unwrap();
+    messages.unshift(...page.messages);
+  }
+  expect(messages).toHaveLength(220);
+  expect(messages[0]?.parts).toEqual([{ type: "text", text: "First 0" }]);
+  expect(messages.at(-1)?.parts).toEqual([{ type: "text", text: "First 219" }]);
+});

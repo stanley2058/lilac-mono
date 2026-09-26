@@ -221,7 +221,10 @@ export function createPanelStore(
           target.surface === "native"
             ? target.sessionId
             : (conversationThreadId ?? target.messageId ?? "session");
-        const id = `thread:${referenceKey(target)}:${conversation}`;
+        const range = target.range
+          ? `:range:${target.range.startMessageId}..${target.range.endMessageId}`
+          : "";
+        const id = `thread:${referenceKey(target)}:${conversation}${range}`;
         const tab: PanelTab = { id, type: "thread", target, title };
         const items = current.items.some((item) => item.id === id)
           ? current.items.map((item) => (item.id === id ? tab : item))

@@ -1,10 +1,71 @@
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import type { DisplayMessage } from "@stanley2058/lilac-client-protocol";
+import { ArrowUpToLine, ArrowDownToLine } from "lucide-react";
+import { CopyReferenceButton, useConversation } from "./ConversationReference";
+import { useOptionalWorkspace } from "../workspace-context";
 import { Message } from "./Timeline";
 import { Skeleton } from "./ui/skeleton";
 
 function noop() {}
+
+function ConversationDivider({
+  messages,
+  index,
+}: {
+  messages: readonly DisplayMessage[];
+  index: number;
+}) {
+  const workspace = useOptionalWorkspace();
+  const conversation = useConversation();
+  function targetFor(message: DisplayMessage) {
+    const ref = message.metadata?.reference ?? conversation;
+    if (!ref) return;
+    return { surface: ref.surface, sessionId: ref.sessionId, messageId: message.id };
+  }
+  async function rangeFor(message: DisplayMessage) {
+    const target = targetFor(message);
+    if (!target) return;
+    if (workspace?.client.rpc) return workspace.client.rpc.references.range(target);
+    const group = messages.filter(
+      (item) => item.metadata?.externalRunId === message.metadata?.externalRunId,
+    );
+    const first = group[0];
+    const last = group.at(-1);
+    if (!first || !last) return;
+    return {
+      surface: target.surface,
+      sessionId: target.sessionId,
+      range: { startMessageId: first.id, endMessageId: last.id },
+    };
+  }
+  return (
+    <div
+      className="mx-6 my-4 flex items-center gap-1"
+      role="group"
+      aria-label="Conversation divider"
+    >
+      <div className="h-px flex-1 bg-border" />
+      <div className="flex">
+        <CopyReferenceButton
+          label="Copy link to thread above"
+          disabled={!targetFor(messages[index - 1]!)}
+          resolveTarget={() => rangeFor(messages[index - 1]!)}
+        >
+          <ArrowUpToLine />
+        </CopyReferenceButton>
+        <CopyReferenceButton
+          label="Copy link to thread below"
+          disabled={!targetFor(messages[index]!)}
+          resolveTarget={() => rangeFor(messages[index]!)}
+        >
+          <ArrowDownToLine />
+        </CopyReferenceButton>
+      </div>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
 
 export function ExternalMessages({
   messages,
@@ -98,7 +159,7 @@ export function ExternalMessages({
               {row.index > 0 &&
               messages[row.index]!.metadata?.externalRunId !==
                 messages[row.index - 1]!.metadata?.externalRunId ? (
-                <hr className="mx-6 my-4 border-border" aria-label="Conversation divider" />
+                <ConversationDivider messages={messages} index={row.index} />
               ) : null}
               <Message
                 message={messages[row.index]!}

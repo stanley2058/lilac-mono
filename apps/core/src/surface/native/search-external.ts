@@ -1,3 +1,4 @@
+import { matchesReferenceMessage } from "./reference-preview";
 import type { ConversationReference } from "@stanley2058/lilac-client-protocol";
 import {
   decodeSentAttachmentMetadata,
@@ -830,8 +831,8 @@ export class NativeExternalThreads {
         });
         if (!targetGroup && input.messageId && input.cursor) targetGroup = group;
         if (!messageFound) {
-          const anchor = projected.findIndex(
-            (message) => message.metadata?.reference?.messageId === input.messageId,
+          const anchor = projected.findIndex((message) =>
+            matchesReferenceMessage(message, input.messageId!),
           );
           const linked = run.record.surfaceRefs.some((item) => item.messageId === input.messageId);
           if (anchor < 0 && !linked) continue;
