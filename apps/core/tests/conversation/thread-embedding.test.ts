@@ -26,8 +26,8 @@ describe("conversation thread embedding adapter resolver", () => {
 
 describe("separate query embeddings", () => {
   it("routes queries separately while retaining document identity and refreshing config", async () => {
-    const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
-    const { providers, parseCoreConfigV2ToUniversal } = await import("@stanley2058/lilac-utils");
+    const { env, getModelProviders, providers, parseCoreConfigV2ToUniversal } =
+      await import("@stanley2058/lilac-utils");
     const requests: string[] = [];
     const server = Bun.serve({
       port: 0,
@@ -41,11 +41,12 @@ describe("separate query embeddings", () => {
       },
     });
     const original = providers["openai-compatible"];
-    providers["openai-compatible"] = createOpenAICompatible({
-      name: "openaiCompatible",
-      baseURL: `${server.url}v1`,
-    });
+    const originalConfig = env.providers.openaiCompatible;
     try {
+      Object.assign(env.providers, {
+        openaiCompatible: { baseUrl: `${server.url}v1`, apiKey: undefined },
+      });
+      providers["openai-compatible"] = getModelProviders()["openai-compatible"];
       const cfg = parseCoreConfigV2ToUniversal({
         configVersion: 2,
         conversation: {
@@ -84,6 +85,7 @@ describe("separate query embeddings", () => {
       cfg.conversation.thread.embedding.queryModel = "missing-alias";
       expect(await resolve()).toBeNull();
     } finally {
+      Object.assign(env.providers, { openaiCompatible: originalConfig });
       providers["openai-compatible"] = original;
       await server.stop(true);
     }
