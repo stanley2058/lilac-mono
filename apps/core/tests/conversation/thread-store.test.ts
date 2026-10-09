@@ -3568,10 +3568,17 @@ describe("conversation thread store", () => {
         ts: 3 + 2 * 60 * 60 * 1000,
       }),
     ]);
+    const embeddedTexts: string[] = [];
     const service = new ConversationThreadService({
       store: threadStore,
       getConfig: async () => testConfig(),
-      getEmbeddingAdapter: async () => fakeEmbeddingAdapter,
+      getEmbeddingAdapter: async () => ({
+        ...fakeEmbeddingAdapter,
+        embed: async (input) => {
+          embeddedTexts.push(input.text);
+          return fakeEmbeddingAdapter.embed(input);
+        },
+      }),
       summarizer: async ({ threadId }) =>
         threadId.endsWith(":m3")
           ? {
@@ -3632,6 +3639,23 @@ describe("conversation thread store", () => {
     expect(excluded.results.map((result) => result.threadId)).not.toContain(
       lexical.results[0]!.threadId,
     );
+
+    for (const url of [
+      "https://example.test/banana",
+      "http://example.test/banana",
+      "www.example.test/banana",
+      "https://example.test/Banana_(fruit)",
+    ]) {
+      const withoutUrl = await shortlist({ text: `sqlite ${url}`, limit: 2 });
+      expect(embeddedTexts.at(-1)).toBe("sqlite");
+      expect(withoutUrl.results.map((result) => result.title)).toEqual(["Database storage"]);
+    }
+    const embeddingCount = embeddedTexts.length;
+    expect(await shortlist({ text: "https://example.test/banana" })).toEqual({
+      source: "none",
+      results: [],
+    });
+    expect(embeddedTexts).toHaveLength(embeddingCount);
 
     const noFallback = await shortlist({ text: "黃色水果", semanticFallback: false });
     expect(noFallback).toEqual({ source: "none", results: [] });

@@ -2093,6 +2093,8 @@ export class ConversationThreadService {
     excludeThreadIds?: readonly string[];
     autoInjectUsage?: ConversationThreadAutoInjectUsageAccumulator;
   }): Promise<ResultType<ConversationThreadAutoInjectShortlist, PersistedDataError>> {
+    const text = input.text.replace(/\b(?:https?:\/\/|www\.)[^\s<>]+/giu, " ").trim();
+    if (!text) return Result.ok({ source: "none", results: [] });
     const cfg = await this.params.getConfig();
     const filters = buildSearchFilters(input);
     const allowlist = buildSearchAllowlist(cfg);
@@ -2100,6 +2102,7 @@ export class ConversationThreadService {
     const semantic = input.semanticFallback
       ? this.searchAutoInjectSemanticFallback({
           ...input,
+          text,
           limit: semanticLimit,
           filters,
           allowlist,
@@ -2108,7 +2111,7 @@ export class ConversationThreadService {
     // Over-fetch so stale native summaries dropped by the filter do not take candidate slots.
     const lexical = this.params.store
       .searchAnyTerm({
-        text: input.text,
+        text,
         limit: input.limit * 2,
         filters,
         allowlist,
