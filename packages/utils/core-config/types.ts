@@ -236,6 +236,7 @@ export type UniversalCoreConfig = {
       embedding: {
         enabled: boolean;
         model: string;
+        queryModel?: string;
       };
       autoInject: {
         enabled: boolean;

@@ -1,5 +1,12 @@
 # MIGRATIONS.md
 
+## Separate thread query embeddings
+
+`conversation.thread.embedding.queryModel` optionally selects the search-query encoder.
+It defaults to `embedding.model`, which remains the document encoder and stored embedding ID.
+Both encoders must share a vector space and dimensions. Changing the document model requires
+re-embedding existing summary facets. No schema-version or database change is required.
+
 ## Decision auto-inject F1 defaults
 
 Decision auto-inject defaults now select useful prior facts without requiring a recall/durable

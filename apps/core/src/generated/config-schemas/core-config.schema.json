@@ -1070,7 +1070,8 @@
                       "default": "openai/text-embedding-3-small",
                       "type": "string",
                       "minLength": 1
-                    }
+                    },
+                    "queryModel": { "type": "string", "minLength": 1 }
                   },
                   "additionalProperties": false
                 },

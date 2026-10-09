@@ -613,6 +613,7 @@ const conversationSchemaV2 = z
           .object({
             enabled: z.boolean().default(false),
             model: z.string().trim().min(1).default("openai/text-embedding-3-small"),
+            queryModel: z.string().trim().min(1).optional(),
           })
           .default({ enabled: false, model: "openai/text-embedding-3-small" }),
         autoInject: z

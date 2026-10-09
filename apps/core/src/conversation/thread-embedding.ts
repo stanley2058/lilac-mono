@@ -64,43 +64,60 @@ function getProvider(providerId: string): EmbeddingProvider | null {
   return providers[providerId] ?? null;
 }
 
+type ResolvedEmbeddingModels = { document: ResolvedModelRef; query: ResolvedModelRef };
+
 function resolveConversationThreadEmbeddingModel(
   cfg: CoreConfig,
-): ResultType<ResolvedModelRef | null, ModelResolutionFailed> {
+): ResultType<ResolvedEmbeddingModels | null, ModelResolutionFailed> {
   const embeddingConfig = cfg.conversation.thread.embedding;
   if (!embeddingConfig.enabled) return Result.ok(null);
 
-  return resolveModelRefResult(
-    cfg,
-    { model: embeddingConfig.model },
-    "conversation.thread.embedding.model",
-  );
-}
-
-function embeddingAdapterCacheKey(resolved: ResolvedModelRef | null): string {
-  if (!resolved) return "disabled";
-  return JSON.stringify({
-    provider: resolved.provider,
-    modelId: resolved.modelId,
-    spec: resolved.spec,
-    providerOptions: resolved.providerOptions ?? null,
+  return Result.gen(function* () {
+    const document = yield* resolveModelRefResult(
+      cfg,
+      { model: embeddingConfig.model },
+      "conversation.thread.embedding.model",
+    );
+    if (!embeddingConfig.queryModel) return Result.ok({ document, query: document });
+    const query = yield* resolveModelRefResult(
+      cfg,
+      { model: embeddingConfig.queryModel },
+      "conversation.thread.embedding.queryModel",
+    );
+    return Result.ok({ document, query });
   });
 }
 
+function embeddingAdapterCacheKey(resolved: ResolvedEmbeddingModels | null): string {
+  if (!resolved) return "disabled";
+  return JSON.stringify(
+    [resolved.document, resolved.query].map((model) => ({
+      provider: model.provider,
+      modelId: model.modelId,
+      spec: model.spec,
+      providerOptions: model.providerOptions ?? null,
+    })),
+  );
+}
+
 function createConversationThreadEmbeddingAdapterFromResolved(
-  resolved: ResolvedModelRef | null,
+  resolved: ResolvedEmbeddingModels | null,
 ): ConversationThreadEmbeddingAdapter | null {
   if (!resolved) return null;
 
-  const provider = getProvider(resolved.provider);
-  if (!provider) return null;
+  const documentProvider = getProvider(resolved.document.provider);
+  const queryProvider = getProvider(resolved.query.provider);
+  if (!documentProvider || !queryProvider) return null;
 
-  const model = provider.embeddingModel(resolved.modelId);
-  const providerOptions = resolved.providerOptions as Record<string, JSONObject> | undefined;
+  const documentModel = documentProvider.embeddingModel(resolved.document.modelId);
+  const queryModel = queryProvider.embeddingModel(resolved.query.modelId);
 
   return {
-    modelId: resolved.spec,
+    modelId: resolved.document.spec,
     async embed(input) {
+      const selected = input.facet === "query" ? resolved.query : resolved.document;
+      const model = input.facet === "query" ? queryModel : documentModel;
+      const providerOptions = selected.providerOptions as Record<string, JSONObject> | undefined;
       const startedAt = performance.now();
       const result = await embed({
         model,
@@ -108,9 +125,9 @@ function createConversationThreadEmbeddingAdapterFromResolved(
         providerOptions,
       });
       input.onUsage?.({
-        modelSpec: resolved.spec,
-        provider: resolved.provider,
-        modelId: resolved.modelId,
+        modelSpec: selected.spec,
+        provider: selected.provider,
+        modelId: selected.modelId,
         facet: input.facet,
         inputChars: input.text.length,
         tokens: result.usage.tokens,

@@ -83,6 +83,8 @@ conversation:
       enabled: false
       # Provider/model ref or models.def alias for an AI SDK embedding model.
       model: openai/text-embedding-3-small
+      # Optional query encoder; must share the document model's vector space and dimensions.
+      # queryModel: openai-compatible/voyage-4-nano-query
     autoInject:
       # Enable automatic injection of related thread title metadata before answers
       # to long, meaningful user messages.

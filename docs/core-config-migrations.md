@@ -1,5 +1,12 @@
 # Core Config Migrations
 
+## Separate thread query embeddings
+
+`conversation.thread.embedding.queryModel` optionally selects the search-query encoder.
+It defaults to `embedding.model`, which remains the document encoder and stored embedding ID.
+Both encoders must share a vector space and dimensions. Changing the document model requires
+re-embedding existing summary facets. No schema-version or database change is required.
+
 This guide records manual `core-config.yaml` changes between config versions. The current field-level
 reference is
 [`packages/utils/config-templates/core-config.example.yaml`](../packages/utils/config-templates/core-config.example.yaml).
