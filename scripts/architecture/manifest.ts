@@ -1666,6 +1666,10 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         },
         category: "projection",
       },
+      ...["decodeThreadSearchRequest", "decodeThreadSearchResponse"].map((exportName) => ({
+        identity: { module: "src/conversation/thread-search-protocol.ts", exportName },
+        category: "wire" as const,
+      })),
       {
         identity: {
           module: "src/conversation/thread-summarization-worker-protocol.ts",

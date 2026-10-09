@@ -707,7 +707,7 @@ export class ConversationThreadStore {
       .get()?.data_version;
     if (version !== undefined && version === this.nativeDataVersion) return;
     const startedAt = performance.now();
-    this.db.transaction(() => this.materializeNativeThreads())();
+    this.db.transaction(() => this.materializeNativeThreads()).immediate();
     // Remember the version from before the scan so a concurrent commit cannot be skipped.
     this.nativeDataVersion = version;
     threadStoreLogger.debug("conversation.thread.native_refresh", {
@@ -2276,34 +2276,72 @@ export class ConversationThreadStore {
     return Result.ok(hits);
   }
 
+  prepareSearch(input: {
+    filters?: ConversationThreadSearchFilters;
+    allowlist?: ConversationThreadSearchAllowlist;
+  }): string[] {
+    this.refreshNativeThreads();
+    const filter = buildSearchFilterClause(input.filters, input.allowlist);
+    return this.db
+      .query<{ thread_id: string }, (string | number)[]>(
+        `SELECT t.thread_id FROM conversation_threads t WHERE ${filter.sql}`,
+      )
+      .all(...filter.values)
+      .map((row) => row.thread_id);
+  }
+
+  filterCurrentSearchHits(input: {
+    hits: readonly ConversationThreadSearchHit[];
+    filters?: ConversationThreadSearchFilters;
+    allowlist?: ConversationThreadSearchAllowlist;
+  }): ConversationThreadSearchHit[] {
+    if (input.hits.length === 0) return [];
+    this.refreshNativeThreads();
+    const filter = buildSearchFilterClause(
+      input.filters,
+      input.allowlist,
+      input.hits.map((hit) => hit.threadId),
+    );
+    const eligible = new Set(
+      this.db
+        .query<{ thread_id: string }, (string | number)[]>(
+          `SELECT t.thread_id FROM conversation_threads t WHERE t.thread_id IN (SELECT value FROM json_each(?)) AND ${filter.sql}`,
+        )
+        .all(JSON.stringify(input.hits.map((hit) => hit.threadId)), ...filter.values)
+        .map((row) => row.thread_id),
+    );
+    return input.hits.filter(
+      (hit) =>
+        eligible.has(hit.threadId) &&
+        (hit.kind !== "native_thread" ||
+          this.getThread(hit.threadId)?.summary_input_hash === hit.sourceRevision),
+    );
+  }
+
   searchSemantic(input: {
     embedding: Float32Array;
     modelId: string;
     dimensions: number;
     limit?: number;
+    eligibleThreadIds?: readonly string[];
     filters?: ConversationThreadSearchFilters;
     allowlist?: ConversationThreadSearchAllowlist;
   }): ResultType<ConversationThreadSearchHit[], PersistedDataError> {
-    this.refreshNativeThreads();
+    if (!input.eligibleThreadIds) this.refreshNativeThreads();
     if (!this.vectorLoaded) return Result.ok([]);
 
     const limit = Math.min(SEARCH_LIMIT_MAX, Math.max(1, Math.floor(input.limit ?? 5)));
-    const filter = buildSearchFilterClause(input.filters, input.allowlist);
+    const filter = input.eligibleThreadIds
+      ? {
+          sql: "t.thread_id IN (SELECT value FROM json_each(?))",
+          values: [JSON.stringify(input.eligibleThreadIds)],
+        }
+      : buildSearchFilterClause(input.filters, input.allowlist);
     const rows = this.db
       .query(
         `
-        SELECT
-          t.*,
-          s.title,
-          s.brief,
-          s.topics_json,
-          s.retrieval_hints_json,
-          s.aboutness_json,
-          s.importance,
-          s.importance_reasons_json,
-          s.created_at,
-          s.updated_at,
-          s.summary_format_version,
+        WITH scores AS (
+        SELECT t.thread_id, t.end_ts,
           sum(
             max(
               0.0,
@@ -2323,6 +2361,24 @@ export class ConversationThreadStore {
         GROUP BY t.thread_id
         ORDER BY semantic_score DESC, t.end_ts DESC
         LIMIT ?
+        )
+        SELECT
+          t.*,
+          s.title,
+          s.brief,
+          s.topics_json,
+          s.retrieval_hints_json,
+          s.aboutness_json,
+          s.importance,
+          s.importance_reasons_json,
+          s.created_at,
+          s.updated_at,
+          s.summary_format_version,
+          scores.semantic_score
+        FROM scores
+        JOIN conversation_threads t ON t.thread_id = scores.thread_id
+        JOIN conversation_thread_summaries s ON s.thread_id = scores.thread_id
+        ORDER BY scores.semantic_score DESC, t.end_ts DESC
         `,
       )
       .all(
@@ -2380,6 +2436,7 @@ export class ConversationThreadStore {
 function buildSearchFilterClause(
   filters?: ConversationThreadSearchFilters,
   allowlist?: ConversationThreadSearchAllowlist,
+  candidateIds?: readonly string[],
 ): {
   sql: string;
   values: Array<string | number>;
@@ -2420,17 +2477,18 @@ function buildSearchFilterClause(
 
   if (filters?.participantId) {
     clauses.push(`
-      EXISTS (
-        SELECT 1
+      t.thread_id IN (
+        SELECT tm.thread_id
         FROM conversation_thread_messages tm
         JOIN conversation_source_messages m
           ON m.channel_id = tm.channel_id
          AND m.message_id = tm.message_id AND m.surface = CASE WHEN tm.thread_id LIKE 'native:%' THEN 'native' ELSE 'discord' END
-        WHERE tm.thread_id = t.thread_id
-          AND m.deleted = 0
+        WHERE m.deleted = 0
+          ${candidateIds ? "AND tm.thread_id IN (SELECT value FROM json_each(?))" : ""}
           AND m.user_id = ?
       )
     `);
+    if (candidateIds) values.push(JSON.stringify(candidateIds));
     values.push(filters.participantId);
   }
 
@@ -2445,17 +2503,18 @@ function buildSearchFilterClause(
     if (filters?.participantSurface === "discord") crossSurface = "t.kind='native_thread' OR ";
     const placeholders = participantIdsAny.map(() => "?").join(", ");
     clauses.push(`
-      (${crossSurface}EXISTS (
-        SELECT 1
+      (${crossSurface}t.thread_id IN (
+        SELECT tm.thread_id
         FROM conversation_thread_messages tm
         JOIN conversation_source_messages m
           ON m.channel_id = tm.channel_id
          AND m.message_id = tm.message_id AND m.surface = CASE WHEN tm.thread_id LIKE 'native:%' THEN 'native' ELSE 'discord' END
-        WHERE tm.thread_id = t.thread_id
-          AND m.deleted = 0
+        WHERE m.deleted = 0
+          ${candidateIds ? "AND tm.thread_id IN (SELECT value FROM json_each(?))" : ""}
           AND m.user_id IN (${placeholders})
       ))
     `);
+    if (candidateIds) values.push(JSON.stringify(candidateIds));
     values.push(...participantIdsAny);
   }
 

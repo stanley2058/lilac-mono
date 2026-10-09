@@ -1,3 +1,5 @@
+import type { ConversationThreadSearchPool } from "./thread-search-pool";
+import type { ThreadSearchOperation } from "./thread-search-protocol";
 import { SUMMARY_QUIET_MS } from "./thread-summary-policy";
 import { captureError } from "../shared/error-capture.js";
 import {
@@ -1944,10 +1946,15 @@ export function buildThreadSummaryInstructions(): string {
 
 export class ConversationThreadService {
   private readonly logger = threadLogger;
+  private readonly searchScopes = new WeakMap<
+    ConversationThreadAutoInjectUsageAccumulator,
+    Map<string, Promise<string[]>>
+  >();
 
   constructor(
     private readonly params: {
       store: ConversationThreadStore;
+      searchPool?: ConversationThreadSearchPool;
       getConfig: () => Promise<CoreConfig>;
       summarizer?: ConversationThreadSummarizer;
       queryAboutnessSummarizer?: ConversationThreadQueryAboutnessSummarizer;
@@ -1957,6 +1964,45 @@ export class ConversationThreadService {
       entityMapper?: Pick<EntityMapper, "normalizeIncomingText">;
     },
   ) {}
+
+  private async searchStore(
+    operation: Exclude<ThreadSearchOperation, { type: "prepare" | "corpus" }>,
+  ): Promise<ResultType<ConversationThreadSearchHit[], PersistedDataError>> {
+    if (this.params.searchPool) return this.params.searchPool.hits(operation);
+    switch (operation.type) {
+      case "semantic":
+        return this.params.store.searchSemantic(operation);
+      case "lexical":
+        return this.params.store.search(operation);
+      case "any-term":
+        return this.params.store.searchAnyTerm(operation);
+      case "current":
+        return Result.ok(this.params.store.filterCurrentSearchHits(operation));
+    }
+  }
+
+  private prepareSearchScope(
+    filters: ConversationThreadSearchFilters,
+    allowlist: ConversationThreadSearchAllowlist,
+    usage?: ConversationThreadAutoInjectUsageAccumulator,
+  ): Promise<string[]> {
+    const prepare = () =>
+      this.params.searchPool
+        ? this.params.searchPool.strings({ type: "prepare", filters, allowlist })
+        : Promise.resolve(this.params.store.prepareSearch({ filters, allowlist }));
+    if (!usage) return prepare();
+    let scopes = this.searchScopes.get(usage);
+    if (!scopes) {
+      scopes = new Map();
+      this.searchScopes.set(usage, scopes);
+    }
+    const key = JSON.stringify({ filters, allowlist });
+    const existing = scopes.get(key);
+    if (existing) return existing;
+    const prepared = prepare();
+    scopes.set(key, prepared);
+    return prepared;
+  }
 
   async search(input: {
     surface?: "discord" | "native";
@@ -1994,6 +2040,11 @@ export class ConversationThreadService {
     const recallLimit =
       mode === "lexical" ? limit : Math.min(50, Math.max(limit * COVERAGE_RECALL_MULTIPLIER, 10));
     const usage = createThreadEmbeddingUsageAccumulator("search_query", input.autoInjectUsage);
+    const allowlist = buildSearchAllowlist(cfg);
+    const eligibleThreadIds =
+      mode !== "lexical" && embeddingAdapter && this.params.store.isVectorSearchAvailable()
+        ? this.prepareSearchScope(filters, allowlist, input.autoInjectUsage)
+        : undefined;
     const recallHits = await this.searchHitsForQueries({
       queries,
       limit: recallLimit,
@@ -2001,7 +2052,8 @@ export class ConversationThreadService {
       cfg,
       embeddingAdapter,
       filters,
-      allowlist: buildSearchAllowlist(cfg),
+      allowlist,
+      eligibleThreadIds,
       onEmbeddingUsage: usage.record,
     });
     const recalledResult = recallHits.mapError((error) => {
@@ -2019,12 +2071,11 @@ export class ConversationThreadService {
           mode,
           candidateCount: recalled.length,
         });
-    this.params.store.refreshNativeThreads();
-    const currentHits = recalled.filter(
-      (hit) =>
-        hit.kind !== "native_thread" ||
-        this.params.store.getThread(hit.threadId)?.summary_input_hash === hit.sourceRevision,
-    );
+    const current = await this.searchStore({ type: "current", hits: recalled, filters, allowlist });
+    const currentError = resultErrorOrNull(current);
+    if (currentError) return Result.err(currentError);
+    const currentIds = new Set(selectResultValue(current).map((hit) => hit.threadId));
+    const currentHits = recalled.filter((hit) => currentIds.has(hit.threadId));
     const hits = this.applyAboutnessCoverage(currentHits, queryAboutness)
       .filter((hit) => hit.score >= minScore)
       .slice(0, limit);
@@ -2109,22 +2160,24 @@ export class ConversationThreadService {
         })
       : Promise.resolve(Result.ok<ConversationThreadSearchHit[]>([]));
     // Over-fetch so stale native summaries dropped by the filter do not take candidate slots.
-    const lexical = this.params.store
-      .searchAnyTerm({
-        text,
-        limit: input.limit * 2,
-        filters,
-        allowlist,
-        excludeThreadIds: input.excludeThreadIds,
-      })
-      .map((hits) => this.filterCurrentAutoInjectHits(cfg, hits).slice(0, input.limit));
+    const lexical = await this.searchStore({
+      type: "any-term",
+      text,
+      limit: input.limit * 2,
+      filters,
+      allowlist,
+      excludeThreadIds: input.excludeThreadIds,
+    });
     const semanticResult = await semantic;
     const lexicalError = resultErrorOrNull(lexical);
     if (lexicalError) return Result.err(lexicalError);
     const semanticError = resultErrorOrNull(semanticResult);
     if (semanticError) return Result.err(semanticError);
-    const lexicalHits = selectResultValue(lexical);
-    const semanticHits = this.filterCurrentAutoInjectHits(cfg, selectResultValue(semanticResult));
+    const [currentLexical, semanticHits] = await Promise.all([
+      this.filterCurrentAutoInjectHits(cfg, selectResultValue(lexical), filters),
+      this.filterCurrentAutoInjectHits(cfg, selectResultValue(semanticResult), filters),
+    ]);
+    const lexicalHits = currentLexical.slice(0, input.limit);
     if (semanticHits.length === 0) {
       if (lexicalHits.length === 0) return Result.ok({ source: "none", results: [] });
       return Result.ok(this.formatShortlist("lexical", lexicalHits));
@@ -2153,12 +2206,20 @@ export class ConversationThreadService {
       : null;
     if (!adapter || !this.params.store.isVectorSearchAvailable()) return Result.ok([]);
 
-    const usage = createThreadEmbeddingUsageAccumulator("search_query", input.autoInjectUsage);
-    const embedded = await captureConversationThreadGeneration(
-      () => adapter.embed({ text: input.text, facet: "query", onUsage: usage.record }),
-      "search-embedding",
-      "Search embedding failed",
+    const eligibility = this.prepareSearchScope(
+      input.filters,
+      input.allowlist,
+      input.autoInjectUsage,
     );
+    const usage = createThreadEmbeddingUsageAccumulator("search_query", input.autoInjectUsage);
+    const [embedded, eligibleThreadIds] = await Promise.all([
+      captureConversationThreadGeneration(
+        () => adapter.embed({ text: input.text, facet: "query", onUsage: usage.record }),
+        "search-embedding",
+        "Search embedding failed",
+      ),
+      eligibility,
+    ]);
     const embeddingError = resultErrorOrNull(embedded);
     if (embeddingError) {
       usage.log({ status: "failed", mode: "semantic", queryCount: 1 });
@@ -2171,32 +2232,32 @@ export class ConversationThreadService {
 
     const excluded = new Set(input.excludeThreadIds ?? []);
     const queryEmbedding = selectResultValue(embedded);
-    return this.params.store
-      .searchSemantic({
-        embedding: queryEmbedding,
+    return (
+      await this.searchStore({
+        type: "semantic",
+        eligibleThreadIds,
+        embedding: new Float32Array(queryEmbedding),
         modelId: adapter.modelId,
         dimensions: queryEmbedding.length,
         limit: input.limit + excluded.size,
         filters: input.filters,
         allowlist: input.allowlist,
       })
-      .map((hits) => hits.filter((hit) => !excluded.has(hit.threadId)).slice(0, input.limit));
+    ).map((hits) => hits.filter((hit) => !excluded.has(hit.threadId)).slice(0, input.limit));
   }
 
-  private filterCurrentAutoInjectHits(
+  private async filterCurrentAutoInjectHits(
     cfg: CoreConfig,
     hits: readonly ConversationThreadSearchHit[],
-  ): ConversationThreadSearchHit[] {
-    return hits.filter((hit) => {
-      if (hit.kind === "native_thread") {
-        return this.params.store.getThread(hit.threadId)?.summary_input_hash === hit.sourceRevision;
-      }
-      return shouldAllowDiscordThread(cfg, {
-        channelId: hit.channelId,
-        parentChannelId: hit.parentChannelId,
-        guildId: hit.guildId,
-      });
+    filters?: ConversationThreadSearchFilters,
+  ): Promise<ConversationThreadSearchHit[]> {
+    const current = await this.searchStore({
+      type: "current",
+      hits,
+      filters,
+      allowlist: buildSearchAllowlist(cfg),
     });
+    return selectResultValue(current);
   }
 
   private formatShortlist(
@@ -2208,7 +2269,10 @@ export class ConversationThreadService {
 
   async getAutoInjectRankingCorpusDocuments(): Promise<readonly string[]> {
     const cfg = await this.params.getConfig();
-    return this.params.store.listAutoInjectRankingDocuments(buildSearchAllowlist(cfg));
+    const allowlist = buildSearchAllowlist(cfg);
+    if (this.params.searchPool)
+      return this.params.searchPool.strings({ type: "corpus", allowlist });
+    return this.params.store.listAutoInjectRankingDocuments(allowlist);
   }
 
   async read(input: {
@@ -3086,6 +3150,7 @@ export class ConversationThreadService {
     embeddingAdapter: Awaited<ReturnType<ConversationThreadEmbeddingAdapterResolver>>;
     filters: ConversationThreadSearchFilters;
     allowlist: ConversationThreadSearchAllowlist;
+    eligibleThreadIds?: Promise<readonly string[]>;
     onEmbeddingUsage?: (event: ConversationThreadEmbeddingUsageEvent) => void;
   }): Promise<ResultType<ConversationThreadSearchHit[], PersistedDataError>> {
     const candidates = new Map<string, ConversationThreadSearchHit>();
@@ -3113,37 +3178,37 @@ export class ConversationThreadService {
       );
     };
 
-    if (input.mode !== "semantic") {
-      const lexical = this.params.store.search({
-        query: input.query,
-        limit: input.limit * 5,
-        filters: input.filters,
-        allowlist: input.allowlist,
-      });
-      const lexicalError = resultErrorOrNull(lexical);
-      if (lexicalError) return Result.err(lexicalError);
-      const lexicalHits = selectResultValue(lexical);
-      for (const hit of lexicalHits) {
-        hit.score = applyImportanceNudge(
-          hit,
-          hit.lexicalScore * (input.mode === "lexical" ? 1 : HYBRID_LEXICAL_WEIGHT),
-        );
-        add(hit);
-      }
-    }
-
     const adapter = input.embeddingAdapter;
-    if (input.mode !== "lexical" && adapter && this.params.store.isVectorSearchAvailable()) {
-      const embedded = await captureConversationThreadGeneration(
-        () =>
-          adapter.embed({
-            text: input.query,
-            facet: "query",
-            onUsage: input.onEmbeddingUsage,
-          }),
-        "search-embedding",
-        "Search embedding failed",
+    const [lexical, embedded] = await Promise.all([
+      input.mode !== "semantic"
+        ? this.searchStore({
+            type: "lexical",
+            query: input.query,
+            limit: input.limit * 5,
+            filters: input.filters,
+            allowlist: input.allowlist,
+          })
+        : Promise.resolve(Result.ok<ConversationThreadSearchHit[]>([])),
+      input.mode !== "lexical" && adapter && this.params.store.isVectorSearchAvailable()
+        ? captureConversationThreadGeneration(
+            () =>
+              adapter.embed({ text: input.query, facet: "query", onUsage: input.onEmbeddingUsage }),
+            "search-embedding",
+            "Search embedding failed",
+          )
+        : Promise.resolve(null),
+      input.eligibleThreadIds,
+    ]);
+    const lexicalError = resultErrorOrNull(lexical);
+    if (lexicalError) return Result.err(lexicalError);
+    for (const hit of selectResultValue(lexical)) {
+      hit.score = applyImportanceNudge(
+        hit,
+        hit.lexicalScore * (input.mode === "lexical" ? 1 : HYBRID_LEXICAL_WEIGHT),
       );
+      add(hit);
+    }
+    if (embedded && adapter) {
       const semantic = await embedded.match({
         err: (error) => async () => {
           this.logger.warn("thread semantic search failed; using lexical fallback", {
@@ -3157,24 +3222,26 @@ export class ConversationThreadService {
           return Result.ok(undefined);
         },
         ok: (queryEmbedding) => async () =>
-          this.params.store
-            .searchSemantic({
-              embedding: queryEmbedding,
+          (
+            await this.searchStore({
+              type: "semantic",
+              eligibleThreadIds: await input.eligibleThreadIds,
+              embedding: new Float32Array(queryEmbedding),
               modelId: adapter.modelId,
               dimensions: queryEmbedding.length,
               limit: input.limit * 5,
               filters: input.filters,
               allowlist: input.allowlist,
             })
-            .map((hits) => {
-              for (const hit of hits) {
-                hit.score = applyImportanceNudge(
-                  hit,
-                  hit.semanticScore + hit.lexicalScore * HYBRID_LEXICAL_WEIGHT,
-                );
-                add(hit);
-              }
-            }),
+          ).map((hits) => {
+            for (const hit of hits) {
+              hit.score = applyImportanceNudge(
+                hit,
+                hit.semanticScore + hit.lexicalScore * HYBRID_LEXICAL_WEIGHT,
+              );
+              add(hit);
+            }
+          }),
       })();
       const semanticError = resultErrorOrNull(semantic);
       if (semanticError) return Result.err(semanticError);
@@ -3198,6 +3265,7 @@ export class ConversationThreadService {
     embeddingAdapter: Awaited<ReturnType<ConversationThreadEmbeddingAdapterResolver>>;
     filters: ConversationThreadSearchFilters;
     allowlist: ConversationThreadSearchAllowlist;
+    eligibleThreadIds?: Promise<readonly string[]>;
     onEmbeddingUsage?: (event: ConversationThreadEmbeddingUsageEvent) => void;
   }): Promise<ResultType<ConversationThreadSearchHitWithAttribution[], PersistedDataError>> {
     if (input.queries.length === 1) {
@@ -3209,6 +3277,7 @@ export class ConversationThreadService {
         embeddingAdapter: input.embeddingAdapter,
         filters: input.filters,
         allowlist: input.allowlist,
+        eligibleThreadIds: input.eligibleThreadIds,
         onEmbeddingUsage: input.onEmbeddingUsage,
       });
     }
@@ -3225,6 +3294,7 @@ export class ConversationThreadService {
           embeddingAdapter: input.embeddingAdapter,
           filters: input.filters,
           allowlist: input.allowlist,
+          eligibleThreadIds: input.eligibleThreadIds,
           onEmbeddingUsage: input.onEmbeddingUsage,
         }),
       })),

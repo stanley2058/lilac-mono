@@ -1,3 +1,4 @@
+import { ConversationThreadSearchPool } from "../../src/conversation/thread-search-pool";
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -13,6 +14,7 @@ import { DiscordSearchStore } from "../../src/surface/store/discord-search-store
 import { ConversationThreadStore } from "../../src/conversation/thread-store";
 import {
   ConversationThreadService,
+  createConversationThreadAutoInjectUsageAccumulator,
   buildThreadSummaryModelMessages,
   createConversationThreadToolService,
   type ConversationThreadSummarizer,
@@ -605,4 +607,114 @@ test("attachment-only native and Discord messages feed identical bytes to summar
   expect(result.failed).toBe(0);
   expect(files).toBe(2);
   expect(surfaces.sort()).toEqual(["discord", "native"]);
+});
+
+test("worker searches preserve cross-surface results and observe concurrent native deletion", async () => {
+  const item = createNative();
+  createDiscord();
+  await service.runSummarization({ now: Date.now() });
+  const expected = (
+    await service.search({
+      query: ["deployment", "answer"],
+      mode: "hybrid",
+      queryAboutness: aboutness,
+    })
+  ).unwrap();
+  const pool = new ConversationThreadSearchPool({
+    searchDbPath: path.join(dir, "search.db"),
+    nativeDbPath: path.join(dir, "native.db"),
+  });
+  const workerService = new ConversationThreadService({
+    store: index,
+    searchPool: pool,
+    getConfig: async () => cfg,
+    getEmbeddingAdapter: async () => ({
+      modelId: "test",
+      embed: async () => {
+        duringEmbedding?.();
+        duringEmbedding = undefined;
+        return new Float32Array([1, 0]);
+      },
+    }),
+  });
+  try {
+    const actual = (
+      await workerService.search({
+        query: ["deployment", "answer"],
+        mode: "hybrid",
+        queryAboutness: aboutness,
+      })
+    ).unwrap();
+    expect(actual.results).toEqual(expected.results);
+    duringEmbedding = () => removeThread(item);
+    const after = (
+      await workerService.search({
+        query: ["deployment", "answer"],
+        mode: "hybrid",
+        queryAboutness: aboutness,
+      })
+    ).unwrap();
+    expect(after.results.map((hit) => hit.threadId)).not.toContain(item.ref);
+    expect(after.results.some((hit) => hit.threadId.startsWith("discord:"))).toBe(true);
+    const empty = (
+      await workerService.search({
+        query: "deployment",
+        mode: "semantic",
+        participantId: "missing",
+        queryAboutness: aboutness,
+      })
+    ).unwrap();
+    expect(empty.results).toEqual([]);
+  } finally {
+    pool.close();
+  }
+});
+
+test("workers refresh changed native threads concurrently and reuse request eligibility", async () => {
+  const pool = new ConversationThreadSearchPool({
+    searchDbPath: path.join(dir, "search.db"),
+    nativeDbPath: path.join(dir, "native.db"),
+  });
+  try {
+    await Promise.all(Array.from({ length: 3 }, () => pool.strings({ type: "prepare" })));
+    for (let i = 0; i < 30; i++) createNative("alice", "deployment " + i);
+    const responses = await Promise.all(
+      Array.from({ length: 6 }, () => pool.strings({ type: "prepare" })),
+    );
+    expect(responses.every((ids) => ids.length === 30)).toBe(true);
+    const strings = spyOn(pool, "strings");
+    const workerService = new ConversationThreadService({
+      store: index,
+      searchPool: pool,
+      getConfig: async () => cfg,
+      getEmbeddingAdapter: async () => ({
+        modelId: "test",
+        embed: async () => new Float32Array([1, 0]),
+      }),
+    });
+    const autoInjectUsage = createConversationThreadAutoInjectUsageAccumulator({
+      requestId: "reuse",
+    });
+    await Promise.all(
+      ["deployment", "answer", "hosting"].map((query) =>
+        workerService.search({
+          query,
+          mode: "semantic",
+          queryAboutness: aboutness,
+          autoInjectUsage,
+        }),
+      ),
+    );
+    expect(strings.mock.calls.filter(([op]) => op.type === "prepare").length).toBe(1);
+    await workerService.search({
+      query: "deployment",
+      mode: "semantic",
+      participantId: "missing",
+      queryAboutness: aboutness,
+      autoInjectUsage,
+    });
+    expect(strings.mock.calls.filter(([op]) => op.type === "prepare").length).toBe(2);
+  } finally {
+    pool.close();
+  }
 });

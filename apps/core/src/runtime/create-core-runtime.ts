@@ -1,3 +1,4 @@
+import { ConversationThreadSearchPool } from "../conversation/thread-search-pool";
 import { nativeFailure } from "../surface/native/errors";
 import { openNativeInstallation, type NativeInstallation } from "../surface/native/installation";
 import {
@@ -2012,6 +2013,7 @@ export async function createCoreRuntime(
   let resourceService: CoreResourceService | null = null;
   let discordSearchStore: DiscordSearchStore | null = null;
   let discordSurfaceStore: DiscordSurfaceStore | null = null;
+  let conversationThreadSearchPool: ConversationThreadSearchPool | null = null;
   let conversationThreadStore: ConversationThreadStore | null = null;
   let discoveryService: DiscoveryService | null = null;
 
@@ -2068,6 +2070,8 @@ export async function createCoreRuntime(
       nativeInstallation = null;
     });
     await cleanup.run("conversationThreadStore.createFailure.close", async () => {
+      conversationThreadSearchPool?.close();
+      conversationThreadSearchPool = null;
       conversationThreadStore?.close();
       conversationThreadStore = null;
     });
@@ -3372,7 +3376,14 @@ export async function createCoreRuntime(
             : undefined;
           if (nativeConversationDbPath)
             activeConversationThreadStore.attachNativeSource(nativeConversationDbPath);
+          conversationThreadSearchPool = new ConversationThreadSearchPool({
+            searchDbPath: discordSearchDbPath,
+            surfaceDbPath: discordSurfaceDbPath,
+            nativeDbPath: nativeConversationDbPath,
+            botName: initialCoreConfig.surface.discord.botName,
+          });
           const threadService = new ConversationThreadService({
+            searchPool: conversationThreadSearchPool,
             store: activeConversationThreadStore,
             getConfig: () => getCoreConfig(),
             getEmbeddingAdapter: getConversationThreadEmbeddingAdapter,
@@ -4563,6 +4574,8 @@ export async function createCoreRuntime(
         discordSurfaceStore = null;
       });
       await safe("conversationThreadStore.close", async () => {
+        conversationThreadSearchPool?.close();
+        conversationThreadSearchPool = null;
         conversationThreadStore?.close();
         conversationThreadStore = null;
         conversationThreadService = null;
