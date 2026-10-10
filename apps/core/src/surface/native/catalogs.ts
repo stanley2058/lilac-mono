@@ -129,6 +129,14 @@ function projectCatalog(source: NativeCatalogSource): Omit<DisplayCatalog, "revi
                 .map((arg) => (arg.required ? `<${arg.key}>` : `[${arg.key}]`))
                 .join(" ")
                 .slice(0, 256),
+              arguments: command.args.map((arg) => ({
+                key: arg.key,
+                type: arg.type,
+                ...(arg.description ? { description: arg.description } : {}),
+                required: arg.required,
+                // Oversized choice lists stay server-validated only.
+                ...(arg.choices && arg.choices.length <= 256 ? { choices: arg.choices } : {}),
+              })),
             }
           : {}),
       })),

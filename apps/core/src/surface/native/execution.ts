@@ -229,7 +229,7 @@ export function createNativeExecution(options: {
     });
   }
 
-  function commandMetadata(input: NativeInputRecord): ResultType<object, Error> {
+  function commandMetadata(input: Pick<NativeInputRecord, "command">): ResultType<object, Error> {
     if (!input.command) return Result.ok({});
     const name = input.command.id.replace(/^custom:/u, "");
     const manager = options.customCommands;
@@ -237,6 +237,7 @@ export function createNativeExecution(options: {
       return Result.err(nativeFailure("invalid", "Custom command is unavailable"));
     return manager
       .parseText(`/${CUSTOM_COMMAND_TEXT_PREFIX}${name} ${input.command.arguments}`)
+      .mapError((error) => nativeFailure("invalid", error.message))
       .andThen((invocation) => {
         if (!invocation)
           return Result.err(nativeFailure("invalid", "Custom command could not be parsed"));
@@ -533,7 +534,12 @@ export function createNativeExecution(options: {
     return Result.all(await Promise.all(publications.values())).map(() => undefined);
   }
 
+  function validateCommand(input: Pick<NativeInputRecord, "command">): ResultType<void, Error> {
+    return commandMetadata(input).map(() => undefined);
+  }
+
   return {
+    validateCommand,
     drainPublications,
     kick,
     cancel,

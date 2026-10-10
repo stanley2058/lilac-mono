@@ -938,7 +938,25 @@ const composerCatalog: DisplayCatalog = {
       source: "user",
     },
   ],
-  commands: [],
+  commands: [
+    {
+      id: "custom:tarot",
+      name: "tarot",
+      description: "Draw tarot cards",
+      kind: "custom",
+      argumentHint: "<count> [spread] [reversed]",
+      arguments: [
+        { key: "count", type: "number", required: true, description: "Cards to draw" },
+        {
+          key: "spread",
+          type: "string",
+          required: false,
+          choices: ["single", "past-present-future", "celtic cross"],
+        },
+        { key: "reversed", type: "boolean", required: false, description: "Allow reversed cards" },
+      ],
+    },
+  ],
 };
 function ComposerSpecimen() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -961,7 +979,7 @@ function ComposerSpecimen() {
     <Section
       id="composer"
       title="Composer"
-      description="Try the formatting toolbar, Markdown shortcuts, and multiline input."
+      description="Try the formatting toolbar, Markdown shortcuts, multiline input, and /tarot arguments."
     >
       <div className="ds-row flex items-center flex-wrap gap-2">
         <Button variant="secondary" onClick={() => setDisabled((value) => !value)}>

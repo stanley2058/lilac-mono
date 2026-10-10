@@ -65,6 +65,7 @@ import {
   replaceEditorDocument,
   insertEditorReference,
   composerBadgeSelection,
+  type CompletionRange,
 } from "./composer-tiptap";
 export {
   createComposerEditor,
@@ -203,7 +204,12 @@ function SkillElement(props: NodeViewProps) {
 }
 export type ComposerEditorHandle = {
   capturePaste: () => ReturnType<typeof captureEditorPaste>;
-  complete: (text: string, replaceLength: number, skill?: ComposerSkill) => void;
+  complete: (
+    text: string,
+    replaceLength: number,
+    skill?: ComposerSkill,
+    range?: CompletionRange,
+  ) => void;
   submissionText: () => string;
   hasMissingAttachments: () => boolean;
 };
@@ -413,9 +419,9 @@ const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) 
         [...editorAttachmentKeys(editor.state.doc)].some(
           (key) => !attachments.some((attachment) => attachment.key === key),
         ),
-      complete(text, length, skill) {
+      complete(text, length, skill, range) {
         if (!editor) return;
-        completeEditor(editor, text, length, skill);
+        completeEditor(editor, text, length, skill, range);
         editor.commands.focus();
       },
     }),

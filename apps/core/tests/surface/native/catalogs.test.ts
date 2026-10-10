@@ -73,3 +73,29 @@ it("identity changes invalidate the catalog once and survive model catalog reloa
   if (reloaded.kind !== "catalog") throw new Error("Expected catalog");
   expect(reloaded.catalog.agent?.avatarUrl).toContain("revision=two");
 });
+
+it("projects custom command arguments for composer completion", () => {
+  const service = new NativeCatalogService({
+    config: parseCoreConfigV2ToUniversal({ models: { main: { model: "openai/demo" } } }),
+    skills: [],
+    commands: [
+      {
+        name: "tarot",
+        description: "Draw cards",
+        args: [
+          { key: "count", type: "number", required: true, description: "Cards to draw" },
+          { key: "mode", type: "string", required: false, choices: ["single", "spread"] },
+        ],
+      },
+    ],
+  });
+  const reply = service.get({ key: "owner" });
+  if (reply.kind !== "catalog") throw new Error("Expected catalog");
+  expect(reply.catalog.commands.find((command) => command.id === "custom:tarot")).toMatchObject({
+    argumentHint: "<count> [mode]",
+    arguments: [
+      { key: "count", type: "number", required: true, description: "Cards to draw" },
+      { key: "mode", type: "string", required: false, choices: ["single", "spread"] },
+    ],
+  });
+});

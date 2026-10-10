@@ -132,6 +132,17 @@ it("completes a mention after a soft line break without deleting preceding text"
   editor.destroy();
 });
 
+it("replaces the rest of a command argument token after the cursor", () => {
+  const editor = headlessEditor("/tarot 3 single more");
+  editor.commands.setTextSelection(12);
+  expect(composerCompletionPrefix(editor)).toBe("/tarot 3 si");
+  completeEditor(editor, "spread=single", 2, undefined, { after: 4 });
+  expect(composerText(editor.state.doc)).toBe("/tarot 3 spread=single  more");
+  completeEditor(editor, "mode=", 0, undefined, { space: false });
+  expect(composerText(editor.state.doc)).toContain("spread=single mode= more");
+  editor.destroy();
+});
+
 it("completes a skill as a badge that keeps its mention syntax", () => {
   const editor = headlessEditor("use $ag");
   editor.commands.setTextSelection(editor.state.doc.content.size - 1);

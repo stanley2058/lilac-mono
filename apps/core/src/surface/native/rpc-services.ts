@@ -44,7 +44,10 @@ export type NativeRpcServiceOptions = {
   workingIndicators?: () => readonly string[];
   catalogs: Pick<NativeCatalogService, "get" | "subscribe">;
   config: Pick<NativeConfigService, "read" | "save" | "reloadMcp">;
-  execution: Pick<NativeExecution, "kick" | "cancel" | "rewind" | "deleteThread">;
+  execution: Pick<
+    NativeExecution,
+    "kick" | "cancel" | "rewind" | "deleteThread" | "validateCommand"
+  >;
   resources: Pick<NativeResourceService, "reserve">;
   search: Pick<NativeSearchStore, "searchMessages">;
   external: Pick<NativeExternalThreads, "list" | "read">;
@@ -187,7 +190,7 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
         )
       )
         return Result.err(nativeFailure("invalid", "Selected command is unavailable"));
-      return Result.ok();
+      return execution.validateCommand(input);
     });
   }
 

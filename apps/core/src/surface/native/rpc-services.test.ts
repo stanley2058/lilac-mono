@@ -119,6 +119,7 @@ function fixture(
       cancel: async () => Result.ok(),
       deleteThread: async () => Result.ok(),
       rewind: async () => Result.err(nativeFailure("invalid", "Not used")),
+      validateCommand: () => Result.ok(),
     },
     resources: { reserve: (actor, input) => store.reserveUpload(actor, input) },
     search: new NativeSearchStore({ db, store }),

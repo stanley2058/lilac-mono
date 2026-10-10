@@ -72,6 +72,10 @@
   width: min(calc(100vw - calc(var(--ui-space-unit) * 8)), var(--anchor-width));
   height: min(20rem, var(--available-height));
 }
+.completion-popover[data-slot="popover-content"][data-mode="arguments"] {
+  height: auto;
+  max-height: min(20rem, var(--available-height));
+}
 
 .composer-attachment-chip > img,
 .composer-attachment-chip > svg {

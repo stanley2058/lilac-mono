@@ -17,11 +17,20 @@ import {
   useState,
   type DragEvent,
 } from "react";
-import { ArrowUp, Paperclip, Square, Upload } from "lucide-react";
+import { ArrowUp, CircleAlert, Paperclip, Square, Upload } from "lucide-react";
 import { createPortal } from "react-dom";
 import { hasFileDrag, installWindowFileDrop } from "../window-file-drop";
 import "./composer-drop.css";
-import type { Completion } from "@stanley2058/lilac-client";
+import { completeCatalog, type Completion } from "@stanley2058/lilac-client";
+import type { CommandArgument } from "@stanley2058/lilac-client-protocol";
+import {
+  commandArgumentStep,
+  tokenRemainder,
+  validateCommandArguments,
+  type ArgumentError,
+  type ArgumentStep,
+  type ArgumentSuggestion,
+} from "../command-arguments";
 import type { ChatCommon, ComposerSubmission, Attachment } from "../types";
 import { readMessageClipboard, type MessageClipboard } from "../message-clipboard";
 import { namePastedImage } from "../pasted-file";
@@ -72,7 +81,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     : `Message ${agent.displayName}…`;
   const input = useRef<ComposerEditorHandle>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const insertingCompletion = useRef(false);
+  const insertingCompletion = useRef<"hide" | "keep">(undefined);
   const [mode, setMode] = useState<"steer" | "followup">("steer");
   const commandId = props.commandId;
   const setCommandId = props.onCommand;
@@ -102,7 +111,9 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   );
   const [prefix, setPrefix] = useState("");
   const [selected, setSelected] = useState(0);
+  const [navigated, setNavigated] = useState(false);
   const [menuHidden, setMenuHidden] = useState(false);
+  const [argumentError, setArgumentError] = useState<ArgumentError>();
   const [dragging, setDragging] = useState(false);
   const [documentKey, setDocumentKey] = useState(props.documentKey);
   if (documentKey !== props.documentKey) {
@@ -110,7 +121,9 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     setMode("steer");
     setPrefix("");
     setSelected(0);
+    setNavigated(false);
     setMenuHidden(false);
+    setArgumentError(undefined);
     setDragging(false);
   }
   const dropProps = useRef(props);
@@ -126,14 +139,6 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   const match = /(?:^|\s)([$/])([^$/\n]*)$/.exec(prefix);
   const trigger = match?.[1] === "$" ? "$" : "/";
   const query = match?.[2] ?? "";
-  const completions = useMemo(
-    () =>
-      match && !menuHidden && client && scope
-        ? client.catalogs.complete(scope, trigger, query, 100)
-        : [],
-    [client, scope, trigger, query, !!match, menuHidden, catalog],
-  );
-  const highlighted = Math.min(selected, Math.max(0, completions.length - 1));
   const matching =
     catalog?.commands.filter(
       (entry) => plainText.trim() === `/${entry.name}` || plainText.startsWith(`/${entry.name} `),
@@ -142,9 +147,40 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   const command = commandId ? matching.find((entry) => entry.id === commandId) : unambiguous;
   const custom = command?.kind === "custom" ? command : undefined;
   const delivery = inputDeliveryOptions(active, mode, props.modelId, !!custom);
+  const commandArguments = custom?.arguments?.length ? custom.arguments : undefined;
+  const argumentText =
+    commandArguments &&
+    custom &&
+    prefix.startsWith(`/${custom.name} `) &&
+    plainText.startsWith(prefix)
+      ? prefix.slice(custom.name.length + 2)
+      : undefined;
+  const argumentStep = useMemo(
+    () =>
+      commandArguments && argumentText !== undefined
+        ? commandArgumentStep(commandArguments, argumentText)
+        : undefined,
+    [commandArguments, argumentText],
+  );
+  const guideOpen = !menuHidden && !!commandArguments && (!!argumentStep || !!argumentError);
+  const completions = useMemo(() => {
+    if (!match || menuHidden || argumentText !== undefined) return [];
+    if (catalog) return completeCatalog(catalog, trigger, query, 100);
+    return client && scope ? client.catalogs.complete(scope, trigger, query, 100) : [];
+  }, [client, scope, trigger, query, !!match, menuHidden, catalog, argumentText === undefined]);
+  const suggestions = guideOpen ? (argumentStep?.suggestions ?? []) : [];
+  const menuSize = guideOpen ? suggestions.length : completions.length;
+  // An optional argument can be skipped, so Enter sends until the user types or navigates.
+  const autoHighlight =
+    !argumentStep ||
+    argumentStep.token !== "" ||
+    (argumentStep.active !== undefined && !!commandArguments?.[argumentStep.active]?.required);
+  const highlighted =
+    menuSize && (navigated || autoHighlight) ? Math.min(selected, menuSize - 1) : -1;
 
   function choose(item: Completion) {
-    insertingCompletion.current = true;
+    const continues = item.kind === "custom" && !!catalogCommand(item.id)?.arguments?.length;
+    insertingCompletion.current = continues ? "keep" : "hide";
     input.current?.complete(
       item.insertText,
       (match?.[2]?.length ?? 0) + 1,
@@ -152,7 +188,35 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     );
     if (item.kind === "skill") setSkills([...new Set([...skillIds, item.id])].slice(0, 32));
     if (item.kind !== "skill") setCommandId(item.id);
-    setMenuHidden(true);
+  }
+
+  function catalogCommand(id: string) {
+    return catalog?.commands.find((entry) => entry.id === id);
+  }
+
+  function chooseArgument(item: ArgumentSuggestion) {
+    insertingCompletion.current = "keep";
+    // Replace the whole token, including any part after the cursor.
+    const after = tokenRemainder(argumentText ?? "", plainText.slice(prefix.length));
+    input.current?.complete(item.insertText, argumentStep?.token.length ?? 0, undefined, {
+      space: !item.continues,
+      after,
+    });
+  }
+
+  function chooseAt(index: number) {
+    const suggestion = guideOpen ? suggestions[index] : undefined;
+    if (suggestion) return chooseArgument(suggestion);
+    const completion = guideOpen ? undefined : completions[index];
+    if (completion) choose(completion);
+  }
+
+  function moveHighlight(down: boolean) {
+    // Without a highlight, Down starts at the first item and Up at the last.
+    const start = down ? menuSize - 1 : 0;
+    const from = highlighted >= 0 ? highlighted : start;
+    setNavigated(true);
+    setSelected((from + (down ? 1 : menuSize - 1)) % menuSize);
   }
 
   function submit() {
@@ -179,6 +243,15 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     if (commandId && !command) {
       setCommandId(undefined);
       toast.add({ title: "The selected command changed. Choose it again.", type: "error" });
+      return;
+    }
+    const invalidArgument =
+      custom && commandArguments
+        ? validateCommandArguments(commandArguments, plainText.slice(custom.name.length + 2))
+        : undefined;
+    if (invalidArgument) {
+      setArgumentError(invalidArgument);
+      setMenuHidden(false);
       return;
     }
     if (command?.kind === "builtin" && command.id === "cancel") {
@@ -211,25 +284,28 @@ export const Composer = memo(function Composer(props: ComposerProps) {
 
   function keydown(event: KeyboardEvent) {
     if (event.isComposing) return;
-    if (
-      completions.length &&
-      ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)
-    ) {
+    if ((menuSize || guideOpen) && event.key === "Escape") {
       event.preventDefault();
-      if (event.key === "Escape") {
-        setMenuHidden(true);
-        return;
-      }
-      if (event.key === "ArrowDown") {
-        setSelected((value) => (value + 1) % completions.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        setSelected((value) => (value + completions.length - 1) % completions.length);
-        return;
-      }
-      const completion = completions[highlighted];
-      if (completion) choose(completion);
+      setMenuHidden(true);
+      return;
+    }
+    if (menuSize && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      moveHighlight(event.key === "ArrowDown");
+      return;
+    }
+    if (menuSize && event.key === "Tab" && !event.shiftKey) {
+      event.preventDefault();
+      chooseAt(Math.max(0, highlighted));
+      return;
+    }
+    const typedSuggestion =
+      guideOpen &&
+      !suggestions[highlighted]?.continues &&
+      suggestions[highlighted]?.insertText === argumentStep?.token;
+    if (event.key === "Enter" && highlighted >= 0 && !typedSuggestion) {
+      event.preventDefault();
+      chooseAt(highlighted);
       return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
@@ -344,10 +420,13 @@ export const Composer = memo(function Composer(props: ComposerProps) {
       plainText: visibleText,
       documentKey: props.documentKey,
     });
+    setArgumentError(undefined);
+    setSelected(0);
+    setNavigated(false);
     if (insertingCompletion.current) {
-      insertingCompletion.current = false;
+      setMenuHidden(insertingCompletion.current === "hide");
+      insertingCompletion.current = undefined;
       onText(value);
-      setMenuHidden(true);
       return;
     }
     const chosen = catalog?.commands.find((entry) => entry.id === commandId);
@@ -361,7 +440,6 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     if (badgeSkills.join("\n") !== skillIds.join("\n")) setSkills(badgeSkills);
     onText(value);
     setMenuHidden(false);
-    setSelected(0);
   });
   const editorKeyDown = useEventCallback(keydown);
   const editorPaste = useEventCallback(paste);
@@ -394,7 +472,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           )
         : null}
       <Popover
-        open={completions.length > 0}
+        open={completions.length > 0 || guideOpen}
         onOpenChange={(open) => {
           if (!open) setMenuHidden(true);
         }}
@@ -411,41 +489,65 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           initialFocus={false}
           finalFocus={false}
           className="completion-popover absolute left-0 right-0 bottom-[calc(100%_+_calc(var(--ui-space-unit)*2))] h-80 p-[calc(calc(var(--ui-space-unit)*1)_*_1.5)] rounded-lg bg-surface-raised shadow-overlay z-20"
-          id="composer-completions"
-          role="listbox"
-          aria-label={trigger === "$" ? "Skills" : "Commands and skills"}
+          data-mode={guideOpen ? "arguments" : undefined}
         >
-          <VirtualList
-            items={completions}
-            itemKey={(item) => `${item.kind}:${item.id}`}
-            label="Suggestions"
-            presentation
-            activeIndex={highlighted}
-            estimate={44}
-            render={(item, index) => (
-              <button
-                type="button"
-                role="option"
-                aria-selected={index === highlighted}
-                id={`completion-${index}`}
-                className={`completion flex items-center gap-2 w-full p-3 text-left rounded-sm text-sm ${index === highlighted ? "selected" : ""}`}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => choose(item)}
-              >
-                <span className="completion-name font-[550] whitespace-nowrap">
-                  {trigger === "/" ? item.insertText : item.name}
-                </span>
-                <span className="completion-description flex-1 whitespace-nowrap overflow-hidden text-ellipsis text-muted-foreground">
-                  {item.description}
-                </span>
-                {item.source ? (
-                  <span className="badge inline-flex items-center gap-1 bg-surface-hover text-muted-foreground rounded-sm py-1 px-2 text-xs whitespace-nowrap">
-                    {item.source}
-                  </span>
-                ) : null}
-              </button>
-            )}
-          />
+          {guideOpen && custom && commandArguments ? (
+            <CommandGuide
+              name={custom.name}
+              args={commandArguments}
+              step={argumentStep}
+              error={argumentError ?? argumentStep?.error}
+            />
+          ) : null}
+          {menuSize ? (
+            <div
+              id="composer-completions"
+              role="listbox"
+              aria-label={completionLabel(guideOpen, trigger)}
+              className="completion-list min-h-0 flex-1"
+              style={guideOpen ? { height: Math.min(menuSize, 6) * 44 } : undefined}
+            >
+              {guideOpen ? (
+                <VirtualList
+                  items={suggestions}
+                  itemKey={(item) => item.id}
+                  label="Suggestions"
+                  presentation
+                  activeIndex={highlighted < 0 ? undefined : highlighted}
+                  estimate={44}
+                  render={(item, index) => (
+                    <CompletionOption
+                      index={index}
+                      selected={index === highlighted}
+                      name={item.label}
+                      description={item.description}
+                      mono
+                      onChoose={() => chooseArgument(item)}
+                    />
+                  )}
+                />
+              ) : (
+                <VirtualList
+                  items={completions}
+                  itemKey={(item) => `${item.kind}:${item.id}`}
+                  label="Suggestions"
+                  presentation
+                  activeIndex={highlighted}
+                  estimate={44}
+                  render={(item, index) => (
+                    <CompletionOption
+                      index={index}
+                      selected={index === highlighted}
+                      name={trigger === "/" ? item.insertText : item.name}
+                      description={item.description}
+                      source={item.source}
+                      onChoose={() => choose(item)}
+                    />
+                  )}
+                />
+              )}
+            </div>
+          ) : null}
         </PopoverContent>
       </Popover>
       <div className="composer bg-surface text-card-foreground rounded-lg p-3">
@@ -483,8 +585,8 @@ export const Composer = memo(function Composer(props: ComposerProps) {
             onKeyDown={editorKeyDown}
             onPaste={editorPaste}
             placeholder={placeholder}
-            expanded={completions.length > 0}
-            activeDescendant={completions.length ? `completion-${highlighted}` : undefined}
+            expanded={menuSize > 0}
+            activeDescendant={highlighted >= 0 ? `completion-${highlighted}` : undefined}
             disabled={disabled}
           />
         </Suspense>
@@ -575,6 +677,135 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     </div>
   );
 });
+
+function CompletionOption(props: {
+  index: number;
+  selected: boolean;
+  name: string;
+  description?: string;
+  source?: string;
+  mono?: boolean;
+  onChoose: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={props.selected}
+      id={`completion-${props.index}`}
+      className={`completion flex items-center gap-2 w-full p-3 text-left rounded-sm text-sm ${props.selected ? "selected" : ""}`}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={props.onChoose}
+    >
+      <span
+        className={`completion-name font-[550] whitespace-nowrap ${props.mono ? "font-mono" : ""}`}
+      >
+        {props.name}
+      </span>
+      <span className="completion-description flex-1 whitespace-nowrap overflow-hidden text-ellipsis text-muted-foreground">
+        {props.description}
+      </span>
+      {props.source ? (
+        <span className="badge inline-flex items-center gap-1 bg-surface-hover text-muted-foreground rounded-sm py-1 px-2 text-xs whitespace-nowrap">
+          {props.source}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+const argumentTypeLabels: Record<CommandArgument["type"], string> = {
+  string: "Text",
+  number: "Number",
+  boolean: "Yes or no",
+};
+
+function argumentDetail(arg: CommandArgument): string {
+  const type = arg.choices?.length ? "Choice" : argumentTypeLabels[arg.type];
+  return [type, arg.required ? "required" : "optional", arg.description]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+const CommandGuide = memo(function CommandGuide({
+  name,
+  args,
+  step,
+  error,
+}: {
+  name: string;
+  args: readonly CommandArgument[];
+  step?: ArgumentStep;
+  error?: ArgumentError;
+}) {
+  const active = error ? error.index : step?.active;
+  const inPrompt = !error && !!step && step.active === undefined;
+  const activeArg = active === undefined ? undefined : args[active];
+  return (
+    <div className="command-guide flex flex-col gap-1.5 px-2 pt-1" data-ui="command-guide">
+      <div className="flex flex-wrap items-center gap-1 font-mono text-xs" aria-hidden>
+        <span className="text-muted-foreground pr-1">/{name}</span>
+        {args.map((arg, index) => {
+          const value = step?.values[index];
+          const state = chipState(index === active, !!error, value !== undefined);
+          return (
+            <span
+              key={arg.key}
+              data-state={state}
+              className={`inline-flex items-center max-w-48 rounded-sm px-1.5 py-0.5 transition-colors ${guideChipStyles[state]}`}
+            >
+              <span className="shrink-0">
+                {arg.key}
+                {arg.required || value !== undefined ? "" : "?"}
+              </span>
+              {value !== undefined && state !== "active" ? (
+                <span className="truncate text-muted-foreground">={value}</span>
+              ) : null}
+            </span>
+          );
+        })}
+        <span
+          data-state={inPrompt ? "active" : "pending"}
+          className={`inline-flex items-center rounded-sm px-1.5 py-0.5 transition-colors ${guideChipStyles[inPrompt ? "active" : "pending"]}`}
+        >
+          prompt…
+        </span>
+      </div>
+      <p
+        className={`flex items-center gap-1.5 min-h-[1lh] text-xs ${error ? "text-danger" : "text-muted-foreground"}`}
+        aria-live="polite"
+      >
+        {error ? <CircleAlert className="size-3.5 shrink-0" aria-hidden /> : null}
+        <span className="truncate">{guideMessage(error, activeArg)}</span>
+      </p>
+    </div>
+  );
+});
+
+type ChipState = "active" | "error" | "filled" | "pending";
+
+const guideChipStyles: Record<ChipState, string> = {
+  active: "bg-primary/10 text-primary",
+  error: "bg-danger/10 text-danger",
+  filled: "bg-surface-hover text-foreground",
+  pending: "text-muted-foreground",
+};
+
+function chipState(active: boolean, invalid: boolean, filled: boolean): ChipState {
+  if (active) return invalid ? "error" : "active";
+  return filled ? "filled" : "pending";
+}
+
+function guideMessage(error?: ArgumentError, arg?: CommandArgument): string {
+  if (error) return error.message;
+  if (arg) return `${arg.key}: ${argumentDetail(arg)}`;
+  return "Add instructions for the reply, or press Enter to send.";
+}
+
+function completionLabel(argumentsOpen: boolean, trigger: "$" | "/"): string {
+  if (argumentsOpen) return "Argument values";
+  return trigger === "$" ? "Skills" : "Commands and skills";
+}
 
 const ComposerModel = memo(function ComposerModel({
   models,

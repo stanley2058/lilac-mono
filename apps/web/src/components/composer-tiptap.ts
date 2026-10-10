@@ -464,17 +464,21 @@ export function captureEditorPaste(editor: Editor) {
     },
   };
 }
+/** `after` extends the replacement past the cursor; `space` appends a separating space. */
+export type CompletionRange = { space?: boolean; after?: number };
 export function completeEditor(
   editor: Editor,
   text: string,
   length: number,
   skill?: ComposerSkill,
+  { space = true, after = 0 }: CompletionRange = {},
 ) {
   const { from } = editor.state.selection;
   const start = Math.max(1, from - length);
+  const end = Math.min(from + after, editor.state.selection.$from.end());
   const { schema, tr } = editor.state;
   if (!skill) {
-    editor.view.dispatch(tr.insertText(`${text} `, start, from).scrollIntoView());
+    editor.view.dispatch(tr.insertText(space ? `${text} ` : text, start, end).scrollIntoView());
     return;
   }
   editor.view.dispatch(

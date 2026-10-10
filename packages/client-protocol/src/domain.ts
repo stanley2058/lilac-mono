@@ -61,12 +61,21 @@ export const skillChoiceSchema = z.strictObject({
   description: z.string().max(1024),
   source: z.string().min(1).max(128),
 });
+export const commandArgumentSchema = z.strictObject({
+  key: z.string().min(1).max(32),
+  type: z.enum(["string", "number", "boolean"]),
+  description: z.string().max(100).optional(),
+  required: z.boolean(),
+  choices: z.array(z.string().min(1).max(100)).max(256).optional(),
+});
+export type CommandArgument = z.infer<typeof commandArgumentSchema>;
 export const commandChoiceSchema = z.strictObject({
   id: catalogIdentifierSchema,
   name: z.string().min(1).max(256),
   description: z.string().max(1024),
   kind: z.enum(["builtin", "custom"]),
   argumentHint: z.string().max(256).optional(),
+  arguments: z.array(commandArgumentSchema).max(24).optional(),
 });
 export const agentIdentitySchema = z.strictObject({
   discordUserId: z

@@ -714,6 +714,52 @@ export async function execute(_args, context) {
   },
 );
 
+test("custom command submissions with invalid arguments are rejected before admission", async () => {
+  const fixture = await createNativeIntegrationFixture({
+    prepare: async ({ dataDir }) => {
+      const directory = path.join(dataDir, "cmds", "typed-fixture");
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        path.join(directory, "def.json"),
+        JSON.stringify({
+          name: "typed-fixture",
+          description: "Typed integration command",
+          args: [
+            { key: "count", type: "number", required: true },
+            { key: "mode", type: "string", choices: ["single", "spread"] },
+          ],
+        }),
+      );
+      await writeFile(
+        path.join(directory, "index.ts"),
+        'export function execute() { return { type: "text", value: "unused" }; }\n',
+      );
+    },
+  });
+  try {
+    const client = fixture.connect().client;
+    const thread = await client.threads.create({
+      commandId: crypto.randomUUID(),
+      title: "Typed command",
+    });
+    for (const [args, message] of [
+      ["", "Missing required argument 'count'."],
+      ["three", "Expected a number, got 'three'."],
+      ["3 mode=triple", "Argument 'mode' must be one of: single, spread."],
+    ] as const)
+      await expect(
+        client.inputs.submit({
+          ...nativePrompt(thread.id, ""),
+          command: { id: "custom:typed-fixture", arguments: args },
+        }),
+      ).rejects.toMatchObject({ message });
+    expect((await client.runs.queue({ threadId: thread.id })).items).toEqual([]);
+    expect(fixture.fatalErrors).toEqual([]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("a custom command submitted as steering queues and executes in its own full turn", async () => {
   const firstStarted = Promise.withResolvers<void>();
   const releaseFirst = Promise.withResolvers<void>();
