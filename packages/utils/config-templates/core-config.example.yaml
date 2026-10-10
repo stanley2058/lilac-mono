@@ -157,6 +157,11 @@ conversation:
         relevanceMinProbability: 0.1
 
 surface:
+  # Status phrases rotated while a request is running. Native web shows them in place of
+  # "Working" and their past tense in place of "Worked".
+  # Defaults live in packages/utils/working-indicators.ts.
+  # workingIndicators: []
+
   native:
     enabled: false
     host: 127.0.0.1
@@ -275,7 +280,7 @@ surface:
 
     # Streaming embed title phrases for in-progress updates.
     # A random entry is selected and rotated periodically while the request is running.
-    # Defaults live in packages/utils/working-indicators.ts.
+    # Overrides surface.workingIndicators for Discord only.
     # workingIndicators: []
 
     # Discord-only markdown output features.

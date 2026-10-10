@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { coreConfigSchema } from "../core-config";
+import { coreConfigSchema, parseCoreConfigV2ToUniversal } from "../core-config";
 
 describe("coreConfigSchema surface.discord.outputMode", () => {
   it("accepts preview mode", () => {
@@ -59,6 +59,26 @@ describe("coreConfigSchema surface.discord.outputMode", () => {
     });
 
     expect(parsed.surface.discord.workingIndicators).toEqual(["Planning", "Reading", "Tooling"]);
+  });
+
+  it("uses surface workingIndicators unless Discord overrides them", () => {
+    const shared = parseCoreConfigV2ToUniversal({
+      configVersion: 2,
+      surface: { workingIndicators: ["Brewing"] },
+    });
+    expect(shared.surface.workingIndicators).toEqual(["Brewing"]);
+    expect(shared.surface.discord.workingIndicators).toEqual(["Brewing"]);
+
+    const overridden = parseCoreConfigV2ToUniversal({
+      configVersion: 2,
+      surface: { workingIndicators: ["Brewing"], discord: { workingIndicators: ["Planning"] } },
+    });
+    expect(overridden.surface.workingIndicators).toEqual(["Brewing"]);
+    expect(overridden.surface.discord.workingIndicators).toEqual(["Planning"]);
+
+    const defaults = parseCoreConfigV2ToUniversal({ configVersion: 2 });
+    expect(defaults.surface.discord.workingIndicators).toEqual(defaults.surface.workingIndicators);
+    expect(defaults.surface.workingIndicators).toContain("Alchemizing");
   });
 
   it("keeps memberPresence optional by default", () => {

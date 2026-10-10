@@ -41,6 +41,7 @@ export type NativeRpcServiceOptions = {
   store: NativeStore;
   auth: NativeAuthenticator;
   installationId: string;
+  workingIndicators?: () => readonly string[];
   catalogs: Pick<NativeCatalogService, "get" | "subscribe">;
   config: Pick<NativeConfigService, "read" | "save" | "reloadMcp">;
   execution: Pick<NativeExecution, "kick" | "cancel" | "rewind" | "deleteThread">;
@@ -512,6 +513,7 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
               ? `${lastListed.updatedAt}_${lastListed.id}`
               : undefined;
           const displayCatalog = yield* catalog(principal, input.catalogRevision);
+          const workingIndicators = options.workingIndicators?.();
           const selected = yield* selectedThread(principal, input);
           if (
             selected.selectedThread &&
@@ -526,6 +528,7 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
             catalog: displayCatalog,
             ...selected,
             catalogCursor,
+            ...(workingIndicators ? { workingIndicators: [...workingIndicators] } : {}),
           });
         });
       },

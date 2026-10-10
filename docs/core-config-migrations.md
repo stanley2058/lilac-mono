@@ -24,6 +24,13 @@ application consumes only the universal shape.
 - If a newer field cannot be represented safely in an older version, that field requires the newer
   `configVersion`.
 
+## Shared working indicators
+
+Version 2 adds `surface.workingIndicators`. Native web and Discord both use this list.
+`surface.discord.workingIndicators` remains valid and overrides it for Discord only. To use one
+custom list everywhere, move it from `surface.discord` to `surface`. Configs that set neither field
+use the built-in list on both surfaces.
+
 ## Native web port
 
 The native web listener now defaults to `8789`, reserving `8787` for the GitHub webhook and `8788`

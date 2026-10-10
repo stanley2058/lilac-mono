@@ -40,6 +40,7 @@ import {
   sidebarSectionSchema,
   sidebarPreferencesSchema,
   sidebarPageSchema,
+  workingIndicatorsSchema,
 } from "./domain.ts";
 
 export const nativeErrorMap = {
@@ -91,6 +92,7 @@ export const bootstrapReplySchema = z.strictObject({
   selectedThread: replayReplySchema.optional(),
   selectedThreadUnavailable: z.literal(true).optional(),
   catalogCursor: identitySchema,
+  workingIndicators: workingIndicatorsSchema.optional(),
 });
 export const catalogEventSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("thread"), thread: nativeThreadSchema, cursor: identitySchema }),

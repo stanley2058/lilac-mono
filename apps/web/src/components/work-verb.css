@@ -1,0 +1,43 @@
+/* The width transition and both word slides share one duration so the label resizes in step. */
+.work-verb {
+  position: relative;
+  display: inline-flex;
+  overflow: hidden;
+  transition: width calc(var(--ui-motion-duration) * 2) ease;
+}
+.work-verb-word {
+  flex: none;
+  white-space: nowrap;
+}
+[data-work-verb="enter"] {
+  animation: work-verb-enter calc(var(--ui-motion-duration) * 2) ease both;
+}
+[data-work-verb="exit"] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  animation: work-verb-exit calc(var(--ui-motion-duration) * 2) ease both;
+}
+:root[data-animation] [data-work-verb] {
+  animation-duration: calc(var(--ui-motion-duration) * 2) !important;
+}
+@keyframes work-verb-enter {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+}
+@keyframes work-verb-exit {
+  to {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+}
+:root[data-animation="off"] [data-work-verb="exit"] {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-work-verb="exit"] {
+    display: none;
+  }
+}

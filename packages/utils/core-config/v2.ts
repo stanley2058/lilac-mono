@@ -366,10 +366,7 @@ const discordSurfaceSchema = z
     outputPreviewModeFinalText: z.enum(["flat", "reply-chain"]).default("flat"),
     outputNotification: z.boolean().default(true),
     attachmentCache: discordAttachmentCacheSchema,
-    workingIndicators: z
-      .array(z.string().trim().min(1))
-      .min(1)
-      .default(cloneDefaultWorkingIndicators()),
+    workingIndicators: z.array(z.string().trim().min(1)).min(1).optional(),
     markdownTableRender: discordMarkdownTableRenderSchema,
     markdownMathRender: discordMarkdownMathRenderSchema,
   })
@@ -383,7 +380,6 @@ const discordSurfaceSchema = z
     outputPreviewModeFinalText: "flat",
     outputNotification: true,
     attachmentCache: { ttl: DEFAULT_DISCORD_ATTACHMENT_CACHE_TTL_MS },
-    workingIndicators: cloneDefaultWorkingIndicators(),
     markdownTableRender: {
       enabled: true,
       style: "unicode",
@@ -861,12 +857,17 @@ export const coreConfigInputSchemaV2 = z.object({
 
   surface: z
     .object({
+      workingIndicators: z
+        .array(z.string().trim().min(1))
+        .min(1)
+        .default(cloneDefaultWorkingIndicators()),
       native: nativeSurfaceSchema,
       router: routerSchema,
       discord: discordSurfaceSchema,
       heartbeat: heartbeatSchema,
     })
     .default({
+      workingIndicators: cloneDefaultWorkingIndicators(),
       native: defaultNativeSurfaceConfig(),
       router: {
         defaultMode: "mention",
@@ -884,7 +885,6 @@ export const coreConfigInputSchemaV2 = z.object({
         outputPreviewModeFinalText: "flat",
         outputNotification: true,
         attachmentCache: { ttl: DEFAULT_DISCORD_ATTACHMENT_CACHE_TTL_MS },
-        workingIndicators: cloneDefaultWorkingIndicators(),
         markdownTableRender: {
           enabled: true,
           style: "unicode",
@@ -1027,6 +1027,7 @@ function coreConfigV2ToUniversal(
       ...isolated.surface,
       discord: {
         ...discord,
+        workingIndicators: discord.workingIndicators ?? isolated.surface.workingIndicators,
         attachmentCache: {
           ttlMs: retentionLimit(attachmentCache.ttl),
         },

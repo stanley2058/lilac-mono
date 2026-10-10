@@ -267,6 +267,7 @@ export type UniversalCoreConfig = {
   };
 
   surface: {
+    workingIndicators: string[];
     native: NativeSurfaceConfig;
     router: {
       defaultMode: "mention" | "active";

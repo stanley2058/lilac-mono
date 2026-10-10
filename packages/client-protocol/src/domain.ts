@@ -236,6 +236,8 @@ export const subagentSummarySchema = z.strictObject({
 });
 export type SubagentSummary = z.infer<typeof subagentSummarySchema>;
 
+export const workingIndicatorsSchema = z.array(z.string().trim().min(1)).min(1);
+
 export const nativeDeploymentSettingsSchema = z.strictObject({
   titleModel: z.string().trim().min(1),
   outputStreaming: z.enum(["paragraph", "complete"]),

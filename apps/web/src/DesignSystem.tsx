@@ -109,6 +109,7 @@ import { ThreadSettleButton } from "./components/ThreadSettleButton";
 import { ThreadQueueDemo } from "./components/ThreadQueueDemo";
 import { DeploymentSettingsForm } from "./components/DeploymentSettings";
 import { AgentWorkDemo } from "./components/AgentWorkDemo";
+import { WorkingIndicatorsContext } from "./components/WorkVerb";
 import { SidebarSearch } from "./components/SidebarSearch";
 import { AgentDiscordLink } from "./components/AgentIdentity";
 import { ExternalMessages } from "./components/ExternalMessages";
@@ -666,6 +667,7 @@ function Threads() {
     </Section>
   );
 }
+const demoWorkingIndicators = ["Brewing", "Photosynthesizing", "Tiptoeing", "Tuning", "Waltzing"];
 const reactionDemoNames = ["Morgan Lee", "Sam Rivera", "Jo Park", "Taylor Kim", "Casey Jones"];
 
 function Messages() {
@@ -1735,7 +1737,9 @@ export default function DesignSystem() {
                 title="Agent work"
                 description="Choose a stage to inspect, or play through the examples. Expand work summaries and tool details. These use the conversation renderer with local sample data."
               >
-                <AgentWorkDemo />
+                <WorkingIndicatorsContext value={demoWorkingIndicators}>
+                  <AgentWorkDemo />
+                </WorkingIndicatorsContext>
               </Section>
               <Section id="appearance" title="Appearance">
                 <div className="max-w-2xl">

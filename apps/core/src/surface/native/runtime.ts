@@ -301,6 +301,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     store,
     auth,
     installationId: nativeConfig.installationId ?? "operator",
+    workingIndicators: () => options.getConfig().surface.workingIndicators,
     catalogs,
     config,
     execution,

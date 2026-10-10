@@ -1,5 +1,17 @@
 # MIGRATIONS.md
 
+## Shared working indicators
+
+Version-2 configuration adds `surface.workingIndicators`, the status phrases shown while a request
+runs. It defaults to the built-in list. `surface.discord.workingIndicators` no longer has a default
+and now overrides the shared list for Discord only; existing Discord values keep their behavior.
+Version-1 configurations use the built-in list for native web. No schema version or stored-data change is required.
+
+The native bootstrap reply gains an optional `workingIndicators` field. Native web rotates the
+phrases in place of "Working" and shows the past tense of the final phrase in place of "Worked".
+Every client derives the phrase from the turn ID and elapsed time, so reloads show the same word.
+Update Core and web together because older strict bootstrap validators reject the new field.
+
 ## Separate thread query embeddings
 
 `conversation.thread.embedding.queryModel` optionally selects the search-query encoder.
