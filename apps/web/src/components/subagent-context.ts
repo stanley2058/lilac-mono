@@ -7,4 +7,4 @@ export const SubagentContext = createContext<{
 }>({ agents: new Map(), open: () => {} });
 export const useSubagents = () => useContext(SubagentContext);
 export const subagentProfileName = (profile: SubagentSummary["profile"]) =>
-  ({ explore: "Explore Agent", general: "General Agent", self: "Self Agent" })[profile];
+  `${profile.charAt(0).toUpperCase()}${profile.slice(1)} Agent`;

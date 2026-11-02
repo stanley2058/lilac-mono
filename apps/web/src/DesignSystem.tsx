@@ -876,7 +876,7 @@ function Messages() {
         </Specimen>
         <Specimen title="Agent avatars">
           <div className="ds-row flex items-center flex-wrap gap-4">
-            {(["general", "explore", "self"] as const).map((profile) => (
+            {(["full", "restricted", "self"] as const).map((profile) => (
               <div key={profile} className="flex items-center gap-2">
                 <AgentAvatar profile={profile} displayName={`${profile} agent`} size="lg" />
                 <span className="text-sm capitalize">{profile}</span>

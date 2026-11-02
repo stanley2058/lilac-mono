@@ -121,7 +121,7 @@ export function subagentActivity(
   const agent = agents.get(part.id);
   if (agent) return agent;
   const profile = subagentLabelProfile(part);
-  if (profile !== "explore" && profile !== "general" && profile !== "self") return;
+  if (!profile) return;
   const current = part.data.label
     .split("\n")
     .findLast((line) => line.includes("> "))

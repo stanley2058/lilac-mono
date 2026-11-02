@@ -36,7 +36,7 @@ test("agent preview uses an agent avatar and readable profile and work title, wi
     </SubagentContext>,
   );
   expect(html).toContain('data-agent-profile="explore"');
-  expect(html).toContain("Explore Agent");
+  expect(html).toContain("Restricted Agent");
   expect(html).toContain(agent.title.replaceAll("&", "&amp;").replaceAll('"', "&quot;"));
   expect(html).not.toContain("subagent (explore;");
   expect(html).not.toMatch(/\sdisabled(?:=|\s|>)/);

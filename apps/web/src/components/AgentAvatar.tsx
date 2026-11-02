@@ -6,6 +6,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import "./agent-avatar.css";
 
 export type AgentProfile = SubagentSummary["profile"];
+type AgentShape = "general" | "explore" | "self";
+
+/** "self" is Lilac's own identity; read-only permission profiles share the explore shape. */
+function agentShape(profile: AgentProfile): AgentShape {
+  if (profile === "self") return "self";
+  if (profile === "restricted" || profile === "explore") return "explore";
+  return "general";
+}
 type EyePosition = { x: number; y: number; targetX: number; targetY: number };
 const eyes = new Map<HTMLSpanElement, EyePosition>();
 let frame = 0;
@@ -106,8 +114,9 @@ export function AgentAvatar({
   size?: "sm" | "default" | "lg";
 }) {
   const identities = useContext(MessageIdentityContext);
+  const shape = agentShape(profile);
   const configuredAvatar =
-    profile === "self"
+    shape === "self"
       ? (avatarUrl ?? (identities.promptingAgent ?? identities.agent).avatarUrl)
       : undefined;
   return (
@@ -117,23 +126,23 @@ export function AgentAvatar({
       aria-hidden={decorative || undefined}
       aria-label={decorative ? undefined : displayName}
       className="agent-avatar after:hidden"
-      data-agent-profile={profile}
+      data-agent-profile={shape}
     >
       {configuredAvatar ? (
         <>
           <AvatarImage src={configuredAvatar} alt="" referrerPolicy="no-referrer" />
           <AvatarFallback className="bg-transparent rounded-none">
-            <AgentFace profile={profile} />
+            <AgentFace shape={shape} />
           </AvatarFallback>
         </>
       ) : (
-        <AgentFace profile={profile} />
+        <AgentFace shape={shape} />
       )}
     </Avatar>
   );
 }
 
-function AgentFace({ profile }: { profile: AgentProfile }) {
+function AgentFace({ shape }: { shape: AgentShape }) {
   const gradient = useId();
   const eyeRef = useRef<HTMLSpanElement>(null);
   useEffect(() => {
@@ -157,11 +166,11 @@ function AgentFace({ profile }: { profile: AgentProfile }) {
           </radialGradient>
         </defs>
         <g fill={`url(#${gradient})`}>
-          {profile === "general" ? <circle r="100" /> : null}
-          {profile === "explore" ? (
+          {shape === "general" ? <circle r="100" /> : null}
+          {shape === "explore" ? (
             <rect x="-80" y="-80" width="160" height="160" rx="28" transform="rotate(45)" />
           ) : null}
-          {profile === "self" ? <rect x="-96" y="-96" width="192" height="192" rx="56" /> : null}
+          {shape === "self" ? <rect x="-96" y="-96" width="192" height="192" rx="56" /> : null}
         </g>
       </svg>
       <span ref={eyeRef} className="agent-avatar-eyes absolute inset-0">

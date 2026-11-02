@@ -379,7 +379,7 @@ test("only the last folded section and sections with running agents shine", () =
   expect(html.match(/class="working-text[ "]/gu)).toHaveLength(2);
   expect(html).toContain(">Compared both options.</span>");
   expect(html).toContain(
-    'class="working-text-shine">General Agent - bash tools web.search &quot;Kyoto museum tickets&quot;</span>',
+    'class="working-text-shine">Full Agent - bash tools web.search &quot;Kyoto museum tickets&quot;</span>',
   );
   expect(html).toContain(
     '>Thinking<span aria-hidden="true" class="working-text-shine">Thinking</span>',

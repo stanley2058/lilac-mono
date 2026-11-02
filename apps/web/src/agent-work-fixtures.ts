@@ -941,8 +941,12 @@ agentWorkStages.unshift({
 });
 
 const demoSubagentSamples = {
-  demo_subagent_weather: { profile: "explore", name: "Weather and riverside", sample: "weather" },
-  demo_subagent_museum: { profile: "general", name: "Museum visit", sample: "museum" },
+  demo_subagent_weather: {
+    profile: "restricted",
+    name: "Weather and riverside",
+    sample: "weather",
+  },
+  demo_subagent_museum: { profile: "full", name: "Museum visit", sample: "museum" },
 } as const;
 
 function demoSubagentSample(id: string) {

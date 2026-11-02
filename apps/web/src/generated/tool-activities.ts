@@ -254,52 +254,52 @@ export const subagentActivities = {
     started: {
       kind: "tool",
       label:
-        'subagent_delegate {"profile":"explore","task":"Check Saturday\'s weather and the riverside walking conditions."}',
+        'subagent_delegate {"permissions":"restricted","task":"Check Saturday\'s weather and the riverside walking conditions."}',
       state: "running",
       detail:
-        'subagent_delegate {"profile":"explore","task":"Check Saturday\'s weather and the riverside walking conditions."}',
+        'subagent_delegate {"permissions":"restricted","task":"Check Saturday\'s weather and the riverside walking conditions."}',
     },
     working: {
       kind: "tool",
       label:
-        'subagent (explore; 1/2 done)\n|- + bash tools web.search "Kyoto wea...\n`- > read ~/notes/riverside-path.md',
+        'subagent (restricted; 1/2 done)\n|- + bash tools web.search "Kyoto wea...\n`- > read ~/notes/riverside-path.md',
       state: "running",
       detail:
-        'subagent (explore; 1/2 done)\n|- + bash tools web.search "Kyoto wea...\n`- > read ~/notes/riverside-path.md',
+        'subagent (restricted; 1/2 done)\n|- + bash tools web.search "Kyoto wea...\n`- > read ~/notes/riverside-path.md',
     },
     done: {
       kind: "tool",
       label:
-        'subagent (explore; 2/2 done)\n|- + bash tools web.search "Kyoto wea...\n`- + read ~/notes/riverside-path.md',
+        'subagent (restricted; 2/2 done)\n|- + bash tools web.search "Kyoto wea...\n`- + read ~/notes/riverside-path.md',
       state: "complete",
       detail:
-        'subagent (explore; 2/2 done)\n|- + bash tools web.search "Kyoto wea...\n`- + read ~/notes/riverside-path.md',
+        'subagent (restricted; 2/2 done)\n|- + bash tools web.search "Kyoto wea...\n`- + read ~/notes/riverside-path.md',
     },
   },
   museum: {
     started: {
       kind: "tool",
       label:
-        'subagent_delegate {"profile":"general","task":"Check the museum\'s opening hours and ticket availability."}',
+        'subagent_delegate {"permissions":"full","task":"Check the museum\'s opening hours and ticket availability."}',
       state: "running",
       detail:
-        'subagent_delegate {"profile":"general","task":"Check the museum\'s opening hours and ticket availability."}',
+        'subagent_delegate {"permissions":"full","task":"Check the museum\'s opening hours and ticket availability."}',
     },
     working: {
       kind: "tool",
       label:
-        'subagent (general; 0/2 done)\n|- > bash tools web.search "Kyoto mus...\n`- > bash tools web.search "Kyoto mus...',
+        'subagent (full; 0/2 done)\n|- > bash tools web.search "Kyoto mus...\n`- > bash tools web.search "Kyoto mus...',
       state: "running",
       detail:
-        'subagent (general; 0/2 done)\n|- > bash tools web.search "Kyoto mus...\n`- > bash tools web.search "Kyoto mus...',
+        'subagent (full; 0/2 done)\n|- > bash tools web.search "Kyoto mus...\n`- > bash tools web.search "Kyoto mus...',
     },
     done: {
       kind: "tool",
       label:
-        'subagent (general; 2/2 done)\n|- + bash tools web.search "Kyoto mus...\n`- + bash tools web.search "Kyoto mus...',
+        'subagent (full; 2/2 done)\n|- + bash tools web.search "Kyoto mus...\n`- + bash tools web.search "Kyoto mus...',
       state: "complete",
       detail:
-        'subagent (general; 2/2 done)\n|- + bash tools web.search "Kyoto mus...\n`- + bash tools web.search "Kyoto mus...',
+        'subagent (full; 2/2 done)\n|- + bash tools web.search "Kyoto mus...\n`- + bash tools web.search "Kyoto mus...',
     },
   },
 } as const satisfies Record<

@@ -148,6 +148,10 @@ describe("activity presentation", () => {
       "explore",
     );
     expect(subagentLabelProfile(tool("subagent (general; 1/2 done)"))).toBe("general");
+    expect(
+      subagentLabelProfile(tool('subagent_delegate {"permissions":"offline","task":"x"}')),
+    ).toBe("offline");
+    expect(subagentLabelProfile(tool("subagent (restricted; scout; 0/1 done)"))).toBe("restricted");
     expect(subagentLabelProfile(tool("bash ls"))).toBeUndefined();
   });
   it("decodes long arguments from the detail when Core truncated the label", () => {
