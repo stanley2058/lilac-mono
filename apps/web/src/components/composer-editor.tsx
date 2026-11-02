@@ -15,6 +15,8 @@ import { ConversationBadge } from "./ConversationReference";
 import { FileIcon } from "./FileIcon";
 import { SkillBadge } from "./SkillBadge";
 import { FileActions } from "./FileActions";
+import { FileTargetPreview } from "./FileViewer";
+import type { FileTarget } from "../file-target";
 import { useOptionalWorkspace } from "../workspace-context";
 import {
   memo,
@@ -41,7 +43,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { IconButton } from "./ui";
-import { inlineChipStyles } from "./ui/button";
+import { Button, inlineChipStyles } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import type { Attachment } from "../types";
 
@@ -179,21 +181,21 @@ function AttachmentElement(props: NodeViewProps) {
   const key = metadata.key ?? "";
   const attachment = context.attachments.find((item) => item.key === key);
   const name = attachment?.file.name ?? metadata.name;
+  const [preview, setPreview] = useState(false);
+  const ready = attachment?.state === "ready" && !!(attachment.resourceId || attachment.preview);
+  const target: FileTarget = {
+    type: "resource",
+    href: attachment?.resourceId
+      ? (workspace?.resourceUrl(attachment.resourceId) ??
+        `/api/resources/${encodeURIComponent(attachment.resourceId)}`)
+      : (attachment?.preview ?? ""),
+    name,
+    mediaType: attachment?.file.type || "application/octet-stream",
+    resourceId: attachment?.resourceId,
+  };
   return (
     <NodeViewWrapper as="span" className="composer-attachment-node inline">
-      <FileActions
-        disabled={attachment?.state !== "ready" || !attachment.resourceId}
-        target={{
-          type: "resource",
-          href: attachment?.resourceId
-            ? (workspace?.resourceUrl(attachment.resourceId) ??
-              `/api/resources/${encodeURIComponent(attachment.resourceId)}`)
-            : "",
-          name,
-          mediaType: attachment?.file.type || "application/octet-stream",
-          resourceId: attachment?.resourceId,
-        }}
-      >
+      <FileActions disabled={!ready} target={target} onPreview={() => setPreview(true)}>
         <Tooltip>
           <TooltipTrigger
             render={
@@ -204,13 +206,21 @@ function AttachmentElement(props: NodeViewProps) {
               />
             }
           >
-            {attachment?.preview ? (
-              <img src={attachment.preview} alt="" />
-            ) : (
-              <FileIcon name={name} mediaType={attachment?.file.type} />
-            )}
-            <span className="composer-attachment-name overflow-hidden text-ellipsis">{name}</span>
-            <small>{attachment ? attachmentSize(attachment.file.size) : "Reattach file"}</small>
+            <Button
+              variant="ghost"
+              className="composer-attachment-preview min-w-0 shrink gap-1 p-0 h-auto rounded-sm text-[length:inherit] leading-inherit font-normal disabled:opacity-100"
+              aria-label={`Preview ${name}`}
+              disabled={!ready}
+              onClick={() => setPreview(true)}
+            >
+              {attachment?.preview ? (
+                <img src={attachment.preview} alt="" />
+              ) : (
+                <FileIcon name={name} mediaType={attachment?.file.type} />
+              )}
+              <span className="composer-attachment-name overflow-hidden text-ellipsis">{name}</span>
+              <small>{attachment ? attachmentSize(attachment.file.size) : "Reattach file"}</small>
+            </Button>
             {attachment?.state === "reserving" ? (
               <span className="sr-only absolute w-px h-px overflow-hidden [clip:rect(0,_0,_0,_0)] whitespace-nowrap">
                 Preparing upload
@@ -242,6 +252,7 @@ function AttachmentElement(props: NodeViewProps) {
           <TooltipContent>{attachment?.error ?? name}</TooltipContent>
         </Tooltip>
       </FileActions>
+      {preview ? <FileTargetPreview target={target} onClose={() => setPreview(false)} /> : null}
     </NodeViewWrapper>
   );
 }

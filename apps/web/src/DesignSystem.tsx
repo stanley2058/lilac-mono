@@ -1015,7 +1015,8 @@ function ComposerSpecimen() {
   const [attachments, setAttachments] = useState<Attachment[]>(() => [
     {
       key: "gallery-notes",
-      file: new File(["A quiet weekend"], "notes.txt", { type: "text/plain" }),
+      file: new File([], "lilac.svg", { type: "image/svg+xml" }),
+      preview: logo,
       reservation: Promise.resolve("gallery-notes"),
       state: "ready",
       progress: 1,
