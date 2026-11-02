@@ -1,16 +1,28 @@
 import { describe, expect, it } from "bun:test";
-import { parseCoreConfigV2ToUniversal } from "@stanley2058/lilac-utils";
+import {
+  parseCoreConfigV3ToUniversal,
+  resolveSubagentPermissionProfile,
+} from "@stanley2058/lilac-utils";
 
 import {
   buildSystemPromptForProfile,
   selectWorkspaceSystemPrompt,
 } from "../../../src/surface/bridge/bus-agent-runner/subagent-prompt";
 
-describe("native subagent profile prompt parity", () => {
-  const config = parseCoreConfigV2ToUniversal({ configVersion: 2 });
+describe("subagent permission profile prompts", () => {
+  const config = parseCoreConfigV3ToUniversal({
+    configVersion: 3,
+    agent: {
+      subagents: {
+        permissions: {
+          offline: { network: false, execution: false, promptOverlay: "Work from local files." },
+        },
+      },
+    },
+  });
 
-  it("uses the worker prompt only for explore and general profiles", () => {
-    for (const profile of ["explore", "general"] as const) {
+  it("uses the worker prompt for every subagent, including legacy self runs", () => {
+    for (const profile of ["full", "restricted", "self", "explore"]) {
       expect(
         selectWorkspaceSystemPrompt({
           profile,
@@ -19,95 +31,69 @@ describe("native subagent profile prompt parity", () => {
         }),
       ).toBe("worker");
     }
-
-    for (const profile of ["primary", "self"] as const) {
-      expect(
-        selectWorkspaceSystemPrompt({
-          profile,
-          primarySystemPrompt: "primary",
-          workerSystemPrompt: "worker",
-        }),
-      ).toBe("primary");
-    }
+    expect(
+      selectWorkspaceSystemPrompt({
+        profile: "primary",
+        primarySystemPrompt: "primary",
+        workerSystemPrompt: "worker",
+      }),
+    ).toBe("primary");
   });
 
   it("falls back to the primary prompt when a worker prompt has not been loaded", () => {
     expect(
       selectWorkspaceSystemPrompt({
-        profile: "general",
+        profile: "full",
         primarySystemPrompt: "primary",
         workerSystemPrompt: "",
       }),
     ).toBe("primary");
   });
 
-  for (const profile of ["explore", "general", "self"] as const) {
-    it(`uses one ${profile} prompt for direct and workflow launches`, () => {
-      const params = {
-        baseSystemPrompt: "base",
-        profile,
-        profileConfig: config.agent.subagents.profiles[profile],
-        exploreOverlay: config.agent.subagents.profiles.explore.promptOverlay,
-        generalOverlay: config.agent.subagents.profiles.general.promptOverlay,
-        selfOverlay: config.agent.subagents.profiles.self.promptOverlay,
-        skillsSection: profile === "explore" ? null : "skills",
-      };
-
-      const direct = buildSystemPromptForProfile(params);
-      const workflow = buildSystemPromptForProfile(params);
-      expect(workflow).toBe(direct);
-      expect(workflow).not.toContain("Workflow Tool Surface");
-      if (profile === "explore" || profile === "general") {
-        expect(workflow).toContain("TOOLS.md describes capabilities and conventions");
-      }
+  it("renders one overlay with the skills section and the customize-lilac pointer", () => {
+    const prompt = buildSystemPromptForProfile({
+      baseSystemPrompt: "base",
+      profile: "full",
+      profileConfig: resolveSubagentPermissionProfile(config, "full"),
+      skillsSection: "skills",
     });
-  }
 
-  for (const profile of ["explore", "general", "self"] as const) {
-    it(`renders ${profile} network and write settings as behavioral guidance`, () => {
-      const restricted = parseCoreConfigV2ToUniversal({
-        configVersion: 2,
-        agent: {
-          subagents: {
-            profiles: {
-              [profile]: { network: false, workspaceWrites: false },
-            },
-          },
-        },
-      }).agent.subagents.profiles[profile];
+    expect(prompt).toContain("skills");
+    expect(prompt).toContain("## Subagent (permissions: full)");
+    expect(prompt).toContain("names in the task refer to that user");
+    expect(prompt).toContain("load the customize-lilac skill");
+    expect(prompt).toContain("TOOLS.md describes capabilities and conventions");
+    expect(prompt).not.toContain("Do not delegate");
+    expect(prompt).not.toContain("Do not edit");
+  });
 
-      const prompt = buildSystemPromptForProfile({
-        baseSystemPrompt: "base",
-        profile,
-        profileConfig: restricted,
-      });
-      expect(prompt).toContain("Do not use network access or network-backed tools.");
-      expect(prompt).toContain(
-        profile === "explore" ? "Do not edit project files." : "Do not edit files.",
-      );
+  it("derives constraint lines and the overlay from the permission profile", () => {
+    const restricted = buildSystemPromptForProfile({
+      baseSystemPrompt: "base",
+      profile: "restricted",
+      profileConfig: resolveSubagentPermissionProfile(config, "restricted"),
     });
-  }
+    expect(restricted).toContain("Do not edit project files.");
+    expect(restricted).toContain("Do not delegate to another subagent.");
+    expect(restricted).not.toContain("Do not use bash.");
 
-  it("only prohibits Bash when explore execution is disabled", () => {
-    const disabled = parseCoreConfigV2ToUniversal({
-      configVersion: 2,
-      agent: { subagents: { profiles: { explore: { execution: false } } } },
-    }).agent.subagents.profiles.explore;
-    const restricted = config.agent.subagents.profiles.explore;
+    const offline = buildSystemPromptForProfile({
+      baseSystemPrompt: "base",
+      profile: "offline",
+      profileConfig: resolveSubagentPermissionProfile(config, "offline"),
+    });
+    expect(offline).toContain("Do not use bash.");
+    expect(offline).toContain("Do not use network access or network-backed tools.");
+    expect(offline).toContain("Work from local files.");
+  });
 
+  it("leaves the primary prompt without a subagent overlay", () => {
     expect(
       buildSystemPromptForProfile({
         baseSystemPrompt: "base",
-        profile: "explore",
-        profileConfig: disabled,
+        profile: "primary",
+        skillsSection: "skills",
       }),
-    ).toContain("Do not use bash.");
-    expect(
-      buildSystemPromptForProfile({
-        baseSystemPrompt: "base",
-        profile: "explore",
-        profileConfig: restricted,
-      }),
-    ).not.toContain("Do not use bash.");
+    ).toBe("base\n\nskills");
   });
 });

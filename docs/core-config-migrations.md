@@ -299,6 +299,42 @@ Default changes from v1:
   `execution: native` to use installed host commands. Restricted surfaces still use virtual Bash. Frozen v1
   profiles retain their historical no-Bash explore and native-Bash general/self behavior.
 
+## v3
+
+`configVersion: 3` keeps every v2 field except `agent.subagents.profiles`. Subagent role profiles are
+replaced by named permission profiles, and the delegating agent picks the model per call.
+
+Replaced v3 field:
+
+- `agent.subagents.profiles` is rejected with migration guidance. Move authority fields to
+  `agent.subagents.permissions.<name>`: `level1`, `level2`, `network`, `workspaceWrites`, `execution`,
+  `delegation`, and optional `promptOverlay`. Drop `modelSlot`, `model`, `reasoning`, `options`, and
+  `fallback`; subagents run the alias named in `subagent_delegate` or `agent()`, and `models.main`
+  otherwise.
+
+New v3 fields:
+
+- `agent.subagents.permissions.full`: always present. Defaults to every tool and callable, network,
+  workspace writes, native Bash, and delegation. A delegation without a named profile uses `full`
+  when the caller may grant it, and the caller's own profile otherwise.
+- `agent.subagents.permissions.restricted`: always present. Defaults to the former `explore` authority.
+- `agent.subagents.permissions.<name>`: custom profiles. Names are lowercase slugs of at most 32
+  characters, other than `primary`. Omitted fields use the `restricted` defaults.
+
+Mapping a v2 file:
+
+| v2 | v3 |
+| --- | --- |
+| `profiles.explore` authority and `promptOverlay` | `permissions.restricted` |
+| `profiles.self` authority and `promptOverlay` | `permissions.full` |
+| `profiles.general` authority | a custom profile, or drop it in favor of `full` |
+| `profiles.*.model`, `.modelSlot`, `.reasoning`, `.options`, `.fallback` | removed; add `agentCanSelect` aliases to `models.def` |
+
+Frozen v1 and v2 configs keep parsing. Their `explore` profile becomes `restricted`, their `self`
+profile becomes `full`, and their `general` profile keeps its name and authority. A delegation without
+a named profile uses `restricted`, the former `explore` default. Per-profile model
+fields are ignored.
+
 ## Native deployment settings move to the database
 
 Native startup imports `surface.native.titleModel`, `outputStreaming`,

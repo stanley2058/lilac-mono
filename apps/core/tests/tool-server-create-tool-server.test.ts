@@ -11,7 +11,11 @@ import {
   ToolPluginManager,
   type Level1ToolSpec,
 } from "@stanley2058/lilac-plugin-runtime";
-import { createLogger, parseCoreConfigV2ToUniversal } from "@stanley2058/lilac-utils";
+import {
+  createLogger,
+  parseCoreConfigV2ToUniversal,
+  parseCoreConfigV3ToUniversal,
+} from "@stanley2058/lilac-utils";
 import { Panic, Result, TaggedError } from "better-result";
 
 import {
@@ -1018,7 +1022,7 @@ describe("createToolServer", () => {
         platform: "discord",
         principal: null,
         authenticatedOrigin: null,
-        profile: "general",
+        profile: "full",
         canonicalCwd: "/workspace",
         safetyMode: "trusted",
         expiresAt: Date.now() + 60_000,
@@ -1058,12 +1062,12 @@ describe("createToolServer", () => {
         getLevel2ContributionInfo: () =>
           new Map([[tool, { pluginId: "profile-plugin", source: "builtin" as const }]]),
       };
-      const config = parseCoreConfigV2ToUniversal({
-        configVersion: 2,
+      const config = parseCoreConfigV3ToUniversal({
+        configVersion: 3,
         agent: {
           subagents: {
-            profiles: {
-              general: {
+            permissions: {
+              full: {
                 level2: {
                   callables: ["profile.allowed"],
                   plugins: ["profile-plugin"],

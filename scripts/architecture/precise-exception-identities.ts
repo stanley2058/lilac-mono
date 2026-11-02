@@ -640,6 +640,7 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
     ["core-config.ts", "resolveDiscordToken", "signal"],
     ["core-config/v1.ts", "parseCoreConfigV1ToUniversal", "signal"],
     ["core-config/v2.ts", "parseCoreConfigV2ToUniversal", "signal"],
+    ["core-config/v3.ts", "parseCoreConfigV3ToUniversal", "signal"],
     ["custom-commands.ts", "decodeCustomCommandResult", "signal"],
     ["custom-commands.ts", "discoverCustomCommands", "signal"],
     ["custom-commands.ts", "pathExists", "signal"],

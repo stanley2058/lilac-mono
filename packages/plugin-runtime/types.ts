@@ -23,7 +23,8 @@ export type RequestContext<P extends string = string> = {
     kind: "primary" | "heartbeat";
     allowedCallables: readonly string[] | null;
   };
-  subagentProfile?: "explore" | "general" | "self";
+  /** Name of the subagent run's configured permission profile. */
+  subagentProfile?: string;
 };
 
 export type ServerToolPrimaryPositional = {
@@ -105,7 +106,8 @@ export interface ServerTool<P extends string = string> {
   ): Promise<ServerToolResult>;
 }
 
-export type Level1RunProfile = "primary" | "explore" | "general" | "self";
+/** "primary" or the name of a configured subagent permission profile. */
+export type Level1RunProfile = "primary" | (string & {});
 
 export type Level1ToolFailureKind = "hard" | "soft";
 

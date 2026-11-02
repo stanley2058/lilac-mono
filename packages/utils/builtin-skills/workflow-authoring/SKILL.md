@@ -26,7 +26,7 @@ const VERIFY_PHASE = "verify";
 async function verifyFindings(pipeline, agent, findings) {
   return pipeline(
     findings,
-    (finding) => agent(`Verify this finding:\n${finding}`, { profile: "explore" }),
+    (finding) => agent(`Verify this finding:\n${finding}`, { profile: "restricted" }),
     { concurrency: 8 },
   );
 }
@@ -53,12 +53,12 @@ export default defineWorkflow({
   async run({ args, agent, pipeline, phase }) {
     const filesJson = await agent(
       `List route files under ${args.directory}. Return only a JSON array of path strings.`,
-      { profile: "explore" },
+      { profile: "restricted" },
     );
     const files = JSON.parse(filesJson);
     const findings = await pipeline(
       files,
-      (file) => agent(`Audit ${file} for missing authorization.`, { profile: "explore", label: file }),
+      (file) => agent(`Audit ${file} for missing authorization.`, { profile: "restricted", label: file }),
       { concurrency: 8 },
     );
     return phase(VERIFY_PHASE, () => verifyFindings(pipeline, agent, findings));
@@ -87,7 +87,7 @@ Read [REFERENCE.md](REFERENCE.md) only when you need exact schema keywords, boun
 
 ## Host APIs
 
-- `agent(prompt, options) -> Promise<string>` dispatches one child and returns its final text. `profile` is required: `explore`, `general`, or `self`. Optional fields are `cwd`, `model`, `reasoning`, and `label`. Omit model and reasoning to preserve profile defaults. Relative cwd resolves from the invocation project; absolute cwd is allowed and existence is checked only when used.
+- `agent(prompt, options) -> Promise<string>` dispatches one child and returns its final text. `profile` is required and names a permission profile from `agent.subagents.permissions`, such as `full` or `restricted`. Optional fields are `cwd`, `model`, `reasoning`, and `label`. Omit model to run the main model; omit reasoning to keep the model default. Relative cwd resolves from the invocation project; absolute cwd is allowed and existence is checked only when used.
 - `pipeline(items, callback, options?)` maps in stable item order. Concurrency defaults to `1`; set `{ concurrency }` for bounded fan-out.
 - `parallel(promises)` journals and joins already-created promises. It has no options.
 - `phase(name, callback)` groups operations for progress and deterministic scoping.

@@ -65,8 +65,9 @@ import {
   fromDurableResolvedModelPlanResult,
   resolveModelChainResult,
   resolveModelPlanResult,
-  resolveNativeSubagentProfile,
   resolveRouterSessionConfig,
+  resolveSubagentPermissionProfile,
+  resolveSubagentPermissionProfileName,
   withModelPlanReasoning,
 } from "@stanley2058/lilac-utils";
 import {
@@ -2401,7 +2402,17 @@ export class AgentRunModelSelectionInvalid extends TaggedError("AgentRunModelSel
   readonly message: string;
 }> {}
 
-type AgentRunModelResolutionError = AgentRunModelSelectionInvalid | ModelResolutionFailed;
+export class SubagentPermissionProfileNotConfigured extends TaggedError(
+  "SubagentPermissionProfileNotConfigured",
+)<{
+  readonly profile: string;
+  readonly message: string;
+}> {}
+
+type AgentRunModelResolutionError =
+  | AgentRunModelSelectionInvalid
+  | SubagentPermissionProfileNotConfigured
+  | ModelResolutionFailed;
 
 export function resolveAgentRunModelResult(params: {
   cfg: CoreConfig;
@@ -2410,15 +2421,22 @@ export function resolveAgentRunModelResult(params: {
   reasoningOverride?: ModelReasoningEffort;
   resolvedModelRequest?: DurableResolvedModelRequest;
 }): ResultType<ResolvedModelPlan, AgentRunModelResolutionError> {
-  const subagentProfileConfig =
-    params.runProfile === "primary"
-      ? null
-      : resolveNativeSubagentProfile(params.cfg, params.runProfile);
-
   if (params.resolvedModelRequest) {
     const plan = fromDurableResolvedModelPlanResult(params.resolvedModelRequest);
     return plan.map((value) =>
       params.reasoningOverride ? withModelPlanReasoning(value, params.reasoningOverride) : value,
+    );
+  }
+
+  if (
+    params.runProfile !== "primary" &&
+    resolveSubagentPermissionProfileName(params.cfg, params.runProfile) === undefined
+  ) {
+    return Result.err(
+      new SubagentPermissionProfileNotConfigured({
+        profile: params.runProfile,
+        message: `Subagent permission profile '${params.runProfile}' is not configured`,
+      }),
     );
   }
 
@@ -2444,54 +2462,22 @@ export function resolveAgentRunModelResult(params: {
     }
   }
 
-  const applyHeadReasoning = (head: ResolvedModelRef): ResolvedModelRef => {
-    const profileHead = subagentProfileConfig?.reasoning
-      ? { ...head, reasoning: subagentProfileConfig.reasoning }
-      : head;
-    return params.reasoningOverride
-      ? { ...profileHead, reasoning: params.reasoningOverride }
-      : profileHead;
-  };
+  const applyHeadReasoning = (head: ResolvedModelRef): ResolvedModelRef =>
+    params.reasoningOverride ? { ...head, reasoning: params.reasoningOverride } : head;
 
-  if (params.requestModelOverride) {
-    const resolved = resolveModelPlanResult(params.cfg, {
-      head: { model: params.requestModelOverride },
-      fallback: [],
-      headSource: "cmd.request.message.modelOverride",
-      fallbackSource: "cmd.request.message.modelOverride.fallback",
-    });
-    const fallbacks = resolveAgentRunModelFallbacksResult(params);
-    return Result.all([resolved, fallbacks]).map(([plan, fallbackValues]) => ({
-      head: applyHeadReasoning(plan.head),
-      fallbacks: fallbackValues,
-    }));
-  }
-
-  if (subagentProfileConfig?.model) {
-    const resolved = resolveModelPlanResult(params.cfg, {
-      head: {
-        model: subagentProfileConfig.model,
-        reasoning: subagentProfileConfig.reasoning,
-        options: subagentProfileConfig.options,
-      },
-      fallback: [],
-      headSource: `agent.subagents.profiles.${params.runProfile}.model`,
-      fallbackSource: `agent.subagents.profiles.${params.runProfile}.fallback`,
-    });
-    const fallbacks = resolveAgentRunModelFallbacksResult(params);
-    return Result.all([resolved, fallbacks]).map(([plan, fallbackValues]) => ({
-      head: applyHeadReasoning(plan.head),
-      fallbacks: fallbackValues,
-    }));
-  }
-
-  const slot = subagentProfileConfig?.modelSlot ?? "main";
-  const resolved = resolveModelPlanResult(params.cfg, {
-    head: params.cfg.models[slot],
-    fallback: [],
-    headSource: `models.${slot}.model`,
-    fallbackSource: `models.${slot}.fallback`,
-  });
+  const resolved = params.requestModelOverride
+    ? resolveModelPlanResult(params.cfg, {
+        head: { model: params.requestModelOverride },
+        fallback: [],
+        headSource: "cmd.request.message.modelOverride",
+        fallbackSource: "cmd.request.message.modelOverride.fallback",
+      })
+    : resolveModelPlanResult(params.cfg, {
+        head: params.cfg.models.main,
+        fallback: [],
+        headSource: "models.main.model",
+        fallbackSource: "models.main.fallback",
+      });
   const fallbacks = resolveAgentRunModelFallbacksResult(params);
   return Result.all([resolved, fallbacks]).map(([plan, fallbackValues]) => ({
     head: applyHeadReasoning(plan.head),
@@ -2516,19 +2502,12 @@ export function resolveAgentRunModel(params: {
 type AgentRunFallbackSource = {
   entries: readonly ConfiguredModelChainEntry[];
   source: string;
-  profileReasoning?: ModelReasoningEffort;
 };
 
 function resolveAgentRunFallbackSource(params: {
   cfg: CoreConfig;
-  runProfile: AgentRunProfile;
   requestModelOverride?: string;
 }): AgentRunFallbackSource | null {
-  const profile =
-    params.runProfile === "primary"
-      ? null
-      : resolveNativeSubagentProfile(params.cfg, params.runProfile);
-
   if (params.requestModelOverride) {
     if (params.requestModelOverride.includes("/")) {
       return {
@@ -2541,42 +2520,12 @@ function resolveAgentRunFallbackSource(params: {
     return {
       entries: preset.fallback ?? [],
       source: `models.def.${params.requestModelOverride}.fallback`,
-      ...(profile?.reasoning ? { profileReasoning: profile.reasoning } : {}),
     };
   }
 
-  if (profile?.model) {
-    if (profile.fallback !== undefined) {
-      return {
-        entries: profile.fallback,
-        source: `agent.subagents.profiles.${params.runProfile}.fallback`,
-        ...(profile.reasoning ? { profileReasoning: profile.reasoning } : {}),
-      };
-    }
-    const preset = profile.model.includes("/") ? undefined : params.cfg.models.def[profile.model];
-    if (!profile.model.includes("/") && !preset) return null;
-    return {
-      entries: preset?.fallback ?? [],
-      source: `models.def.${profile.model}.fallback`,
-      ...(profile.reasoning ? { profileReasoning: profile.reasoning } : {}),
-    };
-  }
-
-  const slot = profile?.modelSlot ?? "main";
-  const slotConfig = params.cfg.models[slot];
-  if (profile?.fallback !== undefined) {
-    return {
-      entries: profile.fallback,
-      source: `agent.subagents.profiles.${params.runProfile}.fallback`,
-      ...(profile.reasoning ? { profileReasoning: profile.reasoning } : {}),
-    };
-  }
+  const slotConfig = params.cfg.models.main;
   if (slotConfig.fallback !== undefined) {
-    return {
-      entries: slotConfig.fallback,
-      source: `models.${slot}.fallback`,
-      ...(profile?.reasoning ? { profileReasoning: profile.reasoning } : {}),
-    };
+    return { entries: slotConfig.fallback, source: "models.main.fallback" };
   }
   const preset = slotConfig.model.includes("/")
     ? undefined
@@ -2585,7 +2534,6 @@ function resolveAgentRunFallbackSource(params: {
   return {
     entries: preset?.fallback ?? [],
     source: `models.def.${slotConfig.model}.fallback`,
-    ...(profile?.reasoning ? { profileReasoning: profile.reasoning } : {}),
   };
 }
 
@@ -2602,23 +2550,14 @@ export function resolveAgentRunModelFallbacksResult(params: {
     fallbackSource.entries,
     fallbackSource.source,
   );
-  return resolved.map((values) => {
-    let fallbacks = values;
-    if (fallbackSource.profileReasoning) {
-      fallbacks = fallbacks.map((candidate, index) => {
-        const configured = fallbackSource.entries[index];
-        return typeof configured === "object" && configured.reasoning !== undefined
-          ? candidate
-          : { ...candidate, reasoning: fallbackSource.profileReasoning };
-      });
-    }
-    return params.reasoningOverride
+  return resolved.map((fallbacks) =>
+    params.reasoningOverride
       ? fallbacks.map((fallback) => ({
           ...fallback,
           reasoning: params.reasoningOverride,
         }))
-      : fallbacks;
-  });
+      : fallbacks,
+  );
 }
 
 export function resolveAgentRunModelFallbacks(params: {
@@ -6085,15 +6024,12 @@ export async function startBusAgentRunner(params: {
             state.activeRun.resolvedProviderFamily = resolvedProviderFamily;
           }
 
-          const skillsSection =
-            runProfile === "explore"
-              ? null
-              : await waitForPreAgent(
-                  maybeBuildSkillsSectionForPrimary(
-                    next.requestClient,
-                    next.authenticatedOrigin?.platform,
-                  ),
-                );
+          const skillsSection = await waitForPreAgent(
+            maybeBuildSkillsSectionForPrimary(
+              next.requestClient,
+              next.authenticatedOrigin?.platform,
+            ),
+          );
 
           const sessionConfigId = parseSessionConfigIdFromRaw(next.raw) ?? sessionId;
           const discordSessionContext =
@@ -6430,7 +6366,11 @@ export async function startBusAgentRunner(params: {
                 .buildLevel1ToolsetResult({
                   cwd: executionCwd,
                   runProfile,
-                  editingToolMode: runProfile === "explore" ? "none" : editingToolMode,
+                  editingToolMode:
+                    runProfile !== "primary" &&
+                    !resolveSubagentPermissionProfile(cfg, runProfile).workspaceWrites
+                      ? "none"
+                      : editingToolMode,
                   subagentDepth: subagentMeta.depth,
                   subagentConfig: {
                     enabled: subagents.enabled,
@@ -8320,34 +8260,21 @@ export async function startBusAgentRunner(params: {
                   type: activeBinding.resolved.provider,
                 });
                 let providerState: HistoryProviderState | undefined;
-                switch (runProfile) {
-                  case "primary":
-                    providerState = resolveCorePrimaryTranscriptProviderState({
-                      targetFamily: targetProviderFamily,
-                      lineage: state.activeRun?.corePrimaryLineage ?? next.corePrimaryLineage,
-                      transcriptStore,
-                    });
-                    break;
-                  case "explore":
-                  case "general":
-                  case "self":
-                    providerState = undefined;
-                    if (stableNamedContinuation && !isCancelled) {
-                      const sourceProviderState =
-                        seededSessionTranscript === null
-                          ? "empty-history"
-                          : (seededSessionTranscript.providerState ?? "unknown-populated-history");
-                      providerState = advanceHistoryProviderState(
-                        sourceProviderState,
-                        targetProviderFamily,
-                      );
-                    }
-                    break;
-                  default: {
-                    const _exhaustive: never = runProfile;
-                    providerState = _exhaustive;
-                    break;
-                  }
+                if (runProfile === "primary") {
+                  providerState = resolveCorePrimaryTranscriptProviderState({
+                    targetFamily: targetProviderFamily,
+                    lineage: state.activeRun?.corePrimaryLineage ?? next.corePrimaryLineage,
+                    transcriptStore,
+                  });
+                } else if (stableNamedContinuation && !isCancelled) {
+                  const sourceProviderState =
+                    seededSessionTranscript === null
+                      ? "empty-history"
+                      : (seededSessionTranscript.providerState ?? "unknown-populated-history");
+                  providerState = advanceHistoryProviderState(
+                    sourceProviderState,
+                    targetProviderFamily,
+                  );
                 }
                 const terminalPrimaryLineage =
                   state.activeRun?.corePrimaryLineage ?? next.corePrimaryLineage;

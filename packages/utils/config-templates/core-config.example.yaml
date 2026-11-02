@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=./.schemas/core-config.schema.json
-configVersion: 2
+configVersion: 3
 
 # Managed opaque bytes use local storage below the runtime data directory by default.
 # Set an absolute local root when the blob store lives elsewhere:
@@ -337,8 +337,8 @@ agent:
   subagents:
     # Master switch for delegate-style subagents.
     enabled: true
-    # Max delegation depth (primary=0). Default 2 allows self->(explore|general)
-    # while explore/general remain non-delegating by policy.
+    # Max delegation depth (primary=0). A child can delegate only when its
+    # permission profile sets delegation: true and the depth limit allows it.
     maxDepth: 2
     # Subagent idle timeout is derived from agent.idleTimeoutMs: floor(2/3),
     # with a 1000ms minimum.
@@ -348,10 +348,23 @@ agent:
     # delegatePromptOverlay: |
     #   Prefer inexpensive models for mechanical exploration.
     #   Escalate difficult architecture and review work to a stronger model.
-    profiles:
-      explore:
-        modelSlot: main
-        # Profile behavior applies identically to direct and workflow launches.
+    # Named permission profiles. The delegating agent picks a model alias from
+    # models.def (agentCanSelect: true) and optionally one of these profiles.
+    # A child may only request a profile whose authority is within its own.
+    # full and restricted always exist; omitted fields use the defaults below.
+    # Custom profile names are lowercase slugs and start from the restricted
+    # defaults. Profiles apply identically to direct and workflow launches.
+    permissions:
+      full:
+        # "*" includes every globally enabled built-in or external contribution.
+        # MCP servers must also set allowSubagents: true in mcp-config.yaml.
+        level1: { tools: ["*"], plugins: ["*"] }
+        level2: { callables: ["*"], plugins: ["*"] }
+        network: true
+        workspaceWrites: true
+        execution: native
+        delegation: true
+      restricted:
         level1:
           tools: [bash, read, glob, grep, fuzzy_search, batch]
           plugins: [builtin-local-tools]
@@ -381,54 +394,12 @@ agent:
         workspaceWrites: false
         execution: native
         delegation: false
-        # Optional direct model override. Can be provider/model or an alias from models.def.
-        # model: "openrouter/openai/gpt-4o"
-        # Optional portable reasoning override for this subagent profile.
-        # reasoning: low
-        # Optional ordered fallback chain. A profile chain takes precedence over
-        # the selected model slot or models.def alias chain.
-        # fallback:
-        #   - sonnet
-        #   - model: openrouter/openai/gpt-4o-mini
-        #     reasoning: none
-        # options:
-        #   temperature: 0.0
-        # Optional extra prompt fragment appended in explore mode.
+        # Optional prompt fragment appended for children running this profile.
         # promptOverlay: |
-        #   Focus on codebase mapping, cite concrete file paths, and avoid edits.
-      general:
-        modelSlot: main
-        # "*" includes every globally enabled built-in or external contribution.
-        # MCP servers must also set allowSubagents: true in mcp-config.yaml.
-        level1: { tools: ["*"], plugins: ["*"] }
-        level2: { callables: ["*"], plugins: ["*"] }
-        network: true
-        workspaceWrites: true
-        execution: native
-        delegation: false
-        # model: "openrouter/openai/gpt-4o"
-        # reasoning: medium
-        # options:
-        #   temperature: 0.1
-        # Optional extra prompt fragment appended in general mode.
-        # promptOverlay: |
-        #   Prioritize execution over discussion and report concrete outcomes.
-      self:
-        modelSlot: main
-        level1: { tools: ["*"], plugins: ["*"] }
-        level2: { callables: ["*"], plugins: ["*"] }
-        network: true
-        workspaceWrites: true
-        execution: native
-        delegation: true
-        # Self subagent is an isolated fork of the primary agent prompt/tooling.
-        # model: "openrouter/openai/gpt-4o"
-        # reasoning: high
-        # options:
-        #   temperature: 0.2
-        # Optional extra prompt fragment appended in self mode.
-        # promptOverlay: |
-        #   Assume no prior conversation context; restate assumptions briefly.
+        #   Cite concrete file paths and avoid edits.
+      # offline:
+      #   network: false
+      #   promptOverlay: Work only from local files.
 
 # Optional base instructions. Codex uses this for Responses instructions when
 # codex_instructions is absent; other providers prepend it to data/prompts/*.

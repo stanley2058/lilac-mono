@@ -247,7 +247,7 @@ function toolActivity({ toolName, args, result, durationMs }: ToolCall) {
 
 type ChildCall = { toolName: Level1ToolName; args: { [key: string]: Json }; done: boolean };
 type SubagentSample = {
-  profile: "explore" | "general";
+  profile: "restricted" | "full";
   task: string;
   children: ChildCall[];
   final: string;
@@ -255,7 +255,7 @@ type SubagentSample = {
 
 const subagentSamples: Record<"weather" | "museum", SubagentSample> = {
   weather: {
-    profile: "explore",
+    profile: "restricted",
     task: "Check Saturday's weather and the riverside walking conditions.",
     children: [
       {
@@ -268,7 +268,7 @@ const subagentSamples: Record<"weather" | "museum", SubagentSample> = {
     final: "Mild and dry on Saturday. The riverside path is open; bring a light jacket.",
   },
   museum: {
-    profile: "general",
+    profile: "full",
     task: "Check the museum's opening hours and ticket availability.",
     children: [
       {
@@ -310,7 +310,7 @@ function subagentProgress(sample: SubagentSample, allDone: boolean): string {
 }
 
 function subagentActivity(sample: SubagentSample) {
-  const args = { profile: sample.profile, task: sample.task };
+  const args = { permissions: sample.profile, task: sample.task };
   return {
     started: activityPartData({
       kind: "tool",

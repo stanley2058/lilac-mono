@@ -4,13 +4,13 @@ import { isRecord } from "../runtime-utils";
 import { parseModelSpecifierResult } from "../model-capability";
 import { validateConfiguredModelProviderOptions } from "../model-provider-option-validation";
 import { decodeCoreConfigV1ToUniversal, CoreConfigV1Invalid } from "./v1";
+import { decodeCoreConfigV2ToUniversal, CoreConfigV2Invalid } from "./v2";
 import {
-  CURRENT_CORE_CONFIG_VERSION,
   DEFAULT_CORE_CONFIG_VERSION,
   SUPPORTED_CORE_CONFIG_VERSIONS,
-  decodeCoreConfigV2ToUniversal,
-  CoreConfigV2Invalid,
-} from "./v2";
+  decodeCoreConfigV3ToUniversal,
+  CoreConfigV3Invalid,
+} from "./v3";
 import type {
   CoreConfig,
   CoreConfigModelOptionWarning,
@@ -35,7 +35,8 @@ export function readCoreConfigVersionResult(
 
   const version = raw.configVersion;
   if (version === undefined || version === null) return Result.ok(DEFAULT_CORE_CONFIG_VERSION);
-  if (version === 1 || version === CURRENT_CORE_CONFIG_VERSION) return Result.ok(version);
+  const supported = SUPPORTED_CORE_CONFIG_VERSIONS.find((candidate) => candidate === version);
+  if (supported !== undefined) return Result.ok(supported);
   const versionDescription =
     typeof version === "string" ||
     typeof version === "number" ||
@@ -94,12 +95,33 @@ function reportConfiguredModelOptionWarnings(
   }
 }
 
+type VersionedCoreConfigInvalid = CoreConfigV1Invalid | CoreConfigV2Invalid | CoreConfigV3Invalid;
+
+function decodeVersionedCoreConfig(
+  version: CoreConfigVersion,
+  raw: unknown,
+  options: CoreConfigParseOptions,
+): ResultType<CoreConfig, VersionedCoreConfigInvalid> {
+  switch (version) {
+    case 1:
+      return decodeCoreConfigV1ToUniversal(raw, options);
+    case 2:
+      return decodeCoreConfigV2ToUniversal(raw, options);
+    case 3:
+      return decodeCoreConfigV3ToUniversal(raw, options);
+  }
+}
+
 export function parseCoreConfigResult(
   raw: unknown,
   options?: CoreConfigParseOptions,
 ): ResultType<
   CoreConfig,
-  CoreConfigVersionInvalid | CoreConfigMustBeObject | CoreConfigV1Invalid | CoreConfigV2Invalid
+  | CoreConfigVersionInvalid
+  | CoreConfigMustBeObject
+  | CoreConfigV1Invalid
+  | CoreConfigV2Invalid
+  | CoreConfigV3Invalid
 > {
   const version = readCoreConfigVersionResult(raw);
   const parsedVersion = version.match<CoreConfigVersion | CoreConfigVersionInvalid>({
@@ -113,19 +135,18 @@ export function parseCoreConfigResult(
 
   const onUnknownKey = options?.onUnknownKey;
 
-  const parsed =
-    parsedVersion === 1
-      ? decodeCoreConfigV1ToUniversal(raw, { onUnknownKey })
-      : decodeCoreConfigV2ToUniversal(raw, { onUnknownKey });
+  const parsed = decodeVersionedCoreConfig(parsedVersion, raw, { onUnknownKey });
   const cfg = Result.match<
     CoreConfig,
-    CoreConfigV1Invalid | CoreConfigV2Invalid,
-    CoreConfig | CoreConfigV1Invalid | CoreConfigV2Invalid
+    VersionedCoreConfigInvalid,
+    CoreConfig | VersionedCoreConfigInvalid
   >(parsed, {
     ok: (value) => value,
     err: (error) => error,
   });
-  if (CoreConfigV1Invalid.is(cfg) || CoreConfigV2Invalid.is(cfg)) return Result.err(cfg);
+  if (CoreConfigV1Invalid.is(cfg) || CoreConfigV2Invalid.is(cfg) || CoreConfigV3Invalid.is(cfg)) {
+    return Result.err(cfg);
+  }
   if (options?.onUnknownModelOption) {
     reportConfiguredModelOptionWarnings(cfg, options.onUnknownModelOption);
   }

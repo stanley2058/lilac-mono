@@ -71,7 +71,7 @@ describe("core config drift coverage", () => {
     expect(difference(v1Paths, v2Paths)).toEqual([]);
   });
 
-  it("keeps the example template parseable with documented v2 defaults", async () => {
+  it("keeps the example template parseable with documented current defaults", async () => {
     const templatePath = path.join(
       import.meta.dir,
       "..",
@@ -82,7 +82,7 @@ describe("core config drift coverage", () => {
     const parsedYaml = Bun.YAML.parse(rawTemplate) as unknown;
     const cfg = await parseCoreConfig(parsedYaml);
 
-    expect(cfg.configVersion).toBe(2);
+    expect(cfg.configVersion).toBe(3);
     expect(cfg.blobStorage).toEqual({ kind: "local" });
     expect(cfg.tools.fsBackend).toBe("fff");
     expect(cfg.tools.inspect.model).toBe("google/gemini-3.5-flash");
@@ -117,9 +117,8 @@ describe("core config drift coverage", () => {
       maxAgeMs: { kind: "bounded", value: 180 * 24 * 60 * 60 * 1000 },
       maxRequests: { kind: "bounded", value: 10_000 },
     });
-    expect(cfg.agent.subagents.profiles.explore.execution).toBe("native");
-    expect(cfg.agent.subagents.profiles.general.execution).toBe("native");
-    expect(cfg.agent.subagents.profiles.self.execution).toBe("native");
+    expect(cfg.agent.subagents.permissions.restricted.execution).toBe("native");
+    expect(cfg.agent.subagents.permissions.full.execution).toBe("native");
     expect(cfg.agent.retry).toEqual({
       enabled: true,
       maxRetries: 3,

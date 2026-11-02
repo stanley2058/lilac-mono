@@ -24,13 +24,13 @@ function readDocument(source: string) {
 }
 
 describe("installer config documents", () => {
-  it("creates a minimal version 2 document without expanding Core defaults", () => {
+  it("creates a minimal current-version document without expanding Core defaults", () => {
     const document = createConfigDocument();
     setConfigValue(document, ["models", "main", "model"], "openai/gpt-5.6-sol");
     setConfigValue(document, ["models", "main", "reasoning"], "medium");
     expect(validateConfigDocument(document).status).toBe("ok");
     expect(serializeConfigDocument(document)).toBe(
-      "# yaml-language-server: $schema=./.schemas/core-config.schema.json\nconfigVersion: 2\nmodels:\n  main:\n    model: openai/gpt-5.6-sol\n    reasoning: medium\n",
+      "# yaml-language-server: $schema=./.schemas/core-config.schema.json\nconfigVersion: 3\nmodels:\n  main:\n    model: openai/gpt-5.6-sol\n    reasoning: medium\n",
     );
     expect(getConfigValue(document, ["agent"])).toBeUndefined();
   });

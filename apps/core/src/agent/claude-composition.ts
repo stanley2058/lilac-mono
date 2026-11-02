@@ -8,7 +8,7 @@ import { signalExternalToolCallHost } from "@stanley2058/lilac-agent/agent-runti
 import {
   applyBasePromptForProvider,
   claudeCodeExecutableSettings,
-  resolveNativeSubagentProfile,
+  resolveSubagentPermissionProfile,
   createLogger,
   isPanic,
   type CoreConfig,
@@ -227,7 +227,7 @@ export async function createCoreClaudeComposition(
     process.env["CLAUDE_CONFIG_DIR"] ?? path.join(homedir(), ".claude"),
   );
   const profileConfig =
-    runProfile === "primary" ? null : resolveNativeSubagentProfile(cfg, runProfile);
+    runProfile === "primary" ? null : resolveSubagentPermissionProfile(cfg, runProfile);
   const executionScope = hashCoreNamedExecutionScope({
     canonicalCwd: canonicalExecutionCwd,
     providerIdentity: "core:claude-code",

@@ -1331,43 +1331,25 @@ describe("subagent model selection", () => {
     ).toThrow("not available for agent selection");
   });
 
-  it("allows an opted-out alias in an explicit static profile", () => {
+  it("runs subagents on models.main and its fallbacks when no alias is delegated", () => {
     const cfg = parseCoreConfigV2ToUniversal({});
     cfg.models.def = {
-      manual: {
-        model: "openai/gpt-4o",
-        agentCanSelect: false,
-      },
+      slot: { model: "openai/slot", fallback: ["openai/alias-backup"] },
     };
-    cfg.agent.subagents.profiles.general = {
-      ...cfg.agent.subagents.profiles.general,
-      modelSlot: "main",
-      model: "manual",
-    };
+    cfg.models.main = { model: "slot", fallback: ["openai/main-backup"] };
+    cfg.models.fast = { model: "openai/fast" };
 
-    const resolved = resolveAgentRunModel({
+    const plan = resolveAgentRunModel({
       cfg,
-      runProfile: "general",
-    });
-
-    expect(resolved.head.alias).toBe("manual");
-  });
-
-  it("applies reasoning overrides to the configured profile fallback", () => {
-    const cfg = parseCoreConfigV2ToUniversal({});
-    cfg.agent.subagents.profiles.explore = {
-      ...cfg.agent.subagents.profiles.explore,
-      modelSlot: "fast",
-      reasoning: "low",
-    };
-
-    const resolved = resolveAgentRunModel({
-      cfg,
-      runProfile: "explore",
+      runProfile: "restricted",
       reasoningOverride: "medium",
     });
 
-    expect(resolved.head.reasoning).toBe("medium");
+    expect([plan.head, ...plan.fallbacks].map((candidate) => candidate.spec)).toEqual([
+      "openai/slot",
+      "openai/main-backup",
+    ]);
+    expect(plan.head.reasoning).toBe("medium");
   });
 
   it("rehydrates a durable workflow model request without current preset resolution", () => {
@@ -1420,25 +1402,20 @@ describe("subagent model selection", () => {
         ],
       },
     };
-    cfg.agent.subagents.profiles.general = {
-      ...cfg.agent.subagents.profiles.general,
-      reasoning: "medium",
-    };
-
     const defaultReasoningPlan = resolveAgentRunModel({
       cfg,
-      runProfile: "general",
+      runProfile: "full",
       requestModelOverride: "requested",
     });
     expect(
       [defaultReasoningPlan.head, ...defaultReasoningPlan.fallbacks].map(
         (candidate) => candidate.reasoning,
       ),
-    ).toEqual(["medium", "medium", "none", "medium"]);
+    ).toEqual(["low", undefined, "none", undefined]);
 
     const plan = resolveAgentRunModel({
       cfg,
-      runProfile: "general",
+      runProfile: "full",
       requestModelOverride: "requested",
       reasoningOverride: "xhigh",
     });
@@ -1466,141 +1443,25 @@ describe("subagent model selection", () => {
         fallback: ["openai/current", { model: "openai/explicit", reasoning: "low" }],
       },
     };
-    cfg.agent.subagents.profiles.general = {
-      ...cfg.agent.subagents.profiles.general,
-      reasoning: "medium",
-    };
-
     const fallbacks = resolveAgentRunModelFallbacks({
       cfg,
-      runProfile: "general",
+      runProfile: "full",
       requestModelOverride: "requested",
     });
 
     expect(fallbacks.map((candidate) => [candidate.spec, candidate.reasoning])).toEqual([
-      ["openai/current", "medium"],
+      ["openai/current", undefined],
       ["openai/explicit", "low"],
     ]);
     delete cfg.models.def.requested;
     expect(
       resolveAgentRunModelFallbacks({
         cfg,
-        runProfile: "general",
+        runProfile: "full",
         requestModelOverride: "requested",
         reasoningOverride: "high",
       }),
     ).toEqual([]);
-  });
-
-  it("keeps explicit profile and slot fallbacks when their head aliases are missing", () => {
-    const cfg = parseCoreConfigV2ToUniversal({});
-    cfg.models.main = {
-      model: "missing-slot-head",
-      fallback: ["openai/slot-backup"],
-    };
-    cfg.agent.subagents.profiles.general = {
-      ...cfg.agent.subagents.profiles.general,
-      model: "missing-profile-head",
-      fallback: ["openai/profile-backup"],
-    };
-
-    expect(
-      resolveAgentRunModelFallbacks({ cfg, runProfile: "general" }).map(
-        (candidate) => candidate.spec,
-      ),
-    ).toEqual(["openai/profile-backup"]);
-    expect(
-      resolveAgentRunModelFallbacks({ cfg, runProfile: "explore" }).map(
-        (candidate) => candidate.spec,
-      ),
-    ).toEqual(["openai/slot-backup"]);
-  });
-
-  it("uses explicit profile fallback and profile reasoning unless an entry overrides it", () => {
-    const cfg = parseCoreConfigV2ToUniversal({});
-    cfg.models.def = {
-      profile: {
-        model: "openai/profile",
-        fallback: ["openai/alias-backup"],
-      },
-    };
-    cfg.agent.subagents.profiles.general = {
-      ...cfg.agent.subagents.profiles.general,
-      model: "profile",
-      reasoning: "medium",
-      fallback: [
-        "openai/common-reasoning",
-        { model: "openai/own-reasoning", reasoning: "low" },
-        "openai/common-reasoning",
-      ],
-    };
-
-    const plan = resolveAgentRunModel({ cfg, runProfile: "general" });
-
-    expect([plan.head, ...plan.fallbacks].map((candidate) => candidate.spec)).toEqual([
-      "openai/profile",
-      "openai/common-reasoning",
-      "openai/own-reasoning",
-      "openai/common-reasoning",
-    ]);
-    expect([plan.head, ...plan.fallbacks].map((candidate) => candidate.reasoning)).toEqual([
-      "medium",
-      "medium",
-      "low",
-      "medium",
-    ]);
-  });
-
-  it("lets profile fallback replace slot and alias fallback", () => {
-    const cfg = parseCoreConfigV2ToUniversal({});
-    cfg.models.def = {
-      slot: { model: "openai/slot", fallback: ["openai/alias-backup"] },
-    };
-    cfg.models.fast = { model: "slot", fallback: ["openai/slot-backup"] };
-    cfg.agent.subagents.profiles.explore = {
-      ...cfg.agent.subagents.profiles.explore,
-      modelSlot: "fast",
-      fallback: ["openai/profile-backup", "openai/profile-backup"],
-    };
-
-    const plan = resolveAgentRunModel({ cfg, runProfile: "explore" });
-
-    expect([plan.head, ...plan.fallbacks].map((candidate) => candidate.spec)).toEqual([
-      "openai/slot",
-      "openai/profile-backup",
-      "openai/profile-backup",
-    ]);
-  });
-
-  it("inherits alias fallback for a direct profile and slot fallback for a slot profile", () => {
-    const cfg = parseCoreConfigV2ToUniversal({});
-    cfg.models.def = {
-      direct: {
-        model: "openai/direct",
-        fallback: ["openai/direct-alias-backup"],
-      },
-      slot: { model: "openai/slot", fallback: ["openai/slot-alias-backup"] },
-    };
-    cfg.models.fast = { model: "slot", fallback: ["openai/slot-backup"] };
-    cfg.agent.subagents.profiles.general = {
-      ...cfg.agent.subagents.profiles.general,
-      model: "direct",
-    };
-    cfg.agent.subagents.profiles.explore = {
-      ...cfg.agent.subagents.profiles.explore,
-      modelSlot: "fast",
-    };
-
-    expect(
-      resolveAgentRunModel({ cfg, runProfile: "general" }).fallbacks.map(
-        (candidate) => candidate.spec,
-      ),
-    ).toEqual(["openai/direct-alias-backup"]);
-    expect(
-      resolveAgentRunModel({ cfg, runProfile: "explore" }).fallbacks.map(
-        (candidate) => candidate.spec,
-      ),
-    ).toEqual(["openai/slot-backup"]);
   });
 
   it("rehydrates the complete durable fallback plan", () => {
@@ -5562,9 +5423,8 @@ describe("bus agent runner terminal cleanup", () => {
 
 describe("startBusAgentRunner production path", () => {
   it.each([
-    ["explore", "deferred"],
-    ["general", "sync"],
-    ["self", "deferred"],
+    ["restricted", "deferred"],
+    ["full", "sync"],
   ] as const)(
     "delegates heartbeat work with inherited %s authority in %s mode",
     async (profile, mode) => {
@@ -5638,10 +5498,12 @@ describe("startBusAgentRunner production path", () => {
                 const tool = subagentTools({
                   idleTimeoutMs: 10_000,
                   maxDepth: 2,
+                  runProfile: "primary",
+                  config,
                   onDelegate,
                 }).subagent_delegate;
                 const result = await tool.execute!(
-                  { task: "Research the watch", profile, mode },
+                  { task: "Research the watch", permissions: profile, mode },
                   {
                     toolCallId: "heartbeat-delegate",
                     messages: [],

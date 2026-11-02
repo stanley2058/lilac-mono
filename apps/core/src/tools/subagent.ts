@@ -12,9 +12,14 @@ import {
 import {
   createLogger,
   formatTaggedErrorForLog,
+  isPermissionProfileWithin,
   opaqueErrorMessage,
   MODEL_REASONING_EFFORTS,
+  resolveSubagentPermissionProfile,
+  type CoreConfig,
   type ModelReasoningEffort,
+  type ResolvedSubagentPermissionProfile,
+  type SubagentPermissionProfileConfig,
 } from "@stanley2058/lilac-utils";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
@@ -41,11 +46,13 @@ type AgentSelectableModelPreset = {
 type SubagentDelegateInput = z.input<typeof subagentDelegateBaseInputSchema> & {
   model?: string;
   reasoning?: ModelReasoningEffort;
+  permissions?: string;
 };
 
 type ParsedSubagentDelegateInput = z.output<typeof subagentDelegateBaseInputSchema> & {
   model?: string;
   reasoning?: ModelReasoningEffort;
+  permissions?: string;
 };
 
 function isSelectableModelPreset(entry: readonly [string, AgentSelectableModelPreset]): boolean {
@@ -53,9 +60,26 @@ function isSelectableModelPreset(entry: readonly [string, AgentSelectableModelPr
   return preset.agentCanSelect === true && !alias.includes("/") && /^[^/]+\/.+/u.test(preset.model);
 }
 
-function createSubagentDelegateInputSchema(
-  selectableModels: ReadonlyArray<readonly [string, AgentSelectableModelPreset]>,
-): z.ZodType<ParsedSubagentDelegateInput> {
+function describePermissionProfile(
+  name: string,
+  profile: Readonly<SubagentPermissionProfileConfig>,
+): string {
+  const bash = profile.execution === false ? "no bash" : `${profile.execution} bash`;
+  return [
+    `- ${name}:`,
+    profile.workspaceWrites ? "workspace writes," : "no workspace writes,",
+    profile.network ? "network," : "no network,",
+    `${bash},`,
+    profile.delegation ? "can delegate" : "cannot delegate",
+  ].join(" ");
+}
+
+function createSubagentDelegateInputSchema(params: {
+  selectableModels: ReadonlyArray<readonly [string, AgentSelectableModelPreset]>;
+  permissionProfiles: ReadonlyArray<ResolvedSubagentPermissionProfile>;
+  defaultPermissionProfile: string;
+}): z.ZodType<ParsedSubagentDelegateInput> {
+  const { selectableModels, permissionProfiles } = params;
   const documentedModels = selectableModels.slice(0, 5).map(([alias, preset]) => {
     const detail = preset.comment?.trim()
       ? truncateEnd(normalizeToolDisplay(preset.comment), 240)
@@ -70,16 +94,31 @@ function createSubagentDelegateInputSchema(
     configuredAliasDescription = `Configured aliases${qualifier}:\n${documentedModels.join("\n")}`;
   }
   const modelDescription = [
-    "Optional agent-selectable alias from models.def. Direct provider/model values are not accepted.",
+    "Optional agent-selectable alias from models.def. Direct provider/model values are not accepted. When omitted, the main model runs the child.",
     configuredAliasDescription,
   ].join("\n");
 
-  if (selectableModels.length === 0) {
-    return subagentDelegateBaseInputSchema;
+  const permissionNames = permissionProfiles.map((profile) => profile.name);
+  const permissionsDescription = [
+    `Optional permission profile for the child. When omitted, ${params.defaultPermissionProfile} applies. Only profiles within this run's own authority are listed.`,
+    ...permissionProfiles.map((profile) => describePermissionProfile(profile.name, profile)),
+  ].join("\n");
+
+  let schema = subagentDelegateBaseInputSchema as z.ZodType<ParsedSubagentDelegateInput>;
+  if (permissionNames.length > 0) {
+    const [firstName, ...remainingNames] = permissionNames;
+    schema = subagentDelegateBaseInputSchema.extend({
+      permissions: z
+        .enum([firstName!, ...remainingNames])
+        .optional()
+        .describe(permissionsDescription),
+    });
   }
 
+  if (selectableModels.length === 0) return schema;
+
   const [firstAlias, ...remainingAliases] = selectableModels.map(([alias]) => alias);
-  return subagentDelegateBaseInputSchema.extend({
+  return (schema as typeof subagentDelegateBaseInputSchema).extend({
     model: z
       .enum([firstAlias!, ...remainingAliases])
       .optional()
@@ -87,9 +126,22 @@ function createSubagentDelegateInputSchema(
     reasoning: modelReasoningEffortSchema
       .optional()
       .describe(
-        "Optional reasoning-effort override for this child run. When omitted, the selected alias or profile default applies.",
+        "Optional reasoning-effort override for this child run. When omitted, the selected alias default applies.",
       ),
   });
+}
+
+/** Profiles a run may grant to its children: every profile for primary, otherwise those within its own. */
+export function delegablePermissionProfiles(
+  config: CoreConfig,
+  currentRunProfile: string,
+): ResolvedSubagentPermissionProfile[] {
+  const configured = Object.keys(config.agent.subagents.permissions).map((name) =>
+    resolveSubagentPermissionProfile(config, name),
+  );
+  if (currentRunProfile === "primary") return configured;
+  const parent = resolveSubagentPermissionProfile(config, currentRunProfile);
+  return configured.filter((profile) => isPermissionProfileWithin(profile, parent));
 }
 
 type SubagentTerminalStatus = z.infer<typeof subagentTerminalStatusSchema>;
@@ -114,8 +166,6 @@ type RequestContextLike = {
   requestInitiator?: SurfacePrincipal;
   requestInitiatorSessionId?: string;
 };
-
-type CurrentRunProfile = SubagentProfile | "primary";
 
 const requestContextSchema = z.object({
   requestId: z.string(),
@@ -217,13 +267,6 @@ function parseDepth(ctx: RequestContextLike): number {
     }
   }
   return 0;
-}
-
-function parseCurrentRunProfile(ctx: RequestContextLike): CurrentRunProfile {
-  const raw = ctx.subagentProfile;
-  if (raw === "primary") return "primary";
-  if (raw === "explore" || raw === "general" || raw === "self") return raw;
-  return "primary";
 }
 
 function toAdapterPlatform(value: string): AdapterPlatform {
@@ -368,6 +411,9 @@ export type SubagentDelegationHandle = {
 export function subagentTools(params: {
   idleTimeoutMs: number;
   maxDepth: number;
+  /** "primary" or the delegating run's permission profile name. */
+  runProfile: string;
+  config: CoreConfig;
   modelPresets?: Readonly<Record<string, AgentSelectableModelPreset>>;
   delegatePromptOverlay?: string;
   onDelegate?: (registration: SubagentDelegationRegistration) => Promise<SubagentDelegationHandle>;
@@ -376,9 +422,22 @@ export function subagentTools(params: {
     isSelectableModelPreset,
   );
   const selectableModelAliases = new Set(selectableModels.map(([alias]) => alias));
-  const inputSchema = createSubagentDelegateInputSchema(selectableModels);
+  const permissionProfiles = delegablePermissionProfiles(params.config, params.runProfile);
+  const delegableProfileNames = new Set(permissionProfiles.map((profile) => profile.name));
+  // The version-owned default applies whenever this run may grant it; a
+  // narrower run falls back to its own profile.
+  const versionDefault = params.config.agent.subagents.defaultPermissions;
+  const defaultPermissionProfile = delegableProfileNames.has(versionDefault)
+    ? versionDefault
+    : resolveSubagentPermissionProfile(params.config, params.runProfile).name;
+  const inputSchema = createSubagentDelegateInputSchema({
+    selectableModels,
+    permissionProfiles,
+    defaultPermissionProfile,
+  });
   const description = [
-    "Delegate a task to an explore, general, or self subagent.",
+    "Delegate a task to a subagent. Pick a model alias and, optionally, a permission profile.",
+    "The subagent does not see this conversation or the user's persona files. Write the task with the context it needs.",
     "Use deferred mode by default.",
     "Use sync mode only when you need the result before the next useful action.",
     "Deferred acceptance means that the subagent started. It does not mean that the task is complete.",
@@ -409,6 +468,12 @@ export function subagentTools(params: {
             `Model alias '${requestedModel}' is not available for agent selection`,
           );
         }
+        if (input.permissions !== undefined && !delegableProfileNames.has(input.permissions)) {
+          signalSubagentFailure(
+            "authorize_delegation",
+            `Permission profile '${input.permissions}' is not within this run's authority`,
+          );
+        }
         if (input.reasoning !== undefined && selectableModels.length === 0) {
           signalSubagentFailure(
             "validate_input",
@@ -422,22 +487,14 @@ export function subagentTools(params: {
         const parsed = decodedInput.data;
         const decodedContext = decodeRequestContext(context);
         const ctx = adaptToolResultToHost(decodedContext);
-        const profile = parsed.profile;
+        const profile = parsed.permissions ?? defaultPermissionProfile;
         const mode = parsed.mode;
         const depth = parseDepth(ctx);
 
-        const currentRunProfile = parseCurrentRunProfile(ctx);
-        if (currentRunProfile === "explore" || currentRunProfile === "general") {
+        if (!delegableProfileNames.has(profile)) {
           signalSubagentFailure(
             "authorize_delegation",
-            `subagent_delegate is disabled in ${currentRunProfile} subagent runs`,
-          );
-        }
-
-        if (currentRunProfile === "self" && profile === "self") {
-          signalSubagentFailure(
-            "authorize_delegation",
-            "self subagent cannot delegate to self profile",
+            `Permission profile '${profile}' is not within this run's authority`,
           );
         }
 
@@ -547,7 +604,7 @@ export function subagentTools(params: {
             mode: "deferred",
             status: "accepted",
             workflowRunId: handle.runId,
-            profile,
+            permissions: profile,
             sessionName,
           };
         }
@@ -609,7 +666,7 @@ export function subagentTools(params: {
               mode: "sync",
               status,
               workflowRunId: handle.runId,
-              profile,
+              permissions: profile,
               sessionName,
               finalText: outcome.finalText,
               detail: outcome.detail,

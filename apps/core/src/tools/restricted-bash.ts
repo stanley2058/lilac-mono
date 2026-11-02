@@ -184,7 +184,7 @@ type RestrictedBashContext = {
   currentTurnUserId?: string;
   toolCallId?: string;
   workspaceWritable?: boolean;
-  subagentProfile?: "explore" | "general" | "self";
+  subagentProfile?: string;
 };
 
 type RestrictedBashFsCacheEntry = {

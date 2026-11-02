@@ -554,12 +554,12 @@ export class WorkflowEngine {
       createDispatchEpoch?: () => string;
       reportFatalPanic?: (panic: Panic) => void;
       validateAgentSelection?: (input: {
-        profile: "explore" | "general" | "self";
+        profile: string;
         model?: string;
         reasoning?: ResolvedWorkflowAgentInput["options"]["reasoning"];
       }) => void | ResolvedAgentSelection | Promise<void | ResolvedAgentSelection>;
       resolveAgentFallbacks?: (input: {
-        profile: "explore" | "general" | "self";
+        profile: string;
         model?: string;
         reasoning?: ResolvedWorkflowAgentInput["options"]["reasoning"];
       }) => readonly DurableAgentFallback[] | Promise<readonly DurableAgentFallback[]>;
@@ -568,7 +568,7 @@ export class WorkflowEngine {
         revision: WorkflowRevision;
         operation: WorkflowOperation;
         prompt: string;
-        profile: "explore" | "general" | "self";
+        profile: string;
         model?: string;
         reasoning?: ResolvedWorkflowAgentInput["options"]["reasoning"];
         policy: WorkflowRequestPolicy;
@@ -2020,7 +2020,7 @@ export class WorkflowEngine {
     revision: WorkflowRevision;
     operation: WorkflowOperation;
     prompt: string;
-    profile: "explore" | "general" | "self";
+    profile: string;
     model?: string;
     reasoning?: ResolvedWorkflowAgentInput["options"]["reasoning"];
     policy: WorkflowRequestPolicy;

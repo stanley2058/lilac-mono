@@ -7,9 +7,7 @@ import {
   getBuildInfo,
   isPanic,
   isRecord,
-  isNativeSubagentProfile,
   type CoreConfig,
-  type NativeSubagentProfile,
 } from "@stanley2058/lilac-utils";
 import {
   invokeLevel2Call,
@@ -332,7 +330,8 @@ function parseRequestContext(headers: ToolRequestHeaders): RequestContext {
     controlCapability: headers.controlCapability,
     currentTurnUserId: headers.currentTurnUserId,
     subagentProfile: (() => {
-      return isNativeSubagentProfile(headers.subagentProfile) ? headers.subagentProfile : undefined;
+      const profile = headers.subagentProfile?.trim();
+      return profile && profile !== "primary" ? profile : undefined;
     })(),
     safetyMode: headers.safetyMode === "restricted" ? "restricted" : undefined,
   };
@@ -455,7 +454,7 @@ export type ToolServerOptions = {
     principal: SurfacePrincipal | null;
     authenticatedOrigin: AuthenticatedSurfaceOrigin | null;
     allowedCallables: readonly string[] | null;
-    profile: "primary" | NativeSubagentProfile;
+    profile: string;
     canonicalCwd: string;
     safetyMode: SafetyMode;
   } | null;

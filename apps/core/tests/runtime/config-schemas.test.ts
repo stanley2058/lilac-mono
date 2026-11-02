@@ -35,6 +35,11 @@ test("Core schemas accept both versions, friendly units, and legacy web inputs",
     { configVersion: 2, tools: { web: { search: { provider: "exa" } } } },
     { configVersion: 1, tools: { web: { extract: { provider: "exa" } } } },
     { configVersion: 2, plugins: { config: { test: { arbitrary: [1, true, null] } } } },
+    { configVersion: 3 },
+    {
+      configVersion: 3,
+      agent: { subagents: { permissions: { offline: { network: false } } } },
+    },
   ];
   for (const input of cases) {
     expect(parseCoreConfigResult(input).isOk()).toBe(true);
@@ -54,10 +59,11 @@ test("Core schemas accept both versions, friendly units, and legacy web inputs",
 
 test("Core editor diagnostics reject wrong versions, fields, types, and units", () => {
   for (const input of [
-    { configVersion: 3 },
+    { configVersion: 4 },
     { configVersion: "2" },
     { configVersion: null },
     { configVersion: 2, typo: true },
+    { configVersion: 3, agent: { subagents: { permissions: { offline: { typo: true } } } } },
     { tools: { output: { artifactTtl: "3h" } } },
     { configVersion: 2, tools: { output: { artifactTtl: true } } },
     { configVersion: 2, tools: { output: { artifactTtl: "3MB" } } },

@@ -1,7 +1,7 @@
 import {
   applyBasePromptForProvider,
   resolveCoreConfigPath,
-  resolveNativeSubagentProfile,
+  resolveSubagentPermissionProfile,
   type CoreConfig,
   type EditingToolMode,
   type ResolvedModelRef,
@@ -46,22 +46,18 @@ export function buildAgentRunSystemPrompt(params: {
     basePrompt: params.cfg.basePrompt,
     provider: params.resolved.provider,
   });
+  const profileConfig =
+    params.runProfile === "primary"
+      ? null
+      : resolveSubagentPermissionProfile(params.cfg, params.runProfile);
   const profilePrompt = {
     baseSystemPrompt: providerSystemPrompt,
-    activeEditingTool: params.runProfile === "explore" ? null : params.editingToolMode,
-    exploreOverlay: params.cfg.agent.subagents.profiles.explore.promptOverlay,
-    generalOverlay: params.cfg.agent.subagents.profiles.general.promptOverlay,
-    selfOverlay: params.cfg.agent.subagents.profiles.self.promptOverlay,
+    activeEditingTool: profileConfig?.workspaceWrites === false ? null : params.editingToolMode,
     skillsSection: params.skillsSection,
   };
-  const baseSystemPrompt =
-    params.runProfile === "primary"
-      ? buildSystemPromptForProfile({ ...profilePrompt, profile: "primary" })
-      : buildSystemPromptForProfile({
-          ...profilePrompt,
-          profile: params.runProfile,
-          profileConfig: resolveNativeSubagentProfile(params.cfg, params.runProfile),
-        });
+  const baseSystemPrompt = profileConfig
+    ? buildSystemPromptForProfile({ ...profilePrompt, profile: profileConfig.name, profileConfig })
+    : buildSystemPromptForProfile({ ...profilePrompt, profile: "primary" });
 
   let prompt = appendConfiguredAliasPromptBlock({
     baseSystemPrompt,

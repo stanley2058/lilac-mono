@@ -300,7 +300,8 @@ export const applyPatchInputSchema = z.object({
   dangerouslyAllow: z.boolean().optional().describe("Bypass filesystem denylist guardrails."),
 });
 
-export const subagentProfileSchema = z.enum(["explore", "general", "self"]);
+/** Name of a configured subagent permission profile. */
+export const subagentProfileSchema = z.string().min(1).max(32);
 export const subagentModeSchema = z.enum(["deferred", "sync"]);
 export const subagentSessionNameSchema = z
   .string()
@@ -309,9 +310,6 @@ export const subagentSessionNameSchema = z
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "sessionName must be a short slug");
 
 export const subagentDelegateBaseInputSchema = z.object({
-  profile: subagentProfileSchema
-    .default("explore")
-    .describe("Subagent profile to run (explore, general, self)."),
   task: z.string().min(1).describe("Objective for the subagent."),
   mode: subagentModeSchema
     .default("deferred")
@@ -333,7 +331,7 @@ export const subagentDelegateOutputSchema = z.discriminatedUnion("mode", [
     mode: z.literal("deferred"),
     status: z.literal("accepted"),
     workflowRunId: z.string().min(1),
-    profile: subagentProfileSchema,
+    permissions: subagentProfileSchema,
     sessionName: subagentSessionNameSchema,
   }),
   z.object({
@@ -341,7 +339,7 @@ export const subagentDelegateOutputSchema = z.discriminatedUnion("mode", [
     mode: z.literal("sync"),
     status: subagentTerminalStatusSchema,
     workflowRunId: z.string().min(1),
-    profile: subagentProfileSchema,
+    permissions: subagentProfileSchema,
     sessionName: subagentSessionNameSchema,
     finalText: z.string(),
     detail: z.string().optional(),

@@ -253,7 +253,8 @@ export const subagentSummarySchema = z.strictObject({
   id: runIdentitySchema,
   activityId: identitySchema,
   turnId: identitySchema,
-  profile: z.enum(["explore", "general", "self"]),
+  /** Name of the subagent permission profile. */
+  profile: z.string().min(1).max(64),
   name: z.string().max(256),
   title: z.string().max(256),
   state: z.enum(["running", "complete", "failed", "canceled"]),

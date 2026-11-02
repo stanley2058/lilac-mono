@@ -26,7 +26,7 @@ import {
   getCoreConfig,
   profileIncludes,
   resolveCoreConfigPath,
-  resolveNativeSubagentProfile,
+  resolveSubagentPermissionProfile,
   type CoreConfig,
 } from "@stanley2058/lilac-utils";
 
@@ -68,7 +68,7 @@ function isStructurallyAllowed(
 ): boolean {
   if (params.runProfile === "primary") return true;
   if (!contribution) return false;
-  const profile = resolveNativeSubagentProfile(config, params.runProfile);
+  const profile = resolveSubagentPermissionProfile(config, params.runProfile);
   if (!profileIncludes(profile.level1.plugins, contribution.pluginId)) return false;
   if (!profileIncludes(profile.level1.tools, specName)) return false;
   if (specName === "bash" && profile.execution === false) return false;
@@ -87,7 +87,7 @@ function isMcpStructurallyAllowed(params: {
 }): boolean {
   if (params.runProfile === "primary") return true;
   if (!params.allowSubagents) return false;
-  const profile = resolveNativeSubagentProfile(params.config, params.runProfile);
+  const profile = resolveSubagentPermissionProfile(params.config, params.runProfile);
   const serverAllowed =
     profileIncludes(profile.level1.plugins, "mcp") ||
     profileIncludes(profile.level1.plugins, `mcp:${params.serverId}`);

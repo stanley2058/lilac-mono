@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { blobRefV1Schema, type BlobRefV1 } from "@stanley2058/lilac-blob-storage";
-import { MODEL_REASONING_EFFORTS } from "@stanley2058/lilac-utils";
+import { isPermissionProfileName, MODEL_REASONING_EFFORTS } from "@stanley2058/lilac-utils";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
 export const WORKFLOW_MANUAL_RECONCILIATION_DETAIL =
@@ -44,8 +44,10 @@ const platformSchema = z.enum([
   "unknown",
 ]);
 
-export const WORKFLOW_AGENT_PROFILES = ["explore", "general", "self"] as const;
-export const workflowAgentProfileSchema = z.enum(WORKFLOW_AGENT_PROFILES);
+/** Names a configured subagent permission profile; legacy role names resolve at dispatch. */
+export const workflowAgentProfileSchema = z
+  .string()
+  .refine(isPermissionProfileName, "profile must name a subagent permission profile");
 export const workflowReasoningSchema = z.enum(MODEL_REASONING_EFFORTS);
 
 export function compareCodeUnits(left: string, right: string): number {

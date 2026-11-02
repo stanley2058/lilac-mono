@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { NativeSubagentProfile } from "@stanley2058/lilac-utils";
 
 import type { AuthenticatedSurfaceOrigin, SurfacePrincipal } from "../surface/types";
 
@@ -12,7 +11,8 @@ type RequestControlPolicyBase = {
   canonicalCwd: string;
   safetyMode: SafetyMode;
   expiresAt: number;
-  profile: "primary" | NativeSubagentProfile;
+  /** "primary" or the run's subagent permission profile name. */
+  profile: string;
 };
 
 export const HEARTBEAT_LEVEL2_CALLABLES = [

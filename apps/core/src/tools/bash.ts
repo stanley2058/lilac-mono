@@ -1,4 +1,4 @@
-import type { CoreConfig, ResolvedNativeSubagentProfile } from "@stanley2058/lilac-utils";
+import type { CoreConfig, ResolvedSubagentPermissionProfile } from "@stanley2058/lilac-utils";
 import { bashInputSchema } from "@stanley2058/lilac-coding-tools/schemas";
 import { tool } from "ai";
 import { z } from "zod";
@@ -113,7 +113,7 @@ export function bashToolWithCwd(
     outputConfig?: CoreConfig["tools"]["output"];
     onActivity?: () => void;
     controlCapability?: string;
-    nativeProfile?: ResolvedNativeSubagentProfile;
+    nativeProfile?: ResolvedSubagentPermissionProfile;
   },
 ) {
   return {
@@ -176,7 +176,7 @@ export function bashToolWithCwd(
           outputConfig?: CoreConfig["tools"]["output"];
           onActivity?: () => void;
           controlCapability?: string;
-          subagentProfile?: ResolvedNativeSubagentProfile["name"];
+          subagentProfile?: string;
         });
       },
     }),

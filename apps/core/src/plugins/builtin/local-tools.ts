@@ -9,7 +9,7 @@ import { expandTilde } from "@stanley2058/lilac-fs";
 import {
   errorCode,
   opaqueErrorMessage,
-  resolveNativeSubagentProfile,
+  resolveSubagentPermissionProfile,
 } from "@stanley2058/lilac-utils";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 import fs from "node:fs/promises";
@@ -381,7 +381,7 @@ export const BUILTIN_LEVEL1_TOOLS = {
         nativeProfile:
           runProfile === "primary" || !runtime.config
             ? undefined
-            : resolveNativeSubagentProfile(runtime.config, runProfile),
+            : resolveSubagentPermissionProfile(runtime.config, runProfile),
       }).bash;
     },
   }),
@@ -442,15 +442,20 @@ export const BUILTIN_LEVEL1_TOOLS = {
       requestContext?.safetyMode !== "restricted",
     formatArgs: formatSubagentDelegateToolArgs,
     summarizeFailure: ({ result }) => summarizeSubagentFailure(result),
-    createTool: ({ runtime, subagentConfig, requestContext }) => {
+    createTool: ({ runtime, subagentConfig, requestContext, runProfile }) => {
       if (!runtime.bus) {
         return signalBuiltinToolHostError("subagent_delegate requires bus");
+      }
+      if (!runtime.config) {
+        return signalBuiltinToolHostError("subagent_delegate requires config");
       }
       return subagentTools({
         idleTimeoutMs: subagentConfig.idleTimeoutMs,
         maxDepth: subagentConfig.maxDepth,
-        modelPresets: runtime.config?.models.def,
-        delegatePromptOverlay: runtime.config?.agent.subagents.delegatePromptOverlay,
+        runProfile,
+        config: runtime.config,
+        modelPresets: runtime.config.models.def,
+        delegatePromptOverlay: runtime.config.agent.subagents.delegatePromptOverlay,
         onDelegate: requestContext ? getDelegateHandler(requestContext) : undefined,
       }).subagent_delegate;
     },

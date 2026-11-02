@@ -437,7 +437,16 @@ export default defineWorkflow({`,
     expect(() =>
       validateWorkflowSource({
         name: "audit-routes",
-        source: source().replace(BASE_AGENT_CALL, 'return agent("bad", { profile: "invalid" });'),
+        source: source().replace(
+          BASE_AGENT_CALL,
+          'return agent("bad", { profile: "Not A Profile" });',
+        ),
+      }),
+    ).toThrow("Invalid workflow agent options");
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(BASE_AGENT_CALL, 'return agent("bad", { profile: "primary" });'),
       }),
     ).toThrow("Invalid workflow agent options");
     expect(() =>
@@ -463,7 +472,7 @@ export default defineWorkflow({`,
         name: "audit-routes",
         source: source().replace(
           BASE_AGENT_CALL,
-          'return agent("bad", { profile: "invalid", label: args.directory });',
+          'return agent("bad", { profile: "Not A Profile", label: args.directory });',
         ),
       }),
     ).toThrow("Invalid workflow agent options");

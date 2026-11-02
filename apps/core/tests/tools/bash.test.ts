@@ -6,7 +6,7 @@ import {
   isRecord,
   parseCoreConfigV1ToUniversal,
   parseCoreConfigV2ToUniversal,
-  resolveNativeSubagentProfile,
+  resolveSubagentPermissionProfile,
 } from "@stanley2058/lilac-utils";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -578,7 +578,7 @@ rmdir "$media_dir"`,
   it("forwards control capability, profile, and current user through ordinary Bash", async () => {
     const config = parseCoreConfigV1ToUniversal({});
     const bash = bashToolWithCwd(process.cwd(), {
-      nativeProfile: resolveNativeSubagentProfile(config, "general"),
+      nativeProfile: resolveSubagentPermissionProfile(config, "general"),
       controlCapability: "generic-control-capability",
     }).bash;
     const result = await executeTool(
@@ -619,7 +619,7 @@ rmdir "$media_dir"`,
         const sessionId = `profile-bash-mode-${index}-${crypto.randomUUID()}`;
         const result = await executeTool(
           bashToolWithCwd(workspace, {
-            nativeProfile: resolveNativeSubagentProfile(config, testCase.profile),
+            nativeProfile: resolveSubagentPermissionProfile(config, testCase.profile),
           }).bash,
           { command: 'printf "%s" "${LILAC_RESTRICTED:-native}"' },
           {

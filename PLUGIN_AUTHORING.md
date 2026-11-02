@@ -175,7 +175,7 @@ plugins:
 
 - `plugins.disabled` disables a plugin without uninstalling it.
 - `plugins.config.<pluginId>` is passed through as `context.pluginConfig`.
-- `agent.subagents.profiles.<profile>.level1` and `.level2` select plugin contributions for that native profile.
+- `agent.subagents.permissions.<profile>.level1` and `.level2` select plugin contributions for that subagent permission profile. Plugins see the profile name in `subagentProfile`.
 - Level 1 selection uses both plugin id and tool name; Level 2 selection uses both plugin id and callable
   id. A `"*"` entry includes every globally enabled contribution at that level.
 - The same resolved native profile applies to direct, generated-delegation, and user-authored workflow

@@ -6,7 +6,6 @@ import {
   isPanic,
   resolveVcsEnv,
   type CoreConfig,
-  type NativeSubagentProfile,
 } from "@stanley2058/lilac-utils";
 import { analyzeBashCommand, type BashSafetyCode } from "@stanley2058/lilac-bash-safety";
 import { randomUUID } from "node:crypto";
@@ -861,7 +860,7 @@ function buildBashChildEnv(params: {
   resolvedCwd: string;
   toolCallId?: string;
   controlCapability?: string;
-  subagentProfile?: NativeSubagentProfile;
+  subagentProfile?: string;
 }): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
@@ -923,7 +922,7 @@ export async function executeBash(
     outputConfig?: CoreConfig["tools"]["output"];
     onActivity?: () => void;
     controlCapability?: string;
-    subagentProfile?: NativeSubagentProfile;
+    subagentProfile?: string;
     spillFileOperations?: BashSpillFileOperations;
   } = {},
 ): Promise<BashToolOutput> {

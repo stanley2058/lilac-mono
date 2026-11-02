@@ -4,7 +4,7 @@ export type JSONObject = {
   [key: string]: JSONValue | undefined;
 };
 
-export type CoreConfigVersion = 1 | 2;
+export type CoreConfigVersion = 1 | 2 | 3;
 
 export type CoreConfigKeyPath = readonly (string | number)[];
 
@@ -59,12 +59,8 @@ export type ConfiguredModelChainEntry = string | ConfiguredModelRef;
 
 export type SubagentExecution = false | "restricted" | "native";
 
-export type SubagentProfileConfig = {
-  modelSlot: "main" | "fast";
-  model?: string;
-  reasoning?: ModelReasoningEffort;
-  options?: JSONObject;
-  fallback?: ConfiguredModelChainEntry[];
+/** Authority granted to a subagent run. Model choice is per delegation, not per profile. */
+export type SubagentPermissionProfileConfig = {
   promptOverlay?: string;
   level1: {
     tools: string[];
@@ -357,10 +353,12 @@ export type UniversalCoreConfig = {
       enabled: boolean;
       maxDepth: number;
       delegatePromptOverlay?: string;
-      profiles: {
-        explore: SubagentProfileConfig;
-        general: SubagentProfileConfig;
-        self: SubagentProfileConfig;
+      /** Version-owned profile used when a primary run delegates without naming one. */
+      defaultPermissions: string;
+      /** Named permission profiles. `full` and `restricted` are always present. */
+      permissions: Record<string, SubagentPermissionProfileConfig> & {
+        full: SubagentPermissionProfileConfig;
+        restricted: SubagentPermissionProfileConfig;
       };
     };
   };

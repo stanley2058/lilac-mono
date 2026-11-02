@@ -25,8 +25,11 @@ import { defaultNativeSurfaceConfig, MODEL_REASONING_EFFORTS } from "./types";
 import type {
   ConfigParser,
   CoreConfigParseOptions,
+  ConfiguredModelChainEntry,
   CoreConfigVersion,
-  SubagentProfileConfig,
+  JSONObject,
+  ModelReasoningEffort,
+  SubagentPermissionProfileConfig,
   UniversalCoreConfig,
 } from "./types";
 import {
@@ -37,11 +40,6 @@ import {
 } from "./types";
 
 export const V2_CORE_CONFIG_VERSION = 2 satisfies CoreConfigVersion;
-export const CURRENT_CORE_CONFIG_VERSION = V2_CORE_CONFIG_VERSION;
-export const DEFAULT_CORE_CONFIG_VERSION = 1 satisfies CoreConfigVersion;
-export const SUPPORTED_CORE_CONFIG_VERSIONS = [
-  1, 2,
-] as const satisfies readonly CoreConfigVersion[];
 
 const configVersionSchema = z.literal(V2_CORE_CONFIG_VERSION).default(V2_CORE_CONFIG_VERSION);
 
@@ -105,19 +103,27 @@ const configuredModelChainEntrySchemaV2 = z.union([
 
 const modelFallbackSchemaV2 = z.array(configuredModelChainEntrySchemaV2).optional();
 
+type SubagentProfileConfigV2 = SubagentPermissionProfileConfig & {
+  modelSlot: "main" | "fast";
+  model?: string;
+  reasoning?: ModelReasoningEffort;
+  options?: JSONObject;
+  fallback?: ConfiguredModelChainEntry[];
+};
+
 const profileNamesSchema = z.array(z.string().trim().min(1)).default([]);
 
-const profileLevel1Schema = z.object({
+export const profileLevel1Schema = z.object({
   tools: profileNamesSchema,
   plugins: profileNamesSchema,
 });
 
-const profileLevel2Schema = z.object({
+export const profileLevel2Schema = z.object({
   callables: profileNamesSchema,
   plugins: profileNamesSchema,
 });
 
-const EXPLORE_PROFILE_DEFAULT: SubagentProfileConfig = {
+const EXPLORE_PROFILE_DEFAULT: SubagentProfileConfigV2 = {
   modelSlot: "main",
   level1: {
     tools: ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
@@ -148,7 +154,7 @@ const EXPLORE_PROFILE_DEFAULT: SubagentProfileConfig = {
   delegation: false,
 };
 
-const GENERAL_PROFILE_DEFAULT: SubagentProfileConfig = {
+const GENERAL_PROFILE_DEFAULT: SubagentProfileConfigV2 = {
   modelSlot: "main",
   level1: { tools: ["*"], plugins: ["*"] },
   level2: { callables: ["*"], plugins: ["*"] },
@@ -158,12 +164,14 @@ const GENERAL_PROFILE_DEFAULT: SubagentProfileConfig = {
   delegation: false,
 };
 
-const SELF_PROFILE_DEFAULT: SubagentProfileConfig = {
+const SELF_PROFILE_DEFAULT: SubagentProfileConfigV2 = {
   ...GENERAL_PROFILE_DEFAULT,
   delegation: true,
 };
 
-function normalizeProfileToolNames(profile: SubagentProfileConfig): SubagentProfileConfig {
+export function normalizeProfileToolNames<T extends SubagentPermissionProfileConfig>(
+  profile: T,
+): T {
   return {
     ...profile,
     level1: {
@@ -184,7 +192,7 @@ function normalizeProfileToolNames(profile: SubagentProfileConfig): SubagentProf
   };
 }
 
-function subagentProfileSchemaV2(defaults: SubagentProfileConfig) {
+function subagentProfileSchemaV2(defaults: SubagentProfileConfigV2) {
   return z
     .object({
       modelSlot: z.enum(["main", "fast"]).default("main"),
@@ -868,6 +876,52 @@ const nativeSurfaceSchema = z
   })
   .default(defaultNativeSurfaceConfig());
 
+export const agentSchemaFieldsV2 = {
+  statsForNerds: statsForNerdsSchema,
+  reasoningDisplay: reasoningDisplaySchema,
+  idleTimeoutMs: z
+    .number()
+    .int()
+    .min(1_500)
+    .default(15 * 60 * 1000),
+  retry: agentRetrySchema,
+  transcriptRetention: transcriptRetentionSchema,
+  subagents: subagentsSchemaV2.default({
+    enabled: true,
+    maxDepth: 2,
+    profiles: {
+      explore: EXPLORE_PROFILE_DEFAULT,
+      general: GENERAL_PROFILE_DEFAULT,
+      self: SELF_PROFILE_DEFAULT,
+    },
+  }),
+};
+
+export const AGENT_DEFAULT_V2 = {
+  statsForNerds: false,
+  reasoningDisplay: "detailed",
+  idleTimeoutMs: 15 * 60 * 1000,
+  retry: {
+    enabled: true,
+    maxRetries: 3,
+    baseDelayMs: 2_000,
+    maxDelayMs: 30_000,
+  },
+  transcriptRetention: {
+    maxAge: DEFAULT_TRANSCRIPT_RETENTION_MAX_AGE_MS,
+    maxRequests: DEFAULT_TRANSCRIPT_RETENTION_MAX_REQUESTS,
+  },
+  subagents: {
+    enabled: true,
+    maxDepth: 2,
+    profiles: {
+      explore: EXPLORE_PROFILE_DEFAULT,
+      general: GENERAL_PROFILE_DEFAULT,
+      self: SELF_PROFILE_DEFAULT,
+    },
+  },
+} satisfies z.output<z.ZodObject<typeof agentSchemaFieldsV2>>;
+
 export const coreConfigInputSchemaV2 = z.object({
   configVersion: configVersionSchema,
 
@@ -930,51 +984,7 @@ export const coreConfigInputSchemaV2 = z.object({
       },
     }),
 
-  agent: z
-    .object({
-      statsForNerds: statsForNerdsSchema,
-      reasoningDisplay: reasoningDisplaySchema,
-      idleTimeoutMs: z
-        .number()
-        .int()
-        .min(1_500)
-        .default(15 * 60 * 1000),
-      retry: agentRetrySchema,
-      transcriptRetention: transcriptRetentionSchema,
-      subagents: subagentsSchemaV2.default({
-        enabled: true,
-        maxDepth: 2,
-        profiles: {
-          explore: EXPLORE_PROFILE_DEFAULT,
-          general: GENERAL_PROFILE_DEFAULT,
-          self: SELF_PROFILE_DEFAULT,
-        },
-      }),
-    })
-    .default({
-      statsForNerds: false,
-      reasoningDisplay: "detailed",
-      idleTimeoutMs: 15 * 60 * 1000,
-      retry: {
-        enabled: true,
-        maxRetries: 3,
-        baseDelayMs: 2_000,
-        maxDelayMs: 30_000,
-      },
-      transcriptRetention: {
-        maxAge: DEFAULT_TRANSCRIPT_RETENTION_MAX_AGE_MS,
-        maxRequests: DEFAULT_TRANSCRIPT_RETENTION_MAX_REQUESTS,
-      },
-      subagents: {
-        enabled: true,
-        maxDepth: 2,
-        profiles: {
-          explore: EXPLORE_PROFILE_DEFAULT,
-          general: GENERAL_PROFILE_DEFAULT,
-          self: SELF_PROFILE_DEFAULT,
-        },
-      },
-    }),
+  agent: z.object(agentSchemaFieldsV2).default(AGENT_DEFAULT_V2),
 
   models: modelsSchemaV2,
   entity: coreConfigInputSchemaV1.shape.entity,
@@ -1006,10 +1016,19 @@ export function parseCoreConfigV2(raw: unknown): ParsedCoreConfigV2 {
   return coreConfigInputSchemaV2.parse(raw);
 }
 
-function coreConfigV2ToUniversal(
-  parsed: ParsedCoreConfigV2,
+type UniversalSubagentsConfig = UniversalCoreConfig["agent"]["subagents"];
+
+/** Shared v2-shaped conversion; each version supplies its own subagent mapping. */
+export function coreConfigV2ShapeToUniversal<
+  T extends Omit<ParsedCoreConfigV2, "configVersion" | "agent"> & {
+    configVersion: CoreConfigVersion;
+    agent: Omit<ParsedCoreConfigV2["agent"], "subagents"> & { subagents: object };
+  },
+>(
+  parsed: T,
   raw: unknown,
-  options?: CoreConfigParseOptions,
+  options: CoreConfigParseOptions | undefined,
+  toSubagents: (subagents: T["agent"]["subagents"]) => UniversalSubagentsConfig,
 ): UniversalCoreConfig {
   if (options?.onUnknownKey) {
     for (const path of collectUnknownConfigKeyPaths(raw, parsed)) {
@@ -1062,18 +1081,55 @@ function coreConfigV2ToUniversal(
         maxAgeMs: retentionLimit(transcriptRetention.maxAge),
         maxRequests: retentionLimit(transcriptRetention.maxRequests),
       },
-      subagents: {
-        ...isolated.agent.subagents,
-        profiles: {
-          explore: normalizeProfileToolNames(isolated.agent.subagents.profiles.explore),
-          general: normalizeProfileToolNames(isolated.agent.subagents.profiles.general),
-          self: normalizeProfileToolNames(isolated.agent.subagents.profiles.self),
-        },
-      },
+      subagents: toSubagents(isolated.agent.subagents),
       systemPrompt: "",
       workerSystemPrompt: "",
     },
   };
+}
+
+function permissionAuthorityFromV2Profile(
+  profile: SubagentProfileConfigV2,
+): SubagentPermissionProfileConfig {
+  const normalized = normalizeProfileToolNames(profile);
+  return {
+    ...(normalized.promptOverlay ? { promptOverlay: normalized.promptOverlay } : {}),
+    level1: normalized.level1,
+    level2: normalized.level2,
+    network: normalized.network,
+    workspaceWrites: normalized.workspaceWrites,
+    execution: normalized.execution,
+    delegation: normalized.delegation,
+  };
+}
+
+// Frozen v2 role profiles map onto the universal permission profiles: explore
+// becomes restricted, self becomes full, and general keeps its name and
+// authority. Per-profile model fields have no universal equivalent.
+function subagentsV2ToUniversal(
+  subagents: ParsedCoreConfigV2["agent"]["subagents"],
+): UniversalSubagentsConfig {
+  return {
+    enabled: subagents.enabled,
+    maxDepth: subagents.maxDepth,
+    ...(subagents.delegatePromptOverlay
+      ? { delegatePromptOverlay: subagents.delegatePromptOverlay }
+      : {}),
+    defaultPermissions: "restricted",
+    permissions: {
+      restricted: permissionAuthorityFromV2Profile(subagents.profiles.explore),
+      general: permissionAuthorityFromV2Profile(subagents.profiles.general),
+      full: permissionAuthorityFromV2Profile(subagents.profiles.self),
+    },
+  };
+}
+
+function coreConfigV2ToUniversal(
+  parsed: ParsedCoreConfigV2,
+  raw: unknown,
+  options?: CoreConfigParseOptions,
+): UniversalCoreConfig {
+  return coreConfigV2ShapeToUniversal(parsed, raw, options, subagentsV2ToUniversal);
 }
 
 export function decodeCoreConfigV2ToUniversal(

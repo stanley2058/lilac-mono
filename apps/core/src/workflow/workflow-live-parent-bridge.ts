@@ -44,7 +44,7 @@ export type WorkflowLiveParentCompletion = {
   runId: string;
   parentToolCallId: string;
   childRequestId: string;
-  profile: "explore" | "general" | "self";
+  profile: string;
   sessionName: string;
   status: "resolved" | "failed" | "cancelled" | "timeout";
   ok: boolean;

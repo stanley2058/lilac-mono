@@ -80,7 +80,7 @@ workflow, accessible evidence, and available execution time. No model behavior i
 passing runtime tests. Logs and transcripts distinguish a scheduled run from a configuration edit, and
 message reads or user confirmation establish actual delivery.
 
-Heartbeat can delegate to the configured subagent profiles. Children retain heartbeat's Level 2
+Heartbeat can delegate with the configured subagent permission profiles. Children retain heartbeat's Level 2
 callable allowlist and principal-less authority, with the selected profile's restrictions applied as
 well. Results return to the heartbeat parent through the existing workflow completion path, including
 after recovery. The parent handles watch notifications. Existing depth limits, timeouts, and parent

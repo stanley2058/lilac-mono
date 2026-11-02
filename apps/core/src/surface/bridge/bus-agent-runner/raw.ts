@@ -5,12 +5,12 @@ import {
   type ModelReasoningEffort,
 } from "@stanley2058/lilac-utils";
 
-const SUBAGENT_PROFILES = ["explore", "general", "self"] as const;
 const SESSION_MODES = ["mention", "active"] as const;
 const CUSTOM_COMMAND_SOURCES = ["text", "discord-slash"] as const;
 
-export type SubagentProfile = (typeof SUBAGENT_PROFILES)[number];
-export type AgentRunProfile = "primary" | SubagentProfile;
+/** Name of a configured subagent permission profile. */
+export type SubagentProfile = string;
+export type AgentRunProfile = "primary" | (SubagentProfile & {});
 export type AgentRunnerRaw = {} | null;
 
 export function preserveAgentRunnerRaw(message: {
@@ -57,10 +57,7 @@ const optionalStringSchema = z.preprocess(normalizeOptionalString, z.string().op
 function normalizeSubagentProfile(value: unknown): SubagentProfile | undefined {
   return isSubagentProfile(value) ? value : undefined;
 }
-const subagentProfileSchema = z.preprocess(
-  normalizeSubagentProfile,
-  z.enum(SUBAGENT_PROFILES).optional(),
-);
+const subagentProfileSchema = z.preprocess(normalizeSubagentProfile, z.string().optional());
 function normalizeOptionalFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -237,7 +234,7 @@ export function requestRawReferencesMessage(raw: unknown, messageId: string): bo
 }
 
 function isSubagentProfile(value: unknown): value is SubagentProfile {
-  return typeof value === "string" && (SUBAGENT_PROFILES as readonly string[]).includes(value);
+  return typeof value === "string" && value.length > 0 && value !== "primary";
 }
 
 export function parseSubagentMetaFromRaw(raw: unknown): ParsedSubagentMeta {

@@ -810,9 +810,14 @@ function coreConfigV1ToUniversal(
       subagents: {
         enabled: subagents.enabled,
         maxDepth: subagents.maxDepth,
-        profiles: {
-          explore: {
-            ...subagents.profiles.explore,
+        // Frozen v1 profiles map onto the universal permission profiles. Their
+        // model fields have no universal equivalent and are ignored.
+        defaultPermissions: "restricted",
+        permissions: {
+          restricted: {
+            ...(subagents.profiles.explore.promptOverlay
+              ? { promptOverlay: subagents.profiles.explore.promptOverlay }
+              : {}),
             level1: {
               tools: ["read", "glob", "grep", "fuzzy_search", "batch"],
               plugins: ["builtin-local-tools"],
@@ -849,7 +854,9 @@ function coreConfigV1ToUniversal(
             delegation: false,
           },
           general: {
-            ...subagents.profiles.general,
+            ...(subagents.profiles.general.promptOverlay
+              ? { promptOverlay: subagents.profiles.general.promptOverlay }
+              : {}),
             level1: { tools: ["*"], plugins: ["*"] },
             level2: { callables: ["*"], plugins: ["*"] },
             network: true,
@@ -857,8 +864,10 @@ function coreConfigV1ToUniversal(
             execution: "native",
             delegation: false,
           },
-          self: {
-            ...subagents.profiles.self,
+          full: {
+            ...(subagents.profiles.self.promptOverlay
+              ? { promptOverlay: subagents.profiles.self.promptOverlay }
+              : {}),
             level1: { tools: ["*"], plugins: ["*"] },
             level2: { callables: ["*"], plugins: ["*"] },
             network: true,

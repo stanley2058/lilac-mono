@@ -820,6 +820,11 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         module: "core-config/v2.ts",
         exportName: "decodeCoreConfigV2ToUniversal",
       },
+      { module: "core-config/v3.ts", exportName: "decodeCoreConfigV3" },
+      {
+        module: "core-config/v3.ts",
+        exportName: "decodeCoreConfigV3ToUniversal",
+      },
       { module: "find-root.ts", exportName: "hasWorkspacesFieldResult" },
       { module: "find-root.ts", exportName: "findWorkspaceRootResult" },
       {
@@ -2095,10 +2100,12 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "codex-oauth.ts", exportName },
         category: "projection" as const,
       })),
-      ...["readCoreConfigVersionResult", "parseCoreConfigResult"].map((exportName) => ({
-        identity: { module: "core-config/parse.ts", exportName },
-        category: "request" as const,
-      })),
+      ...["readCoreConfigVersionResult", "parseCoreConfigResult", "decodeVersionedCoreConfig"].map(
+        (exportName) => ({
+          identity: { module: "core-config/parse.ts", exportName },
+          category: "request" as const,
+        }),
+      ),
       ...["readCoreConfigVersion", "parseCoreConfigResult", "parseCoreConfig", "getCoreConfig"].map(
         (exportName) => ({
           identity: { module: "core-config.ts", exportName },
@@ -2123,6 +2130,11 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         ["core-config/v2.ts", "coreConfigV2ToUniversal"],
         ["core-config/v2.ts", "decodeCoreConfigV2ToUniversal"],
         ["core-config/v2.ts", "parseCoreConfigV2ToUniversal"],
+        ["core-config/v2.ts", "coreConfigV2ShapeToUniversal"],
+        ["core-config/v3.ts", "decodeCoreConfigV3"],
+        ["core-config/v3.ts", "parseCoreConfigV3"],
+        ["core-config/v3.ts", "decodeCoreConfigV3ToUniversal"],
+        ["core-config/v3.ts", "parseCoreConfigV3ToUniversal"],
       ].map(([module, exportName]) => ({
         identity: { module, exportName },
         category: "request" as const,
@@ -5500,7 +5512,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "531ff18847d6aa412d4126078a37ab94b45dbcaacd3b31d12dd590b4281541bd";
+  "6ad3520b6271ce05a45983df202a3b24637bb0d43d737c2f2760e82f2f1558e6";
 
 export const architectureManifest = {
   version: 1,

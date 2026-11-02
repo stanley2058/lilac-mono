@@ -1,5 +1,34 @@
 # MIGRATIONS.md
 
+## Subagent permission profiles and config v3
+
+Subagent role profiles (`explore`, `general`, `self`) are replaced by named permission profiles under
+`agent.subagents.permissions`, with built-in `full` and `restricted`. `subagent_delegate` takes
+`model`, `reasoning`, and an optional `permissions` name instead of `profile`, and its result returns
+`permissions` instead of `profile`. A child may request only profiles within its own authority.
+Workflow `agent()` keeps its required `profile` option; the value now names a permission profile
+other than `primary`. Workflow runs do not record who started them, so a subagent may call
+`workflow.run.trigger`, `workflow.run.resume`, or `workflow.trigger.create` only when its profile can
+delegate and holds the authority of every configured profile.
+
+Every subagent loads the worker prompt (`AGENTS.md` and `TOOLS.md`) with one subagent overlay, the
+skills section, and a list of the unloaded prompt files with their paths. The former `self` profile
+loaded the full persona prompt; no subagent does now. Subagents run the delegated model alias, or
+`models.main` when none is named.
+
+Stored data keeps the existing `profile` fields. Workflow dispatch policies, completion targets,
+agent-run checkpoints, request headers, and the native `subagentSummary.profile` field now hold any
+permission profile name. Names written before this change resolve when no configured profile has
+that name: `explore` to `restricted`, and `general` or `self` to `full`. Frozen v1 and v2 configs
+keep a `general` profile with its configured authority, so their stored `general` runs keep it. A run
+whose profile name no longer resolves fails model resolution, and its tool checks grant nothing.
+Plugins receive the profile name as a string in `subagentProfile` and `Level1RunProfile`.
+
+Config files need `configVersion: 3` to configure permission profiles; see
+[`docs/core-config-migrations.md`](docs/core-config-migrations.md#v3). Frozen v1 and v2 configs keep
+parsing. There is no database migration. Deploy Core and web together so the web client accepts
+profile names other than the three former roles.
+
 ## Native computer viewer through Core
 
 `computer.read.desktop.url` can now be a root-relative `/computer.html?...` URL. Native web resolves
