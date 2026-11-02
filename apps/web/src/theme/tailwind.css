@@ -62,6 +62,7 @@
   --radius-lg: var(--ui-radius-lg);
   --radius-xl: var(--ui-radius-xl);
   --radius-2xl: var(--ui-radius-2xl);
+  --text-provider-code: var(--ui-text-provider-code);
   --text-xs: var(--ui-text-xs);
   --text-sm: var(--ui-text-sm);
   --text-base: var(--ui-text-base);

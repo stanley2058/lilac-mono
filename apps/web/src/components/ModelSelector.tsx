@@ -20,7 +20,7 @@ import { Button } from "./ui/button";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { Select, SelectContent, SelectItem } from "./ui/select";
 import { IconButton } from "./ui";
-import { ProviderIcon, providerName } from "./ProviderIcon";
+import { ProviderIcon, ProviderTabIcon, providerName } from "./ProviderIcon";
 
 const EMPTY_FAVORITES: string[] = [];
 const FAVORITES = "favorites";
@@ -347,7 +347,7 @@ export function ModelSelectorView({
             >
               {tabButton(FAVORITES, "Favorites", <Star className="size-4" />)}
               {providers.map((id) =>
-                tabButton(id, providerName(id), <ProviderIcon provider={id} className="size-4" />),
+                tabButton(id, providerName(id), <ProviderTabIcon provider={id} />),
               )}
             </nav>
             <div className="flex min-w-0 flex-1 flex-col">

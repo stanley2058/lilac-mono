@@ -23,17 +23,28 @@ export type CatalogModel = {
 };
 
 const providerCredentials: Record<string, readonly string[]> = {
+  codex: [],
   openai: ["OPENAI_API_KEY"],
+  "claude-code": ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
   anthropic: ["ANTHROPIC_API_KEY"],
-  vercel: ["AI_GATEWAY_API_KEY"],
+  xai: ["XAI_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY"],
+  vercel: ["AI_GATEWAY_API_KEY"],
   groq: ["GROQ_API_KEY"],
   cerebras: ["CEREBRAS_API_KEY"],
-  xai: ["XAI_API_KEY"],
   "openai-compatible": ["OPENAI_COMPATIBLE_BASE_URL"],
-  codex: [],
-  "claude-code": ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
 };
+
+const providerOrder = new Map(
+  Object.keys(providerCredentials).map((provider, index) => [provider, index]),
+);
+
+export function compareCatalogProviders(a: string, b: string): number {
+  return (
+    (providerOrder.get(a) ?? providerOrder.size) - (providerOrder.get(b) ?? providerOrder.size) ||
+    a.localeCompare(b)
+  );
+}
 
 const CLAUDE_ALIASES = ["opus", "sonnet", "haiku", "fable"];
 // Families whose newest release trails the vendor's newest by more than this are a previous generation.

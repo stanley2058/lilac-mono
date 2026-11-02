@@ -3,6 +3,7 @@ import {
   isClaudeAlias,
   projectModelCatalog,
   configuredCatalogProviders,
+  compareCatalogProviders,
   modelCatalogCache,
   type ModelReasoningEffort,
 } from "@stanley2058/lilac-utils";
@@ -101,6 +102,7 @@ export class NativeCatalogService {
       )
       .sort(
         (a, b) =>
+          compareCatalogProviders(a.provider, b.provider) ||
           Number(a.legacy) - Number(b.legacy) ||
           released.get(b.id)!.localeCompare(released.get(a.id)!) ||
           a.label.localeCompare(b.label) ||
@@ -112,7 +114,7 @@ export class NativeCatalogService {
       providers:
         config.configVersion === 3
           ? configuredCatalogProviders(config)
-          : [...new Set(catalog.map((model) => model.provider))],
+          : [...new Set(catalog.map((model) => model.provider))].sort(compareCatalogProviders),
       models: entries.slice(offset, offset + 100),
       ...(offset + 100 < entries.length ? { nextCursor: String(offset + 100) } : {}),
     };

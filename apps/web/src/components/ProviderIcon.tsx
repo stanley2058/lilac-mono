@@ -57,3 +57,24 @@ export function ProviderIcon({
     </span>
   );
 }
+
+const providerCodes: Record<string, string> = {
+  codex: "CX",
+  openai: "OA",
+  "claude-code": "CC",
+  anthropic: "AN",
+};
+
+export function ProviderTabIcon({ provider }: { provider: string }) {
+  const code = providerCodes[provider];
+  return (
+    <span aria-hidden="true" className="relative inline-flex size-5 items-center justify-center">
+      <ProviderIcon provider={provider} className="size-5" />
+      {code ? (
+        <span className="absolute -right-1 -bottom-1 rounded-sm bg-popover px-0.5 font-mono text-provider-code leading-none font-medium text-popover-foreground">
+          {code}
+        </span>
+      ) : null}
+    </span>
+  );
+}

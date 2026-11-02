@@ -48,3 +48,35 @@ test("legacy catalogs expose exactly configured choices even without provider cr
   expect(catalogs.selection("openai/unconfigured")).toBe(false);
   expect(catalogs.selection(undefined, "provider-default")).toBe(true);
 });
+
+test("favorites and search sort by provider before the existing model ordering", async () => {
+  const config = parseCoreConfigV2ToUniversal({
+    models: {
+      main: { model: "openai/aaa" },
+      def: {
+        claude: { model: "claude-code/aaa" },
+        codexZ: { model: "codex/zzz" },
+        codexA: { model: "codex/aaa" },
+        anthropic: { model: "anthropic/aaa" },
+      },
+    },
+  });
+  const catalogs = new NativeCatalogService({ config, skills: [], commands: [] });
+  const ids = ["anthropic", "claude", "openai/aaa", "codexZ", "codexA"];
+  const favorites = await catalogs.models({ ids });
+  expect(favorites.providers).toEqual(["codex", "openai", "claude-code", "anthropic"]);
+  expect(favorites.models.map((model) => model.id)).toEqual([
+    "codexA",
+    "codexZ",
+    "openai/aaa",
+    "claude",
+    "anthropic",
+  ]);
+  const search = await catalogs.models({ search: "a" });
+  expect(search.models.map((model) => model.provider)).toEqual([
+    "codex",
+    "openai",
+    "claude-code",
+    "anthropic",
+  ]);
+});
