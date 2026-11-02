@@ -629,6 +629,21 @@ function selectPromptFiles(
   return files.filter((file) => included.has(file.name as CorePromptFileName));
 }
 
+function compileWorkerSystemPrompt(files: readonly PromptFile[]): string {
+  const workerNames = new Set<string>(WORKER_PROMPT_FILES);
+  const omitted = files.filter((file) => !workerNames.has(file.name));
+  const compiled = compileSystemPromptFromFiles(selectPromptFiles(files, WORKER_PROMPT_FILES));
+  if (omitted.length === 0) return compiled;
+  const listing = omitted.map((file) => `- ${file.name}: ${file.path}`).join("\n");
+  return [
+    compiled,
+    "",
+    "# Workspace files not loaded in this run",
+    "Read these when the task needs that context:",
+    listing,
+  ].join("\n");
+}
+
 export async function buildAgentSystemPrompt(options?: { dataDir?: string }): Promise<{
   systemPrompt: string;
   workerSystemPrompt: string;
@@ -638,7 +653,7 @@ export async function buildAgentSystemPrompt(options?: { dataDir?: string }): Pr
   const files = await loadPromptFiles({ dataDir: options?.dataDir });
   return {
     systemPrompt: compileSystemPromptFromFiles(files),
-    workerSystemPrompt: compileSystemPromptFromFiles(selectPromptFiles(files, WORKER_PROMPT_FILES)),
+    workerSystemPrompt: compileWorkerSystemPrompt(files),
     promptDir: resolvePromptDir({ dataDir: options?.dataDir }),
     filePaths: files.map((f) => f.path),
   };

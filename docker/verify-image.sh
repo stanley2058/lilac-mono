@@ -115,6 +115,7 @@ for path in \
   /app/packages/utils/builtin-skills/image-generation/references/xai.md \
   /app/packages/utils/builtin-skills/customize-lilac/references/self-debugging.md \
   /app/packages/utils/builtin-skills/customize-lilac/references/core-config.md \
+  /app/packages/utils/builtin-skills/customize-lilac/references/data-layout.md \
   /app/packages/utils/config-templates/core-config.example.yaml \
   /app/packages/utils/core-config.ts; do
   docker exec --user lilac "$container_name" /usr/bin/test -r "$path" ||

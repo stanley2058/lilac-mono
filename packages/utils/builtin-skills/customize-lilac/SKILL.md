@@ -1,6 +1,6 @@
 ---
 name: customize-lilac
-description: Debug deployed Lilac Core from `/app` and explain or change `core-config.yaml`. Use for self-debugging or Core configuration; code work uses `coding-agent`.
+description: Locate Lilac's own files and state under DATA_DIR, debug deployed Core from `/app`, and explain or change `core-config.yaml`. Use for self-debugging, Lilac data, or Core configuration; code work uses `coding-agent`.
 ---
 
 # Customize Lilac
@@ -13,7 +13,9 @@ Ground the work in the target instance rather than remembered behavior.
   [references/self-debugging.md](references/self-debugging.md).
 - For `core-config.yaml` fields, ownership, edits, validation, or reload behavior, read
   [references/core-config.md](references/core-config.md).
-- Read both references only when the request crosses both branches.
+- For where Lilac keeps prompt files, memory, heartbeat watches, skills, workflows, databases, or other
+  state under `DATA_DIR`, read [references/data-layout.md](references/data-layout.md).
+- Read more than one reference only when the request crosses branches.
 
 ## Shared boundaries
 

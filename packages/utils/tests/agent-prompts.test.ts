@@ -153,7 +153,11 @@ describe("agent prompts", () => {
       for (const name of CORE_PROMPT_FILES) {
         if ((WORKER_PROMPT_FILES as readonly string[]).includes(name)) continue;
         expect(built.workerSystemPrompt).not.toContain(`# ${name}`);
+        expect(built.workerSystemPrompt).toContain(
+          `- ${name}: ${path.join(built.promptDir, name)}`,
+        );
       }
+      expect(built.workerSystemPrompt).toContain("# Workspace files not loaded in this run");
       expect(built.systemPrompt).toContain(
         "These local files provide workspace instructions and context for this agent.",
       );
