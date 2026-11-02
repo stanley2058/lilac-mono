@@ -7,9 +7,8 @@ It defaults to `embedding.model`, which remains the document encoder and stored 
 Both encoders must share a vector space and dimensions. Changing the document model requires
 re-embedding existing summary facets. No schema-version or database change is required.
 
-This guide records manual `core-config.yaml` changes between config versions. The current field-level
-reference is
-[`packages/utils/config-templates/core-config.example.yaml`](../packages/utils/config-templates/core-config.example.yaml).
+This guide records manual `core-config.yaml` changes between config versions. Current field-level documentation is available through
+[schema-backed editor hover and completion](core-config.md).
 
 Lilac parses `core-config.yaml` through a versioned parser into one universal runtime config shape. The
 application consumes only the universal shape.

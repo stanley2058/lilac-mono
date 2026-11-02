@@ -10,13 +10,13 @@ Current behavior is authoritative in production source, wire schemas, persisted 
 - `DEVELOPMENT.md` covers source setup, development commands, builds, and checks.
 - `PROJECT.md` is the durable current-system and ownership guide.
 - `AGENTS.md` defines repository-wide working constraints.
-- `packages/utils/config-templates/core-config.example.yaml` documents current Core configuration, and
+- `docs/core-config.md` explains schema-backed Core configuration documentation, and
   `docs/core-config-migrations.md` records manual version upgrades.
 - `MIGRATIONS.md` records persisted-data, wire, and protocol transitions.
 - `scripts/architecture/README.md` explains the permanent architecture gate and exact registrations.
 - `plan/README.md` identifies active implementation plans. Plans describe intended work, not current behavior until the code ships.
-- Component documentation owns operational detail. In particular, see the self-documenting
-  `packages/utils/config-templates/core-config.example.yaml`, `docs/core-config-migrations.md`,
+- Component documentation owns operational detail. In particular, see
+  `docs/core-config.md`, `docs/core-config-migrations.md`,
   `docs/claude-code.md`, `docs/skill-authoring.md`, `docs/docker-deployment.md`, and `PLUGIN_AUTHORING.md`.
 
 `ref/` is vendored upstream reference material and is read-only unless a task explicitly says otherwise.
@@ -27,8 +27,8 @@ Current behavior is authoritative in production source, wire schemas, persisted 
 
 Core is the Redis-backed multi-surface runtime in `apps/core`.
 
-Current Core configuration is documented in
-`packages/utils/config-templates/core-config.example.yaml`; manual version upgrades are in
+Current Core configuration uses schema-backed editor documentation described in
+`docs/core-config.md`; manual version upgrades are in
 `docs/core-config-migrations.md`.
 
 1. Authenticated Discord gateway ingress publishes normalized adapter events to the typed bus. Verified GitHub webhooks can create request messages directly.

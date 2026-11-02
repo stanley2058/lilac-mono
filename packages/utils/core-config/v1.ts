@@ -39,7 +39,12 @@ export const statsForNerdsSchema = z
   .union([
     z.boolean(),
     z.object({
-      verbose: z.boolean().default(false),
+      verbose: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Include input-composition statistics in addition to model, duration, time-to-first-token, and tokens-per-second statistics. Defaults to false.",
+        ),
     }),
   ])
   .default(false);
@@ -49,26 +54,61 @@ const reasoningDisplaySchema = z.enum(["none", "simple", "detailed"]).default("s
 const discordAliasCommentSchema = z.string().trim().min(1).optional();
 
 const discordUserAliasSchema = z.object({
-  discord: z.string().min(1),
-  comment: discordAliasCommentSchema,
+  discord: z
+    .string()
+    .min(1)
+    .describe(
+      "Quoted Discord user ID. Keep snowflake IDs as strings to avoid numeric precision loss.",
+    ),
+  comment: discordAliasCommentSchema.describe(
+    "Context about this user injected into the system prompt alongside the alias and raw ID.",
+  ),
 });
 
 const discordSessionAliasSchema = z.union([
   z.string().min(1),
   z.object({
-    discord: z.string().min(1),
-    comment: discordAliasCommentSchema,
+    discord: z
+      .string()
+      .min(1)
+      .describe(
+        "Quoted Discord channel ID. Keep snowflake IDs as strings to avoid numeric precision loss.",
+      ),
+    comment: discordAliasCommentSchema.describe(
+      "Context about this channel injected into the system prompt alongside the alias and raw ID.",
+    ),
   }),
 ]);
 
 export const subagentProfileSchema = z
   .object({
-    modelSlot: z.enum(["main", "fast"]).default("main"),
+    modelSlot: z
+      .enum(["main", "fast"])
+      .default("main")
+      .describe(
+        "Legacy profile model setting accepted for configuration compatibility. The current runtime ignores per-profile model selection, reasoning, options, and fallback fields. Select models per delegation or through models.main.",
+      ),
     /** Optional direct model ref (provider/model or alias from models.def). */
-    model: z.string().min(1).optional(),
+    model: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Legacy profile model setting accepted for configuration compatibility. The current runtime ignores per-profile model selection, reasoning, options, and fallback fields. Select models per delegation or through models.main.",
+      ),
     /** Optional providerOptions override merged onto models.def.<alias>.options. */
-    options: jsonObjectSchema.optional(),
-    promptOverlay: z.string().min(1).optional(),
+    options: jsonObjectSchema
+      .optional()
+      .describe(
+        "Legacy profile model setting accepted for configuration compatibility. The current runtime ignores per-profile model selection, reasoning, options, and fallback fields. Select models per delegation or through models.main. Legacy validation still requires model when options is supplied.",
+      ),
+    promptOverlay: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Additional instructions appended to the worker prompt for children using this permission profile. For example, "Cite file paths and avoid edits."',
+      ),
   })
   .superRefine((input, ctx) => {
     if (input.options && !input.model) {
@@ -82,29 +122,58 @@ export const subagentProfileSchema = z
 
 export const subagentsSchema = z
   .object({
-    enabled: z.boolean().default(true),
-    maxDepth: z.number().int().min(0).max(2).default(2),
+    enabled: z.boolean().default(true).describe("Enable delegated child agents. Defaults to true."),
+    maxDepth: z
+      .number()
+      .int()
+      .min(0)
+      .max(2)
+      .default(2)
+      .describe(
+        "Maximum delegation depth, with the primary agent at 0. Allowed range: 0 to 2. Children also need `delegation: true` in their permission profile.\n\nDefault: `2`.",
+      ),
     defaultTimeoutMs: z
       .number()
       .int()
       .positive()
-      .default(3 * 60 * 1000),
+      .default(3 * 60 * 1000)
+      .describe(
+        "Legacy timeout accepted for compatibility and validated against maxTimeoutMs, but ignored by the current runtime. V1 uses a fixed 15-minute primary idle timeout; child idle timeout is 10 minutes.",
+      ),
     maxTimeoutMs: z
       .number()
       .int()
       .positive()
-      .default(8 * 60 * 1000),
+      .default(8 * 60 * 1000)
+      .describe(
+        "Legacy timeout ceiling accepted for compatibility, but ignored by the current runtime. V1 child idle timeout is 10 minutes, derived from the fixed primary idle timeout.",
+      ),
     profiles: z
       .object({
-        explore: subagentProfileSchema.default({ modelSlot: "main" }),
-        general: subagentProfileSchema.default({ modelSlot: "main" }),
-        self: subagentProfileSchema.default({ modelSlot: "main" }),
+        explore: subagentProfileSchema
+          .default({ modelSlot: "main" })
+          .describe(
+            "Legacy explore role, mapped to the restricted permission profile. Per-profile model fields are ignored by the current runtime.",
+          ),
+        general: subagentProfileSchema
+          .default({ modelSlot: "main" })
+          .describe(
+            "Legacy general role, mapped to the general permission profile. Per-profile model fields are ignored by the current runtime.",
+          ),
+        self: subagentProfileSchema
+          .default({ modelSlot: "main" })
+          .describe(
+            "Legacy self role, mapped to the full permission profile. Per-profile model fields are ignored by the current runtime.",
+          ),
       })
       .default({
         explore: { modelSlot: "main" },
         general: { modelSlot: "main" },
         self: { modelSlot: "main" },
-      }),
+      })
+      .describe(
+        "Legacy role profiles mapped to permission profiles: explore becomes restricted, self becomes full, and general keeps its name. Per-profile model fields are ignored by the current runtime. Version 3 configures permissions directly.",
+      ),
   })
   .superRefine((input, ctx) => {
     if (input.defaultTimeoutMs > input.maxTimeoutMs) {
@@ -119,39 +188,92 @@ export const subagentsSchema = z
 export const routerSchema = z
   .object({
     /** Default behavior for channels unless overridden by sessionModes. */
-    defaultMode: z.enum(["mention", "active"]).default("mention"),
+    defaultMode: z
+      .enum(["mention", "active"])
+      .default("mention")
+      .describe(
+        "Default channel routing. `mention` responds to mentions or replies to the bot; `active` treats a channel like a DM and considers every message. Defaults to mention.",
+      ),
     /** Per-session overrides. Discord guild keys provide fallback values for every option. */
     sessionModes: z
       .record(
         z.string().min(1),
         z.object({
           /** Optional per-session mode override (falls back to surface.router.defaultMode). */
-          mode: z.enum(["mention", "active"]).optional(),
+          mode: z
+            .enum(["mention", "active"])
+            .optional()
+            .describe(
+              "Override mention/active routing for this session. Omit to inherit the broader routing mode.",
+            ),
           /** Override activeGate.enabled for this session/channel (active mode only). */
-          gate: z.boolean().optional(),
+          gate: z
+            .boolean()
+            .optional()
+            .describe("Override activeGate.enabled for this session. Only affects active mode."),
           /** Optional per-session model override (alias from models.def or provider/model). */
-          model: z.string().trim().min(1).optional(),
+          model: z
+            .string()
+            .trim()
+            .min(1)
+            .optional()
+            .describe(
+              "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`. Overrides the request model for this session.",
+            ),
           /** Optional per-session safety mode. Restricted mode is intended for public/untrusted channels. */
-          safetyMode: z.enum(["trusted", "restricted"]).optional(),
+          safetyMode: z
+            .enum(["trusted", "restricted"])
+            .optional()
+            .describe(
+              "`trusted` uses host tools; `restricted` uses restricted Bash with an overlay filesystem. Writes outside /tmp are discarded after the request; /tmp persists under /tmp/lilac-restricted/<sessionId>. Use for public or untrusted channels.",
+            ),
           /**
            * Optional extra session memo entries appended to the system prompt.
            *
            * Each entry can be literal text or a file:// URL.
            */
-          additionalPrompts: z.array(z.string()).optional(),
+          additionalPrompts: z
+            .array(z.string())
+            .optional()
+            .describe(
+              "Extra session memo entries appended to the system prompt. Each entry is literal text or a `file://` URL, such as `file:///abs/path/session-memo.md`. An empty list stops inheritance from broader sessions.",
+            ),
         }),
       )
-      .default({}),
+      .default({})
+      .describe(
+        "Overrides keyed by session/channel ID or Discord guild ID. Each option inherits independently: thread/channel, parent channel, guild, then global default. An explicit empty `additionalPrompts: []` stops broader prompt inheritance. Reserved keys `__heartbeat__` and `heartbeat` address the internal heartbeat lane.",
+      ),
     /** Debounce window (ms) for active mode initial prompt batching. */
-    activeDebounceMs: z.number().int().positive().default(3000),
+    activeDebounceMs: z
+      .number()
+      .int()
+      .positive()
+      .default(3000)
+      .describe(
+        "Milliseconds to batch initial prompts in active mode. Defaults to 3000; must be positive.",
+      ),
 
     /** Active channel gate to prevent replying to everything. */
     activeGate: z
       .object({
-        enabled: z.boolean().default(false),
-        timeoutMs: z.number().int().positive().default(2500),
+        enabled: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Run the active-channel decision gate. Defaults to false; individual sessions may override it.",
+          ),
+        timeoutMs: z
+          .number()
+          .int()
+          .positive()
+          .default(2500)
+          .describe("Gate timeout in milliseconds. Defaults to 2500; must be positive."),
       })
-      .default({ enabled: false, timeoutMs: 2500 }),
+      .default({ enabled: false, timeoutMs: 2500 })
+      .describe(
+        "Optional lightweight model gate before forwarding active-mode messages, to avoid replying to every message.",
+      ),
   })
   .default({
     defaultMode: "mention",
@@ -162,10 +284,33 @@ export const routerSchema = z
 
 export const discordMarkdownTableRenderSchema = z
   .object({
-    enabled: z.boolean().default(false),
-    style: z.enum(["unicode", "ascii", "image"]).default("unicode"),
-    maxWidth: z.number().int().min(40).max(240).default(80),
-    fallbackMode: z.enum(["list", "passthrough"]).default("list"),
+    enabled: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Render Markdown tables for Discord. When disabled, tables remain ordinary Markdown.\n\nDefault: `false`.",
+      ),
+    style: z
+      .enum(["unicode", "ascii", "image"])
+      .default("unicode")
+      .describe(
+        '`unicode` and `ascii` render text tables. `image` renders top-level tables as PNG attachments in preview/plain/flat final output. Other output modes, streaming previews, and image failures fall back to unicode.\n\nDefault: `"unicode"`.',
+      ),
+    maxWidth: z
+      .number()
+      .int()
+      .min(40)
+      .max(240)
+      .default(80)
+      .describe(
+        "Maximum text-table width in display cells, not bytes. Also applies to image fallback. Allowed range: 40 to 240.\n\nDefault: `80`.",
+      ),
+    fallbackMode: z
+      .enum(["list", "passthrough"])
+      .default("list")
+      .describe(
+        'When a table cannot fit maxWidth, `list` renders wrapped row/key-value text in a code block; `passthrough` preserves the original Markdown table.\n\nDefault: `"list"`.',
+      ),
   })
   .default({
     enabled: false,
@@ -176,7 +321,9 @@ export const discordMarkdownTableRenderSchema = z
 
 const discordExperimentalSchema = z
   .object({
-    markdownTableRender: discordMarkdownTableRenderSchema,
+    markdownTableRender: discordMarkdownTableRenderSchema.describe(
+      "Discord Markdown table rendering and overflow behavior.",
+    ),
   })
   .default({
     markdownTableRender: {
@@ -189,37 +336,85 @@ const discordExperimentalSchema = z
 
 const discordSurfaceSchema = z
   .object({
-    tokenEnv: z.string().min(1).default("DISCORD_TOKEN"),
-    allowedChannelIds: z.array(z.string().min(1)).default([]),
-    allowedGuildIds: z.array(z.string().min(1)).default([]),
-    dbPath: z.string().min(1).optional(),
+    tokenEnv: z
+      .string()
+      .min(1)
+      .default("DISCORD_TOKEN")
+      .describe(
+        "Name of the environment variable containing the Discord bot token. Defaults to DISCORD_TOKEN. Do not put the token itself here.",
+      ),
+    allowedChannelIds: z
+      .array(z.string().min(1))
+      .default([])
+      .describe(
+        "Quoted Discord channel IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored.",
+      ),
+    allowedGuildIds: z
+      .array(z.string().min(1))
+      .default([])
+      .describe(
+        "Quoted Discord guild/server IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored.",
+      ),
+    dbPath: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Optional Discord surface database path. Defaults to DATA_DIR/discord-surface.db."),
     botName: z
       .string()
       .min(1)
-      .refine((s) => !/\s/u.test(s), "botName must not contain spaces"),
-    statusMessage: z.string().optional(),
-    memberPresence: z.boolean().optional(),
+      .refine((s) => !/\s/u.test(s), "botName must not contain spaces")
+      .describe(
+        "Bot display name used for attribution and mention stripping. Must not contain whitespace.",
+      ),
+    statusMessage: z.string().optional().describe("Optional custom Discord presence/status text."),
+    memberPresence: z
+      .boolean()
+      .optional()
+      .describe(
+        "Enable the Discord member-presence intent. Requires the matching privileged intent in the Discord application settings.",
+      ),
 
     /** Output rendering mode for Discord reply streams. */
-    outputMode: z.enum(["inline", "preview"]).default("inline"),
+    outputMode: z
+      .enum(["inline", "preview"])
+      .default("inline")
+      .describe(
+        '`inline` streams into the final reply embed. `preview` streams into a temporary preview, posts the full final reply, then deletes the preview.\n\nDefault: `"inline"`.',
+      ),
 
     /** Final reply style used after Discord preview mode finishes. */
-    previewFinalOutputStyle: z.enum(["embed", "plain"]).default("embed"),
+    previewFinalOutputStyle: z
+      .enum(["embed", "plain"])
+      .default("embed")
+      .describe(
+        'Final answer rendering after preview mode: Discord embeds or normal text messages.\n\nDefault: `"embed"`.',
+      ),
 
     /**
      * Optional global override for Discord output notifications.
      * true = allow reply ping + @mentions, false = suppress by default.
      */
-    outputNotification: z.boolean().optional(),
+    outputNotification: z
+      .boolean()
+      .optional()
+      .describe(
+        "Allow reply pings and @user mention notifications when true. False suppresses output notifications by default.",
+      ),
 
     /** Streaming embed title phrases rotated while a request is in-progress. */
     workingIndicators: z
       .array(z.string().trim().min(1))
       .min(1)
-      .default(cloneDefaultWorkingIndicators()),
+      .default(cloneDefaultWorkingIndicators())
+      .describe(
+        "Non-empty streaming title phrases rotated while a request runs. Overrides surface.workingIndicators for Discord only.",
+      ),
 
     /** Experimental Discord-only output features. */
-    experimental: discordExperimentalSchema,
+    experimental: discordExperimentalSchema.describe(
+      "Legacy Discord experimental output settings.",
+    ),
   })
   .default({
     tokenEnv: "DISCORD_TOKEN",
@@ -272,7 +467,9 @@ export function migrateWebExtractConfigValue(value: unknown): unknown {
 export const webExtractConfigValueSchema = z.preprocess(
   migrateWebExtractConfigValue,
   z.object({
-    providers: webExtractProvidersSchema,
+    providers: webExtractProvidersSchema.describe(
+      "Non-empty ordered extraction-provider list: tavily, exa, or firecrawl. Duplicate entries are removed. Default: [tavily]. Configure the selected providers' credentials in the environment.",
+    ),
   }),
 );
 
@@ -288,16 +485,23 @@ export const webExtractConfigSchema = z
   .preprocess(
     migrateWebConfigValue,
     z.object({
-      extract: webExtractConfigValueSchema.default({
-        providers: ["tavily"],
-      }),
+      extract: webExtractConfigValueSchema
+        .default({
+          providers: ["tavily"],
+        })
+        .describe(
+          "Provider-backed web extraction settings. Configure the ordered provider list under providers.",
+        ),
       fetch: z
         .object({
-          mode: webFetchModeSchema,
+          mode: webFetchModeSchema.describe(
+            "Fetch strategy: `auto`, direct `fetch`, `browser`, `extract`, or `provider-only`. Default: auto. Provider modes use the configured extraction providers.",
+          ),
         })
         .default({
           mode: "auto",
-        }),
+        })
+        .describe("Web page retrieval strategy."),
     }),
   )
   .default({
@@ -312,42 +516,113 @@ export const webExtractConfigSchema = z
 export const modelCapabilityModalitySchema = z.enum(["text", "image", "audio", "video", "pdf"]);
 
 export const modelCapabilityOver200kCostPatchSchema = z.object({
-  input: z.number().nonnegative(),
-  output: z.number().nonnegative(),
-  cache_read: z.number().nonnegative().optional(),
-  cache_write: z.number().nonnegative().optional(),
+  input: z.number().nonnegative().describe("Estimated input cost in USD per million tokens."),
+  output: z.number().nonnegative().describe("Estimated output cost in USD per million tokens."),
+  cache_read: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Estimated cached-input read cost in USD per million tokens."),
+  cache_write: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Estimated cache-write cost in USD per million tokens."),
 });
 
 export const modelCapabilityCostPatchSchema = z.object({
-  input: z.number().nonnegative().optional(),
-  output: z.number().nonnegative().optional(),
-  cache_read: z.number().nonnegative().optional(),
-  cache_write: z.number().nonnegative().optional(),
-  input_audio: z.number().nonnegative().optional(),
-  output_audio: z.number().nonnegative().optional(),
-  context_over_200k: modelCapabilityOver200kCostPatchSchema.optional(),
+  input: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Estimated input cost in USD per million tokens."),
+  output: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Estimated output cost in USD per million tokens."),
+  cache_read: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Estimated cached-input read cost in USD per million tokens."),
+  cache_write: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Estimated cache-write cost in USD per million tokens."),
+  input_audio: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Estimated input-audio cost in USD per million tokens."),
+  output_audio: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Estimated output-audio cost in USD per million tokens."),
+  context_over_200k: modelCapabilityOver200kCostPatchSchema
+    .optional()
+    .describe(
+      "Pricing overrides for the over-200k context tier. Affects cost estimation only; does not change limit.context.",
+    ),
 });
 
 export const modelCapabilityLimitPatchSchema = z.object({
-  context: z.number().int().positive().optional(),
-  output: z.number().int().nonnegative().optional(),
+  context: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Model context-window size in tokens. Must be positive."),
+  output: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe("Maximum output tokens. Must be a non-negative integer."),
 });
 
 export const modelCapabilityModalitiesPatchSchema = z.object({
-  input: z.array(modelCapabilityModalitySchema).optional(),
-  output: z.array(modelCapabilityModalitySchema).optional(),
+  input: z
+    .array(modelCapabilityModalitySchema)
+    .optional()
+    .describe("Supported input modalities: text, image, audio, video, pdf."),
+  output: z
+    .array(modelCapabilityModalitySchema)
+    .optional()
+    .describe("Supported output modalities: text, image, audio, video, pdf."),
 });
 
 const modelCapabilityOverrideSchema = z
   .object({
     /** Optional base model capability spec to inherit from (provider/model). */
-    inherit: z.string().trim().min(1).optional(),
+    inherit: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        "Base capability reference in provider/model format. Omit for a manual capability definition; then limit.context is required, cost patches need input and output, and modality patches need input.",
+      ),
     /** Optional partial cost patch merged onto inherited/base cost. */
-    cost: modelCapabilityCostPatchSchema.optional(),
+    cost: modelCapabilityCostPatchSchema
+      .optional()
+      .describe(
+        "Partial token-price overrides merged onto inherited/base costs. Used for estimation; does not change provider billing.",
+      ),
     /** Optional partial limit patch merged onto inherited/base limits. */
-    limit: modelCapabilityLimitPatchSchema.optional(),
+    limit: modelCapabilityLimitPatchSchema
+      .optional()
+      .describe(
+        "Token-limit overrides merged onto inherited/base limits. A manual definition without inherit must include context.",
+      ),
     /** Optional partial modalities patch merged onto inherited/base modalities. */
-    modalities: modelCapabilityModalitiesPatchSchema.optional(),
+    modalities: modelCapabilityModalitiesPatchSchema
+      .optional()
+      .describe(
+        "Input and output modality overrides. For a manual definition without inherit, specify input when supplying this object.",
+      ),
   })
   .superRefine((input, ctx) => {
     if (!input.inherit && !input.cost && !input.limit && !input.modalities) {
@@ -387,9 +662,19 @@ const modelCapabilityOverrideSchema = z
 export const modelCapabilitySchema = z
   .object({
     /** Providers to always treat as unknown/unresolved capability. */
-    forceUnknownProviders: z.array(z.string().trim().min(1)).default(["openai-compatible"]),
+    forceUnknownProviders: z
+      .array(z.string().trim().min(1))
+      .default(["openai-compatible"])
+      .describe(
+        "Provider IDs whose models.dev capability metadata should always be treated as unresolved. Default: [openai-compatible], useful for upstreams with unstable metadata.",
+      ),
     /** Optional capability overrides keyed by provider/model spec. */
-    overrides: z.record(z.string().trim().min(1), modelCapabilityOverrideSchema).default({}),
+    overrides: z
+      .record(z.string().trim().min(1), modelCapabilityOverrideSchema)
+      .default({})
+      .describe(
+        "Manual capability overrides keyed by provider/model. Useful when catalog metadata is missing or stale. Inherit another model and patch selected fields, or provide a manual definition with limit.context.",
+      ),
   })
   .default({
     forceUnknownProviders: ["openai-compatible"],
@@ -398,9 +683,15 @@ export const modelCapabilitySchema = z
 
 const toolsSchema = z
   .object({
-    fsBackend: z.enum(["fff", "node-rg"]).default("node-rg"),
-    web: webExtractConfigSchema,
-    experimental_hashline_edit: z.boolean().default(false),
+    fsBackend: z
+      .enum(["fff", "node-rg"])
+      .default("node-rg")
+      .describe("Filesystem search backend: `fff` or `node-rg`. Version 2 and 3 default to fff."),
+    web: webExtractConfigSchema.describe("Web fetching and extraction providers."),
+    experimental_hashline_edit: z
+      .boolean()
+      .default(false)
+      .describe("Enable legacy hashline-based file editing.\n\nDefault: `false`."),
   })
   .default({
     fsBackend: "node-rg",
@@ -417,8 +708,18 @@ const toolsSchema = z
 
 export const pluginsSchema = z
   .object({
-    disabled: z.array(z.string().min(1)).default([]),
-    config: z.record(z.string(), z.unknown()).default({}),
+    disabled: z
+      .array(z.string().min(1))
+      .default([])
+      .describe(
+        "Plugin IDs to disable globally. Empty by default. Disabled contributions are also unavailable to subagent allowlists.",
+      ),
+    config: z
+      .record(z.string(), z.unknown())
+      .default({})
+      .describe(
+        "Plugin-specific values keyed by plugin ID. Each plugin owns its settings and validation; arbitrary values are accepted here.",
+      ),
   })
   .default({
     disabled: [],
@@ -437,8 +738,17 @@ const heartbeatOutputSessionSchema = z
 
 export const heartbeatSchema = z
   .object({
-    enabled: z.boolean().default(false),
-    cron: cronExpr5Schema.default("*/30 * * * *"),
+    enabled: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Enable the autonomous heartbeat lane. Defaults to false. Override its model at surface.router.sessionModes.__heartbeat__.model.",
+      ),
+    cron: cronExpr5Schema
+      .default("*/30 * * * *")
+      .describe(
+        "Five-field, minute-precision cron schedule. Defaults to `*/30 * * * *` (every 30 minutes).",
+      ),
     every: z
       .never({ error: "surface.heartbeat.every has been removed; use surface.heartbeat.cron" })
       .optional(),
@@ -446,20 +756,40 @@ export const heartbeatSchema = z
       .number()
       .int()
       .nonnegative()
-      .default(5 * 60 * 1000),
+      .default(5 * 60 * 1000)
+      .describe(
+        "Suppress heartbeat for this many milliseconds after non-heartbeat request activity. Defaults to 300000 (5 minutes); zero disables this quiet interval.",
+      ),
     retryBusyMs: z
       .number()
       .int()
       .positive()
-      .default(60 * 1000),
-    defaultOutputSession: heartbeatOutputSessionSchema.optional(),
+      .default(60 * 1000)
+      .describe(
+        "Delay in milliseconds before retrying a suppressed wake. Defaults to 60000; must be positive.",
+      ),
+    defaultOutputSession: heartbeatOutputSessionSchema
+      .optional()
+      .describe(
+        "Default heartbeat destination in `<client>/<sessionIdOrAlias>` form, for example `discord/ops`. Prefer concrete IDs. Per-watch thread destinations override this value; native is optional.",
+      ),
     softQuietHours: z
       .object({
-        start: hhmmSchema,
-        end: hhmmSchema,
-        timezone: z.string().trim().min(1).optional(),
+        start: hhmmSchema.describe(
+          "Start of quiet hours in 24-hour HH:MM format, for example 23:00.",
+        ),
+        end: hhmmSchema.describe("End of quiet hours in 24-hour HH:MM format, for example 08:00."),
+        timezone: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Optional timezone for the quiet-hours hint, for example Asia/Taipei."),
       })
-      .optional(),
+      .optional()
+      .describe(
+        "Quiet-hours hint included in heartbeat instructions. This is guidance for the agent, not a hard scheduling block.",
+      ),
   })
   .transform((value) => ({
     enabled: value.enabled,
@@ -481,10 +811,32 @@ const configVersionSchema = z.literal(V1_CORE_CONFIG_VERSION).default(V1_CORE_CO
 
 export const agentRetrySchema = z
   .object({
-    enabled: z.boolean().default(true),
-    maxRetries: z.number().int().min(0).default(3),
-    baseDelayMs: z.number().int().nonnegative().default(2_000),
-    maxDelayMs: z.number().int().nonnegative().default(30_000),
+    enabled: z
+      .boolean()
+      .default(true)
+      .describe(
+        "Retry transient upstream failures and replay-safe primary-agent idle timeouts.\n\nDefault: `true`.",
+      ),
+    maxRetries: z
+      .number()
+      .int()
+      .min(0)
+      .default(3)
+      .describe(
+        "Maximum retry attempts after the initial attempt. Defaults to 3; zero disables retries.",
+      ),
+    baseDelayMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(2_000)
+      .describe("Initial retry delay in milliseconds. Defaults to 2000; accepts zero."),
+    maxDelayMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(30_000)
+      .describe("Maximum retry backoff in milliseconds. Defaults to 30000; accepts zero."),
   })
   .default({
     enabled: true,
@@ -501,16 +853,28 @@ const DEFAULT_AGENT_RETRY = {
 };
 
 export const coreConfigInputSchemaV1 = z.object({
-  configVersion: configVersionSchema,
+  configVersion: configVersionSchema.describe(
+    "Configuration format version. New files use 3. An omitted version is parsed as version 1; set this explicitly before using newer fields. See docs/core-config-migrations.md for upgrades.",
+  ),
 
-  tools: toolsSchema,
-  plugins: pluginsSchema,
+  tools: toolsSchema.describe(
+    "File, web, media, and tool-result settings. Omitted options use the defaults shown on their fields.",
+  ),
+  plugins: pluginsSchema.describe(
+    "Enablement and plugin-specific configuration for built-in and external plugins.",
+  ),
 
   surface: z
     .object({
-      router: routerSchema,
-      discord: discordSurfaceSchema,
-      heartbeat: heartbeatSchema,
+      router: routerSchema.describe(
+        "Surface-wide request routing, with per-session and Discord guild overrides.",
+      ),
+      discord: discordSurfaceSchema.describe(
+        "Discord credentials, ingress allowlists, attachment caching, and output rendering.",
+      ),
+      heartbeat: heartbeatSchema.describe(
+        "Autonomous heartbeat lane. Disabled by default; configure its model through `surface.router.sessionModes.__heartbeat__.model`.",
+      ),
     })
     .default({
       router: {
@@ -544,23 +908,32 @@ export const coreConfigInputSchemaV1 = z.object({
         defaultOutputSession: undefined,
         softQuietHours: undefined,
       },
-    }),
+    })
+    .describe("Communication surfaces, request routing, and autonomous heartbeat settings."),
 
   agent: z
     .object({
-      statsForNerds: statsForNerdsSchema,
-      reasoningDisplay: reasoningDisplaySchema,
-      subagents: subagentsSchema.default({
-        enabled: true,
-        maxDepth: 2,
-        defaultTimeoutMs: 3 * 60 * 1000,
-        maxTimeoutMs: 8 * 60 * 1000,
-        profiles: {
-          explore: { modelSlot: "main" },
-          general: { modelSlot: "main" },
-          self: { modelSlot: "main" },
-        },
-      }),
+      statsForNerds: statsForNerdsSchema.describe(
+        "Response metadata statistics: false disables them, true includes model/timing/throughput, and `{verbose: true}` also includes input composition.",
+      ),
+      reasoningDisplay: reasoningDisplaySchema.describe(
+        "Discord streaming reasoning display. `none` hides it; `simple` shows the working title and elapsed timer; `detailed` also shows blockquoted reasoning, clamped to 500 characters.",
+      ),
+      subagents: subagentsSchema
+        .default({
+          enabled: true,
+          maxDepth: 2,
+          defaultTimeoutMs: 3 * 60 * 1000,
+          maxTimeoutMs: 8 * 60 * 1000,
+          profiles: {
+            explore: { modelSlot: "main" },
+            general: { modelSlot: "main" },
+            self: { modelSlot: "main" },
+          },
+        })
+        .describe(
+          "Delegated child-agent execution and permission-profile mapping. V1 uses a fixed 15-minute primary idle timeout and a 10-minute child idle timeout.",
+        ),
     })
     .default({
       statsForNerds: false,
@@ -576,7 +949,8 @@ export const coreConfigInputSchemaV1 = z.object({
           self: { modelSlot: "main" },
         },
       },
-    }),
+    })
+    .describe("Agent execution, retry, transcript retention, display, and delegation settings."),
 
   models: z
     .object({
@@ -586,12 +960,24 @@ export const coreConfigInputSchemaV1 = z.object({
           z.string().min(1),
           z.object({
             /** Canonical model spec in provider/model format. */
-            model: z.string().min(1),
+            model: z
+              .string()
+              .min(1)
+              .describe(
+                "Canonical provider/model reference. An alias cannot point to another alias. Example: openai/gpt-4o.",
+              ),
             /** AI SDK providerOptions-style object (nested JSON allowed). */
-            options: jsonObjectSchema.optional(),
+            options: jsonObjectSchema
+              .optional()
+              .describe(
+                "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
+              ),
           }),
         )
-        .default({}),
+        .default({})
+        .describe(
+          "Reusable model aliases. Each alias names a canonical provider/model. Example: `assistant: {model: openai/gpt-4o}`. Version 1 aliases accept model and options; upgrade the config to use newer alias fields.",
+        ),
 
       main: z
         .object({
@@ -600,7 +986,13 @@ export const coreConfigInputSchemaV1 = z.object({
            *
            * If no '/' is present, the value is treated as an alias.
            */
-          model: z.string().min(1).default("openrouter/openai/gpt-4o"),
+          model: z
+            .string()
+            .min(1)
+            .default("openrouter/openai/gpt-4o")
+            .describe(
+              'Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `"openrouter/openai/gpt-4o"`.',
+            ),
           /**
            * Provider-specific model options.
            *
@@ -608,11 +1000,18 @@ export const coreConfigInputSchemaV1 = z.object({
            * - shorthand: { temperature: 0.2 }
            * - providerOptions map: { openai: { temperature: 0.2 }, gateway: { order: [...] } }
            */
-          options: jsonObjectSchema.optional(),
+          options: jsonObjectSchema
+            .optional()
+            .describe(
+              "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
+            ),
         })
         .default({
           model: "openrouter/openai/gpt-4o",
-        }),
+        })
+        .describe(
+          "Primary request model and optional reasoning, options, and fallback overrides. Defaults to openrouter/openai/gpt-4o.",
+        ),
 
       /**
        * Fast/cheap model for lightweight features (router gate, etc.).
@@ -621,14 +1020,29 @@ export const coreConfigInputSchemaV1 = z.object({
        */
       fast: z
         .object({
-          model: z.string().min(1).default("openrouter/openai/gpt-4o-mini"),
-          options: jsonObjectSchema.optional(),
+          model: z
+            .string()
+            .min(1)
+            .default("openrouter/openai/gpt-4o-mini")
+            .describe(
+              'Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `"openrouter/openai/gpt-4o-mini"`.',
+            ),
+          options: jsonObjectSchema
+            .optional()
+            .describe(
+              "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
+            ),
         })
         .default({
           model: "openrouter/openai/gpt-4o-mini",
-        }),
+        })
+        .describe(
+          "Lightweight model used by features such as the router gate. Defaults to openrouter/openai/gpt-4o-mini.",
+        ),
 
-      capability: modelCapabilitySchema,
+      capability: modelCapabilitySchema.describe(
+        "Manual model metadata and provider exclusions used when resolving model capabilities.",
+      ),
     })
     .default({
       def: {},
@@ -638,22 +1052,44 @@ export const coreConfigInputSchemaV1 = z.object({
         forceUnknownProviders: ["openai-compatible"],
         overrides: {},
       },
-    }),
+    })
+    .describe(
+      "Model slots, reusable aliases, capability overrides, catalog visibility, and ordered option rules. Local Claude subscription models use `claude-code/<model>`; see docs/claude-code.md for authentication, persistent storage, and continuation limits.",
+    ),
 
   entity: z
     .object({
-      users: z.record(z.string().min(1), discordUserAliasSchema).default({}),
+      users: z
+        .record(z.string().min(1), discordUserAliasSchema)
+        .default({})
+        .describe(
+          'Map a user alias to `{discord: "USER_ID", comment: "optional context"}`. Example: `Stanley: {discord: "123456789012345678"}`.',
+        ),
 
       sessions: z
         .object({
-          discord: z.record(z.string().min(1), discordSessionAliasSchema).default({}),
+          discord: z
+            .record(z.string().min(1), discordSessionAliasSchema)
+            .default({})
+            .describe(
+              'Map a channel alias to a quoted Discord ID or `{discord: "CHANNEL_ID", comment: "optional context"}`. For example, `ops: "234567890123456789"`.',
+            ),
         })
-        .default({ discord: {} }),
+        .default({ discord: {} })
+        .describe("Session aliases grouped by surface."),
     })
     .default({ users: {}, sessions: { discord: {} } })
-    .optional(),
+    .optional()
+    .describe(
+      "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt.",
+    ),
 
-  basePrompt: z.string().optional(),
+  basePrompt: z
+    .string()
+    .optional()
+    .describe(
+      "Base instructions. Codex uses this as Responses instructions when `codex_instructions` is absent. Other providers prepend it to the prompt files under DATA_DIR/prompts. Omit to use the provider's normal prompt assembly.",
+    ),
 });
 
 export const coreConfigSchema = coreConfigInputSchemaV1;

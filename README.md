@@ -72,7 +72,7 @@ selection, and troubleshooting.
 ## Documentation
 
 - [Installation and setup](docs/installation.md): providers, native sign-in, Discord, and reconfiguration.
-- [Configuration reference](packages/utils/config-templates/core-config.example.yaml): settings available in Core configuration.
+- [Core configuration](docs/core-config.md): editor hover docs, completion, and the minimal starter config.
 - [Configuration upgrades](docs/core-config-migrations.md): migrating an existing Core configuration.
 - [Manual Docker deployment](docs/docker-deployment.md): source builds, storage, and diagnostics.
 - [Computer use](docs/computer-use.md): desktop setup and operation.

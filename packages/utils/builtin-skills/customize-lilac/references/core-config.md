@@ -13,7 +13,9 @@ Explain and change Core configuration against the parser shipped with the target
    version-owned defaults.
 4. Use `packages/utils/core-config/types.ts` for the universal shape consumed by the application and
    `packages/utils/core-config.ts` for YAML loading, version dispatch, cache behavior, and path resolution.
-5. Use `packages/utils/config-templates/core-config.example.yaml` as the annotated current-version guide.
+5. Read field descriptions in the matching Zod input schema or
+   `<DATA_DIR>/.schemas/core-config.schema.json`. The example YAML is a minimal starter;
+   `docs/core-config.md` explains editor hover and completion.
    Confirm exact shapes in the parser before proposing an edit.
 
 Wrongly typed values fail parsing. Unknown keys are currently reported and ignored. Confirm both behaviors

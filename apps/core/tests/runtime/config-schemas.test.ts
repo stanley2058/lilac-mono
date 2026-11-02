@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import Ajv from "ajv";
 import { parseCoreConfigResult } from "@stanley2058/lilac-utils/core-config/parse";
+import { isRecord } from "@stanley2058/lilac-utils/runtime-utils";
 import { parseMcpConfigYaml, serializeMcpConfigYaml } from "../../src/mcp/config";
 import { createEmptyMcpConfig } from "../../src/mcp/config-types";
 import { publishConfigSchemas } from "../../src/runtime/config-schemas";
@@ -14,6 +15,54 @@ const ajv = new Ajv({ strict: false, validateFormats: false });
 const validateCore = ajv.compile(coreSchema);
 const validateMcp = ajv.compile(mcpSchema);
 const directories: string[] = [];
+
+function undocumentedProperties(schema: unknown, prefix = ""): string[] {
+  if (!isRecord(schema)) return [];
+  const missing: string[] = [];
+  if (isRecord(schema.properties)) {
+    for (const [key, field] of Object.entries(schema.properties)) {
+      if (!isRecord(field) || "not" in field) continue;
+      const fieldPath = prefix ? `${prefix}.${key}` : key;
+      if (typeof field.description !== "string" || field.description.length === 0)
+        missing.push(fieldPath);
+      if (typeof field.markdownDescription !== "string" || field.markdownDescription.length === 0)
+        missing.push(`${fieldPath} (Markdown)`);
+      missing.push(...undocumentedProperties(field, fieldPath));
+    }
+  }
+  for (const keyword of ["anyOf", "oneOf", "allOf"]) {
+    const branches = schema[keyword];
+    if (!Array.isArray(branches)) continue;
+    for (const branch of branches) missing.push(...undocumentedProperties(branch, prefix));
+  }
+  for (const keyword of ["items", "additionalProperties"])
+    missing.push(...undocumentedProperties(schema[keyword], `${prefix}.*`));
+  return missing;
+}
+
+test("current Core fields expose hover documentation, including maps and union branches", () => {
+  const current = coreSchema.anyOf.find((schema) => schema.properties.configVersion.const === 3);
+  expect(current).toBeDefined();
+  expect(undocumentedProperties(current)).toEqual([]);
+});
+
+test("hover documentation retains examples, units, defaults, and version-specific guidance", () => {
+  const current = coreSchema.anyOf[2];
+  if (!current) throw new Error("Missing current Core schema");
+  const tools = current.properties.tools.properties;
+  expect(tools.output?.properties.artifactTtl.markdownDescription).toContain("`7d`");
+  expect(tools.output?.properties.artifactTtl.markdownDescription).toContain("mo is 30 days");
+  expect(tools.output?.properties.artifactTtl.markdownDescription).toContain("Default: 7d");
+  expect(
+    current.properties.agent.properties.subagents.properties.permissions?.description,
+  ).toContain("inherit restricted defaults");
+  expect(
+    current.properties.models.properties.rules?.items.properties.match.markdownDescription,
+  ).toContain("`*` also matches slashes");
+  expect(current.properties.surface.properties.discord.properties.tokenEnv.description).toContain(
+    "not put the token itself",
+  );
+});
 
 async function temporaryDirectory() {
   const directory = await mkdtemp(path.join(tmpdir(), "lilac-config-schemas-"));

@@ -41,9 +41,7 @@ models:
     model: claude-code/claude-sonnet-4-6
 ```
 
-Then provide Claude authentication using one of the methods above. See the self-documenting
-[`core-config.example.yaml`](../packages/utils/config-templates/core-config.example.yaml) for the
-complete current configuration.
+Then provide Claude authentication using one of the methods above. See [Core configuration](core-config.md) for schema-backed hover documentation and completion.
 
 ## Executable Resolution
 

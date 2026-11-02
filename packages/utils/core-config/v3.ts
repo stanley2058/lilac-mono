@@ -68,24 +68,63 @@ const RESTRICTED_PERMISSIONS_DEFAULT: SubagentPermissionProfileConfig = {
 
 function permissionProfileSchemaV3(defaults: SubagentPermissionProfileConfig) {
   return z.object({
-    promptOverlay: z.string().trim().min(1).optional(),
-    level1: profileLevel1Schema.default(defaults.level1),
-    level2: profileLevel2Schema.default(defaults.level2),
-    network: z.boolean().default(defaults.network),
-    workspaceWrites: z.boolean().default(defaults.workspaceWrites),
+    promptOverlay: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Additional instructions appended to the worker prompt for children using this permission profile. For example, "Cite file paths and avoid edits."',
+      ),
+    level1: profileLevel1Schema
+      .default(defaults.level1)
+      .describe(
+        "Direct model-callable tool and plugin allowlists. Entries must also be globally enabled; MCP servers additionally require `allowSubagents: true` in mcp-config.yaml.",
+      ),
+    level2: profileLevel2Schema
+      .default(defaults.level2)
+      .describe(
+        "Core tool-server callable and plugin allowlists. These control functions reached through the tools CLI.",
+      ),
+    network: z
+      .boolean()
+      .default(defaults.network)
+      .describe(
+        "Allow network-capable tool behavior. This is a behavioral guardrail; native host execution is not an OS network sandbox.",
+      ),
+    workspaceWrites: z
+      .boolean()
+      .default(defaults.workspaceWrites)
+      .describe(
+        "Allow workspace-writing tools. Native Bash still runs with the Core service user's authority; use restricted execution or OS isolation for filesystem isolation.",
+      ),
     execution: z
       .union([z.literal(false), z.enum(["restricted", "native"])])
-      .default(defaults.execution),
-    delegation: z.boolean().default(defaults.delegation),
+      .default(defaults.execution)
+      .describe(
+        "Bash execution policy: `false` disables execution, `restricted` uses virtual restricted Bash, and `native` uses trusted host Bash unless the surface is restricted.",
+      ),
+    delegation: z
+      .boolean()
+      .default(defaults.delegation)
+      .describe(
+        "Allow this child to delegate again, subject to `maxDepth`. A child can request only permission profiles within its own authority.",
+      ),
   });
 }
 
 const permissionProfilesSchemaV3 = z
   .object({
-    full: permissionProfileSchemaV3(FULL_PERMISSIONS_DEFAULT).default(FULL_PERMISSIONS_DEFAULT),
-    restricted: permissionProfileSchemaV3(RESTRICTED_PERMISSIONS_DEFAULT).default(
-      RESTRICTED_PERMISSIONS_DEFAULT,
-    ),
+    full: permissionProfileSchemaV3(FULL_PERMISSIONS_DEFAULT)
+      .default(FULL_PERMISSIONS_DEFAULT)
+      .describe(
+        "Full globally enabled tool access, network, workspace writes, native execution, and further delegation by default. Explicit fields override these defaults.",
+      ),
+    restricted: permissionProfileSchemaV3(RESTRICTED_PERMISSIONS_DEFAULT)
+      .default(RESTRICTED_PERMISSIONS_DEFAULT)
+      .describe(
+        "Defaults to read-oriented local and lookup tools, network enabled, workspace writes disabled, native execution, and delegation disabled. This is a tool/behavior policy; native execution retains host authority.",
+      ),
   })
   // Custom profiles start from the restricted defaults.
   .catchall(permissionProfileSchemaV3(RESTRICTED_PERMISSIONS_DEFAULT))
@@ -102,13 +141,32 @@ const permissionProfilesSchemaV3 = z
   });
 
 const subagentsSchemaV3 = z.object({
-  enabled: z.boolean().default(true),
-  maxDepth: z.number().int().min(0).max(2).default(2),
-  delegatePromptOverlay: z.string().trim().min(1).optional(),
-  permissions: permissionProfilesSchemaV3.default({
-    full: FULL_PERMISSIONS_DEFAULT,
-    restricted: RESTRICTED_PERMISSIONS_DEFAULT,
-  }),
+  enabled: z.boolean().default(true).describe("Enable delegated child agents. Defaults to true."),
+  maxDepth: z
+    .number()
+    .int()
+    .min(0)
+    .max(2)
+    .default(2)
+    .describe(
+      "Maximum delegation depth, with the primary agent at 0. Allowed range: 0 to 2. Children also need `delegation: true` in their permission profile.\n\nDefault: `2`.",
+    ),
+  delegatePromptOverlay: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe(
+      "Free-form guidance appended to the parent-visible subagent_delegate tool description. Use for model selection, escalation, cost, or workflow preferences.",
+    ),
+  permissions: permissionProfilesSchemaV3
+    .default({
+      full: FULL_PERMISSIONS_DEFAULT,
+      restricted: RESTRICTED_PERMISSIONS_DEFAULT,
+    })
+    .describe(
+      "Named permission profiles shared by direct and workflow launches. Built-ins full and restricted always exist. Custom lowercase slug names (maximum 32 characters, excluding primary) inherit restricted defaults. A child may only select authority within its own. Models are selected separately per delegation.",
+    ),
   profiles: z
     .never({
       error:
@@ -133,9 +191,20 @@ const baseModels = coreConfigInputSchemaV2.shape.models.unwrap();
 const modelRulesSchema = z
   .array(
     z.object({
-      match: z.string().min(1).max(512),
+      match: z
+        .string()
+        .min(1)
+        .max(512)
+        .describe(
+          "Glob matched against the canonical provider/model reference. `*` also matches slashes. Rules apply in declaration order.",
+        ),
       options: baseModels.shape.main.unwrap().shape.options,
-      reasoning: z.enum(MODEL_REASONING_EFFORTS).optional(),
+      reasoning: z
+        .enum(MODEL_REASONING_EFFORTS)
+        .optional()
+        .describe(
+          "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model.",
+        ),
       unset: z
         .array(
           z
@@ -144,25 +213,51 @@ const modelRulesSchema = z
               /^(?!.*(?:__proto__|constructor|prototype))[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/,
             ),
         )
-        .optional(),
-      legacy: z.boolean().optional(),
+        .optional()
+        .describe(
+          "Inherited option paths to remove, such as `[openai.someInheritedOption]`. Dot-separated path segments must contain letters, numbers, underscores, or hyphens; prototype-related names are forbidden.",
+        ),
+      legacy: z
+        .boolean()
+        .optional()
+        .describe(
+          "Override the matched catalog model's legacy flag, which controls its legacy classification in model discovery.",
+        ),
     }),
   )
   .default([]);
 const reasoningFieldsV3 = {
-  reasoning: z.enum(MODEL_REASONING_EFFORTS).optional(),
+  reasoning: z
+    .enum(MODEL_REASONING_EFFORTS)
+    .optional()
+    .describe(
+      "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model.",
+    ),
   fallback: z
     .array(
       z.union([
         z.string().min(1),
         z.object({
-          model: z.string().min(1),
-          reasoning: z.enum(MODEL_REASONING_EFFORTS).optional(),
+          model: z
+            .string()
+            .min(1)
+            .describe(
+              "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
+            ),
+          reasoning: z
+            .enum(MODEL_REASONING_EFFORTS)
+            .optional()
+            .describe(
+              "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model.",
+            ),
           options: baseModels.shape.main.unwrap().shape.options,
         }),
       ]),
     )
-    .optional(),
+    .optional()
+    .describe(
+      "Ordered fallback models, each a model reference/alias or `{model, reasoning, options}`. A model-slot chain takes precedence over the selected alias chain. Automatic fallback stays within the head model's provider family and is disabled for a `claude-code` head.",
+    ),
 };
 const modelsSchemaV3 = z
   .object({
@@ -175,24 +270,48 @@ const modelsSchemaV3 = z
           .refine((name) => !name.includes("/")),
         baseModels.shape.def.unwrap().valueType.extend({
           ...reasoningFieldsV3,
-          model: z.string().regex(/^[^/]+\/.+/u),
+          model: z
+            .string()
+            .regex(/^[^/]+\/.+/u)
+            .describe(
+              "Canonical provider/model reference. An alias cannot point to another alias. Example: openai/gpt-4o.",
+            ),
         }),
       )
-      .default({}),
+      .default({})
+      .describe(
+        "Reusable model aliases. Alias names cannot contain `/`; each alias must name a canonical provider/model. Example: `assistant: {model: openai/gpt-4o, agentCanSelect: true}`.",
+      ),
     main: baseModels.shape.main
       .unwrap()
       .extend(reasoningFieldsV3)
-      .default({ model: "openrouter/openai/gpt-4o" }),
+      .default({ model: "openrouter/openai/gpt-4o" })
+      .describe(
+        "Primary request model and optional reasoning, options, and fallback overrides. Defaults to openrouter/openai/gpt-4o.",
+      ),
     fast: baseModels.shape.fast
       .unwrap()
       .extend(reasoningFieldsV3)
-      .default({ model: "openrouter/openai/gpt-4o-mini" }),
+      .default({ model: "openrouter/openai/gpt-4o-mini" })
+      .describe(
+        "Lightweight model used by features such as the router gate. Defaults to openrouter/openai/gpt-4o-mini.",
+      ),
     catalog: z
       .object({
-        providers: z.record(z.string(), z.enum(["auto", "enabled", "disabled"])).default({}),
+        providers: z
+          .record(z.string(), z.enum(["auto", "enabled", "disabled"]))
+          .default({})
+          .describe(
+            "Visibility by provider ID: auto infers availability from credentials, enabled shows the provider, disabled hides it. Example: `{codex: enabled, anthropic: disabled}`.",
+          ),
       })
-      .default({ providers: {} }),
-    rules: modelRulesSchema,
+      .default({ providers: {} })
+      .describe(
+        "Model discovery visibility. Credentials are inferred by default; overrides affect catalog visibility only.",
+      ),
+    rules: modelRulesSchema.describe(
+      'Ordered glob defaults applied before alias and per-run options. `*` includes slashes. Later matching rules can override earlier settings. Example: `{match: "codex/gpt-6-*", options: {serviceTier: priority}}.',
+    ),
   })
   .default({
     def: {},
@@ -216,12 +335,15 @@ const webSchemaV3 = baseWeb.extend({
     .out.extend({
       provider: removedV3Field("tools.web.extract.provider", "use providers: [provider]"),
     })
-    .default({ providers: ["tavily"] }),
+    .default({ providers: ["tavily"] })
+    .describe(
+      "Provider-backed web extraction settings. Configure the ordered provider list under providers.",
+    ),
 });
 const toolsSchemaV3 = baseTools
   .extend({
     inspect: removedV3Field("tools.inspect", "content.inspect is no longer available"),
-    web: webSchemaV3.prefault({}),
+    web: webSchemaV3.prefault({}).describe("Web fetching and extraction providers."),
   })
   .prefault({});
 
@@ -258,16 +380,26 @@ const conversationSchemaV3 = baseConversation
             error:
               "autoInjectMode must be llm or decision in configVersion 3; rename jev to decision",
           })
-          .default("llm"),
+          .default("llm")
+          .describe(
+            "Recall selection strategy: llm uses the search planner; decision uses classifier-based recall. Defaults to llm.",
+          ),
         jevAutoInject: removedV3Field(
           "conversation.thread.jevAutoInject",
           "use decisionAutoInject",
         ),
-        decisionAutoInject: decisionSchemaV3.optional(),
+        decisionAutoInject: decisionSchemaV3
+          .optional()
+          .describe(
+            "Classifier-based recall options used by decision mode. Set probability overrides separately under jev and luna.",
+          ),
       })
       .transform((value): z.output<typeof baseThread.in> => value)
       .pipe(baseThread.out)
-      .prefault({}),
+      .prefault({})
+      .describe(
+        "Thread memory: summaries, semantic embeddings, and related-thread metadata injection.",
+      ),
   })
   .prefault({});
 
@@ -301,20 +433,46 @@ const nativeSchemaV3 = z
     }),
   )
   .superRefine(validateNativeSurfaceConfig);
-const surfaceSchemaV3 = baseSurface.extend({ native: nativeSchemaV3.prefault({}) }).prefault({});
+const surfaceSchemaV3 = baseSurface
+  .extend({
+    native: nativeSchemaV3
+      .prefault({})
+      .describe(
+        "Native web/TUI gateway and authentication. Set a unique installationId before enabling. Runtime deployment settings are managed through Settings > Deployment.",
+      ),
+  })
+  .prefault({});
 
 export const coreConfigInputSchemaV3 = coreConfigInputSchemaV2.extend({
-  models: modelsSchemaV3,
-  tools: toolsSchemaV3,
-  conversation: conversationSchemaV3,
-  surface: surfaceSchemaV3,
-  configVersion: z.literal(V3_CORE_CONFIG_VERSION).default(V3_CORE_CONFIG_VERSION),
+  models: modelsSchemaV3.describe(
+    "Model slots, reusable aliases, capability overrides, catalog visibility, and ordered option rules. Local Claude subscription models use `claude-code/<model>`; see docs/claude-code.md for authentication, persistent storage, and continuation limits.",
+  ),
+  tools: toolsSchemaV3.describe(
+    "File, web, media, and tool-result settings. Omitted options use the defaults shown on their fields.",
+  ),
+  conversation: conversationSchemaV3.describe(
+    "Experimental conversation memory: thread summaries, embeddings, and automatic recall. Background summarization, embedding, and injection are disabled by default. Behavior and storage may change.",
+  ),
+  surface: surfaceSchemaV3.describe(
+    "Communication surfaces, request routing, and autonomous heartbeat settings.",
+  ),
+  configVersion: z
+    .literal(V3_CORE_CONFIG_VERSION)
+    .default(V3_CORE_CONFIG_VERSION)
+    .describe(
+      "Configuration format version. New files use 3. An omitted version is parsed as version 1; set this explicitly before using newer fields. See docs/core-config-migrations.md for upgrades.",
+    ),
   agent: z
     .object({
       ...agentFieldsWithoutSubagents,
-      subagents: subagentsSchemaV3.default(SUBAGENTS_DEFAULT_V3),
+      subagents: subagentsSchemaV3
+        .default(SUBAGENTS_DEFAULT_V3)
+        .describe(
+          "Delegated child-agent execution and permissions. Child idle timeout derives from agent.idleTimeoutMs.",
+        ),
     })
-    .default({ ...agentDefaultWithoutSubagents, subagents: SUBAGENTS_DEFAULT_V3 }),
+    .default({ ...agentDefaultWithoutSubagents, subagents: SUBAGENTS_DEFAULT_V3 })
+    .describe("Agent execution, retry, transcript retention, display, and delegation settings."),
 });
 
 export type ParsedCoreConfigV3 = z.infer<typeof coreConfigInputSchemaV3>;

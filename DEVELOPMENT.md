@@ -36,7 +36,7 @@ cp -n packages/utils/config-templates/core-config.example.yaml data/core-config.
 
 If you set `DATA_DIR`, put `core-config.yaml` in that directory instead. Edit the model selections and
 Discord channel/server allowlists before starting Core. The
-[config reference](packages/utils/config-templates/core-config.example.yaml) explains the fields;
+[configuration guide](docs/core-config.md) explains editor hover documentation and completion;
 [config migrations](docs/core-config-migrations.md) documents version changes.
 
 Start the runtime:

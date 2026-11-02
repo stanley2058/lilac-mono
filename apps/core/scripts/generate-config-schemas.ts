@@ -64,6 +64,9 @@ function toEditorSchema(schema: z.core.$ZodType): z.core.JSONSchema.JSONSchema {
     target: "draft-7",
     io: "input",
     override: ({ zodSchema, jsonSchema }) => {
+      if (jsonSchema.description) {
+        Object.assign(jsonSchema, { markdownDescription: jsonSchema.description });
+      }
       const def = (zodSchema as z.core.$ZodTypes)._zod.def;
       if (def.type === "pipe" && def.in._zod.def.type === "transform") {
         applyPreprocessorSchema(def, jsonSchema);
