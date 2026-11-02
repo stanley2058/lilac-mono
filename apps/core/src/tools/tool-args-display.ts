@@ -69,6 +69,7 @@ const localApplyPatchArgsSchema = z.object({
 });
 
 const subagentDelegateArgsSchema = z.object({
+  title: z.string().optional(),
   // Transcripts recorded before permission profiles carry `profile`.
   profile: z.string().optional(),
   permissions: z.string().optional(),
@@ -241,7 +242,9 @@ export const formatFuzzySearchToolArgs: ToolArgsFormatter = (args) => {
 export const formatSubagentDelegateToolArgs: ToolArgsFormatter = (args) => {
   const parsed = safeValidateSync(subagentDelegateArgsSchema, args);
   if (!isRecord(parsed) || typeof parsed["task"] !== "string") return "";
-  const task = parsed["task"].replace(/\s+/g, " ").trim();
+  const task = (typeof parsed["title"] === "string" ? parsed["title"] : parsed["task"])
+    .replace(/\s+/g, " ")
+    .trim();
   if (!task) return "";
   const labels = [parsed["permissions"] ?? parsed["profile"], parsed["model"]].filter(
     (label): label is string => typeof label === "string" && label.length > 0,

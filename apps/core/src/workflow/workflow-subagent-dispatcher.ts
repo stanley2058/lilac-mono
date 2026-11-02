@@ -317,6 +317,7 @@ export class WorkflowSubagentDispatcher {
         childSessionId: registration.childSessionId,
         profile: registration.profile,
         sessionName: registration.sessionName,
+        title: registration.title,
         stableNamedContinuation: registration.stableNamedContinuation,
         depth: registration.depth,
         reasoning: registration.reasoningOverride ?? null,

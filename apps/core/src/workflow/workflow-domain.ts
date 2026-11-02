@@ -248,11 +248,10 @@ export const workflowCompletionTargetSchema = z.discriminatedUnion("kind", [
     childSessionId: idSchema,
     profile: workflowAgentProfileSchema,
     sessionName: idSchema,
+    title: z.string().max(80).optional(),
     stableNamedContinuation: z.literal(true).optional(),
     depth: z.number().int().positive().max(64),
-    reasoning: z
-      .enum(["provider-default", "none", "minimal", "low", "medium", "high", "xhigh"])
-      .nullable(),
+    reasoning: z.enum(MODEL_REASONING_EFFORTS).nullable(),
     fallbackToSurface: z.boolean(),
     fallbackProgressTarget: workflowProgressTargetSchema.nullable(),
     deferredDelivery: z.boolean().default(true),

@@ -1,3 +1,4 @@
+import { ProviderIcon } from "./ProviderIcon";
 import {
   createContext,
   useCallback,
@@ -117,7 +118,11 @@ function Label({ children, live }: { children: ReactNode; live?: boolean }) {
 export function subagentActivity(
   part: ActivityPart,
   agents: ReadonlyMap<string, SubagentSummary>,
-): (Pick<SubagentSummary, "profile" | "title" | "state"> & { id?: string }) | undefined {
+):
+  | (Pick<SubagentSummary, "profile" | "title" | "state" | "taskTitle" | "model" | "reasoning"> & {
+      id?: string;
+    })
+  | undefined {
   const agent = agents.get(part.id);
   if (agent) return agent;
   const profile = subagentLabelProfile(part);
@@ -282,9 +287,20 @@ function SubagentItem({
             size="sm"
           />
         </span>
-        <Label live={requestActive !== false && agent.state === "running"}>
-          {subagentProfileName(agent.profile)} - {agent.title}
-        </Label>
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5 text-left">
+          <span className="truncate text-sm">
+            {agent.taskTitle ?? subagentProfileName(agent.profile)}
+          </span>
+          <Label live={requestActive !== false && agent.state === "running"}>{agent.title}</Label>
+        </span>
+        {agent.model ? (
+          <span
+            title={`${agent.model} · ${agent.profile}${agent.reasoning ? ` · ${agent.reasoning}` : ""}`}
+            className="shrink-0"
+          >
+            <ProviderIcon provider={agent.model.split("/")[0] ?? ""} />
+          </span>
+        ) : null}
         <RowTime at={times.get(part.id)} />
         <Chevron open={false} />
       </button>

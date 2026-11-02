@@ -622,3 +622,35 @@ test("deferred posts use delivery time after the active reply finishes", () => {
   const post = window.slots.find((slot) => slot.slotId === "queued");
   expect(post?.kind === "ready" && post.messages[0]?.metadata?.createdAt).toBe(32_000);
 });
+
+test("model favorites belong to each user and survive reopening the store", () => {
+  const { store, db } = fixture();
+  expect(store.setModelFavorite("alice", "opus", true).unwrap()).toEqual(["opus"]);
+  expect(
+    store.setModelFavorite("alice", "vercel/anthropic/claude-opus-5.5", true).unwrap(),
+  ).toEqual(["opus", "vercel/anthropic/claude-opus-5.5"]);
+  expect(store.getModelFavorites("bob").unwrap()).toEqual([]);
+  const reopened = new NativeStore(db);
+  reopened.initialize().unwrap();
+  expect(reopened.getModelFavorites("alice").unwrap()).toHaveLength(2);
+  expect(reopened.setModelFavorite("alice", "opus", false).unwrap()).toEqual([
+    "vercel/anthropic/claude-opus-5.5",
+  ]);
+});
+
+test("changing thread model clears its old reasoning override", () => {
+  const { store } = fixture();
+  const thread = store
+    .createThread("alice", { commandId: "reasoning-create", modelId: "opus", reasoning: "high" })
+    .unwrap();
+  expect(thread.reasoning).toBe("high");
+  expect(
+    store
+      .updateThread("alice", {
+        commandId: "reasoning-change",
+        threadId: thread.id,
+        modelId: "other",
+      })
+      .unwrap().reasoning,
+  ).toBeUndefined();
+});

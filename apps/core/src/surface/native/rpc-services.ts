@@ -20,7 +20,7 @@ import type {
   DisplayStreamTarget,
 } from "@stanley2058/lilac-client-protocol";
 import { Result } from "better-result";
-import type { DurableResolvedModelRequest } from "@stanley2058/lilac-utils";
+import type { ModelReasoningEffort, DurableResolvedModelRequest } from "@stanley2058/lilac-utils";
 import type { NativeAuthenticator, NativePrincipal } from "./auth";
 import type { NativeClerkAuthenticator } from "./auth-clerk";
 import type { NativeCatalogService } from "./catalogs";
@@ -47,7 +47,8 @@ export type NativeRpcServiceOptions = {
   auth: NativeAuthenticator;
   installationId: string;
   workingIndicators?: () => readonly string[];
-  catalogs: Pick<NativeCatalogService, "get" | "subscribe">;
+  catalogs: Pick<NativeCatalogService, "get" | "subscribe"> &
+    Partial<Pick<NativeCatalogService, "selection" | "models">>;
   config: Pick<NativeConfigService, "read" | "save" | "reloadMcp">;
   execution: Pick<
     NativeExecution,
@@ -62,7 +63,10 @@ export type NativeRpcServiceOptions = {
   >;
   profileProvider?: Pick<NativeClerkAuthenticator, "lookupUser" | "updateDisplayName">;
   lookupUser?: NativeClerkAuthenticator["lookupUser"];
-  resolveModel: (modelId?: string) => Result<DurableResolvedModelRequest, Error>;
+  resolveModel: (
+    modelId?: string,
+    reasoning?: ModelReasoningEffort,
+  ) => Result<DurableResolvedModelRequest, Error>;
 };
 
 export function nativeViewer(user: StoredUser): NativeUser {
@@ -168,8 +172,16 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
     });
   }
 
-  function modelChoice(principal: NativePrincipal, modelId?: string): Result<void, Error> {
-    if (!modelId) return Result.ok();
+  function modelChoice(
+    principal: NativePrincipal,
+    modelId?: string,
+    reasoning?: ModelReasoningEffort,
+  ): Result<void, Error> {
+    if (!modelId && !reasoning) return Result.ok();
+    if (options.catalogs.selection)
+      return options.catalogs.selection(modelId, reasoning)
+        ? Result.ok()
+        : Result.err(nativeFailure("invalid", "Model or reasoning setting is unavailable"));
     return catalog(principal).andThen((reply) => {
       if (reply.kind !== "catalog" || !reply.catalog.models.some((model) => model.id === modelId))
         return Result.err(nativeFailure("invalid", "Configured model is unavailable"));
@@ -182,7 +194,6 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
     input: NativeRpcInputs["inputs"]["submit"],
   ): Result<void, Error> {
     return Result.gen(function* () {
-      yield* modelChoice(principal, input.modelId);
       const reply = yield* catalog(principal);
       if (reply.kind !== "catalog")
         return Result.err(nativeFailure("invalid", "Input catalog is unavailable"));
@@ -738,18 +749,26 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
               "Operator conversations are managed by the terminal session",
             ),
           );
-        return modelChoice(principal, input.modelId).andThen(() =>
+        return modelChoice(principal, input.modelId, input.reasoning).andThen(() =>
           store.createThread(principal.userId, input),
         );
       },
       update(principal, input) {
-        return modelChoice(principal, input.modelId).andThen(() =>
-          store.updateThread(principal.userId, {
+        return Result.gen(function* () {
+          const thread = yield* store.authorizeThread(principal.userId, input.threadId, true);
+          if (input.modelId !== undefined || input.reasoning !== undefined)
+            yield* modelChoice(
+              principal,
+              input.modelId ?? thread.modelId,
+              input.reasoning ??
+                (input.modelId && input.modelId !== thread.modelId ? undefined : thread.reasoning),
+            );
+          return store.updateThread(principal.userId, {
             ...input,
             revision: input.expectedRevision,
             commandId: randomUUID(),
-          }),
-        );
+          });
+        });
       },
       async delete(principal, input) {
         return Result.gen(async function* () {
@@ -904,10 +923,15 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
                 nativeFailure("invalid", "There is no completed context to compact"),
               );
           }
+          const reasoning =
+            input.reasoning ??
+            (input.modelId && input.modelId !== thread.modelId ? undefined : thread.reasoning);
+          if (input.mode !== "steer")
+            yield* modelChoice(principal, input.modelId ?? thread.modelId, reasoning);
           const resolvedModelRequest =
             input.mode === "steer" && !input.command
               ? undefined
-              : yield* options.resolveModel(input.modelId ?? thread.modelId);
+              : yield* options.resolveModel(input.modelId ?? thread.modelId, reasoning);
           const receipt = yield* store.acceptInput(principal.userId, input, {
             resolvedModelRequest,
           });
@@ -941,6 +965,15 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
       },
     },
     catalogs: {
+      async models(_principal, input) {
+        return Result.ok((await options.catalogs.models?.(input)) ?? { providers: [], models: [] });
+      },
+      favorites(principal) {
+        return store.getModelFavorites(principal.userId);
+      },
+      favorite(principal, input) {
+        return store.setModelFavorite(principal.userId, input.modelId, input.favorite);
+      },
       get(principal, input) {
         return catalog(principal, input.revision);
       },

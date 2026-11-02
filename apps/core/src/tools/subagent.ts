@@ -10,6 +10,7 @@ import {
   type SubagentProfile,
 } from "@stanley2058/lilac-coding-tools/schemas";
 import {
+  projectModelCatalog,
   createLogger,
   formatTaggedErrorForLog,
   isPermissionProfileWithin,
@@ -78,6 +79,7 @@ function createSubagentDelegateInputSchema(params: {
   selectableModels: ReadonlyArray<readonly [string, AgentSelectableModelPreset]>;
   permissionProfiles: ReadonlyArray<ResolvedSubagentPermissionProfile>;
   defaultPermissionProfile: string;
+  catalogSelection?: boolean;
 }): z.ZodType<ParsedSubagentDelegateInput> {
   const { selectableModels, permissionProfiles } = params;
   const documentedModels = selectableModels.slice(0, 5).map(([alias, preset]) => {
@@ -115,6 +117,18 @@ function createSubagentDelegateInputSchema(params: {
     });
   }
 
+  if (params.catalogSelection)
+    return (schema as typeof subagentDelegateBaseInputSchema).extend({
+      model: z
+        .string()
+        .optional()
+        .describe(
+          "Model alias or provider/model from model_catalog. Omit to use the main model. Choose a model suited to this task.",
+        ),
+      reasoning: modelReasoningEffortSchema
+        .optional()
+        .describe("Optional reasoning setting supported by the selected model."),
+    });
   if (selectableModels.length === 0) return schema;
 
   const [firstAlias, ...remainingAliases] = selectableModels.map(([alias]) => alias);
@@ -358,6 +372,7 @@ export type SubagentDelegationRegistration = {
   sessionName: string;
   stableNamedContinuation: true;
   task: string;
+  title?: string;
   idleTimeoutMs: number;
   depth: number;
   parentRequestId: string;
@@ -434,6 +449,7 @@ export function subagentTools(params: {
     selectableModels,
     permissionProfiles,
     defaultPermissionProfile,
+    catalogSelection: params.config.configVersion === 3,
   });
   const description = [
     "Delegate a task to a subagent. Pick a model alias and, optionally, a permission profile.",
@@ -462,11 +478,31 @@ export function subagentTools(params: {
       outputSchema: subagentDelegateOutputSchema,
       execute: async (input: SubagentDelegateInput, { abortSignal, context, toolCallId }) => {
         const requestedModel = input.model;
-        if (requestedModel !== undefined && !selectableModelAliases.has(requestedModel)) {
+        if (
+          params.config.configVersion !== 3 &&
+          requestedModel !== undefined &&
+          !selectableModelAliases.has(requestedModel)
+        ) {
           signalSubagentFailure(
             "validate_input",
             `Model alias '${requestedModel}' is not available for agent selection`,
           );
+        }
+        if (
+          params.config.configVersion === 3 &&
+          (requestedModel !== undefined || input.reasoning !== undefined)
+        ) {
+          const selected = projectModelCatalog(params.config).find(
+            (entry) => entry.id === (requestedModel ?? params.config.models.main.model),
+          );
+          if (
+            !selected ||
+            (input.reasoning !== undefined && !selected.reasoning.includes(input.reasoning))
+          )
+            signalSubagentFailure(
+              "validate_input",
+              "Model or reasoning setting is unavailable; use model_catalog",
+            );
         }
         if (input.permissions !== undefined && !delegableProfileNames.has(input.permissions)) {
           signalSubagentFailure(
@@ -474,7 +510,11 @@ export function subagentTools(params: {
             `Permission profile '${input.permissions}' is not within this run's authority`,
           );
         }
-        if (input.reasoning !== undefined && selectableModels.length === 0) {
+        if (
+          params.config.configVersion !== 3 &&
+          input.reasoning !== undefined &&
+          selectableModels.length === 0
+        ) {
           signalSubagentFailure(
             "validate_input",
             "Reasoning override requires an agent-selectable model alias",
@@ -568,6 +608,7 @@ export function subagentTools(params: {
               sessionName,
               stableNamedContinuation,
               task: parsed.task,
+              title: parsed.title,
               idleTimeoutMs,
               depth: depth + 1,
               parentRequestId: ctx.requestId,

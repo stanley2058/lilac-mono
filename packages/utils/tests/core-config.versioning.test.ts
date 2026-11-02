@@ -623,3 +623,23 @@ describe("core config versioning", () => {
     );
   });
 });
+
+it("v3 accepts max effort in model defaults, aliases and fallback chains while v2 stays frozen", () => {
+  const models = {
+    main: {
+      model: "opus",
+      reasoning: "max",
+      fallback: [{ model: "anthropic/claude-opus", reasoning: "max" }],
+    },
+    fast: { model: "opus", reasoning: "max" },
+    def: {
+      opus: {
+        model: "claude-code/opus",
+        reasoning: "max",
+        fallback: [{ model: "anthropic/claude-opus", reasoning: "max" }],
+      },
+    },
+  };
+  expect(parseCoreConfigResult({ configVersion: 3, models }).isOk()).toBe(true);
+  expect(parseCoreConfigResult({ configVersion: 2, models }).isErr()).toBe(true);
+});

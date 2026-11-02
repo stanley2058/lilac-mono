@@ -43,7 +43,7 @@ describe("subagent_delegate tool", () => {
   it("documents selectable model aliases and appends delegation guidance", () => {
     const tools = subagentTools({
       runProfile: "primary",
-      config: TEST_CONFIG,
+      config: { ...TEST_CONFIG, configVersion: 2 },
       idleTimeoutMs: 2_000,
       maxDepth: 1,
       delegatePromptOverlay: "Escalate critical reviews to a stronger model.",
@@ -153,7 +153,7 @@ describe("subagent_delegate tool", () => {
   it("omits the model field when no aliases are selectable", async () => {
     const tools = subagentTools({
       runProfile: "primary",
-      config: TEST_CONFIG,
+      config: { ...TEST_CONFIG, configVersion: 2 },
       idleTimeoutMs: 2_000,
       maxDepth: 1,
       modelPresets: {
@@ -233,7 +233,7 @@ describe("subagent_delegate tool", () => {
       | undefined;
     const tools = subagentTools({
       runProfile: "primary",
-      config: TEST_CONFIG,
+      config: { ...TEST_CONFIG, configVersion: 2 },
       idleTimeoutMs: 2_000,
       maxDepth: 1,
       modelPresets: {
@@ -1069,4 +1069,52 @@ describe("subagent_delegate tool", () => {
     expect(capturedIdleTimeoutMs).toBe(2_000);
     expect(res.status).toBe("accepted");
   });
+});
+
+it("v3 delegates configured aliases without agentCanSelect and preserves the task title", async () => {
+  const config = parseCoreConfigV3ToUniversal({
+    configVersion: 3,
+    models: {
+      catalog: { providers: { openai: "enabled" } },
+      def: { manual: { model: "openai/private-model", agentCanSelect: false } },
+    },
+  });
+  let selected: { modelOverride?: string; title?: string } | undefined;
+  const tools = subagentTools({
+    config,
+    runProfile: "primary",
+    idleTimeoutMs: 2000,
+    maxDepth: 1,
+    onDelegate: async (registration) => {
+      selected = registration;
+      return {
+        runId: "catalog-delegation",
+        completion: Promise.resolve({ status: "resolved", finalText: "" }),
+        cancel: async () => {},
+      };
+    },
+  });
+  await resolveExecuteResult(
+    tools.subagent_delegate.execute!(
+      {
+        permissions: "restricted",
+        task: "Inspect compatibility",
+        title: "Check compatibility",
+        model: "manual",
+        mode: "deferred",
+      },
+      {
+        toolCallId: "catalog-delegation",
+        messages: [],
+        context: {
+          requestId: "catalog-parent",
+          sessionId: "catalog-session",
+          requestClient: "native",
+          subagentDepth: 0,
+        },
+      },
+    ),
+  );
+  expect(selected?.modelOverride).toBe("manual");
+  expect(selected?.title).toBe("Check compatibility");
 });

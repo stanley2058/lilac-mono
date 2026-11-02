@@ -1,3 +1,4 @@
+import type { ModelReasoning } from "@stanley2058/lilac-client-protocol";
 import { Result } from "better-result";
 import { RecentContextProvider } from "./RecentContext";
 import { currentPushDeviceId } from "../push-device";
@@ -529,6 +530,8 @@ export function Chat(props: ChatProps) {
         entry.submission.modelId,
         !!entry.submission.command,
       ),
+      reasoning:
+        serverActive && entry.submission.mode === "steer" ? undefined : entry.submission.reasoning,
       attachmentIds: ids.filter((id): id is string => !!id),
       skillIds: entry.submission.skillIds,
       command: entry.submission.command,
@@ -918,9 +921,9 @@ export function Chat(props: ChatProps) {
     commitDraft({ ...draft, attachments: draft.attachments.filter((id) => id !== key) });
   });
   const composerRetryAttachment = useEventCallback((key: string) => pool.retry(threadId, key));
-  const composerModelChange = useEventCallback((modelId: string) => {
+  const composerModelChange = useEventCallback((modelId: string, reasoning?: ModelReasoning) => {
     if (local) {
-      props.onLocalChange(threadId, (current) => ({ ...current, modelId }));
+      props.onLocalChange(threadId, (current) => ({ ...current, modelId, reasoning }));
       return;
     }
     const rpc = client.rpc,
@@ -932,6 +935,7 @@ export function Chat(props: ChatProps) {
           threadId: threadId,
           expectedRevision: checkpoint.projectionRevision,
           modelId,
+          reasoning,
         }),
       setError,
     );
@@ -1093,6 +1097,7 @@ export function Chat(props: ChatProps) {
           submitting={!!localThread?.creation}
           offline={!online}
           modelId={localThread?.modelId ?? thread?.modelId}
+          reasoning={localThread?.reasoning ?? thread?.reasoning}
           onModelChange={composerModelChange}
           onSubmit={composerSubmit}
           onCancel={composerCancel}

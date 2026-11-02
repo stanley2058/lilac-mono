@@ -1,3 +1,4 @@
+import type { ModelReasoning } from "@stanley2058/lilac-client-protocol";
 import type { WebNativeCache } from "./cache";
 import type { ReactNode } from "react";
 import type { NativeClient, CacheScope } from "@stanley2058/lilac-client";
@@ -41,6 +42,7 @@ export type ComposerSubmission = {
   skillIds: string[];
   mode: "steer" | "followup";
   modelId?: string;
+  reasoning?: ModelReasoning;
   command?: { id: string; arguments: string };
   attachments: Attachment[];
   /** Answers this pending question with the whole message. */

@@ -384,3 +384,60 @@ test("shutdown preserves a model Panic and reports its original identity", async
   expect(f.store.getThreadRecord(f.thread.id).unwrap().title).toBe("First line");
   f.store.close();
 });
+
+test("child task title generation preserves explicit titles and survives completion", () => {
+  const f = fixture();
+  f.store.settleInput(f.input.inputId, "admitted").unwrap();
+  const child = f.store
+    .ensureAgentStream({
+      parentThreadId: f.thread.id,
+      parentRequestId: f.store.getInput(f.input.inputId).unwrap().requestId,
+      runId: "child",
+      requestId: "request",
+      messages: [],
+      state: "running",
+      startedAt: 1,
+      titlePrompt: "Check migration compatibility across versions",
+    })
+    .unwrap();
+  const job = f.store.getTitleGeneration(child.id).unwrap()!;
+  expect(job.user).toBe("Check migration compatibility across versions");
+  f.store
+    .settleTitleGeneration(child.id, job, {
+      title: "Check migration compatibility",
+      needsRefinement: false,
+    })
+    .unwrap();
+  for (const spec of ["codex/gpt-6-astra", "openai/gpt-6-astra"]) {
+    f.store
+      .projectTurn(child.id, child.historyGeneration, spec, child.turnId, (slot) =>
+        Result.ok({
+          slot,
+          changes: [],
+          model: { spec, reasoning: "high" },
+        }),
+      )
+      .unwrap();
+  }
+  const titled = f.store.findAgentStream("child").unwrap()!;
+  expect(titled.model).toBe("openai/gpt-6-astra");
+  expect(titled.reasoning).toBe("high");
+  f.store.settleAgentStream(titled, "complete").unwrap();
+  expect(f.store.findAgentStream("child").unwrap()?.taskTitle).toBe(
+    "Check migration compatibility",
+  );
+  const explicit = f.store
+    .ensureAgentStream({
+      parentThreadId: f.thread.id,
+      parentRequestId: f.store.getInput(f.input.inputId).unwrap().requestId,
+      runId: "explicit",
+      requestId: "explicit-request",
+      messages: [],
+      state: "running",
+      startedAt: 1,
+      taskTitle: "Review config",
+      titlePrompt: "Something else",
+    })
+    .unwrap();
+  expect(f.store.getTitleGeneration(explicit.id).unwrap()).toBeNull();
+});

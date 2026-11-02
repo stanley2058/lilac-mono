@@ -1,3 +1,4 @@
+import { ModelSelectorDemo } from "./components/ModelSelectorDemo";
 import {
   CopySessionIdMenuItem,
   CopySessionIdContextMenuItem,
@@ -1037,6 +1038,9 @@ function ComposerSpecimen() {
           Missing attachment
         </Button>
       </div>
+      <Specimen title="Models">
+        <ModelSelectorDemo />
+      </Specimen>
       <div className="ds-composer my-4">
         <FloatingChatMenu
           sidebarOpen={sidebarOpen}

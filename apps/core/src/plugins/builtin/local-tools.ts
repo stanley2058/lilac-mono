@@ -1,3 +1,10 @@
+import { tool } from "ai";
+import {
+  modelCatalogCache,
+  projectModelCatalog,
+  configuredCatalogProviders,
+} from "@stanley2058/lilac-utils";
+import { modelRuleDefaults } from "@stanley2058/lilac-utils/model-rules";
 import { captureError } from "../../shared/error-capture.js";
 import type { ServerTool } from "@stanley2058/lilac-plugin-runtime";
 import {
@@ -432,6 +439,50 @@ export const BUILTIN_LEVEL1_TOOLS = {
     formatArgs: formatApplyPatchToolArgs,
     summarizeFailure: ({ result }) => summarizeApplyPatchFailure(result),
     createTool: (context) => getApplyPatchTool(context),
+  }),
+  model_catalog: defineLevel1Tool("bounded", {
+    name: "model_catalog",
+    isEnabled: ({ runtime }) => runtime.config?.configVersion === 3,
+    formatArgs: () => "model catalog",
+    summarizeFailure: ({ result }) => summarizeSearchFailure(result, "model_catalog"),
+    createTool: ({ runtime }) =>
+      tool({
+        description:
+          "Find available models for delegation. Omit filters for providers and a short list; search by provider or text. Exact model lookup accepts an alias or provider/model and returns supported reasoning and effective defaults. Any available model can be delegated; favorites do not restrict selection.",
+        inputSchema: z.object({
+          provider: z.string().optional(),
+          search: z.string().optional(),
+          model: z.string().optional(),
+          offset: z.number().int().min(0).default(0),
+        }),
+        execute: async (input) => {
+          const config = runtime.config;
+          if (!config) return { providers: [], models: [], omittedModels: 0 };
+          const registry = await modelCatalogCache.read();
+          const search = input.search?.toLowerCase();
+          const models = projectModelCatalog(config, registry)
+            .filter(
+              (entry) =>
+                (!input.provider || entry.provider === input.provider) &&
+                (!input.model || entry.id === input.model) &&
+                (!search || `${entry.id} ${entry.label}`.toLowerCase().includes(search)),
+            )
+            .sort((a, b) => Number(a.legacy) - Number(b.legacy) || a.id.localeCompare(b.id));
+          return {
+            providers: configuredCatalogProviders(config),
+            models: models.slice(input.offset, input.offset + 20).map((entry) => ({
+              ...entry,
+              ...(input.model
+                ? {
+                    defaults: modelRuleDefaults(config, `${entry.provider}/${entry.model}`),
+                    aliasOptions: config.models.def[entry.id]?.options,
+                  }
+                : {}),
+            })),
+            omittedModels: Math.max(0, models.length - input.offset - 20),
+          };
+        },
+      }),
   }),
   subagent_delegate: defineLevel1Tool("bounded", {
     name: "subagent_delegate",

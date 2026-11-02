@@ -3974,7 +3974,7 @@
               "additionalProperties": {
                 "type": "object",
                 "properties": {
-                  "model": { "type": "string", "minLength": 1 },
+                  "model": { "type": "string", "pattern": "^[^/]+\\/.+" },
                   "reasoning": {
                     "type": "string",
                     "enum": [
@@ -3984,7 +3984,8 @@
                       "low",
                       "medium",
                       "high",
-                      "xhigh"
+                      "xhigh",
+                      "max"
                     ]
                   },
                   "options": {
@@ -4010,7 +4011,8 @@
                                 "low",
                                 "medium",
                                 "high",
-                                "xhigh"
+                                "xhigh",
+                                "max"
                               ]
                             },
                             "options": {
@@ -4043,7 +4045,16 @@
                 },
                 "reasoning": {
                   "type": "string",
-                  "enum": ["provider-default", "none", "minimal", "low", "medium", "high", "xhigh"]
+                  "enum": [
+                    "provider-default",
+                    "none",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
                 },
                 "options": {
                   "type": "object",
@@ -4068,7 +4079,8 @@
                               "low",
                               "medium",
                               "high",
-                              "xhigh"
+                              "xhigh",
+                              "max"
                             ]
                           },
                           "options": {
@@ -4097,7 +4109,16 @@
                 },
                 "reasoning": {
                   "type": "string",
-                  "enum": ["provider-default", "none", "minimal", "low", "medium", "high", "xhigh"]
+                  "enum": [
+                    "provider-default",
+                    "none",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
                 },
                 "options": {
                   "type": "object",
@@ -4122,7 +4143,8 @@
                               "low",
                               "medium",
                               "high",
-                              "xhigh"
+                              "xhigh",
+                              "max"
                             ]
                           },
                           "options": {
@@ -4257,7 +4279,8 @@
                       "low",
                       "medium",
                       "high",
-                      "xhigh"
+                      "xhigh",
+                      "max"
                     ]
                   },
                   "unset": {

@@ -833,3 +833,25 @@ test("catalog changes refresh settled counts without sending settled records", a
   controller.abort();
   await stream.return();
 });
+
+test("thread titles and archive state remain editable after the selected model is removed", async () => {
+  using state = fixture();
+  state.store
+    .updateThread("owner", {
+      threadId: state.thread.id,
+      commandId: "select",
+      modelId: "configured",
+    })
+    .unwrap();
+  state.removeModel();
+  const changed = (
+    await state.services.threads.update(principal, {
+      threadId: state.thread.id,
+      expectedRevision: state.store.getThreadRecord(state.thread.id).unwrap().revision,
+      title: "Renamed",
+      archived: true,
+    })
+  ).unwrap();
+  expect(changed.title).toBe("Renamed");
+  expect(changed.archived).toBe(true);
+});

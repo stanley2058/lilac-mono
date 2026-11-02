@@ -1,3 +1,4 @@
+import { findCatalogModel } from "@stanley2058/lilac-utils";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import type { QuestionService } from "../../question/question-service";
 import { QuestionContinuation } from "../../question/question-continuation";
@@ -2440,7 +2441,24 @@ export function resolveAgentRunModelResult(params: {
     );
   }
 
-  if (params.runProfile !== "primary" && params.requestModelOverride) {
+  if (
+    params.cfg.configVersion === 3 &&
+    params.runProfile !== "primary" &&
+    params.requestModelOverride &&
+    !findCatalogModel(params.cfg, params.requestModelOverride)
+  )
+    return Result.err(
+      new AgentRunModelSelectionInvalid({
+        reason: "alias-required",
+        modelOverride: params.requestModelOverride,
+        message: "Selected model is unavailable in the configured catalog",
+      }),
+    );
+  if (
+    params.cfg.configVersion !== 3 &&
+    params.runProfile !== "primary" &&
+    params.requestModelOverride
+  ) {
     const selectedPreset = params.cfg.models.def[params.requestModelOverride];
     if (!selectedPreset || params.requestModelOverride.includes("/")) {
       return Result.err(
@@ -6014,6 +6032,7 @@ export async function startBusAgentRunner(params: {
             err: (error) => () => signalBusAgentRunnerHostFailure(error),
           })();
           const initialResolvedModel = modelPlan.head;
+          nativeOutput?.model(initialResolvedModel.spec, initialResolvedModel.reasoning);
           resolvedModelLabel = initialResolvedModel.modelId;
           resolvedProviderFamily = classifyHistoryProviderFamily({
             type: initialResolvedModel.provider,
@@ -6545,6 +6564,7 @@ export async function startBusAgentRunner(params: {
               nextBinding.toolset.aggregateOutputBudgetExemptTools,
             );
 
+            nativeOutput?.model(nextBinding.resolved.spec, nextBinding.resolved.reasoning);
             activeBinding = nextBinding;
             setCurrentTurnContext(currentTurnUserId, currentTurnMessageRef);
             activeModelIndex = nextFallback.index;
@@ -9615,6 +9635,8 @@ export async function startBusAgentRunner(params: {
             ]
           : [],
         streaming: !!state.agent?.state.streamMessage,
+        model: run.resolvedModelSpec ?? undefined,
+        reasoning: run.resolvedReasoning,
         activeTools: [...run.activeTools].map(([toolCallId, tool]) => ({
           toolCallId,
           toolName: tool.toolName,

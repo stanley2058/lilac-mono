@@ -973,6 +973,9 @@ export function demoSubagents(slot: ReadyTurnSlot): SubagentSummary[] {
           activityId: part.id,
           turnId: slot.turnId,
           profile: sample.profile,
+          taskTitle:
+            sample.name === "Weather and riverside" ? "Check the weather" : "Check museum options",
+          model: sample.profile === "restricted" ? "codex/gpt-6-luna" : "claude-code/opus",
           name: sample.name,
           state: part.data.state,
           title: running ? title : "Completed",

@@ -608,6 +608,7 @@ function Workspace(props: AppProps) {
           title: creation.title,
           autoTitle: creation.autoTitle,
           modelId: creation.modelId,
+          reasoning: creation.reasoning,
         }),
       (error) => changeLocalDraft(id, (draft) => ({ ...draft, sending: false, error })),
     );

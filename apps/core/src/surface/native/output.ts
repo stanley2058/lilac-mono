@@ -232,6 +232,12 @@ export function createNativeOutputPublisher(options: {
   }
 
   return {
+    model: (
+      spec: string,
+      reasoning?: Extract<NativeOutputPayload, { type: "model" }>["reasoning"],
+    ) => {
+      if (!settled) emit({ type: "model", spec, reasoning });
+    },
     hasPendingText,
     currentStepId: () => currentStepId,
     resource,

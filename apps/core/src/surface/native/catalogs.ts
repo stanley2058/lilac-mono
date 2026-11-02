@@ -1,3 +1,9 @@
+import {
+  projectModelCatalog,
+  configuredCatalogProviders,
+  modelCatalogCache,
+  type ModelReasoningEffort,
+} from "@stanley2058/lilac-utils";
 import { createHash } from "node:crypto";
 import type { AgentIdentity, DisplayCatalog } from "@stanley2058/lilac-client-protocol";
 import type { CoreConfig } from "@stanley2058/lilac-utils/core-config";
@@ -32,17 +38,77 @@ export class NativeCatalogService {
   private readonly scopes = new Map<string, DisplayCatalog>();
   private readonly listeners = new Set<() => void>();
 
-  constructor(source: NativeCatalogSource) {
+  constructor(private configSource: NativeCatalogSource) {
+    const source = configSource;
     this.source = projectCatalog(source);
   }
 
   update(source: NativeCatalogSource): void {
+    this.configSource = source;
     this.source = {
       ...projectCatalog(source),
       ...(this.source.agent ? { agent: this.source.agent } : {}),
     };
     this.scopes.clear();
     for (const listener of this.listeners) listener();
+  }
+
+  private modelEntries(registry?: Awaited<ReturnType<typeof modelCatalogCache.read>>) {
+    const config = this.configSource.config;
+    if (config.configVersion === 3) return projectModelCatalog(config, registry);
+    const allowed = new Set(this.source.models.map((model) => model.id));
+    const providers = Object.fromEntries(
+      this.source.models.map(({ id }) => [
+        (config.models.def[id]?.model ?? id).split("/")[0]!,
+        "enabled" as const,
+      ]),
+    );
+    return projectModelCatalog(
+      { ...config, models: { ...config.models, catalog: { providers } } },
+      registry,
+    )
+      .filter((model) => allowed.has(model.id))
+      .map((model) => ({
+        ...model,
+        reasoning: model.reasoning.filter((effort) => effort !== "max"),
+      }));
+  }
+
+  selection(modelId?: string, reasoning?: ModelReasoningEffort): boolean {
+    const id = modelId ?? this.configSource.config.models.main.model;
+    const model = this.modelEntries().find((entry) => entry.id === id);
+    return Boolean(model && (reasoning === undefined || model.reasoning.includes(reasoning)));
+  }
+
+  async models(input: { provider?: string; search?: string; cursor?: string; ids?: string[] }) {
+    const registry = await modelCatalogCache.read();
+    const config = this.configSource.config;
+    const search = input.search?.toLowerCase().trim();
+    const catalog = this.modelEntries(registry);
+    const entries = catalog
+      .filter(
+        (entry) =>
+          (!input.provider || entry.provider === input.provider) &&
+          (!input.ids || input.ids.includes(entry.id)) &&
+          (!search ||
+            `${entry.id} ${entry.label} ${entry.family ?? ""}`.toLowerCase().includes(search)),
+      )
+      .sort(
+        (a, b) =>
+          Number(a.legacy) - Number(b.legacy) ||
+          a.label.localeCompare(b.label) ||
+          a.id.localeCompare(b.id),
+      );
+    const parsedOffset = Number(input.cursor ?? 0);
+    const offset = Number.isSafeInteger(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
+    return {
+      providers:
+        config.configVersion === 3
+          ? configuredCatalogProviders(config)
+          : [...new Set(catalog.map((model) => model.provider))],
+      models: entries.slice(offset, offset + 100),
+      ...(offset + 100 < entries.length ? { nextCursor: String(offset + 100) } : {}),
+    };
   }
 
   setAgent(agent: AgentIdentity): void {

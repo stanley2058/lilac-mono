@@ -199,6 +199,15 @@ export async function startNativeBrowserFixture(
       threads = seedNativeBrowserFixture(store, { transcript, database });
     },
     async prepare({ workspaceRoot, dataDir, config }) {
+      config.configVersion = 3;
+      config.models.catalog = {
+        providers: {
+          openai: "enabled",
+          codex: "enabled",
+          "claude-code": "enabled",
+          vercel: "enabled",
+        },
+      };
       if (clerk) {
         config.surface.native.installationId = "native-clerk-browser-fixture";
         config.surface.native.publicUrl = `http://localhost:${port}`;

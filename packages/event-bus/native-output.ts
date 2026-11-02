@@ -8,6 +8,13 @@ export type NativeOutputFrontier = z.output<typeof nativeOutputFrontierSchema>;
 
 export const nativeOutputPayloadSchema = z.discriminatedUnion("type", [
   z.strictObject({
+    type: z.literal("model"),
+    spec: id,
+    reasoning: z
+      .enum(["provider-default", "none", "minimal", "low", "medium", "high", "xhigh", "max"])
+      .optional(),
+  }),
+  z.strictObject({
     type: z.literal("resource"),
     stepId: id,
     position,

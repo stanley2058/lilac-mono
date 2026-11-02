@@ -328,7 +328,7 @@ Mapping a v2 file:
 | `profiles.explore` authority and `promptOverlay` | `permissions.restricted` |
 | `profiles.self` authority and `promptOverlay` | `permissions.full` |
 | `profiles.general` authority | a custom profile, or drop it in favor of `full` |
-| `profiles.*.model`, `.modelSlot`, `.reasoning`, `.options`, `.fallback` | removed; add `agentCanSelect` aliases to `models.def` |
+| `profiles.*.model`, `.modelSlot`, `.reasoning`, `.options`, `.fallback` | removed; choose available catalog models or `models.def` aliases per delegation |
 
 Frozen v1 and v2 configs keep parsing. Their `explore` profile becomes `restricted`, their `self`
 profile becomes `full`, and their `general` profile keeps its name and authority. A delegation without
@@ -359,3 +359,14 @@ then alias options, then explicit slot/run options. Objects merge recursively; a
 Capability overrides remain under `models.capability.overrides` and take precedence over inferred metadata.
 Codex uses OpenAI metadata. Claude Code's opus/sonnet/haiku/fable aliases inherit the latest stable family
 metadata while retaining the harness alias for execution.
+
+V3 delegation accepts every available catalog model or configured alias. `agentCanSelect` remains a
+legacy v2 setting. The `model_catalog` tool provides bounded provider/search results and exact model
+lookups, including supported reasoning and option defaults. Composer favorites do not restrict it.
+The composer stores favorites per user and reasoning per thread. Changing models resets reasoning to
+the new model default. Legacy models remain searchable and visible in Favorites.
+
+`subagent_delegate.title` is an optional task label of up to 80 characters. When omitted, the existing
+native title service generates one from the task, with a prompt excerpt while generation is pending.
+Task titles remain separate from activity and completion state. Native rows retain the executing
+provider/model and permission profile, including the final model after fallback.

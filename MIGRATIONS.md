@@ -1,5 +1,19 @@
 # MIGRATIONS.md
 
+## Model catalog, reasoning selections, and native schema 7
+
+Config v3 adds models.dev discovery, provider visibility overrides and ordered model option rules.
+Existing aliases remain valid. Delegation can choose available catalog models independently of aliases
+or composer favorites. V1 and v2 retain their configured model lists and reasoning vocabulary.
+See `docs/core-config-migrations.md` for catalog configuration and rule precedence.
+
+Native initialization advances schema 6 to 7 and adds per-user model favorites. Thread and input
+records gain optional reasoning; child display records gain task titles and actual model identity.
+New optional workflow titles preserve old completion targets. Native output adds model-binding events
+so fallback identity survives completion and restart without reading transcripts. Deploy Core and web
+together. Older binaries reject schema 7; rollback requires restoring the pre-upgrade native database.
+
+
 ## Subagent permission profiles and config v3
 
 Subagent role profiles (`explore`, `general`, `self`) are replaced by named permission profiles under

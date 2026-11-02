@@ -474,7 +474,7 @@ test("origin survives a store reopen and schema 4 upgrades without rewriting inp
   f.db.run("PRAGMA user_version = 4");
   const reopened = new NativeStore(f.db);
   reopened.initialize().unwrap();
-  expect(f.db.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
+  expect(f.db.query("PRAGMA user_version").get()).toEqual({ user_version: 7 });
   expect(reopened.getInput(f.receipt.inputId).unwrap()).toEqual(original);
   expect(reopened.notificationOrigin("alice", f.thread.id).unwrap()).toMatchObject({
     deviceId: primaryDeviceId,

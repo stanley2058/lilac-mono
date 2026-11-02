@@ -125,6 +125,7 @@ function fixture() {
     native,
     streamingMode: () => "paragraph",
     workflows: {
+      getWorkflowRequestDispatchPolicy: () => Result.ok(null),
       getOperationByRequestId: (id) =>
         Result.ok(operations.find((operation) => operation.requestId === id) ?? null),
       getRun: (id) => {

@@ -8,6 +8,7 @@ export const LEVEL1_TOOL_NAMES = [
   "fuzzy_search",
   "edit",
   "patch",
+  "model_catalog",
   "subagent_delegate",
 ] as const;
 
@@ -310,6 +311,13 @@ export const subagentSessionNameSchema = z
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "sessionName must be a short slug");
 
 export const subagentDelegateBaseInputSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .optional()
+    .describe("Short task title shown while this run works and after it finishes."),
   task: z.string().min(1).describe("Objective for the subagent."),
   mode: subagentModeSchema
     .default("deferred")

@@ -1,3 +1,4 @@
+import type { ModelReasoning } from "@stanley2058/lilac-client-protocol";
 import { z } from "zod";
 import type { NativeThread } from "@stanley2058/lilac-client-protocol";
 import type { ComposerSubmission, Attachment } from "./types";
@@ -9,6 +10,7 @@ export type DraftThread = {
   attachments: Attachment[];
   title?: string;
   modelId?: string;
+  reasoning?: ModelReasoning;
   sending?: boolean;
   error?: string;
   creation?: {
@@ -16,6 +18,7 @@ export type DraftThread = {
     title: string;
     autoTitle?: boolean;
     modelId?: string;
+    reasoning?: ModelReasoning;
     entry: PendingInput;
   };
 };
@@ -103,6 +106,7 @@ export function prepareDraftSend(
     }),
     autoTitle: thread.title === undefined,
     modelId: submission.modelId,
+    reasoning: submission.reasoning,
     entry: {
       commandId: crypto.randomUUID(),
       text: submission.text,

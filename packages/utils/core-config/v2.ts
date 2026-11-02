@@ -20,12 +20,11 @@ import {
   webFetchModeSchema,
 } from "./v1";
 import { collectUnknownConfigKeyPaths } from "./unknown-keys";
-import { defaultNativeSurfaceConfig, MODEL_REASONING_EFFORTS } from "./types";
+import { defaultNativeSurfaceConfig } from "./types";
 
 import type {
   ConfigParser,
   CoreConfigParseOptions,
-  ConfiguredModelChainEntry,
   CoreConfigVersion,
   JSONObject,
   ModelReasoningEffort,
@@ -90,7 +89,15 @@ const pluginsSchemaV2 = z
 
 const reasoningDisplaySchema = z.enum(["none", "simple", "detailed"]).default("detailed");
 
-const modelReasoningEffortSchema = z.enum(MODEL_REASONING_EFFORTS);
+const modelReasoningEffortSchema = z.enum([
+  "provider-default",
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
 
 const configuredModelChainEntrySchemaV2 = z.union([
   z.string().min(1),
@@ -106,9 +113,9 @@ const modelFallbackSchemaV2 = z.array(configuredModelChainEntrySchemaV2).optiona
 type SubagentProfileConfigV2 = SubagentPermissionProfileConfig & {
   modelSlot: "main" | "fast";
   model?: string;
-  reasoning?: ModelReasoningEffort;
+  reasoning?: Exclude<ModelReasoningEffort, "max">;
   options?: JSONObject;
-  fallback?: ConfiguredModelChainEntry[];
+  fallback?: z.output<typeof modelFallbackSchemaV2>;
 };
 
 const profileNamesSchema = z.array(z.string().trim().min(1)).default([]);
@@ -1020,7 +1027,8 @@ type UniversalSubagentsConfig = UniversalCoreConfig["agent"]["subagents"];
 
 /** Shared v2-shaped conversion; each version supplies its own subagent mapping. */
 export function coreConfigV2ShapeToUniversal<
-  T extends Omit<ParsedCoreConfigV2, "configVersion" | "agent"> & {
+  T extends Omit<ParsedCoreConfigV2, "configVersion" | "agent" | "models"> & {
+    models: UniversalCoreConfig["models"];
     configVersion: CoreConfigVersion;
     agent: Omit<ParsedCoreConfigV2["agent"], "subagents"> & { subagents: object };
   },

@@ -1,6 +1,7 @@
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
 
+import { MODEL_REASONING_EFFORTS } from "./types";
 import { isPermissionProfileName } from "../subagent-profile";
 import {
   AGENT_DEFAULT_V2,
@@ -135,7 +136,7 @@ const modelRulesSchema = z
     z.object({
       match: z.string().min(1).max(512),
       options: baseModels.shape.main.unwrap().shape.options,
-      reasoning: baseModels.shape.main.unwrap().shape.reasoning,
+      reasoning: z.enum(MODEL_REASONING_EFFORTS).optional(),
       unset: z
         .array(
           z
@@ -149,8 +150,44 @@ const modelRulesSchema = z
     }),
   )
   .default([]);
-const modelsSchemaV3 = baseModels
-  .safeExtend({
+const reasoningFieldsV3 = {
+  reasoning: z.enum(MODEL_REASONING_EFFORTS).optional(),
+  fallback: z
+    .array(
+      z.union([
+        z.string().min(1),
+        z.object({
+          model: z.string().min(1),
+          reasoning: z.enum(MODEL_REASONING_EFFORTS).optional(),
+          options: baseModels.shape.main.unwrap().shape.options,
+        }),
+      ]),
+    )
+    .optional(),
+};
+const modelsSchemaV3 = z
+  .object({
+    ...baseModels.shape,
+    def: z
+      .record(
+        z
+          .string()
+          .min(1)
+          .refine((name) => !name.includes("/")),
+        baseModels.shape.def.unwrap().valueType.extend({
+          ...reasoningFieldsV3,
+          model: z.string().regex(/^[^/]+\/.+/u),
+        }),
+      )
+      .default({}),
+    main: baseModels.shape.main
+      .unwrap()
+      .extend(reasoningFieldsV3)
+      .default({ model: "openrouter/openai/gpt-4o" }),
+    fast: baseModels.shape.fast
+      .unwrap()
+      .extend(reasoningFieldsV3)
+      .default({ model: "openrouter/openai/gpt-4o-mini" }),
     catalog: z
       .object({
         providers: z.record(z.string(), z.enum(["auto", "enabled", "disabled"])).default({}),

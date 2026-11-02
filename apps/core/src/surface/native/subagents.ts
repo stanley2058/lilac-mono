@@ -26,6 +26,8 @@ export type SubagentSnapshot = {
   streaming: boolean;
   activeTools?: readonly { toolCallId: string; toolName: string }[];
   title: string;
+  model?: string;
+  reasoning?: SubagentSummary["reasoning"];
 };
 export type SubagentReader = {
   readSubagentSnapshot(
@@ -197,7 +199,11 @@ export class NativeSubagents {
       >;
       workflows: Pick<
         DurableWorkflowStore,
-        "listSubagentRuns" | "getRun" | "listOperations" | "getOperationByRequestId"
+        | "listSubagentRuns"
+        | "getRun"
+        | "listOperations"
+        | "getOperationByRequestId"
+        | "getWorkflowRequestDispatchPolicy"
       >;
       transcripts: Pick<TranscriptStore, "getRequestTranscript">;
       live: () => SubagentReader | undefined;
@@ -259,6 +265,9 @@ export class NativeSubagents {
         runId: run.runId,
         requestId: input.requestId,
         messages: subagentMessages([{ role: "user", content: input.prompt }]),
+        taskTitle:
+          run.completionTarget.kind === "live_parent" ? run.completionTarget.title : undefined,
+        titlePrompt: input.prompt,
         state: "running",
         startedAt: run.startedAt ?? run.createdAt,
       });
@@ -365,11 +374,19 @@ export class NativeSubagents {
         canceled: "Canceled",
       };
       const title = titles[state];
+      const policy = yield* this.options.workflows
+        .getWorkflowRequestDispatchPolicy(requestId)
+        .mapError(() => nativeFailure("sqlite", "Subagent is unavailable"));
+      const execution = [live, stream].find((entry) => entry?.model);
+      const reasoning = execution ? execution.reasoning : policy?.resolvedModelRequest.reasoning;
       return Result.ok({
         id: run.runId,
         activityId: digest(target.parentToolCallId),
         turnId,
         profile: target.profile,
+        taskTitle: target.title ?? stream?.taskTitle,
+        model: live?.model ?? stream?.model ?? policy?.resolvedModelRequest.spec,
+        reasoning,
         name: target.sessionName.slice(0, 256),
         title: title.slice(0, 256),
         state,

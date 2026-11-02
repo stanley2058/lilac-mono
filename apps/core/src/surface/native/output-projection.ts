@@ -254,6 +254,7 @@ function settleTurn(
 function projectEvent(slot: ReadyTurnSlot, event: NativeOutputEvent): ProjectedTurn {
   if (slot.turnId !== event.turnId) return { slot, changes: [] };
   const payload = event.payload;
+  if (payload.type === "model") return { slot, changes: [] };
   if (payload.type === "reset") return resetAttempt(slot, event, payload);
   if (payload.type === "terminal") return settleTurn(slot, event, payload.state);
   const startedAt = slot.startedAt ?? Math.floor(event.occurredAt);

@@ -1,3 +1,4 @@
+import type { ModelReasoning } from "@stanley2058/lilac-client-protocol";
 import { isNativeServiceMessage } from "./message-ownership";
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
@@ -167,7 +168,7 @@ export class NativeStore {
     return nativeStoreTransaction(this.db, () => {
       const version =
         this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
-      if (version > 6)
+      if (version > 7)
         return Result.err(
           nativeFailure("invalid", "Native store version is newer than this build"),
         );
@@ -193,7 +194,8 @@ export class NativeStore {
         CREATE INDEX IF NOT EXISTS native_thread_preferences_order ON native_thread_preferences(user_id,section,position,thread_id);
         CREATE TABLE IF NOT EXISTS native_push_keys (id INTEGER PRIMARY KEY CHECK(id=1),public_key TEXT NOT NULL,private_key TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS native_push_subscriptions (endpoint TEXT PRIMARY KEY,user_id TEXT NOT NULL,p256dh TEXT NOT NULL,auth TEXT NOT NULL,completion INTEGER NOT NULL,failure INTEGER NOT NULL);
-        PRAGMA user_version = 6;`);
+        CREATE TABLE IF NOT EXISTS native_model_favorites (user_id TEXT NOT NULL,model_id TEXT NOT NULL,PRIMARY KEY(user_id,model_id));
+        PRAGMA user_version = 7;`);
       return Result.ok(undefined);
     });
   }
@@ -430,6 +432,8 @@ export class NativeStore {
   }
 
   ensureAgentStream(input: {
+    taskTitle?: string;
+    titlePrompt?: string;
     parentThreadId: string;
     parentRequestId: string;
     runId: string;
@@ -457,6 +461,8 @@ export class NativeStore {
           id,
           state: input.state === "pending" || !input.state ? "running" : input.state,
           title: "Thinking…",
+          taskTitle: input.taskTitle ?? input.titlePrompt?.replace(/\s+/g, " ").slice(0, 80),
+          titlePrompt: input.taskTitle ? undefined : input.titlePrompt?.slice(0, 8000),
           parentThreadId: input.parentThreadId,
           parentRequestId: input.parentRequestId,
           runId: input.runId,
@@ -718,6 +724,7 @@ export class NativeStore {
         updatedAt: thread.updatedAt,
         revision: thread.revision,
         modelId: thread.modelId,
+        reasoning: thread.reasoning,
         activeRunId: thread.activeRunId,
         capabilities: this.capabilities(user, thread),
         preview: thread.kind === "dm" ? this.latestTextPreview(thread.id) : undefined,
@@ -843,6 +850,42 @@ export class NativeStore {
           ),
         );
         return Result.ok(threads.filter((thread) => thread.capabilities.read));
+      }, this),
+    );
+  }
+
+  getModelFavorites(actorId: string): NativeStoreResult<string[]> {
+    return nativeStoreTransaction(this.db, () =>
+      this.getUser(actorId).map(() =>
+        this.db
+          .query<{ modelId: string }, [string]>(
+            "SELECT model_id AS modelId FROM native_model_favorites WHERE user_id=? ORDER BY rowid",
+          )
+          .all(actorId)
+          .map((row) => row.modelId),
+      ),
+    );
+  }
+
+  setModelFavorite(
+    actorId: string,
+    modelId: string,
+    favorite: boolean,
+  ): NativeStoreResult<string[]> {
+    return nativeStoreTransaction(this.db, () =>
+      Result.gen(function* () {
+        const current = yield* this.getModelFavorites(actorId);
+        if (favorite && !current.includes(modelId) && current.length >= 100)
+          return Result.err(nativeFailure("invalid", "Favorite limit reached"));
+        if (favorite)
+          this.db
+            .query("INSERT OR IGNORE INTO native_model_favorites(user_id,model_id) VALUES(?,?)")
+            .run(actorId, modelId);
+        if (!favorite)
+          this.db
+            .query("DELETE FROM native_model_favorites WHERE user_id=? AND model_id=?")
+            .run(actorId, modelId);
+        return this.getModelFavorites(actorId);
       }, this),
     );
   }
@@ -1145,6 +1188,7 @@ export class NativeStore {
       title?: string;
       autoTitle?: boolean;
       modelId?: string;
+      reasoning?: ModelReasoning;
       ephemeralSessionId?: string;
     },
   ): NativeStoreResult<NativeThread> {
@@ -1178,6 +1222,7 @@ export class NativeStore {
               historyGeneration: 0,
               nextPosition: 0,
               modelId: input.modelId,
+              reasoning: input.reasoning,
               mutationPending: false,
             };
             this.bump(thread, "thread", id);
@@ -1239,6 +1284,7 @@ export class NativeStore {
       title?: string;
       archived?: boolean;
       modelId?: string;
+      reasoning?: ModelReasoning;
       revision?: number;
     },
   ): NativeStoreResult<NativeThread> {
@@ -1257,6 +1303,9 @@ export class NativeStore {
               titleGeneration: input.title === undefined ? thread.titleGeneration : undefined,
               archived: input.archived ?? thread.archived,
               modelId: input.modelId ?? thread.modelId,
+              reasoning:
+                input.reasoning ??
+                (input.modelId && input.modelId !== thread.modelId ? undefined : thread.reasoning),
             },
             "thread",
             thread.id,
@@ -1276,7 +1325,14 @@ export class NativeStore {
   } | null> {
     return Result.gen(function* () {
       const agentStream = yield* this.readRecord("agent-stream", threadId);
-      if (agentStream?.kind === "agent-stream") return Result.ok(null);
+      if (agentStream?.kind === "agent-stream") {
+        const stream = agentStream.value;
+        return Result.ok(
+          stream.titlePrompt && !stream.deleted
+            ? { inputId: stream.requestId, phase: "initial" as const, user: stream.titlePrompt }
+            : null,
+        );
+      }
       const thread = yield* this.getThreadRecord(threadId);
       const state = thread.titleGeneration;
       if (
@@ -1315,6 +1371,25 @@ export class NativeStore {
     }, this);
   }
 
+  private settleAgentTitle(
+    stream: NativeAgentStreamRecord,
+    requestId: string,
+    title?: string,
+  ): NativeStoreResult<void> {
+    if (stream.deleted || !stream.titlePrompt || stream.requestId !== requestId)
+      return Result.ok(undefined);
+    this.writeRecord(
+      stream.id,
+      {
+        kind: "agent-stream",
+        value: { ...stream, taskTitle: title ?? stream.taskTitle, titlePrompt: undefined },
+      },
+      stream.parentThreadId,
+    );
+    this.notifyDisplayChanged(stream.parentThreadId);
+    return Result.ok(undefined);
+  }
+
   settleTitleGeneration(
     threadId: string,
     expected: { inputId: string; phase: "initial" | "refine" },
@@ -1322,6 +1397,9 @@ export class NativeStore {
   ): NativeStoreResult<void> {
     return nativeStoreTransaction(this.db, () =>
       Result.gen(function* () {
+        const agent = yield* this.readRecord("agent-stream", threadId);
+        if (agent?.kind === "agent-stream")
+          return this.settleAgentTitle(agent.value, expected.inputId, generated?.title);
         const thread = yield* this.getThreadRecord(threadId);
         const state = thread.titleGeneration;
         if (
@@ -1740,6 +1818,11 @@ export class NativeStore {
                 attachmentIds: [...input.attachmentIds],
                 skillIds: [...input.skillIds],
                 modelId: options.resolvedModelId ?? input.modelId ?? thread.modelId,
+                reasoning:
+                  input.reasoning ??
+                  (input.modelId && input.modelId !== thread.modelId
+                    ? undefined
+                    : thread.reasoning),
                 resolvedModelRequest: options.resolvedModelRequest,
                 command: input.command,
                 createdAt: this.now(),
@@ -2691,6 +2774,7 @@ export class NativeStore {
       slot: ReadyTurnSlot;
       changes: LiveUpdate["changes"];
       projection?: NativeOutputProjectionState;
+      model?: { spec: string; reasoning?: ModelReasoning };
     }>,
   ): NativeStoreResult<void> {
     return nativeStoreTransaction(this.db, () =>
@@ -2742,7 +2826,14 @@ export class NativeStore {
             canceled: "Canceled",
             running: part?.type === "data-activity" ? part.data.label : "Thinking…",
           };
-          current = { ...thread, state, title: titles[state].slice(0, 256) };
+          current = {
+            ...thread,
+            state,
+            title: titles[state].slice(0, 256),
+            ...(changed.model
+              ? { model: changed.model.spec, reasoning: changed.model.reasoning }
+              : {}),
+          };
         }
         let batch: LiveUpdate["changes"] = [];
         let bytes = 0;

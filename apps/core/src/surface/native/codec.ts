@@ -1,4 +1,5 @@
 import {
+  modelReasoningSchema,
   nativeDeploymentSettingsSchema,
   displayMessageSchema,
   displayPartSchema,
@@ -57,6 +58,7 @@ export const nativeThreadRecordSchema = z.strictObject({
   historyGeneration: revision,
   nextPosition: revision,
   modelId: z.string().min(1).max(512).optional(),
+  reasoning: modelReasoningSchema.optional(),
   activeRunId: id.optional(),
   mutationPending: z.boolean(),
 });
@@ -84,6 +86,7 @@ export const nativeInputRecordSchema = z.strictObject({
   attachmentIds: z.array(id),
   skillIds: z.array(z.string().min(1).max(512)),
   modelId: z.string().min(1).max(512).optional(),
+  reasoning: modelReasoningSchema.optional(),
   command: z.strictObject({ id: z.string(), arguments: z.string() }).optional(),
   createdAt: revision,
   completedAt: revision.optional(),
@@ -131,6 +134,10 @@ const commandSchema = z.strictObject({
   result: mutationResultSchema,
 });
 export const nativeAgentStreamRecordSchema = z.strictObject({
+  model: z.string().optional(),
+  reasoning: modelReasoningSchema.optional(),
+  taskTitle: z.string().max(80).optional(),
+  titlePrompt: z.string().max(8000).optional(),
   id,
   state: z.enum(["running", "complete", "failed", "canceled"]).default("running"),
   title: z.string().max(256).default("Thinking…"),

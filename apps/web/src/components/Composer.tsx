@@ -1,3 +1,5 @@
+import { ModelSelector } from "./ModelSelector";
+import type { ModelReasoning } from "@stanley2058/lilac-client-protocol";
 import { toast } from "./ui/toast";
 import { Kbd } from "./ui/kbd";
 import { useEventCallback } from "../use-event-callback";
@@ -66,7 +68,8 @@ export type ComposerProps = Partial<Pick<ChatCommon, "client" | "scope" | "catal
   submitting?: boolean;
   offline?: boolean;
   modelId?: string;
-  onModelChange: (modelId: string) => void;
+  reasoning?: ModelReasoning;
+  onModelChange: (modelId: string, reasoning?: ModelReasoning) => void;
   onSubmit: (value: ComposerSubmission) => void;
   onCancel: () => void;
   /** Shown above the editor inside the composer, such as the question being answered. */
@@ -290,6 +293,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
       skillIds,
       mode: delivery.mode === "prompt" ? mode : delivery.mode,
       modelId: delivery.modelId,
+      reasoning: delivery.mode === "steer" ? undefined : props.reasoning,
       command: submittedCommand,
       attachments: [...attachments],
     });
@@ -611,7 +615,9 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           />
         </Suspense>
         <footer className="composer-toolbar pl-2 flex flex-wrap gap-1 items-center pt-2">
-          <ComposerModel
+          <ModelSelector
+            client={client}
+            reasoning={props.reasoning}
             models={catalog?.models}
             modelId={props.modelId}
             disabled={disabled || delivery.mode === "steer"}
@@ -826,46 +832,3 @@ function completionLabel(argumentsOpen: boolean, trigger: "$" | "/"): string {
   if (argumentsOpen) return "Argument values";
   return trigger === "$" ? "Skills" : "Commands and skills";
 }
-
-const ComposerModel = memo(function ComposerModel({
-  models,
-  modelId,
-  disabled,
-  onChange,
-}: {
-  models: NonNullable<ComposerProps["catalog"]>["models"] | undefined;
-  modelId?: string;
-  disabled: boolean;
-  onChange: (modelId: string) => void;
-}) {
-  return (
-    <Select
-      items={models?.map((model) => ({ value: model.id, label: model.label }))}
-      value={modelId ?? models?.[0]?.id ?? ""}
-      disabled={disabled}
-      onValueChange={(value) => {
-        if (!value) return;
-        onChange(value);
-      }}
-    >
-      <SelectTrigger
-        id="composer-model"
-        aria-label="Response model"
-        className="composer-model [flex:0_1_auto] min-w-0 max-w-full"
-      >
-        <SelectValue className="min-w-0">
-          <span className="truncate">
-            {models?.find((entry) => entry.id === (modelId ?? models?.[0]?.id))?.label}
-          </span>
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent>
-        {models?.map((model) => (
-          <SelectItem key={model.id} value={model.id}>
-            {model.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-});

@@ -1,3 +1,4 @@
+import { ProviderIcon } from "./ProviderIcon";
 import { AgentAvatar } from "./AgentAvatar";
 import { LoadingSpinner } from "./ui/loading-spinner";
 import { defaultRightPanel } from "../panel-store";
@@ -314,7 +315,7 @@ export function SubagentPanelView({
             <Bot />
           )}
           <h2 title={selected?.name}>
-            {selected ? subagentProfileName(selected.profile) : "Agents"}
+            {selected ? (selected.taskTitle ?? subagentProfileName(selected.profile)) : "Agents"}
           </h2>
           {selected ? (
             <span className="subagent-status flex flex-1 gap-1.5 items-center min-w-0 text-muted-foreground text-xs">
@@ -393,9 +394,19 @@ export function SubagentPanelView({
                 size="sm"
               />
               <span>
-                <strong>{subagentProfileName(agent.profile)}</strong>
+                <strong>{agent.taskTitle ?? subagentProfileName(agent.profile)}</strong>
                 <span className="subagent-name overflow-hidden text-ellipsis whitespace-nowrap">
-                  {agent.name}
+                  {agent.model ? (
+                    <span
+                      className="flex items-center gap-1"
+                      title={`${agent.model} · ${agent.profile}`}
+                    >
+                      <ProviderIcon provider={agent.model.split("/")[0] ?? ""} />
+                      {agent.model.split("/").slice(1).join("/")} · {agent.profile}
+                    </span>
+                  ) : (
+                    agent.name
+                  )}
                 </span>
                 <span className="subagent-status flex gap-2 items-center min-w-0 text-muted-foreground text-sm">
                   <AgentStatus agent={agent} />

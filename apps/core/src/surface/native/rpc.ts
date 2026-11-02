@@ -285,6 +285,15 @@ export function createNativeRouter(
       ),
     },
     catalogs: {
+      models: secured.catalogs.models.handler(async ({ input, context }) =>
+        nativeRpcValue(await services.catalogs.models(context.principal, input)),
+      ),
+      favorites: secured.catalogs.favorites.handler(async ({ input, context }) =>
+        nativeRpcValue(await services.catalogs.favorites(context.principal, input)),
+      ),
+      favorite: secured.catalogs.favorite.handler(async ({ input, context }) =>
+        nativeRpcValue(await services.catalogs.favorite(context.principal, input)),
+      ),
       get: secured.catalogs.get.handler(async ({ input, context, signal }) =>
         nativeRpcValue(await services.catalogs.get(context.principal, input, signal)),
       ),

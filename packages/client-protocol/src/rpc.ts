@@ -1,3 +1,4 @@
+import { modelReasoningSchema, modelCatalogPageSchema } from "./domain";
 import { nativeQuestionSchema } from "./questions.ts";
 import { conversationReferenceSchema } from "./references.ts";
 import type { InferContractRouterInputs, InferContractRouterOutputs } from "@orpc/contract";
@@ -298,6 +299,7 @@ export const nativeContract = {
           title: z.string().max(512),
           autoTitle: z.boolean().optional(),
           modelId: catalogIdentifierSchema.optional(),
+          reasoning: modelReasoningSchema.optional(),
         }),
       )
       .output(nativeThreadSchema),
@@ -308,6 +310,7 @@ export const nativeContract = {
           title: z.string().max(512).optional(),
           archived: z.boolean().optional(),
           modelId: catalogIdentifierSchema.optional(),
+          reasoning: modelReasoningSchema.optional(),
         }),
       )
       .output(nativeThreadSchema),
@@ -416,6 +419,22 @@ export const nativeContract = {
       .output(successSchema),
   },
   catalogs: {
+    models: procedure
+      .input(
+        z.strictObject({
+          provider: z.string().optional(),
+          search: z.string().max(256).optional(),
+          cursor: z.string().optional(),
+          ids: z.array(catalogIdentifierSchema).max(100).optional(),
+        }),
+      )
+      .output(modelCatalogPageSchema),
+    favorites: procedure
+      .input(z.strictObject({}))
+      .output(z.array(catalogIdentifierSchema).max(100)),
+    favorite: procedure
+      .input(z.strictObject({ modelId: catalogIdentifierSchema, favorite: z.boolean() }))
+      .output(z.array(catalogIdentifierSchema).max(100)),
     get: procedure
       .input(z.strictObject({ revision: identitySchema.optional() }))
       .output(catalogReplySchema),

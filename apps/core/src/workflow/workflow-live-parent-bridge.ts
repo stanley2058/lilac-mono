@@ -1008,7 +1008,15 @@ export class WorkflowLiveParentBridge {
   private resolveChildModelSelection(runId: string):
     | {
         model: string;
-        reasoning?: "provider-default" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+        reasoning?:
+          | "provider-default"
+          | "none"
+          | "minimal"
+          | "low"
+          | "medium"
+          | "high"
+          | "xhigh"
+          | "max";
       }
     | undefined {
     const operations = this.input.store.listOperations(runId, { limit: 1_000 });

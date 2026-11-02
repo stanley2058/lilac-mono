@@ -86,6 +86,7 @@ export const MODEL_REASONING_EFFORTS = [
   "medium",
   "high",
   "xhigh",
+  "max",
 ] as const;
 
 export type ModelReasoningEffort = (typeof MODEL_REASONING_EFFORTS)[number];
