@@ -556,6 +556,14 @@ export const REVIEWED_EXCEPTION_ADAPTERS: Readonly<Record<string, readonly Excep
   ],
   "packages/utils": [
     {
+      identity: { module: "model-catalog-cache.ts", exportName: "signalCatalogDefect" },
+      category: "defect-supervisor",
+      externalApi: { package: "global", exportName: "model catalog refresh Promise" },
+      direction: "signal-host",
+      reason:
+        "Preserves catalog I/O Panic and refresh defects after best-effort cache policy; Core supervises detached refreshes and standalone callers receive rejection.",
+    },
+    {
       identity: {
         module: "persistence.ts",
         exportName: "runBunSqliteTransaction",

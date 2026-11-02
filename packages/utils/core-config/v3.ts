@@ -129,7 +129,46 @@ const SUBAGENTS_DEFAULT_V3 = {
 const { subagents: _v2Subagents, ...agentFieldsWithoutSubagents } = agentSchemaFieldsV2;
 const { subagents: _v2SubagentsDefault, ...agentDefaultWithoutSubagents } = AGENT_DEFAULT_V2;
 
+const baseModels = coreConfigInputSchemaV2.shape.models.unwrap();
+const modelRulesSchema = z
+  .array(
+    z.object({
+      match: z.string().min(1).max(512),
+      options: baseModels.shape.main.unwrap().shape.options,
+      reasoning: baseModels.shape.main.unwrap().shape.reasoning,
+      unset: z
+        .array(
+          z
+            .string()
+            .regex(
+              /^(?!.*(?:__proto__|constructor|prototype))[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/,
+            ),
+        )
+        .optional(),
+      legacy: z.boolean().optional(),
+    }),
+  )
+  .default([]);
+const modelsSchemaV3 = baseModels
+  .safeExtend({
+    catalog: z
+      .object({
+        providers: z.record(z.string(), z.enum(["auto", "enabled", "disabled"])).default({}),
+      })
+      .default({ providers: {} }),
+    rules: modelRulesSchema,
+  })
+  .default({
+    def: {},
+    main: { model: "openrouter/openai/gpt-4o" },
+    fast: { model: "openrouter/openai/gpt-4o-mini" },
+    capability: { forceUnknownProviders: ["openai-compatible"], overrides: {} },
+    catalog: { providers: {} },
+    rules: [],
+  });
+
 export const coreConfigInputSchemaV3 = coreConfigInputSchemaV2.extend({
+  models: modelsSchemaV3,
   configVersion: z.literal(V3_CORE_CONFIG_VERSION).default(V3_CORE_CONFIG_VERSION),
   agent: z
     .object({

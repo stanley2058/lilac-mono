@@ -1,4 +1,4 @@
-import { createLogger } from "@stanley2058/lilac-utils";
+import { createLogger, modelCatalogCache } from "@stanley2058/lilac-utils";
 import { Panic, Result } from "better-result";
 
 import { createCoreRuntime, type CoreRuntime } from "./create-core-runtime";
@@ -19,6 +19,8 @@ const handlers = createProcessHandlers({
     runtime?.recordUnhandledRejection(reason);
   },
 });
+
+modelCatalogCache.supervise((error) => handlers.reportFatalError(error));
 
 function projectProcessFailure(reason: unknown, fallback: string): Error {
   return projectRuntimeError(reason, fallback);

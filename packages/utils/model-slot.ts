@@ -20,6 +20,8 @@ import {
   validateModelProviderOptions,
 } from "./model-provider-option-validation";
 
+import { modelRuleDefaults, mergeModelOptions } from "./model-rules";
+
 const logger = createLogger({ module: "utils:model-slot" });
 const warnedProviderOptions = new Set<string>();
 
@@ -468,7 +470,12 @@ function resolveModelSpecFromRawResult(
   ModelResolutionFailed
 > {
   if (raw.includes("/")) {
-    return Result.ok({ spec: raw });
+    const defaults = modelRuleDefaults(cfg, raw);
+    return Result.ok({
+      spec: raw,
+      presetOptions: defaults.options,
+      presetReasoning: defaults.reasoning,
+    });
   }
 
   const alias = raw;
@@ -501,8 +508,8 @@ function resolveModelSpecFromRawResult(
   return Result.ok({
     spec: preset.model,
     alias,
-    presetOptions: preset.options,
-    presetReasoning: preset.reasoning,
+    presetOptions: mergeModelOptions(modelRuleDefaults(cfg, preset.model).options, preset.options),
+    presetReasoning: preset.reasoning ?? modelRuleDefaults(cfg, preset.model).reasoning,
   });
 }
 

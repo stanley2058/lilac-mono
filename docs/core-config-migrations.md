@@ -342,3 +342,20 @@ Native startup imports `surface.native.titleModel`, `outputStreaming`,
 the native database. After that, use Settings > Deployment. The old YAML keys are accepted
 only as initial import values and may be removed after startup; they do not override database
 settings. The import preserves the YAML file, including comments. See MIGRATIONS.md.
+
+### V3 model catalog and option rules
+
+V3 discovers selectable models from models.dev for configured runtime providers. The build bundles a
+snapshot; Core shares one memory catalog and caches validated JSON in `DATA_DIR/cache/models.dev.json`.
+Stale data refreshes at most daily in the background. Failed refreshes retain the last good data.
+`models.catalog.providers.<provider>` accepts `auto` (default), `enabled`, or `disabled`.
+Enabling a catalog does not supply credentials or install a provider adapter.
+
+`models.def` aliases, main/fast slots, and fallback chains keep their existing meaning. Add ordered
+`models.rules` entries with `match` globs, optional `options`, `reasoning`, `legacy`, and `unset`.
+`*` matches any characters, including slashes. Rules apply to the resolved provider/model in file order,
+then alias options, then explicit slot/run options. Objects merge recursively; arrays and scalars replace.
+`null` remains a provider value. `unset` removes dot-separated option paths at that rule's position.
+Capability overrides remain under `models.capability.overrides` and take precedence over inferred metadata.
+Codex uses OpenAI metadata. Claude Code's opus/sonnet/haiku/fable aliases inherit the latest stable family
+metadata while retaining the harness alias for execution.

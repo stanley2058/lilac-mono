@@ -1,6 +1,14 @@
 import type { LanguageModelUsage } from "ai";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
-import { z } from "zod";
+import {
+  decodeModelsDevRegistry,
+  type ModelsDevRegistry,
+  type ModelsDevProvider,
+  type ModelsDevModel,
+} from "./model-catalog-schema";
+import { modelCatalogCache } from "./model-catalog-cache";
+import { claudeAliasTarget } from "./model-catalog-family";
+export { decodeModelsDevRegistry } from "./model-catalog-schema";
 
 import { capturePromiseResult, captureResultOutcome, isPanic } from "./runtime-utils";
 
@@ -96,62 +104,6 @@ const DEFAULT_PROVIDER_ALIASES = {
   // Claude Agent SDK models use Anthropic's model catalog and limits.
   "claude-code": "anthropic",
 } as const satisfies Record<string, string>;
-
-const modelModalitySchema = z.enum(["text", "image", "audio", "video", "pdf"]);
-const modelCostSchema = z.object({
-  input: z.number(),
-  output: z.number(),
-  cache_read: z.number().optional(),
-  cache_write: z.number().optional(),
-  input_audio: z.number().optional(),
-  output_audio: z.number().optional(),
-  context_over_200k: z
-    .object({
-      input: z.number(),
-      output: z.number(),
-      cache_read: z.number().optional(),
-      cache_write: z.number().optional(),
-    })
-    .optional(),
-});
-const modelLimitsSchema = z.object({ context: z.number(), output: z.number() });
-const modelsDevModelSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  family: z.string().optional(),
-  attachment: z.boolean().optional(),
-  reasoning: z.boolean().optional(),
-  tool_call: z.boolean().optional(),
-  temperature: z.boolean().optional(),
-  knowledge: z.string().optional(),
-  release_date: z.string().optional(),
-  last_updated: z.string().optional(),
-  modalities: z.object({
-    input: z.array(modelModalitySchema),
-    output: z.array(modelModalitySchema),
-  }),
-  open_weights: z.boolean().optional(),
-  cost: modelCostSchema.optional(),
-  limit: modelLimitsSchema,
-});
-const modelsDevProviderSchema = z.object({
-  id: z.string(),
-  env: z.array(z.string()).optional(),
-  npm: z.string(),
-  name: z.string(),
-  doc: z.string().optional(),
-  models: z.record(z.string(), modelsDevModelSchema),
-});
-const modelsDevRegistrySchema = z.record(z.string(), modelsDevProviderSchema);
-
-type ModelsDevRegistry = z.output<typeof modelsDevRegistrySchema>;
-type ModelsDevProvider = z.output<typeof modelsDevProviderSchema>;
-type ModelsDevModel = z.output<typeof modelsDevModelSchema>;
-
-export function decodeModelsDevRegistry(value: unknown): ModelsDevRegistry | undefined {
-  const parsed = modelsDevRegistrySchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}
 
 type RegistryLookupResult = {
   providerEntry: ModelsDevProvider;
@@ -380,6 +332,9 @@ export class ModelCapability {
   private async loadRegistryResult(
     signal?: AbortSignal,
   ): Promise<ResultType<ModelsDevRegistry, ModelCapabilityResolutionFailed>> {
+    if (this.fetchFn === fetch && this.apiUrl === "https://models.dev/api.json") {
+      return Result.ok(await modelCatalogCache.read());
+    }
     if (!this.registryPromise) {
       this.registryPromise = (async () => {
         const fetched = await capturePromiseResult(() => this.fetchFn(this.apiUrl, { signal }));
@@ -573,7 +528,10 @@ export class ModelCapability {
     const lookedUp = this.lookupWithFallback({
       registry,
       provider,
-      model: parsedSpec.model,
+      model:
+        parsedSpec.provider === "claude-code"
+          ? (claudeAliasTarget(registry, parsedSpec.model) ?? parsedSpec.model)
+          : parsedSpec.model,
     });
 
     if (!lookedUp) {

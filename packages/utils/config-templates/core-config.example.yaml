@@ -407,6 +407,15 @@ agent:
 #   You are lilac.
 
 models:
+  # Catalogs infer credentials by default. Overrides control catalog visibility only.
+  catalog:
+    providers: {} # e.g. {codex: enabled, anthropic: disabled}
+  # Ordered glob defaults, before alias and per-run options. * includes slashes.
+  rules: []
+  # - match: "codex/gpt-6-*"
+  #   options: {serviceTier: priority, reasoningSummary: auto}
+  #   unset: [openai.someInheritedOption]
+  #   legacy: false
   # Local Claude subscription models use claude-code/<model>, for example:
   # model: claude-code/claude-sonnet-4-6
   # Local runs may use an installed Claude CLI with existing authenticated config

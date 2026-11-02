@@ -61,7 +61,8 @@
     "test:tui": "bun run --filter=@stanley2058/lilac-tui test",
     "typecheck:tui": "bun run --filter=@stanley2058/lilac-tui typecheck",
     "codegen:config-schemas": "bun apps/core/scripts/generate-config-schemas.ts",
-    "codegen:config-schemas:check": "bun apps/core/scripts/generate-config-schemas.ts --check"
+    "codegen:config-schemas:check": "bun apps/core/scripts/generate-config-schemas.ts --check",
+    "build:model-catalog": "bun scripts/build-model-catalog.ts"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.75.0",

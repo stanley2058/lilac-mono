@@ -3961,7 +3961,9 @@
             "def": {},
             "main": { "model": "openrouter/openai/gpt-4o" },
             "fast": { "model": "openrouter/openai/gpt-4o-mini" },
-            "capability": { "forceUnknownProviders": ["openai-compatible"], "overrides": {} }
+            "capability": { "forceUnknownProviders": ["openai-compatible"], "overrides": {} },
+            "catalog": { "providers": {} },
+            "rules": []
           },
           "type": "object",
           "properties": {
@@ -4217,6 +4219,59 @@
                 }
               },
               "additionalProperties": false
+            },
+            "catalog": {
+              "default": { "providers": {} },
+              "type": "object",
+              "properties": {
+                "providers": {
+                  "default": {},
+                  "type": "object",
+                  "propertyNames": { "type": "string" },
+                  "additionalProperties": {
+                    "type": "string",
+                    "enum": ["auto", "enabled", "disabled"]
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "rules": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "match": { "type": "string", "minLength": 1, "maxLength": 512 },
+                  "options": {
+                    "type": "object",
+                    "propertyNames": { "type": "string" },
+                    "additionalProperties": { "$ref": "#/definitions/__schema0" }
+                  },
+                  "reasoning": {
+                    "type": "string",
+                    "enum": [
+                      "provider-default",
+                      "none",
+                      "minimal",
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh"
+                    ]
+                  },
+                  "unset": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^(?!.*(?:__proto__|constructor|prototype))[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$"
+                    }
+                  },
+                  "legacy": { "type": "boolean" }
+                },
+                "required": ["match"],
+                "additionalProperties": false
+              }
             }
           },
           "additionalProperties": false

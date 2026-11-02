@@ -364,6 +364,8 @@ export type UniversalCoreConfig = {
   };
 
   models: {
+    catalog?: { providers: Record<string, "auto" | "enabled" | "disabled"> };
+    rules?: import("../model-rules").ModelRule[];
     def: Record<
       string,
       {
