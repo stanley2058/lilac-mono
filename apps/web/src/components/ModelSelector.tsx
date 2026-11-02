@@ -7,7 +7,7 @@ import type {
   DisplayCatalog,
 } from "@stanley2058/lilac-client-protocol";
 import { Brain, ChevronDown, ChevronRight, Search, Star } from "lucide-react";
-import { queryNativeRPC } from "../queries";
+import { queryNativeRPC, useNativeOnline } from "../queries";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -46,6 +46,7 @@ export const ModelSelector = memo(function ModelSelector(props: Props) {
 
 function ConnectedSelector(props: Props & { client: NativeClient }) {
   const { client } = props;
+  const online = useNativeOnline(client);
   const queries = useQueryClient();
   const [open, setOpen] = useState(false);
   const [provider, setProvider] = useState("");
@@ -54,7 +55,7 @@ function ConnectedSelector(props: Props & { client: NativeClient }) {
   const favorites = useQuery({
     queryKey: ["model-favorites"],
     queryFn: () => queryNativeRPC(client, (rpc) => rpc.catalogs.favorites({})),
-    enabled: open,
+    enabled: open && online,
     staleTime: 0,
   });
   const ids = favorites.data ?? EMPTY_FAVORITES;
@@ -74,7 +75,7 @@ function ConnectedSelector(props: Props & { client: NativeClient }) {
         ),
       ),
     getNextPageParam: (page) => page.nextCursor,
-    enabled: open,
+    enabled: open && online,
     staleTime: 60_000,
   });
   const selectedId = props.modelId ?? props.models?.[0]?.id;
@@ -84,7 +85,7 @@ function ConnectedSelector(props: Props & { client: NativeClient }) {
       queryNativeRPC(client, (rpc) =>
         rpc.catalogs.models({ ids: selectedId ? [selectedId] : [] }, { signal }),
       ),
-    enabled: Boolean(selectedId),
+    enabled: Boolean(selectedId) && online,
     staleTime: 60_000,
   });
   const favorite = useMutation({
@@ -112,6 +113,7 @@ function ConnectedSelector(props: Props & { client: NativeClient }) {
     <ModelSelectorView
       {...props}
       models={models}
+      modelId={selectedId}
       selected={selected.data?.models[0]}
       providers={catalog.data?.pages[0]?.providers ?? []}
       favorites={ids}
