@@ -121,3 +121,41 @@ test("explicit harness metadata and legacy overrides work without enabling the u
   );
   expect(opus).toMatchObject({ legacy: true, reasoning: ["provider-default"] });
 });
+
+test("catalog lists text models and marks families from an earlier generation as legacy", () => {
+  const model = (id: string, family: string, release_date: string, output = ["text"] as const) => ({
+    id,
+    name: id,
+    family,
+    release_date,
+    limit: { context: 100, output: 10 },
+    modalities: { input: ["text" as const], output: [...output] },
+  });
+  const config = parseCoreConfigV3ToUniversal({
+    configVersion: 3,
+    models: { catalog: { providers: { codex: "enabled" } } },
+  });
+  const models = projectModelCatalog(config, {
+    openai: {
+      id: "openai",
+      name: "OpenAI",
+      npm: "test",
+      models: {
+        "gpt-6-sol": model("gpt-6-sol", "gpt-sol", "2026-09-01"),
+        "gpt-6-luna": model("gpt-6-luna", "gpt-luna", "2026-07-01"),
+        "gpt-5-codex-spark": model("gpt-5-codex-spark", "gpt-codex-spark", "2026-02-01"),
+        "gpt-realtime": {
+          ...model("gpt-realtime", "gpt", "2026-09-01"),
+          modalities: { input: ["text", "audio"], output: ["text", "audio"] },
+        },
+        "gpt-red-latest": model("gpt-red-latest", "gpt", "2026-08-01"),
+      },
+    },
+  });
+  expect(Object.fromEntries(models.map((entry) => [entry.model, entry.legacy]))).toEqual({
+    "gpt-6-sol": false,
+    "gpt-6-luna": false,
+    "gpt-5-codex-spark": true,
+    "gpt-red-latest": true,
+  });
+});

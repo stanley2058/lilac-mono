@@ -28,10 +28,10 @@ const models: CatalogModelChoice[] = [
     reasoning: ["provider-default", "low", "high"],
   },
   {
-    id: "claude-code/opus",
+    id: "claude-code/claude-opus-5-5",
     provider: "claude-code",
-    model: "opus",
-    label: "Opus · latest",
+    model: "claude-opus-5-5",
+    label: "Claude Opus 5.5",
     legacy: false,
     reasoning: ["provider-default", "low", "medium", "high", "max"],
   },

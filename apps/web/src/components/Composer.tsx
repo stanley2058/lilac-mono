@@ -614,7 +614,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
             disabled={disabled}
           />
         </Suspense>
-        <footer className="composer-toolbar pl-2 flex flex-wrap gap-1 items-center pt-2">
+        <footer className="composer-toolbar @container pl-2 flex gap-1 items-center pt-2">
           <ModelSelector
             client={client}
             reasoning={props.reasoning}

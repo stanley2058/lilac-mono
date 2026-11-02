@@ -1,4 +1,4 @@
-import { Cpu, Triangle } from "lucide-react";
+import { Cpu } from "lucide-react";
 
 export function providerName(provider: string): string {
   return (
@@ -17,6 +17,18 @@ export function providerName(provider: string): string {
   );
 }
 
+const logos: Record<string, string> = {
+  codex: "openai",
+  "claude-code": "anthropic",
+  openai: "openai",
+  anthropic: "anthropic",
+  xai: "xai",
+  openrouter: "openrouter",
+  groq: "groq",
+  cerebras: "cerebras",
+};
+
+/** Logo files are cropped to their marks; the inset matches the padding inside Lucide glyphs. */
 export function ProviderIcon({
   provider,
   className = "size-4",
@@ -24,24 +36,24 @@ export function ProviderIcon({
   provider: string;
   className?: string;
 }) {
-  const logo = {
-    codex: "openai",
-    "claude-code": "anthropic",
-    openai: "openai",
-    anthropic: "anthropic",
-    xai: "xai",
-    openrouter: "openrouter",
-    groq: "groq",
-    cerebras: "cerebras",
-  }[provider];
-  if (provider === "vercel")
-    return <Triangle aria-hidden="true" className={className} fill="currentColor" />;
-  if (!logo) return <Cpu aria-hidden="true" className={className} />;
+  const logo = logos[provider];
+  if (!logo && provider !== "vercel") return <Cpu aria-hidden="true" className={className} />;
   return (
-    <img
-      src={`/providers/${logo}.svg`}
-      alt=""
-      className={`${className} object-contain ${logo === "anthropic" ? "" : "dark:invert"}`}
-    />
+    <span
+      aria-hidden="true"
+      className={`inline-flex shrink-0 items-center justify-center ${className}`}
+    >
+      {logo ? (
+        <img
+          src={`/providers/${logo}.svg`}
+          alt=""
+          className={`size-[84%] object-contain ${logo === "anthropic" ? "" : "dark:invert"}`}
+        />
+      ) : (
+        <svg viewBox="0 0 24 21" className="size-[84%]" fill="currentColor">
+          <path d="M12 0 24 21H0Z" />
+        </svg>
+      )}
+    </span>
   );
 }

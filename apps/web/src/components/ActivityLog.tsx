@@ -279,7 +279,10 @@ function SubagentItem({
         className={`subagent-activity ${triggerClass}`}
         onClick={() => open(agent.id ?? part.id)}
       >
-        <span aria-hidden="true" className="flex size-6 shrink-0 items-center justify-center">
+        <span
+          aria-hidden="true"
+          className="flex size-6 shrink-0 items-center justify-center [&>[data-slot=avatar]]:size-5"
+        >
           <AgentAvatar
             decorative
             profile={agent.profile}
@@ -287,18 +290,23 @@ function SubagentItem({
             size="sm"
           />
         </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5 text-left">
-          <span className="truncate text-sm">
-            {agent.taskTitle ?? subagentProfileName(agent.profile)}
-          </span>
-          <Label live={requestActive !== false && agent.state === "running"}>{agent.title}</Label>
+        <span className="max-w-[45%] shrink-0 truncate text-foreground">
+          {agent.taskTitle ?? subagentProfileName(agent.profile)}
         </span>
+        <Label live={requestActive !== false && agent.state === "running"}>
+          {agent.state === "failed" ? (
+            <span className="text-danger">{agent.title}</span>
+          ) : (
+            agent.title
+          )}
+        </Label>
         {agent.model ? (
           <span
             title={`${agent.model} · ${agent.profile}${agent.reasoning ? ` · ${agent.reasoning}` : ""}`}
-            className="shrink-0"
+            className="flex max-w-40 shrink-0 items-center gap-1 text-xs"
           >
-            <ProviderIcon provider={agent.model.split("/")[0] ?? ""} />
+            <ProviderIcon provider={agent.model.split("/")[0] ?? ""} className="size-3.5" />
+            <span className="truncate">{agent.model.split("/").slice(1).join("/")}</span>
           </span>
         ) : null}
         <RowTime at={times.get(part.id)} />

@@ -35,6 +35,52 @@ const providerCredentials: Record<string, readonly string[]> = {
   "claude-code": ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
 };
 
+const CLAUDE_ALIASES = ["opus", "sonnet", "haiku", "fable"];
+// Families whose newest release trails the vendor's newest by more than this are a previous generation.
+const CURRENT_GENERATION_MS = 120 * 24 * 60 * 60 * 1000;
+
+export function isClaudeAlias(model: Pick<CatalogModel, "provider" | "model">): boolean {
+  return model.provider === "claude-code" && CLAUDE_ALIASES.includes(model.model);
+}
+
+function textModel(entry: ModelsDevModel): boolean {
+  return (
+    entry.tool_call !== false &&
+    entry.modalities.output.length > 0 &&
+    entry.modalities.output.every((modality) => modality === "text")
+  );
+}
+
+/** Aggregators prefix ids with the vendor; generations are compared within one vendor. */
+function modelVendor(entry: ModelsDevModel): string {
+  const slash = entry.id.indexOf("/");
+  return slash > 0 ? entry.id.slice(0, slash) : "";
+}
+
+function newestByVendor(entries: readonly ModelsDevModel[]): Map<string, number> {
+  const newest = new Map<string, number>();
+  for (const entry of entries) {
+    if (!entry.release_date || entry.status === "deprecated") continue;
+    const released = Date.parse(entry.release_date);
+    if (Number.isNaN(released)) continue;
+    const vendor = modelVendor(entry);
+    newest.set(vendor, Math.max(newest.get(vendor) ?? 0, released));
+  }
+  return newest;
+}
+
+function previousGeneration(
+  entry: ModelsDevModel,
+  familyNewest: ModelsDevModel | undefined,
+  vendorNewest: number | undefined,
+): boolean {
+  if (entry.status === "deprecated" || entry.id.endsWith("-latest")) return true;
+  if (!entry.release_date) return false;
+  if (familyNewest?.release_date && entry.release_date < familyNewest.release_date) return true;
+  const released = Date.parse(entry.release_date);
+  return vendorNewest !== undefined && vendorNewest - released > CURRENT_GENERATION_MS;
+}
+
 export function configuredCatalogProviders(config: CoreConfig): string[] {
   return Object.entries(providerCredentials).flatMap(([provider, keys]) => {
     const override = config.models.catalog?.providers[provider];
@@ -80,10 +126,10 @@ export function projectModelCatalog(
   const enabled = configuredCatalogProviders(config);
   for (const provider of enabled) {
     const upstream = { codex: "openai", "claude-code": "anthropic" }[provider] ?? provider;
-    const entries = Object.values(registry[upstream]?.models ?? {});
+    const entries = Object.values(registry[upstream]?.models ?? {}).filter(textModel);
     const latest = newestModels(entries);
+    const vendors = newestByVendor(entries);
     for (const entry of entries) {
-      if (entry.tool_call === false || !entry.modalities.output.includes("text")) continue;
       const id = `${provider}/${entry.id}`;
       const family = modelFamily(entry);
       const newest = family ? latest.get(family) : undefined;
@@ -99,13 +145,7 @@ export function projectModelCatalog(
         model: entry.id,
         family,
         legacy:
-          defaults.legacy ??
-          (entry.status === "deprecated" ||
-            Boolean(
-              newest?.release_date &&
-              entry.release_date &&
-              entry.release_date < newest.release_date,
-            )),
+          defaults.legacy ?? previousGeneration(entry, newest, vendors.get(modelVendor(entry))),
         reasoning: MODEL_REASONING_EFFORTS.filter(
           (effort) => effort === "provider-default" || supported.includes(effort),
         ),
@@ -113,7 +153,7 @@ export function projectModelCatalog(
       });
     }
     if (provider !== "claude-code") continue;
-    for (const alias of ["opus", "sonnet", "haiku", "fable"]) {
+    for (const alias of CLAUDE_ALIASES) {
       const target = claudeAliasTarget(registry, alias);
       const base = target ? models.get(`${provider}/${target}`) : undefined;
       if (!base) continue;
@@ -187,6 +227,14 @@ export function projectModelCatalog(
     entry.defaultReasoning ??= defaults.reasoning;
   }
   return [...models.values()];
+}
+
+export function catalogReleaseDate(
+  config: CoreConfig,
+  registry: ModelsDevRegistry,
+  model: Pick<CatalogModel, "provider" | "model">,
+): string | undefined {
+  return catalogMetadata(config, registry, `${model.provider}/${model.model}`)?.release_date;
 }
 
 export function findCatalogModel(config: CoreConfig, id: string): CatalogModel | undefined {

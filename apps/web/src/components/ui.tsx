@@ -23,6 +23,7 @@ import { Result } from "better-result";
 export function IconButton({
   label,
   tooltip = label,
+  tooltipSide,
   shortcut,
   children,
   variant = "ghost",
@@ -30,6 +31,7 @@ export function IconButton({
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   label: string;
   tooltip?: ReactNode;
+  tooltipSide?: ComponentProps<typeof TooltipContent>["side"];
   shortcut?: ShortcutAction;
   variant?: ComponentProps<typeof Button>["variant"];
 }) {
@@ -51,7 +53,7 @@ export function IconButton({
       >
         {children}
       </TooltipTrigger>
-      <TooltipContent>
+      <TooltipContent side={tooltipSide}>
         {tooltip}
         {keys.label ? <Kbd>{keys.label}</Kbd> : null}
       </TooltipContent>

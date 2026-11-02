@@ -1,4 +1,6 @@
 import {
+  catalogReleaseDate,
+  isClaudeAlias,
   projectModelCatalog,
   configuredCatalogProviders,
   modelCatalogCache,
@@ -85,17 +87,22 @@ export class NativeCatalogService {
     const config = this.configSource.config;
     const search = input.search?.toLowerCase().trim();
     const catalog = this.modelEntries(registry);
+    const released = new Map(
+      catalog.map((entry) => [entry.id, catalogReleaseDate(config, registry, entry) ?? ""]),
+    );
     const entries = catalog
       .filter(
         (entry) =>
           (!input.provider || entry.provider === input.provider) &&
-          (!input.ids || input.ids.includes(entry.id)) &&
+          // Claude Code aliases duplicate the concrete model they point at; keep them selectable by id.
+          (input.ids ? input.ids.includes(entry.id) : !isClaudeAlias(entry)) &&
           (!search ||
             `${entry.id} ${entry.label} ${entry.family ?? ""}`.toLowerCase().includes(search)),
       )
       .sort(
         (a, b) =>
           Number(a.legacy) - Number(b.legacy) ||
+          released.get(b.id)!.localeCompare(released.get(a.id)!) ||
           a.label.localeCompare(b.label) ||
           a.id.localeCompare(b.id),
       );
