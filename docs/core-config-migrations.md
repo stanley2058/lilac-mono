@@ -1,301 +1,49 @@
-# Core Config Migrations
+# Core configuration upgrades
 
-## Separate thread query embeddings
+Use this guide when changing `core-config.yaml` versions or upgrading a deployment with older
+settings. For current fields, defaults, and examples, use [configuration hover and completion](core-config.md).
+For database cutovers and rollback, use [MIGRATIONS.md](../MIGRATIONS.md).
 
-`conversation.thread.embedding.queryModel` optionally selects the search-query encoder.
-It defaults to `embedding.model`, which remains the document encoder and stored embedding ID.
-Both encoders must share a vector space and dimensions. Changing the document model requires
-re-embedding existing summary facets. No schema-version or database change is required.
+## Upgrade procedure
 
-This guide records manual `core-config.yaml` changes between config versions. Current field-level documentation is available through
-[schema-backed editor hover and completion](core-config.md).
+1. Back up the configuration and the coordinated deployment data before upgrading binaries.
+2. Keep the existing config version for the first startup. V1 and v2 still parse; startup never
+   rewrites a file to v3. An omitted `configVersion` means v1.
+3. For native installations with customized YAML deployment settings, start with v2 once and
+   verify the imported values in Settings > Deployment before removing those keys.
+4. Apply the v3 field conversions below. Update custom skills, scripts, plugins, and tool allowlists
+   for removed callables even if you keep v1 or v2.
+5. Review delegated authority before setting `configVersion: 3`. V1/v2 default delegation to
+   `restricted`; v3 defaults to `full` when the caller can grant it, otherwise the caller's profile.
+6. Validate the edited file with the matching local schema, restart where required, and verify the
+   selected models, permission profiles, and native deployment settings. Deploy Core and clients together.
 
-Lilac parses `core-config.yaml` through a versioned parser into one universal runtime config shape. The
-application consumes only the universal shape.
+The installer supports guided edits to v2 and v3 and preserves the existing version. Its final review
+shows resolved permission profiles, including omitted defaults. V1 can be reinstalled unchanged;
+convert it manually before using guided edits. The installer does not perform a version migration.
 
-## Versioning Rules
+## Review subagent authority
 
-- New generated configs include `configVersion`.
-- Existing configs without `configVersion` are treated as `configVersion: 1`.
-- Lilac does not auto-upgrade config files at startup.
-- Versioned parsers own defaults for their version.
-- New behavior-changing defaults apply only to configs on the version that introduced them.
-- If a newer field cannot be represented safely in an older version, that field requires the newer
-  `configVersion`.
+Compare each old profile's authority with its destination profile. Move `explore` to `restricted`,
+`self` to `full`, and preserve `general` as a custom profile if its permissions matter. Remove the
+per-profile model policy and choose the model per delegation instead. Existing v1/v2 profile model
+fields also no longer select the worker model.
 
-## Shared working indicators
+Built-in `full` allows all globally enabled tools and callables, network, workspace writes, native
+Bash, and further delegation. Built-in `restricted` allows its read-oriented tool/callable list and
+network, denies workspace-writing tools and further delegation, and still uses native Bash.
+Custom profiles inherit omitted fields from `restricted`. Inspect `level1`, `level2`, `network`,
+`workspaceWrites`, `execution`, and `delegation` for every configured profile.
 
-Version 2 adds `surface.workingIndicators`. Native web and Discord both use this list.
-`surface.discord.workingIndicators` remains valid and overrides it for Discord only. To use one
-custom list everywhere, move it from `surface.discord` to `surface`. Configs that set neither field
-use the built-in list on both surfaces.
+`workspaceWrites: false` restricts tool availability. Native Bash still runs with the Core service
+user's filesystem authority. Set `execution: restricted` for virtual restricted Bash, `false` to
+remove Bash, or use OS isolation when native commands need filesystem isolation. A child can only
+select profiles within its own authority. MCP servers additionally require `allowSubagents: true`;
+profile wildcards do not override that server flag.
 
-## Native web port
-
-The native web listener now defaults to `8789`, reserving `8787` for the GitHub webhook and `8788`
-for the container-local operator console. Version-2 defaults for `surface.native.publicUrl` and
-`allowedOrigins` now use `http://localhost:8789`. Configs with native disabled stay disabled.
-
-Explicit port, URL and origin values are preserved. To move an existing deployment, change
-`surface.native.port` and the container side of its Compose port mapping together. If the browser's
-public URL changes, also update `publicUrl`, `allowedOrigins` and any reverse-proxy destination.
-The installer preserves existing deployment port mappings. No config-version bump is required.
-
-## Decision auto-inject lane
-
-Version 2 uses `conversation.thread.autoInjectMode: decision` and
-`conversation.thread.decisionAutoInject`. Rename the old `jev` mode and `jevAutoInject` section.
-Existing version-2 Jev settings still parse into the new runtime fields without changing thresholds.
-If both sections exist, `decisionAutoInject` takes precedence. No config-version bump is required.
-
-The decision lane uses a local shortlist and one call to judge whether past context helps and which
-threads to inject. The `llm` lane remains the default. `autoInject.enabled` and
-`filterCurrentParticipants` still apply to both lanes.
-
-`decisionAutoInject.model` is an ordered, nonempty array. Configure
-`[typesafe/jev-1.13.0, openai/gpt-6-luna]` to use Jev for text and Luna for image attachments.
-Text selects the first entry. A supported image in the latest user message selects the first
-image-capable entry; if none is configured, the first entry evaluates text only. PDFs alone do not
-select Luna. This is routing, not a retry or failure fallback chain. Only the selected model needs
-credentials. A single string and bare Jev model IDs remain supported as legacy input. TypeSafe uses `TYPESAFE_AI_API_KEY` and optional `TYPESAFE_AI_BASE_URL`; OpenAI uses
-`OPENAI_API_KEY` and optional `OPENAI_BASE_URL`. The endpoint must support `/v1/decisions`.
-Missing credentials and evaluation failures continue without injected metadata. A refused question
-counts as "no" for that question. A zero recall threshold disables message gating.
-
-OpenAI receives attached images as native inline image parts, independently of the primary agent's
-image support. Jev evaluates text only. Shortlisting uses the latest authored text and up to three recent authored user messages; image-only
-messages do not run automatic recall. Image preparation uses existing scoped resource access and inline
-media limits. Images are kept in memory. No transcript or database migration is needed.
-
-`decisionAutoInject` retains shared `limit`, `candidateLimit`, and `semanticFallback`. The four
-probability thresholds now live under `decisionAutoInject.jev` and `decisionAutoInject.luna`.
-TypeSafe Jev IDs use the `jev` scope; OpenAI Luna IDs use `luna`. Each scope has independent defaults.
-Legacy flat thresholds apply to both scopes, and explicit scoped fields override them individually.
-The default model list contains Jev only. Both recall thresholds default to zero, and relevance
-thresholds default to 0.2 for Jev and 0.1 for Luna. The default candidate budget is 40. With
-`semanticFallback: true`, lexical and semantic retrieval share that budget even when lexical matches
-exist. Set it to false for lexical-only retrieval. Explicit configured values retain precedence.
-
-## Native title model
-
-Version 2 accepts `surface.native.titleModel`, defaulting to `fast`. Use `main`, `fast`, a configured
-model alias, or an explicit `provider/model` reference. New native conversations keep their immediate
-first-line fallback while this model generates a title without tools. An ambiguous initial title may
-be refined once using the first user input and final assistant reply. Manual titles always win, and
-model failures retain the current title. Existing conversations are not renamed.
-
-The field is optional; no config rewrite is required. Remove it before using an older parser.
-
-## Image table style
-
-Table rendering now accepts `style: image`. The default remains `unicode`, so existing configurations
-keep their text rendering. In v2, set `surface.discord.markdownTableRender.enabled: true` and
-`surface.discord.markdownTableRender.style: image`, with `outputMode: preview`,
-`outputPreviewModeFinalStyle: plain`, and `outputPreviewModeFinalText: flat`, to send top-level tables as
-PNG attachments. The image style falls back to Unicode text in other modes and on rendering failure.
-
-The v1 parser also accepts `image` under `surface.discord.experimental.markdownTableRender.style`, but
-v1's reply-chain output uses the Unicode fallback. No config version bump or automatic rewrite is
-required. Older builds reject `image`; change the style to `unicode` or `ascii` before downgrading.
-
-## v1
-
-`configVersion: 1` is the initial versioned config contract and matches the defaults used before config
-versioning was introduced.
-
-To make an existing implicit v1 config explicit, add:
-
-```yaml
-configVersion: 1
-```
-
-No field migrations are required for v1.
-
-## v2
-
-`configVersion: 2` uses the universal runtime config field names directly and changes several defaults.
-
-Field renames from v1:
-
-- `tools.experimental_hashline_edit` -> `tools.editFile.hashline`
-- `surface.discord.previewFinalOutputStyle` -> `surface.discord.outputPreviewModeFinalStyle`
-- `surface.discord.experimental.markdownTableRender` -> `surface.discord.markdownTableRender`
-
-Removed v2 fields:
-
-- `agent.subagents.idleTimeoutMs`; subagent idle timeouts are derived from `agent.idleTimeoutMs` as
-  `floor(2/3)`, with a `1000ms` minimum.
-- `agent.subagents.defaultTimeoutMs` and `agent.subagents.maxTimeoutMs`; frozen v1 configs may still
-  contain these legacy fields, but they are ignored during universal parsing.
-- `surface.heartbeat.every`; both current versioned parsers reject it with migration guidance. Replace
-  it with a five-field `surface.heartbeat.cron` expression before restarting.
-
-New v2 fields:
-
-- `surface.discord.outputPreviewModeFinalText`: final plain-text grouping after a preview. `flat`
-  replies with the first final-answer chunk and sends later chunks directly; `reply-chain` preserves
-  the v1 commentary-plus-final reply chain. It applies only when `outputMode: preview` and
-  `outputPreviewModeFinalStyle: plain`. The v2 default is `flat`; frozen v1 configs use `reply-chain`.
-- `agent.transcriptRetention.maxAge` and `.maxRequests`: completed request transcript retention limits;
-  defaults to `180d` and `10000`. Each accepts a positive duration/count or `"unlimited"`. Changes are
-  hot-reloaded and apply on the next transcript save. Frozen v1 configs receive the same universal
-  defaults but cannot override them.
-- `surface.discord.attachmentCache.ttl`: Discord ingress attachment cache lifetime; defaults to `30d`
-  and accepts a positive duration or `"unlimited"`. Changes are hot-reloaded. Frozen v1 configs receive
-  the same universal default but cannot override it.
-- `blobStorage`: one Core managed-blob adapter. Omit it for the local store rooted below `DATA_DIR`, or
-  configure `kind: local` with a required absolute `root`, or `kind: s3` with required `bucket`,
-  `prefix`, `endpoint`, `region`, and environment-variable names for credentials. S3 also accepts an
-  optional session-token environment-variable name and optional path-style addressing. Frozen v1
-  configs receive the same universal local default but cannot set this field.
-- `workflows.maxActiveRuns`: principal-blind global admission cap across all nonterminal workflow runs,
-  including scheduled and generated subagent runs; defaults to `64`. Frozen v1 configs receive the same
-  universal fallback but cannot override it.
-- `agent.idleTimeoutMs`: primary agent inactivity timeout; defaults to `900000` (15 minutes). Active runs
-  have no total runtime cap. Frozen v1 configs receive the same universal fallback but cannot override it.
-- `tools.inspect.model`: historical Gemini model setting. Version 2 still accepts it, but the runtime
-  ignores it since `content.inspect` was removed.
-- `tools.web.firecrawl`: optional process-local concurrency policy applied independently to Firecrawl
-  fetch and search calls. When present, `maxConcurrency` defaults to `2` and `queueTtl` defaults to `3s`;
-  when absent, Firecrawl calls remain unlimited.
-- `models.capability.overrides.<provider/model>.attachment`: optional manual override for model attachment
-  input support.
-- `conversation.thread.summarization.enabled`: default-false gate for background conversation thread
-  summarization.
-- `conversation.thread.summarization.model`: model used for conversation thread summaries; defaults to
-  `fast`.
-- `conversation.thread.summarization.concurrency`: number of threads to summarize concurrently inside one
-  run; defaults to `1`.
-- `conversation.thread.summarization.batchSize`: maximum threads processed by one periodic run; defaults
-  to `32`. Manual runs remain unbounded unless they provide a limit. Frozen v1 configs receive the same
-  universal fallback but cannot override it.
-- `conversation.thread.summarization.includePromptContext`: default-false option to include `MEMORY.md`,
-  `USER.md`, and optional `ENTITIES.md` as background-only summarization context.
-- `conversation.thread.embedding.enabled` and `conversation.thread.embedding.model`: default-false
-  semantic thread embedding generation using an AI SDK embedding model ref.
-- `conversation.thread.autoInject.enabled`: default-false gate for request-time conversation thread
-  metadata injection.
-- `conversation.thread.autoInject.plannerModel`: optional model used for request-time auto-inject query
-  planning; when unset, it inherits `conversation.thread.summarization.model`.
-- `conversation.thread.autoInject.textPlannerModel`: optional model used instead of `plannerModel` when
-  the composed request input contains only text. Image, PDF, and other non-text input continues to use
-  `plannerModel`; when unset, all requests retain the existing planner selection.
-- `conversation.thread.autoInject.minTextUnits`: minimum authored text mass before auto-injecting
-  conversation thread metadata; defaults to `80`.
-- `conversation.thread.autoInject.followUpMinTextUnits`: higher text-mass threshold after prior
-  auto-injected thread metadata exists in the same conversation; defaults to `110`.
-- `conversation.thread.autoInject.limit`: maximum injected search results; defaults to `3`.
-- `conversation.thread.autoInject.minScore`: minimum final `conversation.thread.search` score for
-  auto-injected metadata; defaults to `0.1`.
-- `conversation.thread.autoInject.expansionMinConfidence`: minimum ranking confidence for optional
-  auto-injected results after the single recall-floor result; accepts `0` through `1` and defaults to
-  `0.65`. Frozen v1 configs receive the same universal default but cannot override it.
-  The default increased from `0.57` after production recall auditing. Explicit v2 overrides
-  retain their configured value; remove the override or set it to `0.65` to adopt the new cutoff.
-- `conversation.thread.autoInject.mode`: search mode (`hybrid`, `semantic`, or `lexical`); defaults to
-  `hybrid`.
-- `conversation.thread.autoInject.filterCurrentParticipants`: optionally restricts search to threads
-  involving any current participant; defaults to `false`. If enabled when no current participant identity
-  can be recovered, auto-injection is skipped.
-- `tools.output`: direct-result preview and transient artifact policy. Defaults to `40KiB`, `7d`, and
-  `50MiB` per session.
-- `tools.historicalResultPruning`: compatibility policy for rewriting old tool results. It defaults to
-  disabled with the prior `40000`/`20000` token thresholds retained when enabled.
-- `tools.batch.maxCalls`: maximum calls accepted by one batch; defaults to `8`.
-- Batch now expands children into ordinary Level 1 tool calls. Enabled tools are batchable by default;
-  plugin authors can set `supportsBatch: false` to opt out.
-- `tools.media`: model-view inline binary limits. Defaults to `10MiB` per part and `20MiB` in total.
-- `agent.retry`: transient upstream and replay-safe primary idle-timeout retry policy. Frozen v1 configs
-  cannot configure it; the version-specific defaults are listed below.
-- `agent.subagents.delegatePromptOverlay`: optional free-form guidance appended to the parent-visible
-  `subagent_delegate` tool description.
-- `agent.subagents.profiles.<profile>.reasoning` and `.fallback`: optional portable reasoning and ordered
-  model fallback policy. A profile fallback takes precedence over the selected model slot or alias
-  fallback.
-- `agent.subagents.profiles.<profile>.level1`, `.level2`, `.network`, `.workspaceWrites`, `.execution`, and
-  `.delegation`: native profile authority and behavior fields. Frozen v1 profiles cannot configure these
-  fields and receive their historical built-in universal profiles.
-- `models.def.<alias>.reasoning` and `.fallback`, `models.main.reasoning` and `.fallback`, and
-  `models.fast.reasoning` and `.fallback`: portable reasoning plus flat ordered fallback chains. Entries
-  are a model/alias string or an object with `model` and optional `reasoning`/`options`; v1 cannot configure
-  fallback or portable reasoning.
-- `models.def.<alias>.comment`: optional guidance shown when an agent selects a model for a subagent.
-- `models.def.<alias>.agentCanSelect`: explicitly opts an alias into dynamic selection through
-  `subagent_delegate`; defaults to `false`. It does not restrict static profiles, model slots, or explicit
-  human overrides.
-- `surface.discord.markdownMathRender`: Discord markdown math rendering policy. Defaults to
-  `{ enabled: false, maxWidth: 50, fallbackMode: source }`; frozen v1 configs receive this disabled
-  universal fallback but cannot configure it.
-
-Local example:
-
-```yaml
-configVersion: 2
-blobStorage:
-  kind: local
-  root: /var/lib/lilac/blobs
-```
-
-S3-compatible example:
-
-```yaml
-configVersion: 2
-blobStorage:
-  kind: s3
-  bucket: lilac
-  prefix: production/blobs
-  endpoint: https://s3.example.com
-  region: us-east-1
-  accessKeyIdEnv: LILAC_S3_ACCESS_KEY_ID
-  secretAccessKeyEnv: LILAC_S3_SECRET_ACCESS_KEY
-  # sessionTokenEnv: LILAC_S3_SESSION_TOKEN
-  # forcePathStyle: true
-```
-
-The bucket must already exist. Core does not create it or manage its lifecycle policy. Credentials are
-read only from the named environment variables. To move an existing Core data set between local and S3,
-stop Core, copy the whole blob store while preserving object IDs, verify all durable references, and
-switch config only after verification. The persisted-data cutover is documented in
-[`MIGRATIONS.md`](../MIGRATIONS.md#core-unified-blob-storage-clean-break).
-
-Changed v2 fields:
-
-- `agent.subagents.profiles.<profile>.execution` is `false | "restricted" | "native"`. `false` omits Bash,
-  `restricted` exposes the virtual restricted Bash implementation, and `native` exposes trusted host Bash
-  unless the surface is restricted. This intentionally replaces the earlier v2 boolean contract: change
-  `true` to `native`; `false` remains valid.
-- For a normal profile/slot selection, fallback precedence is profile, model slot, then the alias selected
-  by that slot; an explicitly present empty chain suppresses lower-precedence inheritance. An explicit
-  alias request override uses that alias's chain, while an explicit `provider/model` override has no
-  fallback chain.
-- Automatic model fallback exhausts each candidate's retry budget before moving on, stays within the head
-  model's provider family, and is disabled for a `claude-code` head. There is no global fallback enable
-  flag or switch cap. v2 model aliases must not contain `/`, and each `models.def.<alias>.model` must use
-  `provider/model` format.
-
-Tool byte-size fields accept `B`, `KB`, `MB`, `GB`, `KiB`, `MiB`, and `GiB`. Duration fields accept `ms`,
-`s`, `m`, `h`, `d`, `w`, and `mo`; `mo` is a fixed 30 days. These fields cannot be configured in the
-frozen v1 input shape, but v1 receives the same universal runtime defaults.
-
-Default changes from v1:
-
-- `tools.fsBackend: fff`
-- `tools.editFile.hashline: true`
-- `surface.discord.outputMode: preview`
-- `surface.discord.outputPreviewModeFinalStyle: plain`
-- `surface.discord.outputPreviewModeFinalText: flat`
-- `surface.discord.outputNotification: true`
-- `surface.discord.markdownTableRender: { enabled: true, style: unicode, maxWidth: 50, fallbackMode: list }`
-- `agent.reasoningDisplay: detailed`
-- `agent.retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxDelayMs: 30000 }`; v1 universal
-  parsing uses `{ enabled: false, maxRetries: 0, baseDelayMs: 2000, maxDelayMs: 30000 }`.
-- Subagent idle timeouts derive from the primary agent timeout as `floor(2/3)`, with a `1000ms` minimum.
-  This produces `600000` for the default `900000ms` primary timeout. Frozen v1 legacy timeout fields are
-  ignored.
-- The built-in `explore`, `general`, and `self` profiles use native Bash on trusted surfaces.
-  Explicit `execution: restricted` overrides retain virtual Bash; remove the override or set
-  `execution: native` to use installed host commands. Restricted surfaces still use virtual Bash. Frozen v1
-  profiles retain their historical no-Bash explore and native-Bash general/self behavior.
+To retain a read-oriented default after adopting v3, explicitly configure the `full` profile with
+the authority you intend, or instruct callers to select `restricted`. The name `full` itself does
+not override configured authority. Review this choice before enabling unattended delegation.
 
 ## v3
 
@@ -333,15 +81,7 @@ profile becomes `full`, and their `general` profile keeps its name and authority
 a named profile uses `restricted`, the former `explore` default. Per-profile model
 fields are ignored.
 
-## Native deployment settings move to the database
-
-With config v2, native startup imports `surface.native.titleModel`, `outputStreaming`,
-`oldMessageSelectionMaxAgeMs`, `storageRetentionMaxAgeMs`, and `crossThreadSend` once into
-the native database. After that, use Settings > Deployment. The old YAML keys are accepted
-only as initial import values in v2 and must be removed before switching to v3; they do not override
-database settings. The import preserves the YAML file, including comments. See MIGRATIONS.md.
-
-### V3 model catalog and option rules
+### Model catalog and option rules
 
 V3 discovers selectable models from models.dev for configured runtime providers. The build bundles a
 snapshot; Core shares one memory catalog and caches validated JSON in `DATA_DIR/cache/models.dev.json`.
@@ -358,9 +98,9 @@ Capability overrides remain under `models.capability.overrides` and take precede
 Codex uses OpenAI metadata. Claude Code's opus/sonnet/haiku/fable aliases inherit the latest stable family
 metadata while retaining the harness alias for execution.
 
-V3 delegation accepts every available catalog model or configured alias. `agentCanSelect` remains a
-legacy v2 setting. The `model_catalog` tool provides bounded provider/search results and exact model
-lookups, including supported reasoning and option defaults. Composer favorites do not restrict it.
+V3 delegation accepts every available catalog model or configured alias. `agentCanSelect` is accepted
+but ignored in v3; it only controls dynamic alias selection in v2. The `model_catalog` tool provides
+bounded provider/search results and exact model lookups, including supported reasoning and option defaults. Composer favorites do not restrict it.
 The composer stores favorites per user and reasoning per thread. Changing models resets reasoning to
 the new model default. Legacy models remain searchable and visible in Favorites.
 
@@ -389,8 +129,9 @@ are present. V1/v2 retain their existing input compatibility:
 - `tools.web.extract.provider` becomes `tools.web.extract.providers: [provider]`.
 - `conversation.thread.jevAutoInject` becomes `conversation.thread.decisionAutoInject`.
 - `conversation.thread.autoInjectMode: jev` becomes `decision`.
-- Flat `decisionAutoInject` probability thresholds move into `jev` and `luna`. To preserve a flat
-  threshold's behavior, set it in both scopes. Existing scoped overrides retain their values.
+- Flat `decisionAutoInject` probability thresholds must move into `jev` and `luna` if retaining
+  the legacy section. These thresholds no longer control retrieval. Prefer removing the section
+  after transferring its model list to `autoInject.gate`.
 
 V3 also rejects `surface.native.titleModel`, `outputStreaming`, `oldMessageSelectionMaxAgeMs`,
 `storageRetentionMaxAgeMs`, and `crossThreadSend`. These settings belong in Settings > Deployment.
@@ -402,3 +143,63 @@ A fresh v3 installation uses `titleModel: fast`, `outputStreaming: paragraph`, u
 and storage ages (`null`), and `crossThreadSend.triggerRun: true` as its initial deployment settings.
 Change these through Settings > Deployment after installation. No database schema change or data
 deletion is part of this removal.
+
+## Current recall configuration
+
+Automatic recall uses the query planner and search ranking. Enable it with
+`conversation.thread.autoInject.enabled`; summaries and embeddings have separate enable flags.
+The optional `autoInject.gate` supports `off`, `shadow`, and `enforce`. Omission leaves the gate off;
+a configured gate defaults to shadow. Enforce skips only confident negatives, using
+`skipMinProbability` (default 0.8). Failures continue to planning.
+
+Move legacy `autoInjectMode: decision` or `jev` and the decision model list to
+`autoInject.gate`. Legacy modes normalize to a shadow gate; an explicit gate takes precedence.
+Remove `autoInjectMode`, `decisionAutoInject`, and `jevAutoInject` from maintained files after
+transferring the model list. Old candidate budgets, relevance thresholds, and decision message
+thresholds remain compatibility inputs and no longer tune retrieval. The v3 rejection rules above
+still apply to removed legacy spellings.
+
+Both `minTextUnits` and `followUpMinTextUnits` default to 10. Explicit old values such as 80/110
+remain active; remove or lower them to admit short questions. `expansionMinConfidence` defaults
+to 0.65; explicit overrides remain active. Gate diagnostics use
+`conversation.thread.auto_inject.gate` and correlate by request ID.
+
+`embedding.queryModel` defaults to `embedding.model`. Both encoders must share a vector space and
+dimensions. Changing the document encoder requires re-embedding existing summary facets.
+
+## Upgrade from v1 to v2
+
+V2 uses the runtime field names. Apply these conversions before advancing to v3:
+
+- `tools.experimental_hashline_edit` becomes `tools.editFile.hashline`.
+- `surface.discord.previewFinalOutputStyle` becomes `surface.discord.outputPreviewModeFinalStyle`.
+- `surface.discord.experimental.markdownTableRender` becomes `surface.discord.markdownTableRender`.
+- Replace `surface.heartbeat.every` with a five-field `surface.heartbeat.cron`; both parsers reject `every`.
+- Remove `agent.subagents.idleTimeoutMs`, `defaultTimeoutMs`, and `maxTimeoutMs`. Child inactivity
+  timeouts derive from `agent.idleTimeoutMs` as two thirds, with a 1,000 ms minimum.
+- Replace profile `execution: true` with `execution: native`; `false` remains valid.
+- Model aliases cannot contain `/`; alias targets must use `provider/model`.
+
+Review changed defaults: v2 selects the `fff` filesystem backend and hashline editing, enables
+transient retries, uses detailed reasoning display, and uses Discord preview output with flat
+plain-text final replies, notifications, and Unicode table rendering. Explicit overrides retain
+precedence. Built-in profiles use native Bash on trusted surfaces; frozen v1 profiles retain their
+historical authority. V2 adds configurable retention, blob storage, model fallback, and conversation
+memory; consult schema hover for the complete current field reference.
+
+## Other deployment adjustments
+
+- Native web defaults to port 8789. If moving an explicit port, update Compose, `publicUrl`,
+  `allowedOrigins`, and any reverse proxy together. The installer preserves existing port mappings.
+- `surface.workingIndicators` applies to native and Discord. An explicit
+  `surface.discord.workingIndicators` overrides it for Discord only.
+- Discord image tables require `markdownTableRender.style: image`, preview output, plain final
+  style, and flat final text. Other modes and render failures use Unicode fallback. Remove `image`
+  before downgrading to a parser that does not accept it.
+- `tools.batch.maxCalls` is accepted for compatibility but ignored. Remove it from maintained
+  configurations; models issue ordinary tool calls directly.
+- Changing a blob backend requires an offline copy preserving object IDs and verification of
+  durable references before switching. See the [blob cutover procedure](../MIGRATIONS.md#core-unified-blob-storage-clean-break).
+
+Version-specific defaults belong to their parser. Optional fields do not require a config rewrite;
+newer fields must be removed before using an older parser that rejects them.

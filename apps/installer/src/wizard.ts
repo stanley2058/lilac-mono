@@ -15,6 +15,8 @@ import {
   deleteConfigValue,
   serializeConfigDocument,
   validateConfigDocument,
+  supportsGuidedConfigUpdates,
+  permissionReview,
 } from "./config-document";
 import {
   composeArguments,
@@ -164,11 +166,11 @@ async function configureInstallation(
       ]);
       if (action === "cancel") return Result.ok({ installed: false, root });
       reinstall = action === "reinstall";
-      if (!reinstall && loaded.document.get("configVersion") !== 2) {
+      if (!reinstall && !supportsGuidedConfigUpdates(loaded.document)) {
         return Result.err(
           new InstallerSetupFailed({
             message:
-              "Guided updates require configVersion: 2. Follow docs/core-config-migrations.md before updating this configuration. Reinstall can preserve the current version.",
+              "Guided updates support configVersion: 2 or 3. Follow docs/core-config-migrations.md before updating this configuration. Reinstall can preserve the current version.",
           }),
         );
       }
@@ -191,7 +193,7 @@ async function configureInstallation(
       await configureOptional(prompt, draft);
     }
 
-    yield* validateConfigDocument(loaded.document);
+    const validatedConfig = yield* validateConfigDocument(loaded.document);
     yield* validateDeploymentInputs(draft, images, existing?.resolved);
     const deployment = createDeployment(
       root,
@@ -204,6 +206,7 @@ async function configureInstallation(
     const config = serializeConfigDocument(loaded.document);
     const current = getConfigValue(loaded.document, []);
     prompt.note("Review installation");
+    prompt.note(permissionReview(validatedConfig));
     prompt.note(`Directory: ${root}\nContainer UID: 1000\nCore image: ${images.core}`);
     if (draft.computerEnabled)
       prompt.note(`Computer gateway: ${images.gateway}\nComputer runner: ${images.runner}`);

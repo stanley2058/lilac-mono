@@ -152,7 +152,9 @@ From the installation directory, run:
 
 You can also rerun the original `curl` command to download the current setup CLI. Select your existing
 installation directory to update configuration or reinstall. Existing values are loaded before the
-prompts, and config updates preserve unrelated YAML values and comments. Confirmed updates and
+prompts. Guided updates support config v2 and v3, preserve the version and unrelated YAML values
+and comments, and show resolved subagent permissions before writing. Version upgrades remain manual;
+see [configuration upgrades](core-config-migrations.md). Confirmed updates and
 reinstalls recreate containers so startup-only settings take effect, while retaining credentials and
 data. Setup reads Compose's resolved configuration, including environment files, interpolation,
 profiles, and list-form settings. Existing environment files keep their contents and format;

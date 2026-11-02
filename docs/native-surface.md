@@ -4,9 +4,13 @@ The native surface runs inside Core. It owns `native-surface.db` independently o
 the web app, authenticated HTTP bootstrap, file endpoints and one typed oRPC WebSocket. A native
 thread is a session. Messages start work without a mention or active-channel mode.
 
+Use [Local setup](#local-setup) and [Clerk](#clerk) to configure access, [Settings and updates](#settings-and-updates)
+for runtime settings, and [Persistence and rollback](#persistence-and-rollback) before upgrading.
+The container console is covered under [Temporary operator console](#temporary-operator-console).
+
 ## Local setup
 
-Build the web assets with `bun run build:web`. Enable the surface in an existing version-2
+Build the web assets with `bun run build:web`. Enable the surface in a version-3 (or existing version-2)
 `core-config.yaml`:
 
 ```yaml
@@ -46,14 +50,6 @@ when the Clerk instance has more than one user.
 To develop against a real Core installation, run `bun --cwd=apps/web run dev`. Vite proxies `/api` and
 WebSocket upgrades to `http://127.0.0.1:8789`; `LILAC_WEB_BACKEND_URL` overrides that development
 target. Add the development origin, normally `http://localhost:5173`, to `allowedOrigins`.
-
-## Design system
-
-Open `/design-system`, or use the palette button in the sidebar, to inspect the real UI components
-with synthetic examples. The page requires no login and makes no requests for conversations or
-configuration. It includes dark/light themes, thread states, messages, composer, attachment previews,
-code blocks, controls, overlays and layout. The input-required thread state is a visual specimen;
-the native question capability remains unimplemented.
 
 ## Clerk
 
@@ -99,53 +95,14 @@ and modification, but agent conversation search and automatic recall can read ot
 threads and allowlisted Discord conversations. Restricted tool access does not make conversation
 memory private between users. See [Surface tools](#surface-tools) for the retrieval scope.
 
-## Conversation behavior
-
-New conversation opens a local draft. Typing or attaching files adds it to the sidebar; the server
-thread is created on the first Send. Draft text survives reloads, while unsent files must be reattached.
-The composer supports basic Markdown formatting through Plate. Enter sends; Shift+Enter continues
-writing. Attachments appear as inline file chips. Drafts restored after reload require missing files
-to be reattached or removed before sending. Sidebar rows show the starter and activity time; rename,
-archive and delete replace the timestamp on hover or focus. A completed indicator remains until the
-latest settled turn is visible in the foreground tab. Working and failed runs have separate states.
-
-The thread's model selection applies to new full turns. Active runs retain their selected model.
-Sending while a run is active steers by default; follow-up mode queues a full turn. Cancel drops
-queued follow-ups. Users can remove queued entries but cannot reorder or edit them.
-Custom commands sent during an active run automatically queue as follow-ups, including when the
-composer was set to steering. They use the selected next-run model and execute at the start of that
-new full turn.
-
-Rewind targets a full user turn. It cancels active work, removes that turn and later history, and puts
-the original text into the composer. Steering messages are not rewind targets. Rewind does not undo
-external tool effects.
-
-Attachments upload over HTTP. Sending accepts the message while upload continues; execution waits
-for all file resources. Resource access follows the file's original thread, including when another
-thread references it. Text previews return at most 64 KiB, with a truncation indicator for larger
-files and an error for binary data. Local and SSH filepath previews read only that prefix of the
-latest file and show an error when it is gone.
-
-Markdown links and images accept retained `resource://r1_<128-bit-id>` references. They use the
-authenticated resource endpoint and preserve the original resource's access rules. Transient
-`resource://t1_` references and explicit SSH URIs are not supported in Markdown.
-
-Settings > Deployment controls response streaming for the instance. Paragraph publishes text at
-blank-line boundaries. Full publishes the
-buffered text at model-step completion or tool handoff. Clients never receive token-by-token text.
-Compaction and activity remain explicit display events. Native structured questions are available through the protocol and web question cards; the TUI has no answer controls.
-
-Old-message selection and storage retention are separate settings:
-`oldMessageSelectionMaxAgeMs` and `storageRetentionMaxAgeMs`. Both default to `null`, which disables
-them. Replay history has its own bounded retention; an expired replay cursor replaces the visible
-window and leaves older history available for hydration.
-
 ## Settings and updates
 
 The owner manages title generation, response streaming, old-message selection age, storage retention,
 and whether cross-thread sends trigger a run in Settings > Deployment. These settings persist in the
-native database. On first startup after upgrading, Core imports their existing `surface.native`
-values once without rewriting the YAML file. Later YAML edits do not override database settings.
+native database. With config v2, Core imports existing `surface.native` values once when it creates the deployment
+record. Later YAML edits do not override database settings. Before switching a customized installation
+to v3, start with v2, verify Settings > Deployment, then remove the five YAML settings. V3 rejects
+those keys. Fresh v3 installations use deployment defaults. See [configuration upgrades](core-config-migrations.md#upgrade-procedure).
 Saves reject stale revisions. New title jobs, output attempts, selections, and retention passes use
 the latest settings; active output attempts keep their original streaming mode.
 
@@ -168,119 +125,50 @@ The browser caches versioned app assets and scoped conversation projections sepa
 API responses never enter the service worker cache. Logout clears cached conversation data. An app update
 offers a Reload button; drafts remain on the device until sent or cleared.
 
-## Temporary operator console
+## Conversation behavior
 
-The container includes `lilac-tui`. From the installation directory, run:
+New conversation opens a local draft. Typing or attaching files adds it to the sidebar; the server
+thread is created on the first Send. Draft text survives reloads, while unsent files must be reattached.
+The composer supports basic Markdown formatting through Plate. Enter sends; Shift+Enter continues
+writing. Attachments appear as inline file chips. Drafts restored after reload require missing files
+to be reattached or removed before sending. Sidebar rows show the starter and activity time; rename,
+archive and delete replace the timestamp on hover or focus. A completed indicator remains until the
+latest settled turn is visible in the foreground tab. Working and failed runs have separate states.
 
-```sh
-docker compose exec --user root lilac lilac-tui
-```
+The thread's model selection applies to new full turns. Active runs retain their selected model.
+With config v3, the picker searches the available provider catalog and configured aliases. Favorites
+belong to the user; reasoning belongs to the thread and resets to the new model's default on a model
+change. Favorites do not restrict models available to delegated agents. Subagent rows show the task,
+permission profile, and executing model, including changes after fallback.
+Sending while a run is active steers by default; follow-up mode queues a full turn. Cancel drops
+queued follow-ups. Users can remove queued entries but cannot reorder or edit them.
+Custom commands sent during an active run automatically queue as follow-ups, including when the
+composer was set to steering. They use the selected next-run model and execute at the start of that
+new full turn.
 
-The installer offers "Talk to Lilac now" after deployment. Terminal-only installation needs a model
-provider but no Discord, local password, or Clerk account. Web and Discord can be configured separately.
+Rewind targets a full user turn. It cancels active work, removes that turn and later history, and puts
+the original text into the composer. Steering messages are not rewind targets. Rewind does not undo
+external tool effects.
 
-Each invocation creates one temporary owner conversation. Ctrl+Q exits, cancels active work, and deletes
-the conversation using native deletion. If the terminal disappears, heartbeats stop and Core deletes the
-conversation after 30 seconds. Reconnecting within that grace period keeps the same invocation alive.
-Core cleans abandoned conversations before recovering agent work after restart. Temporary conversations
-stay out of the web sidebar and search. Normal deletion and resource-retention rules apply; this is not
-secure erasure of databases, logs, provider records, or backups. Files created by tools and external
-side effects remain.
+Attachments upload over HTTP. Sending accepts the message while upload continues; execution waits
+for all file resources. Resource access follows the file's original thread, including when another
+thread references it. Text previews return at most 64 KiB, with a truncation indicator for larger
+files and an error for binary data. Local and SSH filepath previews read only that prefix of the
+latest file and show an error when it is gone.
 
-The console uses the existing native protocol and agent runner. Its separate HTTP/WebSocket listener
-binds only to container loopback on port 8788, which is not published. Every request requires the root-only
-`/run/lilac/operator-token` in an authorization header. Startup rotates that token; Core receives its
-hash. The authenticated identity is the configured native owner. Tools still execute with the Core
-service user's authority, never the terminal client's root identity.
+Markdown links and images accept retained `resource://r1_<128-bit-id>` references. They use the
+authenticated resource endpoint and preserve the original resource's access rules. Transient
+`resource://t1_` references and explicit SSH URIs are not supported in Markdown.
 
-There is no saved login, disk conversation cache, remote URL option, thread browser, or standalone TUI
-release. The image's Bun runtime loads the root-owned console and dependencies. Local password and Clerk
-web authentication continue to work independently. The legacy Clerk OAuth-client configuration is no
-longer needed by the terminal.
+Settings > Deployment controls response streaming for the instance. Paragraph publishes text at
+blank-line boundaries. Full publishes the buffered text at model-step completion or tool handoff. Clients never receive token-by-token text.
+Compaction and activity remain explicit display events. Native structured questions use web question
+cards; the TUI has no answer controls.
 
-Enter sends; Shift+Enter adds a line; Ctrl+C cancels work; Ctrl+Q exits. Ctrl+M selects a model and Ctrl+K
-shows queued inputs. Use `$` or `/skill:` for skills and `/` for commands. `:help` lists the remaining
-terminal commands. `:attach /path/to/file` reads a file inside the container. The console renders plain
-text and strips terminal control sequences. It does not read the host clipboard.
-
-For source development, `bun run dev:tui` connects to the same local operator endpoint. It requires
-access to the operator token, just like the container command.
-
-## DM links and agent delivery
-
-Open `/dm` to return to your permanent DM. Its existing `/threads/<threadId>` URL remains valid
-for links to that specific conversation.
-
-Agents can use `surface.messages.send` with `client=native` and `sessionId=dm`. Native requests
-resolve `dm` using the authenticated requesting user. Trusted agent runs from another surface, and
-heartbeat runs, use the configured native owner's access after Core validates their control capability.
-Restricted and unverified requests cannot use this cross-surface access. Other users' private DMs stay
-inaccessible to the owner. The alias is documented in `surface.help` and native agent instructions.
-For deferred delivery, call `surface.messages.list` with the same target and save the concrete
-`meta.session.channelId` returned by Core. Heartbeat messages are visible assistant posts and do not
-start another agent run in the destination thread. Cross-thread agent messages trigger a run only with explicit
-`triggerRun: true` and the deployment setting enabled. Native is optional for heartbeat; see [heartbeat](heartbeat.md).
-
-## Diagnostics and compatibility
-
-See [verification evidence and limits](native-surface-verification.md) for deployment, authentication,
-terminal/browser checks and the previous performance baseline.
-
-Backend, shared clients and display projection use native protocol version 1. Update the server and
-clients together. Older web tabs retain assets until reload; terminal clients report an incompatible
-response instead of interpreting another protocol version.
-
-Debug logging under `surface:native:metrics` records connection IDs, application-frame byte counts,
-bootstrap duration, replay kind/resets, queue pressure and handoff failures. Request and thread IDs
-correlate output commits with socket enqueue timing. This timing ends at the server's socket send,
-not at client rendering. Byte counters exclude TLS and WebSocket framing overhead. Metric fields
-omit credentials and conversation bodies.
-
-## Surface tools
-
-Native surface tools accept both `native:<threadId>` and the bare thread ID returned by listings.
-Use `native:<threadId>` as the canonical session ID. `surface.sessions.list` paginates through all
-readable active threads, subject to its requested limit. Set `archived: true` to list archived threads.
-Message reads and lists include display names and reply context. Lilac's projected replies support
-editing, deletion and reactions, including replies created before explicit author metadata was added.
-
-`surface.messages.send` creates a separate message. `attachment.add_files` attaches a file to the
-active response. Both copy files into managed blob storage and expose native resource attachments;
-the original local file can then be removed. Active-response attachments participate in output replay,
-checkpoint rollback and thread rewind. A canceled response retains attachments already published.
-
-Recent agent writes include projected responses and tool-sent messages. Startup restores missing links
-for historical responses whose native input records identify the owning request. It cannot infer the
-owner of older standalone tool messages that have no request link.
-
-`conversation.thread.search` and automatic recall use the same summary and embedding index for
-Discord and native conversations. Both origins search all retained native threads and allowlisted
-Discord conversations. Native ownership and sharing grants do not restrict these agent memory reads;
-they still control native UI access and conversation modification. Deleted, rewound, pending-mutation,
-and ephemeral native content is excluded. Explicit `participantId` filters remain available; automatic
-participant filtering applies only within Discord when the request originates there.
-
-Search supports lexical, semantic, and hybrid retrieval with shared ranking and `minScore` behavior.
-Use `surface: native` or `surface: discord` to restrict a search. Compact results, metadata, reads, and
-automatic recall include `surface`. Native conversation-memory IDs use `native:<threadId>` and can be
-passed directly to `conversation.thread.read`. Summarization maintenance uses the shared runner and
-supports native IDs, dry runs, force, clear, and embedding refresh. Structured questions use the `question` tool and the native protocol described below.
-
-## Persistence and rollback
-
-Back up `native-surface.db` together with Core's transcript, resource, request-delivery and agent-run
-stores and managed blob data. Use the normal coordinated shutdown or a consistent SQLite backup;
-copying a live database without its WAL can lose accepted work.
-
-Native input receipts and upload readiness are durable before execution admission. Native output
-uses a managed nonexpiring event topic; projection receipts make replay idempotent. Agent-run
-checkpoints record the output frontier they cover, so restart retains the committed prefix and removes
-abandoned output. External tool effects still have the existing at-least-once recovery behavior.
-
-See [MIGRATIONS.md](../MIGRATIONS.md) before downgrading. Older builds do not understand native refs,
-resource origins or native recovery checkpoint fields. Drain work and keep a consistent backup before
-switching binaries.
-
+Old-message selection and storage retention are separate settings:
+`oldMessageSelectionMaxAgeMs` and `storageRetentionMaxAgeMs`. Both default to `null`, which disables
+them. Replay history has its own bounded retention; an expired replay cursor replaces the visible
+window and leaves older history available for hydration.
 
 ## Conversation links
 
@@ -299,8 +187,27 @@ Native previews update while open. Discord previews use retained agent history, 
 fetch. Missing messages keep an external-open fallback. Existing membership and owner-only external
 history rules apply to links. The agent receives session coordinates for session links, and the
 conversation thread ID plus source message coordinates for message links when locally resolvable.
-Referenced message content is not automatically inserted into the prompt.
+Core expands visible text and attachment metadata under the thread starter's authority, sharing a
+12,000-character budget across previews. Message links preview that message; session and inclusive
+range links page backward, preferring recent content. A range fixes its endpoints, while reads reflect
+retained edits. Attachment bytes are not fetched by reference expansion.
 
+## Rich content and previews
+
+Select assistant text to create an `lilac-citation://v1/quote` reference with an optional comment.
+Core expands valid citations into quoted context for prompts, follow-ups, and steering. The quote and
+comment remain usable if the source changes or disappears. Encoded and expanded inputs must each
+fit the existing 65,536-character limit.
+
+Agents can publish an HTML page with a fenced `html-preview-file` block containing one file path.
+At turn completion or failure, Core reads the file under the thread's filesystem permissions,
+inlines local and retained resource assets, and saves the page as a native upload. The authenticated
+preview uses a sandboxed opaque origin with scripts, forms, and popups enabled. Remote scripts may
+load. Deleting the thread removes its preview records. A missing or unreadable source records a
+failure instead of a saved page.
+
+The built-in `visualize` skill is native-only. Custom skills can declare a nonempty `surfaces` list;
+invalid lists cause the skill to be skipped. Skills without it remain available across surfaces.
 
 ## Permanent direct conversation
 
@@ -331,7 +238,22 @@ current model context through the existing compaction engine, even when automati
 It preserves the displayed messages and queues behind a running reply. It accepts no arguments,
 skills, or attachments. Recent direct messages survive a shortened gap that excludes an older summary.
 
-### Background notifications
+## DM links and agent delivery
+
+Open `/dm` to return to your permanent DM. Its existing `/threads/<threadId>` URL remains valid
+for links to that specific conversation.
+
+Agents can use `surface.messages.send` with `client=native` and `sessionId=dm`. Native requests
+resolve `dm` using the authenticated requesting user. Trusted agent runs from another surface, and
+heartbeat runs, use the configured native owner's access after Core validates their control capability.
+Restricted and unverified requests cannot use this cross-surface access. Other users' private DMs stay
+inaccessible to the owner. The alias is documented in `surface.help` and native agent instructions.
+For deferred delivery, call `surface.messages.list` with the same target and save the concrete
+`meta.session.channelId` returned by Core. Heartbeat messages are visible assistant posts and do not
+start another agent run in the destination thread. Cross-thread agent messages trigger a run only with explicit
+`triggerRun: true` and the deployment setting enabled. Native is optional for heartbeat; see [heartbeat](heartbeat.md).
+
+## Background notifications
 
 Settings → Notifications has separate event choices and a Background push toggle. Enabling background
 push registers this browser with Core, which sends encrypted Web Push when a response finishes or a
@@ -391,3 +313,109 @@ intended respondent with current thread edit access can answer or dismiss. Stale
 answers under new command IDs and discarded history are rejected. The web uses its ordinary composer
 for replies and attachments; numbered options populate the draft without sending. Other viewers see
 read-only questions. The TUI has no question controls in this release.
+
+## Surface tools
+
+Native surface tools accept both `native:<threadId>` and the bare thread ID returned by listings.
+Use `native:<threadId>` as the canonical session ID. `surface.sessions.list` paginates through all
+readable active threads, subject to its requested limit. Set `archived: true` to list archived threads.
+Message reads and lists include display names and reply context. Lilac's projected replies support
+editing, deletion and reactions, including replies created before explicit author metadata was added.
+
+`surface.messages.send` creates a separate message. `attachment.add_files` attaches a file to the
+active response. Both copy files into managed blob storage and expose native resource attachments;
+the original local file can then be removed. Active-response attachments participate in output replay,
+checkpoint rollback and thread rewind. A canceled response retains attachments already published.
+
+Recent agent writes include projected responses and tool-sent messages. Startup restores missing links
+for historical responses whose native input records identify the owning request. It cannot infer the
+owner of older standalone tool messages that have no request link.
+
+`conversation.thread.search` and automatic recall use the same summary and embedding index for
+Discord and native conversations. Both origins search all retained native threads and allowlisted
+Discord conversations. Native ownership and sharing grants do not restrict these agent memory reads;
+they still control native UI access and conversation modification. Deleted, rewound, pending-mutation,
+and ephemeral native content is excluded. Explicit `participantId` filters remain available; automatic
+participant filtering applies only within Discord when the request originates there.
+
+Search supports lexical, semantic, and hybrid retrieval with shared ranking and `minScore` behavior.
+Use `surface: native` or `surface: discord` to restrict a search. Compact results, metadata, reads, and
+automatic recall include `surface`. Native conversation-memory IDs use `native:<threadId>` and can be
+passed directly to `conversation.thread.read`. Summarization maintenance uses the shared runner and
+supports native IDs, dry runs, force, clear, and embedding refresh. Structured questions use the
+`question` tool and the [native question protocol](#structured-question-protocol).
+
+## Temporary operator console
+
+The container includes `lilac-tui`. From the installation directory, run:
+
+```sh
+docker compose exec --user root lilac lilac-tui
+```
+
+The installer offers "Talk to Lilac now" after deployment. Terminal-only installation needs a model
+provider but no Discord, local password, or Clerk account. Web and Discord can be configured separately.
+
+Each invocation creates one temporary owner conversation. Ctrl+Q exits, cancels active work, and deletes
+the conversation using native deletion. If the terminal disappears, heartbeats stop and Core deletes the
+conversation after 30 seconds. Reconnecting within that grace period keeps the same invocation alive.
+Core cleans abandoned conversations before recovering agent work after restart. Temporary conversations
+stay out of the web sidebar and search. Normal deletion and resource-retention rules apply; this is not
+secure erasure of databases, logs, provider records, or backups. Files created by tools and external
+side effects remain.
+
+The console uses the existing native protocol and agent runner. Its separate HTTP/WebSocket listener
+binds only to container loopback on port 8788, which is not published. Every request requires the root-only
+`/run/lilac/operator-token` in an authorization header. Startup rotates that token; Core receives its
+hash. The authenticated identity is the configured native owner. Tools still execute with the Core
+service user's authority, never the terminal client's root identity.
+
+There is no saved login, disk conversation cache, remote URL option, thread browser, or standalone TUI
+release. The image's Bun runtime loads the root-owned console and dependencies. Local password and Clerk
+web authentication continue to work independently. The legacy Clerk OAuth-client configuration is no
+longer needed by the terminal.
+
+Enter sends; Shift+Enter adds a line; Ctrl+C cancels work; Ctrl+Q exits. Ctrl+M selects a model and Ctrl+K
+shows queued inputs. Use `$` or `/skill:` for skills and `/` for commands. `:help` lists the remaining
+terminal commands. `:attach /path/to/file` reads a file inside the container. The console renders plain
+text and strips terminal control sequences. It does not read the host clipboard.
+
+For source development, `bun run dev:tui` connects to the same local operator endpoint. It requires
+access to the operator token, just like the container command.
+
+## Persistence and rollback
+
+Back up `native-surface.db` together with Core's transcript, resource, request-delivery and agent-run
+stores and managed blob data. Use the normal coordinated shutdown or a consistent SQLite backup;
+copying a live database without its WAL can lose accepted work.
+
+Native input receipts and upload readiness are durable before execution admission. Native output
+uses a managed nonexpiring event topic; projection receipts make replay idempotent. Agent-run
+checkpoints record the output frontier they cover, so restart retains the committed prefix and removes
+abandoned output. External tool effects still have the existing at-least-once recovery behavior.
+
+See [MIGRATIONS.md](../MIGRATIONS.md) before downgrading. Older builds do not understand native refs,
+resource origins or native recovery checkpoint fields. Drain work and keep a consistent backup before
+switching binaries.
+
+## Diagnostics and compatibility
+
+See [verification evidence and limits](native-surface-verification.md) for deployment, authentication,
+terminal/browser checks and the previous performance baseline.
+
+Backend, shared clients and display projection use native protocol version 1. Update the server and
+clients together. Older web tabs retain assets until reload; terminal clients report an incompatible
+response instead of interpreting another protocol version.
+
+Debug logging under `surface:native:metrics` records connection IDs, application-frame byte counts,
+bootstrap duration, replay kind/resets, queue pressure and handoff failures. Request and thread IDs
+correlate output commits with socket enqueue timing. This timing ends at the server's socket send,
+not at client rendering. Byte counters exclude TLS and WebSocket framing overhead. Metric fields
+omit credentials and conversation bodies.
+
+## Design system
+
+Open `/design-system`, or use the palette button in the sidebar, to inspect the real UI components
+with synthetic examples. The page requires no login and makes no requests for conversations or
+configuration. It includes dark/light themes, thread states, messages, composer, attachment previews,
+code blocks, controls, overlays and layout. Question cards use the ordinary composer for answers and attachments; the TUI has no question controls.

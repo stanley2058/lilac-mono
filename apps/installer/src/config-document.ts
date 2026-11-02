@@ -27,6 +27,31 @@ export function createConfigDocument(): ConfigDocument {
   );
 }
 
+export function supportsGuidedConfigUpdates(document: ConfigDocument): boolean {
+  const version = document.get("configVersion");
+  return version === 2 || version === 3;
+}
+
+export function permissionReview(config: CoreConfig): string {
+  const { defaultPermissions, permissions } = config.agent.subagents;
+  const profiles = Object.entries(permissions).map(([name, profile]) => ({
+    name,
+    level1: profile.level1,
+    level2: profile.level2,
+    network: profile.network,
+    workspaceWrites: profile.workspaceWrites,
+    execution: profile.execution,
+    delegation: profile.delegation,
+  }));
+  return [
+    `Default subagent permissions: ${defaultPermissions}.`,
+    "V3 defaults to full when the caller can grant it, otherwise the caller's own profile. V1/v2 default to restricted.",
+    "Profiles below include defaults. Globally disabled tools and MCP servers without allowSubagents remain unavailable.",
+    "Native Bash runs with the Core service user's authority even when workspaceWrites is false. Use restricted execution or OS isolation to limit filesystem access.",
+    Bun.YAML.stringify(profiles, null, 2),
+  ].join("\n");
+}
+
 export function validateConfigDocument(
   document: ConfigDocument,
 ): ResultType<CoreConfig, InstallerConfigInvalid> {

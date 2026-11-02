@@ -165,7 +165,7 @@ const subagentsSchemaV3 = z.object({
       restricted: RESTRICTED_PERMISSIONS_DEFAULT,
     })
     .describe(
-      "Named permission profiles shared by direct and workflow launches. Built-ins full and restricted always exist. Custom lowercase slug names (maximum 32 characters, excluding primary) inherit restricted defaults. A child may only select authority within its own. Models are selected separately per delegation.",
+      "Named permission profiles shared by direct and workflow launches. Omitted permissions on a direct delegation select full when the caller can grant it, otherwise the caller's own profile; v1/v2 default to restricted. Built-ins full and restricted always exist. Custom lowercase slug names (maximum 32 characters, excluding primary) inherit restricted defaults. A child may only select authority within its own. Models are selected separately per delegation.",
     ),
   profiles: z
     .never({
@@ -270,6 +270,11 @@ const modelsSchemaV3 = z
           .refine((name) => !name.includes("/")),
         baseModels.shape.def.unwrap().valueType.extend({
           ...reasoningFieldsV3,
+          agentCanSelect: baseModels.shape.def
+            .unwrap()
+            .valueType.shape.agentCanSelect.describe(
+              "Compatibility field, ignored in v3. Agents can select every configured alias and available catalog model regardless of this value.",
+            ),
           model: z
             .string()
             .regex(/^[^/]+\/.+/u)
@@ -280,7 +285,7 @@ const modelsSchemaV3 = z
       )
       .default({})
       .describe(
-        "Reusable model aliases. Alias names cannot contain `/`; each alias must name a canonical provider/model. Example: `assistant: {model: openai/gpt-4o, agentCanSelect: true}`.",
+        "Reusable model aliases. Alias names cannot contain `/`; each alias must name a canonical provider/model. Example: `assistant: {model: openai/gpt-4o}`.",
       ),
     main: baseModels.shape.main
       .unwrap()
@@ -382,7 +387,7 @@ const conversationSchemaV3 = baseConversation
           })
           .default("llm")
           .describe(
-            "Recall selection strategy: llm uses the search planner; decision uses classifier-based recall. Defaults to llm.",
+            "Compatibility selector. All recall uses the search planner; decision supplies a shadow gate when autoInject.gate is absent. Prefer autoInject.gate. Defaults to llm.",
           ),
         jevAutoInject: removedV3Field(
           "conversation.thread.jevAutoInject",
@@ -391,7 +396,7 @@ const conversationSchemaV3 = baseConversation
         decisionAutoInject: decisionSchemaV3
           .optional()
           .describe(
-            "Classifier-based recall options used by decision mode. Set probability overrides separately under jev and luna.",
+            "Compatibility settings. Legacy decision mode uses the model list for a shadow gate; candidate budgets and probability thresholds no longer control retrieval. Prefer autoInject.gate.",
           ),
       })
       .transform((value): z.output<typeof baseThread.in> => value)

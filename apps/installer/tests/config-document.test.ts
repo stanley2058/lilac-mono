@@ -5,6 +5,8 @@ import path from "node:path";
 
 import {
   createConfigDocument,
+  supportsGuidedConfigUpdates,
+  permissionReview,
   deleteConfigValue,
   getConfigValue,
   parseConfigDocument,
@@ -24,6 +26,49 @@ function readDocument(source: string) {
 }
 
 describe("installer config documents", () => {
+  it.each([2, 3])("supports guided updates without changing version %s", (version) => {
+    const document = readDocument(`configVersion: ${version}\n`);
+    expect(supportsGuidedConfigUpdates(document)).toBe(true);
+    setConfigValue(document, ["models", "main", "model"], "openai/example");
+    expect(validateConfigDocument(document).status).toBe("ok");
+    expect(document.get("configVersion")).toBe(version);
+  });
+
+  it("keeps implicit and explicit v1 outside guided updates", () => {
+    expect(supportsGuidedConfigUpdates(readDocument("models: {}\n"))).toBe(false);
+    expect(supportsGuidedConfigUpdates(readDocument("configVersion: 1\n"))).toBe(false);
+  });
+
+  it("reviews resolved permission overrides without printing prompt overlays", () => {
+    const document = readDocument(`configVersion: 3
+agent:
+  subagents:
+    permissions:
+      audit:
+        execution: restricted
+        promptOverlay: private-instructions
+`);
+    const review = validateConfigDocument(document).match({
+      ok: permissionReview,
+      err: (failure) => {
+        throw failure;
+      },
+    });
+    expect(review).toContain("Default subagent permissions: full");
+    expect(review).toContain("name: audit");
+    expect(review).toContain("execution: restricted");
+    expect(review).toContain("workspaceWrites: false");
+    expect(review).toContain("Core service user's authority");
+    expect(review).not.toContain("private-instructions");
+    const legacyReview = validateConfigDocument(readDocument("configVersion: 2\n")).match({
+      ok: permissionReview,
+      err: (failure) => {
+        throw failure;
+      },
+    });
+    expect(legacyReview).toContain("Default subagent permissions: restricted");
+  });
+
   it("creates a minimal current-version document without expanding Core defaults", () => {
     const document = createConfigDocument();
     setConfigValue(document, ["models", "main", "model"], "openai/gpt-5.6-sol");

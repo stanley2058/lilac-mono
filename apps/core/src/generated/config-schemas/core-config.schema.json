@@ -1391,7 +1391,7 @@
             },
             "inspect": {
               "default": { "model": "google/gemini-3.5-flash" },
-              "description": "Legacy content inspection model settings. Removed in configuration version 3.",
+              "description": "Compatibility settings, ignored because content.inspect is retired. Rejected in configuration version 3.",
               "type": "object",
               "properties": {
                 "model": {
@@ -1403,7 +1403,7 @@
                 }
               },
               "additionalProperties": false,
-              "markdownDescription": "Legacy content inspection model settings. Removed in configuration version 3."
+              "markdownDescription": "Compatibility settings, ignored because content.inspect is retired. Rejected in configuration version 3."
             },
             "editFile": {
               "default": { "hashline": true },
@@ -1494,20 +1494,20 @@
             },
             "batch": {
               "default": { "maxCalls": 8 },
-              "description": "Limits for parallel tool batches.",
+              "description": "Compatibility section, ignored since the batch tool was retired.",
               "type": "object",
               "properties": {
                 "maxCalls": {
                   "default": 8,
-                  "description": "Maximum tool calls in one batch. Integer from 1 to 8; defaults to 8.",
+                  "description": "Compatibility field, ignored. The batch tool is retired; models issue ordinary tool calls directly.",
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 8,
-                  "markdownDescription": "Maximum tool calls in one batch. Integer from 1 to 8; defaults to 8."
+                  "markdownDescription": "Compatibility field, ignored. The batch tool is retired; models issue ordinary tool calls directly."
                 }
               },
               "additionalProperties": false,
-              "markdownDescription": "Limits for parallel tool batches."
+              "markdownDescription": "Compatibility section, ignored since the batch tool was retired."
             },
             "media": {
               "description": "Inline media byte budgets for model input.",
@@ -3073,10 +3073,10 @@
                           "properties": {
                             "tools": {
                               "default": [],
-                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch.",
+                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
-                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch."
+                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search."
                             },
                             "plugins": {
                               "default": [],
@@ -3269,10 +3269,10 @@
                           "properties": {
                             "tools": {
                               "default": [],
-                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch.",
+                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
-                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch."
+                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search."
                             },
                             "plugins": {
                               "default": [],
@@ -3443,10 +3443,10 @@
                           "properties": {
                             "tools": {
                               "default": [],
-                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch.",
+                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
-                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch."
+                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search."
                             },
                             "plugins": {
                               "default": [],
@@ -4306,20 +4306,20 @@
             },
             "batch": {
               "default": { "maxCalls": 8 },
-              "description": "Limits for parallel tool batches.",
+              "description": "Compatibility section, ignored since the batch tool was retired.",
               "type": "object",
               "properties": {
                 "maxCalls": {
                   "default": 8,
-                  "description": "Maximum tool calls in one batch. Integer from 1 to 8; defaults to 8.",
+                  "description": "Compatibility field, ignored. The batch tool is retired; models issue ordinary tool calls directly.",
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 8,
-                  "markdownDescription": "Maximum tool calls in one batch. Integer from 1 to 8; defaults to 8."
+                  "markdownDescription": "Compatibility field, ignored. The batch tool is retired; models issue ordinary tool calls directly."
                 }
               },
               "additionalProperties": false,
-              "markdownDescription": "Limits for parallel tool batches."
+              "markdownDescription": "Compatibility section, ignored since the batch tool was retired."
             },
             "media": {
               "description": "Inline media byte budgets for model input.",
@@ -4582,13 +4582,13 @@
                 },
                 "autoInjectMode": {
                   "default": "llm",
-                  "description": "Recall selection strategy: llm uses the search planner; decision uses classifier-based recall. Defaults to llm.",
+                  "description": "Compatibility selector. All recall uses the search planner; decision supplies a shadow gate when autoInject.gate is absent. Prefer autoInject.gate. Defaults to llm.",
                   "type": "string",
                   "enum": ["llm", "decision"],
-                  "markdownDescription": "Recall selection strategy: llm uses the search planner; decision uses classifier-based recall. Defaults to llm."
+                  "markdownDescription": "Compatibility selector. All recall uses the search planner; decision supplies a shadow gate when autoInject.gate is absent. Prefer autoInject.gate. Defaults to llm."
                 },
                 "decisionAutoInject": {
-                  "description": "Classifier-based recall options used by decision mode. Set probability overrides separately under jev and luna.",
+                  "description": "Compatibility settings. Legacy decision mode uses the model list for a shadow gate; candidate budgets and probability thresholds no longer control retrieval. Prefer autoInject.gate.",
                   "type": "object",
                   "properties": {
                     "recallMinProbability": { "not": {} },
@@ -4703,7 +4703,7 @@
                     }
                   },
                   "additionalProperties": false,
-                  "markdownDescription": "Classifier-based recall options used by decision mode. Set probability overrides separately under jev and luna."
+                  "markdownDescription": "Compatibility settings. Legacy decision mode uses the model list for a shadow gate; candidate budgets and probability thresholds no longer control retrieval. Prefer autoInject.gate."
                 },
                 "jevAutoInject": { "not": {} }
               },
@@ -5511,7 +5511,7 @@
                       "delegation": false
                     }
                   },
-                  "description": "Named permission profiles shared by direct and workflow launches. Built-ins full and restricted always exist. Custom lowercase slug names (maximum 32 characters, excluding primary) inherit restricted defaults. A child may only select authority within its own. Models are selected separately per delegation.",
+                  "description": "Named permission profiles shared by direct and workflow launches. Omitted permissions on a direct delegation select full when the caller can grant it, otherwise the caller's own profile; v1/v2 default to restricted. Built-ins full and restricted always exist. Custom lowercase slug names (maximum 32 characters, excluding primary) inherit restricted defaults. A child may only select authority within its own. Models are selected separately per delegation.",
                   "type": "object",
                   "properties": {
                     "full": {
@@ -5539,10 +5539,10 @@
                           "properties": {
                             "tools": {
                               "default": [],
-                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch.",
+                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
-                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch."
+                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search."
                             },
                             "plugins": {
                               "default": [],
@@ -5662,10 +5662,10 @@
                           "properties": {
                             "tools": {
                               "default": [],
-                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch.",
+                              "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
-                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch."
+                              "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search."
                             },
                             "plugins": {
                               "default": [],
@@ -5774,10 +5774,10 @@
                         "properties": {
                           "tools": {
                             "default": [],
-                            "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch.",
+                            "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                             "type": "array",
                             "items": { "type": "string", "minLength": 1 },
-                            "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch."
+                            "markdownDescription": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search."
                           },
                           "plugins": {
                             "default": [],
@@ -5865,7 +5865,7 @@
                     },
                     "additionalProperties": false
                   },
-                  "markdownDescription": "Named permission profiles shared by direct and workflow launches. Built-ins full and restricted always exist. Custom lowercase slug names (maximum 32 characters, excluding primary) inherit restricted defaults. A child may only select authority within its own. Models are selected separately per delegation."
+                  "markdownDescription": "Named permission profiles shared by direct and workflow launches. Omitted permissions on a direct delegation select full when the caller can grant it, otherwise the caller's own profile; v1/v2 default to restricted. Built-ins full and restricted always exist. Custom lowercase slug names (maximum 32 characters, excluding primary) inherit restricted defaults. A child may only select authority within its own. Models are selected separately per delegation."
                 },
                 "profiles": { "not": {} }
               },
@@ -5890,7 +5890,7 @@
           "properties": {
             "def": {
               "default": {},
-              "description": "Reusable model aliases. Alias names cannot contain `/`; each alias must name a canonical provider/model. Example: `assistant: {model: openai/gpt-4o, agentCanSelect: true}`.",
+              "description": "Reusable model aliases. Alias names cannot contain `/`; each alias must name a canonical provider/model. Example: `assistant: {model: openai/gpt-4o}`.",
               "type": "object",
               "propertyNames": { "type": "string", "minLength": 1 },
               "additionalProperties": {
@@ -5977,15 +5977,15 @@
                   },
                   "agentCanSelect": {
                     "default": false,
-                    "description": "Allow agents to dynamically select this configured alias for delegation. Defaults to false. Human overrides and model-slot references remain available.",
+                    "description": "Compatibility field, ignored in v3. Agents can select every configured alias and available catalog model regardless of this value.",
                     "type": "boolean",
-                    "markdownDescription": "Allow agents to dynamically select this configured alias for delegation. Defaults to false. Human overrides and model-slot references remain available."
+                    "markdownDescription": "Compatibility field, ignored in v3. Agents can select every configured alias and available catalog model regardless of this value."
                   }
                 },
                 "required": ["model"],
                 "additionalProperties": false
               },
-              "markdownDescription": "Reusable model aliases. Alias names cannot contain `/`; each alias must name a canonical provider/model. Example: `assistant: {model: openai/gpt-4o, agentCanSelect: true}`."
+              "markdownDescription": "Reusable model aliases. Alias names cannot contain `/`; each alias must name a canonical provider/model. Example: `assistant: {model: openai/gpt-4o}`."
             },
             "main": {
               "default": { "model": "openrouter/openai/gpt-4o" },

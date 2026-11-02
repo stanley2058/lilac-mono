@@ -1,20 +1,41 @@
-# MIGRATIONS.md
+# Upgrade and rollback reference
 
-## Model catalog, reasoning selections, and native schema 7
+Use this reference before changing deployed binaries or stored-data formats. Configuration-file
+conversions are in [Core configuration upgrades](docs/core-config-migrations.md); native setup and
+day-to-day behavior are in [Native surface](docs/native-surface.md). Git history retains the sequence
+of feature introductions. This file keeps the cutover steps and compatibility constraints that still
+matter when upgrading an older installation.
 
-Config v3 adds models.dev discovery, provider visibility overrides and ordered model option rules.
-Existing aliases remain valid. Delegation can choose available catalog models independently of aliases
-or composer favorites. V1 and v2 retain their configured model lists and reasoning vocabulary.
-See `docs/core-config-migrations.md` for catalog configuration and rule precedence.
+## Plan the cutover
 
-Native initialization advances schema 6 to 7 and adds per-user model favorites. Thread and input
-records gain optional reasoning; child display records gain task titles and actual model identity.
-New optional workflow titles preserve old completion targets. Native output adds model-binding events
-so fallback identity survives completion and restart without reading transcripts. Deploy Core and web
-together. Older binaries reject schema 7; rollback requires restoring the pre-upgrade native database.
+1. Identify the installed build, config version, and database schema versions. Configuration,
+   native protocol, and SQLite schema versions are independent.
+2. Drain work when repeated external effects would be harmful, then stop Core and other producers.
+   Recovery is at least once; a backup cannot undo a tool's external effects.
+3. Back up Core databases, managed blob storage, and required Redis state as one consistent set.
+   Use a coordinated shutdown or consistent SQLite backup; copying a live database without its WAL
+   can lose accepted work. Preserve configuration and credential files privately.
+4. If transcript storage predates schema 6 or workflow storage predates schema 26, run the offline
+   blob migration below before starting current Core. Later supported schema migrations run at startup.
+5. Apply configuration and caller conversions. Upgrade Core, tools, web, and shared clients together;
+   update the optional computer gateway as described below. Reload old browser tabs.
+6. Verify startup health, a new request, retained history, resource reads, and configured integrations.
+   Verify native deployment settings and subagent authority after adopting v3.
 
+Rollback uses the matching pre-upgrade databases and blob storage together. Current workflow schema
+27, transcript schema 14, and native schema 7 are not readable by older builds. Strict record codecs
+can also change within a schema version; a matching version number alone does not establish downgrade
+compatibility. Keep producers stopped while restoring. Never remove migration markers to force an
+older binary to open current data.
 
-## Subagent permission profiles and config v3
+## Configuration and caller changes
+
+For v3, follow the [ordered upgrade procedure](docs/core-config-migrations.md#upgrade-procedure).
+V1/v2 remain readable. Their legacy profile model choices are ignored; delegated models are selected
+per call. V3 changes default delegated authority from restricted to full when the caller can grant it.
+The installer previews resolved permission profiles before writing and preserves the config version.
+
+### Subagent permission profiles and config v3
 
 Subagent role profiles (`explore`, `general`, `self`) are replaced by named permission profiles under
 `agent.subagents.permissions`, with built-in `full` and `restricted`. `subagent_delegate` takes
@@ -43,262 +64,23 @@ Config files need `configVersion: 3` to configure permission profiles; see
 parsing. There is no database migration. Deploy Core and web together so the web client accepts
 profile names other than the three former roles.
 
-## Native computer viewer through Core
+### Config v3 retired tools and settings
 
-`computer.read.desktop.url` can now be a root-relative `/computer.html?...` URL. Native web resolves
-it against the Core origin and uses the dedicated authenticated `/api/computer/socket` lane. Core
-connects to the computer-use gateway's new bearer-authenticated `/viewer/socket` endpoint with a
-canonical session hash and desktop generation. Deploy Core/web and gateway together and reload
-existing browser clients. There is no stored-data migration or runner rebuild requirement. Direct
-`provision` viewer URLs are unchanged.
+`content.inspect`, `surface.messages.search`, and `attachment.download` are removed without aliases
+for every config version. Migrate callers to ordinary media reads or a capable model,
+`discovery.search`, and `resource.materialize` respectively. `content.inspect`'s dedicated Gemini
+video/transcription workflow has no direct replacement. Custom permission allowlists and plugin lists
+must drop the retired names. The Discord message cache, ingress indexer and shared discovery path remain;
+only the old search callable's first-search history backfill is removed.
 
-## Deferred questions and native schema 6
+Config v3 rejects `tools.inspect`, legacy web/recall spellings, flat decision thresholds, and the five
+native YAML deployment settings. V1/v2 input parsing remains supported. Follow
+[the v3 migration instructions](docs/core-config-migrations.md#retired-tools-and-v3-configuration-fields)
+before changing the config version, especially the one-time native settings import. Existing deployment
+records are retained; fresh v3 records use the existing defaults. No persisted schema, table, blob,
+or history is deleted by this change.
 
-The Level 1 `question` tool now defaults to `mode: "deferred"`. It returns
-`{ mode: "deferred", status: "accepted", questionCallId }` after presentation. Pass `mode: "sync"`
-to await `{ mode: "sync", status: "answered", questionCallId, answers }`. Update callers that expect
-the old `{ answers }` result. Deferred questions have no inactivity timeout. Explicit sync calls retain
-the ten-minute timeout and are interrupted on Core restart; cancellation and expiry never select an option.
-
-Native questions are canonical display records in the native store. Deferred calls survive turn
-completion and Core restart. A native reply uses ordinary `inputs.submit` with optional
-`questionReply: { messageId, token }`, normal text and attachments. Acceptance atomically resolves the
-whole question call and retains the input receipt. Retry the same command ID to recover that receipt.
-The normal native delivery path supplies the reply and original question context to the agent.
-Explicit sync native calls route replies into the active run as steering and return a `kind: "message"`
-answer with text, message ID and attachment IDs. Discord retains its sequential cards and live request continuation via `question_result`; pending
-Discord calls are interrupted on restart. Agent-run checkpoints gain optional `questionResultIds` for
-that continuation path. Older checkpoints remain readable.
-
-Question-store initialization rebuilds the old Discord-only calls table in one transaction, retaining
-calls and action tokens. It adds `mode` with `sync` for existing rows and the `expired` terminal state.
-Native initialization advances SQLite schema 5 to 6 without rewriting existing records; input records
-gain optional question-reply references. Older binaries reject schema 6.
-
-Native display/replay adds `data-question`. The oRPC contract adds `questions.read`, `questions.pending`,
-and `questions.dismiss`. Replies and dismissals require the intended authenticated respondent, edit
-access, the current history generation and a pending question token. Ready attachments use the same
-ownership checks as normal messages. Pending questions are queryable independently of the history
-window. Deploy Core and clients together because old strict decoders reject new display and input
-fields. Back up request-delivery, agent-run and native stores before upgrading; rollback requires that
-coordinated backup.
-
-The web client uses its ordinary composer to answer questions, including attachments. Numbered options
-populate the draft without sending it. The TUI has no question controls in this release.
-
-## Native schema 5: initiating notification device
-
-Native input submissions and persisted input records gain optional `deviceId`, the lowercase SHA-256
-hex digest of the initiating browser's push subscription endpoint. Core matches it only against the
-authenticated initiating user's subscriptions. Existing inputs without this field keep immediate
-broadcast delivery. The existing subscription table remains unchanged; no device registry is added.
-
-Initialization advances SQLite schema 4 to 5 without rewriting existing records. Older binaries reject
-schema 5. Deploy Core and web together because older strict input validators reject `deviceId`; rollback
-requires a pre-upgrade backup.
-
-Successful completions notify the initiating subscription first, then other eligible devices after
-60 seconds if that completion remains unread. Missing or disabled initiating subscriptions and failed
-primary sends fall back to immediate delivery to other eligible devices. Failures and agent-initiated
-posts keep immediate broadcast behavior. Pending escalations are process-local: restarting Core during
-the delay drops them, and startup does not replay them.
-
-## Native surface sends opt in to execution
-
-`surface.messages.send` replaces `suppressRun` with `triggerRun`, defaulting to false. Native sends
-now queue by default; pass `triggerRun: true` to request the existing cross-thread execution behavior.
-Heartbeat remains notification-only. The strict input schema rejects the removed flag. Update callers
-and deploy Core and tools together; there is no stored-data or configuration migration. Other surfaces
-retain their send behavior. Deferred native messages now receive their visible timestamp at delivery.
-
-## Native schema 4: deferred surface sends
-
-Native `surface.messages.send` calls with effective `suppressRun=true`, including heartbeat, now
-return `{ ok: true, status: "queued", message, session }` without a message reference. Other sends
-retain their existing result and run-triggering behavior. Deploy Core and its tools together.
-
-Schema 4 stores request-grouped sends in native records. Groups retain first-send order per destination
-and become visible only after the sender settles and the destination has no active or pending input.
-Lifecycle bus events wake delivery checks; the durable request outcome distinguishes settlement from
-recoverable failure. Startup and maintenance reconcile retained groups, and runner settlement wakes
-delivery immediately. Repeated delivery does not duplicate messages. Pending
-messages remain absent from history, search and transcript links. Attachments retain their bytes while
-pending. Deleting a destination removes its groups; a history-generation change or lost write access
-discards pending groups when delivery is checked. Completed groups retain delivery links for recovery. Heartbeat handoffs are prepared before settlement
-and linked only after delivery.
-There is no expiry, coalescing, operation-status API, or change to edits and deletes.
-
-Existing data needs no rewrite. Older binaries reject schema 4; rollback requires a pre-upgrade backup.
-Existing customized HEARTBEAT.md files remain unchanged. A queued acknowledgment means acceptance;
-heartbeat should continue and avoid resending the same finding while it waits for delivery.
-
-## File-based heartbeat workflow and native agent access
-
-No config version, wire schema, or database schema changes. Core seeds missing `prompts/HEARTBEAT.md`
-and `prompts/heartbeat/WORK.md` from the built-in heartbeat skill. Existing files and legacy inbox/archive
-notes remain unchanged. Ask the agent to use the heartbeat skill's migration reference to merge old
-responsibilities and active prompt instructions, preserve destinations, and verify delivery. Startup
-no longer creates empty legacy inbox/archive directories. The default destination remains optional in
-configuration and is selected through conversation during setup; native is not required.
-
-Trusted cross-surface agent capabilities now grant the configured native owner's existing thread access.
-Native-origin runs retain their original principal. Restricted or unverified requests receive no owner
-fallback, and other users' private DMs remain inaccessible. Heartbeat posts are notifications and do not
-admit another agent turn in their destination. This is a deliberate authority-policy change, not a change
-to human login or thread-sharing permissions. Deploy Core; web clients need no protocol upgrade.
-
-## Permanent native DM
-
-Native thread records and summaries gain optional `kind: "dm"`. Absence retains ordinary-thread
-behavior. Bootstrap creates one private DM per human user, enforced by a unique SQLite expression
-index. DMs cannot be shared, renamed, archived, rewound, deleted, or removed by retention.
-New input indexes bound request/delivery lookup, pending work, and age selection. Initialization
-creates these indexes without rewriting existing records.
-
-Deployment settings gain `dmContextMaxAgeMs`, defaulting to 10,800,000 ms when absent. It is
-independent of ordinary-thread context age. `threads.context` reports the selected context boundary,
-summary boundary, generation, and expiry. The built-in `/compact` command uses the existing agent
-compactor and preserves display history. The authenticated native request envelope gains optional
-`compact`, checked against the accepted command before execution.
-DM thread summaries gain optional `preview`: the latest user or assistant text message, with
-whitespace collapsed and at most 160 characters. Ordinary thread summaries omit it.
-
-Deploy Core and web together. Older strict protocol validators may reject the new fields. Do not
-roll back Core over a database containing DM records: older code does not enforce their permanence.
-
-## Optional auto-inject decision gate
-
-Auto-inject now always uses the query planner and search ranking. Optional
-`conversation.thread.autoInject.gate` configures `mode: off | shadow | enforce`, an ordered `model`
-list, and `skipMinProbability` (default 0.8). Omission disables the gate; a configured gate defaults
-to shadow. Shadow records decisions and continues retrieval. Enforce skips only when the negative
-score meets the cutoff and the usefulness score is at most its complement. Invalid responses,
-refusals, image preparation failures, and unavailable providers continue to the planner.
-
-Legacy `autoInjectMode: decision` or `jev` maps to a shadow gate with the existing decision model
-list. Explicit `autoInject.gate`, including `mode: off`, takes precedence. Legacy decision options
-remain accepted for configuration compatibility, but candidate limits, relevance cutoffs, and old
-message thresholds no longer affect runtime behavior. Move model settings to `autoInject.gate.model`
-and remove `autoInjectMode`, `decisionAutoInject`, and `jevAutoInject` when editing configuration.
-Existing explicit length floors still apply before the gate, so lower old 80/110 overrides to admit
-short questions. No schema version or stored-data change is required.
-
-Gate logs use `conversation.thread.auto_inject.gate`, with mode, outcome, model, probabilities, and
-elapsed time. Outcomes include `length-skip` and `failed`; shadow `skip` means the gate would skip,
-while retrieval still proceeds. Correlate with usage and appended events by request ID.
-
-## Auto-inject length floor
-
-Initial and follow-up auto-inject length defaults are now 10 meaningful text units. Explicit
-`minTextUnits` and `followUpMinTextUnits` values retain precedence. The planner now generates
-queries for the current subject, including useful personal history without explicit recall wording.
-No schema version or stored-data change is required.
-
-## Native assistant citations version 1
-
-Native message and draft text can contain `[Assistant quote](lilac-citation://v1/quote?...)`
-links. The query contains `thread`, `message`, `text`, `start`, `end`, `prefix`, `suffix`, and
-an optional `comment`. Selectors use whitespace-normalized rendered assistant text and UTF-16
-offsets. The quote and comment remain usable when the source is changed or removed.
-
-Core expands valid links into quoted model context for prompts, follow-ups, and steering.
-Display history and drafts retain their links. Both encoded and expanded input must fit the
-existing 65,536-character input limit. No database schema or RPC fields change. Older clients
-cannot render the chips, and older Core versions do not expand them. Update Core and web together.
-
-## Sidebar working time
-
-Native thread summaries gain an optional `workingSince` field while a thread is working. Core reads it
-from the latest turn's start time, or from its first message's creation time before output begins.
-Native web shows the elapsed time in place of the last-activity time. No stored data changes.
-Update Core and web together because older strict thread validators reject the new field.
-
-## Shared working indicators
-
-Version-2 configuration adds `surface.workingIndicators`, the status phrases shown while a request
-runs. It defaults to the built-in list. `surface.discord.workingIndicators` no longer has a default
-and now overrides the shared list for Discord only; existing Discord values keep their behavior.
-Version-1 configurations use the built-in list for native web. No schema version or stored-data change is required.
-
-The native bootstrap reply gains an optional `workingIndicators` field. Native web rotates the
-phrases in place of "Working" and shows the past tense of the final phrase in place of "Worked".
-Every client derives the phrase from the turn ID and elapsed time, so reloads show the same word.
-Update Core and web together because older strict bootstrap validators reject the new field.
-
-## Separate thread query embeddings
-
-`conversation.thread.embedding.queryModel` optionally selects the search-query encoder.
-It defaults to `embedding.model`, which remains the document encoder and stored embedding ID.
-Both encoders must share a vector space and dimensions. Changing the document model requires
-re-embedding existing summary facets. No schema-version or database change is required.
-
-## Decision auto-inject F1 defaults
-
-Decision auto-inject defaults now select useful prior facts without requiring a recall/durable
-message gate. Both scoped `recallMinProbability` defaults are zero; setting a positive recall threshold
-still enables the existing gate. The default shortlist has up to 40 candidates, Jev relevance defaults
-to 0.2, and Luna relevance defaults to 0.1. Luna uses a usefulness question and no longer truncates
-the configured shortlist to ten. Existing explicit configuration values retain precedence.
-
-With `semanticFallback: true`, retrieval now reserves half the candidate budget for lexical matches
-and half for semantic matches, merging duplicate threads. Semantic search runs even when lexical
-matches exist. Missing embeddings or embedding failure retain lexical retrieval; false keeps lexical-only
-retrieval. The latest message and up to three recent authored user messages inform retrieval and scoring.
-Generated recall and assistant messages are excluded from that context. Debug decision events can now
-report `source: "hybrid"`. No configuration fields, schema version, or stored data are added.
-
-## Native HTML previews
-
-Native agent replies can show a page from a fenced `html-preview-file` block containing one file path.
-When a completed or failed turn ends, Core reads each named file under the thread's filesystem
-permissions, inlines local and `resource://` assets as data URIs, and stores the page as a published
-native upload. Native store records gain the `html-preview` kind, which maps a turn and path to that
-upload or to the reason it could not be saved. Thread deletion removes these records. No SQLite schema
-change or backfill is needed. Older strict record parsers reject the new kind, so restore a consistent
-backup before downgrading.
-
-The authenticated `GET /api/html-previews?thread=&message=&path=` route serves the saved page with
-`Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups`, so remote scripts load but
-the page has an opaque origin. Update Core and web together. Older clients show these fences as code.
-
-The built-in `visualize` skill teaches agents the fence. Skill frontmatter accepts an optional
-`surfaces` list, and `visualize` sets `surfaces: [native]`, so only native requests see it in the skills
-index, `skills.list`, and `skills.read`. Skills without the field are unchanged. A skill whose `surfaces`
-is not a non-empty list of names is now reported as invalid and skipped.
-
-## Decision auto-inject configuration
-
-Rename version-2 `conversation.thread.autoInjectMode: jev` to `decision` and the `jevAutoInject`
-section to `decisionAutoInject`. Old settings normalize to the new runtime shape, preserving thresholds;
-the new section wins if both are present. No config-version or database migration is required.
-`decisionAutoInject.model` is now an ordered array. Single strings still parse. Move the four
-`*Probability` fields into `decisionAutoInject.jev` or `decisionAutoInject.luna`; old flat fields
-apply to both scopes, with explicit scoped fields taking precedence. Configure
-`[typesafe/jev-1.13.0, openai/gpt-6-luna]` to select Jev for text and Luna for attached images.
-The array controls routing, without retrying another model on failure. Log queries must also change:
-the `conversation.thread.auto_inject.jev` event is now `conversation.thread.auto_inject.decision`,
-and the usage record's `jev` field and timing stage are now `decision`. OpenAI can evaluate
-attached images through existing scoped resource access. See [config migration guidance](docs/core-config-migrations.md#decision-auto-inject-lane).
-
-## Native workflow cards
-
-Native display messages accept a `data-workflow` part that carries a structured workflow progress
-card: status, start and end times, step counts, phases, current steps, waits, the result or failure
-reason, agent counts, and the next scheduled run. Core adds it to native workflow progress messages
-next to the existing markdown text and `data-actions` controls, and replaces it on each edit. The web
-app renders the card as its own block in place of the text. Discord and GitHub cards are unchanged.
-Existing progress messages keep their text-only form until their next edit. Stored data needs no
-backfill. Update Core, web, and TUI together because older strict validators reject the new part.
-
-## Generated context messages
-
-New deferred subagent completions, automatic conversation recall, and custom-command outputs use
-labeled user messages with `providerOptions.lilac.generated` version 1 metadata. Existing message
-codecs preserve this metadata, so no database rewrite or schema bump is required. Existing synthetic
-tool exchanges remain readable and participate in completion and recall deduplication. Generated
-messages do not count as human turns for compaction. Deploy the runtime and adapters together.
-
-## Batch retirement
+### Batch retirement
 
 The `batch` tool and tool-call expansion API are removed. Ordinary model-issued calls run concurrently
 in received-order groups separated by `write`, `edit`, and `patch` calls, including their legacy
@@ -309,369 +91,27 @@ remain accepted for configuration/plugin compatibility but no longer control exe
 from maintained configurations and plugins. Old transcripts remain replayable; a newly attempted
 `batch` call receives the ordinary unknown-tool error.
 
-## Native activity details
-
-Native output activity payloads and `data-activity` display parts add optional `output`,
-`exitCode`, and `file`. `file` holds the path and media type of a file that a read attaches, such
-as an image; the web app resolves it with `files.resolve` only when the row is expanded. Completed
-thinking activities now carry their reasoning text in `detail`, and completed tools carry
-`durationMs` plus a redacted result preview of at most 4,096 characters. Bash activities carry the
-redacted command in `detail`, and edit and patch activities list every changed path in `detail`, one
-per line. Stored turns
-need no backfill: older activities render without these details, and thinking rows without reasoning
-text are hidden. Update Core and web together because older strict validators reject the new fields.
-
-## Native agent streams
-
-Native v1 adds `streams.sync`, `streams.watch`, `streams.hydrate`, and `streams.turnPage`. Their target
-selects either a native thread or a subagent owned by that thread. Both targets use the existing
-display-message, turn, replay-checkpoint, and subscription event schemas. Core and web must be updated
-together. The existing thread and paged subagent RPCs remain available.
-
-Native SQLite `user_version` advances from 1 to 2 without rewriting existing records. The native record
-codec adds `agent-stream` metadata; child display turns, replay deltas, projection provenance, and
-deduplication receipts reuse the existing native tables. Older binaries reject version 2. Rollback
-requires a pre-upgrade backup. New child runs publish through the same durable semantic output path
-as primary runs, including recovery-frontier resets, reasoning details, redacted tool arguments and
-results, text phases, and terminal state.
-
-Existing completed children are projected lazily from retained transcripts when opened. Those
-transcripts cannot recover original timing or text-phase events. System prompts, opaque provider
-state, and encrypted reasoning remain excluded. This replaces the original subagent inspection
-policy that omitted all tool arguments and reasoning text.
-
-Child access follows the verified workflow ancestry to a canonical native parent request. Parent
-rewind or deletion invalidates discarded descendants and removes their native display records.
-Minimal deleted stream metadata remains so retained late output events are acknowledged as stale.
-Grant revocation ends child subscriptions and purges their cached display data. Child display streams
-do not create sidebar conversations or grant permission to edit, rewind, or submit input to children.
-
-## Native computer viewer
-
-Native RPC adds `computer.read`. Deploy Core and web together, and rebuild the optional computer-use
-gateway and runner images. The gateway adds a read-only `viewer` MCP tool; the runner serves
-`/lilac-viewer.html` using its bundled noVNC client. Existing desktops must be terminated and
-provisioned again to use the rebuilt runner. No stored-data or configuration migration is needed.
-
-Viewer credentials are fetched under the native thread edit permission, kept in memory, and sent to
-the viewer frame using origin-checked messages. They are not included in URLs or the conversation
-cache. Existing direct noVNC links and provisioning responses remain unchanged.
-
-## Native web keybindings
-
-Keyboard shortcuts are stored only in the browser under `lilac-keybindings-v1`, scoped to the
-installation and principal. The version 1 payload contains physical key codes and modifiers for
-each action; null disables an action. Missing, invalid, duplicate, or unsupported payloads use
-default bindings without rewriting storage. No Core configuration or server-data migration is needed.
-
-## Native reaction names
-
-Reaction responses add optional `userNames` (at most five display names) and `overflowCount`.
-Core projects these fields from current users when personalizing messages; stored messages need no
-backfill. Update Core and web together because older strict response validators reject these fields.
-
-## Native deployment settings
-
-Native settings `titleModel`, `outputStreaming`, `oldMessageSelectionMaxAgeMs`,
-`storageRetentionMaxAgeMs`, and `crossThreadSend.triggerRun` now live in a singleton
-`deployment` record in the native database. Startup creates the record once from the existing
-parsed `surface.native` values, including version-owned defaults. Existing database values always
-win on later starts. The migration does not rewrite `core-config.yaml`; the old keys remain readable
-for initial import only and can be removed after successful startup. Changing those YAML keys no
-longer changes a migrated installation's runtime behavior.
-
-Settings > Deployment replaces the response streaming control in Options. All five settings are
-instance-wide and owner-only. Saves use an atomic database transaction with a revision check.
-New output attempts and title jobs use the latest settings; active output attempts keep their mode.
-Message selection and retention maintenance read the current settings when they run.
-
-Native RPC replaces `config.readStreaming` / `config.setStreaming` with `config.readDeployment` /
-`config.setDeployment`. Update Core and web together. The native database format remains version 1
-with an additional record kind; older builds cannot manage this record. Keep a pre-upgrade database
-backup if a rollback is needed.
-
-## Conversation reference ranges and previews
-
-Reference links accept `range=<startMessageId>..<endMessageId>` instead of `message`. Endpoints are
-inclusive and may use native web display IDs, including retained external messages without a unique
-platform ID. The `references.range` RPC resolves a message anchor to its complete discussion endpoints
-without sending unloaded transcript pages to the browser. Update Core and web together for this RPC
-and the optional `range` reference field. Existing links
-and stored Markdown remain valid; no database migration or backfill is required.
-
-Native input expansion now injects visible text and attachment metadata under the starter's authority.
-Previews share a 12,000-character budget, prefer recent messages, and place omission warnings before
-the excerpt. Message links preview the selected message; session and range links page backward.
-Range endpoints fix the selection, not the contents: subsequent reads reflect retained edits and
-report unavailable or reversed endpoints. Reference previews do not retrieve attachment bytes.
-
-## Conversation references
-
-Native web adds `references.resolve` and `references.read`, and display-message metadata accepts an
-optional `reference` containing surface, session ID and optional source message ID. Update Core and
-web together because older strict response validators reject this metadata. References persist as
-ordinary Markdown links in existing message and draft text; there is no database migration or backfill.
-Core expands those links into agent coordinates under the native thread starter's authority.
-
-Browser panel state accepts thread-preview tabs. Older clients may discard saved tabs when reading
-this new variant; sidebar and panel widths remain readable. Native and external message links use
-`/?ref=<surface>:<sessionId>&message=<messageId>` with URL-encoded query values. Omitting `message`
-opens the session at its normal latest position. A reference grants no access. Missing external
-history is not fetched from Discord.
-
-## Retained external runs
-
-The native external conversation view now reads retained agent runs rather than live channel messages.
-Display-message metadata adds optional `externalRunId` for conversation dividers. This legacy field
-identifies the retained continuation chain, so linked requests share a divider group. Both Discord and GitHub read
-cursors now page backward through retained runs; reload open external views when upgrading. Update Core
-and web together because older strict response validators reject the new metadata. The authenticated
-resource route also serves retained Discord resource IDs, owner-only transcript file references, and
-retained sent-file handles. Expired sent files keep placeholders when attachment metadata remains in
-the transcript. Existing output retention is unchanged.
-No stored-data migration or historical backfill is required.
-
-## Link previews
-
-The authenticated native RPC contract adds `links.preview` for page titles, descriptions, images,
-and favicons. Update Core and web together to enable hover previews. Older clients do not call
-the new method; newer clients keep ordinary links usable if the method is unavailable.
-Metadata uses an in-memory browser query cache. No stored-data migration is required.
-
-## Agent Discord identity
-
-The native service-user record and agent catalog accept optional `discordUserId`. Owners can set
-or clear it through `identity.update`; omitted input preserves the existing link, and `null` clears it.
-Matching Discord messages use the agent identity in the web chat. This is a display link and does not
-change permissions. Existing records need no backfill. Update Core and web together; older strict
-parsers cannot read the new field. Clear the link before downgrading to a version without this field.
-
-## External conversation display
-
-External thread responses now include optional `sourceUrl`, and display-message metadata accepts
-optional `authorDisplayName`. External authors are rendered from metadata instead of prepended text.
-External lists use latest activity first; their opaque cursors still identify the last thread on a page.
-Update web and Core together because older strict response validators reject the new fields.
-No stored-data migration is required.
-
-## Temporary operator conversations
-
-Native v1 thread records accept optional `ephemeral: { sessionId, lastSeenAt }`. Normal records omit
-it. Each operator invocation uses a UUID session identifier and root bearer token on a private,
-loopback-only gateway. POST `/api/operator/session` creates or renews that invocation; DELETE ends it.
-These endpoints are absent from the public web gateway. Existing native RPC schemas are unchanged.
-Expired invocations cannot recreate their deleted thread. Deletion receipts and scrubbed tombstones
-remain under the existing native deletion contract. Startup cancels/deletes abandoned temporary
-conversations before accepted-request recovery. A downgrade must not read records with the new field;
-back up native storage before upgrading and restore the matching backup when rolling back.
-
-The image now contains the console and uses its existing Bun runtime. Standalone TUI release assets,
-local/Clerk terminal login, and client disk cache support are removed. Existing host TUI binaries and
-old credential/cache directories are not automatically deleted. Stop using those binaries and remove
-those local files if no longer needed. Web authentication and retained conversations are unchanged.
-Operator-only Core startup is enabled by the existing container operator-token hash without enabling
-the public native listener or requiring Discord. The native owner ID is reused if web is enabled later.
-
-This file records persisted-data, wire, and protocol migrations. Manual `core-config.yaml` upgrades are
-documented separately in [`docs/core-config-migrations.md`](docs/core-config-migrations.md).
-
-## Native surface version 1
-
-The optional native surface adds version-1 JSON/oRPC client contracts, native session/message refs,
-and `native-surface.db`. Existing installations keep native disabled. The new store owns users,
-memberships, threads, turns, command receipts, upload handles, read/reaction state and bounded replay
-changes. It uses its own SQLite schema version and strict per-record codecs. It does not import or
-replace Discord's store. Native private projection provenance never enters display payloads.
-
-Version-2 core config accepts optional `surface.native`. Version-1 config normalization leaves native
-disabled. Old-message selection and storage retention both default to disabled. Existing v2 config
-without this section behaves unchanged. Remove the section before using a strict older parser.
-
-The transcript/resource database advances to schema 13. Schema 12 adds native resource ownership
-references, and schema 13 retains canonical native transcripts while native history refers to them.
-Global transcript age/count pruning cannot remove native conversation history behind the surface.
-Rewind, deletion and explicit native retention release those references through the existing recovery
-path. Resource records accept immutable native upload origins; their origin thread controls access.
-
-Native refs are additive to current surface/workflow event schemas. Frozen legacy snapshot validators
-still reject native values. Restore a consistent backup before downgrading a database to an older
-build, and drain native work before removing the gateway. Keep native state together with existing
-request-delivery, WAL, transcript/resource, event-bus and managed blob data.
-
-Browser projection caches are scoped by installation, principal, protocol and projection version.
-They are disposable: unsupported versions or invalid coverage require a fresh recent window, while
-server conversation history remains authoritative. Never copy one user's cache into another scope.
-
-## Native automatic titles
-
-The optional `autoTitle` flag on `threads.create` marks a supplied title as an automatic fallback.
-Updated web and TUI clients opt in for first-line titles and leave manual draft titles unchanged.
-Clients that omit the flag keep their explicit titles. Update clients and servers together.
-
-Native v1 thread records accept optional private `titleGeneration` metadata containing the first input
-ID and the initial/refinement phase. Existing records without it keep their titles. No backfill or
-SQLite schema change is needed. Manual renames remove this metadata; automatic updates also verify
-that history has not been rewound or deleted. Older strict parsers cannot read records containing the
-new field. Restore a consistent backup before downgrading.
-
-## Native file resolution
-
-The v1 RPC contract adds authenticated `files.resolve` with a thread ID and filesystem path. It
-returns the resolved path, filename, media type, and existing authenticated preview URL. Resolution
-requires thread edit access and uses the thread's filesystem permissions and deny paths. Existing
-published-path records and file-serving routes are reused; no database migration is required.
-Update clients and servers together to enable inline-path previews.
-
-## Native web theme selection
-
-The web app stores the selected built-in theme for each color scheme under `lilac-theme-palette-v1`.
-The value is browser-wide, like the existing `lilac-theme-v1` scheme preference. The JSON value holds
-`light` and `dark` theme IDs. Missing, invalid, unknown, or unavailable values use Lilac for both.
-Older clients ignore the key. No backend data or existing browser preferences require migration.
-
-## Native web local panel layouts
-
-The web app stores device-local panel preferences under `lilac-panels-v1`, scoped by installation and
-principal. The JSON value contains the global sidebar width/open state and right-panel width/open
-state pairs keyed by thread ID. Missing, invalid, or unavailable storage uses the existing defaults.
-Older clients ignore the new key. No backend data or existing browser preferences require migration.
-
-The value now also stores each thread's ordered tabs, file targets, and active tab ID in an optional
-`tabs` field. Existing values without tabs retain their layouts and start with the Agents tab.
-Malformed tab data resets tabs without discarding layout preferences. File targets accept an optional
-inclusive `endLine` alongside `line` for range navigation. File contents and subagent transcript
-selection are not stored. Builds predating this field reject the extended value and use
-default layouts; removing `tabs` from the value restores their ability to read the layout preferences.
-
-## Native personal sidebar queues
-
-The native store adds `native_user_preferences` and `native_thread_preferences`. These additive
-SQLite tables hold each user's inactivity threshold, section, order, and activity frontier. Existing
-threads enter Active in creation order, newest first, and inactive threads settle when the sidebar is
-read. The default threshold is three days. Pinned threads and running conversations do not auto-settle.
-New conversation activity re-enqueues settled threads at the top of Active; activity does not reorder
-an already active thread. Renaming and changing access do not count as conversation activity.
-Moving a thread into another section restarts its inactivity threshold; reordering within a section
-does not.
-
-The v1 RPC contract adds `sidebar.preferences`, `sidebar.configure`, `sidebar.list`, and `sidebar.move`.
-These operations always use the authenticated user and require read access to each affected thread.
-Settling and pinning are personal organization, independent of shared archive or deletion. No background
-worker or shared thread mutation is introduced. Update clients and servers together for the new UI.
-
-## Native account profiles
-
-Native users can edit their own display name and avatar. Local profiles use the existing name and
-managed avatar fields; startup preserves the owner's edits. Clerk installations save names and images
-in Clerk, then project them locally. Display names update Clerk's first name and clear its last name;
-sign-in usernames are unchanged. The optional stored `providerAvatarUrl` holds Clerk's profile image
-URL. Existing records need no backfill. Older strict record parsers cannot read this new field.
-
-The v1 wire contract adds `profile.get` and `profile.update`, optional `avatarUrl` on display users, and
-optional `starterAvatarUrl` on thread summaries. Authenticated `PUT`/`DELETE /api/profile/avatar` edits
-only the caller's avatar. `GET /api/users/:id/avatar` reads local public profile images. Managed blob
-references and provider user IDs remain private. Clients and servers should be updated together.
-
-## Native display identity and previews
-
-Native v1 user records now accept an optional `avatar` containing a managed blob reference and a
-validated raster image media type. Existing records omit it and retain their initials fallback.
-The stable `lilac` service-user ID and authority are unchanged; startup preserves its display name
-and avatar. Only the owner can change either. Avatar reads require native authentication and are
-installation-wide, independent of private thread attachment grants.
-
-Display catalogs optionally carry `agent` identity. Existing disposable client caches without it
-remain readable and use the default identity until catalog reconciliation. Thread summaries add
-optional `starterDisplayName` and `displayStatus` display fields; the server emits these using existing
-thread/read state. The existing `native_surface_read` table is initialized by `NativeStore`, with no
-schema or read-state migration. `displayStatus` also accepts `input` when a native question in the
-current history waits for the viewer and no run is active; clients older than this value reject the
-summary until they reload the current web bundle, and no stored data changes.
-
-The filesystem `fs.read_bytes` request accepts optional `prefixBytes` from 1 through 65,536.
-Without it, reads retain their whole-file limit and result shape. Prefix reads return at most that
-many bytes and add `totalBytes`, the original size reported by the opened file. `bytesLength` remains
-the returned prefix length and `fileHash` hashes those returned bytes; prefix reads do not establish
-a full-file edit hash. Both local and SSH paths retain their existing denied-path checks.
-
-Text preview endpoints cap returned UTF-8 prefixes at 64 KiB and preserve the originating thread's
-resource authorization. Binary data returns a displayable error. Published file previews read a bounded prefix of the
-latest file, as before. The new preview endpoints do not create file snapshots.
-
-## Native web local drafts
-
-The existing scoped browser draft cache also holds unsent new conversations under `draft:` IDs.
-Draft rows accept optional title and model selection metadata. Existing rows remain readable; no
-IndexedDB version or backend schema changes. An older web build may ignore rows with the new optional
-metadata. File selections remain in memory and must be reattached after a browser reload.
-
-## Native terminal cache version 1
-
-The terminal client writes versioned private credential and transcript files separately. Its
-`cache-v1.json` atomically commits replay checkpoints and hydrated/deferred slots, bounded to 64 threads
-and 32 MiB. Cache entries are scoped by installation, principal, protocol and projection version.
-Unsupported or corrupt cache files reset from the server; they never migrate canonical history.
-Credential files are keyed by the server origin hash and contain session or OAuth refresh credentials,
-never the local Basic password. Logout removes the credential and purges the principal's cache.
-See [native setup](docs/native-surface.md) for locations and permissions.
-
-Fresh installer deployments default to native web/terminal with authentication. Updating or reinstalling
-an existing deployment retains its configured surfaces and port bindings. Existing Core configurations
-without `surface.native` remain disabled; no configuration-version bump enables a listener implicitly.
-
-## Native output recovery frontier
-
-Native runs add an optional `nativeOutput` field to version-1 agent-run WAL checkpoints. It stores
-`ordinal`, the last native output publication covered by that checkpoint, and `position`, the display
-ordering boundary. Existing checkpoints without this field remain valid. Non-native runs omit it.
-The checkpoint writer waits for the captured durable publication barrier before writing the field with
-canonical history. A failed publication retains the earlier checkpoint or accepted input.
-
-The new fixed `evt.native.output` topic uses nonexpiring managed durable delivery. Its internal events
-carry a publication ordinal separate from their original display position. Native recovery publishes a
-reset through the saved ordinal, retaining the checkpointed projection prefix and removing abandoned
-output. Recovery from accepted work without a checkpoint retains no prior output. Private native
-projection provenance supports this rollback and never enters client payloads.
-
-Drain native runs before downgrading to a build without this contract. Older strict WAL readers may
-reject native checkpoints containing the new field and restart from accepted input. At-least-once
-model/tool execution remains unchanged; the frontier does not make external effects exactly once.
-
-## Native surface tool output
-
-The internal `evt.native.output` union now accepts a `resource` event for attachments to an active
-response. It references an existing native upload and projects the existing `data-resource` display
-part. Resource events use the same publication ordinal and checkpoint frontier as text. This does not
-change the native client protocol version or add a database table.
-
-New projected assistant messages include `metadata.authorId: lilac`. Older projected messages retain
-access through their existing assistant role and projection ID. Startup idempotently restores transcript
-links where native input records identify the response's request. Standalone historical messages without
-known ownership are left unlinked.
-
-Older core builds reject the new strict event variant. Drain native work and preserve a consistent backup
-of native state, transcripts, blobs and retained output events before downgrading.
-
-## MCP value source prefixes
-
-Environment and file references in `mcp-config.yaml` accept an optional string `prefix`.
-For example, `Authorization: { env: MCP_TOKEN, prefix: "Bearer " }` adds the authentication
-scheme without storing it in the token. Prefixes are prepended verbatim after resolution,
-including after whole-file trimming or JSON Pointer selection. The shared value-source format
-also supports prefixes in stdio environment values and static OAuth client values.
-
-The file remains `configVersion: 1`; existing configurations keep their behavior. Reload with
-`mcp.reload` or restart Core after editing. Older builds reject references containing `prefix`;
-remove the field and include the prefix in the referenced value before downgrading.
-
-## Agent tool approval removal
+### Skill read tool replacement
+
+`skills.read` replaces `skills.brief` and `skills.full`; both old callables are removed without aliases.
+Update scripts, prompt tool maps, and explicit callable allowlists to use `skills.read`. The generated
+config and both versioned parsers' default allowlists use the replacement callable. Existing explicit
+allowlists are not rewritten.
+
+The new tool accepts `name`, with no `maxChars` option. Its response fields are `path`, `length`,
+`metadata`, and `content`, in that order. `content` is the complete raw `SKILL.md`, including frontmatter;
+`length` counts its UTF-16 code units. The old body, truncation, and resource-listing fields are removed.
+Bash output limits continue to apply. See [skill authoring](docs/skill-authoring.md) for discovery and
+catalog behavior.
+
+### Agent tool approval removal
 
 Lilac executes available tools without an approval step. Per-tool `needsApproval` callbacks are no
 longer evaluated, and agent options do not expose a `toolApproval` policy. Input validation, tool
 availability rules, and cancellation still apply. Existing persisted approval message formats remain
 readable; no stored-data or configuration version changes are needed.
 
-## Image generation script interface
+### Image generation script interface
 
 `generate.image` now accepts only `{ code: string }`, with JavaScript executed by Bun in the calling
 CLI's cwd and Core's inherited container environment. Replace calls using `prompt`, `model`, `size`,
@@ -693,7 +133,32 @@ container environment. There is no additional sandbox. `generate.video` keeps it
 No stored data or configuration version changes are needed. Rollback requires restoring old callers
 alongside the old tool implementation.
 
-## Tool launcher build artifacts
+### Level-2 Result, wire, and CLI clean break
+
+Level-2 callable settlement is a clean break with no compatibility layer. Every external Level-2
+callable must now return a `better-result` `Result`. The runtime accepts the full `better-result`
+Result protocol structurally so Results from plugin-local dependency installations work across the
+plugin boundary. Raw values and plain `{ status: ... }` wire-shaped objects without the full
+protocol remain invalid. Existing external plugins must be updated and rebuilt before loading.
+Expected failures are `Result.err(ServerToolFailure)` with `kind`, `code`, `message`, `retryable`,
+and optional JSON `details`. Throws are defects, not expected failures, and are handled by the fatal
+defect boundary rather than translated into plugin failures.
+
+The `/call` wire response is exactly `{ status: "ok", value }` or
+`{ status: "error", error }`, where `error` is the complete `ServerToolFailure`. There is no legacy
+raw-success response or legacy failure-envelope decoding.
+
+The `tools` CLI unwraps a successful wire response and writes the JSON value to stdout. A failure is
+written as `{ "status": "error", "error": ServerToolFailure }` JSON to stderr, not stdout. Failure
+exit codes are `1` internal, `2` usage, `3` denied, `4` not_found, `5` conflict, `6` unavailable,
+`7` timeout, and `8` cancelled. Successful calls exit `0`.
+
+This settlement change does not reinterpret report or diagnostic payloads. A callable that
+successfully produces a report remains `Result.ok(report)` even when the report records warnings,
+validation findings, unhealthy state, or another negative conclusion. `Result.err` means the
+callable itself failed to complete as expected.
+
+### Tool launcher build artifacts
 
 Built tool installations now include `tools-build-id` and `tools-build-info.json` beside
 `tools` and `tools-worker`. Install all four artifacts together. The launcher and worker
@@ -705,88 +170,158 @@ Docker writes version metadata only in `/app/build/build-info.json` and links th
 metadata file to it. Local tool builds write their metadata beside the executables.
 Metadata changes no longer change the worker ID or require recompiling either executable.
 
-## Skill read tool replacement
+## Native deployment upgrade
 
-`skills.read` replaces `skills.brief` and `skills.full`; both old callables are removed without aliases.
-Update scripts, prompt tool maps, and explicit callable allowlists to use `skills.read`. The generated
-config and both versioned parsers' default allowlists use the replacement callable. Existing explicit
-allowlists are not rewritten.
+Native uses protocol version 1 with strict display and RPC codecs. Deploy Core and clients together
+even when the protocol number stays unchanged. Browser projection caches are disposable and scoped
+by installation and principal; canonical conversation history remains on the server. Reload external
+conversation views after upgrading. Old standalone terminal binaries and their credential/cache files
+are no longer used; run the container-local operator console and remove obsolete local files if unwanted.
 
-The new tool accepts `name`, with no `maxChars` option. Its response fields are `path`, `length`,
-`metadata`, and `content`, in that order. `content` is the complete raw `SKILL.md`, including frontmatter;
-`length` counts its UTF-16 code units. The old body, truncation, and resource-listing fields are removed.
-Bash output limits continue to apply. See [skill authoring](docs/skill-authoring.md) for discovery and
-catalog behavior.
+Native schema migrations run automatically. The current schema is 7:
 
-## MCP subagent access defaults to disabled
+- Schema 1 establishes the native store. Record additions include deployment settings, DMs,
+  temporary operator conversations, HTML previews, identity, and title-generation metadata.
+- Schema 2 adds child agent streams. Completed older children are projected lazily from retained
+  transcripts; original timing and phase events cannot be reconstructed.
+- Schema 3 adds Web Push signing keys and per-browser subscriptions. Existing notification event
+  choices are preserved; background push starts disabled.
+- Schema 4 adds durable deferred-send groups. Existing records need no rewrite.
+- Schema 5 adds optional initiating-device identity. Older inputs retain broadcast notifications.
+- Schema 6 adds native questions and optional question-reply references. Existing records are retained.
+- Schema 7 adds per-user model favorites, optional reasoning on threads/inputs, and child task/model
+  display metadata. Existing aliases and old completion targets remain valid.
 
-Each server in `mcp-config.yaml` now accepts `allowSubagents`, a boolean that defaults to `false`.
-The file remains `configVersion: 1`. Existing files still parse, but their MCP tools are no longer
-available to subagents, including `general` and `self` profiles with wildcard permissions.
+Before moving customized native settings to config v3, start with v2 and verify the one-time import
+of `titleModel`, `outputStreaming`, `oldMessageSelectionMaxAgeMs`, `storageRetentionMaxAgeMs`, and
+`crossThreadSend` in Settings > Deployment. Existing deployment records win. Remove the YAML keys
+only after verification; v3 rejects them. The import preserves YAML comments and does not rewrite it.
+Fresh v3 deployments use the documented defaults in the configuration upgrade guide.
 
-Add `allowSubagents: true` to each server whose subagent access should continue, then reload it with
-`mcp.reload` or restart Core. The server flag and the profile's Level 1 plugin/tool allowlists must all
-permit access. A profile wildcard cannot override `false`. Primary-agent access is unchanged.
-Leave computer-use disabled unless subagents should be able to operate their own desktops.
+`dmContextMaxAgeMs` is replaced by `dmContextGapMs` (7,200,000 ms) and `dmTimestampGapMs`
+(1,800,000 ms). The stored decoder drops the former setting and applies the new defaults; a custom
+age cannot be translated to a pause length. Review both in Settings > Deployment. DMs are permanent;
+older builds do not enforce that property, so restore a pre-upgrade backup before rollback.
 
-The restriction applies when Core assembles a run's toolset, including resumed runs. Saved catalog
-selections cannot restore tools excluded from that toolset. Existing active toolsets retain their
-snapshot; finish or interrupt those runs before relying on a changed policy. A failed reload retains
-the previous server configuration, so check the reload outcome before starting new work.
+Update caller integrations as follows:
 
-Older builds reject server entries containing `allowSubagents`. Remove the field before downgrading;
-the older build will again grant MCP access according to profile allowlists alone. This is a tool
-access policy, not OS isolation from MCP endpoints for subagents with native host execution.
+- Replace `suppressRun` with `triggerRun` on `surface.messages.send`. Its default is false;
+  use true only to request destination execution. Heartbeat remains notification-only.
+- Replace `config.readStreaming` / `config.setStreaming` with `config.readDeployment` /
+  `config.setDeployment` and use the revision returned by the read when saving.
+- `question` defaults to deferred and returns an accepted call ID. Explicit sync returns the
+  mode/status/call ID plus answers. Update callers expecting only `{ answers }`. Native deferred
+  questions survive restart; sync waits are interrupted. Discord pending calls are interrupted.
+- `notifications.presence` accepts `clientId` and optional `threadId`, independently of push endpoints.
+- Use the shared `streams.*` display APIs for child inspection. Current streams include redacted
+  activity details and available reasoning; old transcript-only views omitted those details.
 
-## Agent-run checkpoint local MCP images
+Native question replies use ordinary input submission with `questionReply`; acceptance and resolution
+commit atomically. Question-store initialization retains old Discord calls/tokens and assigns sync
+mode to those rows. For current notification, question, DM, and reference behavior, see the native
+operating guide instead of inferring behavior from the schema that first introduced a feature.
 
-Version-1 agent-run checkpoints now accept an optional `mcpImages` array. Each entry identifies a tool
-result content position and records its absolute local path, MIME type, byte length, SHA-256, and
-optional filename. The corresponding stored message contains a text path marker, not inline bytes or
-a managed blob reference. Only MCP `image` results successfully written by Core's existing local
-materializer use this representation. Embedded MCP resources and ordinary binary `read` results keep
-their existing behavior. Final transcript persistence still uses managed blobs for inline images.
+### Native schema 4: deferred surface sends
 
-Recovery reads each surviving local file and restores its inline image only when its length and hash
-match. Missing, unreadable, or changed files become text notices without discarding the checkpoint.
-The local files remain temporary and gain no new retention or cleanup policy.
+A default native send returns a queued acknowledgment without a visible message reference. Groups
+retain first-send order per destination and become visible after the sender settles and the destination
+has no active or pending input. Pending attachments retain their bytes. Startup reconciles groups;
+retries do not duplicate delivered messages. Deleting the destination removes its groups, while a
+history-generation change or lost write access discards them at delivery checks. There is no expiry
+or operation-status API. Avoid resending an accepted message while it waits for delivery.
 
-Existing checkpoints without `mcpImages` decode unchanged. No database schema migration or old-image
-migration runs. Older Core builds reject checkpoints containing the new field and can discard that run's
-journal progress, then recover its original accepted work. Drain active runs before downgrading to avoid
-that loss of progress and repeated work.
+### Native output recovery frontier
 
-## Computer-use gateway schema 1 and Core session header
+Native runs add an optional `nativeOutput` field to version-1 agent-run WAL checkpoints. It stores
+`ordinal`, the last native output publication covered by that checkpoint, and `position`, the display
+ordering boundary. Existing checkpoints without this field remain valid. Non-native runs omit it.
+The checkpoint writer waits for the captured durable publication barrier before writing the field with
+canonical history. A failed publication retains the earlier checkpoint or accepted input.
 
-The optional gateway creates its own SQLite database, defaulting to `/data/computer-use.sqlite`, with
-`PRAGMA user_version=1`. This does not migrate Core's databases. The `runners` table stores session
-hash, desktop generation, Docker container ID, Python runtime ID, reserved port, provisioning/ready/
-terminating state, viewer password, idle timeout, and absolute expiry. Session, generation, and port
-are unique. Runtime IDs distinguish a surviving interpreter from a restarted process. The database
-uses WAL and full synchronous commits; its file permissions are 0600.
+The new fixed `evt.native.output` topic uses nonexpiring managed durable delivery. Its internal events
+carry a publication ordinal separate from their original display position. Native recovery publishes a
+reset through the saved ordinal, retaining the checkpointed projection prefix and removing abandoned
+output. Recovery from accepted work without a checkpoint retains no prior output. Private native
+projection provenance supports this rollback and never enters client payloads.
 
-Startup rejects unknown schema versions or invalid records before admitting MCP calls. It retains only
-unexpired ready records matched to usable owned Docker containers and removes owned outliers. It never
-restores a missing desktop from metadata. Failed inspection retains unresolved reservations and fails
-readiness. Keep the database volume and gateway ownership label together. Removing the volume alone
-loses credentials and intent, and does not remove sibling runner containers. There is no downgrade path
-for gateway schema 1; stop and explicitly terminate its runners before removing the integration.
+Drain native runs before downgrading to a build without this contract. Older strict WAL readers may
+reject native checkpoints containing the new field and restart from accepted input. At-least-once
+model/tool execution remains unchanged; the frontier does not make external effects exactly once.
 
-Core's MCP configuration remains version 1. HTTP tool calls now reserve `x-lilac-session-hash` for a
-SHA-256 digest of `lilac:mcp-session:v1`, a NUL separator, and the trusted UTF-8 canonical session ID.
-Static configuration cannot supply this header. Initialization and discovery omit it; stdio is unchanged.
-Existing HTTP servers may ignore the added header. An older Core build can discover this gateway but
-cannot use its runner tools because it does not supply the required routing identity. Disable this MCP
-server before rolling Core back. Bearer authentication still uses the existing static-header contract.
+Active-response attachments share the output publication frontier. Drain native work before rollback;
+older builds reject newer output event variants. Keep native state, transcripts, blobs, accepted requests,
+and retained output events together. Historical standalone messages without a known request remain
+unlinked; startup only restores links it can prove from retained native inputs.
 
-The runner's local newline-JSON protocol carries `info`, `health`, and `execute` requests through Docker
-exec and a persistent Unix socket. It is private to the gateway/runner image pair. Deploy compatible
-images together; replacing a runner always creates a new desktop generation and password. Existing
-runners continue using their original image until termination or expiry.
+### Native computer viewer through Core
 
-See [computer-use operation](docs/computer-use.md) for rollout, retention, and verification commands.
+`computer.read.desktop.url` can now be a root-relative `/computer.html?...` URL. Native web resolves
+it against the Core origin and uses the dedicated authenticated `/api/computer/socket` lane. Core
+connects to the computer-use gateway's new bearer-authenticated `/viewer/socket` endpoint with a
+canonical session hash and desktop generation. Deploy Core/web and gateway together and reload
+existing browser clients. There is no stored-data migration or runner rebuild requirement. Direct
+`provision` viewer URLs are unchanged.
 
-## Workflow schema 27 and staged blob publication
+When upgrading from before the original viewer integration, also rebuild the gateway and runner
+images and reprovision existing desktops. The later Core-proxy change alone does not require a runner
+rebuild. Direct provision viewer URLs retain their contract.
+
+## Storage cutovers and recovery
+
+### Core unified blob storage clean break
+
+Core now stores managed opaque bytes through `packages/blob-storage`. Current Redis messages and Core
+databases carry versioned `BlobHandleV1` or `BlobRefV1` values, not `dataBase64`, data URLs, SQLite byte
+columns, or private domain-owned content paths. Local and S3-compatible adapters share the same
+adapter-neutral references. Tool-result encryption and domain retention metadata remain owned by their
+domains.
+
+This transition is offline and fail-closed. Runtime startup does not read or rewrite legacy blob state.
+Before starting the new runtime, stop Core, back up its data, and run:
+
+```sh
+bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data
+```
+
+If Core sets `SQLITE_URL`, run the migration with the same environment value. The command resolves
+`SQLITE_URL` from its working directory exactly as Core does. Without `SQLITE_URL`, it migrates
+`<data-dir>/data.sqlite3`.
+
+Use `--dry-run` for a read-only preflight. The normal command preflights and then applies in one
+invocation. It accepts only supported legacy schemas, verifies every copied object's SHA-256 and byte
+length, rewrites each database only after its required objects exist, and removes replaced legacy byte
+columns and files. The offline command emits transcript schema 6 and workflow schema 26; current Core
+then applies transcript schemas 7 through 14 and workflow schema 27 during startup. Databases below
+those blob baselines, including partially migrated legacy databases, stop startup with the migration command.
+
+The migration copies durable transcript, projection, lineage, and workflow artifact content. It discards
+rebuildable Discord downloads, Anthropic fallback media, and legacy tool-result artifacts. It does not
+translate queued Redis requests, output events, pending entries, consumer groups, or dead-letter
+payloads. Drain accepted work before cutover when it must finish. Export any required legacy Redis
+evidence, then remove the inert old versioned namespaces separately.
+
+The operator-approved graceful-restart exception is narrower and explicit. The offline command discards
+one exact, valid snapshot v1, v2, v3, or v4 instead of preserving it. Graceful snapshots contain live
+process recovery state whose inline provider bytes have no safe owner after the singleton row is consumed;
+adding another durable ownership subsystem is outside this clean break. Stop and drain Core before cutover.
+`--dry-run` reports the planned graceful snapshot discard without deleting it. Malformed rows, corrupt v5
+rows, future versions, and drifted table layouts remain blockers and are never classified for discard.
+
+The operation is transactional per database, not across the object store and every database. If apply
+fails after mutation starts, keep Core stopped, restore the operator backup, and rerun. Do not point Core
+at a partially copied local root, bucket, or prefix. Whole-store local-to-S3 or S3-to-local moves are also
+offline: preserve object IDs, verify all durable references at the destination, then switch configuration.
+
+Blob storage is configurable in v2 and v3. An omitted `blobStorage` field, including the universal projection of a
+frozen v1 config, selects the local default under `DATA_DIR`. V2 and v3 can set a local root or select S3.
+S3 credentials are names of environment variables in config; literal credentials are invalid.
+
+Core now emits transient tool-result references as `resource://t1_<128-bit-id>`. Existing
+`tool-result://<uuid>` references remain readable by Core until their ordinary TTL or eviction removes
+them, so this URI change needs no persisted-data migration. Tool-result metadata, session scope,
+encryption, quota accounting, and expiry remain separate from retained `resource://r1_` records.
+
+### Workflow schema 27 and staged blob publication
 
 Schema 27 adds `workflow_artifact_publications` to the existing workflow database. Its columns are
 `object_id`, the primary key, `artifact_id`, `blob_ref_json`, and `created_at`. The JSON field retains the
@@ -827,69 +362,48 @@ A process interrupted immediately after a delayed backend decision write can lea
 file after deletion. It cannot resurrect readable content or a durable blob reference. Completed calls
 clean that file; removing every such interrupted marker would require a separate backend storage change.
 
-## MCP 2026-07-28 client and OAuth credentials
+### Redis managed event delivery v2
 
-Core's configured MCP clients negotiate the stateless `2026-07-28` tool protocol and fall back to the
-legacy initialization handshake. The MCP configuration contract remains version 1.
+Durable event-bus subscriptions use new transport-owned physical consumer-group names and create missing
+groups at the current stream end. Existing unversioned groups, pending entries, and stream entries are not
+replayed or migrated. They remain in Redis until an operator deliberately removes the old groups or data;
+the v2 runtime never treats them as managed work.
 
-OAuth credential files remain version 1 and now accept optional issuer pins on stored tokens, client
-information, and authorization-server information. Existing files need no rewrite and acquire the pin
-on their next authorization flow. Before rolling back to an older Core build, back up and delete each
-affected file under `DATA_DIR/secret/mcp-oauth`, or remove every `issuer` field from its stored tokens,
-client information, and authorization-server information. Run `mcp.auth` again after the older build
-starts.
+The v2 delivery path stores lease, attempt, retry, and terminalization metadata in a separate versioned
+Redis namespace. Existing v1 and v2 dead-letter records remain under their old keys and are not readable
+through the v3 record codec. New encrypted records use the `:v3:` dead-letter namespace and are finalized
+atomically with source acknowledgement. Deployments that need old event or dead-letter evidence must
+export it before switching versions.
 
-## Level-2 Result, Wire, And CLI Clean Break
+Durable subscriptions no longer accept a start offset and always handle only entries added after their v2
+physical group is created. Publisher-supplied approximate `MAXLEN` retention is removed. Expiring output
+streams remain tail-only, and supported trimming preserves all managed pending frontiers.
 
-Level-2 callable settlement is a clean break with no compatibility layer. Every external Level-2
-callable must now return a `better-result` `Result`. The runtime accepts the full `better-result`
-Result protocol structurally so Results from plugin-local dependency installations work across the
-plugin boundary. Raw values and plain `{ status: ... }` wire-shaped objects without the full
-protocol remain invalid. Existing external plugins must be updated and rebuilt before loading.
-Expected failures are `Result.err(ServerToolFailure)` with `kind`, `code`, `message`, `retryable`,
-and optional JSON `details`. Throws are defects, not expected failures, and are handled by the fatal
-defect boundary rather than translated into plugin failures.
+<a id="core-transcript-database-schemas-1-9"></a>
 
-The `/call` wire response is exactly `{ status: "ok", value }` or
-`{ status: "error", error }`, where `error` is the complete `ServerToolFailure`. There is no legacy
-raw-success response or legacy failure-envelope decoding.
+### Transcript storage
 
-The `tools` CLI unwraps a successful wire response and writes the JSON value to stdout. A failure is
-written as `{ "status": "error", "error": ServerToolFailure }` JSON to stderr, not stdout. Failure
-exit codes are `1` internal, `2` usage, `3` denied, `4` not_found, `5` conflict, `6` unavailable,
-`7` timeout, and `8` cancelled. Successful calls exit `0`.
+Current `agent-transcripts.db` uses schema 14. Schemas below the managed-blob baseline of 6 require
+the offline command above. Startup applies supported later migrations in a transaction and validates
+foreign keys. These migrations retain canonical history and add resource/ownership references,
+deferred-tool snapshots, deleted-output aliases, native retention, and image-preview metadata.
 
-This settlement change does not reinterpret report or diagnostic payloads. A callable that
-successfully produces a report remains `Result.ok(report)` even when the report records warnings,
-validation findings, unhealthy state, or another negative conclusion. `Result.err` means the
-callable itself failed to complete as expected.
+Native ownership in schemas 12/13 prevents global transcript pruning from deleting native history
+behind the surface. Rewind, deletion, and configured native retention release those references.
+Schema 14 adds nullable image-preview metadata; originals and resource IDs remain unchanged, and
+missing previews regenerate on demand. Restore a pre-upgrade backup for older binaries.
 
-## Core SQLite
+Prefix-lineage tool snapshots replace the old session-wide `session_loaded_tools` union. That table
+is dropped because its selection cannot be assigned to a branch safely. Existing descendants inherit
+the newest reachable snapshot or start with no deferred selections. Deleted output aliases keep their
+request identity for lineage validation but are excluded from live output and recovery targets;
+previously removed aliases cannot be reconstructed.
 
-### Prefix-lineage tool authority
+Claude continuation bindings are reverified against retained canonical transcripts and lineage.
+Unverifiable bindings are retired and continuation starts fresh. Existing transcripts do not acquire
+guessed bindings. Corrupt historical rows can block migration rather than receive invented digests.
 
-Core transcript schema 10 adds `request_transcripts.loaded_catalog_ids_json`. Each completed request
-stores the cumulative deferred-tool selection for that exact conversation prefix. Continuations and
-forks inherit the newest reachable request or compaction-checkpoint snapshot from the existing Core
-primary lineage. A fresh lineage starts with no deferred tools selected.
-
-Startup drops the former `session_loaded_tools` table. Its session-wide union cannot be migrated safely
-because it does not record which branch selected a tool. Existing transcripts remain readable and gain
-an empty tool snapshot on their next completed descendant when no reachable schema-10 snapshot exists.
-Agent-run checkpoints also carry the current selection so crash recovery does not lose a tool loaded
-mid-run.
-
-### Agent questions
-
-Core adds `agent_question_calls` and `agent_question_tokens` to `request-delivery.db`. The tables
-store pending Discord question tool calls and hashed one-time interaction tokens. Existing databases
-create both tables at startup and need no offline migration.
-
-Question calls belong to a request-delivery record and are removed with that record. A Core restart
-marks pending questions as interrupted and removes their live tokens. The Discord adapter then clears
-the stale controls after reconnecting. Core does not resume an interrupted question tool call.
-
-### Agent-run WAL and graceful-restart clean cut
+### Accepted work and agent-run checkpoints
 
 Core adds `agent_run_wal_metadata`, `agent_run_wal_events`, and `agent_run_wal_heads` to
 `request-delivery.db`. The request-delivery record remains the durable admission queue. The WAL stores
@@ -928,268 +442,54 @@ reference fields and `blob_cached_at` form a valid cache entry. No table rewrite
 finite `surface.discord.attachmentCache.ttl` still rejects a durable entry after its recorded cache time
 crosses the configured lifetime, then clears that reference lazily when the attachment is next read.
 
-## Core Unified Blob Storage Clean Break
+### Agent-run checkpoint local MCP images
 
-Core now stores managed opaque bytes through `packages/blob-storage`. Current Redis messages and Core
-databases carry versioned `BlobHandleV1` or `BlobRefV1` values, not `dataBase64`, data URLs, SQLite byte
-columns, or private domain-owned content paths. Local and S3-compatible adapters share the same
-adapter-neutral references. Tool-result encryption and domain retention metadata remain owned by their
-domains.
+Version-1 agent-run checkpoints now accept an optional `mcpImages` array. Each entry identifies a tool
+result content position and records its absolute local path, MIME type, byte length, SHA-256, and
+optional filename. The corresponding stored message contains a text path marker, not inline bytes or
+a managed blob reference. Only MCP `image` results successfully written by Core's existing local
+materializer use this representation. Embedded MCP resources and ordinary binary `read` results keep
+their existing behavior. Final transcript persistence still uses managed blobs for inline images.
 
-This transition is offline and fail-closed. Runtime startup does not read or rewrite legacy blob state.
-Before starting the new runtime, stop Core, back up its data, and run:
+Recovery reads each surviving local file and restores its inline image only when its length and hash
+match. Missing, unreadable, or changed files become text notices without discarding the checkpoint.
+The local files remain temporary and gain no new retention or cleanup policy.
 
-```sh
-bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data
-```
+Existing checkpoints without `mcpImages` decode unchanged. No database schema migration or old-image
+migration runs. Older Core builds reject checkpoints containing the new field and can discard that run's
+journal progress, then recover its original accepted work. Drain active runs before downgrading to avoid
+that loss of progress and repeated work.
 
-If Core sets `SQLITE_URL`, run the migration with the same environment value. The command resolves
-`SQLITE_URL` from its working directory exactly as Core does. Without `SQLITE_URL`, it migrates
-`<data-dir>/data.sqlite3`.
+### Older workflow databases
 
-Use `--dry-run` for a read-only preflight. The normal command preflights and then applies in one
-invocation. It accepts only supported legacy schemas, verifies every copied object's SHA-256 and byte
-length, rewrites each database only after its required objects exist, and removes replaced legacy byte
-columns and files. The offline command emits transcript schema 6 and workflow schema 26; current Core
-then applies transcript schemas 7 through 10 and workflow schema 27 during startup. Databases below
-those blob baselines, including partially migrated legacy databases, stop startup with the migration command.
+Workflow source files survive the executable-state clean breaks. For installations predating the
+current runtime `lilac-workflow-js-v4`, review source, save current definitions, and recreate triggers.
+Legacy `workflows` / `workflow_tasks` tables are inert. Migration 18 removes pre-envelope dependent
+runs/triggers/revisions; migration 20 archives bounded audit summaries, quarantines active work,
+deactivates dispatches, and removes old executable identities. Migration 21 cancels nonterminal v20
+work and active/paused triggers while preserving readable terminal records. Migration 23 archives
+v3 summaries and removes v3 executable rows. None of these steps carries old approvals forward.
 
-The migration copies durable transcript, projection, lineage, and workflow artifact content. It discards
-rebuildable Discord downloads, Anthropic fallback media, and legacy tool-result artifacts. It does not
-translate queued Redis requests, output events, pending entries, consumer groups, or dead-letter
-payloads. Drain accepted work before cutover when it must finish. Export any required legacy Redis
-evidence, then remove the inert old versioned namespaces separately.
+Current workflows use profile authority and resource bounds. Remove `capabilities`, approval metadata,
+`maxRuntimeMemoryBytes`, and per-agent isolation/editing/tool/envelope options from old source. Use
+`resources` and the current `agent()` options. Workflow programs run as plain Bun subprocesses with
+determinism and protocol controls; systemd, Bubblewrap, cgroups, and user namespaces are no longer
+required. Tool authority comes from the permission profile, not a workflow sandbox.
 
-The operator-approved graceful-restart exception is narrower and explicit. The offline command discards
-one exact, valid snapshot v1, v2, v3, or v4 instead of preserving it. Graceful snapshots contain live
-process recovery state whose inline provider bytes have no safe owner after the singleton row is consumed;
-adding another durable ownership subsystem is outside this clean break. Stop and drain Core before cutover.
-`--dry-run` reports the planned graceful snapshot discard without deleting it. Malformed rows, corrupt v5
-rows, future versions, and drifted table layouts remain blockers and are never classified for discard.
+There is no workflow-wide wall-time limit. Child operations retain inactivity limits and cancellation
+terminates the program. Replace `parallel(..., { concurrency })` with `parallel(promises)` for already
+started work or `pipeline(..., { concurrency })` for bounded fan-out. Reply waits require the authenticated
+originating Discord session. Remove `includeSensitiveResult`; terminal results are available through
+the ordinary result path while sensitive inputs remain redacted.
 
-The operation is transactional per database, not across the object store and every database. If apply
-fails after mutation starts, keep Core stopped, restore the operator backup, and rerun. Do not point Core
-at a partially copied local root, bucket, or prefix. Whole-store local-to-S3 or S3-to-local moves are also
-offline: preserve object IDs, verify all durable references at the destination, then switch configuration.
+Schema 22 retains completion materialization failures for retry. Schema 24 converts unreachable
+live-parent deliveries to `orphaned`, clears fallback-card targets, and cancels unreachable active
+chains at startup. Terminal results remain retained; orphaned does not mean delivered. Schema 25
+persists permanent progress-delivery failures so restart does not repeat them until the target or
+surface configuration changes. Retryable failures retain backoff. The schema-26 blob baseline and
+schema-27 publication recovery are covered above.
 
-Configuration remains version 2. An omitted `blobStorage` field, including the universal projection of a
-frozen v1 config, selects the local default under `DATA_DIR`. Only v2 can set a local root or select S3.
-S3 credentials are names of environment variables in config; literal credentials are invalid.
-
-Core now emits transient tool-result references as `resource://t1_<128-bit-id>`. Existing
-`tool-result://<uuid>` references remain readable by Core until their ordinary TTL or eviction removes
-them, so this URI change needs no persisted-data migration. Tool-result metadata, session scope,
-encryption, quota accounting, and expiry remain separate from retained `resource://r1_` records.
-
-## Redis Managed Event Delivery V2
-
-Durable event-bus subscriptions use new transport-owned physical consumer-group names and create missing
-groups at the current stream end. Existing unversioned groups, pending entries, and stream entries are not
-replayed or migrated. They remain in Redis until an operator deliberately removes the old groups or data;
-the v2 runtime never treats them as managed work.
-
-The v2 delivery path stores lease, attempt, retry, and terminalization metadata in a separate versioned
-Redis namespace. Existing v1 and v2 dead-letter records remain under their old keys and are not readable
-through the v3 record codec. New encrypted records use the `:v3:` dead-letter namespace and are finalized
-atomically with source acknowledgement. Deployments that need old event or dead-letter evidence must
-export it before switching versions.
-
-Durable subscriptions no longer accept a start offset and always handle only entries added after their v2
-physical group is created. Publisher-supplied approximate `MAXLEN` retention is removed. Expiring output
-streams remain tail-only, and supported trimming preserves all managed pending frontiers.
-
-<a id="core-transcript-database-schemas-1-9"></a>
-
-## Core transcript database schemas 1-11
-
-Core's `agent-transcripts.db` has its own `transcript_schema_migrations` sequence. These are internal
-SQLite migrations and do not change `core-config.yaml`; its current config contract remains
-`configVersion: 2`.
-
-- Transcript schema 1 records the baseline request transcript/cache tables and the current named
-  Claude binding/attempt substrate. Existing transcripts do not gain guessed native bindings.
-- Transcript schema 2 adds immutable first-seen surface projections, Core-owned attachment blobs,
-  request/checkpoint lineage references, primary lineage manifests, and canonical transcript digests.
-  Existing transcript rows are parsed and hashed during migration; an unreadable row aborts the
-  migration rather than receiving an unsafe digest.
-- Transcript schema 3 adds request-output alias references so split Discord output messages can point
-  to one canonical request atom without duplicating history.
-- Transcript schema 4 adds Discord-primary Claude bindings and bounded attempt records. A binding is
-  usable only when the current composed lineage proves the exact complete-segment prefix; existing
-  Discord history starts fresh until a successful current turn establishes that proof.
-- Transcript schema 5 adds `terminal_request_id` to every Discord-primary Claude binding. The ID
-  points to the exact retained request transcript and lineage manifest that produce the binding's
-  atom count, prefix digest, and canonical message count. Migration first considers matching retained
-  succeeded attempts, then scans retained durable transcript/manifest rows so a valid binding can be
-  backfilled even when bounded attempt retention already pruned its attempt. Every candidate is fully
-  recomputed and accepted only when its client/session, provider state, lineage version, atom count,
-  digest, and canonical count match exactly. Bindings without one exact durable terminal request are
-  deleted rather than guessed.
-- Transcript schema 6 is the managed-blob reference baseline produced by the offline blob migration.
-  Runtime still refuses schemas below 6 because those databases may contain legacy inline bytes.
-- Transcript schema 7 adds strict resource records, transcript resource references, and surface
-  projection resource references. The v6 to v7 step is additive and does not rewrite historical
-  messages or blobs. A resource row uses one stable canonical-origin key and an optional verified
-  BlobStore cache reference. Transcript and projection deletion cascades their reference rows;
-  maintenance deletes a zero-reference cache before removing its resource row.
-- Transcript schema 8 adds transcript-to-blob ownership references. Provider file bytes are uploaded
-  to durable BlobStore objects before persistence, stored in messages as strict blob references, and
-  materialized back into provider files on replay. Migration backfills ownership for existing blob
-  parts. Transcript retention cascades reference rows. Maintenance claims an unreferenced owned blob
-  before deleting its object, which prevents a transcript or surface projection from attaching while
-  deletion is in progress.
-- Transcript schema 9 adds agent-run-checkpoint blob ownership references. A checkpoint pins every
-  referenced blob before replacing the agent-run WAL head, then replaces its ownership set with the
-  blobs reachable from the latest checkpoint and its retained predecessor. Startup reconciliation
-  removes stale pins left by a crash. If the latest checkpoint blob is unavailable, recovery
-  atomically promotes the retained predecessor in the WAL. It resumes from the accepted request only
-  when neither checkpoint is usable.
-- Transcript schema 10 adds a canonical deferred-tool snapshot to every new request transcript and
-  removes the session-wide selection table. Historical rows have no snapshot. Descendants use the
-  newest reachable prefix snapshot, or start empty when none exists.
-
-- Transcript schema 11 adds nullable `deleted_ts` to surface-message aliases. Existing rows remain
-  live. Surface deletion marks an alias deleted while transcript lookup and request-alias lineage
-  validation retain its request identity. Recovery targets, recent output links, discovery coverage,
-  and checkpoint live-output checks exclude deleted aliases. A database trigger removes every alias
-  when its request transcript is deleted, including age-based retention and checkpoint cleanup.
-  Deleted aliases without a transcript expire under the configured transcript age limit during
-  retention cleanup. Unlimited age retention keeps them.
-  Previously removed aliases cannot be reconstructed by this migration. Older binaries reject schema
-  11; rollback requires a pre-upgrade backup or a separately reviewed downgrade.
-
-Core applies missing versions in one immediate transaction, validates foreign keys, marks interrupted
-native attempts uncertain during startup recovery, and promotes recovered pending successes only
-after canonical transcript/lineage verification. Primary binding reads lazily reverify the identified
-terminal transcript and manifest. A missing, corrupt, or mismatched head is compare-and-delete retired;
-a concurrent replacement is re-read rather than deleted, and continuation safely starts fresh when no
-verified binding remains.
-
-Core also exposes aggregate retention diagnostics for named/primary binding counts, active/terminal
-attempt counts, unverifiable primary bindings, orphan succeeded attempts/manifests, unreferenced
-surface projections, total Core-owned blob bytes, and unreferenced blob counts/bytes. Bounded attempt
-pruning emits per-owner metadata-pruned diagnostics. These are internal retention/operational
-diagnostics and do not add a `core-config.yaml` key; the config contract remains `configVersion: 2`.
-
-## Historical graceful restart snapshot v5
-
-Snapshot v5 used strict `StoredMessageV1` messages and `CorePrimaryLineageV2`. Runtime recovery no longer
-reads this database. Existing rows remain inert. The offline unified blob migration still recognizes its
-supported historical schemas for explicit discard; malformed, future, corrupt-current, or
-correlation-invalid rows remain blocking evidence for that offline command.
-
-## Historical Workflow Schema 18
-
-At schema 18, workflow capability review stored a normalized maximum envelope with per-operation narrowing, exact Level-1 tools, concrete Level-2 callable IDs, destination-scoped origin surface operations, allowed roots, bounded reasoning, and explicit trusted executable authority. Schema 20 later removed that envelope and approval model.
-
-Pre-envelope revisions cannot be interpreted without changing their approval meaning. Migration 18 therefore removes their dependent runs, triggers, approvals, and revision rows. Workflow source files remain in place and must be triggered and reviewed again under the new contract.
-
-## Workflow Runtime Clean Break
-
-This section records the historical unified runtime transition. It did not read or migrate legacy `WorkflowDefinitionV2`/`WorkflowDefinitionV3` records. Existing `workflows` and `workflow_tasks` SQLite tables remain inert. That transition required recreating scheduled jobs as JavaScript definitions plus `workflow.trigger.create`. Its approval identity included immutable source, schema, capability profile, project path, and runtime version, so old approvals did not carry forward. Schema 20 later removed this approval model, and schema 23 replaced the v3 execution identity with v4.
-
-Deferred subagents persist as generated unified workflow runs. Graceful-restart snapshots no longer contain runner-local deferred child handles, output cursors, timers, or buffered completions. Active generated runs and pending live-parent deliveries recover from the durable workflow database. At this clean break, terminal results fell back to a durable progress card when the parent could not be restored; Schema 24 supersedes that behavior by durably orphaning unreachable live-parent deliveries instead.
-
-At the time of this clean break, workflow JavaScript ran inside a fail-closed OS sandbox that required a systemd-PID1 Docker image with Bubblewrap, cgroup v2, and a reachable `lilac` user systemd manager. That deployment requirement is historical and is superseded by Schema 21, which runs the deterministic program child as a plain Bun subprocess. See the Schema 21 section below.
-
-The Level-2 HTTP server remains an internal trusted-network service rather than a generally authenticated public API. Workflow admission adds no caller-specific or principal gate beyond ordinary Level-2 callable routing; every caller and trigger competes against the same global active-run cap.
-
-## Workflow Schema 20
-
-Schema 20 introduced the profile-native trusted-auto-run clean break for runtime `lilac-workflow-js-v3`. This section records that transition; schema 21 removed its remaining approval tables, and schema 23 replaced v3 executable state. Workflow definitions use `resources` for orchestration bounds, and the public durable hash is `resourcePolicySha256`. The former maximum capability envelope, exact grant identity, approval API/state/actions, `awaiting_review`, and shared-editor lease runtime are removed.
-
-Migration from schema 19 does not translate old authority:
-
-- Every v19 revision receives a bounded `workflow_legacy_audit_records` summary before its executable rows are removed.
-- Terminal v19 runs are retained only as audit summaries because their maximum-envelope revision shape is not readable as a v3 resource policy.
-- Nonterminal v19 runs and operations, plus active/paused triggers, receive explicit `workflow_quarantine` reasons before deletion.
-- All old request dispatches are deactivated before dependent rows are deleted, so no old dispatch can be adopted or redispatched under current defaults.
-- Standalone v19 terminal receipts are archived as bounded `terminal_receipt` audit records and deleted with their old runs; no receipt can outlive the executable identity it referred to.
-- Old triggers and generated subagent revisions are deleted and must be recreated from current source by an authenticated trusted principal.
-- At schema 20, historical approval tables and columns remained inert to avoid a SQLite table rebuild. The v3 runtime did not read or write approval records. Schema 21 later dropped those tables and columns.
-- `workflow_shared_editor_leases` is dropped. Shared writers are intentionally concurrent.
-
-After migration 20, source files remained on disk and were statically revalidated into a new v3 snapshot on their first trusted invocation. Removed `capabilities` metadata fails validation with migration guidance; rename resource bounds to `resources` and use only profile-native `agent()` options.
-
-The unshipped workflow-only `plugins.workflowExternal`, plugin `workflowExposure`, and Level-1 effect metadata were removed rather than migrated. Config v2 now owns Level-1 tools/plugins, Level-2 callables/plugins, direct network, workspace writes, execution, and delegation under each `agent.subagents.profiles.*` entry. Config v1 remains frozen and receives the useful built-in profile defaults during universal parsing. These native profiles apply identically to direct and workflow-launched subagents and are not serialized into workflow revisions or operation guardrail envelopes.
-
-## Workflow Schema 21
-
-Schema 21 was the workflow-runtime-simplification clean break for the historical v3 runtime. The guiding rule is that workflows orchestrate and profiles authorize: the workflow layer keeps durable operation identity, dispatch epochs, single-owner claims, terminal receipts, waits, triggers, replay, and progress, and drops every workflow-specific security concept. This is an atomic migration that shrinks the persisted dispatch policy while still reading persisted v20 dispatches.
-
-Resolved `agent()` input is reduced to `profile`, `cwd`, `model`, `reasoning`, and `label`. `cwd` is free-form and no longer canonicalized against protected roots. Agent authority comes entirely from the selected native profile: profiles own tools, Bash, Level-2 callables, network, and delegation, identically for direct and workflow launches. The former `isolation`, `editing`, `tools`, `executables`, `level2Callables`, `surfaceOriginOperations`, and `delegation` agent options are removed and fail validation with migration guidance.
-
-Schema 21 spawned the deterministic program child directly with `bun --smol workflow-sandbox-child.js`. The child kept its determinism lockdown and NDJSON protocol, and the host retained wall-time, cancellation, output-size, and protocol limits with forced termination. Schema 23 later removed the workflow-wide wall-time limit. `maxRuntimeMemoryBytes` is removed because a plain Bun subprocess does not enforce that contract; it is stripped from persisted revision limits. Workflow execution no longer requires systemd, Bubblewrap, cgroup v2, or user namespaces, and there is no plain-subprocess fallback to fail closed against.
-
-The persisted state migration is a clean break rather than a reinterpretation:
-
-- The minimal durable dispatch policy is `{ runId, operationId, dispatchEpoch, profile, model, reasoning, resolvedModelRequest, cwd, originSession, stableNamedContinuation? }`. The optional stable identity is present only for eligible live-parent named subagents and is verified against that run's persisted completion target. Old `policy_json` is rewritten into this envelope; the former `canonicalCwd` becomes `cwd`, and canonical-root, inode, safety-mode, isolation, scratch-root, and control-token identity are dropped.
-- Terminal runs, operations, journals, results, and receipts stay readable. Pinned resolved-model identity and dispatch fencing are preserved.
-- Nonterminal v20 runs and operations are quarantined with explicit reasons, then terminalized as `cancelled` with an explicit migration reason; their pending waits are cancelled.
-- Active and paused triggers are quarantined and cancelled; they must be recreated from current source by an authenticated trusted principal.
-- All active request dispatches are deactivated so no old dispatch can be adopted or redispatched under the current defaults.
-- `maxRuntimeMemoryBytes` and revision `safety` metadata are removed from revision rows, and `safetyMode` is removed from trigger origins.
-- Approval residue is dropped: the `workflow_approvals` table, the `approval_id` columns on `workflow_runs` and `workflow_surface_actions`, the `origin_safety_mode` column, and the approval-state index.
-- Worktree residue is dropped: `workflow_worktree_outputs` and its cleanup index.
-- Single-process projector residue is dropped: projection claims, orphans, missing-binding tables and triggers, and reconciliation state. One durable surface binding per run, the action outbox, edit-on-change, startup reconciliation, retry state, controls, and terminal cards are retained.
-
-The workflow-only security modules removed in this break (Level-1 boundary, path authority, protected-path, denied-root policy, network policy, descriptor path, scratch, and worktree artifact) are deleted rather than migrated. The dead tool-bridge `x-lilac-workflow-capability` header and plugin `workflowPathAuthority` guidance are removed. Level-2 `workflow.*` access follows native profile configuration and the generic profile-bound request capability; there is no workflow-specific active-request or principal gate.
-
-## Workflow schema 22
-
-Schema 22 adds durable materialization attempt/error state to live-parent completion deliveries. Deferred subagent results retry artifact loading and output normalization across process restarts before Core inserts an explicit failed synthetic result, preventing transient delivery failures from either losing successful child output or waiting forever.
-
-## Workflow Schema 23
-
-Schema 23 and runtime `lilac-workflow-js-v4` remove the workflow-wide wall-time contract. Workflow programs, sleeps, reply waits, pauses, and recovery have no total elapsed-time limit. Individual child-agent operations retain `operationIdleTimeoutMs`, and explicit cancellation still forcibly terminates the workflow subprocess.
-
-The v4 API also removes the unused public `parallel(..., { concurrency })` option; `parallel(promises)` joins already-created promises, while `pipeline(..., { concurrency })` provides bounded fan-out. Reply waits are explicitly limited to the authenticated originating Discord session. Literal host-call option objects receive static validation before a definition is saved or triggered.
-
-Terminal results, terminal detail, and requested result artifacts are returned without sensitivity gating. Sensitive input fields, argument hashes, and progress values remain redacted. The obsolete `includeSensitiveResult` run-inspection option is removed.
-
-This is a clean break for persisted v3 execution identity. Migration 23 archives bounded summaries for old revisions, runs, triggers, and terminal receipts; quarantines nonterminal runs and active triggers; deactivates dispatches; and removes v3 executable rows. Source definition files remain on disk and can be corrected and saved as v4 definitions. The request-dispatch table no longer has a hard expiry column; active state, run and operation state, dispatch epochs, owner heartbeats, idle cancellation, and exact terminal receipts govern its lifecycle.
-
-## Workflow Schema 24
-
-Schema 24 makes an unreachable live-parent delivery a durable `orphaned` state instead of creating a
-fallback progress card. Migration rebuilds `workflow_completion_deliveries`, converts every historical
-`fallback` delivery to `orphaned`, and clears `progress_target_json` on the corresponding live-parent
-run so the retired fallback card is not recreated. Other delivery fields, including materialization
-attempt/error state, are preserved.
-
-At startup, pending live-parent chains are retained only when their parent request is restorable or
-reachable through another retained active workflow request. An unreachable nonterminal run has its
-operations and waits cancelled, active dispatches deactivated, and run terminalized as `cancelled`
-before its delivery becomes `orphaned`. An unreachable terminal run keeps its terminal state and
-result, but its delivery becomes `orphaned`. This reconciliation is idempotent and does not reinterpret
-an orphan as delivered.
-
-## Workflow Schema 25
-
-Schema 25 adds nullable `permanent_failure_json` to each durable workflow surface binding. Existing
-v24 bindings keep their message reference, rendered hash, retry count, next attempt, errors, and
-timestamps and receive no permanent failure. The v24 persistence reader also treats the absent field
-as `null`; v25 rows require the field.
-
-A permanent surface failure or missing registered progress port now persists a gate containing the
-operation/reason, failure time, message, and surface configuration revision. The projector clears its
-retry time and revokes active controls, and startup reconciliation does not repeat the same permanent
-failure while the target and configuration revision still match. A changed target or progress-port
-configuration clears the stale gate and allows projection to be attempted again; retryable failures
-continue to use the existing durable backoff state.
-
-## Native subagent inspection
-
-The native v1 RPC contract adds `subagents.list` and `subagents.read`. Both require read access to the
-parent thread and exclude runs whose parent request is no longer in canonical history. Workflow run
-IDs remain opaque, including their existing colon-separated prefixes. The new panel reads existing
-workflow and transcript stores; there is no stored-data migration. Update clients and servers together.
-
-Transcript responses contain bounded pages of display text and activity labels. They omit system
-prompts, raw reasoning, tool arguments, and provider state. Older runs without retained transcripts
-show an unavailable state. Panel visibility and pixel width are local to the current workspace session.
-
-## Shared cross-surface conversation memory
+### Shared cross-surface conversation memory
 
 Conversation memory now indexes Discord and native threads in the shared conversation-thread tables
 in the Discord search database. The first open without the `conversation_index_v2` marker drops and
@@ -1208,61 +508,93 @@ its retained message content or history generation changes, including edits, rew
 Model selection, titles, archiving, and grant changes preserve existing summaries. Downgrading requires
 rebuilding the derived index for the older runtime; do not reuse cross-surface derived rows with an older binary.
 
-## Transcript schema 14: model image previews
+## MCP and computer-use integration
 
-Schema 14 adds nullable `image_preview_json` to `core_resources`. Existing originals and resource
-references are unchanged. Core lazily generates previews for model input above 1 MiB, with a 25 MiB
-source-read limit and a 40-million-pixel decode limit. Preview metadata records the source hash,
-resize policy version, dimensions, media type, and a separate expiring blob reference. Preview blobs
-expire after 24 hours through existing blob maintenance, including abandoned or replaced previews.
-Missing or expired previews regenerate on demand. Original downloads remain unchanged.
-Older binaries reject schema 14; rollback requires a pre-upgrade backup.
+### MCP subagent access defaults to disabled
 
-## Native schema 3: background notifications
+Each server in `mcp-config.yaml` now accepts `allowSubagents`, a boolean that defaults to `false`.
+The file remains `configVersion: 1`. Existing files still parse, but their MCP tools are no longer
+available to subagents, including profiles with wildcard permissions.
 
-Schema 3 adds installation-owned Web Push signing keys and per-browser subscriptions to the native
-SQLite database. Existing accounts and conversation records are unchanged. Keys are generated on the
-first opt-in and retained across restarts. Subscriptions belong to the authenticated user, store the
-two event preferences, and are removed on opt-out, explicit logout, or a push service's 404/410 reply.
-Deploy Core and the web client together for the new `notifications.*` RPC methods. Older binaries
-reject schema 3; rollback requires a pre-upgrade backup.
+Add `allowSubagents: true` to each server whose subagent access should continue, then reload it with
+`mcp.reload` or restart Core. The server flag and the profile's Level 1 plugin/tool allowlists must all
+permit access. A profile wildcard cannot override `false`. Primary-agent access is unchanged.
+Leave computer-use disabled unless subagents should be able to operate their own desktops.
 
-The browser's existing three-bit notification preference accepts an optional fourth background-push
-bit. Existing preferences retain their event choices and default background push to off. Push previews
-contain at most 200 characters of assistant text. Delivery is best effort and has no replay queue.
+The restriction applies when Core assembles a run's toolset, including resumed runs. Saved catalog
+selections cannot restore tools excluded from that toolset. Existing active toolsets retain their
+snapshot; finish or interrupt those runs before relying on a changed policy. A failed reload retains
+the previous server configuration, so check the reload outcome before starting new work.
 
-## Native thread presence independent of push
+Older builds reject server entries containing `allowSubagents`. Remove the field before downgrading;
+the older build will again grant MCP access according to profile allowlists alone. This is a tool
+access policy, not OS isolation from MCP endpoints for subagents with native host execution.
 
-The native `notifications.presence` RPC now accepts only `clientId` and optional `threadId`.
-It no longer accepts or requires a push endpoint. Deploy Core and the web client together and reload
-open tabs. Presence is scoped to the authenticated user and tab, remains in memory, and expires after
-60 seconds without a heartbeat. A focused thread suppresses that user's completion and failure pushes
-on all devices, including when push is disabled or unsupported on the viewing device. There is no
-stored-data migration.
+### MCP value source prefixes
 
-## Gap-based native DM context
+Environment and file references in `mcp-config.yaml` accept an optional string `prefix`.
+For example, `Authorization: { env: MCP_TOKEN, prefix: "Bearer " }` adds the authentication
+scheme without storing it in the token. Prefixes are prepended verbatim after resolution,
+including after whole-file trimming or JSON Pointer selection. The shared value-source format
+also supports prefixes in stdio environment values and static OAuth client values.
 
-Deployment settings replace `dmContextMaxAgeMs` with `dmContextGapMs` (default 7,200,000 ms) and add
-`dmTimestampGapMs` (default 1,800,000 ms). Decoding a stored deployment record drops
-`dmContextMaxAgeMs` and applies both defaults; the next save writes the new fields. A custom DM age
-is not carried over because an age limit does not translate to a pause length. `threads.context`
-gains required `timestampGapMs`, and its `expiresAt` for a DM is the latest completion plus the gap.
-Deploy Core and web together. Older strict validators reject the new fields, and older clients that
-send `dmContextMaxAgeMs` are rejected. There is no other stored-data migration.
+The file remains `configVersion: 1`; existing configurations keep their behavior. Reload with
+`mcp.reload` or restart Core after editing. Older builds reject references containing `prefix`;
+remove the field and include the prefix in the referenced value before downgrading.
 
+### MCP 2026-07-28 client and OAuth credentials
 
-## Config v3 retired tools and settings
+Core's configured MCP clients negotiate the stateless `2026-07-28` tool protocol and fall back to the
+legacy initialization handshake. The MCP configuration contract remains version 1.
 
-`content.inspect`, `surface.messages.search`, and `attachment.download` are removed without aliases
-for every config version. Migrate callers to ordinary media reads or a capable model,
-`discovery.search`, and `resource.materialize` respectively. `content.inspect`'s dedicated Gemini
-video/transcription workflow has no direct replacement. Custom permission allowlists and plugin lists
-must drop the retired names. The Discord message cache, ingress indexer and shared discovery path remain;
-only the old search callable's first-search history backfill is removed.
+OAuth credential files remain version 1 and now accept optional issuer pins on stored tokens, client
+information, and authorization-server information. Existing files need no rewrite and acquire the pin
+on their next authorization flow. Before rolling back to an older Core build, back up and delete each
+affected file under `DATA_DIR/secret/mcp-oauth`, or remove every `issuer` field from its stored tokens,
+client information, and authorization-server information. Run `mcp.auth` again after the older build
+starts.
 
-Config v3 rejects `tools.inspect`, legacy web/recall spellings, flat decision thresholds, and the five
-native YAML deployment settings. V1/v2 input parsing remains supported. Follow
-[the v3 migration instructions](docs/core-config-migrations.md#retired-tools-and-v3-configuration-fields)
-before changing the config version, especially the one-time native settings import. Existing deployment
-records are retained; fresh v3 records use the existing defaults. No persisted schema, table, blob,
-or history is deleted by this change.
+### Computer-use gateway schema 1 and Core session header
+
+The optional gateway creates its own SQLite database, defaulting to `/data/computer-use.sqlite`, with
+`PRAGMA user_version=1`. This does not migrate Core's databases. The `runners` table stores session
+hash, desktop generation, Docker container ID, Python runtime ID, reserved port, provisioning/ready/
+terminating state, viewer password, idle timeout, and absolute expiry. Session, generation, and port
+are unique. Runtime IDs distinguish a surviving interpreter from a restarted process. The database
+uses WAL and full synchronous commits; its file permissions are 0600.
+
+Startup rejects unknown schema versions or invalid records before admitting MCP calls. It retains only
+unexpired ready records matched to usable owned Docker containers and removes owned outliers. It never
+restores a missing desktop from metadata. Failed inspection retains unresolved reservations and fails
+readiness. Keep the database volume and gateway ownership label together. Removing the volume alone
+loses credentials and intent, and does not remove sibling runner containers. There is no downgrade path
+for gateway schema 1; stop and explicitly terminate its runners before removing the integration.
+
+Core's MCP configuration remains version 1. HTTP tool calls now reserve `x-lilac-session-hash` for a
+SHA-256 digest of `lilac:mcp-session:v1`, a NUL separator, and the trusted UTF-8 canonical session ID.
+Static configuration cannot supply this header. Initialization and discovery omit it; stdio is unchanged.
+Existing HTTP servers may ignore the added header. An older Core build can discover this gateway but
+cannot use its runner tools because it does not supply the required routing identity. Disable this MCP
+server before rolling Core back. Bearer authentication still uses the existing static-header contract.
+
+The runner's local newline-JSON protocol carries `info`, `health`, and `execute` requests through Docker
+exec and a persistent Unix socket. It is private to the gateway/runner image pair. Deploy compatible
+images together; replacing a runner always creates a new desktop generation and password. Existing
+runners continue using their original image until termination or expiry.
+
+See [computer-use operation](docs/computer-use.md) for rollout, retention, and verification commands.
+
+## Prompt and heartbeat migration
+
+No config version, wire schema, or database schema changes. Core seeds missing `prompts/HEARTBEAT.md`
+and `prompts/heartbeat/WORK.md` from the built-in heartbeat skill. Existing files and legacy inbox/archive
+notes remain unchanged. Ask the agent to use the heartbeat skill's migration reference to merge old
+responsibilities and active prompt instructions, preserve destinations, and verify delivery. Startup
+no longer creates empty legacy inbox/archive directories. The default destination remains optional in
+configuration and is selected through conversation during setup; native is not required.
+
+Trusted cross-surface agent capabilities now grant the configured native owner's existing thread access.
+Native-origin runs retain their original principal. Restricted or unverified requests receive no owner
+fallback, and other users' private DMs remain inaccessible. Heartbeat posts are notifications and do not
+admit another agent turn in their destination. This is a deliberate authority-policy change, not a change
+to human login or thread-sharing permissions. Deploy Core; web clients need no protocol upgrade.

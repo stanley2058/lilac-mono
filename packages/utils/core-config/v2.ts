@@ -174,7 +174,7 @@ const profileNamesSchema = z.array(z.string().trim().min(1)).default([]);
 
 export const profileLevel1Schema = z.object({
   tools: profileNamesSchema.describe(
-    "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search, batch.",
+    "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
   ),
   plugins: profileNamesSchema.describe(
     "Allowed direct-tool plugin IDs. `*` includes every globally enabled plugin; MCP servers also require allowSubagents: true.",
@@ -765,7 +765,9 @@ const toolsSchema = z
       .default({
         model: "google/gemini-3.5-flash",
       })
-      .describe("Legacy content inspection model settings. Removed in configuration version 3."),
+      .describe(
+        "Compatibility settings, ignored because content.inspect is retired. Rejected in configuration version 3.",
+      ),
     editFile: z
       .object({
         hashline: z
@@ -840,10 +842,12 @@ const toolsSchema = z
           .positive()
           .max(8)
           .default(8)
-          .describe("Maximum tool calls in one batch. Integer from 1 to 8; defaults to 8."),
+          .describe(
+            "Compatibility field, ignored. The batch tool is retired; models issue ordinary tool calls directly.",
+          ),
       })
       .default({ maxCalls: 8 })
-      .describe("Limits for parallel tool batches."),
+      .describe("Compatibility section, ignored since the batch tool was retired."),
     media: z
       .object({
         maxInlineBytesPerPart: byteSizeSchema
