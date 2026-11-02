@@ -349,3 +349,17 @@ test("thread previews reuse a conversation tab and preserve message navigation o
   expect(tabs[0]?.target.messageId).toBe("second");
   expect(restored.threads.get("origin")?.open).toBe(true);
 });
+
+test("computer geometry survives conversation switches within its workspace session", () => {
+  const storage = memoryStorage();
+  const panels = createPanelStore(scope, storage);
+  const first = { x: 120, y: 80, width: 600, height: 400 };
+  const second = { x: 8, y: 8, width: 320, height: 240 };
+  panels.getState().setComputerGeometry("a", first);
+  panels.getState().setComputerGeometry("b", second);
+  panels.getState().openAgents("b");
+  panels.getState().openAgents("a");
+  expect(panels.getState().computerGeometry.get("a")).toEqual(first);
+  expect(panels.getState().computerGeometry.get("b")).toEqual(second);
+  expect(createPanelStore(scope, storage).getState().computerGeometry.size).toBe(0);
+});

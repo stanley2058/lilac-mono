@@ -3,6 +3,7 @@ import {
   referenceKey,
   type ConversationReference,
 } from "@stanley2058/lilac-client-protocol";
+import type { ComputerGeometry } from "./computer-viewer";
 import type { FileTarget } from "./file-target";
 import { Result } from "better-result";
 import { createStore } from "zustand/vanilla";
@@ -116,6 +117,8 @@ function navigateFile(current: FileTarget, requested: FileTarget): FileTarget {
   };
 }
 type PanelStore = PanelLayouts & {
+  computerGeometry: Map<string, ComputerGeometry>;
+  setComputerGeometry: (threadId: string, geometry: ComputerGeometry) => void;
   openThread: (
     threadId: string,
     target: ConversationReference,
@@ -215,6 +218,12 @@ export function createPanelStore(
     }
     return {
       ...initial,
+      computerGeometry: new Map(),
+      setComputerGeometry: (threadId, geometry) => {
+        const computerGeometry = new Map(get().computerGeometry);
+        computerGeometry.set(threadId, geometry);
+        set({ computerGeometry });
+      },
       openThread: (threadId, target, title, conversationThreadId) => {
         const current = get().tabs.get(threadId) ?? defaultPanelTabs;
         const conversation =

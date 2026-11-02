@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export type ComputerGeometry = { x: number; y: number; width: number; height: number };
+
 const stateSchema = z.object({
   type: z.literal("lilac-computer-state"),
   state: z.enum(["ready", "connected", "disconnected", "failed"]),

@@ -1,10 +1,15 @@
-import { useEffect, useRef, useState, type RefObject, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject, type PointerEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Monitor, MousePointer2, X, RotateCw, GripHorizontal } from "lucide-react";
 import type { NativeRpcOutputs } from "@stanley2058/lilac-client-protocol";
 import { queryNativeRPC, useNativeOnline } from "../queries";
 import { useWorkspace } from "../workspace-context";
-import { clampComputerPosition, computerFrameUrl, decodeComputerState } from "../computer-viewer";
+import {
+  clampComputerPosition,
+  computerFrameUrl,
+  decodeComputerState,
+  type ComputerGeometry,
+} from "../computer-viewer";
 import { Button } from "./ui/button";
 import "./computer-viewer.css";
 
@@ -17,7 +22,13 @@ export function NativeComputerViewer({
   threadId: string;
   enabled: boolean;
 }) {
-  const { client } = useWorkspace();
+  const { client, panels } = useWorkspace();
+  const saveGeometry = useCallback(
+    (geometry: ComputerGeometry) => {
+      panels.getState().setComputerGeometry(threadId, geometry);
+    },
+    [panels, threadId],
+  );
   const online = useNativeOnline(client);
   const query = useQuery({
     queryKey: ["computer", threadId],
@@ -38,11 +49,17 @@ export function NativeComputerViewer({
     Date.parse(desktop.expiresAt) <= Date.now()
   )
     return null;
-  return <ComputerViewer key={`${threadId}:${desktop.generation}`} desktop={desktop} />;
+  return (
+    <ComputerViewer
+      key={`${threadId}:${desktop.generation}`}
+      desktop={desktop}
+      savedGeometry={panels.getState().computerGeometry.get(threadId)}
+      onGeometryChange={saveGeometry}
+    />
+  );
 }
 
-type Geometry = { x: number; y: number; width: number; height: number };
-function initialGeometry(): Geometry {
+function initialGeometry(): ComputerGeometry {
   const tokens = getComputedStyle(document.documentElement);
   const width = Number.parseFloat(tokens.getPropertyValue("--ui-computer-width"));
   const height = Number.parseFloat(tokens.getPropertyValue("--ui-computer-height"));
@@ -54,8 +71,16 @@ function initialGeometry(): Geometry {
   };
 }
 
-export function ComputerViewer({ desktop }: { desktop: Desktop }) {
-  const [initial] = useState(initialGeometry);
+export function ComputerViewer({
+  desktop,
+  savedGeometry,
+  onGeometryChange,
+}: {
+  desktop: Desktop;
+  savedGeometry?: ComputerGeometry;
+  onGeometryChange?: (geometry: ComputerGeometry) => void;
+}) {
+  const [initial] = useState(() => savedGeometry ?? initialGeometry());
   const geometry = useRef(initial);
   const [hidden, setHidden] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -74,6 +99,7 @@ export function ComputerViewer({ desktop }: { desktop: Desktop }) {
       key={attempt}
       desktop={desktop}
       geometry={geometry}
+      onGeometryChange={onGeometryChange}
       onClose={() => setHidden(true)}
       onRetry={() => setAttempt((value) => value + 1)}
     />
@@ -82,39 +108,60 @@ export function ComputerViewer({ desktop }: { desktop: Desktop }) {
 
 function ComputerPanel({
   geometry,
+  onGeometryChange,
   desktop,
   onClose,
   onRetry,
 }: {
   desktop: Desktop;
-  geometry: RefObject<Geometry>;
+  geometry: RefObject<ComputerGeometry>;
+  onGeometryChange?: (geometry: ComputerGeometry) => void;
   onClose: () => void;
   onRetry: () => void;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
-  const [position, setPosition] = useState(() => ({
-    x: geometry.current.x,
-    y: geometry.current.y,
-  }));
+  const [position, setPosition] = useState(() =>
+    clampComputerPosition(
+      geometry.current.x,
+      geometry.current.y,
+      Math.min(geometry.current.width, window.innerWidth - 16),
+      Math.min(geometry.current.height, window.innerHeight - 16),
+      window.innerWidth,
+      window.innerHeight,
+    ),
+  );
   const [size] = useState(() => ({
     width: geometry.current.width,
     height: geometry.current.height,
   }));
   useEffect(() => {
     geometry.current = { ...geometry.current, ...position };
-  }, [position, geometry]);
+    onGeometryChange?.(geometry.current);
+  }, [position, geometry, onGeometryChange]);
   useEffect(() => {
     const element = panel.current;
     if (!element) return;
     const observer = new ResizeObserver(() => {
       const rect = element.getBoundingClientRect();
       geometry.current = { ...geometry.current, width: rect.width, height: rect.height };
+      onGeometryChange?.(geometry.current);
+      setPosition((value) => {
+        const next = clampComputerPosition(
+          value.x,
+          value.y,
+          rect.width,
+          rect.height,
+          window.innerWidth,
+          window.innerHeight,
+        );
+        return next.x === value.x && next.y === value.y ? value : next;
+      });
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [geometry]);
+  }, [geometry, onGeometryChange]);
   const [state, setState] = useState<"connecting" | "connected" | "disconnected" | "failed">(
     "connecting",
   );
@@ -201,8 +248,8 @@ function ComputerPanel({
         height: size.height,
         left: position.x,
         top: position.y,
-        maxWidth: `calc(100vw - ${position.x + 8}px)`,
-        maxHeight: `calc(100dvh - ${position.y + 8}px)`,
+        maxWidth: "calc(100vw - 16px)",
+        maxHeight: "calc(100dvh - 16px)",
       }}
     >
       <div className="flex shrink-0 items-center gap-1 px-2 py-1">

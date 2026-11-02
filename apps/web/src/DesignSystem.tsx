@@ -5,6 +5,7 @@ import {
 } from "./components/CopySessionIdMenuItem";
 import { ContextMessage, NextContextStart, TimestampSeparator } from "./components/RecentContext";
 import { DirectThreadCard } from "./components/DirectThreadCard";
+import type { ComputerGeometry } from "./computer-viewer";
 import { ComputerViewer } from "./components/ComputerViewer";
 import computerDemoUrl from "./assets/computer-demo.html?url";
 import { AgentAvatar } from "./components/AgentAvatar";
@@ -41,7 +42,7 @@ import { RightPanelTabs } from "./components/FileViewer";
 import { FileSource } from "./components/FileSource";
 import { Link, useLocation } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
   ArrowLeft,
@@ -1733,6 +1734,7 @@ function Layout() {
   );
 }
 function ComputerDemo() {
+  const geometry = useRef<ComputerGeometry | undefined>(undefined);
   const [open, setOpen] = useState(false);
   return (
     <Section id="computer" title="Computer viewer">
@@ -1741,6 +1743,10 @@ function ComputerDemo() {
       </Button>
       {open ? (
         <ComputerViewer
+          savedGeometry={geometry.current}
+          onGeometryChange={(value) => {
+            geometry.current = value;
+          }}
           desktop={{
             generation: "demo",
             url: new URL(computerDemoUrl, location.origin).href,
