@@ -49,7 +49,8 @@ import { MarkdownPlugin, defaultRules } from "@platejs/markdown";
 import remarkCjkFriendly from "remark-cjk-friendly/bidi";
 import remarkCjkFriendlyGfmStrikethrough from "remark-cjk-friendly-gfm-strikethrough/bidi";
 import remarkGfm from "remark-gfm";
-import { editableComposerLinks, protectComposerLinks } from "./composer-links";
+import { editableComposerLinks, protectComposerSyntax } from "./composer-links";
+import { editableComposerTables } from "./composer-tables";
 import { composerParagraphSpacing } from "./composer-line-breaks";
 const attachmentType = "composer_attachment";
 const referenceType = "composer_reference";
@@ -119,7 +120,12 @@ export function insertComposerAttachment(
   editor.tf.insertText(" ");
 }
 
-const composerMarkdownSyntax = [remarkGfm, remarkCjkFriendly, remarkCjkFriendlyGfmStrikethrough];
+const composerMarkdownSyntax = [
+  remarkGfm,
+  remarkCjkFriendly,
+  remarkCjkFriendlyGfmStrikethrough,
+  editableComposerTables,
+];
 
 export const composerPlugins = [
   CitationPlugin,
@@ -263,11 +269,11 @@ function serializeComposer(editor: PlateEditor, references: boolean): string {
   });
   if (!value.some((node) => NodeApi.string(node))) return "";
   for (const block of value) block.children = trimEmptyInlineText(block.children);
-  const restoreLinks = protectComposerLinks(editor, value);
+  const restoreSyntax = protectComposerSyntax(editor, value);
   const last: (TElement & Partial<TListProps>) | undefined = value.at(-1);
   const endsWithEmptyParagraph =
     last?.type === KEYS.p && !last.listStyleType && !NodeApi.string(last);
-  return restoreLinks(
+  return restoreSyntax(
     editor.getApi(MarkdownPlugin).markdown.serialize({
       value,
       preserveEmptyParagraphs: false,

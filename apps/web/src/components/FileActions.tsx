@@ -128,6 +128,7 @@ function ResolvedFileLink({ target }: { target: FileTarget }) {
             <Button
               variant="reference"
               className="file-link"
+              data-copy-content
               onPointerEnter={() => setHovered(true)}
               onFocus={() => setHovered(true)}
               onClick={() => (viewer ? viewer.openFile(resolved) : setPreview(true))}
@@ -169,6 +170,7 @@ export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
       <Button
         variant="ghost"
         className="markdown-image-trigger"
+        data-copy-content
         aria-label={`Preview ${target.name}`}
         onClick={() => setPreview(true)}
       >

@@ -113,21 +113,30 @@ export function sourceAttributes(node: ExtraProps["node"]) {
   return { "data-source": node?.properties["data-source"] };
 }
 
-type SourceSlice = { start: number; end: number; prefix?: string; suffix?: string };
+type SourceSlice = { start: number; end: number; prefix?: string; suffix?: string; text?: string };
 export type SourceSelection = Map<number, SourceSlice>;
 
-export function selectedMarkdown(source: MarkdownSource, selection: SourceSelection): string {
+export function selectedMarkdown(
+  source: MarkdownSource,
+  selection: SourceSelection,
+  unwrapped: ReadonlySet<number> = new Set(),
+): string {
   if (!source.root) return "";
   const references = new Set<string>();
   const visit = (node: SourceNode): string | undefined => {
     const selected = selection.get(node.id);
-    if (node.identifier && (selected || node.children.some(containsSelection)))
+    if (
+      node.identifier &&
+      !unwrapped.has(node.id) &&
+      (selected || node.children.some(containsSelection))
+    )
       references.add(node.identifier);
     if (selected)
       return (
+        selected.text ??
         (selected.prefix ?? "") +
-        source.text.slice(selected.start, selected.end) +
-        (selected.suffix ?? "")
+          source.text.slice(selected.start, selected.end) +
+          (selected.suffix ?? "")
       );
     const children = node.children.filter(containsSelection);
     if (!children.length) return;
@@ -161,6 +170,8 @@ export function selectedMarkdown(source: MarkdownSource, selection: SourceSelect
       previous = child;
     }
     if (node.type === "root" || node.type === "list") return text;
+    if (unwrapped.has(node.id))
+      return node.type === "blockquote" ? text.replace(/\n[ \t]{0,3}>[ \t]?/g, "\n") : text;
     if (node.type === "tableRow") {
       const row =
         source.text.slice(node.start, first.start) + text + source.text.slice(last.end, node.end);

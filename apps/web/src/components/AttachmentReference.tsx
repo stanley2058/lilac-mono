@@ -33,6 +33,7 @@ export function AttachmentReference({
       <span className="sent-attachment-reference inline">
         <Button
           type="button"
+          data-copy-content
           variant="reference"
           className="sent-attachment-chip inline-flex max-w-full h-auto gap-1 px-2 rounded-sm [font-weight:inherit]"
           disabled={!ready}

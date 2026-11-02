@@ -40,6 +40,37 @@ const citation: AssistantCitation = {
   suffix: "",
 };
 
+it("keeps pasted Markdown tables editable as source through draft and submission", () => {
+  const table = [
+    "| Surface | Input | Output |",
+    "| :--- | --- | ---: |",
+    "| **Web** | Text and files | [Rich content](https://example.com) |",
+    "| TUI | `a\\|b` | Plain text |",
+  ].join("\n");
+  const text = `Before\n\n${table}\n\nAfter`;
+  const doc = readComposerDocument(text);
+  expect(composerText(doc)).toContain(table);
+  expect(writeComposerDocument(doc)).toBe(text);
+  expect(writeComposerDocument(doc, false)).toBe(text);
+  expect(writeComposerDocument(readComposerDocument(writeComposerDocument(doc)))).toBe(text);
+});
+
+it("preserves a table inside a blockquote without duplicating quote prefixes", () => {
+  const text = "> | A | B |\n> | --- | --- |\n> | 1 | 2 |";
+  const doc = readComposerDocument(text);
+  expect(composerText(doc)).toContain("| A | B |\n| --- | --- |\n| 1 | 2 |");
+  expect(writeComposerDocument(doc)).toBe(text);
+  expect(writeComposerDocument(readComposerDocument(writeComposerDocument(doc)))).toBe(text);
+});
+
+it("preserves definitions needed by literal table references", () => {
+  const text =
+    '| Name | Link |\n| --- | --- |\n| Earth | [Docs][ref] |\n\n[ref]: https://example.com "Title"';
+  const doc = readComposerDocument(text);
+  expect(writeComposerDocument(doc)).toBe(text);
+  expect(writeComposerDocument(readComposerDocument(writeComposerDocument(doc)))).toBe(text);
+});
+
 it("inserts a citation at the caret, round-trips through drafts and submission, and supports undo", () => {
   const editor = headlessEditor("before after");
   editor.registerPlugin(history());

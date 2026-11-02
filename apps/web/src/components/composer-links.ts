@@ -36,25 +36,25 @@ export function editableComposerLinks(resourceUrls?: ReadonlySet<string>) {
   };
 }
 
-export function protectComposerLinks(editor: PlateEditor, value: Descendant[]) {
+export function protectComposerSyntax(editor: PlateEditor, value: Descendant[]) {
   const source = value.map((node) => NodeApi.string(node)).join("\n");
   let marker = "\uE000";
   while (source.includes(marker)) marker += "\uE000";
-  const links: string[] = [];
+  const literals: { text: string; table: boolean }[] = [];
 
   function protect(text: string) {
-    if (!/[[<:@]|www\./.test(text)) return text;
+    if (!/[[<:@|]|www\./.test(text)) return text;
     const tree = markdownToAstProcessor(editor, text, { remarkPlugins: [remarkGfm] });
     let end = 0;
     let result = "";
     function visit(nodes: MdRootContent[]) {
       for (const node of nodes) {
-        if (node.type === "link") {
+        if (node.type === "link" || node.type === "table" || node.type === "definition") {
           const start = node.position?.start.offset;
           const next = node.position?.end.offset;
           if (start === undefined || next === undefined) continue;
-          result += text.slice(end, start) + marker + links.length + marker;
-          links.push(text.slice(start, next));
+          result += text.slice(end, start) + marker + literals.length + marker;
+          literals.push({ text: text.slice(start, next), table: node.type === "table" });
           end = next;
           continue;
         }
@@ -77,9 +77,16 @@ export function protectComposerLinks(editor: PlateEditor, value: Descendant[]) {
       visit(node.children);
     }
   }
-  // Plate splits newlines before serializing text. Keep complete link syntax together until afterward.
+  // Plate splits newlines before serialization. Protect literal links and tables from escaping.
   visit(value);
   const pattern = new RegExp(`${marker}(\\d+)${marker}`, "g");
   return (markdown: string) =>
-    markdown.replace(pattern, (match, index: string) => links[Number(index)] ?? match);
+    markdown.replace(pattern, (match, index: string, offset: number) => {
+      const literal = literals[Number(index)];
+      if (!literal) return match;
+      if (!literal.table) return literal.text;
+      const prefix = markdown.slice(markdown.lastIndexOf("\n", offset - 1) + 1, offset);
+      const continuation = prefix.replace(/[^\s>]/g, " ");
+      return literal.text.replaceAll("\n", `\n${continuation}`);
+    });
 }

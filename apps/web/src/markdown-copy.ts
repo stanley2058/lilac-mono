@@ -4,9 +4,11 @@ import {
   sourceTextSelection,
   type SourceSelection,
 } from "./markdown-source";
+import { tableRows, tableText } from "./table-copy";
 
 const skipped =
-  "button,input,textarea,script,style,svg,[aria-hidden=true],.select-none,.sr-only,.code-toolbar";
+  "button:not([data-copy-content]),input,textarea,script,style,svg,[aria-hidden=true],.select-none:not([data-copy-content]),.sr-only,.code-toolbar";
+const textRegions = "strong,b,em,i,del,s,a,code,blockquote";
 const wrappers = new Set([
   "STRONG",
   "B",
@@ -36,7 +38,12 @@ const wrappers = new Set([
   "H6",
 ]);
 
-function selectionMarkdown(range: Range, root: HTMLElement): string | undefined {
+function selectionMarkdown(
+  range: Range,
+  root: HTMLElement,
+  tables: Map<number, string>,
+  unwrapped: ReadonlySet<number>,
+): string | undefined {
   const source = getMarkdownSource(root);
   if (!source) return;
   const selection: SourceSelection = new Map();
@@ -65,6 +72,11 @@ function selectionMarkdown(range: Range, root: HTMLElement): string | undefined 
       continue;
     }
     const id = Number(mapped.dataset.source?.split(":")[2]);
+    // Renderer whitespace between blocks has no source span of its own.
+    if (!node.data.trim() && source.nodes[id]?.children.length) {
+      node = walker.nextNode();
+      continue;
+    }
     const content =
       source.nodes[id]?.type === "code" ? (mapped.querySelector("pre code") ?? mapped) : mapped;
     const prefix = root.ownerDocument.createRange();
@@ -101,7 +113,8 @@ function selectionMarkdown(range: Range, root: HTMLElement): string | undefined 
     if (node.type === "code" && element.querySelector("pre")) continue;
     selection.set(id, { start: node.start, end: node.end });
   }
-  return selectedMarkdown(source, selection) || undefined;
+  for (const [id, text] of tables) selection.set(id, { start: 0, end: 0, text });
+  return selectedMarkdown(source, selection, unwrapped) || undefined;
 }
 
 export function markdownClipboard(
@@ -126,15 +139,50 @@ export function markdownClipboard(
   ) {
     if (!wrappers.has(element.tagName)) continue;
     const wrapper = element.cloneNode(false);
+    if (wrapper instanceof Element && element.matches(textRegions)) {
+      const source = element.closest("[data-source]")?.getAttribute("data-source");
+      if (source) wrapper.setAttribute("data-source", source);
+    }
     wrapper.appendChild(fragment);
     fragment = wrapper;
   }
   container.appendChild(fragment);
+  for (const node of container.querySelectorAll(skipped)) node.remove();
+  const tables = new Map<number, string>();
+  for (const table of container.querySelectorAll("table")) {
+    const text = tableText(tableRows(table));
+    const onlyTable = container.textContent?.trim() === table.textContent?.trim();
+    const plain = roots.ownerDocument.createElement("span");
+    plain.style.whiteSpace = "pre-wrap";
+    plain.textContent = text;
+    if (onlyTable) return { text, html: plain.outerHTML };
+    const id = Number(table.dataset.source?.split(":")[2]);
+    tables.set(id, text);
+    table.replaceWith(plain);
+  }
+  const formats = Array.from(container.querySelectorAll(textRegions)).filter(
+    (element) => !element.closest("pre"),
+  );
+  const contained = formats.filter((element) => container.textContent === element.textContent);
+  if (contained.length && formats.every((element) => contained.includes(element))) {
+    const text = selection.toString();
+    if (!text) return;
+    container.textContent = text;
+    container.style.whiteSpace = "pre-wrap";
+    return { text, html: container.outerHTML };
+  }
+  const unwrapped = new Set<number>();
+  for (const element of contained) {
+    const mapped = element.closest("[data-source]");
+    const id = Number(mapped?.getAttribute("data-source")?.split(":")[2]);
+    unwrapped.add(id);
+    element.replaceWith(...element.childNodes);
+  }
   const soleCode = container.querySelector("pre");
   const codeOnly =
     ancestor.closest("pre") ||
     (soleCode && container.textContent?.trim() === soleCode.textContent?.trim());
-  const text = codeOnly ? range.toString() : selectionMarkdown(range, roots);
+  const text = codeOnly ? range.toString() : selectionMarkdown(range, roots, tables, unwrapped);
   if (!text) return;
   for (const node of container.querySelectorAll(skipped)) node.remove();
   for (const node of container.querySelectorAll("*")) {

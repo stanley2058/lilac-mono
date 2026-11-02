@@ -1934,7 +1934,7 @@ export default function DesignSystem() {
                     />
                   </Specimen>
                   <Markdown text={richText} />
-                  <Specimen title="Table with long descriptions">
+                  <Specimen title="Table with Markdown and CSV copy">
                     <Markdown text={tableExample} />
                   </Specimen>
                   <Specimen title="Table in a wrapped preview">

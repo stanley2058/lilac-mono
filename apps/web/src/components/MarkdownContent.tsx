@@ -28,6 +28,8 @@ import { LinkWithFavicon } from "./LinkWithFavicon";
 import { AttachmentReference } from "./AttachmentReference";
 import { MessageResourcesContext } from "./message-resources";
 import { CodeBlock } from "./CodeBlock";
+import { MarkdownTable, MarkdownTableContext } from "./MarkdownTable";
+import { remarkTableSources } from "../markdown-table-source";
 import { HtmlPreviewBlock } from "./HtmlPreview";
 import { markdownUrl } from "./markdown-policy";
 import { userMessageLineBreaks } from "./composer-line-breaks";
@@ -208,11 +210,7 @@ const components: Components = {
         <MarkdownImage {...props} />
       </span>
     ),
-  table: ({ children, node }) => (
-    <div className="markdown-table">
-      <table {...sourceAttributes(node)}>{children}</table>
-    </div>
-  ),
+  table: MarkdownTable,
 };
 
 function UserMarkdown({ text }: { text: string }) {
@@ -230,15 +228,19 @@ function RenderedMarkdown({
   remarkPlugins: ComponentProps<typeof ReactMarkdown>["remarkPlugins"];
   source?: MarkdownSource;
 }) {
+  const tableSources = useMemo(() => ({ text, tables: new Map<string, string>() }), [text]);
   const mappedRemarkPlugins = useMemo(
-    () =>
-      source
-        ? [
-            ...(remarkPlugins ?? []),
-            [remarkMarkdownSource, source] satisfies [typeof remarkMarkdownSource, typeof source],
-          ]
-        : remarkPlugins,
-    [remarkPlugins, source],
+    () => [
+      ...(remarkPlugins ?? []),
+      [remarkTableSources, tableSources.tables] satisfies [
+        typeof remarkTableSources,
+        Map<string, string>,
+      ],
+      ...(source
+        ? [[remarkMarkdownSource, source] satisfies [typeof remarkMarkdownSource, typeof source]]
+        : []),
+    ],
+    [remarkPlugins, source, tableSources],
   );
   const mappedRehypePlugins = useMemo(
     () =>
@@ -251,15 +253,17 @@ function RenderedMarkdown({
     [source],
   );
   return (
-    <ReactMarkdown
-      remarkPlugins={mappedRemarkPlugins}
-      rehypePlugins={mappedRehypePlugins}
-      components={components}
-      urlTransform={markdownUrl}
-      skipHtml
-    >
-      {text}
-    </ReactMarkdown>
+    <MarkdownTableContext value={tableSources.tables}>
+      <ReactMarkdown
+        remarkPlugins={mappedRemarkPlugins}
+        rehypePlugins={mappedRehypePlugins}
+        components={components}
+        urlTransform={markdownUrl}
+        skipHtml
+      >
+        {text}
+      </ReactMarkdown>
+    </MarkdownTableContext>
   );
 }
 

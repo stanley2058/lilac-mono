@@ -103,6 +103,15 @@ test("reference-style links keep their original definitions", () => {
   ).toBe("[the source][ref]\n\n[ref]: https://example.com 'Title'");
 });
 
+test("unwrapping a reference link retains crossed inner formatting without its definition", () => {
+  const { source } = parse("[one **two** three][ref]\n\n[ref]: https://example.com");
+  const selection: SourceSelection = new Map();
+  for (const node of source.nodes.filter((node) => node.value === "two" || node.value === " three"))
+    selection.set(node.id, { start: node.start, end: node.end });
+  const link = source.nodes.find((node) => node.type === "linkReference")!;
+  expect(selectedMarkdown(source, selection, new Set([link.id]))).toBe("**two** three");
+});
+
 test("mixed prose and partial code copy only the selected code with its original fence", () => {
   expect(
     select("Before\n\n~~~js\nfirst();\nsecond();\n~~~", [
