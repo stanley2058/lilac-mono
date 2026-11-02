@@ -2,9 +2,12 @@ import { describe, expect, it } from "bun:test";
 
 import {
   coreConfigInputSchemaV2,
+  coreConfigInputSchemaV3,
   coreConfigSchema,
   parseCoreConfigV1ToUniversal,
 } from "../core-config";
+
+import type { ModelCapabilityOverride } from "../core-config/types";
 
 describe("coreConfigSchema models.capability", () => {
   it("defaults conversation thread summarization, embedding, and auto injection config", () => {
@@ -394,6 +397,17 @@ describe("coreConfigSchema models.capability", () => {
     });
 
     expect(parsed.models.capability.overrides["custom/private-model"]?.attachment).toBe(true);
+  });
+
+  it.each([2, 3])("accepts partial upstream capability overrides in v%i", (configVersion) => {
+    const overrides: Record<string, ModelCapabilityOverride> = {
+      "codex/gpt-6-astra": { limit: { context: 395000 } },
+      "openai/gpt-6-astra": { cost: { input: 0.6, context_over_200k: { input: 1 } } },
+      "openai/gpt-6.1-sol": { attachment: false, modalities: { output: ["text"] } },
+    };
+    const schema = configVersion === 2 ? coreConfigInputSchemaV2 : coreConfigInputSchemaV3;
+    const parsed = schema.parse({ configVersion, models: { capability: { overrides } } });
+    expect(parsed.models.capability.overrides).toEqual(overrides);
   });
 
   it("rejects direct override without limit.context", () => {

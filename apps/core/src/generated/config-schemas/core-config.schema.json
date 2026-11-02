@@ -3792,17 +3792,17 @@
                 },
                 "overrides": {
                   "default": {},
-                  "description": "Manual capability overrides keyed by provider/model. Useful when catalog metadata is missing or stale. Inherit another model and patch selected fields, or provide a manual definition with limit.context.",
+                  "description": "Capability overrides keyed by provider/model. Deep-merge selected fields onto upstream metadata, or use inherit to select another base. Arrays replace base arrays. Without a base, provide a standalone definition with limit.context.",
                   "type": "object",
                   "propertyNames": { "type": "string", "minLength": 1 },
                   "additionalProperties": {
                     "type": "object",
                     "properties": {
                       "inherit": {
-                        "description": "Base capability reference in provider/model format. Omit for a manual capability definition; then limit.context is required, cost patches need input and output, and modality patches need input.",
+                        "description": "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions.",
                         "type": "string",
                         "minLength": 1,
-                        "markdownDescription": "Base capability reference in provider/model format. Omit for a manual capability definition; then limit.context is required, cost patches need input and output, and modality patches need input."
+                        "markdownDescription": "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions."
                       },
                       "cost": {
                         "description": "Partial token-price overrides merged onto inherited/base costs. Used for estimation; does not change provider billing.",
@@ -3845,7 +3845,7 @@
                             "markdownDescription": "Estimated output-audio cost in USD per million tokens."
                           },
                           "context_over_200k": {
-                            "description": "Pricing overrides for the over-200k context tier. Affects cost estimation only; does not change limit.context.",
+                            "description": "Partial pricing overrides merged onto the over-200k context tier.",
                             "type": "object",
                             "properties": {
                               "input": {
@@ -3873,16 +3873,15 @@
                                 "markdownDescription": "Estimated cache-write cost in USD per million tokens."
                               }
                             },
-                            "required": ["input", "output"],
                             "additionalProperties": false,
-                            "markdownDescription": "Pricing overrides for the over-200k context tier. Affects cost estimation only; does not change limit.context."
+                            "markdownDescription": "Partial pricing overrides merged onto the over-200k context tier."
                           }
                         },
                         "additionalProperties": false,
                         "markdownDescription": "Partial token-price overrides merged onto inherited/base costs. Used for estimation; does not change provider billing."
                       },
                       "limit": {
-                        "description": "Token-limit overrides merged onto inherited/base limits. A manual definition without inherit must include context.",
+                        "description": "Token-limit overrides merged onto inherited/base limits. When no upstream or inherited base is available, the definition must include context.",
                         "type": "object",
                         "properties": {
                           "context": {
@@ -3901,7 +3900,7 @@
                           }
                         },
                         "additionalProperties": false,
-                        "markdownDescription": "Token-limit overrides merged onto inherited/base limits. A manual definition without inherit must include context."
+                        "markdownDescription": "Token-limit overrides merged onto inherited/base limits. When no upstream or inherited base is available, the definition must include context."
                       },
                       "attachment": {
                         "description": "Override attachment input support.",
@@ -3909,7 +3908,7 @@
                         "markdownDescription": "Override attachment input support."
                       },
                       "modalities": {
-                        "description": "Input and output modality overrides. For a manual definition without inherit, specify input when supplying this object.",
+                        "description": "Input and output modality overrides. Arrays replace the corresponding base arrays. When no base is available, specify input when supplying this object.",
                         "type": "object",
                         "properties": {
                           "input": {
@@ -3932,12 +3931,12 @@
                           }
                         },
                         "additionalProperties": false,
-                        "markdownDescription": "Input and output modality overrides. For a manual definition without inherit, specify input when supplying this object."
+                        "markdownDescription": "Input and output modality overrides. Arrays replace the corresponding base arrays. When no base is available, specify input when supplying this object."
                       }
                     },
                     "additionalProperties": false
                   },
-                  "markdownDescription": "Manual capability overrides keyed by provider/model. Useful when catalog metadata is missing or stale. Inherit another model and patch selected fields, or provide a manual definition with limit.context."
+                  "markdownDescription": "Capability overrides keyed by provider/model. Deep-merge selected fields onto upstream metadata, or use inherit to select another base. Arrays replace base arrays. Without a base, provide a standalone definition with limit.context."
                 }
               },
               "additionalProperties": false,
@@ -6167,17 +6166,17 @@
                 },
                 "overrides": {
                   "default": {},
-                  "description": "Manual capability overrides keyed by provider/model. Useful when catalog metadata is missing or stale. Inherit another model and patch selected fields, or provide a manual definition with limit.context.",
+                  "description": "Capability overrides keyed by provider/model. Deep-merge selected fields onto upstream metadata, or use inherit to select another base. Arrays replace base arrays. Without a base, provide a standalone definition with limit.context.",
                   "type": "object",
                   "propertyNames": { "type": "string", "minLength": 1 },
                   "additionalProperties": {
                     "type": "object",
                     "properties": {
                       "inherit": {
-                        "description": "Base capability reference in provider/model format. Omit for a manual capability definition; then limit.context is required, cost patches need input and output, and modality patches need input.",
+                        "description": "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions.",
                         "type": "string",
                         "minLength": 1,
-                        "markdownDescription": "Base capability reference in provider/model format. Omit for a manual capability definition; then limit.context is required, cost patches need input and output, and modality patches need input."
+                        "markdownDescription": "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions."
                       },
                       "cost": {
                         "description": "Partial token-price overrides merged onto inherited/base costs. Used for estimation; does not change provider billing.",
@@ -6220,7 +6219,7 @@
                             "markdownDescription": "Estimated output-audio cost in USD per million tokens."
                           },
                           "context_over_200k": {
-                            "description": "Pricing overrides for the over-200k context tier. Affects cost estimation only; does not change limit.context.",
+                            "description": "Partial pricing overrides merged onto the over-200k context tier.",
                             "type": "object",
                             "properties": {
                               "input": {
@@ -6248,16 +6247,15 @@
                                 "markdownDescription": "Estimated cache-write cost in USD per million tokens."
                               }
                             },
-                            "required": ["input", "output"],
                             "additionalProperties": false,
-                            "markdownDescription": "Pricing overrides for the over-200k context tier. Affects cost estimation only; does not change limit.context."
+                            "markdownDescription": "Partial pricing overrides merged onto the over-200k context tier."
                           }
                         },
                         "additionalProperties": false,
                         "markdownDescription": "Partial token-price overrides merged onto inherited/base costs. Used for estimation; does not change provider billing."
                       },
                       "limit": {
-                        "description": "Token-limit overrides merged onto inherited/base limits. A manual definition without inherit must include context.",
+                        "description": "Token-limit overrides merged onto inherited/base limits. When no upstream or inherited base is available, the definition must include context.",
                         "type": "object",
                         "properties": {
                           "context": {
@@ -6276,7 +6274,7 @@
                           }
                         },
                         "additionalProperties": false,
-                        "markdownDescription": "Token-limit overrides merged onto inherited/base limits. A manual definition without inherit must include context."
+                        "markdownDescription": "Token-limit overrides merged onto inherited/base limits. When no upstream or inherited base is available, the definition must include context."
                       },
                       "attachment": {
                         "description": "Override attachment input support.",
@@ -6284,7 +6282,7 @@
                         "markdownDescription": "Override attachment input support."
                       },
                       "modalities": {
-                        "description": "Input and output modality overrides. For a manual definition without inherit, specify input when supplying this object.",
+                        "description": "Input and output modality overrides. Arrays replace the corresponding base arrays. When no base is available, specify input when supplying this object.",
                         "type": "object",
                         "properties": {
                           "input": {
@@ -6307,12 +6305,12 @@
                           }
                         },
                         "additionalProperties": false,
-                        "markdownDescription": "Input and output modality overrides. For a manual definition without inherit, specify input when supplying this object."
+                        "markdownDescription": "Input and output modality overrides. Arrays replace the corresponding base arrays. When no base is available, specify input when supplying this object."
                       }
                     },
                     "additionalProperties": false
                   },
-                  "markdownDescription": "Manual capability overrides keyed by provider/model. Useful when catalog metadata is missing or stale. Inherit another model and patch selected fields, or provide a manual definition with limit.context."
+                  "markdownDescription": "Capability overrides keyed by provider/model. Deep-merge selected fields onto upstream metadata, or use inherit to select another base. Arrays replace base arrays. Without a base, provide a standalone definition with limit.context."
                 }
               },
               "additionalProperties": false,

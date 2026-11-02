@@ -68,7 +68,9 @@ export type ModelCapabilityOverride = {
   /** Optional base model capability to inherit from (provider/model). */
   inherit?: ModelSpecifier;
   /** Optional partial cost patch merged onto inherited/base cost. */
-  cost?: Partial<ModelCost>;
+  cost?: Omit<Partial<ModelCost>, "context_over_200k"> & {
+    context_over_200k?: Partial<NonNullable<ModelCost["context_over_200k"]>>;
+  };
   /** Optional partial limit patch merged onto inherited/base limits. */
   limit?: {
     context?: number;
@@ -420,7 +422,7 @@ export class ModelCapability {
   private mergeCostPatchResult(params: {
     spec: string;
     baseCost: ModelCost | undefined;
-    patch: Partial<ModelCost> | undefined;
+    patch: ModelCapabilityOverride["cost"];
   }): ResultType<ModelCost | undefined, ModelCapabilityResolutionFailed> {
     if (!params.patch) {
       return Result.ok(this.cloneCost(params.baseCost));
@@ -432,27 +434,23 @@ export class ModelCapability {
       return Result.err(
         new ModelCapabilityResolutionFailed({
           spec: params.spec,
-          message: `Invalid capability override '${params.spec}': cost patch requires cost.input and cost.output (directly or via inherit).`,
+          message: `Invalid capability override '${params.spec}': cost patch requires cost.input and cost.output (directly, from upstream, or via inherit).`,
         }),
       );
     }
 
-    let contextOver200k: ModelCost["context_over_200k"];
-    if (params.patch.context_over_200k !== undefined) {
-      contextOver200k = {
-        input: params.patch.context_over_200k.input,
-        output: params.patch.context_over_200k.output,
-        cache_read: params.patch.context_over_200k.cache_read,
-        cache_write: params.patch.context_over_200k.cache_write,
-      };
-    } else if (params.baseCost?.context_over_200k) {
-      contextOver200k = {
-        input: params.baseCost.context_over_200k.input,
-        output: params.baseCost.context_over_200k.output,
-        cache_read: params.baseCost.context_over_200k.cache_read,
-        cache_write: params.baseCost.context_over_200k.cache_write,
-      };
-    }
+    const mergedTier = this.mergeContextOver200kCostPatchResult({
+      spec: params.spec,
+      base: params.baseCost?.context_over_200k,
+      patch: params.patch.context_over_200k,
+    });
+    const contextOver200k = mergedTier.match<
+      ModelCost["context_over_200k"] | ModelCapabilityResolutionFailed
+    >({
+      ok: (value) => value,
+      err: (error) => error,
+    });
+    if (ModelCapabilityResolutionFailed.is(contextOver200k)) return Result.err(contextOver200k);
 
     return Result.ok({
       input: mergedInput,
@@ -462,6 +460,31 @@ export class ModelCapability {
       input_audio: params.patch.input_audio ?? params.baseCost?.input_audio,
       output_audio: params.patch.output_audio ?? params.baseCost?.output_audio,
       context_over_200k: contextOver200k,
+    });
+  }
+
+  private mergeContextOver200kCostPatchResult(params: {
+    spec: string;
+    base: ModelCost["context_over_200k"];
+    patch: Partial<NonNullable<ModelCost["context_over_200k"]>> | undefined;
+  }): ResultType<ModelCost["context_over_200k"], ModelCapabilityResolutionFailed> {
+    if (!params.patch) return Result.ok(params.base ? { ...params.base } : undefined);
+
+    const input = params.patch.input ?? params.base?.input;
+    const output = params.patch.output ?? params.base?.output;
+    if (input === undefined || output === undefined) {
+      return Result.err(
+        new ModelCapabilityResolutionFailed({
+          spec: params.spec,
+          message: `Invalid capability override '${params.spec}': context_over_200k patch requires input and output (directly, from upstream, or via inherit).`,
+        }),
+      );
+    }
+    return Result.ok({
+      input,
+      output,
+      cache_read: params.patch.cache_read ?? params.base?.cache_read,
+      cache_write: params.patch.cache_write ?? params.base?.cache_write,
     });
   }
 
@@ -604,6 +627,13 @@ export class ModelCapability {
     }
 
     let base: ModelCapabilityInfo | null = null;
+    if (!override.inherit) {
+      const upstream = await this.resolveFromRegistryResult(spec, { signal: options.signal });
+      base = upstream.match({
+        ok: (value) => value,
+        err: () => null,
+      });
+    }
     if (override.inherit) {
       const inherited = await this.resolveWithOverridesResult(override.inherit, {
         signal: options.signal,
@@ -627,7 +657,7 @@ export class ModelCapability {
       return Result.err(
         new ModelCapabilityResolutionFailed({
           spec,
-          message: `Invalid capability override '${spec}': limit.context is required (directly or via inherit).`,
+          message: `Invalid capability override '${spec}': limit.context is required (directly, from upstream, or via inherit).`,
         }),
       );
     }

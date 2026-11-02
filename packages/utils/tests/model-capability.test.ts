@@ -472,6 +472,127 @@ describe("ModelCapability", () => {
     );
   });
 
+  it("merges partial overrides onto upstream metadata through provider aliases", async () => {
+    const registry = {
+      openai: {
+        id: "openai",
+        name: "OpenAI",
+        npm: "@ai-sdk/openai",
+        models: {
+          "gpt-6-astra": {
+            id: "gpt-6-astra",
+            name: "Astra",
+            attachment: true,
+            modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+            limit: { context: 400_000, output: 128_000 },
+            cost: {
+              input: 2,
+              output: 8,
+              cache_read: 0.5,
+              context_over_200k: { input: 4, output: 16, cache_read: 1 },
+            },
+          },
+        },
+      },
+    };
+    const options = {
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch(registry),
+    };
+    const original = await new ModelCapability(options).resolve("codex/gpt-6-astra");
+    const contextOnly = await new ModelCapability({
+      ...options,
+      overrides: { "codex/gpt-6-astra": { limit: { context: 395_000 } } },
+    }).resolve("codex/gpt-6-astra");
+    expect(contextOnly).toEqual({ ...original, limit: { context: 395_000, output: 128_000 } });
+    expect(contextOnly.attachment).toBe(true);
+    expect(contextOnly.modalities?.input).toContain("image");
+
+    const patched = await new ModelCapability({
+      ...options,
+      overrides: {
+        "codex/gpt-6-astra": {
+          attachment: false,
+          cost: { input: 0, context_over_200k: { input: 3 } },
+          limit: { output: 0 },
+          modalities: { input: ["text"] },
+        },
+      },
+    }).resolve("codex/gpt-6-astra");
+    expect(patched.attachment).toBe(false);
+    expect(patched.limit).toEqual({ context: 400_000, output: 0 });
+    expect(patched.modalities).toEqual({ input: ["text"], output: ["text"] });
+    expect(patched.cost).toEqual({
+      ...original.cost,
+      output: 8,
+      input: 0,
+      context_over_200k: { input: 3, output: 16, cache_read: 1 },
+    });
+    expect(await new ModelCapability(options).resolve("codex/gpt-6-astra")).toEqual(original);
+  });
+
+  it("retains standalone overrides when upstream metadata is missing or disabled", async () => {
+    for (const forceUnknownProviders of [[], ["custom"]]) {
+      const mc = new ModelCapability({
+        apiUrl: "https://example.invalid/models.dev/api.json",
+        fetch: createRegistryFetch({}),
+        forceUnknownProviders,
+        overrides: {
+          "custom/model": {
+            limit: { context: 1000 },
+            attachment: true,
+            modalities: { input: ["text", "image"] },
+          },
+          "custom/incomplete": { cost: { input: 1 } },
+        },
+      });
+      expect((await mc.resolve("custom/model")).limit).toEqual({ context: 1000, output: 0 });
+      await expect(mc.resolve("custom/incomplete")).rejects.toThrow("limit.context is required");
+    }
+  });
+
+  it("validates incomplete standalone patches after upstream lookup", async () => {
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: createRegistryFetch({}),
+      overrides: {
+        "custom/cost": { limit: { context: 1000 }, cost: { input: 1 } },
+        "custom/tier": {
+          limit: { context: 1000 },
+          cost: { input: 1, output: 2, context_over_200k: { input: 3 } },
+        },
+        "custom/modalities": { limit: { context: 1000 }, modalities: { output: ["text"] } },
+      },
+    });
+    await expect(mc.resolve("custom/cost")).rejects.toThrow("cost.input and cost.output");
+    await expect(mc.resolve("custom/tier")).rejects.toThrow(
+      "context_over_200k patch requires input and output",
+    );
+    await expect(mc.resolve("custom/modalities")).rejects.toThrow("modalities.input is required");
+  });
+
+  it("keeps complete standalone overrides usable when catalog fetching fails", async () => {
+    const mc = new ModelCapability({
+      apiUrl: "https://example.invalid/models.dev/api.json",
+      fetch: Object.assign(
+        async () => {
+          throw new Error("catalog unavailable");
+        },
+        { preconnect: fetch.preconnect },
+      ),
+      overrides: {
+        "custom/offline": {
+          limit: { context: 1000 },
+          attachment: true,
+          modalities: { input: ["text", "image"] },
+        },
+      },
+    });
+    const info = await mc.resolve("custom/offline");
+    expect(info.attachment).toBe(true);
+    expect(info.limit.context).toBe(1000);
+  });
+
   it("supports inherited overrides for newly introduced models", async () => {
     const registry = {
       openai: {

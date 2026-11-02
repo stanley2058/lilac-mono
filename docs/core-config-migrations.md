@@ -94,7 +94,13 @@ Enabling a catalog does not supply credentials or install a provider adapter.
 `*` matches any characters, including slashes. Rules apply to the resolved provider/model in file order,
 then alias options, then explicit slot/run options. Objects merge recursively; arrays and scalars replace.
 `null` remains a provider value. `unset` removes dot-separated option paths at that rule's position.
-Capability overrides remain under `models.capability.overrides` and take precedence over inferred metadata.
+Capability overrides remain under `models.capability.overrides`. Overrides deep-merge onto upstream
+metadata for the same model, preserving omitted fields such as attachment support, modalities, pricing,
+and output limits. Arrays replace base arrays. An explicit `inherit` selects a different base, including
+another override. If upstream metadata is unavailable, a standalone override must provide
+`limit.context` and complete any supplied cost or modality definitions. Providers in
+`forceUnknownProviders` still skip upstream lookup. V2/v3 accept partial overrides without `inherit`;
+the frozen v1 parser retains its completeness checks.
 Codex uses OpenAI metadata. Claude Code's opus/sonnet/haiku/fable aliases inherit the latest stable family
 metadata while retaining the harness alias for execution.
 

@@ -101,8 +101,8 @@ export type ModelCapabilityOverride = {
     input_audio?: number;
     output_audio?: number;
     context_over_200k?: {
-      input: number;
-      output: number;
+      input?: number;
+      output?: number;
       cache_read?: number;
       cache_write?: number;
     };

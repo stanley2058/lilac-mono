@@ -352,10 +352,17 @@ const modelCapabilityOverrideSchemaV2 = z
       .min(1)
       .optional()
       .describe(
-        "Base capability reference in provider/model format. Omit for a manual capability definition; then limit.context is required, cost patches need input and output, and modality patches need input.",
+        "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions.",
       ),
     /** Optional partial cost patch merged onto inherited/base cost. */
     cost: modelCapabilityCostPatchSchema
+      .extend({
+        context_over_200k: modelCapabilityCostPatchSchema.shape.context_over_200k
+          .unwrap()
+          .partial()
+          .optional()
+          .describe("Partial pricing overrides merged onto the over-200k context tier."),
+      })
       .optional()
       .describe(
         "Partial token-price overrides merged onto inherited/base costs. Used for estimation; does not change provider billing.",
@@ -364,7 +371,7 @@ const modelCapabilityOverrideSchemaV2 = z
     limit: modelCapabilityLimitPatchSchema
       .optional()
       .describe(
-        "Token-limit overrides merged onto inherited/base limits. A manual definition without inherit must include context.",
+        "Token-limit overrides merged onto inherited/base limits. When no upstream or inherited base is available, the definition must include context.",
       ),
     /** Optional attachment input support patch merged onto inherited/base capability. */
     attachment: z.boolean().optional().describe("Override attachment input support."),
@@ -372,7 +379,7 @@ const modelCapabilityOverrideSchemaV2 = z
     modalities: modelCapabilityModalitiesPatchSchema
       .optional()
       .describe(
-        "Input and output modality overrides. For a manual definition without inherit, specify input when supplying this object.",
+        "Input and output modality overrides. Arrays replace the corresponding base arrays. When no base is available, specify input when supplying this object.",
       ),
   })
   .superRefine((input, ctx) => {
@@ -388,32 +395,6 @@ const modelCapabilityOverrideSchemaV2 = z
         message:
           "override must set at least one of inherit, cost, limit, attachment, or modalities",
       });
-    }
-
-    if (!input.inherit) {
-      if (input.limit?.context === undefined) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["limit", "context"],
-          message: "limit.context is required when inherit is not set",
-        });
-      }
-
-      if (input.cost && (input.cost.input === undefined || input.cost.output === undefined)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["cost"],
-          message: "cost.input and cost.output are required when inherit is not set",
-        });
-      }
-
-      if (input.modalities && input.modalities.input === undefined) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["modalities", "input"],
-          message: "modalities.input is required when inherit is not set",
-        });
-      }
     }
   });
 
@@ -431,7 +412,7 @@ const modelCapabilitySchemaV2 = z
       .record(z.string().trim().min(1), modelCapabilityOverrideSchemaV2)
       .default({})
       .describe(
-        "Manual capability overrides keyed by provider/model. Useful when catalog metadata is missing or stale. Inherit another model and patch selected fields, or provide a manual definition with limit.context.",
+        "Capability overrides keyed by provider/model. Deep-merge selected fields onto upstream metadata, or use inherit to select another base. Arrays replace base arrays. Without a base, provide a standalone definition with limit.context.",
       ),
   })
   .default({
