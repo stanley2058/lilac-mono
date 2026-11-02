@@ -3,7 +3,6 @@ import { Result } from "better-result";
 import type { BlobRefV1 } from "@stanley2058/lilac-blob-storage";
 import type { LimitOpts, SessionRef, SurfaceMessage } from "../../../src/surface/types";
 import {
-  DISCORD_SEARCH_FIRST_SEARCH_HEAL_LIMIT,
   DISCORD_SEARCH_NEW_MESSAGE_HEAL_LIMIT,
   DiscordSearchService,
   DiscordSearchStore,
@@ -387,33 +386,6 @@ describe("discord search store", () => {
     }
   });
 
-  it("searches within a single channel", () => {
-    const store = new DiscordSearchStore(":memory:");
-
-    store.upsertMessages([
-      {
-        ref: { platform: "discord", channelId: "123", messageId: "m1" },
-        session: { platform: "discord", channelId: "123" },
-        userId: "u1",
-        text: "deploy completed",
-        ts: 1,
-      },
-      {
-        ref: { platform: "discord", channelId: "456", messageId: "m2" },
-        session: { platform: "discord", channelId: "456" },
-        userId: "u2",
-        text: "deploy elsewhere",
-        ts: 2,
-      },
-    ]);
-
-    const hits = store.searchChannel({ channelId: "123", query: "deploy" });
-    expect(hits.length).toBe(1);
-    expect(hits[0]?.ref.channelId).toBe("123");
-
-    store.close();
-  });
-
   it("heals recent history on create and respects cooldown", async () => {
     const adapter = new FakeSearchAdapter({
       "123": [
@@ -448,52 +420,6 @@ describe("discord search store", () => {
 
     expect(adapter.listCalls.length).toBe(1);
     expect(adapter.listCalls[0]?.opts?.limit).toBe(DISCORD_SEARCH_NEW_MESSAGE_HEAL_LIMIT);
-
-    store.close();
-  });
-
-  it("uses first-search heal limit then cooldown", async () => {
-    const adapter = new FakeSearchAdapter({
-      "123": [
-        {
-          ref: { platform: "discord", channelId: "123", messageId: "m1" },
-          session: { platform: "discord", channelId: "123" },
-          userId: "u1",
-          text: "deploy completed",
-          ts: 1,
-        },
-      ],
-    });
-
-    const store = new DiscordSearchStore(":memory:");
-    const indexedChannels: string[] = [];
-    const service = new DiscordSearchService({
-      adapter,
-      store,
-      onMessagesIndexed(channelId) {
-        indexedChannels.push(channelId);
-      },
-    });
-
-    const first = await service.searchSession({
-      sessionRef: { platform: "discord", channelId: "123" },
-      query: "deploy",
-    });
-
-    expect(first.heal?.attempted).toBe(true);
-    expect(first.heal?.limit).toBe(DISCORD_SEARCH_FIRST_SEARCH_HEAL_LIMIT);
-    expect(adapter.listCalls.length).toBe(1);
-    expect(indexedChannels).toEqual(["123"]);
-
-    const second = await service.searchSession({
-      sessionRef: { platform: "discord", channelId: "123" },
-      query: "deploy",
-    });
-
-    expect(second.heal?.skipped).toBe(true);
-    expect(second.heal?.reason).toBe("cooldown");
-    expect(adapter.listCalls.length).toBe(1);
-    expect(indexedChannels).toEqual(["123"]);
 
     store.close();
   });

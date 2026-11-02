@@ -30,7 +30,6 @@ export const HEARTBEAT_LEVEL2_CALLABLES = [
   "surface.sessions.listParticipants",
   "surface.messages.list",
   "surface.messages.read",
-  "surface.messages.search",
   "surface.messages.send",
 ] as const;
 

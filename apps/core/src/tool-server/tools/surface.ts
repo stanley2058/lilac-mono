@@ -3,7 +3,7 @@ import { z } from "zod";
 import fs from "node:fs/promises";
 import { basename } from "node:path";
 import { fileTypeFromBuffer } from "file-type";
-import { errorMessage, getDiscordUserAliasValue, type CoreConfig } from "@stanley2058/lilac-utils";
+import { errorMessage, type CoreConfig } from "@stanley2058/lilac-utils";
 import { Panic, Result, type Result as ResultType } from "better-result";
 import {
   serverToolFailure,
@@ -38,7 +38,6 @@ import {
   getBuiltinSurfaceProtocol,
   inferBuiltinSurfaceToolRequestTarget,
 } from "../../surface/builtin-surface-protocols";
-import type { DiscordSearchService } from "../../surface/store/discord-search-store";
 import type { RequestContext } from "../types";
 import type { RecentAgentWriteSnapshot, TranscriptStore } from "../../transcript/transcript-store";
 import { isHeartbeatSessionId } from "../../transcript/heartbeat-handoff";
@@ -367,22 +366,6 @@ export async function loadLocalAttachments(params: {
   });
 }
 
-function buildDiscordUserAliasById(cfg: CoreConfig): Map<string, string> {
-  const out = new Map<string, string>();
-  const users = cfg.entity?.users ?? {};
-
-  for (const [alias, rec] of Object.entries(users)) {
-    const resolved = getDiscordUserAliasValue(rec);
-    if (!resolved) continue;
-    const userId = resolved.discordId;
-    if (!out.has(userId)) {
-      out.set(userId, alias);
-    }
-  }
-
-  return out;
-}
-
 const baseInputSchema = z
   .object({
     client: surfaceClientSchema.optional(),
@@ -555,9 +538,6 @@ function buildAttachmentHints(
 
 const MESSAGE_LIST_ORDER_SCHEMA = z.enum(["ts_asc", "ts_desc"]);
 type MessageListOrder = z.infer<typeof MESSAGE_LIST_ORDER_SCHEMA>;
-
-const MESSAGE_SEARCH_ORDER_SCHEMA = z.enum(["relevance", "ts_asc", "ts_desc"]);
-type MessageSearchOrder = z.infer<typeof MESSAGE_SEARCH_ORDER_SCHEMA>;
 
 function compareMessageIdLike(a: string, b: string): number {
   if (/^\d+$/u.test(a) && /^\d+$/u.test(b)) {
@@ -856,27 +836,6 @@ const messagesReadInputSchema = baseInputSchema.extend({
     .describe("Include raw platform payloads (default: false)."),
 });
 
-const messagesSearchInputSchema = baseInputSchema.extend({
-  sessionId: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "Target session/channel. If omitted, defaults to the current request session (LILAC_SESSION_ID, or inferred from requestId when available).",
-    ),
-  query: z.string().min(1).describe("Search query (full-text, session-scoped)."),
-  limit: z.coerce
-    .number()
-    .int()
-    .positive()
-    .max(100)
-    .optional()
-    .describe("Max matches (default: 20, max: 100)"),
-  order: MESSAGE_SEARCH_ORDER_SCHEMA.optional().describe(
-    "Sort order for hits (default: relevance).",
-  ),
-});
-
 const optionalNonEmptyStringListInputSchema = z
   .union([z.string().min(1), z.array(z.string().min(1)).min(1).max(10)])
   .optional()
@@ -1010,7 +969,6 @@ export class Surface implements ServerTool {
       nativeAdapterForContext?: (context: RequestContext) => SurfaceOperationResult<SurfaceAdapter>;
       config?: CoreConfig;
       getConfig?: () => Promise<CoreConfig>;
-      discordSearch?: DiscordSearchService;
       transcriptStore?: TranscriptStore;
     },
   ) {
@@ -1062,16 +1020,6 @@ export class Surface implements ServerTool {
           inputSchema: messagesReadInputSchema,
           validation: "zod",
           run: (input, opts) => this.callMessagesRead(input, opts?.context),
-        }),
-        "surface.messages.search": callable({
-          name: "Surface Messages Search",
-          description:
-            "Deprecated: search indexed messages in a single Discord session. Prefer discovery.search for memory retrieval.",
-          inputSchema: messagesSearchInputSchema,
-          validation: "zod",
-          primaryPositional: "query",
-          hidden: true,
-          run: (input, opts) => this.callMessagesSearch(input, opts?.context),
         }),
         "surface.messages.send": callable({
           name: "Surface Messages Send",
@@ -1802,114 +1750,6 @@ export class Surface implements ServerTool {
           includeRaw: input.includeRaw ?? false,
         }),
       );
-    });
-  }
-
-  private async callMessagesSearch(
-    decodedInput: z.output<typeof messagesSearchInputSchema>,
-    ctx: RequestContext | undefined,
-  ): Promise<ServerToolResult> {
-    const resolvedResult = this.resolveAdapter(decodedInput.client, ctx);
-    return resolvedResult.andThenAsync(async (resolved) => {
-      const inputResult = withDefaultSessionId(decodedInput, ctx);
-      return inputResult.andThenAsync(async (input) => {
-        const sessionIdResult = mustPresentString(input.sessionId, "sessionId");
-        return sessionIdResult.andThenAsync(async (sessionId) => {
-          return (await this.resolveSessionTarget({ resolved, sessionId })).andThenAsync(
-            async (target) => {
-              if (
-                target.resolved.platform !== "discord" ||
-                target.sessionRef.platform !== "discord" ||
-                !target.cfg
-              ) {
-                return Result.err(
-                  surfaceFailure(
-                    "unavailable",
-                    "surface.messages.search is a Discord-owned sidecar and is unavailable for GitHub; use discovery.search for shared memory retrieval.",
-                  ),
-                );
-              }
-
-              const search = this.params.discordSearch;
-              if (!search) {
-                return Result.err(
-                  surfaceFailure(
-                    "unavailable",
-                    "surface.messages.search is unavailable: Discord search index is not initialized.",
-                  ),
-                );
-              }
-
-              const result = await search.searchSession({
-                sessionRef: target.sessionRef,
-                query: input.query,
-                limit: input.limit,
-              });
-
-              const userAliasById = buildDiscordUserAliasById(target.cfg);
-              const baseHits = result.hits.map((hit) => ({
-                ...hit,
-                userAlias: userAliasById.get(hit.userId),
-              }));
-
-              const order: MessageSearchOrder = input.order ?? "relevance";
-              const hits =
-                order === "relevance"
-                  ? baseHits
-                  : [...baseHits]
-                      .sort((a, b) => compareSurfaceMessageChronological(a, b))
-                      .map((hit) => hit);
-
-              if (order === "ts_desc") {
-                hits.reverse();
-              }
-
-              const attachmentHintsByMessageId = new Map<string, SurfaceMessageAttachmentHints>();
-              await Promise.all(
-                hits.map(async (hit) => {
-                  const read = await Result.tryPromise({
-                    try: () => target.resolved.adapter.readMsg(hit.ref),
-                    catch: captureSurfaceFailure,
-                  });
-                  const msg = read
-                    .mapError((failure) => surfaceExternalFailure(failure))
-                    .match({
-                      ok: (result) => result.match({ ok: (value) => value, err: () => null }),
-                      err: () => null,
-                    });
-                  const attachments = msg ? getMessageAttachmentMeta(msg) : [];
-                  attachmentHintsByMessageId.set(
-                    hit.ref.messageId,
-                    buildAttachmentHints(attachments),
-                  );
-                }),
-              );
-
-              return Result.ok({
-                meta: {
-                  session: toSessionMeta(target.sessionRef, target.cfg),
-                  order,
-                  count: hits.length,
-                },
-                query: input.query,
-                heal: result.heal,
-                hits: hits.map((hit) => ({
-                  messageId: hit.ref.messageId,
-                  userId: hit.userId,
-                  userName: hit.userName,
-                  userAlias: hit.userAlias,
-                  richText: hit.text,
-                  ts: hit.ts,
-                  editedTs: hit.editedTs,
-                  score: hit.score,
-                  ...(attachmentHintsByMessageId.get(hit.ref.messageId) ??
-                    buildAttachmentHints([])),
-                })),
-              });
-            },
-          );
-        });
-      });
     });
   }
 

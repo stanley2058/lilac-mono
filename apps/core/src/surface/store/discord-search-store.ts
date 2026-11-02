@@ -21,23 +21,9 @@ import {
 import type { DiscordMsgRef, DiscordSessionRef, SurfaceMessage, SurfacePlatform } from "../types";
 import { configureSqliteConnection } from "../../shared/sqlite";
 
-const SEARCH_LIMIT_MAX = 100;
-
 export const DISCORD_SEARCH_NEW_MESSAGE_HEAL_LIMIT = 50;
-export const DISCORD_SEARCH_FIRST_SEARCH_HEAL_LIMIT = 300;
 export const DISCORD_SEARCH_HEAL_CAP = 300;
 export const DISCORD_SEARCH_HEAL_COOLDOWN_MS = 30 * 60 * 1000;
-
-export type DiscordSearchHit = {
-  ref: DiscordMsgRef;
-  session: DiscordSessionRef;
-  userId: string;
-  userName?: string;
-  text: string;
-  ts: number;
-  editedTs?: number;
-  score: number;
-};
 
 export type DiscordSearchIndexedMessage = {
   ref: DiscordMsgRef;
@@ -83,18 +69,6 @@ class DiscordSearchHealFailed extends TaggedError("DiscordSearchHealFailed")<{
   readonly message: string;
 }> {}
 
-function normalizeFtsQuery(input: string): string | null {
-  const tokens = input
-    .trim()
-    .split(/\s+/u)
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0)
-    .map((t) => `"${t.replaceAll('"', '""')}"`);
-
-  if (tokens.length === 0) return null;
-  return tokens.join(" ");
-}
-
 function asDiscordSessionRef(input: {
   channelId: string;
   guildId?: string | null;
@@ -116,18 +90,6 @@ function isDiscordMessage(msg: SurfaceMessage): msg is SurfaceMessage & {
 } {
   return msg.session.platform === "discord" && msg.ref.platform === "discord";
 }
-
-type RawSearchRow = {
-  channel_id: string;
-  guild_id: string | null;
-  message_id: string;
-  user_id: string;
-  user_name: string | null;
-  text: string;
-  ts: number;
-  edited_ts: number | null;
-  score: number;
-};
 
 type RawIndexedRow = {
   channel_id: string;
@@ -499,15 +461,6 @@ export class DiscordSearchStore {
     );
   }
 
-  countMessagesByChannel(channelId: string): number {
-    const row = this.db
-      .query<{ c: number }, [string]>(
-        "SELECT COUNT(1) AS c FROM discord_search_messages WHERE channel_id = ?",
-      )
-      .get(channelId);
-    return typeof row?.c === "number" ? row.c : 0;
-  }
-
   getIndexedMessage(input: {
     channelId: string;
     messageId: string;
@@ -761,51 +714,6 @@ export class DiscordSearchStore {
       clear: (input) => this.clearAttachmentCache(input),
     };
   }
-
-  searchChannel(input: { channelId: string; query: string; limit?: number }): DiscordSearchHit[] {
-    const ftsQuery = normalizeFtsQuery(input.query);
-    if (!ftsQuery) return [];
-
-    const limit = Math.min(SEARCH_LIMIT_MAX, Math.max(1, Math.floor(input.limit ?? 20)));
-
-    const rows = this.db
-      .query<RawSearchRow, [string, string, number]>(
-        `
-        SELECT
-          m.channel_id,
-          m.guild_id,
-          m.message_id,
-          m.user_id,
-          m.user_name,
-          m.text,
-          m.ts,
-          m.edited_ts,
-          bm25(discord_search_messages_fts) AS score
-        FROM discord_search_messages_fts
-        JOIN discord_search_messages m ON m.rowid = discord_search_messages_fts.rowid
-        WHERE discord_search_messages_fts MATCH ?
-          AND m.channel_id = ?
-          AND m.deleted = 0
-        ORDER BY score ASC, m.ts DESC
-        LIMIT ?
-        `,
-      )
-      .all(ftsQuery, input.channelId, limit);
-
-    return rows.map((row) => ({
-      ref: asDiscordMsgRef(row.channel_id, row.message_id),
-      session: asDiscordSessionRef({
-        channelId: row.channel_id,
-        guildId: row.guild_id,
-      }),
-      userId: row.user_id,
-      userName: row.user_name ?? undefined,
-      text: row.text,
-      ts: row.ts,
-      editedTs: row.edited_ts ?? undefined,
-      score: row.score,
-    }));
-  }
 }
 
 type DiscordSearchAdapter = Pick<SurfaceAdapter, "listMsg"> & Partial<SurfaceCacheBurstProvider>;
@@ -870,34 +778,6 @@ export class DiscordSearchService {
       channelId: input.channelId,
       messageId: input.messageId,
     });
-  }
-
-  async searchSession(input: {
-    sessionRef: DiscordSessionRef;
-    query: string;
-    limit?: number;
-  }): Promise<{
-    hits: DiscordSearchHit[];
-    heal: DiscordSearchHealResult | null;
-  }> {
-    const indexed = this.params.store.countMessagesByChannel(input.sessionRef.channelId);
-
-    let heal: DiscordSearchHealResult | null = null;
-    if (indexed < DISCORD_SEARCH_FIRST_SEARCH_HEAL_LIMIT) {
-      heal = await this.maybeHealChannel({
-        sessionRef: input.sessionRef,
-        limit: DISCORD_SEARCH_FIRST_SEARCH_HEAL_LIMIT,
-      });
-    }
-
-    return {
-      hits: this.params.store.searchChannel({
-        channelId: input.sessionRef.channelId,
-        query: input.query,
-        limit: input.limit,
-      }),
-      heal,
-    };
   }
 
   private async maybeHealChannel(input: {

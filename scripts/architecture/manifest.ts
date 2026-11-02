@@ -958,24 +958,10 @@ const CORE_TOOL_SERVER_BOUNDARY_DECODERS = [
     identity: { module: "src/tool-server/create-tool-server.ts", exportName },
     category: "request" as const,
   })),
-  ...[
-    "normalizeAttachmentAddFilesInput",
-    "asBuffer",
-    "downloadToBuffer",
-    "Attachment.callDownload",
-    "collectUserResourceUris",
-    "collectUserBlobAttachments",
-  ].map((exportName) => ({
+  ...["normalizeAttachmentAddFilesInput"].map((exportName) => ({
     identity: { module: "src/tool-server/tools/attachment.ts", exportName },
     category: "plugin" as const,
   })),
-  {
-    identity: {
-      module: "src/tool-server/tools/content-inspect.ts",
-      exportName: "inferContentInspectType",
-    },
-    category: "request",
-  },
   {
     identity: {
       module: "src/tool-server/tools/programmatic-workflow.ts",
@@ -1015,11 +1001,6 @@ const CORE_TOOL_SERVER_BOUNDARY_DECODERS = [
     ["src/tool-server/tools/attachment.ts", "Attachment.callAddFiles"],
     ["src/tool-server/tools/codex.ts", "observeCodexLogin"],
     ["src/tool-server/tools/codex.ts", "Codex.runCallable"],
-    ["src/tool-server/tools/content-inspect.ts", "contentInspectExternalFailure"],
-    ["src/tool-server/tools/content-inspect.ts", "ContentInspect.inspect"],
-    ["src/tool-server/tools/content-inspect.ts", "inspectContent"],
-    ["src/tool-server/tools/content-inspect.ts", "loadInspectSource"],
-    ["src/tool-server/tools/content-inspect.ts", "readInspectResponseBytes"],
     ["src/tool-server/tools/conversation-thread.ts", "conversationThreadFailure"],
     ["src/tool-server/tools/generate.ts", "readImageDataFromPath"],
     ["src/tool-server/tools/generate.ts", "buildVideoGenerationPrompt"],
@@ -1045,7 +1026,6 @@ const CORE_TOOL_SERVER_BOUNDARY_DECODERS = [
     ["src/tool-server/tools/surface.ts", "Surface.callActivitiesRecentAgentWrites"],
     ["src/tool-server/tools/surface.ts", "Surface.callMessagesList"],
     ["src/tool-server/tools/surface.ts", "Surface.callMessagesRead"],
-    ["src/tool-server/tools/surface.ts", "Surface.callMessagesSearch"],
     ["src/tool-server/tools/web.ts", "webFailure"],
   ].map(([module, exportName]) => ({
     identity: { module: module!, exportName: exportName! },
@@ -5153,9 +5133,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             },
             ...[
               ["src/tool-server/tools/attachment.ts", "Attachment.call"],
-              ["src/tool-server/tools/attachment.ts", "downloadLegacyBlobToBuffer"],
               ["src/tool-server/tools/codex.ts", "Codex.call"],
-              ["src/tool-server/tools/content-inspect.ts", "ContentInspect.call"],
               ["src/tool-server/tools/conversation-thread.ts", "ConversationThread.call"],
               ["src/tool-server/tools/discovery.ts", "Discovery.call"],
               ["src/tool-server/tools/generate.ts", "Generate.call"],

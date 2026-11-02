@@ -111,7 +111,6 @@ function getToolDescription(tools: Record<string, unknown>, name: string): strin
 
 const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "attachment.add_files",
-  "attachment.download",
   "codex.login",
   "codex.logout",
   "codex.status",
@@ -119,7 +118,6 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "conversation.thread.read",
   "conversation.thread.runSummarization",
   "conversation.thread.search",
-  "content.inspect",
   "discovery.search",
   "fetch",
   "onboarding.all",
@@ -147,7 +145,6 @@ const EXPECTED_STABLE_LEVEL2_CALLABLE_IDS = [
   "surface.messages.edit",
   "surface.messages.list",
   "surface.messages.read",
-  "surface.messages.search",
   "surface.messages.send",
   "surface.reactions.add",
   "surface.reactions.list",

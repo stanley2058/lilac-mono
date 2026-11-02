@@ -29,7 +29,6 @@
     "apps/core": {
       "name": "@stanley2058/lilac-core",
       "dependencies": {
-        "@ai-sdk/google": "^4.0.90",
         "@ai-sdk/mcp": "^2.0.83",
         "@ai-sdk/typesafe-ai": "^3.0.15",
         "@clerk/backend": "3.18.1",
@@ -447,8 +446,6 @@
     "@ai-sdk/cerebras": ["@ai-sdk/cerebras@3.0.65", "", { "dependencies": { "@ai-sdk/openai-compatible": "3.0.65", "@ai-sdk/provider": "4.0.24", "@ai-sdk/provider-utils": "5.0.56" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-W0YF72hdm0bktN7aa6aYI2YDauirvSxwcJ8nTHcLyKfLqF1lM6W/8Mswq9cdp5zcdklIlaFm2ORZ4PoU0uhmBw=="],
 
     "@ai-sdk/gateway": ["@ai-sdk/gateway@4.0.106", "", { "dependencies": { "@ai-sdk/provider": "4.0.24", "@ai-sdk/provider-utils": "5.0.56", "@vercel/oidc": "3.2.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-NprSdFzyVnbEp2SDWtIgsCFIUHFCehOD9S6FQkF/dLrCmnke8w4SOK3KcmUUiEbwtVzlUF8prkaELp+ohcQaQw=="],
-
-    "@ai-sdk/google": ["@ai-sdk/google@4.0.90", "", { "dependencies": { "@ai-sdk/provider": "4.0.24", "@ai-sdk/provider-utils": "5.0.56" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-XQNKWT6CwcgARdqTUZn0j89y0gvDMR0k2j2qhOg7ffoL+6MNViQ9t3ALoleAAKo10yMLFE7Ato0Fk+RD14i2kg=="],
 
     "@ai-sdk/groq": ["@ai-sdk/groq@4.0.57", "", { "dependencies": { "@ai-sdk/provider": "4.0.24", "@ai-sdk/provider-utils": "5.0.56" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-ilsyKha2I3IRwH0VSxlk6GLymHaa7R9wvxq+lz9AfNR713Sy5pVCUHQxbqP+wv7weITV6XcdY3gjdPvYLhk16g=="],
 

@@ -191,9 +191,6 @@ export type UniversalCoreConfig = {
         queueTtlMs: number;
       };
     };
-    inspect: {
-      model: string;
-    };
     editFile: {
       hashline: boolean;
     };

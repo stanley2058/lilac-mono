@@ -85,7 +85,7 @@ describe("core config drift coverage", () => {
     expect(cfg.configVersion).toBe(3);
     expect(cfg.blobStorage).toEqual({ kind: "local" });
     expect(cfg.tools.fsBackend).toBe("fff");
-    expect(cfg.tools.inspect.model).toBe("google/gemini-3.5-flash");
+    expect(cfg.tools).not.toHaveProperty("inspect");
     expect(cfg.tools.editFile.hashline).toBe(true);
     expect(cfg.tools.output.maxPreviewBytes).toBe(40 * 1024);
     expect(cfg.tools.output.artifactTtlMs).toBe(7 * 24 * 60 * 60 * 1000);

@@ -1,7 +1,7 @@
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
 
-import { MODEL_REASONING_EFFORTS } from "./types";
+import { defaultNativeSurfaceConfig, MODEL_REASONING_EFFORTS } from "./types";
 import { isPermissionProfileName } from "../subagent-profile";
 import {
   AGENT_DEFAULT_V2,
@@ -11,6 +11,7 @@ import {
   normalizeProfileToolNames,
   profileLevel1Schema,
   profileLevel2Schema,
+  validateNativeSurfaceConfig,
 } from "./v2";
 
 import type {
@@ -48,18 +49,16 @@ const RESTRICTED_PERMISSIONS_DEFAULT: SubagentPermissionProfileConfig = {
       "search",
       "skills.list",
       "skills.read",
-      "content.inspect",
       "discovery.search",
       "conversation.thread.search",
       "surface.help",
       "surface.sessions.listParticipants",
       "surface.messages.list",
       "surface.messages.read",
-      "surface.messages.search",
       "surface.reactions.list",
       "surface.reactions.listDetailed",
     ],
-    plugins: ["web", "skills", "content.inspect", "discovery", "conversation.thread", "surface"],
+    plugins: ["web", "skills", "discovery", "conversation.thread", "surface"],
   },
   network: true,
   workspaceWrites: false,
@@ -204,8 +203,111 @@ const modelsSchemaV3 = z
     rules: [],
   });
 
+function removedV3Field(field: string, guidance: string) {
+  return z.never({ error: `${field} was removed in configVersion 3; ${guidance}` }).optional();
+}
+
+const baseTools = coreConfigInputSchemaV2.shape.tools.unwrap();
+const baseWeb = baseTools.shape.web.unwrap().out;
+const webSchemaV3 = baseWeb.extend({
+  search: removedV3Field("tools.web.search", "use tools.web.extract.providers"),
+  extract: baseWeb.shape.extract
+    .unwrap()
+    .out.extend({
+      provider: removedV3Field("tools.web.extract.provider", "use providers: [provider]"),
+    })
+    .default({ providers: ["tavily"] }),
+});
+const toolsSchemaV3 = baseTools
+  .extend({
+    inspect: removedV3Field("tools.inspect", "content.inspect is no longer available"),
+    web: webSchemaV3.prefault({}),
+  })
+  .prefault({});
+
+const baseConversation = coreConfigInputSchemaV2.shape.conversation.unwrap();
+const baseThread = baseConversation.shape.thread.unwrap();
+const baseDecision = baseThread.in.shape.decisionAutoInject.unwrap();
+const decisionSchemaV3 = baseDecision.in
+  .extend({
+    recallMinProbability: removedV3Field(
+      "decisionAutoInject.recallMinProbability",
+      "set jev.recallMinProbability and luna.recallMinProbability",
+    ),
+    durableSubjectMinProbability: removedV3Field(
+      "decisionAutoInject.durableSubjectMinProbability",
+      "set jev.durableSubjectMinProbability and luna.durableSubjectMinProbability",
+    ),
+    casualMaxProbability: removedV3Field(
+      "decisionAutoInject.casualMaxProbability",
+      "set jev.casualMaxProbability and luna.casualMaxProbability",
+    ),
+    relevanceMinProbability: removedV3Field(
+      "decisionAutoInject.relevanceMinProbability",
+      "set jev.relevanceMinProbability and luna.relevanceMinProbability",
+    ),
+  })
+  .transform((value): z.output<typeof baseDecision.in> => value)
+  .pipe(baseDecision.out);
+const conversationSchemaV3 = baseConversation
+  .extend({
+    thread: baseThread.in
+      .extend({
+        autoInjectMode: z
+          .enum(["llm", "decision"], {
+            error:
+              "autoInjectMode must be llm or decision in configVersion 3; rename jev to decision",
+          })
+          .default("llm"),
+        jevAutoInject: removedV3Field(
+          "conversation.thread.jevAutoInject",
+          "use decisionAutoInject",
+        ),
+        decisionAutoInject: decisionSchemaV3.optional(),
+      })
+      .transform((value): z.output<typeof baseThread.in> => value)
+      .pipe(baseThread.out)
+      .prefault({}),
+  })
+  .prefault({});
+
+const baseSurface = coreConfigInputSchemaV2.shape.surface.unwrap();
+const nativeSchemaV3 = z
+  .object({
+    ...baseSurface.shape.native.unwrap().shape,
+    titleModel: removedV3Field("surface.native.titleModel", "use Settings > Deployment"),
+    outputStreaming: removedV3Field("surface.native.outputStreaming", "use Settings > Deployment"),
+    oldMessageSelectionMaxAgeMs: removedV3Field(
+      "surface.native.oldMessageSelectionMaxAgeMs",
+      "use Settings > Deployment",
+    ),
+    storageRetentionMaxAgeMs: removedV3Field(
+      "surface.native.storageRetentionMaxAgeMs",
+      "use Settings > Deployment",
+    ),
+    crossThreadSend: removedV3Field("surface.native.crossThreadSend", "use Settings > Deployment"),
+  })
+  .transform(
+    ({
+      titleModel: _titleModel,
+      outputStreaming: _outputStreaming,
+      oldMessageSelectionMaxAgeMs: _selectionAge,
+      storageRetentionMaxAgeMs: _retentionAge,
+      crossThreadSend: _crossThreadSend,
+      ...native
+    }) => ({
+      ...defaultNativeSurfaceConfig(),
+      ...native,
+    }),
+  )
+  .superRefine(validateNativeSurfaceConfig);
+const surfaceSchemaV3 = baseSurface.extend({ native: nativeSchemaV3.prefault({}) }).prefault({});
+
 export const coreConfigInputSchemaV3 = coreConfigInputSchemaV2.extend({
   models: modelsSchemaV3,
+  tools: toolsSchemaV3,
+  conversation: conversationSchemaV3,
+  surface: surfaceSchemaV3,
   configVersion: z.literal(V3_CORE_CONFIG_VERSION).default(V3_CORE_CONFIG_VERSION),
   agent: z
     .object({

@@ -67,7 +67,6 @@
     "tests/workflow/workflow-skill-examples.test.ts": 187,
     "tests/surface/discord/discord-runtime-health.test.ts": 180,
     "tests/workflow/workflow-artifact-store.test.ts": 174,
-    "tests/tool-server/content-inspect.test.ts": 168,
     "tests/surface/bridge/anthropic-fallback-media.test.ts": 164,
     "tests/surface/discord/output/discord-markdown-math-renderer.test.ts": 159,
     "tests/runtime/compose-builtin-surface-runtimes.test.ts": 156,

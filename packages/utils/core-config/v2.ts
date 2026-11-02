@@ -142,18 +142,16 @@ const EXPLORE_PROFILE_DEFAULT: SubagentProfileConfigV2 = {
       "search",
       "skills.list",
       "skills.read",
-      "content.inspect",
       "discovery.search",
       "conversation.thread.search",
       "surface.help",
       "surface.sessions.listParticipants",
       "surface.messages.list",
       "surface.messages.read",
-      "surface.messages.search",
       "surface.reactions.list",
       "surface.reactions.listDetailed",
     ],
-    plugins: ["web", "skills", "content.inspect", "discovery", "conversation.thread", "surface"],
+    plugins: ["web", "skills", "discovery", "conversation.thread", "surface"],
   },
   network: true,
   workspaceWrites: false,
@@ -828,6 +826,28 @@ const nativeOriginSchema = nativeHttpUrlSchema.refine(
   "Expected an origin without a path or trailing slash",
 );
 
+export function validateNativeSurfaceConfig(
+  value: Pick<UniversalCoreConfig["surface"]["native"], "enabled" | "installationId" | "auth">,
+  ctx: z.RefinementCtx,
+) {
+  if (!value.enabled) return;
+  if (!value.installationId)
+    ctx.addIssue({
+      code: "custom",
+      path: ["installationId"],
+      message: "Required when the native surface is enabled",
+    });
+  if (value.auth.provider !== "clerk") return;
+  for (const key of ["ownerProviderUserId", "clerkIssuer"] as const) {
+    if (value.auth[key]) continue;
+    ctx.addIssue({
+      code: "custom",
+      path: ["auth", key],
+      message: "Required when Clerk authentication is enabled",
+    });
+  }
+}
+
 const nativeSurfaceSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -863,24 +883,7 @@ const nativeSurfaceSchema = z
       .object({ triggerRun: z.boolean().default(true) })
       .default({ triggerRun: true }),
   })
-  .superRefine((value, ctx) => {
-    if (!value.enabled) return;
-    if (!value.installationId)
-      ctx.addIssue({
-        code: "custom",
-        path: ["installationId"],
-        message: "Required when the native surface is enabled",
-      });
-    if (value.auth.provider !== "clerk") return;
-    for (const key of ["ownerProviderUserId", "clerkIssuer"] as const) {
-      if (value.auth[key]) continue;
-      ctx.addIssue({
-        code: "custom",
-        path: ["auth", key],
-        message: "Required when Clerk authentication is enabled",
-      });
-    }
-  })
+  .superRefine(validateNativeSurfaceConfig)
   .default(defaultNativeSurfaceConfig());
 
 export const agentSchemaFieldsV2 = {
@@ -1027,7 +1030,8 @@ type UniversalSubagentsConfig = UniversalCoreConfig["agent"]["subagents"];
 
 /** Shared v2-shaped conversion; each version supplies its own subagent mapping. */
 export function coreConfigV2ShapeToUniversal<
-  T extends Omit<ParsedCoreConfigV2, "configVersion" | "agent" | "models"> & {
+  T extends Omit<ParsedCoreConfigV2, "configVersion" | "agent" | "models" | "tools"> & {
+    tools: Omit<ParsedCoreConfigV2["tools"], "inspect"> & { inspect?: { model: string } };
     models: UniversalCoreConfig["models"];
     configVersion: CoreConfigVersion;
     agent: Omit<ParsedCoreConfigV2["agent"], "subagents"> & { subagents: object };
@@ -1046,7 +1050,8 @@ export function coreConfigV2ShapeToUniversal<
   // Zod default objects may be reused between parses. Isolate the decoded
   // config so runtime/test mutations cannot change a later parse's defaults.
   const isolated = structuredClone(parsed);
-  const { artifactTtl, ...output } = isolated.tools.output;
+  const { inspect: _removedInspect, ...tools } = isolated.tools;
+  const { artifactTtl, ...output } = tools.output;
   const { firecrawl, ...web } = isolated.tools.web;
   const { attachmentCache, ...discord } = isolated.surface.discord;
   const { transcriptRetention, ...agent } = isolated.agent;
@@ -1058,7 +1063,7 @@ export function coreConfigV2ShapeToUniversal<
     ...isolated,
     blobStorage: isolated.blobStorage ?? { kind: "local" },
     tools: {
-      ...isolated.tools,
+      ...tools,
       web: firecrawl
         ? {
             ...web,

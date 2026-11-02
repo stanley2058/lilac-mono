@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,11 +19,9 @@ import {
 import type { RequestContext } from "../src/tool-server/types";
 import { Attachment } from "../src/tool-server/tools/attachment";
 import { resolveRestrictedSessionTmpDir } from "../src/shared/attachment-utils";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 import {
-  ResourceOriginUnavailable,
   ResourceTooLarge,
-  type MaterializedResource,
   type ResourceAccess,
   type ResourceDescriptor,
   type VerifiedResourceRead,
@@ -33,26 +31,6 @@ import {
   type ToolResultArtifactStore,
 } from "../src/artifacts/tool-result-artifact-store";
 import { getTestBlobStore } from "./helpers/blob-store";
-
-type MockFetch = (
-  input: Parameters<typeof fetch>[0],
-  init?: Parameters<typeof fetch>[1],
-) => ReturnType<typeof fetch>;
-
-let restoreFetch: (() => void) | undefined;
-
-function installMockFetch(handler: MockFetch): void {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = Object.assign(handler, { preconnect: originalFetch.preconnect });
-  restoreFetch = () => {
-    globalThis.fetch = originalFetch;
-    restoreFetch = undefined;
-  };
-}
-
-afterEach(() => {
-  restoreFetch?.();
-});
 
 async function callValue(
   tool: Attachment,
@@ -201,10 +179,6 @@ function createAttachment(
   });
 }
 
-function fakeResourceAccess(materialize: ResourceAccess["materialize"]): ResourceAccess {
-  return { materialize } as ResourceAccess;
-}
-
 function fakeOpenResourceAccess(open: ResourceAccess["open"]): ResourceAccess {
   return { open } as ResourceAccess;
 }
@@ -248,6 +222,19 @@ function isAddFilesResult(
 }
 
 describe("tool-server attachment", () => {
+  it("rejects the removed attachment.download callable", async () => {
+    const tool = createAttachment(createLilacBus(createInMemoryRawBus()));
+    expect((await tool.list()).some((entry) => entry.callableId === "attachment.download")).toBe(
+      false,
+    );
+    expect(
+      (await tool.call("attachment.download", {})).match({ ok: () => null, err: (error) => error }),
+    ).toMatchObject({
+      kind: "not_found",
+      code: "unknown_callable",
+    });
+  });
+
   it("uses collision-resistant restricted tmp directories", () => {
     expect(resolveRestrictedSessionTmpDir(".")).not.toBe("/tmp/lilac-restricted");
     expect(resolveRestrictedSessionTmpDir("..")).not.toBe("/tmp");
@@ -268,20 +255,6 @@ describe("tool-server attachment", () => {
     });
     expect(addFiles?.description).toBe(
       "Reads local files or resources and attaches them to the current reply.",
-    );
-  });
-
-  it("keeps attachment.download callable but marks it deprecated and hidden", async () => {
-    const raw = createInMemoryRawBus();
-    const tool = createAttachment(createLilacBus(raw));
-
-    const entry = (await tool.list()).find(
-      (candidate) => candidate.callableId === "attachment.download",
-    );
-
-    expect(entry?.hidden).toBe(true);
-    expect(entry?.description).toBe(
-      "Deprecated: materialize inbound resources. Prefer resource.materialize.",
     );
   });
 
@@ -652,299 +625,5 @@ describe("tool-server attachment", () => {
         message: "Restricted mode only allows file paths under /tmp.",
       });
     }
-  });
-
-  it("reports restricted attachment download paths as sandbox /tmp paths", async () => {
-    const raw = createInMemoryRawBus();
-    const bus = createLilacBus(raw);
-    const tool = createAttachment(bus);
-
-    const res = await callValue(
-      tool,
-      "attachment.download",
-      {},
-      {
-        context: {
-          requestId: "discord:c1:m1",
-          sessionId: "restricted-attachment-test",
-          requestClient: "discord",
-          cwd: "/workspace",
-          safetyMode: "restricted",
-        },
-        messages: [],
-      },
-    );
-
-    expect(res).toEqual({ ok: true, downloadDir: "/tmp", files: [] });
-  });
-
-  it("materializes current request resources without exposing an origin URL", async () => {
-    const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-att-resource-"));
-    const uri = "resource://r1_00000000000000000000000000000001";
-    try {
-      const resourceAccess = fakeResourceAccess(async (inputUri, options) =>
-        Result.ok({
-          uri: inputUri,
-          path: join(options.targetDirectory, "report.pdf"),
-          filename: "report.pdf",
-          mimeType: "application/pdf",
-          bytes: 7,
-          sha256: "a".repeat(64),
-        } as MaterializedResource),
-      );
-      const tool = createAttachment(
-        createLilacBus(createInMemoryRawBus()),
-        undefined,
-        resourceAccess,
-      );
-
-      const value = await callValue(
-        tool,
-        "attachment.download",
-        { downloadDir: tmp },
-        {
-          context: { cwd: tmp, safetyMode: "trusted" },
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "resource", uri, filename: "report.pdf", mediaType: "application/pdf" },
-              ],
-            },
-          ],
-        },
-      );
-
-      expect(value).toEqual({
-        ok: true,
-        downloadDir: tmp,
-        files: [
-          {
-            path: join(tmp, "report.pdf"),
-            sha10: "aaaaaaaaaa",
-            bytes: 7,
-            sourceUrl: uri,
-            mimeType: "application/pdf",
-          },
-        ],
-      });
-      expect(JSON.stringify(value)).not.toContain("discordapp.com");
-    } finally {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps earlier resource files when a later deprecated download item fails", async () => {
-    const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-att-resource-"));
-    const firstUri = "resource://r1_00000000000000000000000000000001";
-    const secondUri = "resource://r1_00000000000000000000000000000002";
-    const calls: string[] = [];
-    try {
-      const resourceAccess = fakeResourceAccess(async (uri, options) => {
-        calls.push(uri);
-        if (uri === secondUri) {
-          return Result.err(
-            new ResourceOriginUnavailable({
-              uri,
-              retryable: true,
-              message: "origin is unavailable",
-            }),
-          );
-        }
-        await fs.writeFile(join(options.targetDirectory, "first.txt"), "first", "utf8");
-        return Result.ok({
-          uri,
-          path: join(options.targetDirectory, "first.txt"),
-          filename: "first.txt",
-          mimeType: "text/plain",
-          bytes: 5,
-          sha256: "b".repeat(64),
-        } as MaterializedResource);
-      });
-      const tool = createAttachment(
-        createLilacBus(createInMemoryRawBus()),
-        undefined,
-        resourceAccess,
-      );
-
-      const result = await tool.call(
-        "attachment.download",
-        { downloadDir: tmp },
-        {
-          context: { cwd: tmp, safetyMode: "trusted" },
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "resource", uri: firstUri },
-                { type: "resource", uri: secondUri },
-              ],
-            },
-          ],
-        },
-      );
-
-      expect(result.status).toBe("error");
-      if (result.status === "error") {
-        expect(result.error).toMatchObject({ kind: "unavailable" });
-      }
-      expect(calls).toEqual([firstUri, secondUri]);
-      expect(await fs.readFile(join(tmp, "first.txt"), "utf8")).toBe("first");
-    } finally {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps the historical stored-blob download path", async () => {
-    const tmp = await fs.mkdtemp(join(tmpdir(), "lilac-att-blob-"));
-    const sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    try {
-      const tool = createAttachment(createLilacBus(createInMemoryRawBus()));
-
-      const value = await callValue(
-        tool,
-        "attachment.download",
-        { downloadDir: tmp },
-        {
-          context: { cwd: tmp, safetyMode: "trusted" },
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "blob",
-                  blob: {
-                    version: 1,
-                    objectId: "b1_00000000000000000000000000000001",
-                    sha256,
-                    byteLength: 0,
-                  },
-                  mediaType: "text/plain",
-                  filename: "legacy.txt",
-                },
-              ],
-            },
-          ],
-        },
-      );
-
-      expect(value).toEqual({
-        ok: true,
-        downloadDir: tmp,
-        files: [
-          {
-            path: join(tmp, "e3b0c44298.txt"),
-            sha10: "e3b0c44298",
-            bytes: 0,
-            sourceUrl: "inline",
-            mimeType: "text/plain",
-          },
-        ],
-      });
-    } finally {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects attachment.download URLs outside Discord CDN hosts", async () => {
-    const raw = createInMemoryRawBus();
-    const bus = createLilacBus(raw);
-    const tool = createAttachment(bus);
-
-    const result = await tool.call(
-      "attachment.download",
-      {},
-      {
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "file",
-                mediaType: "application/pdf",
-                filename: "external.pdf",
-                data: "https://example.com/external.pdf",
-              },
-            ],
-          },
-        ],
-      },
-    );
-    expect(result.status).toBe("error");
-    if (result.status === "error") {
-      expect(result.error.kind).toBe("denied");
-      expect(result.error.message).toContain("Blocked attachment host 'example.com'");
-    }
-  });
-
-  it("redacts signed URL query strings from download failures", async () => {
-    installMockFetch(async () => new Response("unavailable", { status: 503 }));
-    const raw = createInMemoryRawBus();
-    const tool = createAttachment(createLilacBus(raw));
-    const signedUrl =
-      "https://cdn.discordapp.com/attachments/1/2/report.pdf?ex=secret-expiry&sig=secret-signature";
-
-    const result = await tool.call(
-      "attachment.download",
-      {},
-      {
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "file",
-                mediaType: "application/pdf",
-                filename: "report.pdf",
-                data: signedUrl,
-              },
-            ],
-          },
-        ],
-      },
-    );
-
-    expect(result.status).toBe("error");
-    if (result.status === "error") {
-      expect(result.error.message).toContain(
-        "https://cdn.discordapp.com/attachments/1/2/report.pdf",
-      );
-      expect(result.error.message).not.toContain("secret-expiry");
-      expect(result.error.message).not.toContain("secret-signature");
-      expect(result.error.message).not.toContain("?");
-    }
-  });
-
-  it("preserves Panic from attachment downloads", async () => {
-    const panic = new Panic({ message: "attachment fetch invariant" });
-    installMockFetch(async () => {
-      throw panic;
-    });
-    const raw = createInMemoryRawBus();
-    const tool = createAttachment(createLilacBus(raw));
-
-    const [settled] = await Promise.allSettled([
-      tool.call(
-        "attachment.download",
-        {},
-        {
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "file",
-                  mediaType: "application/pdf",
-                  filename: "report.pdf",
-                  data: "https://cdn.discordapp.com/attachments/1/2/report.pdf?sig=secret",
-                },
-              ],
-            },
-          ],
-        },
-      ),
-    ]);
-    expect(settled?.status).toBe("rejected");
-    if (settled?.status === "rejected") expect(Panic.is(settled.reason)).toBe(true);
   });
 });

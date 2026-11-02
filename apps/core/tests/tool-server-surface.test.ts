@@ -19,10 +19,7 @@ import {
 import { createDescriptorBoundSurfaceAdapter } from "../src/surface/produced-ref-guard";
 import { SurfaceRuntimeRegistry } from "../src/surface/runtime-descriptor";
 import { GITHUB_AGENT_COMMENT_MARKER } from "../src/github/github-comment-marker";
-import {
-  DiscordSearchService,
-  DiscordSearchStore,
-} from "../src/surface/store/discord-search-store";
+import { DiscordSearchStore } from "../src/surface/store/discord-search-store";
 import type { RequestContext } from "../src/tool-server/types";
 import { SqliteTranscriptStore, type TranscriptStore } from "../src/transcript/transcript-store";
 import fs from "node:fs/promises";
@@ -268,14 +265,20 @@ class FakeAdapter extends SurfaceAdapterTestBase {
 }
 
 describe("tool-server surface", () => {
-  it("marks surface.messages.search as deprecated and hidden", async () => {
+  it("rejects the removed surface.messages.search callable", async () => {
     const tool = new Surface({ adapter: new FakeAdapter([], {}), config: testConfig({}) });
-
-    const entry = (await tool.list()).find((item) => item.callableId === "surface.messages.search");
-
-    expect(entry?.hidden).toBe(true);
-    expect(entry?.description.toLowerCase()).toContain("deprecated");
-    expect(entry?.description).toContain("discovery.search");
+    expect(
+      (await tool.list()).some((entry) => entry.callableId === "surface.messages.search"),
+    ).toBe(false);
+    expect(
+      (await tool.callResult("surface.messages.search", {})).match({
+        ok: () => null,
+        err: (error) => error,
+      }),
+    ).toMatchObject({
+      kind: "not_found",
+      code: "unknown_callable",
+    });
   });
 
   it("returns reaction counts", async () => {
@@ -840,194 +843,6 @@ describe("tool-server surface", () => {
     expect(res.meta.order).toBe("ts_desc");
     expect(res.messages.length).toBe(1);
     expect(res.messages[0]?.messageId).toBe("m1");
-  });
-
-  it("searches per session and cools down healing", async () => {
-    const c1 = "123";
-    const c2 = "456";
-
-    const cfg = testConfig({
-      surface: {
-        discord: {
-          tokenEnv: "DISCORD_TOKEN",
-          allowedChannelIds: [c1, c2],
-          allowedGuildIds: [],
-          botName: "lilac",
-        },
-      },
-      entity: {
-        users: {
-          alice: { discord: "u1" },
-        },
-        sessions: {
-          discord: {
-            ops: c1,
-          },
-        },
-      },
-    });
-
-    const adapter = new FakeAdapter(
-      [{ ref: { platform: "discord", channelId: c1 }, kind: "channel" }],
-      {
-        [c1]: [
-          {
-            ref: { platform: "discord", channelId: c1, messageId: "m1" },
-            session: { platform: "discord", channelId: c1 },
-            userId: "u1",
-            text: "deploy completed successfully",
-            ts: 100,
-            raw: {
-              discord: {
-                attachments: [
-                  {
-                    url: "https://cdn.discordapp.com/attachments/1/2/deploy.png",
-                    filename: "deploy.png",
-                  },
-                ],
-              },
-            },
-          },
-          {
-            ref: { platform: "discord", channelId: c1, messageId: "m2" },
-            session: { platform: "discord", channelId: c1 },
-            userId: "u2",
-            text: "incident timeline",
-            ts: 101,
-          },
-        ],
-        [c2]: [
-          {
-            ref: { platform: "discord", channelId: c2, messageId: "m3" },
-            session: { platform: "discord", channelId: c2 },
-            userId: "u3",
-            text: "deploy in other channel",
-            ts: 102,
-          },
-        ],
-      },
-    );
-
-    const searchStore = new DiscordSearchStore(":memory:");
-    const search = new DiscordSearchService({ adapter, store: searchStore });
-    const tool = new Surface({
-      adapter,
-      config: cfg,
-      discordSearch: search,
-    });
-
-    const first = (await tool.call("surface.messages.search", {
-      client: "discord",
-      sessionId: c1,
-      query: "deploy",
-    })) as {
-      meta: {
-        session: { channelId: string; alias?: string };
-        order: string;
-      };
-      hits: Array<{
-        messageId: string;
-        userAlias?: string;
-        hasAttachments?: boolean;
-        attachmentCount?: number;
-        hasMedia?: boolean;
-        mediaCount?: number;
-        mediaKinds?: string[];
-      }>;
-      heal: { attempted: boolean; limit: number } | null;
-    };
-
-    expect(first.meta.session.channelId).toBe(c1);
-    expect(first.meta.session.alias).toBe("ops");
-    expect(first.meta.order).toBe("relevance");
-    expect(first.hits.length).toBe(1);
-    expect(first.hits[0]?.messageId).toBe("m1");
-    expect(first.hits[0]!.userAlias).toBe("alice");
-    expect(first.hits[0]?.hasAttachments).toBe(true);
-    expect(first.hits[0]?.attachmentCount).toBe(1);
-    expect(first.hits[0]?.hasMedia).toBe(true);
-    expect(first.hits[0]?.mediaCount).toBe(1);
-    expect(first.hits[0]?.mediaKinds).toEqual(["image"]);
-    expect(first.heal?.attempted).toBe(true);
-    expect(first.heal?.limit).toBe(300);
-    expect(adapter.listCalls.length).toBe(1);
-    expect(adapter.listCalls[0]?.opts?.limit).toBe(300);
-
-    const second = (await tool.call("surface.messages.search", {
-      client: "discord",
-      sessionId: c1,
-      query: "deploy",
-    })) as {
-      heal: { skipped: boolean; reason?: string } | null;
-    };
-
-    expect(second.heal?.skipped).toBe(true);
-    expect(second.heal?.reason).toBe("cooldown");
-    expect(adapter.listCalls.length).toBe(1);
-
-    searchStore.close();
-  });
-
-  it("degrades ordinary search enrichment failures but preserves guarded produced-ref Panic", async () => {
-    const channelId = "c1";
-    const message: SurfaceMessage = {
-      ref: { platform: "discord", channelId, messageId: "m1" },
-      session: { platform: "discord", channelId },
-      userId: "user",
-      text: "deploy result",
-      ts: 1,
-    };
-    const adapter: SurfaceAdapter = new FakeAdapter([], { [channelId]: [message] });
-    adapter.readMsg = async () =>
-      Result.err(
-        new SurfaceUnavailable({
-          platform: "discord",
-          operation: "read-message",
-          message: "attachment enrichment unavailable",
-        }),
-      );
-    const searchStore = new DiscordSearchStore(":memory:");
-    const search = new DiscordSearchService({ adapter, store: searchStore });
-    const tool = new Surface({
-      adapter,
-      discordSearch: search,
-      config: testConfig({
-        surface: {
-          discord: {
-            tokenEnv: "DISCORD_TOKEN",
-            allowedChannelIds: [channelId],
-            allowedGuildIds: [],
-            botName: "lilac",
-          },
-        },
-        entity: { sessions: { discord: { ops: channelId } } },
-      }),
-    });
-    try {
-      const ordinary = (await tool.call("surface.messages.search", {
-        client: "discord",
-        sessionId: "#ops",
-        query: "deploy",
-      })) as { hits: Array<{ hasAttachments?: boolean }> };
-      expect(ordinary.hits[0]?.hasAttachments).toBe(false);
-
-      adapter.readMsg = async () =>
-        Result.ok({
-          ...message,
-          ref: { platform: "github", channelId, messageId: "m1" },
-        });
-      const [settled] = await Promise.allSettled([
-        tool.call("surface.messages.search", {
-          client: "discord",
-          sessionId: "#ops",
-          query: "deploy",
-        }),
-      ]);
-      expect(settled?.status).toBe("rejected");
-      if (settled?.status === "rejected") expect(Panic.is(settled.reason)).toBe(true);
-    } finally {
-      searchStore.close();
-    }
   });
 
   it("defaults sessionId and messageId from discord requestId", async () => {
@@ -1902,192 +1717,6 @@ describe("tool-server surface", () => {
     expect(read.message?.attachmentCount).toBe(1);
     expect(read.message?.attachments?.[0]?.filename).toBe("IMG_TOP.png");
     expect(read.message?.attachments?.[0]?.kind).toBe("image");
-  });
-
-  it("supports search order options", async () => {
-    const channelId = "123";
-    const cfg = testConfig({
-      surface: {
-        discord: {
-          tokenEnv: "DISCORD_TOKEN",
-          allowedChannelIds: [channelId],
-          allowedGuildIds: [],
-          botName: "lilac",
-        },
-      },
-    });
-
-    const adapter = new FakeAdapter(
-      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
-      {
-        [channelId]: [
-          {
-            ref: { platform: "discord", channelId, messageId: "m1" },
-            session: { platform: "discord", channelId },
-            userId: "u1",
-            text: "deploy alpha",
-            ts: 100,
-          },
-          {
-            ref: { platform: "discord", channelId, messageId: "m2" },
-            session: { platform: "discord", channelId },
-            userId: "u2",
-            text: "deploy beta",
-            ts: 200,
-          },
-        ],
-      },
-    );
-
-    const searchStore = new DiscordSearchStore(":memory:");
-    const search = new DiscordSearchService({ adapter, store: searchStore });
-    const tool = new Surface({ adapter, config: cfg, discordSearch: search });
-
-    const asc = (await tool.call("surface.messages.search", {
-      client: "discord",
-      sessionId: channelId,
-      query: "deploy",
-      order: "ts_asc",
-    })) as {
-      meta: { order: string };
-      hits: Array<{ messageId: string }>;
-    };
-
-    expect(asc.meta.order).toBe("ts_asc");
-    expect(asc.hits.map((h) => h.messageId)).toEqual(["m1", "m2"]);
-
-    const desc = (await tool.call("surface.messages.search", {
-      client: "discord",
-      sessionId: channelId,
-      query: "deploy",
-      order: "ts_desc",
-    })) as {
-      meta: { order: string };
-      hits: Array<{ messageId: string }>;
-    };
-
-    expect(desc.meta.order).toBe("ts_desc");
-    expect(desc.hits.map((h) => h.messageId)).toEqual(["m2", "m1"]);
-
-    searchStore.close();
-  });
-
-  it("indexes the same stored discord text that read returns", async () => {
-    const channelId = "123";
-    const cfg = testConfig({
-      surface: {
-        discord: {
-          tokenEnv: "DISCORD_TOKEN",
-          allowedChannelIds: [channelId],
-          allowedGuildIds: [],
-          botName: "lilac",
-        },
-      },
-    });
-
-    const adapter = new FakeAdapter(
-      [{ ref: { platform: "discord", channelId }, kind: "channel" }],
-      {
-        [channelId]: [
-          {
-            ref: { platform: "discord", channelId, messageId: "m1" },
-            session: { platform: "discord", channelId },
-            userId: "u1",
-            text: ["normal-text", "[discord_embed]", "embed-title", "embed-description"].join(
-              "\n\n",
-            ),
-            ts: 100,
-            raw: {
-              content: "normal-text",
-              embeds: [
-                {
-                  title: "embed-title",
-                  description: "embed-description",
-                  fields: [{ name: "field-1", value: "value-1" }],
-                  footer: { text: "embed-footer" },
-                },
-              ],
-            },
-          },
-          {
-            ref: { platform: "discord", channelId, messageId: "m2" },
-            session: { platform: "discord", channelId },
-            userId: "u2",
-            text: [
-              "forward-comment",
-              "snapshot-content",
-              "[discord_embed]",
-              "snapshot-title",
-              "snapshot-description",
-            ].join("\n\n"),
-            ts: 200,
-            raw: {
-              content: "forward-comment",
-              reference: { type: 1, messageId: "orig", channelId: "other" },
-              messageSnapshots: [
-                {
-                  message: {
-                    content: "snapshot-content",
-                    embeds: [
-                      {
-                        title: "snapshot-title",
-                        description: "snapshot-description",
-                      },
-                    ],
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      },
-    );
-
-    const searchStore = new DiscordSearchStore(":memory:");
-    const search = new DiscordSearchService({ adapter, store: searchStore });
-    const tool = new Surface({ adapter, config: cfg, discordSearch: search });
-
-    const embedHit = (await tool.call("surface.messages.search", {
-      client: "discord",
-      sessionId: channelId,
-      query: "embed-description",
-    })) as {
-      hits: Array<{ messageId: string; richText: string }>;
-    };
-
-    const embedRead = (await tool.call("surface.messages.read", {
-      client: "discord",
-      sessionId: channelId,
-      messageId: "m1",
-    })) as {
-      message: { richText: string } | null;
-    };
-
-    expect(embedHit.hits).toHaveLength(1);
-    expect(embedHit.hits[0]?.messageId).toBe("m1");
-    expect(embedHit.hits[0]?.richText).toBe(embedRead.message?.richText);
-
-    const forwardHit = (await tool.call("surface.messages.search", {
-      client: "discord",
-      sessionId: channelId,
-      query: "snapshot-description",
-    })) as {
-      hits: Array<{ messageId: string; richText: string }>;
-    };
-
-    const forwardRead = (await tool.call("surface.messages.read", {
-      client: "discord",
-      sessionId: channelId,
-      messageId: "m2",
-    })) as {
-      message: { richText: string } | null;
-    };
-
-    expect(forwardHit.hits).toHaveLength(1);
-    expect(forwardHit.hits[0]?.messageId).toBe("m2");
-    expect(forwardHit.hits[0]?.richText).toBe(forwardRead.message?.richText);
-
-    searchStore.close();
   });
 
   it("errors clearly when sessionId looks like requestId", async () => {

@@ -4,6 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { nativeDeploymentSettingsSchema } from "@stanley2058/lilac-client-protocol";
+import {
+  parseCoreConfigV2ToUniversal,
+  parseCoreConfigV3ToUniversal,
+} from "@stanley2058/lilac-utils";
 import { NativeStore } from "../../../src/surface/native/store";
 import { createNativeIntegrationFixture } from "./integration-fixture";
 
@@ -138,6 +142,46 @@ test("stored deployment settings drop the legacy DM context age", () => {
       dmContextGapMs: 7_200_000,
       dmTimestampGapMs: 1_800_000,
     });
+  } finally {
+    store.close();
+  }
+});
+
+function deploymentFromConfig(
+  native: ReturnType<typeof parseCoreConfigV3ToUniversal>["surface"]["native"],
+) {
+  return nativeDeploymentSettingsSchema.parse({
+    titleModel: native.titleModel,
+    outputStreaming: native.outputStreaming,
+    oldMessageSelectionMaxAgeMs: native.oldMessageSelectionMaxAgeMs,
+    storageRetentionMaxAgeMs: native.storageRetentionMaxAgeMs,
+    crossThreadSend: native.crossThreadSend,
+    dmContextGapMs: 7_200_000,
+    dmTimestampGapMs: 1_800_000,
+  });
+}
+
+test("switching from v2 native YAML settings to v3 defaults preserves the deployment record", () => {
+  const store = new NativeStore(new Database(":memory:"));
+  try {
+    store.initialize().unwrap();
+    const v2 = parseCoreConfigV2ToUniversal({
+      configVersion: 2,
+      surface: { native: initial },
+    });
+    const v2Settings = deploymentFromConfig(v2.surface.native);
+    store.initializeDeployment(v2Settings).unwrap();
+    const imported = store.getDeployment().unwrap();
+    const v3 = parseCoreConfigV3ToUniversal({ configVersion: 3 });
+    const freshSettings = deploymentFromConfig(v3.surface.native);
+    expect(freshSettings.titleModel).toBe("fast");
+    expect(freshSettings.outputStreaming).toBe("paragraph");
+    expect(freshSettings.crossThreadSend.triggerRun).toBe(true);
+    store.initializeDeployment(freshSettings).unwrap();
+    expect(store.getDeployment().unwrap()).toEqual(imported);
+    expect(imported.settings.titleModel).toBe("main");
+    expect(imported.settings.outputStreaming).toBe("complete");
+    expect(imported.settings.crossThreadSend.triggerRun).toBe(false);
   } finally {
     store.close();
   }

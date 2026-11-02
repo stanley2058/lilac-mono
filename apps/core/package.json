@@ -27,7 +27,6 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@ai-sdk/google": "^4.0.90",
     "@ai-sdk/mcp": "^2.0.83",
     "@ai-sdk/typesafe-ai": "^3.0.15",
     "@clerk/backend": "3.18.1",

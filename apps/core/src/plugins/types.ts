@@ -14,7 +14,6 @@ import type { SurfaceAdapterResolver } from "../surface/runtime-descriptor";
 import type { NativeSearchService } from "../surface/native/search";
 import type { DiscoveryService } from "../discovery/discovery-service";
 import type { ConversationThreadToolService } from "../conversation/thread-service";
-import type { DiscordSearchService } from "../surface/store/discord-search-store";
 import type { TranscriptStore } from "../transcript/transcript-store";
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
 import type { DurableWorkflowStore } from "../workflow/durable-workflow-store";
@@ -42,7 +41,6 @@ export type CoreToolPluginRuntime = {
   discovery?: DiscoveryService;
   nativeSearch?: NativeSearchService;
   conversationThreads?: ConversationThreadToolService;
-  discordSearch?: DiscordSearchService;
   transcriptStore?: TranscriptStore;
   mcpRegistry?: McpRegistryApi;
   mcpOAuthProviders?: McpOAuthProviderService;

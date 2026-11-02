@@ -4,7 +4,6 @@ import {
   Attachment,
   Codex,
   ConversationThread,
-  ContentInspect,
   Discovery,
   Generate,
   McpManagement,
@@ -119,21 +118,6 @@ export function createBuiltinGeneratePlugin(): CoreToolPlugin {
   return singletonLevel2("generate", () => new Generate());
 }
 
-export function createBuiltinContentInspectPlugin(): CoreToolPlugin {
-  return {
-    meta: {
-      id: "content.inspect",
-    },
-    create({ runtime }) {
-      const config = runtime.config;
-      const getConfig = runtime.getConfig ?? (config ? async () => config : undefined);
-      return {
-        level2: [new ContentInspect({ getConfig })],
-      };
-    },
-  };
-}
-
 export function createBuiltinSshPlugin(): CoreToolPlugin {
   return singletonLevel2("ssh", () => new SSH());
 }
@@ -245,7 +229,6 @@ export function createBuiltinSurfacePlugin(): CoreToolPlugin {
             nativeAdapterForContext: runtime.nativeAdapterForContext,
             config: runtime.config,
             getConfig: runtime.getConfig,
-            discordSearch: runtime.discordSearch,
             transcriptStore: runtime.transcriptStore,
           }),
         ],

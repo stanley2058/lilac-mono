@@ -1780,25 +1780,16 @@
                         "search",
                         "skills.list",
                         "skills.read",
-                        "content.inspect",
                         "discovery.search",
                         "conversation.thread.search",
                         "surface.help",
                         "surface.sessions.listParticipants",
                         "surface.messages.list",
                         "surface.messages.read",
-                        "surface.messages.search",
                         "surface.reactions.list",
                         "surface.reactions.listDetailed"
                       ],
-                      "plugins": [
-                        "web",
-                        "skills",
-                        "content.inspect",
-                        "discovery",
-                        "conversation.thread",
-                        "surface"
-                      ]
+                      "plugins": ["web", "skills", "discovery", "conversation.thread", "surface"]
                     },
                     "network": true,
                     "workspaceWrites": false,
@@ -1844,25 +1835,16 @@
                           "search",
                           "skills.list",
                           "skills.read",
-                          "content.inspect",
                           "discovery.search",
                           "conversation.thread.search",
                           "surface.help",
                           "surface.sessions.listParticipants",
                           "surface.messages.list",
                           "surface.messages.read",
-                          "surface.messages.search",
                           "surface.reactions.list",
                           "surface.reactions.listDetailed"
                         ],
-                        "plugins": [
-                          "web",
-                          "skills",
-                          "content.inspect",
-                          "discovery",
-                          "conversation.thread",
-                          "surface"
-                        ]
+                        "plugins": ["web", "skills", "discovery", "conversation.thread", "surface"]
                       },
                       "network": true,
                       "workspaceWrites": false,
@@ -1903,21 +1885,18 @@
                             "search",
                             "skills.list",
                             "skills.read",
-                            "content.inspect",
                             "discovery.search",
                             "conversation.thread.search",
                             "surface.help",
                             "surface.sessions.listParticipants",
                             "surface.messages.list",
                             "surface.messages.read",
-                            "surface.messages.search",
                             "surface.reactions.list",
                             "surface.reactions.listDetailed"
                           ],
                           "plugins": [
                             "web",
                             "skills",
-                            "content.inspect",
                             "discovery",
                             "conversation.thread",
                             "surface"
@@ -2014,21 +1993,18 @@
                               "search",
                               "skills.list",
                               "skills.read",
-                              "content.inspect",
                               "discovery.search",
                               "conversation.thread.search",
                               "surface.help",
                               "surface.sessions.listParticipants",
                               "surface.messages.list",
                               "surface.messages.read",
-                              "surface.messages.search",
                               "surface.reactions.list",
                               "surface.reactions.listDetailed"
                             ],
                             "plugins": [
                               "web",
                               "skills",
-                              "content.inspect",
                               "discovery",
                               "conversation.thread",
                               "surface"
@@ -2662,10 +2638,12 @@
           ]
         },
         "tools": {
+          "default": {},
           "type": "object",
           "properties": {
             "fsBackend": { "default": "fff", "type": "string", "enum": ["fff", "node-rg"] },
             "web": {
+              "default": {},
               "type": "object",
               "properties": {
                 "extract": {
@@ -2676,11 +2654,7 @@
                       "type": "array",
                       "items": { "type": "string", "enum": ["tavily", "exa", "firecrawl"] }
                     },
-                    "provider": {
-                      "$schema": "http://json-schema.org/draft-07/schema#",
-                      "type": "string",
-                      "enum": ["tavily", "exa", "firecrawl"]
-                    }
+                    "provider": { "not": {} }
                   },
                   "additionalProperties": false
                 },
@@ -2717,33 +2691,11 @@
                   },
                   "additionalProperties": false
                 },
-                "search": {
-                  "type": "object",
-                  "properties": {
-                    "providers": {
-                      "minItems": 1,
-                      "type": "array",
-                      "items": { "type": "string", "enum": ["tavily", "exa", "firecrawl"] }
-                    },
-                    "provider": {
-                      "$schema": "http://json-schema.org/draft-07/schema#",
-                      "type": "string",
-                      "enum": ["tavily", "exa", "firecrawl"]
-                    }
-                  },
-                  "additionalProperties": false
-                }
+                "search": { "not": {} }
               },
               "additionalProperties": false
             },
-            "inspect": {
-              "default": { "model": "google/gemini-3.5-flash" },
-              "type": "object",
-              "properties": {
-                "model": { "default": "google/gemini-3.5-flash", "type": "string", "minLength": 1 }
-              },
-              "additionalProperties": false
-            },
+            "inspect": { "not": {} },
             "editFile": {
               "default": { "hashline": true },
               "type": "object",
@@ -2857,9 +2809,11 @@
           "additionalProperties": false
         },
         "conversation": {
+          "default": {},
           "type": "object",
           "properties": {
             "thread": {
+              "default": {},
               "type": "object",
               "properties": {
                 "summarization": {
@@ -2974,19 +2928,15 @@
                 "autoInjectMode": {
                   "default": "llm",
                   "type": "string",
-                  "enum": ["llm", "decision", "jev"]
+                  "enum": ["llm", "decision"]
                 },
                 "decisionAutoInject": {
                   "type": "object",
                   "properties": {
-                    "recallMinProbability": { "type": "number", "minimum": 0, "maximum": 1 },
-                    "durableSubjectMinProbability": {
-                      "type": "number",
-                      "minimum": 0,
-                      "maximum": 1
-                    },
-                    "casualMaxProbability": { "type": "number", "minimum": 0, "maximum": 1 },
-                    "relevanceMinProbability": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "recallMinProbability": { "not": {} },
+                    "durableSubjectMinProbability": { "not": {} },
+                    "casualMaxProbability": { "not": {} },
+                    "relevanceMinProbability": { "not": {} },
                     "model": {
                       "anyOf": [
                         { "type": "string", "minLength": 1 },
@@ -3041,71 +2991,7 @@
                   },
                   "additionalProperties": false
                 },
-                "jevAutoInject": {
-                  "type": "object",
-                  "properties": {
-                    "recallMinProbability": { "type": "number", "minimum": 0, "maximum": 1 },
-                    "durableSubjectMinProbability": {
-                      "type": "number",
-                      "minimum": 0,
-                      "maximum": 1
-                    },
-                    "casualMaxProbability": { "type": "number", "minimum": 0, "maximum": 1 },
-                    "relevanceMinProbability": { "type": "number", "minimum": 0, "maximum": 1 },
-                    "model": {
-                      "anyOf": [
-                        { "type": "string", "minLength": 1 },
-                        {
-                          "minItems": 1,
-                          "type": "array",
-                          "items": { "type": "string", "minLength": 1 }
-                        }
-                      ]
-                    },
-                    "limit": {
-                      "default": 3,
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "maximum": 10
-                    },
-                    "candidateLimit": {
-                      "default": 40,
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "maximum": 50
-                    },
-                    "semanticFallback": { "default": true, "type": "boolean" },
-                    "jev": {
-                      "type": "object",
-                      "properties": {
-                        "recallMinProbability": { "type": "number", "minimum": 0, "maximum": 1 },
-                        "durableSubjectMinProbability": {
-                          "type": "number",
-                          "minimum": 0,
-                          "maximum": 1
-                        },
-                        "casualMaxProbability": { "type": "number", "minimum": 0, "maximum": 1 },
-                        "relevanceMinProbability": { "type": "number", "minimum": 0, "maximum": 1 }
-                      },
-                      "additionalProperties": false
-                    },
-                    "luna": {
-                      "type": "object",
-                      "properties": {
-                        "recallMinProbability": { "type": "number", "minimum": 0, "maximum": 1 },
-                        "durableSubjectMinProbability": {
-                          "type": "number",
-                          "minimum": 0,
-                          "maximum": 1
-                        },
-                        "casualMaxProbability": { "type": "number", "minimum": 0, "maximum": 1 },
-                        "relevanceMinProbability": { "type": "number", "minimum": 0, "maximum": 1 }
-                      },
-                      "additionalProperties": false
-                    }
-                  },
-                  "additionalProperties": false
-                }
+                "jevAutoInject": { "not": {} }
               },
               "additionalProperties": false
             }
@@ -3126,6 +3012,7 @@
           "additionalProperties": false
         },
         "surface": {
+          "default": {},
           "type": "object",
           "properties": {
             "workingIndicators": {
@@ -3230,6 +3117,7 @@
               "items": { "type": "string", "minLength": 1 }
             },
             "native": {
+              "default": {},
               "type": "object",
               "properties": {
                 "enabled": { "default": false, "type": "boolean" },
@@ -3268,46 +3156,11 @@
                   },
                   "additionalProperties": false
                 },
-                "titleModel": { "default": "fast", "type": "string", "minLength": 1 },
-                "outputStreaming": {
-                  "default": "paragraph",
-                  "type": "string",
-                  "enum": ["paragraph", "complete"]
-                },
-                "oldMessageSelectionMaxAgeMs": {
-                  "anyOf": [
-                    {
-                      "anyOf": [
-                        { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
-                        {
-                          "type": "string",
-                          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
-                        }
-                      ]
-                    },
-                    { "type": "null" }
-                  ]
-                },
-                "storageRetentionMaxAgeMs": {
-                  "anyOf": [
-                    {
-                      "anyOf": [
-                        { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
-                        {
-                          "type": "string",
-                          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
-                        }
-                      ]
-                    },
-                    { "type": "null" }
-                  ]
-                },
-                "crossThreadSend": {
-                  "default": { "triggerRun": true },
-                  "type": "object",
-                  "properties": { "triggerRun": { "default": true, "type": "boolean" } },
-                  "additionalProperties": false
-                }
+                "titleModel": { "not": {} },
+                "outputStreaming": { "not": {} },
+                "oldMessageSelectionMaxAgeMs": { "not": {} },
+                "storageRetentionMaxAgeMs": { "not": {} },
+                "crossThreadSend": { "not": {} }
               },
               "additionalProperties": false
             },
@@ -3613,25 +3466,16 @@
                         "search",
                         "skills.list",
                         "skills.read",
-                        "content.inspect",
                         "discovery.search",
                         "conversation.thread.search",
                         "surface.help",
                         "surface.sessions.listParticipants",
                         "surface.messages.list",
                         "surface.messages.read",
-                        "surface.messages.search",
                         "surface.reactions.list",
                         "surface.reactions.listDetailed"
                       ],
-                      "plugins": [
-                        "web",
-                        "skills",
-                        "content.inspect",
-                        "discovery",
-                        "conversation.thread",
-                        "surface"
-                      ]
+                      "plugins": ["web", "skills", "discovery", "conversation.thread", "surface"]
                     },
                     "network": true,
                     "workspaceWrites": false,
@@ -3666,25 +3510,16 @@
                           "search",
                           "skills.list",
                           "skills.read",
-                          "content.inspect",
                           "discovery.search",
                           "conversation.thread.search",
                           "surface.help",
                           "surface.sessions.listParticipants",
                           "surface.messages.list",
                           "surface.messages.read",
-                          "surface.messages.search",
                           "surface.reactions.list",
                           "surface.reactions.listDetailed"
                         ],
-                        "plugins": [
-                          "web",
-                          "skills",
-                          "content.inspect",
-                          "discovery",
-                          "conversation.thread",
-                          "surface"
-                        ]
+                        "plugins": ["web", "skills", "discovery", "conversation.thread", "surface"]
                       },
                       "network": true,
                       "workspaceWrites": false,
@@ -3765,21 +3600,18 @@
                             "search",
                             "skills.list",
                             "skills.read",
-                            "content.inspect",
                             "discovery.search",
                             "conversation.thread.search",
                             "surface.help",
                             "surface.sessions.listParticipants",
                             "surface.messages.list",
                             "surface.messages.read",
-                            "surface.messages.search",
                             "surface.reactions.list",
                             "surface.reactions.listDetailed"
                           ],
                           "plugins": [
                             "web",
                             "skills",
-                            "content.inspect",
                             "discovery",
                             "conversation.thread",
                             "surface"
@@ -3820,21 +3652,18 @@
                               "search",
                               "skills.list",
                               "skills.read",
-                              "content.inspect",
                               "discovery.search",
                               "conversation.thread.search",
                               "surface.help",
                               "surface.sessions.listParticipants",
                               "surface.messages.list",
                               "surface.messages.read",
-                              "surface.messages.search",
                               "surface.reactions.list",
                               "surface.reactions.listDetailed"
                             ],
                             "plugins": [
                               "web",
                               "skills",
-                              "content.inspect",
                               "discovery",
                               "conversation.thread",
                               "surface"
@@ -3900,21 +3729,18 @@
                             "search",
                             "skills.list",
                             "skills.read",
-                            "content.inspect",
                             "discovery.search",
                             "conversation.thread.search",
                             "surface.help",
                             "surface.sessions.listParticipants",
                             "surface.messages.list",
                             "surface.messages.read",
-                            "surface.messages.search",
                             "surface.reactions.list",
                             "surface.reactions.listDetailed"
                           ],
                           "plugins": [
                             "web",
                             "skills",
-                            "content.inspect",
                             "discovery",
                             "conversation.thread",
                             "surface"

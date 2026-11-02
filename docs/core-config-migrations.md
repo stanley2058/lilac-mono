@@ -154,7 +154,8 @@ New v2 fields:
   universal fallback but cannot override it.
 - `agent.idleTimeoutMs`: primary agent inactivity timeout; defaults to `900000` (15 minutes). Active runs
   have no total runtime cap. Frozen v1 configs receive the same universal fallback but cannot override it.
-- `tools.inspect.model`: configurable Gemini model for `content.inspect`; must start with `google/`.
+- `tools.inspect.model`: historical Gemini model setting. Version 2 still accepts it, but the runtime
+  ignores it since `content.inspect` was removed.
 - `tools.web.firecrawl`: optional process-local concurrency policy applied independently to Firecrawl
   fetch and search calls. When present, `maxConcurrency` defaults to `2` and `queueTtl` defaults to `3s`;
   when absent, Firecrawl calls remain unlimited.
@@ -281,8 +282,6 @@ Default changes from v1:
 
 - `tools.fsBackend: fff`
 - `tools.editFile.hashline: true`
-- `tools.inspect.model: google/gemini-3.5-flash` (`configVersion: 1` always uses
-  `google/gemini-3-flash`)
 - `surface.discord.outputMode: preview`
 - `surface.discord.outputPreviewModeFinalStyle: plain`
 - `surface.discord.outputPreviewModeFinalText: flat`
@@ -301,7 +300,7 @@ Default changes from v1:
 
 ## v3
 
-`configVersion: 3` keeps every v2 field except `agent.subagents.profiles`. Subagent role profiles are
+`configVersion: 3` removes the legacy fields listed below, including `agent.subagents.profiles`. Subagent role profiles are
 replaced by named permission profiles, and the delegating agent picks the model per call.
 
 Replaced v3 field:
@@ -337,11 +336,11 @@ fields are ignored.
 
 ## Native deployment settings move to the database
 
-Native startup imports `surface.native.titleModel`, `outputStreaming`,
+With config v2, native startup imports `surface.native.titleModel`, `outputStreaming`,
 `oldMessageSelectionMaxAgeMs`, `storageRetentionMaxAgeMs`, and `crossThreadSend` once into
 the native database. After that, use Settings > Deployment. The old YAML keys are accepted
-only as initial import values and may be removed after startup; they do not override database
-settings. The import preserves the YAML file, including comments. See MIGRATIONS.md.
+only as initial import values in v2 and must be removed before switching to v3; they do not override
+database settings. The import preserves the YAML file, including comments. See MIGRATIONS.md.
 
 ### V3 model catalog and option rules
 
@@ -370,3 +369,37 @@ the new model default. Legacy models remain searchable and visible in Favorites.
 native title service generates one from the task, with a prompt excerpt while generation is pending.
 Task titles remain separate from activity and completion state. Native rows retain the executing
 provider/model and permission profile, including the final model after fallback.
+
+### Retired tools and v3 configuration fields
+
+This release removes `content.inspect`, `surface.messages.search`, and `attachment.download` for
+all config versions. Remove their names from custom callable/plugin allowlists and update scripts
+and skills that invoke them. Use `discovery.search` with `platform: discord` and `sessionId` for
+session-scoped memory retrieval, and `resource.materialize` for inbound resources. Discovery searches
+the retained index; it does not perform the retired search tool's first-search Discord history backfill.
+The Discord message store, ingress indexer, and new-message backfill remain in use.
+
+`content.inspect` has no single replacement. Use ordinary reads/fetches or a suitably capable model
+for supported media. Its dedicated Gemini transcription, video analysis, Google search and URL-context
+workflow is removed. `tools.inspect` is rejected in v3; v2 accepts and ignores it.
+
+V3 rejects these legacy input forms with migration guidance, including when both old and new keys
+are present. V1/v2 retain their existing input compatibility:
+
+- `tools.web.search` becomes `tools.web.extract`.
+- `tools.web.extract.provider` becomes `tools.web.extract.providers: [provider]`.
+- `conversation.thread.jevAutoInject` becomes `conversation.thread.decisionAutoInject`.
+- `conversation.thread.autoInjectMode: jev` becomes `decision`.
+- Flat `decisionAutoInject` probability thresholds move into `jev` and `luna`. To preserve a flat
+  threshold's behavior, set it in both scopes. Existing scoped overrides retain their values.
+
+V3 also rejects `surface.native.titleModel`, `outputStreaming`, `oldMessageSelectionMaxAgeMs`,
+`storageRetentionMaxAgeMs`, and `crossThreadSend`. These settings belong in Settings > Deployment.
+Before switching a customized v2 installation to v3, start it once with v2 and the existing YAML
+settings so Core imports them into the native deployment record. Confirm those settings in the UI,
+then remove the YAML keys and set `configVersion: 3`. Existing deployment records always win at startup.
+
+A fresh v3 installation uses `titleModel: fast`, `outputStreaming: paragraph`, unlimited selection
+and storage ages (`null`), and `crossThreadSend.triggerRun: true` as its initial deployment settings.
+Change these through Settings > Deployment after installation. No database schema change or data
+deletion is part of this removal.

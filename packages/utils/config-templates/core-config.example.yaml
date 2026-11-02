@@ -34,9 +34,6 @@ tools:
     # firecrawl:
     #   maxConcurrency: 2
     #   queueTtl: 3s
-  inspect:
-    # Must start with google/.
-    model: google/gemini-3.5-flash
   editFile:
     hashline: true
   output:
@@ -375,18 +372,16 @@ agent:
               search,
               skills.list,
               skills.read,
-              content.inspect,
               discovery.search,
               conversation.thread.search,
               surface.help,
               surface.sessions.listParticipants,
               surface.messages.list,
               surface.messages.read,
-              surface.messages.search,
               surface.reactions.list,
               surface.reactions.listDetailed,
             ]
-          plugins: [web, skills, content.inspect, discovery, conversation.thread, surface]
+          plugins: [web, skills, discovery, conversation.thread, surface]
         # Behavioral/tool-surface settings. execution accepts false, restricted,
         # or native. restricted uses the virtual restricted Bash implementation;
         # native uses trusted host Bash unless the surface is restricted.

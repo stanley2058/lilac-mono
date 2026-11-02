@@ -5,7 +5,6 @@ import {
   createBuiltinAttachmentPlugin,
   createBuiltinCodexPlugin,
   createBuiltinConversationThreadPlugin,
-  createBuiltinContentInspectPlugin,
   createBuiltinDiscoveryPlugin,
   createBuiltinGeneratePlugin,
   createBuiltinMcpPlugin,
@@ -34,7 +33,6 @@ export function createBuiltinCoreToolPlugins(): CoreToolPlugin[] {
     createBuiltinOnboardingPlugin(),
     createBuiltinGeneratePlugin(),
     createBuiltinCodexPlugin(),
-    createBuiltinContentInspectPlugin(),
     createBuiltinSshPlugin(),
   ];
 }

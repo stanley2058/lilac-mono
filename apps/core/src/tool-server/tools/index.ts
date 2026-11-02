@@ -1,5 +1,4 @@
 export * from "./web";
-export * from "./content-inspect";
 export * from "./attachment";
 export * from "./resource";
 export * from "./programmatic-workflow";

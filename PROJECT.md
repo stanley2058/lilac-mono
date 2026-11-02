@@ -212,8 +212,7 @@ Request capabilities bind request context, cwd, profile, callable authority, and
 
 Core ingress resources use opaque `resource://r1_<128-bit-id>` capabilities. The shared Core resource
 module validates and resolves them for provider media, Level 1 `read` and `grep`, Level 2
-`resource.materialize` and `attachment.add_files`, and the hidden deprecated `attachment.download`
-compatibility callable.
+`resource.materialize` and `attachment.add_files`.
 `resource.materialize` writes an ordered selection into the invoking `tools` CLI process cwd without
 overwriting existing files. The server keeps the capability-authorized cwd separate from that
 invocation cwd, and restricted requests can materialize only under their private `/tmp` mapping. Text

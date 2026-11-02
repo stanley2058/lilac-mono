@@ -1249,3 +1249,20 @@ is not carried over because an age limit does not translate to a pause length. `
 gains required `timestampGapMs`, and its `expiresAt` for a DM is the latest completion plus the gap.
 Deploy Core and web together. Older strict validators reject the new fields, and older clients that
 send `dmContextMaxAgeMs` are rejected. There is no other stored-data migration.
+
+
+## Config v3 retired tools and settings
+
+`content.inspect`, `surface.messages.search`, and `attachment.download` are removed without aliases
+for every config version. Migrate callers to ordinary media reads or a capable model,
+`discovery.search`, and `resource.materialize` respectively. `content.inspect`'s dedicated Gemini
+video/transcription workflow has no direct replacement. Custom permission allowlists and plugin lists
+must drop the retired names. The Discord message cache, ingress indexer and shared discovery path remain;
+only the old search callable's first-search history backfill is removed.
+
+Config v3 rejects `tools.inspect`, legacy web/recall spellings, flat decision thresholds, and the five
+native YAML deployment settings. V1/v2 input parsing remains supported. Follow
+[the v3 migration instructions](docs/core-config-migrations.md#retired-tools-and-v3-configuration-fields)
+before changing the config version, especially the one-time native settings import. Existing deployment
+records are retained; fresh v3 records use the existing defaults. No persisted schema, table, blob,
+or history is deleted by this change.

@@ -96,7 +96,7 @@ describe("core config versioning", () => {
     });
     expect(parsed.tools.fsBackend).toBe("node-rg");
     expect(parsed.tools.web.fetch.mode).toBe("auto");
-    expect(parsed.tools.inspect.model).toBe("google/gemini-3-flash");
+    expect(parsed.tools).not.toHaveProperty("inspect");
     expect(parsed.tools.editFile.hashline).toBe(false);
     expect(parsed.agent.subagents.permissions.restricted.level1.tools).toEqual([
       "read",
@@ -135,7 +135,7 @@ describe("core config versioning", () => {
     ]);
     expect(parsed.agent.subagents.permissions.restricted.execution).toBe("native");
     expect(parsed.agent.subagents.permissions.full.execution).toBe("native");
-    expect(parsed.tools.inspect.model).toBe("google/gemini-3.5-flash");
+    expect(parsed.tools).not.toHaveProperty("inspect");
     expect(parsed.tools.editFile.hashline).toBe(true);
     expect(parsed.surface.discord.outputMode).toBe("preview");
     expect(parsed.surface.discord.outputPreviewModeFinalStyle).toBe("plain");
@@ -537,7 +537,7 @@ describe("core config versioning", () => {
     });
 
     expect(parsed.tools.fsBackend).toBe("node-rg");
-    expect(parsed.tools.inspect.model).toBe("google/gemini-3-pro");
+    expect(parsed.tools).not.toHaveProperty("inspect");
     expect(parsed.tools.editFile.hashline).toBe(false);
     expect(parsed.surface.discord.outputPreviewModeFinalStyle).toBe("embed");
     expect(parsed.surface.discord.outputPreviewModeFinalText).toBe("reply-chain");
@@ -592,7 +592,7 @@ describe("core config versioning", () => {
     });
 
     expect(parsed.tools.fsBackend).toBe("fff");
-    expect(parsed.tools.inspect.model).toBe("google/gemini-3-flash");
+    expect(parsed.tools).not.toHaveProperty("inspect");
     expect(parsed.tools.editFile.hashline).toBe(true);
     expect(parsed.surface.discord.outputPreviewModeFinalStyle).toBe("plain");
     expect(parsed.surface.discord.outputPreviewModeFinalText).toBe("reply-chain");
