@@ -855,3 +855,23 @@ test("thread titles and archive state remain editable after the selected model i
   expect(changed.title).toBe("Renamed");
   expect(changed.archived).toBe(true);
 });
+
+test("title regeneration rejects stale revisions and other thread changes", async () => {
+  using state = fixture();
+  const update = (input: { expectedRevision: number; archived?: boolean }) =>
+    state.services.threads.update(principal, {
+      threadId: state.thread.id,
+      regenerateTitle: true,
+      ...input,
+    });
+  const revision = state.store.getThreadRecord(state.thread.id).unwrap().revision;
+  const message = async (input: { expectedRevision: number; archived?: boolean }) =>
+    (await update(input)).match({ ok: () => "ok", err: (error) => error.message });
+  expect(await message({ expectedRevision: revision, archived: true })).toBe(
+    "Regenerate the title without other thread changes",
+  );
+  expect(await message({ expectedRevision: revision + 1 })).toBe(
+    "Thread changed before this update",
+  );
+  expect(state.store.getThreadRecord(state.thread.id).unwrap().archived).toBe(false);
+});

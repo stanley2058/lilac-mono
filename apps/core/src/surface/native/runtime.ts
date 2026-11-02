@@ -316,6 +316,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
   });
   const computer = new NativeComputer(store, options.mcpRegistry);
   const services = createNativeRpcServices({
+    titles,
     questions,
     push,
     computer,

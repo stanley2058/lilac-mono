@@ -16,6 +16,7 @@ import {
   Undo2,
   Pin,
   PinOff,
+  RefreshCw,
 } from "lucide-react";
 import type { NativeThread, NativeUser, SidebarSection } from "@stanley2058/lilac-client-protocol";
 import { useWorkspace } from "../workspace-context";
@@ -46,6 +47,7 @@ export const SidebarThread = memo(function SidebarThread({
   external,
   onSelect,
   onRename,
+  onRegenerateTitle,
   onArchive,
   onDelete,
   onDiscardDraft,
@@ -65,6 +67,7 @@ export const SidebarThread = memo(function SidebarThread({
   external?: boolean;
   onSelect: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  onRegenerateTitle: (id: string) => void;
   onArchive: (id: string, archived: boolean) => void;
   onDelete: (id: string) => void;
   onDiscardDraft: (id: string) => void;
@@ -171,6 +174,12 @@ export const SidebarThread = memo(function SidebarThread({
                 <Pencil />
                 Rename
               </ContextMenuItem>
+              {thread ? (
+                <ContextMenuItem onClick={() => onRegenerateTitle(id)}>
+                  <RefreshCw />
+                  Regenerate title
+                </ContextMenuItem>
+              ) : null}
               {thread ? (
                 <ContextMenuItem onClick={() => onArchive(id, !thread.archived)}>
                   {thread.archived ? <ArchiveRestore /> : <Archive />}

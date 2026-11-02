@@ -23,6 +23,7 @@ export type GeneratedNativeTitle = z.infer<typeof titleSchema>;
 export type NativeTitleInput = {
   user: string;
   assistant?: string;
+  conversation?: { role: "user" | "assistant"; text: string }[];
   config: CoreConfig;
   titleModel: string;
   signal: AbortSignal;
@@ -66,11 +67,16 @@ export const generateNativeTitle: NativeTitleGenerator = (input) =>
               'Return only JSON: {"title":"...","needsRefinement":false}. No markdown or tools.',
               "Set needsRefinement to true only when the initial request is too ambiguous to name well without the assistant's answer.",
               "If an assistant answer is supplied, choose the final title and set needsRefinement to false.",
+              "If a conversation is supplied, name what it is about now. When the topic moved away from the opening request, favor the later direction. Set needsRefinement to false.",
             ].join("\n"),
             messages: [
               {
                 role: "user",
-                content: JSON.stringify({ user: input.user, assistant: input.assistant }),
+                content: JSON.stringify(
+                  input.conversation
+                    ? { conversation: input.conversation }
+                    : { user: input.user, assistant: input.assistant },
+                ),
               },
             ],
           });
@@ -166,6 +172,26 @@ export function createNativeTitleGeneration(options: {
   }
   const unsubscribe = options.store.subscribe(kick);
   return {
+    regenerate: (threadId: string) =>
+      Result.gen(async function* () {
+        const transcript = yield* options.store.getTitleTranscript(threadId);
+        const first = transcript.messages.find((message) => message.role === "user");
+        if (!first)
+          return Result.err(
+            nativeFailure("invalid", "Send a message before regenerating the title"),
+          );
+        const settings = yield* options.store.getDeployment().map((value) => value.settings);
+        const generated = yield* Result.await(
+          generate({
+            titleModel: settings.titleModel,
+            user: first.text,
+            conversation: transcript.messages,
+            config: options.getConfig(),
+            signal: AbortSignal.any([abort.signal, AbortSignal.timeout(30_000)]),
+          }),
+        );
+        return options.store.applyRegeneratedTitle(threadId, transcript.title, generated.title);
+      }),
     async stop() {
       unsubscribe();
       abort.abort();
@@ -173,3 +199,4 @@ export function createNativeTitleGeneration(options: {
     },
   };
 }
+export type NativeTitleGeneration = ReturnType<typeof createNativeTitleGeneration>;

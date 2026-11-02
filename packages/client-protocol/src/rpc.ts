@@ -309,6 +309,7 @@ export const nativeContract = {
           expectedRevision: revisionSchema,
           title: z.string().max(512).optional(),
           archived: z.boolean().optional(),
+          regenerateTitle: z.literal(true).optional(),
           modelId: catalogIdentifierSchema.optional(),
           reasoning: modelReasoningSchema.optional(),
         }),

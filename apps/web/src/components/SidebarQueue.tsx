@@ -34,6 +34,7 @@ export const SidebarQueue = memo(function SidebarQueue({
   models,
   onSelect,
   onRename,
+  onRegenerateTitle,
   onArchive,
   onDelete,
   onDiscardDraft,
@@ -46,6 +47,7 @@ export const SidebarQueue = memo(function SidebarQueue({
   models?: DisplayCatalog["models"];
   onSelect: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  onRegenerateTitle: (id: string) => void;
   onArchive: (id: string, archived: boolean) => void;
   onDelete: (id: string) => void;
   onDiscardDraft: (id: string) => void;
@@ -203,6 +205,7 @@ export const SidebarQueue = memo(function SidebarQueue({
             settleDisabled={!online || move.isPending}
             onSelect={select}
             onRename={rename}
+            onRegenerateTitle={onRegenerateTitle}
             onArchive={archive}
             onDelete={onDelete}
             onDiscardDraft={onDiscardDraft}

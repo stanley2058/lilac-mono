@@ -441,3 +441,67 @@ test("child task title generation preserves explicit titles and survives complet
     .unwrap();
   expect(f.store.getTitleGeneration(explicit.id).unwrap()).toBeNull();
 });
+
+function regenerationFixture() {
+  const f = fixture(false);
+  complete(f, "Opening answer");
+  const later = f.store
+    .acceptInput("owner", {
+      threadId: f.thread.id,
+      commandId: "later",
+      historyGeneration: 0,
+      text: "Now help me deploy it",
+      mode: "prompt",
+      skillIds: [],
+      attachmentIds: [],
+    })
+    .unwrap();
+  f.store.settleInput(f.input.inputId, "admitted").unwrap();
+  f.store.markInputCompleted(f.input.inputId).unwrap();
+  const turnId = f.store.prepareInput(later.inputId).unwrap()?.turnId;
+  complete({ ...f, input: { ...later, turnId } }, "Deployment answer");
+  return { f, c: controlled(f) };
+}
+
+test("regenerating a title summarizes the whole conversation", async () => {
+  const { f, c } = regenerationFixture();
+  const pending = c.service.regenerate(f.thread.id);
+  const input = await c.first.promise;
+  expect(input.conversation).toEqual([
+    { role: "user", text: "First line\nExplain the problem" },
+    { role: "assistant", text: "Opening answer" },
+    { role: "user", text: "Now help me deploy it" },
+    { role: "assistant", text: "Deployment answer" },
+  ]);
+  c.firstResult.resolve(Result.ok({ title: "Deploying the fix", needsRefinement: false }));
+  (await pending).unwrap();
+  expect(f.store.getThreadRecord(f.thread.id).unwrap().title).toBe("Deploying the fix");
+  await c.service.stop();
+  f.store.close();
+});
+
+test("a manual rename during regeneration keeps the manual title", async () => {
+  const { f, c } = regenerationFixture();
+  const pending = c.service.regenerate(f.thread.id);
+  await c.first.promise;
+  f.store
+    .updateThread("owner", { threadId: f.thread.id, commandId: "rename", title: "Manual" })
+    .unwrap();
+  c.firstResult.resolve(Result.ok({ title: "Generated", needsRefinement: false }));
+  expect((await pending).isErr()).toBe(true);
+  expect(f.store.getThreadRecord(f.thread.id).unwrap().title).toBe("Manual");
+  await c.service.stop();
+  f.store.close();
+});
+
+test("regenerating a title requires a message", async () => {
+  const f = fixture(false);
+  const empty = f.store
+    .createThread("owner", { commandId: "empty", title: "Empty", autoTitle: false })
+    .unwrap();
+  const c = controlled(f);
+  expect((await c.service.regenerate(empty.id)).isErr()).toBe(true);
+  expect(c.calls).toHaveLength(0);
+  await c.service.stop();
+  f.store.close();
+});

@@ -33,6 +33,7 @@ import type { NativeResourceService } from "./resources";
 import type { NativeRpcServices } from "./rpc";
 import type { NativeExternalThreads } from "./search-external";
 import type { NativeStore } from "./store";
+import type { NativeTitleGeneration } from "./title-generation";
 import type { NativeSearchStore } from "./store-search";
 import type { NativeSurfaceStore } from "./store-surface";
 
@@ -50,6 +51,7 @@ export type NativeRpcServiceOptions = {
   catalogs: Pick<NativeCatalogService, "get" | "subscribe"> &
     Partial<Pick<NativeCatalogService, "selection" | "models">>;
   config: Pick<NativeConfigService, "read" | "save" | "reloadMcp">;
+  titles?: Pick<NativeTitleGeneration, "regenerate">;
   execution: Pick<
     NativeExecution,
     "kick" | "cancel" | "rewind" | "deleteThread" | "validateCommand" | "context"
@@ -274,6 +276,28 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
       default:
         return Result.ok(reply);
     }
+  }
+
+  function regenerateTitle(
+    principal: NativePrincipal,
+    input: NativeRpcInputs["threads"]["update"],
+  ) {
+    return Result.gen(async function* () {
+      const { threadId, expectedRevision, regenerateTitle: _, ...other } = input;
+      if (Object.values(other).some((value) => value !== undefined))
+        return Result.err(
+          nativeFailure("invalid", "Regenerate the title without other thread changes"),
+        );
+      const thread = yield* store.authorizeThread(principal.userId, threadId, true);
+      if (thread.revision !== expectedRevision)
+        return Result.err(nativeFailure("stale", "Thread changed before this update"));
+      if (thread.kind === "dm")
+        return Result.err(nativeFailure("forbidden", "The DM cannot be renamed"));
+      if (!options.titles)
+        return Result.err(nativeFailure("invalid", "Title generation is unavailable"));
+      yield* Result.await(options.titles.regenerate(thread.id));
+      return store.getThread(principal.userId, thread.id);
+    });
   }
 
   function syncThreadReplay(principal: NativePrincipal, input: NativeRpcInputs["threads"]["sync"]) {
@@ -754,6 +778,7 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
         );
       },
       update(principal, input) {
+        if (input.regenerateTitle) return regenerateTitle(principal, input);
         return Result.gen(function* () {
           const thread = yield* store.authorizeThread(principal.userId, input.threadId, true);
           if (input.modelId !== undefined || input.reasoning !== undefined)

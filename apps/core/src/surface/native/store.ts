@@ -1352,23 +1352,62 @@ export class NativeStore {
         return Result.ok({ inputId: input.id, phase: state.phase, user });
       const turn = input.turnId ? yield* this.readRecord("turn", input.turnId) : null;
       if (turn?.kind !== "turn" || turn.value.state !== "complete") return Result.ok(null);
-      const hasText = (message: DisplayMessage) =>
-        message.role === "assistant" &&
-        message.parts.some((part) => part.type === "text" && part.text.trim());
-      const message =
-        turn.value.messages.findLast(
-          (message) => message.metadata?.phase === "final" && hasText(message),
-        ) ??
-        turn.value.messages.findLast(
-          (message) => message.metadata?.phase === undefined && hasText(message),
-        );
-      const assistant = message?.parts
-        .flatMap((part) => (part.type === "text" ? [part.text] : []))
-        .join("\n")
-        .slice(0, 4000);
+      const assistant = finalAssistantText(turn.value.messages).slice(0, 4000);
       if (!assistant) return Result.ok(null);
       return Result.ok({ inputId: input.id, phase: state.phase, user, assistant });
     }, this);
+  }
+
+  getTitleTranscript(threadId: string): NativeStoreResult<{
+    title: string;
+    messages: { role: "user" | "assistant"; text: string }[];
+  }> {
+    return nativeStoreTransaction(this.db, () =>
+      Result.gen(function* () {
+        const thread = yield* this.getThreadRecord(threadId);
+        // Long threads only need their opening and where they ended up.
+        const first = yield* this.readRows(
+          "SELECT * FROM native_records WHERE kind='turn' AND thread_id=? ORDER BY position LIMIT 1",
+          [threadId],
+        );
+        const recent = yield* this.readRows(
+          "SELECT * FROM native_records WHERE kind='turn' AND thread_id=? ORDER BY position DESC LIMIT 20",
+          [threadId],
+        );
+        const turns = new Map<string, ReadyTurnSlot>();
+        for (const record of [...first, ...recent.toReversed()])
+          if (record.kind === "turn") turns.set(record.value.turnId, record.value);
+        const messages = [...turns.values()].flatMap((turn) => {
+          const user = turn.messages
+            .filter((message) => message.role === "user")
+            .map(messageText)
+            .join("\n")
+            .trim();
+          const assistant = finalAssistantText(turn.messages);
+          return [
+            ...(user ? [{ role: "user" as const, text: user.slice(0, 2000) }] : []),
+            ...(assistant ? [{ role: "assistant" as const, text: assistant.slice(0, 2000) }] : []),
+          ];
+        });
+        return Result.ok({ title: thread.title, messages });
+      }, this),
+    );
+  }
+
+  applyRegeneratedTitle(
+    threadId: string,
+    expectedTitle: string,
+    title: string,
+  ): NativeStoreResult<void> {
+    return nativeStoreTransaction(this.db, () =>
+      Result.gen(function* () {
+        const thread = yield* this.getThreadRecord(threadId);
+        if (thread.deleted || thread.title !== expectedTitle)
+          return Result.err(nativeFailure("stale", "Thread title changed during regeneration"));
+        this.bump({ ...thread, title, titleGeneration: undefined }, "thread", thread.id);
+        return Result.ok(undefined);
+      }, this),
+    );
   }
 
   private settleAgentTitle(
@@ -3898,4 +3937,18 @@ export class NativeStore {
       return Result.ok(undefined);
     }, this);
   }
+}
+
+function messageText(message: DisplayMessage) {
+  return message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+}
+
+function finalAssistantText(messages: readonly DisplayMessage[]) {
+  const hasText = (message: DisplayMessage) =>
+    message.role === "assistant" &&
+    message.parts.some((part) => part.type === "text" && part.text.trim());
+  const message =
+    messages.findLast((message) => message.metadata?.phase === "final" && hasText(message)) ??
+    messages.findLast((message) => message.metadata?.phase === undefined && hasText(message));
+  return message ? messageText(message) : "";
 }
