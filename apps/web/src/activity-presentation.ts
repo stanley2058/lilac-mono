@@ -92,7 +92,10 @@ export function activityRowKind(part: ActivityPart): ActivityRowKind {
   if (part.data.kind !== "tool") return part.data.kind;
   const { name } = parseToolLabel(part.data.label);
   const known = toolKinds[name];
-  if (known === "command" && toolsCall(part)?.callable.startsWith("web.")) return "web";
+  if (known === "command") {
+    const callable = toolsCall(part)?.callable;
+    if (callable === "fetch" || callable === "search" || callable?.startsWith("web.")) return "web";
+  }
   if (known) return known;
   return /(^|[._])(web|fetch|browse|url)([._]|$)/i.test(name) ? "web" : "tool";
 }

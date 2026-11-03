@@ -339,6 +339,24 @@ const messageFixtures: DisplayMessage[] = [
       },
       { type: "data-activity", id: "gallery-search", data: toolActivities.nearby.settled },
       {
+        type: "data-activity",
+        id: "gallery-cli-search",
+        data: {
+          kind: "tool",
+          label: 'bash tools search "Kyoto bookstore opening hours"',
+          state: "complete",
+        },
+      },
+      {
+        type: "data-activity",
+        id: "gallery-cli-fetch",
+        data: {
+          kind: "tool",
+          label: "bash tools fetch 'https://example.com/bookstore'",
+          state: "complete",
+        },
+      },
+      {
         type: "text",
         text: "The café opens earlier than the bookstore, so that order works well.",
       },
