@@ -52,6 +52,7 @@ export type ComposerProps = Partial<Pick<ChatCommon, "client" | "scope" | "catal
   documentKey?: string;
   loadingDraft?: boolean;
   autoFocus?: boolean;
+  typeToFocus?: boolean;
   skillIds: string[];
   onSkills: (ids: string[]) => void;
   commandId?: string;
@@ -596,6 +597,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
             documentKey={props.documentKey}
             loadingDraft={props.loadingDraft}
             autoFocus={props.autoFocus}
+            typeToFocus={props.typeToFocus}
             ref={input}
             text={text}
             attachments={attachments}

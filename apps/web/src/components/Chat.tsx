@@ -1078,6 +1078,7 @@ export function Chat(props: ChatProps) {
           placeholder={replyPrompt ? answerPlaceholder(replyChosen !== undefined) : undefined}
           answer={composerAnswer}
           autoFocus={props.autoFocus}
+          typeToFocus={props.foreground}
           loadingDraft={!draftLoaded}
           windowDrop={props.foreground}
           catalog={props.catalog}

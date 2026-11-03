@@ -1008,6 +1008,7 @@ const composerCatalog: DisplayCatalog = {
 function ComposerSpecimen() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const [typeToFocus, setTypeToFocus] = useState(false);
   const [text, setText] = useState(
     "Help me turn these **notes** into a weekend plan with $agent-browser.\n\nCompare [the discussion](/?ref=discord%3Aweekend). Keep Sunday free.\nhttps://example.com/weekend",
   );
@@ -1027,9 +1028,16 @@ function ComposerSpecimen() {
     <Section
       id="composer"
       title="Composer"
-      description="Try the formatting toolbar, Markdown shortcuts, multiline input, and /tarot arguments."
+      description="Enable Type anywhere, then click outside the editor and start typing. Try the formatting toolbar, Markdown shortcuts, multiline input, and /tarot arguments."
     >
       <div className="ds-row flex items-center flex-wrap gap-2">
+        <Button
+          variant="secondary"
+          aria-pressed={typeToFocus}
+          onClick={() => setTypeToFocus((value) => !value)}
+        >
+          Type anywhere
+        </Button>
         <Button variant="secondary" onClick={() => setDisabled((value) => !value)}>
           {disabled ? "Enable editor" : "Disable editor"}
         </Button>
@@ -1056,6 +1064,7 @@ function ComposerSpecimen() {
           onDelete={() => toast.add({ title: "Delete selected", type: "info" })}
         />
         <Composer
+          typeToFocus={typeToFocus}
           text={text}
           onText={setText}
           attachments={attachments}

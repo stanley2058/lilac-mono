@@ -1,5 +1,6 @@
 import { Kbd } from "./ui/kbd";
 import { shortcutOverlayOpen } from "../shortcuts";
+import { shouldFocusComposer } from "../composer-focus";
 import { formatBinding, ariaBinding } from "../keybindings";
 import {
   parseReferenceHref,
@@ -311,6 +312,7 @@ export type ComposerEditorProps = {
   documentKey?: string;
   loadingDraft?: boolean;
   autoFocus?: boolean;
+  typeToFocus?: boolean;
   attachments?: readonly Attachment[];
   skills?: readonly ComposerSkill[];
   onRemoveAttachment?: (key: string) => void;
@@ -544,6 +546,16 @@ const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) 
     }),
     [editor, attachments, props.text],
   );
+  useEffect(() => {
+    if (!editor || !props.typeToFocus || props.disabled || props.loadingDraft) return;
+    const focus = (event: KeyboardEvent) => {
+      if (!shouldFocusComposer(event)) return;
+      // Focus synchronously so the browser delivers this key's native text input to the editor.
+      editor.view.focus();
+    };
+    window.addEventListener("keydown", focus);
+    return () => window.removeEventListener("keydown", focus);
+  }, [editor, props.typeToFocus, props.disabled, props.loadingDraft]);
   const focusedDocument = useRef<string>(undefined);
   useEffect(() => {
     if (
