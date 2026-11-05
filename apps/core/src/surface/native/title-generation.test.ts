@@ -17,6 +17,7 @@ function fixture(autoTitle = true) {
   store
     .initializeDeployment({
       titleModel: "fast",
+      transport: "auto",
       outputStreaming: "paragraph",
       dmContextGapMs: 7_200_000,
       dmTimestampGapMs: 1_800_000,

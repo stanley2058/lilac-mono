@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ORPCError } from "@orpc/client";
 import { Result } from "better-result";
-import type { CacheScope } from "@stanley2058/lilac-client";
+import { createNativeHttpRPC, type CacheScope } from "@stanley2058/lilac-client";
 import type { BootstrapReply } from "@stanley2058/lilac-client-protocol";
 import { WebSessionController, type WebSessionOptions } from "../src/bootstrap";
 import { WebNativeCache } from "../src/cache";
@@ -57,6 +57,7 @@ function setup(options: WebSessionOptions = {}) {
       opened.push(socket);
       return socket;
     },
+    openHttp: () => createNativeHttpRPC({ url: server.url }),
     socketBootstrap: (_rpc, input, signal) => fetchBootstrap(input, signal),
     logout: async () => Result.ok(),
     currentUrl: () => new URL("http://localhost/threads/selected"),
@@ -69,7 +70,7 @@ function setup(options: WebSessionOptions = {}) {
 }
 
 describe("WebSessionController", () => {
-  test("cold deep link starts socket and selected bootstrap in parallel", async () => {
+  test("cold deep link reads deployment policy before opening a socket", async () => {
     const response = Promise.withResolvers<BootstrapReply>();
     const requested = Promise.withResolvers<void>();
     const inputs: unknown[] = [];
@@ -82,7 +83,7 @@ describe("WebSessionController", () => {
     });
     const starting = test.controller.start();
     await requested.promise;
-    expect(test.opened).toHaveLength(1);
+    expect(test.opened).toHaveLength(0);
     expect(inputs).toEqual([{ threadId: "selected" }]);
     expect(test.controller.getSnapshot().kind).toBe("starting");
     response.resolve({ ...bootstrap, selectedThread: { kind: "window", checkpoint, slots: [] } });
@@ -149,7 +150,7 @@ describe("WebSessionController", () => {
     const signal = await requested.promise;
     await test.controller.logout();
     expect(signal?.aborted).toBe(true);
-    expect(test.opened[0]?.readyState).toBeGreaterThanOrEqual(WebSocket.CLOSING);
+    expect(test.opened).toHaveLength(0);
     response.resolve(bootstrap);
     await starting;
     expect(test.controller.getSnapshot().kind).toBe("login");
@@ -262,17 +263,19 @@ describe("WebSessionController", () => {
     expect(await b.cache.readLatestBootstrap()).toBeUndefined();
   });
 
-  test("synchronous socket failure is an offline state, not an unhandled start rejection", async () => {
+  test("synchronous socket failure starts the HTTP fallback", async () => {
     const test = setup({
       openSocket: () => {
         throw new Error("Socket blocked");
       },
     });
     await test.controller.start();
-    expect(test.controller.getSnapshot().kind).toBe("offline");
+    const state = test.controller.getSnapshot();
+    expect(state.kind).toBe("ready");
+    if (state.kind === "ready") expect(state.session.client.currentTransport).toBe("http-sse");
   });
 
-  test("cold authentication failure closes its parallel socket and shows login", async () => {
+  test("cold authentication failure shows login without opening a socket", async () => {
     const test = setup({
       bootstrap: async () => {
         throw new ORPCError("FORBIDDEN");
@@ -280,7 +283,7 @@ describe("WebSessionController", () => {
     });
     await test.controller.start();
     expect(test.controller.getSnapshot().kind).toBe("login");
-    expect(test.opened[0]?.readyState).toBeGreaterThanOrEqual(WebSocket.CLOSING);
+    expect(test.opened).toHaveLength(0);
   });
 
   test("a failed remote logout still clears local private state", async () => {

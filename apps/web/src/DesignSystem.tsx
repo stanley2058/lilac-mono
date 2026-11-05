@@ -1883,6 +1883,7 @@ export default function DesignSystem() {
               <Section id="deployment" title="Deployment settings">
                 <DeploymentSettingsForm
                   value={{
+                    transport: "auto",
                     titleModel: "fast",
                     outputStreaming: "complete",
                     dmContextGapMs: 7_200_000,

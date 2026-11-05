@@ -5,7 +5,14 @@ import { ORPCError } from "@orpc/client";
 import { Result } from "better-result";
 import { z } from "zod";
 import { createWebNativeCache, type WebNativeCache } from "./cache";
-import { logoutHttp, openNativeSocket, readBootstrap } from "./http";
+import {
+  logoutHttp,
+  openNativeSocket,
+  openNativeHttp,
+  readBootstrap,
+  nativeWebHttpFailure,
+  WebRequestFailed,
+} from "./http";
 import { prepareWebConnection } from "./connection-credentials";
 
 export type WebSession = {
@@ -22,6 +29,7 @@ export type WebState =
 export type WebSessionOptions = {
   cache?: WebNativeCache;
   openSocket?: () => WebSocket;
+  openHttp?: typeof openNativeHttp;
   bootstrap?: typeof readBootstrap;
   socketBootstrap?: SocketBootstrap;
   logout?: () => Promise<Result<void, Error>>;
@@ -101,11 +109,11 @@ export class WebSessionController {
   private activeScope: CacheScope | undefined;
   private stopEvents: (() => void) | undefined;
   private startup = new AbortController();
-  private startingSocket: WebSocket | undefined;
   private cleanup: Promise<void> = Promise.resolve();
   private readonly saves = new Set<Promise<void>>();
   private readonly cache: WebNativeCache;
   private readonly openSocket: () => WebSocket;
+  private readonly openHttp: typeof openNativeHttp;
   private readonly fetchBootstrap: typeof readBootstrap;
   private readonly socketBootstrap: SocketBootstrap;
   private readonly endRemoteSession: () => Promise<Result<void, Error>>;
@@ -115,6 +123,7 @@ export class WebSessionController {
   constructor(options: WebSessionOptions = {}) {
     this.cache = options.cache ?? webCache;
     this.openSocket = options.openSocket ?? openNativeSocket;
+    this.openHttp = options.openHttp ?? openNativeHttp;
     this.fetchBootstrap = options.bootstrap ?? readBootstrap;
     this.socketBootstrap =
       options.socketBootstrap ?? ((rpc, input, signal) => rpc.bootstrap.get(input, { signal }));
@@ -134,10 +143,6 @@ export class WebSessionController {
     }
     void this.clearSession(false);
   };
-  private closeStartingSocket(): void {
-    this.startingSocket?.close();
-    this.startingSocket = undefined;
-  }
   getSnapshot = (): WebState => this.state;
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -151,7 +156,6 @@ export class WebSessionController {
     if (this.disposed || this.pendingSignouts.size || this.logoutFailed) return;
     const epoch = ++this.epoch;
     this.startup.abort();
-    this.closeStartingSocket();
     this.startup = new AbortController();
     const signal = this.startup.signal;
     this.stopEvents?.();
@@ -171,7 +175,6 @@ export class WebSessionController {
     await this.settleStartFailure(failure);
   }
   private async settleStartFailure(failure: WebState): Promise<void> {
-    this.closeStartingSocket();
     this.stopEvents?.();
     this.stopEvents = undefined;
     const active = this.active;
@@ -194,35 +197,15 @@ export class WebSessionController {
       await session.client.start(threadId);
       return;
     }
-    const socket = this.openSocket();
-    this.startingSocket = socket;
     const bootstrap = await this.fetchBootstrap({ threadId }, signal);
-    if (epoch !== this.epoch) {
-      socket.close();
-      return;
-    }
+    if (epoch !== this.epoch) return;
     const scope: CacheScope = {
       installationId: bootstrap.installationId,
       principalId: bootstrap.viewer.id,
       protocolVersion: 1,
       projectionVersion: 1,
     };
-    let firstSocket = true;
-    const session = this.create(
-      scope,
-      bootstrap,
-      threadId,
-      () => {
-        if (firstSocket && socket.readyState < WebSocket.CLOSING) {
-          firstSocket = false;
-          return socket;
-        }
-        firstSocket = false;
-        return this.openSocket();
-      },
-      bootstrap,
-    );
-    this.startingSocket = undefined;
+    const session = this.create(scope, bootstrap, threadId, this.openSocket, bootstrap);
     this.set({ kind: "ready", session });
     await session.client.start(threadId);
   }
@@ -237,6 +220,8 @@ export class WebSessionController {
     let pending = prefetched;
     const client: NativeClient = new NativeClient({
       scope,
+      transport: initial.transport,
+      openHttp: this.openHttp,
       cache: this.cache,
       openSocket: () => {
         socket = openSocket();
@@ -282,8 +267,17 @@ export class WebSessionController {
     const rpc = client.rpc;
     // A resumed page can reuse a pooled HTTP connection that died in the background, while each
     // socket opens a new connection.
-    if (socket && rpc && (await socketOpened(socket, signal)))
+    if (
+      client.currentTransport === "websocket" &&
+      socket &&
+      rpc &&
+      (await socketOpened(socket, signal))
+    )
       return this.socketBootstrap(rpc, input, signal);
+    if (signal.aborted)
+      return nativeWebHttpFailure(
+        new WebRequestFailed({ code: "canceled", message: "Request canceled" }),
+      );
     // Browsers hide the status of a rejected upgrade, so HTTP reports whether the session ended.
     return this.fetchBootstrap(input, signal);
   }
@@ -355,7 +349,6 @@ export class WebSessionController {
   private clearSession(broadcast: boolean): Promise<void> {
     ++this.epoch;
     this.startup.abort();
-    this.closeStartingSocket();
     const client = this.active;
     const scope = this.activeScope;
     this.active = undefined;
@@ -395,7 +388,6 @@ export class WebSessionController {
     this.disposed = true;
     ++this.epoch;
     this.startup.abort();
-    this.closeStartingSocket();
     this.stopEvents?.();
     this.stopEvents = undefined;
     const active = this.active;

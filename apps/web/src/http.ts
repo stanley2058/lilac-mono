@@ -1,3 +1,4 @@
+import { createNativeHttpRPC } from "@stanley2058/lilac-client";
 import { ORPCError } from "@orpc/client";
 import {
   bootstrapReplySchema,
@@ -115,6 +116,18 @@ export async function readBootstrap(
   signal?: AbortSignal,
 ): Promise<BootstrapReply> {
   return httpValue(await bootstrapResult(input, signal));
+}
+
+export function openNativeHttp() {
+  return createNativeHttpRPC({
+    url: new URL("/api/rpc", location.origin),
+    headers: async () => {
+      const token = await readConnectionToken();
+      if (token === null)
+        return nativeWebHttpFailure(failed("unauthenticated", "Sign in to continue"));
+      return token ? { authorization: `Bearer ${token}` } : {};
+    },
+  });
 }
 
 export function openNativeSocket(): WebSocket {

@@ -275,12 +275,14 @@ export class NativeStore {
         const value = {
           settings: {
             ...input.settings,
+            transport: input.settings.transport ?? current.settings.transport,
             dmContextGapMs: input.settings.dmContextGapMs ?? current.settings.dmContextGapMs,
             dmTimestampGapMs: input.settings.dmTimestampGapMs ?? current.settings.dmTimestampGapMs,
           },
           revision: current.revision + 1,
         };
         this.writeRecord("instance", { kind: "deployment", value });
+        this.notify("");
         return Result.ok(value);
       }, this),
     );

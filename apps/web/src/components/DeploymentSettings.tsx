@@ -10,6 +10,7 @@ import { ErrorNotice } from "./ui";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { StreamingModeSelect } from "./StreamingSettings";
 
 type DeploymentDocument = NativeRpcOutputs["config"]["readDeployment"];
@@ -27,6 +28,7 @@ export function DeploymentSettingsForm({
   onSave: (settings: NativeDeploymentSettings) => void;
   onEdit?: () => void;
 }) {
+  const [transport, setTransport] = useState(value.transport);
   const [titleModel, setTitleModel] = useState(value.titleModel);
   const [streaming, setStreaming] = useState(value.outputStreaming);
   const [dmGap, setDmGap] = useState(String(value.dmContextGapMs));
@@ -46,6 +48,7 @@ export function DeploymentSettingsForm({
         event.preventDefault();
         if (!titleModel.trim()) return;
         onSave({
+          transport,
           titleModel: titleModel.trim(),
           outputStreaming: streaming,
           dmContextGapMs: Number(dmGap),
@@ -57,6 +60,39 @@ export function DeploymentSettingsForm({
       }}
     >
       <fieldset disabled={disabled || pending} className="grid min-w-0 gap-6">
+        <section className="grid gap-2" aria-labelledby="transport-heading">
+          <h3 id="transport-heading" className="font-medium">
+            Transport
+          </h3>
+          <div className="settings-row flex items-start justify-between gap-6">
+            <p className="text-sm text-muted-foreground">
+              Applies to all clients. Auto tries WebSocket, then falls back to HTTP+SSE.
+            </p>
+            <Select
+              value={transport}
+              items={[
+                { value: "auto", label: "Auto (default)" },
+                { value: "websocket", label: "WebSocket" },
+                { value: "http-sse", label: "HTTP+SSE" },
+              ]}
+              disabled={disabled || pending}
+              onValueChange={(next) => {
+                if (next !== "auto" && next !== "websocket" && next !== "http-sse") return;
+                onEdit?.();
+                setTransport(next);
+              }}
+            >
+              <SelectTrigger aria-label="Transport">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto (default)</SelectItem>
+                <SelectItem value="websocket">WebSocket</SelectItem>
+                <SelectItem value="http-sse">HTTP+SSE</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
         <label className="grid gap-2">
           <span>Title model</span>
           <Input

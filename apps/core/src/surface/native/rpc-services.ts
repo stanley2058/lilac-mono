@@ -706,6 +706,7 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
             items.push(yield* store.getThread(principal.userId, input.threadId));
           return Result.ok({
             installationId: options.installationId,
+            transport: (yield* store.getDeployment()).settings.transport,
             viewer: nativeViewer(viewer),
             threads: { items, ...(nextCursor ? { nextCursor } : {}) },
             catalog: displayCatalog,

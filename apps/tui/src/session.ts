@@ -1,5 +1,10 @@
 import { ORPCError } from "@orpc/client";
-import { NativeClient, type CacheScope, type NativeCache } from "@stanley2058/lilac-client";
+import {
+  createNativeHttpRPC,
+  NativeClient,
+  type CacheScope,
+  type NativeCache,
+} from "@stanley2058/lilac-client";
 import {
   bootstrapReplySchema,
   type BootstrapInput,
@@ -205,6 +210,15 @@ export async function createTuiSession(
   let firstBootstrap = true;
   const client = new NativeClient({
     scope,
+    transport: initial.transport,
+    openHttp: () =>
+      createNativeHttpRPC({
+        url: new URL("/api/rpc", baseUrl),
+        headers: () => ({
+          authorization: auth.authorization(),
+          "x-lilac-operator-session": auth.sessionId,
+        }),
+      }),
     cache,
     openSocket: () => {
       const url = new URL("/api/socket", baseUrl);

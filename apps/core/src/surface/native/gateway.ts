@@ -2,6 +2,7 @@ import path from "node:path";
 import type { BinaryRelay } from "@stanley2058/lilac-utils/binary-relay";
 import { decodeNativeViewerRequest, type NativeComputer } from "./computer";
 import { RPCHandler } from "@orpc/server/bun-ws";
+import { RPCHandler as HttpRPCHandler, BodyLimitPlugin } from "@orpc/server/fetch";
 import { AsyncIteratorClass, onError, ORPCError } from "@orpc/server";
 import {
   bootstrapInputSchema,
@@ -42,6 +43,8 @@ export type NativeGatewayOptions = {
   webRoot?: string;
   operatorSession?: (request: Request) => Promise<Response>;
 };
+type HttpContext = NativeRpcContext & { http: { streaming: boolean; finish: () => void } };
+
 type Peer = { send: (message: string | ArrayBufferLike | Uint8Array) => number };
 type SocketData = {
   viewer?: BinaryRelay;
@@ -242,9 +245,36 @@ async function staticResponse(request: Request, webRoot: string | undefined): Pr
 
 export function createNativeGateway(options: NativeGatewayOptions) {
   const metrics = options.metrics ?? createNativeMetrics();
-  const handler = new RPCHandler(createNativeRouter(options.services, options.getViewer), {
+  const failureInterceptors: NonNullable<
+    ConstructorParameters<typeof HttpRPCHandler<NativeRpcContext>>[1]
+  >["clientInterceptors"] = [
+    onError((error) => observeNativeGatewayFailure(error, options.reportFatalError)),
+  ];
+  const router = createNativeRouter(options.services, options.getViewer);
+  const httpConnections = new Map<AbortController, HttpContext>();
+  const httpHandler = new HttpRPCHandler<HttpContext>(router, {
+    plugins: [new BodyLimitPlugin({ maxBodySize: 2 * 1024 * 1024 })],
+    eventIteratorKeepAliveInterval: 15_000,
     clientInterceptors: [
-      onError((error) => observeNativeGatewayFailure(error, options.reportFatalError)),
+      ...failureInterceptors,
+      async ({ next, context }) => {
+        const output = await next();
+        if (!(output instanceof AsyncIteratorClass)) return output;
+        context.http.streaming = true;
+        const observed = observeNativeIterator(output, options.reportFatalError);
+        return new AsyncIteratorClass(
+          () => observed.next(),
+          async (reason) => {
+            context.http.finish();
+            if (reason !== "next") await observed.return();
+          },
+        );
+      },
+    ],
+  });
+  const handler = new RPCHandler(router, {
+    clientInterceptors: [
+      ...failureInterceptors,
       async ({ next }) => {
         const output = await next();
         if (!(output instanceof AsyncIteratorClass)) return output;
@@ -262,7 +292,9 @@ export function createNativeGateway(options: NativeGatewayOptions) {
   let stopPromise: Promise<void> | undefined;
   let stopFinished = false;
 
-  function closeSession(sessionId: string): void {
+  function closeSession(sessionId: string, except?: AbortController): void {
+    for (const [controller, context] of httpConnections)
+      if (controller !== except && context.principal.sessionId === sessionId) controller.abort();
     for (const socket of sockets)
       if (socket.data.context.principal.sessionId === sessionId)
         socket.close(4401, "Session ended");
@@ -279,13 +311,14 @@ export function createNativeGateway(options: NativeGatewayOptions) {
 
   function refreshSession(socket: Bun.ServerWebSocket<SocketData>) {
     scheduleExpiry(socket);
+    refreshViewers(socket.data.context.principal);
+  }
+
+  function refreshViewers(principal: NativePrincipal) {
     for (const peer of sockets) {
-      if (
-        !peer.data.viewer ||
-        peer.data.context.principal.sessionId !== socket.data.context.principal.sessionId
-      )
+      if (!peer.data.viewer || peer.data.context.principal.sessionId !== principal.sessionId)
         continue;
-      peer.data.context.principal = socket.data.context.principal;
+      peer.data.context.principal = principal;
       scheduleExpiry(peer);
     }
   }
@@ -333,6 +366,50 @@ export function createNativeGateway(options: NativeGatewayOptions) {
       return { response: privateJson({ error: "Server stopping" }, 503) };
     }
     return decision;
+  }
+
+  async function handleHttpRpc(request: Request, principal: NativePrincipal): Promise<Response> {
+    if (request.method !== "POST") return privateJson({ error: "Method not allowed" }, 405);
+    if (
+      request.headers.get("content-type")?.split(";", 1)[0]?.trim() !== "application/json" ||
+      request.headers.has("content-disposition")
+    )
+      return privateJson({ error: "JSON required" }, 415);
+    const controller = new AbortController();
+    const signal = AbortSignal.any([request.signal, controller.signal]);
+    const expiry = setTimeout(
+      () => controller.abort(),
+      Math.min(Math.max(0, principal.expiresAt * 1000 - Date.now()), 2_147_483_647),
+    );
+    const finish = () => {
+      clearTimeout(expiry);
+      httpConnections.delete(controller);
+      signal.removeEventListener("abort", finish);
+    };
+    signal.addEventListener("abort", finish, { once: true });
+    const context: HttpContext = {
+      principal,
+      request,
+      auth: options.auth,
+      http: { streaming: false, finish },
+      refreshed: () => refreshViewers(context.principal),
+      loggedOut: () => closeSession(principal.sessionId, controller),
+    };
+    httpConnections.set(controller, context);
+    using _admission = {
+      [Symbol.dispose]() {
+        if (!context.http.streaming) finish();
+      },
+    };
+    const result = await httpHandler.handle(new Request(request, { signal }), {
+      prefix: "/api/rpc",
+      context,
+    });
+    if (!result.matched) return privateJson({ error: "Not found" }, 404);
+    result.response.headers.set("cache-control", "no-store");
+    result.response.headers.set("x-content-type-options", "nosniff");
+    result.response.headers.set("x-accel-buffering", "no");
+    return result.response;
   }
 
   async function authenticateRequest(
@@ -385,6 +462,7 @@ export function createNativeGateway(options: NativeGatewayOptions) {
       viewer?.close();
       return privateJson({ error: "WebSocket upgrade required" }, 426);
     }
+    if (url.pathname.startsWith("/api/rpc/")) return handleHttpRpc(request, user);
     if (url.pathname === "/api/bootstrap" && request.method === "GET") {
       const input = bootstrapInput(url).match<{ input: BootstrapInput } | { response: Response }>({
         ok: (value) => ({ input: value }),
@@ -524,6 +602,8 @@ export function createNativeGateway(options: NativeGatewayOptions) {
           hostname: options.hostname,
           port: options.port,
           maxRequestBodySize: 512 * 1024 * 1024,
+          // SSE keepalives arrive every 15 seconds, above Bun's default idle timeout.
+          idleTimeout: 60,
           fetch,
           websocket: {
             maxPayloadLength: 2 * 1024 * 1024,
@@ -545,6 +625,9 @@ export function createNativeGateway(options: NativeGatewayOptions) {
               socket.data.metrics.opened();
               socket.data.context.refreshed = () => refreshSession(socket);
               socket.data.context.loggedOut = () => {
+                for (const [controller, context] of httpConnections)
+                  if (context.principal.sessionId === socket.data.context.principal.sessionId)
+                    controller.abort();
                 socket.data.ending = true;
                 for (const peer of sockets)
                   if (
@@ -627,6 +710,7 @@ export function createNativeGateway(options: NativeGatewayOptions) {
       if (socket.data.peer) handler.close(socket.data.peer);
     }
     sockets.clear();
+    for (const controller of httpConnections.keys()) controller.abort();
     for (const controller of requestControllers) controller.abort();
     server?.stop(true);
     server = undefined;

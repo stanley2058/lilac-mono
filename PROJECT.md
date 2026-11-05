@@ -93,6 +93,11 @@ resources, search, semantic output projection and the HTTP/WebSocket gateway. Th
 starter-owned authority and a separate user directory, with `lilac` as its service user. The web app
 uses the shared client and a principal-scoped IndexedDB cache. See [native setup](docs/native-surface.md).
 
+Native web and TUI share the deployment transport policy: Auto tries WebSocket and falls back to
+HTTP RPC with SSE subscriptions after a failed upgrade or handshake deadline. Forced WebSocket and
+HTTP+SSE modes are available under Deployment settings. Both reuse the same router and replay
+checkpoints. Policy changes resync connected clients; the computer viewer retains its binary socket.
+
 Native input receipts and upload readiness commit before the existing request-delivery coordinator
 admits execution. Stable delivery identities bridge these stores; the native surface does not own a
 second model-execution queue. Each human user also has one permanent native DM, with gap-based

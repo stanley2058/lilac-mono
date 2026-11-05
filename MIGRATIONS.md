@@ -30,6 +30,16 @@ older binary to open current data.
 
 ## Configuration and caller changes
 
+### Native transport selection
+
+Native deployment settings add `transport`, with `auto`, `websocket`, and `http-sse` values.
+Existing deployment records decode a missing field as `auto` without rewriting the record.
+Bootstrap responses publish the policy, and deployment changes trigger the existing bootstrap resync.
+Deploy Core, web, and TUI together because older strict wire decoders reject the new fields.
+Before downgrading, remove `transport` from the stored deployment settings or restore a pre-upgrade
+backup. The native database schema version is unchanged.
+
+
 For v3, follow the [ordered upgrade procedure](docs/core-config-migrations.md#upgrade-procedure).
 V1/v2 remain readable. Their legacy profile model choices are ignored; delegated models are selected
 per call. V3 changes default delegated authority from restricted to full when the caller can grant it.

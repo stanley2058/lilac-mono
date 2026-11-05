@@ -8,10 +8,12 @@ import {
   parseCoreConfigV2ToUniversal,
   parseCoreConfigV3ToUniversal,
 } from "@stanley2058/lilac-utils";
+import { decodeNativeRecord } from "../../../src/surface/native/codec";
 import { NativeStore } from "../../../src/surface/native/store";
 import { createNativeIntegrationFixture } from "./integration-fixture";
 
 const initial = {
+  transport: "auto" as const,
   titleModel: "main",
   outputStreaming: "complete" as const,
   dmContextGapMs: 7_200_000,
@@ -184,5 +186,48 @@ test("switching from v2 native YAML settings to v3 defaults preserves the deploy
     expect(imported.settings.crossThreadSend.triggerRun).toBe(false);
   } finally {
     store.close();
+  }
+});
+
+test("existing deployment records default to auto without rewriting and reject unknown transports", () => {
+  const { transport: _transport, ...settings } = initial;
+  const row = {
+    format_version: 1,
+    data_json: JSON.stringify({ kind: "deployment", value: { settings, revision: 7 } }),
+  };
+  const decoded = decodeNativeRecord(row).unwrap();
+  expect(decoded.value).toMatchObject({
+    kind: "deployment",
+    value: { settings: { transport: "auto" }, revision: 7 },
+  });
+  expect(JSON.parse(row.data_json).value.settings.transport).toBeUndefined();
+  expect(nativeDeploymentSettingsSchema.safeParse({ ...initial, transport: "poll" }).success).toBe(
+    false,
+  );
+});
+
+test("deployment transport changes notify connected readers through bootstrap resync", async () => {
+  const fixture = await createNativeIntegrationFixture();
+  const controller = new AbortController();
+  try {
+    const { client } = fixture.connect();
+    const initial = await client.bootstrap.get({});
+    const document = await client.config.readDeployment({});
+    const stream = await client.bootstrap.watch(
+      { cursor: initial.catalogCursor },
+      { signal: controller.signal },
+    );
+    const next = stream.next();
+    await client.config.setDeployment({
+      settings: { ...document.settings, transport: "http-sse" },
+      expectedRevision: document.revision,
+    });
+    expect((await next).value).toMatchObject({ kind: "resync" });
+    expect((await client.bootstrap.get({})).transport).toBe("http-sse");
+    controller.abort();
+    await stream.return();
+  } finally {
+    controller.abort();
+    await fixture.close();
   }
 });

@@ -119,6 +119,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
   const { store, database, auth: publicAuth, clerk, login } = options.installation;
   const legacy = options.getConfig().surface.native;
   const deploymentInitialized = store.initializeDeployment({
+    transport: "auto",
     titleModel: legacy.titleModel,
     outputStreaming: legacy.outputStreaming,
     dmContextGapMs: DEFAULT_DM_CONTEXT_GAP_MS,

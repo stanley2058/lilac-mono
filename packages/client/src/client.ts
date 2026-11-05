@@ -10,6 +10,7 @@ import type {
   ReplayCheckpoint,
   ThreadEvent,
   DisplayStreamTarget,
+  NativeTransport,
 } from "@stanley2058/lilac-client-protocol";
 import { type CacheScope, type NativeCache, NoNativeCache } from "./cache.ts";
 import { DisplayCatalogCache } from "./catalog.ts";
@@ -36,6 +37,8 @@ export type ClientEvent =
 export type NativeClientOptions = {
   scope: CacheScope;
   openSocket: () => WebSocket;
+  openHttp?: () => NativeRPC;
+  transport?: NativeTransport;
   bootstrap: (input: BootstrapInput, signal: AbortSignal) => Promise<BootstrapReply>;
   prepareConnection?: (request: { fresh: boolean }) => Promise<void>;
   cache?: NativeCache;
@@ -89,6 +92,10 @@ export class NativeClient {
     { threadId: string; controller: AbortController }
   >();
   private readonly cacheWrites = new Map<string, Promise<void>>();
+  private transport: NativeTransport;
+  private httpFallback = false;
+  private activeTransport: "websocket" | "http-sse" = "websocket";
+  private socketOpened = false;
   private socket: WebSocket | undefined;
   private connection: NativeRPC | undefined;
   private lifetime = new AbortController();
@@ -115,12 +122,29 @@ export class NativeClient {
   private state: Extract<ClientEvent, { kind: "connection" }>["state"] = "connecting";
 
   constructor(private readonly options: NativeClientOptions) {
+    this.transport = options.transport ?? "auto";
     this.cache = options.cache ?? new NoNativeCache();
     this.catalogs = options.catalogs ?? new DisplayCatalogCache();
     if (options.onEvent) this.listeners.add(options.onEvent);
   }
   get rpc(): NativeRPC | undefined {
     return this.connection;
+  }
+  get currentTransport() {
+    return this.activeTransport;
+  }
+  private desiredTransport(): "websocket" | "http-sse" {
+    if (!this.options.openHttp) return "websocket";
+    return this.transport === "http-sse" || (this.transport === "auto" && this.httpFallback)
+      ? "http-sse"
+      : "websocket";
+  }
+  private fallback(): boolean {
+    if (this.transport !== "auto" || this.activeTransport !== "websocket" || !this.options.openHttp)
+      return false;
+    this.httpFallback = true;
+    this.reconnect();
+    return true;
   }
   get connectionState() {
     return this.state;
@@ -257,13 +281,15 @@ export class NativeClient {
     clearTimeout(this.reconnectTimer);
     clearTimeout(this.bootstrapTimer);
     this.attempt = 0;
+    this.connectionLifetime.abort();
     const streams = [...this.streamTasks];
     this.abortStreams();
     this.abortHistory();
     const socket = this.socket;
     this.socket = undefined;
     this.connection = undefined;
-    // Stream cancellation sends an RPC abort before the socket can close.
+    if (socket?.readyState === WebSocket.CONNECTING) socket.close();
+    // Stream cancellation sends an RPC abort before an established socket closes.
     void Promise.all(streams).then(() => socket?.close());
     this.bootstrapPending = true;
     void this.connect();
@@ -279,6 +305,7 @@ export class NativeClient {
     this.armConnectionDeadline();
     const prepare = this.options.prepareConnection;
     if (prepare && !(await this.prepareConnection(prepare, attempt))) return;
+    if (this.stopped || attempt !== this.connectionAttempt) return;
     this.open();
     if (this.selectedThreadId && !this.thread(this.selectedThreadId).checkpoint)
       await this.loadCached(this.selectedThreadId);
@@ -307,11 +334,13 @@ export class NativeClient {
     clearTimeout(this.connectionDeadline);
     this.connectionDeadline = setTimeout(() => {
       if (this.stopped || attempt !== this.connectionAttempt) return;
+      if (this.socket && !this.socketOpened && this.fallback()) return;
       this.reconnect();
     }, 10_000);
   }
   private connected(): void {
-    if (this.bootstrapPending || this.socket?.readyState !== WebSocket.OPEN) return;
+    if (this.bootstrapPending || !this.connection) return;
+    if (this.activeTransport === "websocket" && this.socket?.readyState !== WebSocket.OPEN) return;
     clearTimeout(this.connectionDeadline);
     this.attempt = 0;
     this.emit({ kind: "connection", state: "online" });
@@ -319,6 +348,12 @@ export class NativeClient {
   private open(): void {
     if (this.stopped) return;
     this.emit({ kind: "connection", state: "connecting" });
+    this.activeTransport = this.desiredTransport();
+    this.socketOpened = false;
+    if (this.activeTransport === "http-sse" && this.options.openHttp) {
+      this.connection = this.options.openHttp();
+      return;
+    }
     const opened = Result.try({ try: this.options.openSocket, catch: captureFailure });
     const socket = opened.match({ ok: (value) => value, err: () => undefined });
     if (!socket) {
@@ -329,13 +364,16 @@ export class NativeClient {
     this.connection = createNativeRPC(socket);
     socket.addEventListener("open", () => {
       if (this.socket !== socket) return;
+      this.socketOpened = true;
       this.connected();
     });
     if (socket.readyState === WebSocket.OPEN) {
+      this.socketOpened = true;
       this.connected();
     }
     socket.addEventListener("close", () => {
       if (this.socket !== socket || this.stopped) return;
+      if (!this.socketOpened && this.fallback()) return;
       this.disconnected();
     });
   }
@@ -398,6 +436,14 @@ export class NativeClient {
       await this.logout();
       return;
     }
+    if (reply.transport && reply.transport !== this.transport) {
+      this.transport = reply.transport;
+      this.httpFallback = false;
+    }
+    if (this.options.openHttp && this.desiredTransport() !== this.activeTransport) {
+      this.reconnect();
+      return;
+    }
     this.catalogCursor = reply.catalogCursor;
     if (reply.catalog.kind === "catalog")
       this.catalogs.put(this.options.scope, reply.catalog.catalog);
@@ -405,6 +451,13 @@ export class NativeClient {
     if (threadId && reply.selectedThread && threadEpoch === this.threadEpochs.get(threadId))
       this.thread(threadId).replay(reply.selectedThread);
     this.bootstrapPending = false;
+    if (
+      this.activeTransport === "websocket" &&
+      !this.socketOpened &&
+      (!this.socket || this.socket.readyState >= WebSocket.CLOSING) &&
+      this.fallback()
+    )
+      return;
     this.connected();
     this.emit({ kind: "bootstrap", bootstrap: reply });
     this.watchCatalog();
@@ -748,6 +801,7 @@ export class NativeClient {
       await this.logout();
       return false;
     }
+    if (this.activeTransport === "http-sse") this.reconnect();
     return true;
   }
   async submit(input: NativeInput): Promise<CommandOutcome> {
@@ -888,6 +942,7 @@ export class NativeClient {
     clearTimeout(this.reconnectTimer);
     clearTimeout(this.bootstrapTimer);
     this.connection = undefined;
+    if (this.socket?.readyState === WebSocket.CONNECTING) this.socket.close();
     await Promise.all(this.streamTasks);
     this.socket?.close();
   }

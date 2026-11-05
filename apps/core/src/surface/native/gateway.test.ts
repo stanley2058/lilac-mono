@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/websocket";
+import { RPCLink as HttpRPCLink } from "@orpc/client/fetch";
 import type { ContractRouterClient } from "@orpc/contract";
 import { nativeContract } from "@stanley2058/lilac-client-protocol";
 import { exportSPKI, generateKeyPair, SignJWT } from "jose";
@@ -136,6 +137,7 @@ async function fixture(
   return {
     url,
     token,
+    auth,
     gateway,
     services,
     fatalErrors,
@@ -851,4 +853,123 @@ test("real oRPC frames produce redacted replay and bootstrap measurements", asyn
   expect(replay?.commitToSocketEnqueueMs).toBeGreaterThanOrEqual(0);
   expect(replay?.bytes).toBeGreaterThan(0);
   expect(JSON.stringify(measurements)).not.toContain(token);
+});
+
+function connectHttp(url: string, token: string) {
+  return createORPCClient<ContractRouterClient<typeof nativeContract>>(
+    new HttpRPCLink({
+      url: new URL("api/rpc", url),
+      headers: { authorization: `Bearer ${token}` },
+    }),
+  );
+}
+
+test("HTTP RPC uses the same auth, domain errors and SSE replay as WebSocket", async () => {
+  const f = await fixture();
+  const client = connectHttp(f.url, f.token);
+  expect(await client.bootstrap.get({})).toMatchObject({ viewer: user });
+  await expect(client.threads.sync({ threadId: "private-other" })).rejects.toMatchObject({
+    code: "FORBIDDEN",
+  });
+  const events = [];
+  for await (const event of await client.threads.watch({ threadId: "thread" })) events.push(event);
+  expect(events.map((event) => event.kind)).toEqual(["replay", "hydration"]);
+  const endpoint = new URL("api/rpc/bootstrap/get", f.url);
+  const unauthorized = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "http://localhost" },
+    body: '{"json":{}}',
+  });
+  expect(unauthorized.status).toBe(401);
+  const foreign = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${f.token}`,
+      origin: "https://other.example",
+    },
+    body: '{"json":{}}',
+  });
+  expect(foreign.status).toBe(403);
+  const getMutation = await fetch(new URL("api/rpc/connection/logout", f.url), {
+    headers: { authorization: `Bearer ${f.token}` },
+  });
+  expect(getMutation.status).toBe(405);
+  expect(f.fatalErrors).toEqual([]);
+});
+
+for (const ending of ["cancel", "logout", "shutdown"] as const) {
+  test(`HTTP SSE ${ending} releases an idle server subscription`, async () => {
+    const f = await fixture();
+    const watching = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    f.services.threads.watch = (_principal, _input, signal) =>
+      Result.ok(
+        (async function* () {
+          yield { kind: "replay" as const, reply: { kind: "unchanged" as const, checkpoint } };
+          watching.resolve();
+          await new Promise<void>((resolve) => {
+            if (signal?.aborted) return resolve();
+            signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          released.resolve();
+        })(),
+      );
+    const client = connectHttp(f.url, f.token);
+    const abort = new AbortController();
+    const stream = await client.threads.watch({ threadId: "thread" }, { signal: abort.signal });
+    expect((await stream.next()).value).toMatchObject({ kind: "replay" });
+    await watching.promise;
+    if (ending === "cancel") abort.abort();
+    if (ending === "logout") expect(await client.connection.logout({})).toEqual({ ok: true });
+    if (ending === "shutdown") await f.gateway.stop();
+    await released.promise;
+    if (ending === "cancel")
+      await expect(stream.return()).rejects.toHaveProperty("name", "AbortError");
+    else await stream.return();
+    expect(f.fatalErrors).toEqual([]);
+  });
+}
+
+test("HTTP SSE expires an idle authenticated stream", async () => {
+  const f = await fixture();
+  const authenticate = f.auth.authenticate.bind(f.auth);
+  const auth = spyOn(f.auth, "authenticate").mockImplementation(async (request, context) =>
+    (await authenticate(request, context)).map((principal) => ({
+      ...principal,
+      expiresAt: Date.now() / 1000 + 60,
+    })),
+  );
+  cleanup.push(() => auth.mockRestore());
+  const checkSession = spyOn(f.auth, "checkSession").mockReturnValue(Result.ok());
+  cleanup.push(() => checkSession.mockRestore());
+  const originalTimeout = globalThis.setTimeout;
+  let expire: (() => void) | undefined;
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(
+    Object.assign((...args: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...values] = args;
+      if (delay && delay > 59_000 && delay <= 60_000) expire = () => callback(...values);
+      return originalTimeout(...args);
+    }, originalTimeout),
+  );
+  cleanup.push(() => timer.mockRestore());
+  const released = Promise.withResolvers<void>();
+  f.services.threads.watch = (_principal, _input, signal) =>
+    Result.ok(
+      (async function* () {
+        yield { kind: "replay" as const, reply: { kind: "unchanged" as const, checkpoint } };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) return resolve();
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        released.resolve();
+      })(),
+    );
+  const stream = await connectHttp(f.url, f.token).threads.watch({ threadId: "thread" });
+  await stream.next();
+  expect(expire).toBeDefined();
+  expire!();
+  await released.promise;
+  expect((await stream.next()).done).toBe(true);
+  expect(f.fatalErrors).toEqual([]);
 });

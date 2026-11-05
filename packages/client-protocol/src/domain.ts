@@ -297,7 +297,11 @@ export const workingIndicatorsSchema = z.array(z.string().trim().min(1)).min(1);
 
 export const DEFAULT_DM_CONTEXT_GAP_MS = 7_200_000;
 export const DEFAULT_DM_TIMESTAMP_GAP_MS = 1_800_000;
+export const nativeTransportSchema = z.enum(["auto", "websocket", "http-sse"]);
+export type NativeTransport = z.infer<typeof nativeTransportSchema>;
+
 export const nativeDeploymentSettingsSchema = z.strictObject({
+  transport: nativeTransportSchema.default("auto"),
   titleModel: z.string().trim().min(1),
   outputStreaming: z.enum(["paragraph", "complete"]),
   dmContextGapMs: z.number().int().positive().default(DEFAULT_DM_CONTEXT_GAP_MS),

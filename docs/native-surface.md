@@ -1,7 +1,7 @@
 # Native surface
 
 The native surface runs inside Core. It owns `native-surface.db` independently of Discord and serves
-the web app, authenticated HTTP bootstrap, file endpoints and one typed oRPC WebSocket. A native
+the web app, authenticated HTTP bootstrap, file endpoints, and typed oRPC over WebSocket or HTTP+SSE. A native
 thread is a session. Messages start work without a mention or active-channel mode.
 
 Use [Local setup](#local-setup) and [Clerk](#clerk) to configure access, [Settings and updates](#settings-and-updates)
@@ -96,6 +96,25 @@ threads and allowlisted Discord conversations. Restricted tool access does not m
 memory private between users. See [Surface tools](#surface-tools) for the retrieval scope.
 
 ## Settings and updates
+
+Settings > Deployment > Transport applies to all native web and TUI clients:
+
+- **Auto (default)** tries WebSocket first. A failed upgrade or a handshake that exceeds the
+  ten-second connection deadline switches that client to HTTP+SSE for the rest of its session.
+  An established socket that disconnects first retries WebSocket.
+- **WebSocket** uses WebSocket without fallback.
+- **HTTP+SSE** sends RPC calls over HTTP and streams each active subscription over SSE.
+
+Saving a different policy reconnects active clients with their existing replay checkpoints and command
+receipts. The setting persists in the native deployment record. Older records default to Auto.
+Both transports use the same authentication and authorization. The computer-use viewer retains its
+separate binary WebSocket.
+
+HTTP RPC uses POST under `/api/rpc/`. Allow streaming responses through the reverse proxy, disable
+response buffering, and permit idle intervals longer than the 15-second SSE keepalive. HTTP/2 is
+recommended for multiple tabs and subscriptions. Each watch has its own SSE response; this is not a
+single multiplexed event connection. HTTP presence uses the existing 60-second heartbeat expiry.
+
 
 The owner manages title generation, response streaming, old-message selection age, storage retention,
 and whether cross-thread sends trigger a run in Settings > Deployment. These settings persist in the

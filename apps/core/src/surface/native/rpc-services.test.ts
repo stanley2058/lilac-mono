@@ -37,6 +37,18 @@ function fixture(
   const store = new NativeStore(db);
   store.initialize().unwrap();
   store
+    .initializeDeployment({
+      transport: "auto",
+      titleModel: "fast",
+      outputStreaming: "paragraph",
+      dmContextGapMs: 7_200_000,
+      dmTimestampGapMs: 1_800_000,
+      oldMessageSelectionMaxAgeMs: null,
+      storageRetentionMaxAgeMs: null,
+      crossThreadSend: { triggerRun: false },
+    })
+    .unwrap();
+  store
     .upsertUser({
       id: "owner",
       providerId: "owner_provider",

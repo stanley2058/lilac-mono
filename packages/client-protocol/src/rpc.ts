@@ -18,6 +18,7 @@ import {
 } from "./replay.ts";
 import {
   nativeDeploymentSettingsSchema,
+  nativeTransportSchema,
   nativeDeploymentDocumentSchema,
   subagentSummarySchema,
   catalogReplySchema,
@@ -98,6 +99,7 @@ export const bootstrapInputSchema = z.strictObject({
 });
 export const bootstrapReplySchema = z.strictObject({
   installationId: identitySchema,
+  transport: nativeTransportSchema.optional(),
   viewer: nativeUserSchema,
   threads: threadListSchema,
   catalog: catalogReplySchema,
