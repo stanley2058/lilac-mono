@@ -268,7 +268,8 @@ async function waitForTerminal(
   store: SqliteRequestDeliveryStore<unknown, CoreAcceptedRequestWork, unknown>,
   requestDeliveryIds: readonly string[],
 ): Promise<void> {
-  for (let turn = 0; turn < 20_000; turn += 1) {
+  const deadline = performance.now() + 4_000;
+  while (performance.now() < deadline) {
     if (
       requestDeliveryIds.every(
         (requestDeliveryId) => value(store.load(requestDeliveryId)).state === "terminal",
