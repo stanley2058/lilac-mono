@@ -2588,8 +2588,10 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
       }
       const hadPartialOutput = this.state.streamMessage !== null;
       this.resetMessagesAfterAbort("recovery");
+      const lastMessage = this.state.messages.at(-1);
       const canRetry =
-        this.state.messages.at(-1)?.role !== "assistant" ||
+        lastMessage?.role !== "assistant" ||
+        hasInlineToolResult(lastMessage) ||
         this.steeringQueue.length > 0 ||
         this.followUpQueue.length > 0;
       const retrySafety: TurnRetrySafety = canRetry

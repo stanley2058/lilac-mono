@@ -142,6 +142,72 @@ class ControlledAdapter implements AgentAdapter {
 }
 
 describe("provider-neutral agent executor", () => {
+  test.each(["inline-tool-result", "assistant-text"] as const)(
+    "native recovery retry eligibility after %s",
+    async (boundary) => {
+      const adapter = new ControlledAdapter(undefined, (execution) => {
+        if (execution.attemptId !== "execution-1") {
+          execution.onStart = () => {
+            execution.emit({ type: "terminal", outcome: { status: "completed" } });
+          };
+        }
+      });
+      const message: ModelMessage =
+        boundary === "inline-tool-result"
+          ? {
+              role: "assistant",
+              content: [
+                { type: "tool-call", toolCallId: "read-1", toolName: "read", input: {} },
+                {
+                  type: "tool-result",
+                  toolCallId: "read-1",
+                  toolName: "read",
+                  output: { type: "text", value: "completed result" },
+                },
+              ],
+            }
+          : { role: "assistant", content: "completed answer" };
+      const retrySafety: boolean[] = [];
+      const cause = new Error("Internal server error");
+      const agent = new AgentExecutor({
+        system: "test",
+        adapter,
+        turnErrorHandler(_error, context) {
+          retrySafety.push(context.retrySafety.canRetry);
+          return context.retrySafety.canRetry ? "retry" : "fail";
+        },
+      });
+      const run = agent.prompt("read").then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const first = await adapter.created.promise;
+      await first.started.promise;
+      first.emit({ type: "history-commit", messages: [message], inputIds: [] });
+      first.emit({
+        type: "terminal",
+        outcome: {
+          status: "failed",
+          error: new AgentAdapterFailure({
+            reason: "unavailable",
+            message: cause.message,
+            replaySafety: "reconcile",
+            cause,
+          }),
+        },
+      });
+      const result = await run;
+      const shouldRetry = boundary === "inline-tool-result";
+      expect(retrySafety).toEqual([shouldRetry]);
+      expect(result).toBe(shouldRetry ? undefined : cause);
+      expect(first.disposed).toBe(true);
+      expect(adapter.executions).toHaveLength(shouldRetry ? 2 : 1);
+      if (shouldRetry) {
+        expect(adapter.executions[1]?.initialMessages).toEqual([...first.initialMessages, message]);
+      }
+    },
+  );
+
   for (const scenario of [
     { cleanup: "dispose", result: false, operationPanic: false },
     { cleanup: "dispose", result: true, operationPanic: false },
