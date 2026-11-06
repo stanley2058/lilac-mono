@@ -336,7 +336,7 @@ test("workspace editing reads whole UTF-8 files, checks revisions, and preserves
   ).toBe(true);
 });
 
-test("competing saves against one revision let only the first write land", async () => {
+test("competing saves against one revision let exactly one write land", async () => {
   const root = await mkdtemp(join(tmpdir(), "lilac-editor-race-"));
   directories.push(root);
   const native = new NativeStore(new Database(":memory:"));
@@ -370,8 +370,12 @@ test("competing saves against one revision let only the first write land", async
       }),
     ),
   );
-  expect(results.map((result) => result.isOk())).toEqual([true, false]);
-  expect(await readFile(file, "utf8")).toBe("first\n");
+  const saved = results.filter((result) => result.isOk());
+  const conflicts = results.filter((result) => result.isErr());
+  expect(saved).toHaveLength(1);
+  expect(conflicts).toHaveLength(1);
+  expect(conflicts[0]?.error).toMatchObject({ code: "conflict" });
+  expect(saved.map((result) => result.value.text)).toEqual([await readFile(file, "utf8")]);
   native.close();
 });
 
