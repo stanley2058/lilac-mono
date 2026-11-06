@@ -2805,7 +2805,7 @@ export async function createCoreRuntime(
         lastCoreConfigValidationError = null;
         if (discordEnabled) await adapter.refreshCoreConfig();
         await toolServer?.reload();
-        conversationThreadMaterializer?.markAllDirty();
+        conversationThreadMaterializer?.invalidate();
       },
       err: (error) => async () => {
         if (isPanic(error)) throw error;
@@ -3744,6 +3744,7 @@ export async function createCoreRuntime(
           nativeConversationPlanner = conversationThreadToolService;
 
           pluginManager = createCoreToolPluginManager({
+            discordSearch: discordSearchService ?? undefined,
             runtime: {
               bus: durableBus,
               blobStore: activeBlobStore,

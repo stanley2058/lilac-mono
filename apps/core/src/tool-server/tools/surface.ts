@@ -1,3 +1,4 @@
+import type { DiscordSearchService } from "../../surface/store/discord-search-store";
 import { captureError } from "../../shared/error-capture";
 import { z } from "zod";
 import fs from "node:fs/promises";
@@ -970,6 +971,10 @@ export class Surface implements ServerTool {
       config?: CoreConfig;
       getConfig?: () => Promise<CoreConfig>;
       transcriptStore?: TranscriptStore;
+      discordSearch?: Pick<
+        DiscordSearchService,
+        "observeToolMessages" | "refreshToolMessage" | "observeToolDeletion"
+      >;
     },
   ) {
     this.tool = defineServerTool({
@@ -1584,6 +1589,7 @@ export class Surface implements ServerTool {
   ): Promise<ServerToolResult> {
     const resolveAdapter = this.resolveAdapter.bind(this);
     const resolveSessionTarget = this.resolveSessionTarget.bind(this);
+    const discordSearch = this.params.discordSearch;
     return Result.gen(async function* () {
       const resolved = yield* resolveAdapter(decodedInput.client, ctx);
       const input = yield* withDefaultSessionId(decodedInput, ctx);
@@ -1650,6 +1656,7 @@ export class Surface implements ServerTool {
         }
       }
 
+      discordSearch?.observeToolMessages(target.sessionRef, filtered);
       return Result.ok(
         buildMessagesListOutput({
           session: target.sessionRef,
@@ -1670,6 +1677,7 @@ export class Surface implements ServerTool {
   ): Promise<ServerToolResult> {
     const resolveAdapter = this.resolveAdapter.bind(this);
     const resolveSessionTarget = this.resolveSessionTarget.bind(this);
+    const discordSearch = this.params.discordSearch;
     return Result.gen(async function* () {
       const resolved = yield* resolveAdapter(decodedInput.client, ctx);
       const sessionInput = yield* withDefaultSessionId(decodedInput, ctx);
@@ -1697,6 +1705,7 @@ export class Surface implements ServerTool {
       }
       const msg = yield* surfaceOperationResult(await target.resolved.adapter.readMsg(msgRef));
       if (!msg) {
+        discordSearch?.observeToolMessages(target.sessionRef, []);
         return Result.ok(
           buildMessagesReadOutput({
             session: target.sessionRef,
@@ -1725,6 +1734,7 @@ export class Surface implements ServerTool {
           );
         }
       }
+      discordSearch?.observeToolMessages(target.sessionRef, [msg]);
       let referenced =
         target.resolved.platform === "discord" && target.cfg
           ? yield* Result.await(
@@ -1760,6 +1770,7 @@ export class Surface implements ServerTool {
     const resolveAdapter = this.resolveAdapter.bind(this);
     const resolveSessionTarget = this.resolveSessionTarget.bind(this);
     const linkSentMessageToTranscript = this.linkSentMessageToTranscript.bind(this);
+    const discordSearch = this.params.discordSearch;
     return Result.gen(async function* () {
       const resolved = yield* resolveAdapter(decodedInput.client, ctx);
       const input = yield* withDefaultSessionId(decodedInput, ctx);
@@ -1819,6 +1830,7 @@ export class Surface implements ServerTool {
           session: toSessionMeta(target.sessionRef, target.cfg),
         });
       const ref = sent.ref;
+      await discordSearch?.refreshToolMessage(target.resolved.adapter, ref);
 
       yield* linkSentMessageToTranscript(ref, ctx);
 
@@ -1836,6 +1848,7 @@ export class Surface implements ServerTool {
   ): Promise<ServerToolResult> {
     const resolveAdapter = this.resolveAdapter.bind(this);
     const resolveSessionTarget = this.resolveSessionTarget.bind(this);
+    const discordSearch = this.params.discordSearch;
     return Result.gen(async function* () {
       const resolved = yield* resolveAdapter(decodedInput.client, ctx);
       const input = yield* withDefaultSessionId(decodedInput, ctx);
@@ -1846,6 +1859,10 @@ export class Surface implements ServerTool {
           createSurfaceMessageRef(target.sessionRef, input.messageId),
           { text: input.text },
         ),
+      );
+      await discordSearch?.refreshToolMessage(
+        target.resolved.adapter,
+        createSurfaceMessageRef(target.sessionRef, input.messageId),
       );
       return Result.ok({ ok: true as const });
     });
@@ -1858,6 +1875,7 @@ export class Surface implements ServerTool {
     const resolveAdapter = this.resolveAdapter.bind(this);
     const resolveSessionTarget = this.resolveSessionTarget.bind(this);
     const transcriptStore = this.params.transcriptStore;
+    const discordSearch = this.params.discordSearch;
     return Result.gen(async function* () {
       const resolved = yield* resolveAdapter(decodedInput.client, ctx);
       const input = yield* withDefaultSessionId(decodedInput, ctx);
@@ -1867,6 +1885,9 @@ export class Surface implements ServerTool {
         await target.resolved.adapter.deleteMsg(
           createSurfaceMessageRef(target.sessionRef, input.messageId),
         ),
+      );
+      discordSearch?.observeToolDeletion(
+        createSurfaceMessageRef(target.sessionRef, input.messageId),
       );
       if (target.resolved.platform === "native" && transcriptStore?.unlinkSurfaceMessage) {
         yield* transcriptStore

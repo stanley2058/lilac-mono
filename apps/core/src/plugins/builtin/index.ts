@@ -17,7 +17,9 @@ import {
   createBuiltinWorkflowPlugin,
 } from "./server-tools";
 
-export function createBuiltinCoreToolPlugins(): CoreToolPlugin[] {
+export function createBuiltinCoreToolPlugins(
+  discordSearch?: Parameters<typeof createBuiltinSurfacePlugin>[0],
+): CoreToolPlugin[] {
   return [
     createBuiltinLocalToolsPlugin(),
     createBuiltinQuestionPlugin(),
@@ -27,7 +29,7 @@ export function createBuiltinCoreToolPlugins(): CoreToolPlugin[] {
     createBuiltinDiscoveryPlugin(),
     createBuiltinConversationThreadPlugin(),
     createBuiltinWorkflowPlugin(),
-    createBuiltinSurfacePlugin(),
+    createBuiltinSurfacePlugin(discordSearch),
     createBuiltinAttachmentPlugin(),
     createBuiltinResourcePlugin(),
     createBuiltinOnboardingPlugin(),

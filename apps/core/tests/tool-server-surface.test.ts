@@ -10,6 +10,7 @@ import {
   SurfaceRateLimited,
   SurfaceUnavailable,
   type SurfaceAdapter,
+  type SurfaceOperationResult,
 } from "../src/surface/adapter";
 import { BUILTIN_SURFACE_PROTOCOLS } from "../src/surface/builtin-surface-protocols";
 import {
@@ -19,7 +20,10 @@ import {
 import { createDescriptorBoundSurfaceAdapter } from "../src/surface/produced-ref-guard";
 import { SurfaceRuntimeRegistry } from "../src/surface/runtime-descriptor";
 import { GITHUB_AGENT_COMMENT_MARKER } from "../src/github/github-comment-marker";
-import { DiscordSearchStore } from "../src/surface/store/discord-search-store";
+import {
+  DiscordSearchService,
+  DiscordSearchStore,
+} from "../src/surface/store/discord-search-store";
 import type { RequestContext } from "../src/tool-server/types";
 import { SqliteTranscriptStore, type TranscriptStore } from "../src/transcript/transcript-store";
 import fs from "node:fs/promises";
@@ -174,7 +178,7 @@ class FakeAdapter extends SurfaceAdapterTestBase {
     } as const);
   }
 
-  async readMsg(msgRef: MsgRef) {
+  async readMsg(msgRef: MsgRef): Promise<SurfaceOperationResult<SurfaceMessage | null>> {
     this.readCalls.push(msgRef);
     const msgs = this.messagesByChannelId[msgRef.channelId] ?? [];
     return Result.ok(msgs.find((m) => m.ref.messageId === msgRef.messageId) ?? null);
@@ -265,6 +269,173 @@ class FakeAdapter extends SurfaceAdapterTestBase {
 }
 
 describe("tool-server surface", () => {
+  it("refreshes only touched Discord history after message tool calls", async () => {
+    const channelId = "123456789012345678";
+    const session = { platform: "discord" as const, channelId };
+    const message = (messageId: string, text: string): SurfaceMessage => ({
+      ref: { ...session, messageId },
+      session,
+      userId: "bot",
+      text,
+      ts: 1,
+    });
+    const messages = [message("111111111111111111", "before"), message("sent", "sent text")];
+    const store = new DiscordSearchStore(":memory:");
+    const adapter = new FakeAdapter([], { [channelId]: messages });
+    const notifications: string[] = [];
+    const discordSearch = new DiscordSearchService({
+      adapter,
+      store,
+      onMessagesIndexed(id) {
+        expect(
+          store.getIndexedMessage({ channelId, messageId: messages[0]!.ref.messageId })?.text,
+        ).toBe(messages[0]!.text);
+        notifications.push(id);
+      },
+    });
+    const tool = new Surface({
+      adapter,
+      discordSearch,
+      config: testConfig({
+        surface: { discord: { botName: "lilac", allowedChannelIds: [channelId] } },
+      }),
+    });
+    const target = {
+      client: "discord",
+      sessionId: channelId,
+      messageId: messages[0]!.ref.messageId,
+    };
+    try {
+      store.upsertMessages([message("222222222222222222", "retained outside fetched page")]);
+      await tool.call("surface.messages.list", {
+        client: "discord",
+        sessionId: channelId,
+        limit: 1,
+      });
+      expect(notifications).toEqual([channelId]);
+      expect(store.getIndexedMessage({ channelId, messageId: "222222222222222222" })?.deleted).toBe(
+        false,
+      );
+      messages[0] = message(target.messageId, "read update");
+      await tool.call("surface.messages.read", target);
+      expect(store.getIndexedMessage({ channelId, messageId: target.messageId })?.text).toBe(
+        "read update",
+      );
+      messages[0] = message(target.messageId, "edited text");
+      await tool.call("surface.messages.edit", { ...target, text: "edited text" });
+      expect(store.getIndexedMessage({ channelId, messageId: target.messageId })?.text).toBe(
+        "edited text",
+      );
+      await tool.call("surface.messages.send", {
+        client: "discord",
+        sessionId: channelId,
+        text: "sent text",
+      });
+      expect(store.getIndexedMessage({ channelId, messageId: "sent" })?.text).toBe("sent text");
+      await tool.call("surface.messages.delete", target);
+      expect(store.getIndexedMessage({ channelId, messageId: target.messageId })?.deleted).toBe(
+        true,
+      );
+      expect(notifications).toHaveLength(5);
+      await tool.call("surface.reactions.list", target);
+      expect(notifications).toHaveLength(5);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("invalidates the request cache before indexing a successful edit", async () => {
+    const channelId = "123456789012345678";
+    const message: SurfaceMessage = {
+      ref: { platform: "discord", channelId, messageId: "111111111111111111" },
+      session: { platform: "discord", channelId },
+      userId: "bot",
+      text: "old",
+      ts: 1,
+    };
+    const order: string[] = [];
+    class CachedAdapter extends FakeAdapter {
+      async burstCache() {
+        order.push("invalidate");
+        message.text = "fresh";
+      }
+      override async readMsg(ref: MsgRef) {
+        order.push("read");
+        return super.readMsg(ref);
+      }
+    }
+    const adapter = new CachedAdapter([], { [channelId]: [message] });
+    const store = new DiscordSearchStore(":memory:");
+    const discordSearch = new DiscordSearchService({
+      adapter,
+      store,
+      onMessagesIndexed: () => order.push("repair"),
+    });
+    const tool = new Surface({
+      adapter,
+      discordSearch,
+      config: testConfig({
+        surface: { discord: { botName: "lilac", allowedChannelIds: [channelId] } },
+      }),
+    });
+    try {
+      await tool.call("surface.messages.edit", {
+        client: "discord",
+        sessionId: channelId,
+        messageId: message.ref.messageId,
+        text: "fresh",
+      });
+      expect(order).toEqual(["invalidate", "read", "repair"]);
+      expect(store.getIndexedMessage({ channelId, messageId: message.ref.messageId })?.text).toBe(
+        "fresh",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps a successful send successful when its refresh is unavailable", async () => {
+    class UnavailableReadAdapter extends FakeAdapter {
+      override async readMsg(): Promise<SurfaceOperationResult<SurfaceMessage | null>> {
+        return Result.err(
+          new SurfaceUnavailable({
+            platform: "discord",
+            operation: "read-message",
+            message: "unavailable",
+          }),
+        );
+      }
+    }
+    const channelId = "123456789012345678";
+    const store = new DiscordSearchStore(":memory:");
+    const adapter = new UnavailableReadAdapter([], {});
+    const notifications: string[] = [];
+    const discordSearch = new DiscordSearchService({
+      adapter,
+      store,
+      onMessagesIndexed: (id) => notifications.push(id),
+    });
+    const tool = new Surface({
+      adapter,
+      discordSearch,
+      config: testConfig({
+        surface: { discord: { botName: "lilac", allowedChannelIds: [channelId] } },
+      }),
+    });
+    try {
+      const result = await tool.call("surface.messages.send", {
+        client: "discord",
+        sessionId: channelId,
+        text: "sent text",
+      });
+      expect(result).toMatchObject({ ok: true });
+      expect(adapter.sendCalls).toHaveLength(1);
+      expect(notifications).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("rejects the removed surface.messages.search callable", async () => {
     const tool = new Surface({ adapter: new FakeAdapter([], {}), config: testConfig({}) });
     expect(

@@ -213,7 +213,9 @@ export function createBuiltinWorkflowPlugin(): CoreToolPlugin {
   };
 }
 
-export function createBuiltinSurfacePlugin(): CoreToolPlugin {
+export function createBuiltinSurfacePlugin(
+  discordSearch?: ConstructorParameters<typeof Surface>[0]["discordSearch"],
+): CoreToolPlugin {
   return {
     meta: {
       id: "surface",
@@ -230,6 +232,7 @@ export function createBuiltinSurfacePlugin(): CoreToolPlugin {
             config: runtime.config,
             getConfig: runtime.getConfig,
             transcriptStore: runtime.transcriptStore,
+            discordSearch,
           }),
         ],
       };

@@ -149,6 +149,13 @@ The registry binds one produced-ref-guarded adapter facade and passes that facad
 
 Discord owns its gateway ingress, allowlists, mention/active router, local message cache/search, and Discord rendering. `apps/core/src/conversation` owns shared Discord/native conversation-memory indexing, summarization, embeddings, search, and automatic recall. Agent memory reads include all retained native threads and allowlisted Discord threads; native UI permissions and modification authority remain surface-owned. GitHub owns webhook verification, trigger parsing, API authentication, acknowledgement state, pagination, and GitHub rendering. Shared code must not infer that a wire-valid platform has those capabilities.
 
+Discord conversation materialization is reactive. Startup, worker recovery, and configuration reload
+leave inactive channels untouched. The first channel activity after startup or invalidation repairs
+its topology; later content-only edits can invalidate summaries without rebuilding membership.
+Successful Discord surface message reads and writes update the local search index before scheduling
+channel repair. Partial history reads never imply deletion of omitted messages. Repairs remain
+coalesced and serialized; interrupted or offline history can stay stale until later activity.
+
 With table rendering enabled and style `image`, Discord's preview/plain/flat final output renders top-level Markdown tables
 as 2× PNG attachments and starts a new message after each table. When image table rendering is enabled,
 the Discord adapter starts and warms one Chromium browser and page, serializes table renders on that

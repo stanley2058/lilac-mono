@@ -18,7 +18,14 @@ import {
   type DiscordAttachmentCacheEntry,
   type DiscordAttachmentCacheKey,
 } from "../discord/discord-attachment";
-import type { DiscordMsgRef, DiscordSessionRef, SurfaceMessage, SurfacePlatform } from "../types";
+import type {
+  DiscordMsgRef,
+  DiscordSessionRef,
+  MsgRef,
+  SessionRef,
+  SurfaceMessage,
+  SurfacePlatform,
+} from "../types";
 import { configureSqliteConnection } from "../../shared/sqlite";
 
 export const DISCORD_SEARCH_NEW_MESSAGE_HEAL_LIMIT = 50;
@@ -741,6 +748,45 @@ export class DiscordSearchService {
 
   attachmentCacheAccess(): DiscordAttachmentCacheAccess {
     return this.params.store.attachmentCacheAccess();
+  }
+
+  observeToolMessages(session: SessionRef, messages: readonly SurfaceMessage[]): void {
+    if (session.platform !== "discord") return;
+    this.params.store.upsertMessages(messages);
+    this.params.onMessagesIndexed?.(session.channelId);
+  }
+
+  async refreshToolMessage(adapter: SurfaceAdapter, ref: MsgRef): Promise<void> {
+    if (ref.platform !== "discord") return;
+    if (hasBurstCache(adapter)) {
+      const burst = await Result.tryPromise({
+        try: () => adapter.burstCache!({ msgRef: ref, reason: "surface_tool" }),
+        catch: captureError,
+      });
+      if (burst.isErr()) {
+        preserveSurfacePanic(burst.error.cause);
+        this.logger.warn("surface tool message refresh cache invalidation failed");
+        return;
+      }
+    }
+    const result = await adapter.readMsg(ref);
+    const message = result.match({
+      ok: (value) => value,
+      err: (error) => {
+        this.logger.warn("surface tool message refresh failed", {
+          ...formatTaggedErrorForLog(error),
+        });
+        return null;
+      },
+    });
+    if (!message) return;
+    this.observeToolMessages(message.session, [message]);
+  }
+
+  observeToolDeletion(ref: MsgRef): void {
+    if (ref.platform !== "discord") return;
+    this.onMessageDeleted(ref);
+    this.params.onMessagesIndexed?.(ref.channelId);
   }
 
   async onMessageCreated(message: SurfaceMessage): Promise<void> {

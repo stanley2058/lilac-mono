@@ -62,24 +62,27 @@ async function expectWorkerRestart(response: (requestId: string) => unknown): Pr
   });
   const first = workers[0];
   if (!first) throw new Error("Initial materializer worker was not created");
-  const firstRequest = first.requests[0];
-  if (!firstRequest) throw new Error("Initial list request was not posted");
+  expect(first.requests).toEqual([]);
+  materializer.markDirty({ channelId: "active", kind: "content", messageId: "m1" });
+  const flushed = materializer.flush();
+  const firstRequest = await first.waitForRequest(0);
 
   first.emitMessage(response(firstRequest.id));
   expect(first.terminated).toBe(true);
   expect(workers).toHaveLength(2);
-
-  const replacement = workers[1];
-  const replacementRequest = replacement?.requests[0];
-  if (!replacement || !replacementRequest)
-    throw new Error("Replacement list request was not posted");
-  replacement.emitMessage({
-    id: replacementRequest.id,
-    ok: true,
-    type: "list-channels",
-    channelIds: [],
+  await flushed;
+  const replacement = workers[1]!;
+  expect(replacement.requests).toEqual([]);
+  materializer.markDirty({ channelId: "active", kind: "content", messageId: "m1" });
+  const refreshed = materializer.flush();
+  const replacementRequest = await replacement.waitForRequest(0);
+  expect(replacementRequest).toMatchObject({
+    type: "repair-channel",
+    channelId: "active",
+    kind: "topology",
   });
-  await materializer.flush();
+  replacement.emitMessage({ id: replacementRequest.id, ok: true, type: "repair-channel" });
+  await refreshed;
   await materializer.stop();
 }
 
@@ -214,64 +217,71 @@ describe("thread materializer worker protocol", () => {
     }));
   });
 
-  it("requeues a repair after a correlated wrong response type", async () => {
-    const workers: FakeMaterializerWorker[] = [];
+  it("waits for activity after a correlated wrong response type", async () => {
+    await expectWorkerRestart((id) => ({ id, ok: true, type: "list-channels", channelIds: [] }));
+  });
+
+  it("starts idle, repairs on first edit, and invalidates lazily", async () => {
+    const worker = new FakeMaterializerWorker();
     const materializer = startConversationThreadMaterializer({
       searchDbPath: "/tmp/search.db",
-      workerFactory: () => {
-        const worker = new FakeMaterializerWorker();
-        workers.push(worker);
-        return worker;
-      },
-    });
-    const first = workers[0];
-    if (!first) throw new Error("Initial materializer worker was not created");
-    const initialList = await first.waitForRequest(0);
-    first.emitMessage({
-      id: initialList.id,
-      ok: true,
-      type: "list-channels",
-      channelIds: [],
+      workerFactory: () => worker,
     });
     await materializer.flush();
+    expect(worker.requests).toEqual([]);
+    for (const [index, kind] of ["topology", "content", "topology"].entries()) {
+      materializer.markDirty({ channelId: "active", kind: "content", messageId: "m1" });
+      const flushed = materializer.flush();
+      const request = await worker.waitForRequest(index);
+      expect(request).toMatchObject({ type: "repair-channel", channelId: "active", kind });
+      worker.emitMessage({ id: request.id, ok: true, type: "repair-channel" });
+      await flushed;
+      if (index === 1) {
+        materializer.invalidate();
+        await materializer.flush();
+        expect(worker.requests).toHaveLength(2);
+      }
+    }
+    await materializer.stop();
+  });
 
-    materializer.markDirty({ channelId: "channel-a", kind: "content", messageId: "message-a" });
-    const flushed = materializer.flush();
-    const firstRepair = await first.waitForRequest(1);
-    expect(firstRepair).toMatchObject({
-      type: "repair-channel",
-      channelId: "channel-a",
-      kind: "content",
-      messageIds: ["message-a"],
-    });
-    first.emitMessage({
-      id: firstRepair.id,
-      ok: true,
-      type: "list-channels",
-      channelIds: [],
-    });
-
-    expect(first.terminated).toBe(true);
-    const replacement = workers[1];
-    if (!replacement) throw new Error("Replacement materializer worker was not created");
-    const recoveryList = await replacement.waitForRequest(0);
-    replacement.emitMessage({
-      id: recoveryList.id,
-      ok: true,
-      type: "list-channels",
-      channelIds: ["channel-a"],
-    });
-    const retriedRepair = await replacement.waitForRequest(1);
-    expect(retriedRepair).toEqual({
-      id: retriedRepair.id,
-      type: "repair-channel",
+  it("does not let an in-flight repair acknowledge a later invalidation", async () => {
+    const worker = new FakeMaterializerWorker();
+    const materializer = startConversationThreadMaterializer({
       searchDbPath: "/tmp/search.db",
-      channelId: "channel-a",
-      kind: "topology",
+      workerFactory: () => worker,
     });
-    replacement.emitMessage({ id: retriedRepair.id, ok: true, type: "repair-channel" });
-
+    materializer.markDirty({ channelId: "active", kind: "topology" });
+    const flushed = materializer.flush();
+    const first = await worker.waitForRequest(0);
+    materializer.invalidate();
+    materializer.markDirty({ channelId: "active", kind: "content", messageId: "m1" });
+    worker.emitMessage({ id: first.id, ok: true, type: "repair-channel" });
+    const second = await worker.waitForRequest(1);
+    expect(second).toMatchObject({ type: "repair-channel", kind: "topology" });
+    worker.emitMessage({ id: second.id, ok: true, type: "repair-channel" });
     await flushed;
+    await materializer.stop();
+  });
+
+  it("leaves a failed channel for its next activity without sweeping history", async () => {
+    const worker = new FakeMaterializerWorker();
+    const materializer = startConversationThreadMaterializer({
+      searchDbPath: "/tmp/search.db",
+      workerFactory: () => worker,
+    });
+    materializer.markDirty({ channelId: "active", kind: "topology" });
+    const failed = materializer.flush();
+    const request = await worker.waitForRequest(0);
+    worker.emitMessage({ id: request.id, ok: false, error: "repair failed" });
+    await failed;
+    expect(worker.requests).toHaveLength(1);
+    materializer.markDirty({ channelId: "active", kind: "content", messageId: "m1" });
+    const retried = materializer.flush();
+    const retry = await worker.waitForRequest(1);
+    expect(retry).toMatchObject({ type: "repair-channel", kind: "topology" });
+    worker.emitMessage({ id: retry.id, ok: true, type: "repair-channel" });
+    await retried;
     await materializer.stop();
   });
 
@@ -281,15 +291,6 @@ describe("thread materializer worker protocol", () => {
       searchDbPath: "/tmp/search.db",
       workerFactory: () => worker,
     });
-    const initialList = await worker.waitForRequest(0);
-    worker.emitMessage({
-      id: initialList.id,
-      ok: true,
-      type: "list-channels",
-      channelIds: [],
-    });
-    await materializer.flush();
-
     const failure = new Error("post failed");
     worker.postFailure = failure;
     materializer.markDirty({ channelId: "channel-a", kind: "topology" });

@@ -25,7 +25,9 @@ type PendingRequest =
       reject: (error: Error) => void;
     };
 
-export type ConversationThreadMaterializer = ThreadMaterializer;
+export type ConversationThreadMaterializer = ThreadMaterializer & {
+  invalidate(): void;
+};
 
 export type ThreadMaterializerWorkerHost = {
   setMessageHandler(handler: (event: MessageEvent<unknown>) => void): void;
@@ -65,8 +67,12 @@ export function startConversationThreadMaterializer(params: {
   let worker = createWorker();
   const pending = new Map<string, PendingRequest>();
   let stopped = false;
-  let coalescer: ThreadMaterializer | null = null;
-  let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  const refreshedChannels = new Set<string>();
+  let refreshGeneration = 0;
+  const invalidate = () => {
+    refreshGeneration += 1;
+    refreshedChannels.clear();
+  };
 
   const rejectPending = (error: Error) => {
     for (const request of pending.values()) request.reject(error);
@@ -79,16 +85,7 @@ export function startConversationThreadMaterializer(params: {
     worker.terminate();
     worker = createWorker();
     configureWorker(worker);
-    coalescer?.markAllDirty();
-  };
-
-  const scheduleRecovery = () => {
-    if (stopped || recoveryTimer) return;
-    recoveryTimer = setTimeout(() => {
-      recoveryTimer = null;
-      coalescer?.markAllDirty();
-    }, 1_000);
-    recoveryTimer.unref?.();
+    invalidate();
   };
 
   function configureWorker(target: ThreadMaterializerWorkerHost): void {
@@ -129,7 +126,6 @@ export function startConversationThreadMaterializer(params: {
                 message: response.error,
               }),
             );
-            scheduleRecovery();
             return;
           }
           if (request.type === "list-channels" && response.type === "list-channels") {
@@ -197,7 +193,6 @@ export function startConversationThreadMaterializer(params: {
             );
           }
           pendingRequest.reject(error);
-          scheduleRecovery();
         },
     })();
   };
@@ -214,11 +209,15 @@ export function startConversationThreadMaterializer(params: {
     });
 
   const repairChannel = (
-    input:
+    requested:
       | { channelId: string; kind: "topology" }
       | { channelId: string; kind: "content"; messageIds: readonly string[] },
-  ) =>
-    new Promise<void>((resolve, reject) => {
+  ) => {
+    const generation = refreshGeneration;
+    const input = refreshedChannels.has(requested.channelId)
+      ? requested
+      : { channelId: requested.channelId, kind: "topology" as const };
+    return new Promise<void>((resolve, reject) => {
       let request: Extract<ThreadMaterializerWorkerRequest, { type: "repair-channel" }>;
       switch (input.kind) {
         case "content":
@@ -244,9 +243,13 @@ export function startConversationThreadMaterializer(params: {
           break;
       }
       postRequest(request, { type: request.type, resolve, reject });
+    }).then(() => {
+      if (generation === refreshGeneration) refreshedChannels.add(input.channelId);
     });
+  };
 
   const onError = (error: Error, context: ThreadMaterializerErrorContext) => {
+    if (context.operation === "repair-channel") refreshedChannels.delete(context.channelId);
     logger.error("conversation thread materialization failed", context, error);
   };
 
@@ -256,11 +259,10 @@ export function startConversationThreadMaterializer(params: {
     debounceMs: params.debounceMs,
     onError,
   });
-  coalescer = startedCoalescer;
-  startedCoalescer.markAllDirty();
 
   let stopPromise: Promise<void> | null = null;
   return {
+    invalidate,
     markDirty: (input) => startedCoalescer.markDirty(input),
     markAllDirty: () => startedCoalescer.markAllDirty(),
     flush: () => startedCoalescer.flush(),
@@ -268,8 +270,6 @@ export function startConversationThreadMaterializer(params: {
       if (stopPromise) return stopPromise;
       stopPromise = startedCoalescer.stop().finally(() => {
         stopped = true;
-        if (recoveryTimer) clearTimeout(recoveryTimer);
-        recoveryTimer = null;
         worker.terminate();
         rejectPending(
           new ThreadMaterializerOperationFailed({

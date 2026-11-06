@@ -190,6 +190,7 @@ export function readOpaqueTool(target: ToolSet, name: string): unknown {
 }
 
 export function createCoreToolPluginManager(params: {
+  discordSearch?: Parameters<typeof createBuiltinCoreToolPlugins>[0];
   runtime: CoreToolPluginRuntime;
   dataDir: string;
 }) {
@@ -657,7 +658,7 @@ export function createCoreToolPluginManager(params: {
     dataDir: params.dataDir,
     configPath: resolveCoreConfigPath({ dataDir: params.dataDir }),
     logger,
-    builtinPlugins: createBuiltinCoreToolPlugins(),
+    builtinPlugins: createBuiltinCoreToolPlugins(params.discordSearch),
     getDisabledPluginIds: async () => (await resolveConfig()).plugins?.disabled ?? [],
     getPluginConfig: async (pluginId: string) =>
       resolveOpaquePluginConfig(await resolveConfig(), pluginId),
