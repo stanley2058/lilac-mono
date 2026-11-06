@@ -16,6 +16,9 @@ import {
   type AgentExecution,
 } from "../../agent-adapter";
 import { AgentExecutor } from "../../agent-executor";
+import { AiSdkPiAgent } from "../../ai-sdk-pi-agent";
+import { createTransientModelRetryController } from "../../transient-model-retry";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
 import type { AgentExecutionHost } from "../../agent-execution-host";
 import {
   OpenAIResponsesAgentAdapter,
@@ -58,11 +61,13 @@ class SocketFixture implements OpenAIResponsesSocket {
   readonly sent: Record<string, unknown>[] = [];
   closeFailure: Panic | undefined;
   onClose: (() => void) | undefined;
+  onSend: (() => void) | undefined;
   private readonly outgoing = new Mailbox<Record<string, unknown>>();
   send(payload: ResponsesClientEvent) {
     const value = { ...payload };
     this.sent.push(value);
     this.outgoing.push(value);
+    this.onSend?.();
     return Result.ok(undefined);
   }
   close() {
@@ -179,6 +184,154 @@ function hasText(agent: AgentExecutor, text: string) {
     (message) => message.role === "user" && message.content === text,
   );
 }
+
+describe("native overload recovery", () => {
+  for (const failureAt of [
+    "connect",
+    "stream-error",
+    "response-failed",
+    "tool-continuation",
+  ] as const) {
+    for (const exhaustFallback of [false, true]) {
+      test(`${failureAt} retries each model before ${exhaustFallback ? "exhausting fallback" : "recovering on fallback"}`, async () => {
+        const models = [
+          new MockLanguageModelV4({ modelId: "primary" }),
+          new MockLanguageModelV4({ modelId: "fallback" }),
+        ];
+        const attempts: string[] = [];
+        let toolCalls = 0;
+        let advances = 0;
+        const agent = new AiSdkPiAgent({
+          model: models[0]!,
+          system: "test",
+          modelSpecifier: "codex/primary",
+          tools: {
+            lookup: tool({
+              inputSchema: z.object({}),
+              execute: () => {
+                toolCalls++;
+                return "looked up";
+              },
+            }),
+          },
+          adapterFactory(settings) {
+            attempts.push(settings.modelSpecifier!);
+            const recover = !exhaustFallback && attempts.length === 4;
+            const socket = new SocketFixture();
+            socket.onSend = () => {
+              const id = `response-${attempts.length}-${socket.sent.length}`;
+              socket.created(id);
+              if (recover) {
+                socket.finished(id, "recovered");
+                return;
+              }
+              if (failureAt === "tool-continuation" && toolCalls === 0) {
+                socket.finished(id, "", false, [
+                  {
+                    type: "function_call",
+                    id: "lookup-item",
+                    call_id: "lookup-call",
+                    name: "lookup",
+                    arguments: "{}",
+                  },
+                ]);
+                return;
+              }
+              const error = {
+                code: "server_is_overloaded",
+                message: "Our servers are currently overloaded. Please try again later.",
+              };
+              socket.emit(
+                failureAt === "stream-error"
+                  ? { type: "error", ...error }
+                  : {
+                      type: "response.failed",
+                      response: { id, status: "failed", output: [], error },
+                    },
+              );
+            };
+            return new OpenAIResponsesAgentAdapter({
+              model: settings.model === models[0] ? "primary" : "fallback",
+              transport: "websocket",
+              connect: async () =>
+                failureAt === "connect" && !recover
+                  ? Result.err(
+                      new AgentAdapterFailure({
+                        reason: "unavailable",
+                        replaySafety: "safe",
+                        message: "server_is_overloaded",
+                      }),
+                    )
+                  : Result.ok(socket),
+            });
+          },
+        });
+        const retry = createTransientModelRetryController({
+          retry: { enabled: true, maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0 },
+          logger: createLogger({ module: "native-overload-test", logLevel: "fatal" }),
+          requestId: "request",
+          sessionId: "session",
+          modelSpec: "codex/primary",
+          advanceModel: async () => {
+            advances++;
+            if (advances > 1) return { ok: false, reason: "fallback-chain-exhausted" };
+            agent.setModel(models[1]!, undefined, "codex/fallback");
+            return { ok: true, modelSpec: "codex/fallback" };
+          },
+        });
+        agent.setTurnErrorHandler(retry.handler);
+        const result = await agent.prompt("question").then(
+          () => "completed",
+          () => "failed",
+        );
+        expect(attempts).toEqual([
+          "codex/primary",
+          "codex/primary",
+          "codex/fallback",
+          "codex/fallback",
+        ]);
+        expect(result).toBe(exhaustFallback ? "failed" : "completed");
+        expect(advances).toBe(exhaustFallback ? 2 : 1);
+        expect(toolCalls).toBe(failureAt === "tool-continuation" ? 1 : 0);
+        if (!exhaustFallback)
+          expect(JSON.stringify(agent.state.messages.at(-1))).toContain("recovered");
+      });
+    }
+  }
+
+  test.each(["before-step", "transform-messages"] as const)(
+    "does not fall back for overload text in %s failures",
+    async (phase) => {
+      let advances = 0;
+      const fail = () => {
+        throw new Error("overloaded preparation dependency");
+      };
+      const retry = createTransientModelRetryController({
+        retry: { enabled: true, maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0 },
+        logger: createLogger({ module: "native-overload-test", logLevel: "fatal" }),
+        requestId: "request",
+        sessionId: "session",
+        modelSpec: "codex/primary",
+        advanceModel: async () => {
+          advances++;
+          return { ok: true, modelSpec: "codex/fallback" };
+        },
+      });
+      const phases: Array<string | undefined> = [];
+      const { agent, socket } = fixture({
+        ...(phase === "before-step" ? { beforeStep: fail } : { prepareFullModelView: fail }),
+        turnErrorHandler: (error, context) => {
+          phases.push(context.phase);
+          return retry.handler(error, context);
+        },
+      });
+      await expect(agent.prompt("question")).rejects.toThrow("overloaded preparation dependency");
+      expect(phases).toEqual([phase]);
+      expect(advances).toBe(0);
+      expect(socket.sent).toHaveLength(0);
+    },
+  );
+});
 
 test.each([false, true])(
   "settles reasoning before the turn ends, Codex normalization: %s",

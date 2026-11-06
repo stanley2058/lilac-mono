@@ -2232,6 +2232,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     if (!seeded.ok) this.failAdapter(seeded.error);
     if (!inherited) this.state.messages = seeded.value.canonicalMessages.map(cloneMessage);
     this.synchronizeCanonicalHistory();
+    this.activeExecutionFailurePhase = "model-call";
     return seeded.value;
   }
   private createExecutionHost(attemptId: string): AgentExecutionHost<TOOLS> {
@@ -2682,6 +2683,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     let completedInputIds: Set<string> | undefined;
     const outcome = resultOutcome(
       await captureAgentPromise(async () => {
+        this.activeExecutionFailurePhase = "model-call";
         const started = resultOutcome(execution.start());
         if (!started.ok) this.failAdapter(started.error);
         for await (const received of execution.events) {
