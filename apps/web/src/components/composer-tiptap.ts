@@ -1,7 +1,7 @@
 import { Extension, Node, getSchema, type Editor, type JSONContent } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
-import { Slice, type Node as DocumentNode, type ResolvedPos, type Schema } from "@tiptap/pm/model";
+import { Slice, type Node as DocumentNode, type Schema } from "@tiptap/pm/model";
 import { EditorState, TextSelection, Plugin } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import {
@@ -125,27 +125,6 @@ export function insertEditorReference(
     transaction.setSelection(TextSelection.create(transaction.doc, from, to));
   view.dispatch(transaction.replaceSelectionWith(node).scrollIntoView());
   return true;
-}
-
-export function composerBadgeSelection(
-  view: EditorView,
-  anchor: ResolvedPos,
-): TextSelection | null {
-  // Native edits can request a selection in a document the view has not applied yet.
-  if (anchor.doc !== view.state.doc) return null;
-  const selection = view.dom.ownerDocument.getSelection();
-  if (!selection?.isCollapsed || !selection.focusNode) return null;
-  const focus = selection.focusNode;
-  const element = focus.nodeType === 1 ? (focus as Element) : focus.parentElement;
-  const badge = element?.closest("[data-composer-badge]");
-  if (!badge || !view.dom.contains(badge)) return null;
-  const from = view.posAtDOM(badge, 0);
-  const node = view.state.doc.nodeAt(from);
-  if (!node?.isAtom) return null;
-  const to = from + node.nodeSize;
-  // Android drops its IME connection at non-editable spans. Keep the DOM editable,
-  // then move native caret positions inside a badge across the atomic model node.
-  return TextSelection.create(view.state.doc, view.state.selection.head >= to ? from : to);
 }
 
 const indentation = Extension.create({

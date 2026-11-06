@@ -78,7 +78,6 @@ import {
   completeEditor,
   replaceEditorDocument,
   insertEditorReference,
-  composerBadgeSelection,
   type CompletionRange,
 } from "./composer-tiptap";
 export {
@@ -347,33 +346,32 @@ const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) 
       citationNode.extend({
         addNodeView: () =>
           ReactNodeViewRenderer(CitationElement, {
-            attrs: { contenteditable: "inherit", "data-composer-badge": "" },
+            attrs: { contenteditable: "false", "data-composer-badge": "" },
           }),
       }),
       Placeholder.configure({ placeholder: () => current.current.placeholder }),
       attachmentNode.extend({
         addNodeView: () =>
           ReactNodeViewRenderer(AttachmentElement, {
-            attrs: { contenteditable: "inherit", "data-composer-badge": "" },
+            attrs: { contenteditable: "false", "data-composer-badge": "" },
           }),
       }),
       referenceNode.extend({
         addNodeView: () =>
           ReactNodeViewRenderer(ReferenceElement, {
-            attrs: { contenteditable: "inherit", "data-composer-badge": "" },
+            attrs: { contenteditable: "false", "data-composer-badge": "" },
           }),
       }),
       skillNode.extend({
         addNodeView: () =>
           ReactNodeViewRenderer(SkillElement, {
-            attrs: { contenteditable: "inherit", "data-composer-badge": "" },
+            attrs: { contenteditable: "false", "data-composer-badge": "" },
           }),
       }),
     ],
     content: initialDocument,
     editable: !props.disabled,
     editorProps: {
-      createSelectionBetween: composerBadgeSelection,
       handleTextInput: (view, from, to, text) =>
         insertEditorReference(view, from, to, text, location.origin),
       attributes: {

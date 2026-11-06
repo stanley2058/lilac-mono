@@ -20,7 +20,6 @@ import {
   composerCompletionPrefix,
   completeEditor,
   insertEditorReference,
-  composerBadgeSelection,
 } from "../src/components/composer-tiptap";
 import { createComposerEditor, composerMarkdown } from "../src/components/composer-document";
 import {
@@ -179,13 +178,6 @@ it("preserves active marks when inserting a reference", () => {
   expect(editor.state.selection.$from.nodeBefore?.marks.map((mark) => mark.type.name)).toEqual([
     "bold",
   ]);
-  editor.destroy();
-});
-
-it("leaves native mutation selections to ProseMirror's updated document", () => {
-  const editor = headlessEditor("before");
-  const transaction = editor.state.tr.insertText("x", 1);
-  expect(composerBadgeSelection(editor.view, transaction.doc.resolve(2))).toBeNull();
   editor.destroy();
 });
 
