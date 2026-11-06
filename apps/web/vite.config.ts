@@ -12,6 +12,7 @@ export default defineConfig({
     tailwindcss(),
     serviceWorkerBuild(),
   ],
+  optimizeDeps: { include: ["monaco-yaml/yaml.worker.js"] },
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   server: {
     port: 5173,

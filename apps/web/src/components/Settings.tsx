@@ -19,7 +19,7 @@ import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import "./settings.css";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Textarea } from "./ui/textarea";
+import { CodeEditor } from "./CodeEditor";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
@@ -89,7 +89,11 @@ export function Settings({
           ? current
           : {
               ...current,
-              [value.kind]: { document: value, text: value.text, editRevision: 0 },
+              [value.kind]: {
+                document: value,
+                text: value.text,
+                editRevision: 0,
+              },
             },
       );
     }
@@ -103,7 +107,12 @@ export function Settings({
     setSaving((current) => ({ ...current, [request.kind]: true }));
     setError(undefined);
     const saved = await attempt(
-      () => rpc.config.save({ kind: request.kind, expectedRevision: document.revision, text }),
+      () =>
+        rpc.config.save({
+          kind: request.kind,
+          expectedRevision: document.revision,
+          text,
+        }),
       (message) => {
         if (tabRef.current === request.kind) setError(message);
       },
@@ -284,46 +293,46 @@ export function Settings({
             {tab === "core" || tab === "mcp" ? (
               <TabsContent
                 value={tab}
-                className="settings-section settings-config flex min-h-full flex-col"
+                className="settings-section settings-config flex h-full min-h-0 flex-col gap-3"
               >
-                <h2>{tab === "core" ? "Core" : "MCP"}</h2>
-                <Textarea
-                  className="config-editor block flex-1 min-h-64 resize-y w-full h-[45dvh] font-mono text-sm leading-normal p-4 rounded-md [tab-size:2]"
-                  spellCheck={false}
-                  aria-label={`${tab === "core" ? "Core" : "MCP"} configuration YAML`}
-                  value={document ? text : ""}
-                  disabled={!document}
-                  onChange={(event) => {
-                    setEditors((current) => editConfig(current, tab, event.target.value));
-                  }}
-                />
-                <footer className="config-footer flex items-center gap-3 mt-3 text-sm text-muted-foreground">
-                  <span role="status">
+                <header className="config-header flex flex-wrap items-center gap-2">
+                  <h2 className="flex-1 m-0 text-lg font-semibold">
+                    {tab === "core" ? "Core" : "MCP"}
+                  </h2>
+                  <span role="status" className="text-sm text-muted-foreground">
                     {status}
                     {tab === "mcp" && status === "Saved" ? ". Reload to apply changes." : ""}
                   </span>
-                  <span className="toolbar-spacer flex-1" />
                   {tab === "mcp" ? (
-                    <Button
-                      variant="secondary"
-                      className="gap-2 rounded-sm px-4"
-                      onClick={() => void reload()}
-                    >
+                    <Button variant="secondary" size="sm" onClick={() => void reload()}>
                       <RefreshCw />
                       Reload MCP
                     </Button>
                   ) : null}
                   <Button
-                    className="gap-2 rounded-sm px-4"
+                    size="sm"
                     disabled={!document || !!saving[document.kind] || text === document.text}
                     onClick={() => void save()}
                   >
                     <Save />
                     Save
                   </Button>
-                </footer>
+                </header>
+                <div className="config-editor flex flex-1 min-h-0 overflow-hidden rounded-md border border-border">
+                  <CodeEditor
+                    key={tab}
+                    language="yaml"
+                    configKind={tab}
+                    uri={`file:///lilac-settings/${tab}-config.yaml`}
+                    label={`${tab === "core" ? "Core" : "MCP"} configuration YAML`}
+                    value={document ? text : ""}
+                    readOnly={!document}
+                    onChange={(value) => setEditors((current) => editConfig(current, tab, value))}
+                    onSave={() => void save()}
+                  />
+                </div>
                 {tab === "mcp" && reloads ? (
-                  <div className="reload-results max-h-48 overflow-auto pt-3 text-sm">
+                  <div className="reload-results flex-none max-h-40 overflow-auto text-sm">
                     {reloads.servers.map((server) => (
                       <div key={server.name}>
                         <strong>{server.name}</strong>
@@ -348,7 +357,10 @@ export function People() {
   const { client } = useWorkspace();
   const online = useNativeOnline(client);
   const queries = useQueryClient();
-  const userQuery = useInfiniteQuery({ ...userOptions(client), enabled: online });
+  const userQuery = useInfiniteQuery({
+    ...userOptions(client),
+    enabled: online,
+  });
   const users = userQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const [providerId, setProviderId] = useState("");
   const [mode, setMode] = useState<"restricted" | "full">("restricted");

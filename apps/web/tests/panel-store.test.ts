@@ -59,7 +59,10 @@ describe("local panel layouts", () => {
     store.getState().select("a", "child-agent");
     const loaded = createPanelStore(scope, storage).getState();
     expect(loaded.threads.get("a")).toEqual({ open: true, width: 440 });
-    expect(loaded.threads.get("b") ?? defaultRightPanel).toEqual({ open: false, width: 360 });
+    expect(loaded.threads.get("b") ?? defaultRightPanel).toEqual({
+      open: false,
+      width: 360,
+    });
     expect(loaded.selection).toBeUndefined();
   });
 
@@ -106,7 +109,10 @@ describe("local panel layouts", () => {
     store.getState().resize("a", 400);
     store.getState().toggle("a");
     expect(store.getState().sidebar.open).toBe(false);
-    expect(store.getState().threads.get("a")).toEqual({ open: true, width: 400 });
+    expect(store.getState().threads.get("a")).toEqual({
+      open: true,
+      width: 400,
+    });
   });
 
   test("unscoped design demos never read or write device preferences", () => {
@@ -132,7 +138,12 @@ test("file tabs coexist with Agents, refocus without duplicates, and stay per th
   const storage = memoryStorage();
   const store = createPanelStore(scope, storage);
   const actions = store.getState();
-  const a = { type: "path", path: "/tmp/a.md", name: "a.md", line: 123 } as const;
+  const a = {
+    type: "path",
+    path: "/tmp/a.md",
+    name: "a.md",
+    line: 123,
+  } as const;
   const b = {
     type: "resource",
     href: "/api/resources/b",
@@ -189,12 +200,21 @@ test("resolved path aliases merge into the existing tab and retain line navigati
     mediaType: "text/plain",
   } as const;
   actions.openFile("thread", resolved);
-  actions.openFile("thread", { type: "path", path: "./a.ts", name: "a.ts", line: 123 });
+  actions.openFile("thread", {
+    type: "path",
+    path: "./a.ts",
+    name: "a.ts",
+    line: 123,
+  });
   actions.resolveFile("thread", "path:./a.ts", { ...resolved, line: 123 });
   expect(store.getState().tabs.get("thread")).toEqual({
     items: [
       { id: "agents", type: "agents" },
-      { id: "path:/work/a.ts", type: "file", target: { ...resolved, line: 123 } },
+      {
+        id: "path:/work/a.ts",
+        type: "file",
+        target: { ...resolved, line: 123 },
+      },
     ],
     activeId: "path:/work/a.ts",
   });
@@ -203,7 +223,13 @@ test("resolved path aliases merge into the existing tab and retain line navigati
 test("restores independent tab order and selection, including closed tabs and an empty panel", () => {
   const storage = memoryStorage();
   const store = createPanelStore(scope, storage);
-  const a = { type: "path", path: "/tmp/a.md", name: "a.md", line: 12, endLine: 15 } as const;
+  const a = {
+    type: "path",
+    path: "/tmp/a.md",
+    name: "a.md",
+    line: 12,
+    endLine: 15,
+  } as const;
   const b = {
     type: "resource",
     href: "/api/resources/b",
@@ -255,7 +281,12 @@ test("published links and canonical inline paths share a tab in either opening o
     name: "example.md",
     mediaType: "text/markdown",
   } as const;
-  const resolved = { ...published, path: "/tmp/example.md", line: 12, endLine: 15 };
+  const resolved = {
+    ...published,
+    path: "/tmp/example.md",
+    line: 12,
+    endLine: 15,
+  };
   for (const [first, second] of [
     [published, resolved],
     [resolved, published],
@@ -269,10 +300,16 @@ test("published links and canonical inline paths share a tab in either opening o
   }
   const store = createPanelStore();
   store.getState().openFile("thread", published);
-  store.getState().openFile("thread", { type: "path", path: "./example.md", name: "example.md" });
+  store.getState().openFile("thread", {
+    type: "path",
+    path: "./example.md",
+    name: "example.md",
+  });
   store.getState().resolveFile("thread", "path:./example.md", resolved);
   expect(store.getState().tabs.get("thread")?.items).toHaveLength(2);
-  expect(store.getState().tabs.get("thread")?.items[1]).toMatchObject({ target: resolved });
+  expect(store.getState().tabs.get("thread")?.items[1]).toMatchObject({
+    target: resolved,
+  });
   expect(store.getState().tabs.get("thread")?.activeId).toBe("resource:/api/files/published");
 });
 
@@ -362,4 +399,32 @@ test("computer geometry survives conversation switches within its workspace sess
   expect(panels.getState().computerGeometry.get("a")).toEqual(first);
   expect(panels.getState().computerGeometry.get("b")).toEqual(second);
   expect(createPanelStore(scope, storage).getState().computerGeometry.size).toBe(0);
+});
+
+test("Files opens once as a panel tab and survives reload", () => {
+  const storage = new Map<string, string>();
+  const store = createPanelStore(
+    { installationId: "installation", principalId: "owner" },
+    {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    },
+  );
+  store.getState().openFiles("thread");
+  store.getState().openFiles("thread");
+  expect(store.getState().tabs.get("thread")).toEqual({
+    items: [
+      { id: "agents", type: "agents" },
+      { id: "files", type: "files" },
+    ],
+    activeId: "files",
+  });
+  expect(
+    createPanelStore(
+      { installationId: "installation", principalId: "owner" },
+      { getItem: (key) => storage.get(key) ?? null, setItem: () => {} },
+    )
+      .getState()
+      .tabs.get("thread")?.activeId,
+  ).toBe("files");
 });

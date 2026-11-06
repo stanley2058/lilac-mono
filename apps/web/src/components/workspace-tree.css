@@ -1,0 +1,8 @@
+.workspace-tree {
+  --trees-bg-override: var(--ui-sidebar);
+  --trees-fg-override: var(--ui-sidebar-foreground);
+  --trees-bg-muted-override: var(--ui-muted);
+  --trees-fg-muted-override: var(--ui-muted-foreground);
+  --trees-accent-override: var(--ui-primary);
+  --trees-border-color-override: var(--ui-border);
+}

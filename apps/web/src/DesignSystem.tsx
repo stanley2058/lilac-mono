@@ -1,3 +1,5 @@
+import { CodeEditor } from "./components/CodeEditor";
+import { WorkspaceTreeView } from "./components/WorkspaceTree";
 import { ModelSelectorDemo } from "./components/ModelSelectorDemo";
 import {
   CopySessionIdMenuItem,
@@ -1153,8 +1155,23 @@ function FileTabsDemo() {
         onFocus={(id) => actions.focusTab("demo", id)}
         onClose={(id) => actions.closeTab("demo", id)}
         onAgents={() => actions.openAgents("demo")}
+        onFiles={() => actions.openFiles("demo")}
         renderTab={(tab) => {
           if (tab.type === "thread") return <ConversationBadge target={tab.target} />;
+          if (tab.type === "files")
+            return (
+              <WorkspaceTreeView
+                paths={editorDemoPaths}
+                root="/workspace"
+                onOpen={(path) =>
+                  actions.openFile("demo", {
+                    type: "path",
+                    path: `/workspace/${path}`,
+                    name: path.split("/").at(-1) ?? path,
+                  })
+                }
+              />
+            );
           return tab.type === "agents" ? (
             <div className="file-status grid place-content-center flex-1 p-4 text-sm text-muted-foreground">
               No subagents yet
@@ -1270,6 +1287,9 @@ function Attachments() {
             kind="text"
             text={{ status: "ready", text: markdownAttachment, truncated: false }}
           />
+        </Specimen>
+        <Specimen title="Workspace editor">
+          <WorkspaceEditorDemo />
         </Specimen>
         <Specimen title="Right panel tabs">
           <div className="flex flex-wrap gap-2 mb-3">
@@ -2024,6 +2044,21 @@ function NotificationSettingsDemo() {
       <Button variant="outline" disabled={sending} onClick={() => void testNotification()}>
         <Bell /> Test notification
       </Button>
+    </div>
+  );
+}
+
+const editorDemoPaths = ["src/app.ts", "src/settings.yaml", "README.md"];
+function WorkspaceEditorDemo() {
+  const [text, setText] = useState("# YAML editor\nenabled: true\nretries: 3\n");
+  const [selected, setSelected] = useState("src/settings.yaml");
+  return (
+    <div className="flex flex-col h-96 min-h-0 bg-background text-foreground">
+      <div className="flex h-40 min-h-0">
+        <WorkspaceTreeView paths={editorDemoPaths} onOpen={setSelected} />
+      </div>
+      <div className="px-3 py-1 text-xs text-muted-foreground">{selected}</div>
+      <CodeEditor value={text} onChange={setText} language="yaml" label="Example YAML editor" />
     </div>
   );
 }

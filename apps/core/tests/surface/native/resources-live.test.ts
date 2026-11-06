@@ -2,7 +2,7 @@ import { nativeSessionId } from "../../../src/surface/native/native-protocol";
 import { resolveRestrictedSessionTmpDir } from "../../../src/shared/attachment-utils";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtemp, mkdir, open, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, open, readFile, symlink, writeFile, rm } from "node:fs/promises";
 import { join, relative as relativePath } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { FileSystem } from "@stanley2058/lilac-fs";
@@ -251,5 +251,215 @@ test("restricted file resolution uses the thread's virtual tmp directory exactly
   expect(await response?.text()).toBe("session file");
   for (const path of ["~/.bashrc", "/etc/passwd", "../example.txt", "/tmp/../etc/passwd"])
     expect((await service.resolve("limited", thread.id, path)).status).toBe("error");
+  native.close();
+});
+
+test("workspace editing reads whole UTF-8 files, checks revisions, and preserves access boundaries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lilac-editor-"));
+  directories.push(root);
+  const native = new NativeStore(new Database(":memory:"));
+  value(native.initialize());
+  for (const id of ["owner", "outsider"])
+    value(
+      native.upsertUser({
+        id,
+        providerId: id,
+        role: id === "owner" ? "owner" : "participant",
+        toolMode: "full",
+        displayName: id,
+      }),
+    );
+  const thread = value(native.createThread("owner", { commandId: "editor-test", title: "Editor" }));
+  const file = join(root, "config.yaml");
+  const secret = join(root, "secret.txt");
+  const initial = "# long file\n".repeat(7000);
+  await writeFile(file, initial);
+  await writeFile(secret, "secret");
+  await writeFile(join(root, "binary.bin"), new Uint8Array([0, 255]));
+  const service = new NativeLiveFileService({
+    native,
+    filesystem: new FileSystem(root, { denyPaths: [secret] }),
+    toolRoot: root,
+    remoteDenyPaths: [],
+  });
+  const tree = value(await service.tree("owner", thread.id));
+  expect(tree.paths).toContain("config.yaml");
+  expect(tree.paths).not.toContain("secret.txt");
+  const doc = value(await service.document("owner", thread.id, "config.yaml"));
+  expect(doc.text).toBe(initial);
+  const saved = value(
+    await service.saveDocument("owner", {
+      threadId: thread.id,
+      path: file,
+      expectedRevision: doc.revision,
+      text: "enabled: true\n",
+    }),
+  );
+  expect(saved.revision).not.toBe(doc.revision);
+  expect(value(await service.document("owner", thread.id, file)).text).toBe("enabled: true\n");
+  await writeFile(file, "agent: changed\n");
+  expect(
+    (
+      await service.saveDocument("owner", {
+        threadId: thread.id,
+        path: file,
+        expectedRevision: saved.revision,
+        text: "stale\n",
+      })
+    ).isErr(),
+  ).toBe(true);
+  expect(value(await service.document("owner", thread.id, file)).text).toBe("agent: changed\n");
+  expect((await service.document("outsider", thread.id, file)).isErr()).toBe(true);
+  expect((await service.tree("outsider", thread.id)).isErr()).toBe(true);
+  expect(
+    (
+      await service.saveDocument("outsider", {
+        threadId: thread.id,
+        path: file,
+        expectedRevision: saved.revision,
+        text: "no",
+      })
+    ).isErr(),
+  ).toBe(true);
+  expect((await service.document("owner", thread.id, secret)).isErr()).toBe(true);
+  expect((await service.document("owner", thread.id, "binary.bin")).isErr()).toBe(true);
+  await rm(file);
+  expect(
+    (
+      await service.saveDocument("owner", {
+        threadId: thread.id,
+        path: file,
+        expectedRevision: saved.revision,
+        text: "no recreation",
+      })
+    ).isErr(),
+  ).toBe(true);
+});
+
+test("competing saves against one revision let only the first write land", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lilac-editor-race-"));
+  directories.push(root);
+  const native = new NativeStore(new Database(":memory:"));
+  value(native.initialize());
+  value(
+    native.upsertUser({
+      id: "owner",
+      providerId: "owner",
+      role: "owner",
+      toolMode: "full",
+      displayName: "owner",
+    }),
+  );
+  const thread = value(native.createThread("owner", { commandId: "editor-race" }));
+  const file = join(root, "notes.txt");
+  await writeFile(file, "start\n");
+  const service = new NativeLiveFileService({
+    native,
+    filesystem: new FileSystem(root),
+    toolRoot: root,
+    remoteDenyPaths: [],
+  });
+  const { revision } = value(await service.document("owner", thread.id, file));
+  const results = await Promise.all(
+    ["first\n", "second\n"].map((text) =>
+      service.saveDocument("owner", {
+        threadId: thread.id,
+        path: file,
+        expectedRevision: revision,
+        text,
+      }),
+    ),
+  );
+  expect(results.map((result) => result.isOk())).toEqual([true, false]);
+  expect(await readFile(file, "utf8")).toBe("first\n");
+  native.close();
+});
+
+test("restricted editing rejects symlinks that leave the session directory", async () => {
+  const outside = await mkdtemp(join(tmpdir(), "lilac-editor-outside-"));
+  directories.push(outside);
+  const target = join(outside, "target.txt");
+  await writeFile(target, "outside");
+  const native = new NativeStore(new Database(":memory:"));
+  value(native.initialize());
+  value(
+    native.upsertUser({
+      id: "limited",
+      providerId: "limited",
+      role: "participant",
+      toolMode: "restricted",
+      displayName: "Limited",
+    }),
+  );
+  const thread = value(native.createThread("limited", { commandId: "restricted-editor" }));
+  const root = resolveRestrictedSessionTmpDir(nativeSessionId(thread.id));
+  directories.push(root);
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "inside.txt"), "inside");
+  await symlink(target, join(root, "link.txt"));
+  const service = new NativeLiveFileService({
+    native,
+    filesystem: new FileSystem(root),
+    toolRoot: root,
+    remoteDenyPaths: [],
+  });
+  expect(value(await service.document("limited", thread.id, "/tmp/inside.txt")).text).toBe(
+    "inside",
+  );
+  expect((await service.document("limited", thread.id, "/tmp/link.txt")).isErr()).toBe(true);
+  expect(
+    (
+      await service.saveDocument("limited", {
+        threadId: thread.id,
+        path: "/tmp/link.txt",
+        expectedRevision: "any",
+        text: "overwritten",
+      })
+    ).isErr(),
+  ).toBe(true);
+  expect(await readFile(target, "utf8")).toBe("outside");
+  native.close();
+});
+
+test("editing keeps deny paths for symlinks inside denied directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lilac-editor-deny-"));
+  const outside = await mkdtemp(join(tmpdir(), "lilac-editor-deny-target-"));
+  directories.push(root, outside);
+  const target = join(outside, "target.txt");
+  await writeFile(target, "outside");
+  await mkdir(join(root, "private"));
+  const link = join(root, "private", "link.txt");
+  await symlink(target, link);
+  const native = new NativeStore(new Database(":memory:"));
+  value(native.initialize());
+  value(
+    native.upsertUser({
+      id: "owner",
+      providerId: "owner",
+      role: "owner",
+      toolMode: "full",
+      displayName: "owner",
+    }),
+  );
+  const thread = value(native.createThread("owner", { commandId: "editor-deny" }));
+  const service = new NativeLiveFileService({
+    native,
+    filesystem: new FileSystem(root, { denyPaths: [join(root, "private")] }),
+    toolRoot: root,
+    remoteDenyPaths: [],
+  });
+  const { revision } = value(await service.document("owner", thread.id, target));
+  expect((await service.document("owner", thread.id, link)).isErr()).toBe(true);
+  expect(
+    (
+      await service.saveDocument("owner", {
+        threadId: thread.id,
+        path: link,
+        expectedRevision: revision,
+        text: "overwritten",
+      })
+    ).isErr(),
+  ).toBe(true);
+  expect(await readFile(target, "utf8")).toBe("outside");
   native.close();
 });

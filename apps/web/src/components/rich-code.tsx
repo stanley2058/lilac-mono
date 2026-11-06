@@ -10,15 +10,7 @@ import {
   type ThemeRegistration,
 } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
-import typescript from "shiki/langs/typescript.mjs";
-import tsx from "shiki/langs/tsx.mjs";
-import javascript from "shiki/langs/javascript.mjs";
-import json from "shiki/langs/json.mjs";
-import html from "shiki/langs/html.mjs";
-import css from "shiki/langs/css.mjs";
-import bash from "shiki/langs/bash.mjs";
-import python from "shiki/langs/python.mjs";
-import yaml from "shiki/langs/yaml.mjs";
+import { syntaxLanguages } from "./syntax-languages";
 
 const highlighter = createHighlighterCore({
   themes: [
@@ -40,7 +32,7 @@ const highlighter = createHighlighterCore({
       },
     }),
   ],
-  langs: [typescript, tsx, javascript, json, html, css, bash, python, yaml],
+  langs: syntaxLanguages,
   engine: createJavaScriptRegexEngine(),
 });
 const cache = new Map<string, Promise<ThemedToken[][]>>();

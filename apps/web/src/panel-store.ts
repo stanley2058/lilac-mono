@@ -60,6 +60,7 @@ const tabsSchema = z
           })
           .strict(),
         z.object({ id: z.literal("agents"), type: z.literal("agents") }).strict(),
+        z.object({ id: z.literal("files"), type: z.literal("files") }).strict(),
         z.object({ id: z.string(), type: z.literal("file"), target: fileTargetSchema }).strict(),
       ]),
     ),
@@ -88,6 +89,7 @@ type PanelLayouts = {
 export type PanelTab =
   | { id: string; type: "thread"; target: ConversationReference; title: string }
   | { id: string; type: "agents" }
+  | { id: string; type: "files" }
   | { id: string; type: "file"; target: FileTarget };
 export type PanelTabs = { items: PanelTab[]; activeId?: string };
 export const defaultPanelTabs: PanelTabs = {
@@ -126,6 +128,7 @@ type PanelStore = PanelLayouts & {
     conversationThreadId?: string,
   ) => void;
   openAgents: (threadId: string) => void;
+  openFiles: (threadId: string) => void;
   focusTab: (threadId: string, id: string) => void;
   closeTab: (threadId: string, id: string) => void;
   resolveFile: (threadId: string, id: string, target: FileTarget) => void;
@@ -208,14 +211,15 @@ export function createPanelStore(
       set({ tabs });
       save(get());
     }
-    function openAgents(threadId: string) {
+    function openTool(threadId: string, type: "agents" | "files") {
       const current = get().tabs.get(threadId) ?? defaultPanelTabs;
-      const items = current.items.some((tab) => tab.type === "agents")
+      const items = current.items.some((tab) => tab.type === type)
         ? current.items
-        : [...current.items, { id: "agents", type: "agents" as const }];
-      updateTabs(threadId, { items, activeId: "agents" });
+        : [...current.items, { id: type, type }];
+      updateTabs(threadId, { items, activeId: type });
       updateRight(threadId, { open: true });
     }
+    const openAgents = (threadId: string) => openTool(threadId, "agents");
     return {
       ...initial,
       computerGeometry: new Map(),
@@ -242,6 +246,7 @@ export function createPanelStore(
         updateRight(threadId, { open: true });
       },
       openAgents,
+      openFiles: (threadId) => openTool(threadId, "files"),
       focusTab: (threadId, id) => {
         const current = get().tabs.get(threadId) ?? defaultPanelTabs;
         if (current.activeId === id || !current.items.some((tab) => tab.id === id)) return;

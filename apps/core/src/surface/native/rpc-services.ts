@@ -42,7 +42,7 @@ export type NativeRpcServiceOptions = {
   push?: NativePush;
   computer?: Pick<NativeComputer, "read">;
   references?: Pick<NativeReferences, "resolve" | "read" | "range">;
-  files?: Pick<NativeLiveFileService, "resolve">;
+  files?: Pick<NativeLiveFileService, "resolve" | "tree" | "document" | "saveDocument">;
   subagents?: Pick<NativeSubagents, "list" | "read" | "stream">;
   store: NativeStore;
   auth: NativeAuthenticator;
@@ -1005,6 +1005,18 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
       },
     },
     files: {
+      tree: (principal, input) =>
+        options.files
+          ? options.files.tree(principal.userId, input.threadId)
+          : Result.err(nativeFailure("not-found", "File browsing is unavailable")),
+      document: (principal, input) =>
+        options.files
+          ? options.files.document(principal.userId, input.threadId, input.path)
+          : Result.err(nativeFailure("not-found", "File browsing is unavailable")),
+      save: (principal, input) =>
+        options.files
+          ? options.files.saveDocument(principal.userId, input)
+          : Result.err(nativeFailure("not-found", "File editing is unavailable")),
       resolve: (principal, input, signal) =>
         options.files
           ? options.files.resolve(principal.userId, input.threadId, input.path, signal)

@@ -1,3 +1,4 @@
+import { createFileEditors } from "./file-editors";
 import { createThreadPresence } from "./thread-presence";
 import { createBackgroundPush } from "./background-push";
 import { createNotificationPreferences } from "./notifications";
@@ -16,6 +17,7 @@ type WorkspaceServices = Pick<
   AppProps,
   "client" | "scope" | "upload" | "resourceUrl" | "draftCache" | "accountProfile"
 > & {
+  fileEditors: ReturnType<typeof createFileEditors>;
   keybindings: ReturnType<typeof createKeybindings>;
   panels: ReturnType<typeof createPanelStore>;
   pool: UploadPool;
@@ -40,6 +42,15 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
     () => createKeybindings(scope),
     [scope.installationId, scope.principalId],
   );
+  const fileEditors = useMemo(() => createFileEditors(), [scope.installationId, scope.principalId]);
+  useEffect(() => {
+    const guard = (event: BeforeUnloadEvent) => {
+      if (!fileEditors.getState().dirty.size) return;
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [fileEditors]);
   const panels = useMemo(() => createPanelStore(scope), [scope.installationId, scope.principalId]);
   const pool = useMemo(() => new UploadPool(client, upload), [client, upload]);
   const drafts = useMemo(() => createDraftStore(), [client]);
@@ -72,6 +83,7 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
   const services = useMemo(
     () => ({
       client,
+      fileEditors,
       scope,
       upload,
       resourceUrl,
@@ -87,7 +99,9 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
       keybindings,
     }),
     [
+      fileEditors,
       client,
+      fileEditors,
       scope,
       upload,
       resourceUrl,

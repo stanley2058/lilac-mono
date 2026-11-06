@@ -1,6 +1,7 @@
 import { nativeSessionId } from "./native-protocol";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import type { Root, RootContent } from "mdast";
+import { realpath } from "node:fs/promises";
 import { basename, posix } from "node:path";
 import type { FileSystem } from "@stanley2058/lilac-fs";
 import type { PersistedDataError } from "@stanley2058/lilac-utils";
@@ -8,6 +9,8 @@ import { Result, type Result as ResultType } from "better-result";
 import { RESOURCE_MAX_BYTES } from "../../resource/contracts";
 import {
   inferMimeTypeFromFilename,
+  isPathInside,
+  resolveRestrictedSessionTmpDir,
   resolveToolPathForRequestContextResult,
 } from "../../shared/attachment-utils";
 import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
@@ -21,6 +24,10 @@ type NativeFileResult<T> = ResultType<T, NativeFileError>;
 export type PublishedNativePath = { id: string; threadId: string; path: string; cwd?: string };
 
 export class NativeLiveFileService {
+  // The filesystem checks the revision and then writes asynchronously, so competing editor saves
+  // for one file must run one at a time or both can pass the same revision check.
+  private readonly saves = new Map<string, Promise<void>>();
+
   constructor(
     readonly dependencies: {
       native: {
@@ -64,6 +71,138 @@ export class NativeLiveFileService {
       const reference = yield* this.publish(actorId, threadId, inputPath);
       const file = yield* Result.await(this.read(actorId, reference.id, signal));
       return Result.ok({ ...file, path: reference.path });
+    }, this);
+  }
+
+  private editorPath(actorId: string, threadId: string, inputPath: string) {
+    return Result.gen(async function* () {
+      const thread = yield* this.dependencies.native.authorizeThread(actorId, threadId, true);
+      const actor = yield* this.dependencies.native.getUser(actorId);
+      const starter = yield* this.dependencies.native.getUser(thread.starterId);
+      if (actor.toolMode === "restricted" && starter.toolMode !== "restricted")
+        return Result.err(nativeFailure("forbidden", "File browsing is outside your tool access"));
+      const restricted = starter.toolMode === "restricted";
+      const root = restricted ? "/tmp" : this.dependencies.toolRoot;
+      const path = posix.resolve(root, inputPath);
+      const sessionId = nativeSessionId(threadId);
+      const resolved = yield* resolveToolPathForRequestContextResult({
+        cwd: root,
+        inputPath: path,
+        context: { sessionId, safetyMode: restricted ? "restricted" : "trusted" },
+      }).mapError(() => nativeFailure("forbidden", "File path is outside this thread's access"));
+      const canonical = yield* Result.await(
+        Result.tryPromise({
+          try: () => realpath(resolved),
+          catch: () => nativeFailure("not-found", "File not found"),
+        }),
+      );
+      if (!restricted) return Result.ok({ root, path, resolved, canonical });
+      // Restricted paths are checked lexically; a symlink in the session directory must not
+      // lead the editor outside it.
+      const sessionRoot = yield* Result.await(
+        Result.tryPromise({
+          try: () => realpath(resolveRestrictedSessionTmpDir(sessionId)),
+          catch: () => nativeFailure("not-found", "File not found"),
+        }),
+      );
+      if (!isPathInside(sessionRoot, canonical))
+        return Result.err(nativeFailure("forbidden", "File path is outside this thread's access"));
+      return Result.ok({ root, path, resolved, canonical });
+    }, this);
+  }
+
+  /** Runs `task` after earlier saves of `key`; `task` must resolve with a Result instead of rejecting. */
+  private exclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const run = (this.saves.get(key) ?? Promise.resolve()).then(task);
+    const tail = run.then(() => {
+      if (this.saves.get(key) === tail) this.saves.delete(key);
+    });
+    this.saves.set(key, tail);
+    return run;
+  }
+
+  async tree(actorId: string, threadId: string) {
+    return Result.gen(async function* () {
+      const location = yield* Result.await(this.editorPath(actorId, threadId, "."));
+      const listing = await this.dependencies.filesystem.glob({
+        baseDir: location.resolved,
+        patterns: ["**/*", "!**/.git/**", "!**/node_modules/**"],
+        maxEntries: 10_000,
+        mode: "detailed",
+      });
+      if (listing.error || listing.mode !== "detailed")
+        return Result.err(nativeFailure("not-found", "Could not list workspace files"));
+      return Result.ok({
+        root: location.root,
+        paths: listing.entries
+          .filter((entry) => entry.type === "file")
+          .map((entry) => entry.path)
+          .sort(),
+        truncated: listing.truncated,
+      });
+    }, this);
+  }
+
+  async document(actorId: string, threadId: string, inputPath: string) {
+    return Result.gen(async function* () {
+      const location = yield* Result.await(this.editorPath(actorId, threadId, inputPath));
+      const read = await this.dependencies.filesystem.readFileBytes({
+        path: location.resolved,
+        maxBytes: 2_097_152,
+      });
+      if (!read.success)
+        return Result.err(
+          nativeFailure(
+            "invalid",
+            "Cannot edit this file. It must be readable and no larger than 2 MiB.",
+          ),
+        );
+      const text = yield* Result.try({
+        try: () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(read.bytes),
+        catch: () => nativeFailure("invalid", "Only UTF-8 text files can be edited"),
+      });
+      if (text.includes("\0"))
+        return Result.err(nativeFailure("invalid", "Binary files cannot be edited"));
+      return Result.ok({ path: location.path, text, revision: read.fileHash });
+    }, this);
+  }
+
+  async saveDocument(
+    actorId: string,
+    input: { threadId: string; path: string; text: string; expectedRevision: string },
+  ) {
+    return Result.gen(async function* () {
+      if (Buffer.byteLength(input.text) > 2_097_152 || input.text.includes("\0"))
+        return Result.err(nativeFailure("invalid", "Only text files up to 2 MiB can be saved"));
+      const location = yield* Result.await(this.editorPath(actorId, input.threadId, input.path));
+      const written = yield* Result.await(
+        this.exclusive(location.canonical, () =>
+          Result.tryPromise({
+            try: () =>
+              this.dependencies.filesystem.writeFile({
+                path: location.resolved,
+                content: input.text,
+                overwrite: true,
+                expectedHash: input.expectedRevision,
+                createParents: false,
+              }),
+            catch: () => nativeFailure("forbidden", "Could not save this file"),
+          }),
+        ),
+      );
+      if (!written.success) {
+        const conflict =
+          written.error.code === "HASH_MISMATCH" || written.error.code === "NOT_FOUND";
+        return Result.err(
+          nativeFailure(
+            conflict ? "conflict" : "forbidden",
+            conflict
+              ? "File changed on disk. Reload it before saving."
+              : "Could not save this file",
+          ),
+        );
+      }
+      return Result.ok({ path: location.path, text: input.text, revision: written.fileHash });
     }, this);
   }
 

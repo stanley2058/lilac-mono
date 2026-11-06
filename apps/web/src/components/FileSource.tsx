@@ -17,6 +17,7 @@ export function FileSource({
   endLine,
   navigation,
   heading,
+  actions,
 }: {
   name: string;
   href?: string;
@@ -25,6 +26,7 @@ export function FileSource({
   endLine?: number;
   navigation?: FileTarget;
   heading?: ReactNode;
+  actions?: ReactNode;
 }) {
   const [wrap, setWrap] = useState(true);
   const [preview, setPreview] = useState(false);
@@ -52,6 +54,7 @@ export function FileSource({
             <WrapText />
           </IconButton>
         ) : null}
+        {actions}
       </div>
       {htmlPreview ? <HtmlFilePreview key={href} href={href} name={name} /> : null}
       {!htmlPreview && text.status === "loading" ? (

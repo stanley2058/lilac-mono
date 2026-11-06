@@ -299,6 +299,15 @@ export function createNativeRouter(
       ),
     },
     files: {
+      tree: secured.files.tree.handler(async ({ input, context }) =>
+        nativeRpcValue(await services.files.tree(context.principal, input)),
+      ),
+      document: secured.files.document.handler(async ({ input, context }) =>
+        nativeRpcValue(await services.files.document(context.principal, input)),
+      ),
+      save: secured.files.save.handler(async ({ input, context }) =>
+        nativeRpcValue(await services.files.save(context.principal, input)),
+      ),
       resolve: secured.files.resolve.handler(async ({ input, context, signal }) =>
         nativeRpcValue(await services.files.resolve(context.principal, input, signal)),
       ),

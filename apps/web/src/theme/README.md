@@ -39,10 +39,11 @@ win. Missing roles use a related color or the built-in palette for the effective
 borders, and shadows are centralized there. The adapter maps editor, sidebar, widget, menu, button,
 input, list selection, link, focus, and status roles. It does not duplicate the VS Code workbench.
 
-Ordered TextMate `tokenColors` or resolved Shiki `settings` load through the existing shared
-highlighter. Cache keys include theme identity. Only code-rendering leaves subscribe to syntax
-changes; UI colors update through CSS without subscribing the workspace tree. File line estimates
-read the code line-height token once at mount, and rendered rows retain virtualizer measurement.
+Ordered TextMate `tokenColors` or resolved Shiki `settings` feed both chat highlighting and Monaco.
+Monaco uses a separate Shiki instance with shared grammar imports so chat tokenization cannot change
+the editor theme. Only code-rendering leaves subscribe to syntax changes; UI colors update through
+CSS. The workspace tree uses the same sidebar and selection variables. Monaco and the YAML language
+service load on demand. Core and MCP editors use the generated configuration schemas.
 
 Resolve extension `include` files and path-valued `tokenColors` before registration. This module does
 not parse JSONC files, fetch extensions, or apply language-server semantic tokens. It supports the

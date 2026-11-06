@@ -34,7 +34,7 @@ function restrictedSessionPathToken(value: string | undefined): string {
   return createHash("sha256").update(raw).digest("hex").slice(0, 32);
 }
 
-function isPathInside(parent: string, child: string): boolean {
+export function isPathInside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }

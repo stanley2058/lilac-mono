@@ -12,10 +12,6 @@
   font-weight: 600;
 }
 
-.settings-config .config-footer {
-  flex-wrap: wrap;
-}
-
 .settings-account > div {
   display: flex;
   justify-content: space-between;

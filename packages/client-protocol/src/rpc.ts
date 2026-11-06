@@ -443,6 +443,29 @@ export const nativeContract = {
       .output(catalogReplySchema),
   },
   files: {
+    tree: procedure.input(threadIdInput).output(
+      z.strictObject({
+        root: z.string(),
+        paths: z.array(z.string()),
+        truncated: z.boolean(),
+      }),
+    ),
+    document: procedure.input(threadIdInput.extend({ path: z.string().min(1).max(4096) })).output(
+      z.strictObject({
+        path: z.string(),
+        text: z.string(),
+        revision: z.string(),
+      }),
+    ),
+    save: procedure
+      .input(
+        threadIdInput.extend({
+          path: z.string().min(1).max(4096),
+          text: z.string().max(2_097_152),
+          expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+        }),
+      )
+      .output(z.strictObject({ path: z.string(), text: z.string(), revision: z.string() })),
     resolve: procedure.input(threadIdInput.extend({ path: z.string().min(1).max(4096) })).output(
       z.strictObject({
         path: z.string(),
