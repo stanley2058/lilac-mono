@@ -37,6 +37,11 @@ function fixture(transport: NativeTransport, rejectSocket = false, openSocket?: 
   let sockets = 0;
   let httpCalls = 0;
   let accepted = 0;
+  let bootstraps = 0;
+  let reauthentications = 0;
+  let token = "initial-test-token";
+  const watchTokens: string[] = [];
+  let subscriptions = new AbortController();
   let threadReady = Promise.withResolvers<void>();
   let catalogReady = Promise.withResolvers<void>();
   const publisher = new EventPublisher<{ catalog: CatalogEvent; thread: ThreadEvent }>();
@@ -45,6 +50,12 @@ function fixture(transport: NativeTransport, rejectSocket = false, openSocket?: 
   const checkpoints: unknown[] = [];
   const api = implement(nativeContract);
   const router = {
+    connection: {
+      reauthenticate: api.connection.reauthenticate.handler(() => {
+        reauthentications++;
+        return initial.viewer;
+      }),
+    },
     streams: {
       watch: api.streams.watch.handler(async function* ({ input, signal }) {
         checkpoints.push(input.checkpoint);
@@ -52,7 +63,9 @@ function fixture(transport: NativeTransport, rejectSocket = false, openSocket?: 
         watched.resolve();
         threadReady.resolve();
         try {
-          yield* publisher.subscribe("thread", { signal });
+          yield* publisher.subscribe("thread", {
+            signal: AbortSignal.any([subscriptions.signal, ...(signal ? [signal] : [])]),
+          });
         } finally {
           canceled.resolve();
         }
@@ -61,7 +74,9 @@ function fixture(transport: NativeTransport, rejectSocket = false, openSocket?: 
     bootstrap: {
       watch: api.bootstrap.watch.handler(async function* ({ signal }) {
         catalogReady.resolve();
-        yield* publisher.subscribe("catalog", { signal });
+        yield* publisher.subscribe("catalog", {
+          signal: AbortSignal.any([subscriptions.signal, ...(signal ? [signal] : [])]),
+        });
       }),
     },
     inputs: {
@@ -88,6 +103,8 @@ function fixture(transport: NativeTransport, rejectSocket = false, openSocket?: 
         return new Response(null, { status: 426 });
       }
       httpCalls++;
+      if (new URL(request.url).pathname.endsWith("/watch"))
+        watchTokens.push(request.headers.get("authorization") ?? "");
       return (await http.handle(request)).response ?? new Response(null, { status: 404 });
     },
     websocket: {
@@ -105,8 +122,15 @@ function fixture(transport: NativeTransport, rejectSocket = false, openSocket?: 
     },
     transport,
     openSocket: openSocket ?? (() => new WebSocket(`ws://127.0.0.1:${server.port}/socket`)),
-    openHttp: () => createNativeHttpRPC({ url: server.url }),
-    bootstrap: async () => ({ ...initial, transport: policy }),
+    openHttp: () =>
+      createNativeHttpRPC({
+        url: server.url,
+        headers: () => ({ authorization: `Bearer ${token}` }),
+      }),
+    bootstrap: async () => {
+      bootstraps++;
+      return { ...initial, transport: policy };
+    },
   });
   cleanups.push(() => client.dispose());
   return {
@@ -114,7 +138,23 @@ function fixture(transport: NativeTransport, rejectSocket = false, openSocket?: 
     watched: watched.promise,
     canceled: canceled.promise,
     checkpoints,
-    counts: () => ({ sockets, httpCalls, accepted }),
+    counts: () => ({ sockets, httpCalls, accepted, bootstraps, reauthentications }),
+    watchTokens,
+    endStreams: () => {
+      subscriptions.abort();
+      subscriptions = new AbortController();
+    },
+    setToken: (next: string) => {
+      token = next;
+    },
+    allowSocket: () => {
+      rejectSocket = false;
+    },
+    nextWatches: () => {
+      threadReady = Promise.withResolvers<void>();
+      catalogReady = Promise.withResolvers<void>();
+      return Promise.all([threadReady.promise, catalogReady.promise]);
+    },
     ready: () => Promise.all([threadReady.promise, catalogReady.promise]),
     publishInput: () =>
       publisher.publish("thread", {
@@ -155,7 +195,7 @@ test("HTTP+SSE streams replay, sends commands once, and cancels idle subscriptio
   await f.canceled;
 });
 
-test("auto falls back after a rejected upgrade and retains HTTP on reconnect", async () => {
+test("auto tries WebSocket again on reconnect and can fall back again", async () => {
   const f = fixture("auto", true);
   await f.client.start("thread");
   await f.watched;
@@ -167,7 +207,8 @@ test("auto falls back after a rejected upgrade and retains HTTP on reconnect", a
   });
   f.client.reconnect();
   await online.promise;
-  expect(f.counts().sockets).toBe(1);
+  expect(f.counts().sockets).toBe(2);
+  expect(f.client.currentTransport).toBe("http-sse");
 });
 
 test("forced WebSocket never starts HTTP when an upgrade fails", async () => {
@@ -251,4 +292,100 @@ test("deployment resync repeatedly switches live subscriptions between WebSocket
     await delivered.promise;
     unsubscribe();
   }
+});
+
+test("auto upgrades back to WebSocket when it becomes available on reconnect", async () => {
+  const f = fixture("auto", true);
+  await f.client.start("thread");
+  await f.ready();
+  expect(f.client.currentTransport).toBe("http-sse");
+  f.allowSocket();
+  const ready = f.nextWatches();
+  f.client.reconnect();
+  await ready;
+  expect(f.client.currentTransport).toBe("websocket");
+  expect(f.counts().sockets).toBe(2);
+  expect(f.checkpoints).toEqual([checkpoint, checkpoint]);
+});
+
+test("HTTP reauthentication renews subscriptions with fresh credentials without reconnecting", async () => {
+  const f = fixture("http-sse");
+  let online = 0;
+  f.client.subscribe((event) => {
+    if (event.kind === "connection" && event.state === "online") online++;
+  });
+  await f.client.start("thread");
+  await f.ready();
+  const rpc = f.client.rpc;
+  const ready = f.nextWatches();
+  f.setToken("renewed-test-token");
+  expect(await f.client.reauthenticate("renewed-test-token")).toBe(true);
+  await ready;
+  await f.canceled;
+  expect(f.client.rpc).toBe(rpc);
+  expect(f.counts()).toMatchObject({ sockets: 0, bootstraps: 1, reauthentications: 1 });
+  expect(online).toBe(1);
+  expect(f.watchTokens).toEqual([
+    "Bearer initial-test-token",
+    "Bearer initial-test-token",
+    "Bearer renewed-test-token",
+    "Bearer renewed-test-token",
+  ]);
+  expect(f.checkpoints).toEqual([checkpoint, checkpoint]);
+  const delivered = Promise.withResolvers<void>();
+  f.client.subscribe((event) => {
+    if (event.kind === "input" && event.receipt.inputId === "live") delivered.resolve();
+  });
+  f.publishInput();
+  await delivered.promise;
+});
+
+for (const transport of ["http-sse", "auto"] as const)
+  test(`an online reauthentication listener cannot cause a ${transport} reconnect loop`, async () => {
+    const f = fixture(transport, true);
+    let online = 0;
+    const refreshed = Promise.withResolvers<boolean>();
+    f.client.subscribe((event) => {
+      if (event.kind !== "connection" || event.state !== "online") return;
+      online++;
+      if (online === 1) void f.client.reauthenticate("test-token").then(refreshed.resolve);
+    });
+    await f.client.start("thread");
+    expect(await refreshed.promise).toBe(true);
+    expect(online).toBe(1);
+    expect(f.counts()).toMatchObject({
+      bootstraps: transport === "auto" ? 2 : 1,
+      reauthentications: 1,
+    });
+  });
+
+test("auto retries WebSocket after an established SSE stream disconnects", async () => {
+  const f = fixture("auto", true);
+  await f.client.start("thread");
+  await f.ready();
+  expect(f.client.currentTransport).toBe("http-sse");
+  const originalTimeout = globalThis.setTimeout;
+  const retryScheduled = Promise.withResolvers<() => void>();
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(
+    Object.assign((...args: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...values] = args;
+      const handle = originalTimeout(...args);
+      if (delay !== undefined && delay >= 250 && delay <= 500) {
+        retryScheduled.resolve(() => {
+          clearTimeout(handle);
+          callback(...values);
+        });
+      }
+      return handle;
+    }, originalTimeout),
+  );
+  cleanups.push(() => timer.mockRestore());
+  f.allowSocket();
+  const ready = f.nextWatches();
+  f.endStreams();
+  const retry = await retryScheduled.promise;
+  retry();
+  await ready;
+  expect(f.client.currentTransport).toBe("websocket");
+  expect(f.counts().sockets).toBe(2);
 });

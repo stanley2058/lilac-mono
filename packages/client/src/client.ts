@@ -142,8 +142,7 @@ export class NativeClient {
   private fallback(): boolean {
     if (this.transport !== "auto" || this.activeTransport !== "websocket" || !this.options.openHttp)
       return false;
-    this.httpFallback = true;
-    this.reconnect();
+    this.restartConnection(true);
     return true;
   }
   get connectionState() {
@@ -277,6 +276,9 @@ export class NativeClient {
     await this.connect();
   }
   reconnect(): void {
+    this.restartConnection(false);
+  }
+  private restartConnection(httpFallback: boolean): void {
     if (this.stopped) return;
     clearTimeout(this.reconnectTimer);
     clearTimeout(this.bootstrapTimer);
@@ -292,9 +294,10 @@ export class NativeClient {
     // Stream cancellation sends an RPC abort before an established socket closes.
     void Promise.all(streams).then(() => socket?.close());
     this.bootstrapPending = true;
-    void this.connect();
+    void this.connect(httpFallback);
   }
-  private async connect(): Promise<void> {
+  private async connect(httpFallback = false): Promise<void> {
+    this.httpFallback = httpFallback;
     const attempt = ++this.connectionAttempt;
     clearTimeout(this.bootstrapTimer);
     this.connectionLifetime.abort();
@@ -474,6 +477,10 @@ export class NativeClient {
     this.bootstrapTimer = setTimeout(
       () => {
         if (this.stopped) return;
+        if (this.transport === "auto" && this.activeTransport === "http-sse") {
+          this.reconnect();
+          return;
+        }
         void this.bootstrap();
       },
       reconnectDelay(this.attempt++),
@@ -801,8 +808,22 @@ export class NativeClient {
       await this.logout();
       return false;
     }
-    if (this.activeTransport === "http-sse") this.reconnect();
+    if (this.activeTransport === "http-sse") this.renewHttpSubscriptions();
     return true;
+  }
+  private renewHttpSubscriptions(): void {
+    // Each SSE request retains its opening credential. Renew streams without another online event,
+    // because authentication listeners use that event to request their own refresh.
+    const watched = [...this.streams.keys()];
+    this.abortStreams();
+    for (const key of watched) {
+      if (key === "__catalog") {
+        this.watchCatalog();
+        continue;
+      }
+      const target = this.streamTargets.get(key);
+      if (target) this.watchTarget(target);
+    }
   }
   async submit(input: NativeInput): Promise<CommandOutcome> {
     const known = this.receipts.get(input.commandId);

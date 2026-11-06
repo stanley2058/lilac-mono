@@ -100,8 +100,8 @@ memory private between users. See [Surface tools](#surface-tools) for the retrie
 Settings > Deployment > Transport applies to all native web and TUI clients:
 
 - **Auto (default)** tries WebSocket first. A failed upgrade or a handshake that exceeds the
-  ten-second connection deadline switches that client to HTTP+SSE for the rest of its session.
-  An established socket that disconnects first retries WebSocket.
+  ten-second connection deadline falls back to HTTP+SSE for that connection. Each reconnect tries
+  WebSocket again.
 - **WebSocket** uses WebSocket without fallback.
 - **HTTP+SSE** sends RPC calls over HTTP and streams each active subscription over SSE.
 
