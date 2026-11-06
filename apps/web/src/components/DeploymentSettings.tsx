@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   NativeDeploymentSettings,
@@ -6,261 +6,345 @@ import type {
 } from "@stanley2058/lilac-client-protocol";
 import { useWorkspace } from "../workspace-context";
 import { useNativeOnline } from "../queries";
-import { ErrorNotice } from "./ui";
+import { attempt, ErrorNotice } from "./ui";
+import { cn } from "cn";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "./ui/input-group";
 import { Switch } from "./ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { StreamingModeSelect } from "./StreamingSettings";
 
 type DeploymentDocument = NativeRpcOutputs["config"]["readDeployment"];
 
-export function DeploymentSettingsForm({
-  value,
-  disabled,
-  pending,
-  onSave,
-  onEdit,
+const deploymentKey = ["config", "deployment"] as const;
+const minute = 60_000;
+const day = 24 * 60 * minute;
+
+function formatDuration(ms: number | null, unit: number) {
+  if (ms === null) return "";
+  return String(Number((ms / unit).toFixed(3)));
+}
+
+/** Returns `undefined` for invalid input and `null` for an empty optional value. */
+function parseDuration(text: string, unit: number, optional: boolean) {
+  const trimmed = text.trim();
+  if (trimmed === "") return optional ? null : undefined;
+  const amount = Number(trimmed);
+  if (!Number.isFinite(amount)) return undefined;
+  const ms = Math.round(amount * unit);
+  return ms >= 1 ? ms : undefined;
+}
+
+function SettingRow({
+  id,
+  label,
+  description,
+  children,
 }: {
-  value: NativeDeploymentSettings;
-  disabled?: boolean;
-  pending?: boolean;
-  onSave: (settings: NativeDeploymentSettings) => void;
-  onEdit?: () => void;
+  id?: string;
+  label: string;
+  description?: string;
+  children: ReactNode;
 }) {
-  const [transport, setTransport] = useState(value.transport);
-  const [titleModel, setTitleModel] = useState(value.titleModel);
-  const [streaming, setStreaming] = useState(value.outputStreaming);
-  const [dmGap, setDmGap] = useState(String(value.dmContextGapMs));
-  const [timestampGap, setTimestampGap] = useState(String(value.dmTimestampGapMs));
-  const [selectionAge, setSelectionAge] = useState(
-    value.oldMessageSelectionMaxAgeMs?.toString() ?? "",
-  );
-  const [retentionAge, setRetentionAge] = useState(
-    value.storageRetentionMaxAgeMs?.toString() ?? "",
-  );
-  const triggerRunId = useId();
-  const [triggerRun, setTriggerRun] = useState(value.crossThreadSend.triggerRun);
   return (
-    <form
-      className="grid gap-6"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (!titleModel.trim()) return;
-        onSave({
-          transport,
-          titleModel: titleModel.trim(),
-          outputStreaming: streaming,
-          dmContextGapMs: Number(dmGap),
-          dmTimestampGapMs: Number(timestampGap),
-          oldMessageSelectionMaxAgeMs: selectionAge === "" ? null : Number(selectionAge),
-          storageRetentionMaxAgeMs: retentionAge === "" ? null : Number(retentionAge),
-          crossThreadSend: { triggerRun },
-        });
-      }}
-    >
-      <fieldset disabled={disabled || pending} className="grid min-w-0 gap-6">
-        <section className="grid gap-2" aria-labelledby="transport-heading">
-          <h3 id="transport-heading" className="font-medium">
-            Transport
-          </h3>
-          <div className="settings-row flex items-start justify-between gap-6">
-            <p className="text-sm text-muted-foreground">
-              Applies to all clients. Auto tries WebSocket, then falls back to HTTP+SSE.
-            </p>
-            <Select
-              value={transport}
-              items={[
-                { value: "auto", label: "Auto (default)" },
-                { value: "websocket", label: "WebSocket" },
-                { value: "http-sse", label: "HTTP+SSE" },
-              ]}
-              disabled={disabled || pending}
-              onValueChange={(next) => {
-                if (next !== "auto" && next !== "websocket" && next !== "http-sse") return;
-                onEdit?.();
-                setTransport(next);
-              }}
-            >
-              <SelectTrigger aria-label="Transport">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">Auto (default)</SelectItem>
-                <SelectItem value="websocket">WebSocket</SelectItem>
-                <SelectItem value="http-sse">HTTP+SSE</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </section>
-        <label className="grid gap-2">
-          <span>Title model</span>
-          <Input
-            required
-            value={titleModel}
-            onChange={(event) => {
-              onEdit?.();
-              setTitleModel(event.target.value);
-            }}
-          />
-          <span className="text-sm text-muted-foreground">
-            Use fast, main, or a provider/model reference.
-          </span>
-        </label>
-        <div className="settings-row flex items-start justify-between gap-6">
-          <div className="min-w-0">
-            <span>Response streaming</span>
-            <p className="text-sm text-muted-foreground">
-              Show completed paragraphs or wait for the full response.
-            </p>
-          </div>
-          <StreamingModeSelect
-            value={streaming}
-            disabled={disabled || pending}
-            onChange={(mode) => {
-              onEdit?.();
-              setStreaming(mode);
-            }}
-          />
-        </div>
-        <label className="grid gap-2">
-          <span>DM context gap (ms)</span>
-          <Input
-            type="number"
-            min={1}
-            step={1}
-            required
-            value={dmGap}
-            onChange={(event) => {
-              onEdit?.();
-              setDmGap(event.target.value);
-            }}
-          />
-          <span className="text-sm text-muted-foreground">
-            Default: 2 hours. A longer pause starts a new context. Messages remain in your DM.
-          </span>
-        </label>
-        <label className="grid gap-2">
-          <span>DM timestamp gap (ms)</span>
-          <Input
-            type="number"
-            min={1}
-            step={1}
-            required
-            value={timestampGap}
-            onChange={(event) => {
-              onEdit?.();
-              setTimestampGap(event.target.value);
-            }}
-          />
-          <span className="text-sm text-muted-foreground">
-            Default: 30 minutes. Timestamps also appear when the day changes.
-          </span>
-        </label>
-        <label className="grid gap-2">
-          <span>Old message selection max age (ms)</span>
-          <Input
-            type="number"
-            min={1}
-            step={1}
-            placeholder="Unlimited"
-            value={selectionAge}
-            onChange={(event) => {
-              onEdit?.();
-              setSelectionAge(event.target.value);
-            }}
-          />
-          <span className="text-sm text-muted-foreground">Leave blank for no age limit.</span>
-        </label>
-        <label className="grid gap-2">
-          <span>Storage retention max age (ms)</span>
-          <Input
-            type="number"
-            min={1}
-            step={1}
-            placeholder="Unlimited"
-            value={retentionAge}
-            onChange={(event) => {
-              onEdit?.();
-              setRetentionAge(event.target.value);
-            }}
-          />
-          <span className="text-sm text-muted-foreground">
-            Inactive ordinary threads older than this limit are deleted. Leave blank to keep them.
-          </span>
-        </label>
-        <div className="flex items-center justify-between gap-6">
-          <label htmlFor={triggerRunId}>Start a run for cross-thread messages</label>
-          <Switch
-            id={triggerRunId}
-            checked={triggerRun}
-            disabled={disabled || pending}
-            onCheckedChange={(checked) => {
-              onEdit?.();
-              setTriggerRun(checked);
-            }}
-          />
-        </div>
-        <Button type="submit" className="justify-self-start">
-          {pending ? "Saving…" : "Save"}
-        </Button>
-      </fieldset>
-    </form>
+    <div className="settings-row flex items-start justify-between gap-6">
+      <div className="settings-row-description min-w-0">
+        {id ? (
+          <label htmlFor={id} className="block py-2">
+            {label}
+          </label>
+        ) : (
+          <span>{label}</span>
+        )}
+        {description ? <p className="muted text-muted-foreground">{description}</p> : null}
+      </div>
+      {children}
+    </div>
   );
 }
 
-function DeploymentEditor({ initial, online }: { initial: DeploymentDocument; online: boolean }) {
+function CommitInput({
+  id,
+  value,
+  parse,
+  suffix,
+  placeholder,
+  className,
+  inputClassName,
+  inputMode,
+  onCommit,
+}: {
+  id: string;
+  value: string;
+  parse: (text: string) => boolean;
+  suffix?: string;
+  placeholder?: string;
+  className: string;
+  inputClassName?: string;
+  inputMode?: "decimal";
+  onCommit: (text: string) => void;
+}) {
+  const [text, setText] = useState(value);
+  const [saved, setSaved] = useState(value);
+  if (saved !== value) {
+    setSaved(value);
+    setText(value);
+  }
+  const invalid = !parse(text);
+  const visibleSuffix = text === "" ? undefined : suffix;
+  function commit() {
+    if (invalid || text.trim() === value) return;
+    onCommit(text);
+  }
+  return (
+    <InputGroup className={cn("flex-none", className)}>
+      <InputGroupInput
+        id={id}
+        className={cn(inputClassName, visibleSuffix && "pr-1.5")}
+        inputMode={inputMode}
+        placeholder={placeholder}
+        aria-invalid={invalid || undefined}
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+          if (event.key === "Escape" && text !== value) {
+            event.stopPropagation();
+            setText(value);
+          }
+        }}
+      />
+      {visibleSuffix ? <InputGroupAddon>{visibleSuffix}</InputGroupAddon> : null}
+    </InputGroup>
+  );
+}
+
+function DurationRow({
+  label,
+  description,
+  value,
+  unit,
+  suffix,
+  optional = false,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  value: number | null;
+  unit: number;
+  suffix: string;
+  optional?: boolean;
+  onChange: (ms: number | null) => void;
+}) {
+  const id = useId();
+  return (
+    <SettingRow id={id} label={label} description={description}>
+      <CommitInput
+        id={id}
+        className="w-28"
+        inputClassName="text-right"
+        inputMode="decimal"
+        suffix={suffix}
+        placeholder={optional ? "None" : undefined}
+        value={formatDuration(value, unit)}
+        parse={(text) => parseDuration(text, unit, optional) !== undefined}
+        onCommit={(text) => {
+          const ms = parseDuration(text, unit, optional);
+          if (ms !== undefined) onChange(ms);
+        }}
+      />
+    </SettingRow>
+  );
+}
+
+export function DeploymentSettingsForm({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: NativeDeploymentSettings;
+  disabled?: boolean;
+  onChange: (settings: NativeDeploymentSettings) => void;
+}) {
+  const titleModelId = useId();
+  const triggerRunId = useId();
+  const update = (changes: Partial<NativeDeploymentSettings>) => onChange({ ...value, ...changes });
+  return (
+    <fieldset disabled={disabled} className="grid min-w-0 gap-6">
+      <SettingRow
+        label="Transport"
+        description="Applies to all clients. Auto tries WebSocket, then falls back to HTTP+SSE."
+      >
+        <Select
+          value={value.transport}
+          items={[
+            { value: "auto", label: "Auto (default)" },
+            { value: "websocket", label: "WebSocket" },
+            { value: "http-sse", label: "HTTP+SSE" },
+          ]}
+          disabled={disabled}
+          onValueChange={(next) => {
+            if (next !== "auto" && next !== "websocket" && next !== "http-sse") return;
+            update({ transport: next });
+          }}
+        >
+          <SelectTrigger aria-label="Transport">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">Auto (default)</SelectItem>
+            <SelectItem value="websocket">WebSocket</SelectItem>
+            <SelectItem value="http-sse">HTTP+SSE</SelectItem>
+          </SelectContent>
+        </Select>
+      </SettingRow>
+      <SettingRow
+        id={titleModelId}
+        label="Title model"
+        description="Use fast, main, or a provider/model reference."
+      >
+        <CommitInput
+          id={titleModelId}
+          className="w-40"
+          value={value.titleModel}
+          parse={(text) => text.trim() !== ""}
+          onCommit={(text) => update({ titleModel: text.trim() })}
+        />
+      </SettingRow>
+      <SettingRow
+        label="Response streaming"
+        description="Show completed paragraphs or wait for the full response."
+      >
+        <StreamingModeSelect
+          value={value.outputStreaming}
+          disabled={disabled}
+          onChange={(mode) => update({ outputStreaming: mode })}
+        />
+      </SettingRow>
+      <DurationRow
+        label="DM context gap"
+        description="Default: 2 hours. A longer pause starts a new context. Messages remain in your DM."
+        value={value.dmContextGapMs}
+        unit={minute}
+        suffix="min"
+        onChange={(ms) => {
+          if (ms !== null) update({ dmContextGapMs: ms });
+        }}
+      />
+      <DurationRow
+        label="DM timestamp gap"
+        description="Default: 30 minutes. Timestamps also appear when the day changes."
+        value={value.dmTimestampGapMs}
+        unit={minute}
+        suffix="min"
+        onChange={(ms) => {
+          if (ms !== null) update({ dmTimestampGapMs: ms });
+        }}
+      />
+      <DurationRow
+        label="Old message selection max age"
+        description="Leave blank for no age limit."
+        value={value.oldMessageSelectionMaxAgeMs}
+        unit={day}
+        suffix="days"
+        optional
+        onChange={(ms) => update({ oldMessageSelectionMaxAgeMs: ms })}
+      />
+      <DurationRow
+        label="Storage retention max age"
+        description="Inactive ordinary threads older than this limit are deleted. Leave blank to keep them."
+        value={value.storageRetentionMaxAgeMs}
+        unit={day}
+        suffix="days"
+        optional
+        onChange={(ms) => update({ storageRetentionMaxAgeMs: ms })}
+      />
+      <SettingRow id={triggerRunId} label="Start a run for cross-thread messages">
+        <div className="flex h-9 flex-none items-center">
+          <Switch
+            id={triggerRunId}
+            checked={value.crossThreadSend.triggerRun}
+            disabled={disabled}
+            onCheckedChange={(checked) => update({ crossThreadSend: { triggerRun: checked } })}
+          />
+        </div>
+      </SettingRow>
+    </fieldset>
+  );
+}
+
+function DeploymentEditor({ document, online }: { document: DeploymentDocument; online: boolean }) {
   const { client } = useWorkspace();
   const queries = useQueryClient();
-  const [draft, setDraft] = useState<DeploymentDocument>();
-  const document = draft ?? initial;
+  const [pending, setPending] = useState<NativeDeploymentSettings>();
+  const [error, setError] = useState<string>();
   const [formVersion, setFormVersion] = useState(0);
-  const update = useMutation({
-    mutationFn: (settings: NativeDeploymentSettings) =>
-      client.rpc!.config.setDeployment({ settings, expectedRevision: document.revision }),
-    onMutate: () => queries.cancelQueries({ queryKey: ["config", "deployment"] }),
-    onSuccess: (value) => {
-      setDraft(undefined);
-      queries.setQueryData(["config", "deployment"], value);
-      void queries.invalidateQueries({ queryKey: ["recent-context"] });
-    },
-  });
+  const queued = useRef<NativeDeploymentSettings>(undefined);
+  const running = useRef(false);
+  // Each write replaces the whole document at an expected revision, so writes run one at a time
+  // and only the latest queued settings are sent after the in-flight write finishes.
+  async function flush() {
+    running.current = true;
+    while (queued.current) {
+      const settings = queued.current;
+      queued.current = undefined;
+      await queries.cancelQueries({ queryKey: deploymentKey });
+      const expectedRevision = (queries.getQueryData<DeploymentDocument>(deploymentKey) ?? document)
+        .revision;
+      const saved = await attempt(
+        () => client.rpc!.config.setDeployment({ settings, expectedRevision }),
+        setError,
+      );
+      if (!saved) {
+        queued.current = undefined;
+        running.current = false;
+        setPending(undefined);
+        setFormVersion((version) => version + 1);
+        return;
+      }
+      queries.setQueryData(deploymentKey, saved);
+    }
+    running.current = false;
+    setPending(undefined);
+    void queries.invalidateQueries({ queryKey: ["recent-context"] });
+  }
+  function save(settings: NativeDeploymentSettings) {
+    setError(undefined);
+    setPending(settings);
+    queued.current = settings;
+    if (!running.current) void flush();
+  }
   const reload = useMutation({
     mutationFn: () => client.rpc!.config.readDeployment({}),
     onSuccess: (value) => {
-      setDraft(undefined);
+      setError(undefined);
       setFormVersion((version) => version + 1);
-      update.reset();
-      queries.setQueryData(["config", "deployment"], value);
+      queries.setQueryData(deploymentKey, value);
       void queries.invalidateQueries({ queryKey: ["recent-context"] });
     },
   });
+  const failure = error ?? reload.error?.message;
   return (
     <>
-      <DeploymentSettingsForm
-        key={`${formVersion}:${document.revision}`}
-        value={document.settings}
-        disabled={!online || reload.isPending}
-        pending={update.isPending}
-        onSave={(settings) => update.mutate(settings)}
-        onEdit={() => {
-          setDraft(document);
-          if (update.isSuccess) update.reset();
-        }}
-      />
-      <span role="status" className="text-sm text-muted-foreground">
-        {update.isSuccess ? "Saved" : ""}
-      </span>
-      <ErrorNotice message={(update.error ?? reload.error)?.message} />
-      {update.isError ? (
-        <Button
-          variant="outline"
-          disabled={!online || reload.isPending}
-          onClick={() => reload.mutate()}
-        >
-          Reload settings
-        </Button>
+      {failure ? (
+        <div className="mb-6 grid justify-items-start gap-3">
+          <ErrorNotice message={failure} />
+          <Button
+            variant="outline"
+            disabled={!online || reload.isPending}
+            onClick={() => reload.mutate()}
+          >
+            Reload settings
+          </Button>
+        </div>
       ) : null}
+      <DeploymentSettingsForm
+        key={formVersion}
+        value={pending ?? document.settings}
+        disabled={!online || reload.isPending}
+        onChange={save}
+      />
     </>
   );
 }
@@ -269,12 +353,12 @@ export function DeploymentSettings() {
   const { client } = useWorkspace();
   const online = useNativeOnline(client);
   const settings = useQuery({
-    queryKey: ["config", "deployment"],
+    queryKey: deploymentKey,
     enabled: online,
     queryFn: ({ signal }) => client.rpc!.config.readDeployment({}, { signal }),
     staleTime: 0,
   });
   if (!settings.data)
     return <ErrorNotice message={settings.error?.message ?? (online ? "Loading…" : "Offline")} />;
-  return <DeploymentEditor initial={settings.data} online={online} />;
+  return <DeploymentEditor document={settings.data} online={online} />;
 }

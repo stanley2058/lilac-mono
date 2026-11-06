@@ -57,7 +57,11 @@ import {
   RefreshCw,
   Trash2,
 } from "lucide-react";
-import type { DisplayMessage, NativeThread } from "@stanley2058/lilac-client-protocol";
+import type {
+  DisplayMessage,
+  NativeDeploymentSettings,
+  NativeThread,
+} from "@stanley2058/lilac-client-protocol";
 import logo from "./assets/logo.svg";
 import motion from "./assets/design-system/motion.mp4";
 import tone from "./assets/design-system/tone.wav";
@@ -1881,19 +1885,7 @@ export default function DesignSystem() {
                 <NotificationSettingsDemo />
               </Section>
               <Section id="deployment" title="Deployment settings">
-                <DeploymentSettingsForm
-                  value={{
-                    transport: "auto",
-                    titleModel: "fast",
-                    outputStreaming: "complete",
-                    dmContextGapMs: 7_200_000,
-                    dmTimestampGapMs: 1_800_000,
-                    oldMessageSelectionMaxAgeMs: null,
-                    storageRetentionMaxAgeMs: null,
-                    crossThreadSend: { triggerRun: true },
-                  }}
-                  onSave={() => undefined}
-                />
+                <DeploymentSettingsDemo />
               </Section>
               <ComposerSpecimen />
               <Section
@@ -1995,6 +1987,20 @@ export default function DesignSystem() {
 function KeybindingsDemo() {
   const [store] = useState(() => createKeybindings());
   return <KeybindingsSettings store={store} />;
+}
+
+function DeploymentSettingsDemo() {
+  const [settings, setSettings] = useState<NativeDeploymentSettings>({
+    transport: "auto",
+    titleModel: "fast",
+    outputStreaming: "complete",
+    dmContextGapMs: 7_200_000,
+    dmTimestampGapMs: 1_800_000,
+    oldMessageSelectionMaxAgeMs: null,
+    storageRetentionMaxAgeMs: null,
+    crossThreadSend: { triggerRun: true },
+  });
+  return <DeploymentSettingsForm value={settings} onChange={setSettings} />;
 }
 
 function NotificationSettingsDemo() {
