@@ -2050,7 +2050,9 @@ function NotificationSettingsDemo() {
 
 const editorDemoPaths = ["src/app.ts", "src/settings.yaml", "README.md"];
 function WorkspaceEditorDemo() {
-  const [text, setText] = useState("# YAML editor\nenabled: true\nretries: 3\n");
+  const [text, setText] = useState(
+    '# YAML editor\nname: "Lilac"\nproviders: [firecrawl, exa]\nenabled: true\nretries: 3\nqueueTtl: 3s\n',
+  );
   const [selected, setSelected] = useState("src/settings.yaml");
   return (
     <div className="flex flex-col h-96 min-h-0 bg-background text-foreground">

@@ -39,6 +39,9 @@ win. Missing roles use a related color or the built-in palette for the effective
 borders, and shadows are centralized there. The adapter maps editor, sidebar, widget, menu, button,
 input, list selection, link, focus, and status roles. It does not duplicate the VS Code workbench.
 
+Lilac uses the Orchard syntax palette in `orchard.ts`, with separate light and dark colors. Its
+shared scope map covers keys, strings, literals, keywords, functions, types, and template expressions.
+
 Ordered TextMate `tokenColors` or resolved Shiki `settings` feed both chat highlighting and Monaco.
 Monaco uses a separate Shiki instance with shared grammar imports so chat tokenization cannot change
 the editor theme. Only code-rendering leaves subscribe to syntax changes; UI colors update through

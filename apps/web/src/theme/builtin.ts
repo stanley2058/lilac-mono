@@ -1,8 +1,10 @@
 import type { ThemeRegistration } from "shiki/core";
+import { orchardSyntax } from "./orchard";
 
 export const builtinThemes = {
   dark: {
     name: "lilac-dark",
+    tokenColors: orchardSyntax.dark,
     type: "dark",
     colors: {
       "editor.background": "#17161a",
@@ -33,6 +35,7 @@ export const builtinThemes = {
   },
   light: {
     name: "lilac-light",
+    tokenColors: orchardSyntax.light,
     type: "light",
     colors: {
       "editor.background": "#faf9fb",

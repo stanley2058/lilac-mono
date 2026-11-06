@@ -63,6 +63,44 @@ test("ordinary VS Code themes supply both UI and TextMate colors without manual 
   }
 });
 
+test("Lilac highlights YAML keys, quoted and plain strings, and literals distinctly", async () => {
+  for (const input of Object.values(builtinThemes)) {
+    const theme = resolveTheme(input);
+    const tokens = (
+      await highlightCode(
+        'name: "Lilac"\nmode: provider-only\nenabled: true\nretries: 3',
+        "yaml",
+        theme.syntax,
+      )
+    ).flat();
+    const color = (text: string) => tokens.find((token) => token.content === text)?.color;
+    expect(color("name")).toBeDefined();
+    expect(color("provider-only")).toBeDefined();
+    expect(color("true")).toBeDefined();
+    expect(new Set([color("name"), color("provider-only"), color("true")]).size).toBe(3);
+    expect(color("true")).toBe(color("3"));
+    const string = tokens.find((token) => token.content.includes("Lilac"));
+    expect(string?.color).toBe(color("provider-only"));
+    expect(color("name")?.toLowerCase()).not.toBe(theme.variables.foreground);
+    expect(color("provider-only")?.toLowerCase()).not.toBe(theme.variables.foreground);
+  }
+});
+
+test("Lilac separates template expressions from string contents in both modes", async () => {
+  for (const input of Object.values(builtinThemes)) {
+    const theme = resolveTheme(input);
+    const tokens = (
+      await highlightCode("const url = `/api/${name}`;", "typescript", theme.syntax)
+    ).flat();
+    const color = (text: string) => tokens.find((token) => token.content === text)?.color;
+    expect(color("name")?.toLowerCase()).toBe(theme.variables.foreground);
+    expect(color("${")).toBeDefined();
+    expect(color("${")).toBe(color("}"));
+    expect(color("${")).toBe(color("const"));
+    expect(tokens.find((token) => token.content.includes("/api/"))?.color).not.toBe(color("name"));
+  }
+});
+
 test("syntax cache separates theme objects even when names match and preserves token styles", async () => {
   const source = "const value = 1;";
   const makeTheme = (foreground: string): ThemeRegistration => ({
