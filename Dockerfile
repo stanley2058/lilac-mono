@@ -235,6 +235,7 @@ COPY tsconfig.json ./
 COPY apps/web apps/web
 COPY packages/client packages/client
 COPY packages/client-protocol packages/client-protocol
+COPY apps/core/src/generated/config-schemas apps/core/src/generated/config-schemas
 RUN bun run build:web \
   && find /app/apps/web/dist ! -type l -perm /022 -exec chmod go-w {} +
 
