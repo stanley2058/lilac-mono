@@ -133,6 +133,16 @@ import { ExternalSkeleton } from "./components/ExternalSidebar";
 import { ThreadCard } from "./components/ThreadSelect";
 import { toolActivities } from "./generated/tool-activities";
 import "./design-system.css";
+import { Wordmark } from "./components/LilacMark";
+import { ConversationWelcome } from "./components/ConversationWelcome";
+import { MessageGroupingDemo } from "./components/MessageGroupingDemo";
+import { CodeFallback } from "./components/CodeEditor";
+import {
+  SkeletonCode,
+  SkeletonConversation,
+  SkeletonLines,
+  SkeletonRows,
+} from "./components/ui/skeleton";
 
 const sections = [
   ["foundations", "Foundations"],
@@ -875,6 +885,15 @@ function Messages() {
             />
           ))}
         </div>
+        <Specimen title="Grouping and time gaps">
+          <MessageGroupingDemo />
+        </Specimen>
+        <Specimen title="New conversation">
+          <div className="grid grid-cols-1 workspace:grid-cols-2 gap-6">
+            <ConversationWelcome />
+            <ConversationWelcome existing />
+          </div>
+        </Specimen>
       </MessageIdentityContext>
       <div className="ds-grid grid grid-cols-1 workspace:grid-cols-2 gap-6">
         <Specimen title="Avatars">
@@ -942,6 +961,26 @@ function Messages() {
       </Specimen>
       <Specimen title="HTML preview">
         <HtmlPreviewFrame src={galleryPreviewSrc} title="weekly-runs.html" />
+      </Specimen>
+      <Specimen title="Loading states">
+        <div className="grid grid-cols-1 gap-6 workspace:grid-cols-2">
+          <SkeletonConversation label="Loading conversation" />
+          <div className="flex flex-col gap-4">
+            <SkeletonRows label="Loading files" rows={4} />
+            <SkeletonRows label="Loading people" rows={2} avatar />
+            <SkeletonLines label="Loading preview" />
+            <SkeletonCode label="Loading file" lines={5} />
+          </div>
+        </div>
+      </Specimen>
+      <Specimen title="Editor loading">
+        <div className="flex h-40 rounded-lg bg-background">
+          <CodeFallback
+            value={
+              'export const weekend = { pace: "slow" };\nexport const stops = ["river", "bookstore"];\n\nconsole.log(weekend, stops);'
+            }
+          />
+        </div>
       </Specimen>
       <Specimen title="HTML file preview">
         <div className="h-96">
@@ -1773,9 +1812,7 @@ function Layout() {
           <ResizableHandle withHandle />
           <ResizablePanel minSize="30%">
             <div className="ds-panel flex flex-col h-full gap-3 p-4 text-sm min-w-0 ds-panel-center items-center justify-center text-center">
-              <span className="brand inline-flex gap-1 items-baseline text-2xl [letter-spacing:-0.07em] font-[650]">
-                lilac<span>.</span>
-              </span>
+              <Wordmark />
               <span className="ds-muted">Your next conversation starts here.</span>
             </div>
           </ResizablePanel>
