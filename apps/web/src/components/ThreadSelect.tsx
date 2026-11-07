@@ -13,7 +13,6 @@ import {
   MessageSquare,
   UserRound,
   Users,
-  CircleCheck,
   Pin,
   CircleAlert,
   MessageCircleQuestion,
@@ -33,12 +32,12 @@ import "./thread-card.css";
 
 export type ThreadDisplayState = "idle" | "completed" | "working" | "error" | "input";
 const states = {
-  idle: { label: "Idle", icon: MessageSquare },
-  completed: { label: "Completed, unread", icon: CircleCheck },
-  working: { label: "Working", icon: LoadingSpinner },
+  idle: { label: "Idle" },
+  completed: { label: "Completed, unread" },
+  working: { label: "Working" },
   error: { label: "Run failed", icon: CircleAlert },
   input: { label: "Needs your input", icon: MessageCircleQuestion },
-} satisfies Record<ThreadDisplayState, { label: string; icon: ComponentType }>;
+} satisfies Record<ThreadDisplayState, { label: string; icon?: ComponentType }>;
 
 export function ThreadCard({
   title,
@@ -46,6 +45,7 @@ export function ThreadCard({
   starterName,
   starterAvatarUrl,
   starterIcon,
+  showStarter = true,
   updatedAt,
   workingSince,
   now,
@@ -63,6 +63,8 @@ export function ThreadCard({
   starterName: string;
   starterAvatarUrl?: string;
   starterIcon?: ReactNode;
+  /** Shows the starter's avatar; a viewer's own conversations omit it. */
+  showStarter?: boolean;
   updatedAt?: number;
   workingSince?: number;
   now?: number;
@@ -76,11 +78,10 @@ export function ThreadCard({
   onSelect: () => void;
 }) {
   const shortcut = useThreadShortcut(shortcutId);
-  const StatusIcon = states[state].icon;
   const runningSince = state === "working" ? workingSince : undefined;
   return (
     <div
-      className={`thread-card relative min-w-0 rounded-md ${selected ? "selected" : ""}`}
+      className={`thread-card relative min-w-0 rounded-lg ${selected ? "selected" : ""}`}
       data-settled={settled || undefined}
       data-state={state}
       data-draft={selected ? undefined : draft}
@@ -92,113 +93,142 @@ export function ThreadCard({
         aria-keyshortcuts={shortcut.aria}
         aria-label={`${title || "Untitled"}, ${states[state].label}${draft && !selected ? ", Draft" : ""}`}
       />
-      {settled ? (
-        <div className="thread-card-copy relative pointer-events-none flex min-w-0 items-center gap-2 px-3 py-1">
-          <AvatarGroup className="thread-settled-avatars shrink-0 -space-x-2 [&>[data-slot=avatar]]:size-[var(--ui-text-lg)] [&>[data-slot=avatar]]:ring-0">
-            <ActorAvatar displayName="Lilac" agentProfile="self" size="sm" />
-            <ActorAvatar displayName={starterName} avatarUrl={starterAvatarUrl} size="sm" />
-          </AvatarGroup>
-          {draft && !selected ? (
-            <span className="thread-draft-icon text-draft flex-none" aria-label="Draft">
-              <SquarePen />
-            </span>
-          ) : null}
-          <span className="thread-card-title min-w-0 flex-1 truncate text-sm">
-            {title || "Untitled"}
+      <span className="thread-card-copy relative pointer-events-none flex h-9 min-w-0 items-center gap-2 pr-2 pl-4">
+        {state === "completed" ? (
+          <span
+            className="thread-unread-dot absolute top-1/2 left-[0.3125rem] size-1.5 -translate-y-1/2 rounded-full bg-primary"
+            aria-label={states.completed.label}
+          />
+        ) : null}
+        {draft && !selected ? (
+          <span
+            className="thread-draft-icon text-draft flex-none grid place-items-center"
+            aria-label="Draft"
+          >
+            <SquarePen />
           </span>
+        ) : null}
+        <ThreadCardLead
+          settled={settled}
+          starterIcon={starterIcon}
+          showStarter={showStarter}
+          starterName={starterName}
+          starterAvatarUrl={starterAvatarUrl}
+        />
+        <span className="thread-card-title min-w-0 flex-1 truncate text-sm">
+          {title || "Untitled"}
+        </span>
+        <span className="thread-card-meta flex-none flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="thread-card-status flex items-center gap-1">
+            {pinned ? (
+              <span className="thread-pin grid place-items-center flex-none" aria-label="Pinned">
+                <Pin />
+              </span>
+            ) : null}
+            {state === "error" || state === "input" ? <ThreadStateIcon state={state} /> : null}
+            {state === "working" ? (
+              <span
+                className="thread-state-icon grid size-[var(--ui-text-lg)] flex-none place-items-center"
+                aria-label={states[state].label}
+              >
+                <LoadingSpinner size={14} />
+              </span>
+            ) : null}
+          </span>
+          {settled || draft === "new" ? null : (
+            <ThreadCardTime
+              runningSince={runningSince}
+              updatedAt={updatedAt}
+              now={now}
+              settleDays={settleDays}
+              counting={!pinned}
+            />
+          )}
           {actions ? (
             <span
               data-ui="thread-card-actions"
-              className="thread-card-actions flex shrink-0 items-center opacity-0 pointer-events-none"
+              className="thread-card-actions absolute top-1/2 right-1.5 flex -translate-y-1/2 items-center opacity-0 pointer-events-none rounded-md"
             >
               {actions}
             </span>
           ) : null}
-        </div>
-      ) : (
-        <span className="thread-card-copy relative pointer-events-none flex min-w-0 flex-col gap-0 pt-[calc(var(--ui-space-unit)*1.5)] px-3 pb-3">
-          <span className="thread-card-top flex items-center gap-2 h-[var(--ui-control-compact)] text-xs text-muted-foreground">
-            <span className="thread-starter flex min-w-0 items-center gap-1">
-              {draft && !selected ? (
-                <span
-                  className="thread-draft-icon text-draft flex-none grid place-items-center"
-                  aria-label="Draft"
-                >
-                  <SquarePen />
-                </span>
-              ) : null}
-              {starterIcon ? (
-                <span className="thread-starter-icon flex-none grid place-items-center size-[var(--ui-text-lg)]">
-                  {starterIcon}
-                </span>
-              ) : (
-                <ActorAvatar displayName={starterName} avatarUrl={starterAvatarUrl} />
-              )}
-              <span>{starterName}</span>
-            </span>
-            <span className="thread-card-meta ml-auto flex-none flex items-center gap-1">
-              <span className="thread-card-status flex items-center gap-1">
-                {pinned ? (
-                  <span
-                    className="thread-pin grid place-items-center flex-none"
-                    aria-label="Pinned"
-                  >
-                    <Pin />
-                  </span>
-                ) : null}
-                {state !== "idle" ? (
-                  <span
-                    className="thread-state-icon w-[var(--ui-text-lg)] h-[var(--ui-text-lg)] flex-none grid place-items-center text-muted-foreground"
-                    aria-label={states[state].label}
-                  >
-                    <StatusIcon />
-                  </span>
-                ) : null}
-              </span>
-              {actions ? (
-                <span
-                  data-ui="thread-card-actions"
-                  className="thread-card-actions absolute top-[calc(var(--ui-space-unit)*1.5)] right-2 flex items-center opacity-0 pointer-events-none bg-surface-hover rounded-sm"
-                >
-                  {actions}
-                </span>
-              ) : null}
-              {state === "working" ? (
-                <span
-                  data-ui="thread-working-label"
-                  className="hidden text-primary [@media(hover:none)]:inline"
-                >
-                  Working
-                </span>
-              ) : null}
-              {draft !== "new" && runningSince !== undefined ? (
-                <WorkingTime since={runningSince} now={now} />
-              ) : null}
-              {draft !== "new" && runningSince === undefined && updatedAt !== undefined ? (
-                <ThreadTime
-                  updatedAt={updatedAt}
-                  now={now}
-                  settleDays={settleDays}
-                  counting={!settled && !pinned}
-                />
-              ) : null}
-            </span>
-          </span>
-          <span className="thread-card-title overflow-hidden text-ellipsis whitespace-nowrap text-sm">
-            {title || "Untitled"}
-          </span>
         </span>
-      )}
+      </span>
       {shortcut.held && shortcut.label ? (
         <Kbd
           data-ui="thread-shortcut"
-          className="absolute bottom-2 right-2 bg-popover px-2 text-popover-foreground shadow-sm"
+          className="absolute top-1/2 right-2 -translate-y-1/2 bg-popover px-2 text-popover-foreground shadow-sm"
         >
           {shortcut.label}
         </Kbd>
       ) : null}
     </div>
   );
+}
+
+function ThreadStateIcon({ state }: { state: "error" | "input" }) {
+  const { label, icon: Icon } = states[state];
+  return (
+    <span
+      className="thread-state-icon grid size-[var(--ui-text-lg)] flex-none place-items-center text-muted-foreground"
+      aria-label={label}
+    >
+      <Icon />
+    </span>
+  );
+}
+
+/** Settled rows show both parties; others show a starter only when it is someone else. */
+function ThreadCardLead({
+  settled,
+  starterIcon,
+  showStarter,
+  starterName,
+  starterAvatarUrl,
+}: {
+  settled?: boolean;
+  starterIcon?: ReactNode;
+  showStarter: boolean;
+  starterName: string;
+  starterAvatarUrl?: string;
+}) {
+  if (settled)
+    return (
+      <AvatarGroup className="thread-settled-avatars shrink-0 -space-x-2 [&>[data-slot=avatar]]:size-[var(--ui-text-lg)] [&>[data-slot=avatar]]:ring-0">
+        <ActorAvatar displayName="Lilac" agentProfile="self" size="sm" />
+        <ActorAvatar displayName={starterName} avatarUrl={starterAvatarUrl} size="sm" />
+      </AvatarGroup>
+    );
+  if (starterIcon)
+    return (
+      <span className="thread-starter-icon flex-none grid place-items-center size-[var(--ui-text-lg)]">
+        {starterIcon}
+      </span>
+    );
+  if (!showStarter) return null;
+  return (
+    <span className="thread-starter flex-none" title={starterName}>
+      <ActorAvatar displayName={starterName} avatarUrl={starterAvatarUrl} size="sm" />
+    </span>
+  );
+}
+
+function ThreadCardTime({
+  runningSince,
+  updatedAt,
+  now,
+  settleDays,
+  counting,
+}: {
+  runningSince?: number;
+  updatedAt?: number;
+  now?: number;
+  settleDays?: number;
+  counting: boolean;
+}) {
+  if (runningSince !== undefined) return <WorkingTime since={runningSince} now={now} />;
+  if (updatedAt === undefined) return null;
+  return <ThreadTime updatedAt={updatedAt} now={now} settleDays={settleDays} counting={counting} />;
 }
 
 export function ThreadTime({
@@ -223,7 +253,7 @@ export function ThreadTime({
     <time
       dateTime={new Date(updatedAt).toISOString()}
       data-age={counting ? threadAge(updatedAt, current, settleDays) : undefined}
-      className="tabular-nums data-[age=fresh]:font-semibold data-[age=fresh]:text-primary data-[age=recent]:text-primary data-[age=aging]:text-[color-mix(in_srgb,var(--color-primary)_45%,var(--color-muted-foreground))]"
+      className="tabular-nums data-[age=aging]:opacity-70 data-[age=settling]:opacity-45"
     >
       {relativeThreadTime(updatedAt, current)}
     </time>
@@ -303,6 +333,7 @@ export function ThreadSelect({
           starterAvatarUrl={
             thread.starterId === viewer.id ? viewer.avatarUrl : thread.starterAvatarUrl
           }
+          showStarter={thread.starterId !== viewer.id}
           updatedAt={thread.updatedAt}
           workingSince={thread.workingSince}
           now={now}
@@ -319,7 +350,7 @@ export function ThreadSelect({
       <TooltipContent
         side="right"
         align="start"
-        className="thread-details-tooltip shadow-overlay bg-popover text-popover-foreground p-3 [&>[aria-hidden=true]]:hidden"
+        className="thread-details-tooltip rounded-xl shadow-overlay bg-popover text-popover-foreground p-3 ring-1 ring-border [&>[aria-hidden=true]]:hidden"
       >
         <div className="thread-details flex flex-col gap-2 text-sm wrap-anywhere">
           <strong>{thread.title || "Untitled"}</strong>
@@ -329,7 +360,11 @@ export function ThreadSelect({
           </span>
           <span>
             <Clock3 />
-            Last active {new Date(thread.updatedAt).toLocaleString()}
+            Last active{" "}
+            {new Date(thread.updatedAt).toLocaleString(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
           </span>
           {modelLabel || thread.modelId ? (
             <span>

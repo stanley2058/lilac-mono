@@ -28,7 +28,7 @@ export function DirectThreadCard({
       <ContextMenuTrigger
         render={<button type="button" />}
         className={cn(
-          "flex w-full min-w-0 shrink-0 items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-surface-hover hover:text-hover-foreground focus-visible:outline-2 focus-visible:outline-ring",
+          "relative flex w-full min-w-0 shrink-0 items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-surface-hover hover:text-hover-foreground focus-visible:outline-2 focus-visible:outline-ring",
           selected && "bg-selection text-selection-foreground hover:bg-selection",
         )}
         aria-current={selected ? "page" : undefined}

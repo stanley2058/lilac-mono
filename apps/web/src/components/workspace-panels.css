@@ -3,7 +3,7 @@
   container-type: inline-size;
 }
 .workspace-panels {
-  --left-panel-width: 288px;
+  --left-panel-width: 304px;
   --right-panel-width: 360px;
   --left-min: 0px;
   --left-size: min(

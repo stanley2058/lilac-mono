@@ -25,6 +25,7 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "./ui/context-menu";
 import { ThreadSettleButton } from "./ThreadSettleButton";
@@ -120,7 +121,7 @@ export const SidebarThread = memo(function SidebarThread({
   const [now] = useState(Date.now);
   return (
     <ContextMenu>
-      <ContextMenuTrigger className="thread-row-card block py-1">
+      <ContextMenuTrigger className="thread-row-card block py-0.5">
         {thread ? (
           <ThreadSelect
             thread={thread}
@@ -138,6 +139,7 @@ export const SidebarThread = memo(function SidebarThread({
             shortcutId={id}
             title={title}
             starterName={viewer.displayName}
+            showStarter={false}
             draft="new"
             starterAvatarUrl={viewer.avatarUrl}
             state="idle"
@@ -153,19 +155,16 @@ export const SidebarThread = memo(function SidebarThread({
       </ContextMenuTrigger>
       {thread || editable || settleAction ? (
         <ContextMenuContent>
-          {thread ? (
-            <CopyReferenceItem label="Copy link" target={{ surface: "native", sessionId: id }} />
+          {thread && !thread.archived && onPin ? (
+            <ContextMenuItem disabled={settleDisabled} onClick={pin}>
+              {section === "pinned" ? <PinOff /> : <Pin />}
+              {section === "pinned" ? "Unpin" : "Pin"}
+            </ContextMenuItem>
           ) : null}
           {settleAction ? (
             <ContextMenuItem disabled={settleDisabled} onClick={settle}>
               {section === "settled" ? <Undo2 /> : <Check />}
               {section === "settled" ? "Unsettle" : "Settle"}
-            </ContextMenuItem>
-          ) : null}
-          {thread && !thread.archived && onPin ? (
-            <ContextMenuItem disabled={settleDisabled} onClick={pin}>
-              {section === "pinned" ? <PinOff /> : <Pin />}
-              {section === "pinned" ? "Unpin" : "Pin"}
             </ContextMenuItem>
           ) : null}
           {editable ? (
@@ -180,20 +179,29 @@ export const SidebarThread = memo(function SidebarThread({
                   Regenerate title
                 </ContextMenuItem>
               ) : null}
+            </>
+          ) : null}
+          {thread ? (
+            <>
+              <ContextMenuSeparator />
+              <CopyReferenceItem label="Copy link" target={{ surface: "native", sessionId: id }} />
+              <CopySessionIdContextMenuItem threadId={id} />
+            </>
+          ) : null}
+          {editable ? (
+            <>
+              <ContextMenuSeparator />
               {thread ? (
                 <ContextMenuItem onClick={() => onArchive(id, !thread.archived)}>
                   {thread.archived ? <ArchiveRestore /> : <Archive />}
                   {thread.archived ? "Unarchive" : "Archive"}
                 </ContextMenuItem>
               ) : null}
+              <ContextMenuItem variant="destructive" onClick={() => onDelete(id)}>
+                <Trash2 />
+                Delete
+              </ContextMenuItem>
             </>
-          ) : null}
-          {thread ? <CopySessionIdContextMenuItem threadId={id} /> : null}
-          {editable ? (
-            <ContextMenuItem variant="destructive" onClick={() => onDelete(id)}>
-              <Trash2 />
-              Delete
-            </ContextMenuItem>
           ) : null}
         </ContextMenuContent>
       ) : null}

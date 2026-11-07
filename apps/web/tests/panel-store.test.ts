@@ -91,7 +91,7 @@ describe("local panel layouts", () => {
   ])("ignores invalid local layouts: %s", (raw) => {
     const storage = { getItem: () => raw, setItem: () => {} };
     const state = createPanelStore(scope, storage).getState();
-    expect(state.sidebar).toEqual({ open: true, width: 288 });
+    expect(state.sidebar).toEqual({ open: true, width: 304 });
     expect(state.threads.size).toBe(0);
   });
 

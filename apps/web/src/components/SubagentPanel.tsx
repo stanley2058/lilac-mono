@@ -1,4 +1,5 @@
 import { ProviderIcon } from "./ProviderIcon";
+import { SkeletonRows } from "./ui/skeleton";
 import { AgentAvatar } from "./AgentAvatar";
 import { LoadingSpinner } from "./ui/loading-spinner";
 import { defaultRightPanel } from "../panel-store";
@@ -306,7 +307,7 @@ export function SubagentPanelView({
       aria-label="Subagents"
     >
       {selected || !embedded ? (
-        <header className="subagent-panel-header flex items-center gap-2 h-8 flex-none px-2 pr-[calc(calc(var(--ui-space-unit)*3)_+_var(--ui-control-compact)_+_calc(var(--ui-space-unit)*2))]">
+        <header className="subagent-panel-header flex items-center gap-2 h-[var(--ui-header-height)] flex-none px-2 pr-[calc(calc(var(--ui-space-unit)*3)_+_var(--ui-control-compact)_+_calc(var(--ui-space-unit)*2))]">
           {selected ? (
             <IconButton label="Back to agents" onClick={onBack}>
               <ArrowLeft />
@@ -330,11 +331,7 @@ export function SubagentPanelView({
           {error}
         </p>
       ) : null}
-      {loading ? (
-        <p className="subagent-notice p-3 text-muted-foreground text-sm" role="status">
-          Loading…
-        </p>
-      ) : null}
+      {loading ? <SkeletonRows label="Loading agents" rows={4} avatar /> : null}
       {selected ? (
         <div
           className="subagent-transcript flex-1 flex flex-col-reverse overflow-y-auto overflow-x-hidden min-h-0 bg-background"

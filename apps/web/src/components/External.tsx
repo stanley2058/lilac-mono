@@ -19,7 +19,7 @@ export function External({ threadId }: { threadId?: string }) {
     );
   return (
     <section className="external-view flex flex-1 min-h-0 flex-col">
-      <header className="thread-header flex items-center gap-2 h-8 min-h-8 px-6 py-0.5 [&_h1]:truncate [&_.icon-button]:size-[var(--ui-control-compact)] max-workspace:gap-1 max-workspace:pl-15 group-[.sidebar-hidden]/workspace:pl-15 group-[.right-panel-hidden]/workspace:pr-[calc(var(--ui-space-unit)*5+var(--ui-control-compact))]">
+      <header className="thread-header flex items-center gap-2 h-[var(--ui-header-height)] px-6 py-0.5 [&_h1]:truncate [&_.icon-button]:size-[var(--ui-control-compact)] max-workspace:gap-1 max-workspace:pl-15 group-[.sidebar-hidden]/workspace:pl-15 group-[.right-panel-hidden]/workspace:pr-[calc(var(--ui-space-unit)*5+var(--ui-control-compact))]">
         <h1>{view?.thread.title ?? ""}</h1>
         <span className="text-xs text-muted-foreground whitespace-nowrap">Read-only</span>
         <span className="flex-1" />

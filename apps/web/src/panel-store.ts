@@ -11,7 +11,7 @@ import { z } from "zod";
 import type { CacheScope } from "@stanley2058/lilac-client";
 
 export const panelSizes = {
-  left: { initial: 288, min: 192, max: 512 },
+  left: { initial: 304, min: 192, max: 512 },
   right: { initial: 360, min: 240, max: 640 },
 };
 type PanelLayout = { open: boolean; width: number };

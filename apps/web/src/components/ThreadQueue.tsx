@@ -218,7 +218,7 @@ export function ThreadQueue({
         emptyState={dragging ? null : emptyState}
         animateChanges={!dragging}
         itemKey={(row) => row.id}
-        estimate={64}
+        estimate={40}
         fillBeforeIndex={rows.findIndex((row) => row.id === "heading:settled")}
         label="Conversations"
         className={`thread-list flex-1 thread-queue ${drag ? "is-dragging" : ""}`}

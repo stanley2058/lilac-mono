@@ -66,13 +66,13 @@
   top: 0;
   right: calc(var(--ui-space-unit) * 3);
   z-index: 40;
-  height: 2rem;
+  height: var(--ui-header-height);
   display: flex;
   align-items: center;
 }
 .right-panel-toggle .icon-button {
-  width: var(--ui-control-compact);
-  height: var(--ui-control-compact);
+  width: 2rem;
+  height: 2rem;
 }
 
 .subagent-transcript .turn {

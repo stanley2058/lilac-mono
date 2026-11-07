@@ -1,4 +1,5 @@
 import { CopySessionIdMenuItem } from "./components/CopySessionIdMenuItem";
+import { SkeletonRows } from "./components/ui/skeleton";
 import { DirectThreadCard, DirectThreadTitle } from "./components/DirectThreadCard";
 import { currentPushDeviceId } from "./push-device";
 import { NativeComputerViewer } from "./components/ComputerViewer";
@@ -28,6 +29,7 @@ import { AvatarConnectionContext } from "./components/ui/avatar";
 import { defaultRightPanel } from "./panel-store";
 import { WorkspacePanels, WorkspaceSidePanel } from "./components/WorkspacePanels";
 import { PanelToggleButton } from "./components/PanelToggleButton";
+import { Wordmark } from "./components/LilacMark";
 import { NativeSubagentProvider, RightPanelToggle } from "./components/SubagentPanel";
 import { useLocation, useNavigate, useMatch, useRouter } from "@tanstack/react-router";
 import {
@@ -50,15 +52,15 @@ import { Result } from "better-result";
 import { Tooltip } from "@base-ui/react/tooltip";
 import {
   Plus,
-  MessageCirclePlus,
   Settings as SettingsIcon,
   LogOut,
   Archive,
+  Globe,
+  MessageCirclePlus,
   ArchiveRestore,
   Pencil,
   Trash2,
   Users,
-  Globe,
   PanelLeftClose,
   PanelLeftOpen,
   MoreHorizontal,
@@ -855,12 +857,6 @@ function Workspace(props: AppProps) {
   const archiveSidebarThread = useEventCallback(
     (id: string, archived: boolean) => void update(id, { archived }),
   );
-  const toggleArchived = useEventCallback(() => {
-    changeView({ view: archived ? undefined : "archived", otherThread: undefined });
-  });
-  const toggleExternal = useEventCallback(() => {
-    changeView({ view: external ? undefined : "others", otherThread: undefined });
-  });
   const selectExternal = useEventCallback((id: string) => {
     changeView({ view: "others", otherThread: id, ref: undefined, message: undefined });
   });
@@ -908,36 +904,40 @@ function Workspace(props: AppProps) {
       if (focused) focusMainComposer();
     },
   });
+  const showView = useEventCallback((view?: "archived" | "others") =>
+    changeView({ view, otherThread: undefined }),
+  );
   const sidebarToolbar = useMemo(
     () => (
-      <div className="sidebar-search-row flex items-center gap-1 min-w-0 mb-2">
+      <div className="sidebar-search-row flex items-center gap-1 min-w-0 mb-3">
         <SidebarSearch onSearch={changeSearchQuery} />
         <nav
-          className="sidebar-tabs flex items-center py-2 px-0"
+          className="sidebar-tabs flex items-center gap-0.5"
           aria-label="Conversation filters and actions"
         >
           <IconButton
             label={archived ? "Show active conversations" : "Show archived conversations"}
             tooltip="Archived"
             aria-pressed={archived}
-            onClick={toggleArchived}
+            onClick={() => showView(archived ? undefined : "archived")}
           >
             <Archive />
           </IconButton>
           {owner ? (
             <IconButton
-              label="Show other conversations"
+              label={external ? "Show active conversations" : "Show other conversations"}
               tooltip="Others"
               aria-pressed={external}
-              onClick={toggleExternal}
+              onClick={() => showView(external ? undefined : "others")}
             >
               <Globe />
             </IconButton>
           ) : null}
           <IconButton
             label="New conversation"
-            tooltip="New thread"
+            tooltip="New conversation"
             shortcut="newThread"
+            className="sidebar-new"
             onClick={createThread}
           >
             <MessageCirclePlus />
@@ -945,7 +945,7 @@ function Workspace(props: AppProps) {
         </nav>
       </div>
     ),
-    [archived, external, owner, toggleArchived, toggleExternal, createThread],
+    [archived, external, owner, showView, createThread],
   );
   const sidebarFooter = useMemo(
     () => (
@@ -998,7 +998,7 @@ function Workspace(props: AppProps) {
                   className={`app-shell group/workspace fixed inset-x-0 top-0 flex h-dvh overflow-hidden ${sidebar ? "" : "sidebar-hidden"} ${rightOpen ? "" : "right-panel-hidden"}`}
                   aria-label="Chat workspace"
                 >
-                  <div className="sidebar-toggle fixed top-0 left-3 h-8 flex items-center z-40 [&_.icon-button]:size-[var(--ui-control-compact)]">
+                  <div className="sidebar-toggle fixed top-0 left-3 h-[var(--ui-header-height)] flex items-center z-40 [&_.icon-button]:size-8">
                     <PanelToggleButton
                       label={sidebar ? "Hide sidebar" : "Show sidebar"}
                       shortcut="sidebar"
@@ -1064,11 +1064,8 @@ function Workspace(props: AppProps) {
                       onWidthChange={panels.getState().resizeSidebar}
                     >
                       <aside className="sidebar flex flex-col bg-sidebar text-sidebar-foreground p-3 pt-0 min-h-0 h-full">
-                        <header className="sidebar-header flex items-center gap-2 h-8 min-h-8 shrink-0 pl-[calc(var(--ui-control-compact)+var(--ui-space-unit)*3)] mb-3 [&_.brand]:leading-none">
-                          <span className="brand inline-flex gap-1 items-baseline text-2xl [letter-spacing:-0.07em] font-[650]">
-                            lilac
-                            <span />
-                          </span>
+                        <header className="sidebar-header flex items-center gap-2 h-[var(--ui-header-height)] shrink-0 pl-[calc(var(--ui-control-compact)+var(--ui-space-unit)*3)] mb-3 [&_.brand]:leading-none">
+                          <Wordmark />
                         </header>
                         {sidebarToolbar}
                         {archived && !results && !external ? (
@@ -1137,11 +1134,13 @@ function Workspace(props: AppProps) {
                               {!archived ? (
                                 <>
                                   {directThread ? (
-                                    <DirectThreadCard
-                                      thread={directThread}
-                                      selected={selectedId === directThread.id}
-                                      onSelect={select}
-                                    />
+                                    <div className="sidebar-direct mb-2 border-b border-border/70 pb-2">
+                                      <DirectThreadCard
+                                        thread={directThread}
+                                        selected={selectedId === directThread.id}
+                                        onSelect={select}
+                                      />
+                                    </div>
                                   ) : null}
                                   <SidebarQueue
                                     fallbackThreads={
@@ -1181,7 +1180,7 @@ function Workspace(props: AppProps) {
                                     if (nextCursor) void listThreads(archived, nextCursor);
                                   }}
                                   className="thread-list flex-1"
-                                  estimate={64}
+                                  estimate={40}
                                   render={(thread) => (
                                     <SidebarThread
                                       id={thread.id}
@@ -1307,7 +1306,7 @@ function Workspace(props: AppProps) {
                                   loadError={selectedMetadata.error?.message}
                                   header={
                                     thread ? (
-                                      <header className="thread-header flex items-center gap-2 h-8 min-h-0 px-6 py-0.5 [&_h1]:truncate [&_.icon-button]:size-[var(--ui-control-compact)] max-workspace:gap-1 max-workspace:pl-15 group-[.sidebar-hidden]/workspace:pl-15 group-[.right-panel-hidden]/workspace:pr-[calc(var(--ui-space-unit)*5+var(--ui-control-compact))]">
+                                      <header className="thread-header flex items-center gap-2 h-[var(--ui-header-height)] min-h-0 px-6 py-0.5 [&_h1]:truncate [&_.icon-button]:size-8 max-workspace:gap-1 max-workspace:pl-15 group-[.sidebar-hidden]/workspace:pl-15 group-[.right-panel-hidden]/workspace:pr-[calc(var(--ui-space-unit)*5+2rem)]">
                                         {thread.kind === "dm" ? (
                                           <DirectThreadTitle />
                                         ) : (
@@ -1371,7 +1370,7 @@ function Workspace(props: AppProps) {
                   ) : null}
                   {sharing && owner && selected ? (
                     <Modal title="Share conversation" onClose={() => setSharing(false)}>
-                      <Suspense fallback={<p role="status">Loading people…</p>}>
+                      <Suspense fallback={<SkeletonRows label="Loading people" rows={3} avatar />}>
                         <Sharing key={selected.id} thread={selected} />
                       </Suspense>
                     </Modal>

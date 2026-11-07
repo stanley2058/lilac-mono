@@ -128,7 +128,7 @@ export function ThreadReferenceView({
           className={
             panel
               ? "flex items-center gap-2 px-3 py-2 min-w-0"
-              : "thread-header flex items-center gap-2 h-8 min-h-8 px-6 min-w-0 max-workspace:pl-15 group-[.sidebar-hidden]/workspace:pl-15 group-[.right-panel-hidden]/workspace:pr-15"
+              : "thread-header flex items-center gap-2 h-[var(--ui-header-height)] px-6 min-w-0 max-workspace:pl-15 group-[.sidebar-hidden]/workspace:pl-15 group-[.right-panel-hidden]/workspace:pr-15"
           }
         >
           <ConversationIcon surface={target.surface} />
