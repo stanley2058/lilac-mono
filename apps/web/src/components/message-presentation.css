@@ -1,12 +1,12 @@
 .native-message.message-user {
-  padding: calc(var(--ui-space-unit) * 2) 0;
+  padding: calc(var(--ui-space-unit) * 0.5) 0;
   background: transparent;
   border-radius: 0;
 }
 .native-message {
   flex-direction: column;
   align-items: flex-start;
-  gap: calc(var(--ui-space-unit) * 2);
+  gap: calc(var(--ui-space-unit) * 1);
 }
 .native-message[data-align="end"] {
   flex-direction: column;
@@ -156,8 +156,8 @@
 }
 
 .native-message[data-align="end"] .message-bubble [data-slot="bubble-content"] {
-  background: var(--ui-tint);
-  color: var(--ui-tint-foreground);
+  background: color-mix(in srgb, var(--ui-primary) 20%, var(--ui-surface-raised));
+  color: var(--ui-surface-raised-foreground);
 }
 .markdown-link {
   text-decoration: underline;
@@ -182,6 +182,19 @@
 .native-message > .message-controls {
   opacity: 0;
   pointer-events: none;
+}
+/* With a pointer, controls float in the gap below the message instead of reserving a row. */
+@media (hover: hover) {
+  .timeline .native-message > .message-controls {
+    position: absolute;
+    top: calc(100% + 2px);
+    right: 0;
+    z-index: 2;
+  }
+  .timeline .native-message[data-align="start"] > .message-controls {
+    right: auto;
+    left: 0;
+  }
 }
 .native-message:hover > .message-controls,
 .native-message:focus-within > .message-controls {
@@ -220,4 +233,144 @@
 ::highlight(lilac-citation-comment),
 ::highlight(lilac-citation-source) {
   background-color: color-mix(in srgb, var(--ui-primary) 32%, transparent);
+}
+
+/* Avatars sit in a left gutter so identity never costs a row of its own. */
+.timeline {
+  container: timeline / inline-size;
+}
+.timeline .turn {
+  padding-left: calc(var(--ui-space-unit) * 6 + var(--ui-message-gutter));
+}
+.timeline .agent-response {
+  position: relative;
+}
+.timeline .agent-response > [data-slot="message-avatar"],
+.timeline .native-message[data-align="start"] > [data-slot="message-avatar"] {
+  position: absolute;
+  top: 0;
+  left: calc(-1 * var(--ui-message-gutter));
+}
+.timeline
+  .agent-response:has(> [data-ui="work-summary"], > [data-slot="collapsible"])
+  > [data-slot="message-avatar"] {
+  top: calc(var(--ui-space-unit) * -1);
+}
+/* With room beside the column, the gutter hangs outside it so text stays centered with the composer. */
+@container timeline (width >= 60rem) {
+  .timeline .turn {
+    padding-left: calc(var(--ui-space-unit) * 6);
+  }
+}
+/* Floating message actions need room before whatever follows the reply in its turn. */
+@media (hover: hover) {
+  .timeline .agent-response ~ * {
+    margin-top: calc(var(--ui-space-unit) * 9);
+  }
+  /* A stopped or failed turn shows its status where the actions would float, so the actions
+     move to the right edge of that row instead. */
+  .timeline .agent-response ~ [data-ui="turn-status"] {
+    margin-top: calc(var(--ui-space-unit) * 1);
+  }
+  .timeline .turn:has(> [data-ui="turn-status"]) .native-message > .message-controls {
+    right: 0;
+    left: auto;
+  }
+}
+/* The viewer's own messages are already marked by alignment and tint. */
+.native-message[data-align="end"] > [data-slot="message-avatar"] {
+  display: none;
+}
+
+/* Assistant replies read as a document; only people's messages use bubbles. */
+.native-message.message-assistant .message-bubble > [data-slot="bubble-content"] {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.native-message.message-user .message-bubble > [data-slot="bubble-content"] {
+  border-radius: var(--ui-radius-2xl);
+}
+/* A DM reads like messaging a person: the agent's replies keep their own bubbles, so separate
+   messages stay separate when they group. */
+.timeline[data-messaging] .native-message.message-assistant .message-bubble > [data-slot="bubble-content"] {
+  background: var(--ui-muted);
+  padding: calc(var(--ui-space-unit) * 3) calc(var(--ui-space-unit) * 4);
+  border-radius: var(--ui-radius-2xl);
+  border-top-left-radius: var(--ui-radius-sm);
+}
+/* Bubbles in a group sit 4px apart, within a turn and across joined turns alike. */
+.timeline[data-messaging] .turn[data-joined-before] {
+  padding-top: calc(var(--ui-space-unit) * 1);
+}
+.timeline[data-messaging] .agent-response {
+  gap: calc(var(--ui-space-unit) * 1);
+}
+.timeline[data-messaging] .agent-response > .native-message.message-assistant {
+  padding-block: 0;
+}
+/* A run of bubbles keeps tight corners where they meet, so it reads as one block. */
+.timeline[data-messaging]
+  .agent-response
+  > .native-message.message-assistant:has(~ .native-message.message-assistant)
+  .message-bubble
+  > [data-slot="bubble-content"],
+.timeline[data-messaging]
+  .turn[data-joined-after]
+  .agent-response
+  > .native-message.message-assistant:not(:has(~ .native-message.message-assistant))
+  .message-bubble
+  > [data-slot="bubble-content"] {
+  border-bottom-left-radius: var(--ui-radius-sm);
+}
+.native-message[data-align="end"] .message-bubble [data-slot="bubble-content"] {
+  border-bottom-right-radius: var(--ui-radius-sm);
+}
+.native-message[data-align="start"].message-user .message-bubble [data-slot="bubble-content"] {
+  border-top-left-radius: var(--ui-radius-sm);
+}
+
+@media (max-width: 47.5rem) {
+  :root {
+    --ui-message-gutter: 2.25rem;
+  }
+  .timeline .turn {
+    padding-left: calc(var(--ui-space-unit) * 4 + var(--ui-message-gutter));
+  }
+  .timeline .agent-response > [data-slot="message-avatar"] [data-slot="avatar"],
+  .timeline .native-message[data-align="start"] > [data-slot="message-avatar"] [data-slot="avatar"] {
+    width: calc(var(--ui-space-unit) * 7);
+    height: calc(var(--ui-space-unit) * 7);
+  }
+}
+
+/* An empty conversation centers its greeting and composer, then settles at the bottom. */
+.timeline-centered {
+  display: flex;
+  flex-direction: column;
+}
+.timeline-centered > .virtual-canvas {
+  flex: none;
+  margin: auto auto 0;
+}
+.timeline-centered > .chat-sticky-footer {
+  position: relative;
+  margin-bottom: auto;
+  padding-bottom: 12vh;
+}
+.message-controls {
+  min-height: var(--ui-control-compact);
+  color: color-mix(in srgb, var(--ui-foreground) 80%, transparent);
+}
+.message-controls .icon-button {
+  width: calc(var(--ui-space-unit) * 8);
+  height: calc(var(--ui-space-unit) * 8);
+}
+.message-controls .icon-button svg {
+  width: calc(var(--ui-space-unit) * 4.5);
+  height: calc(var(--ui-space-unit) * 4.5);
+}
+.message-controls > time {
+  margin-inline: calc(var(--ui-space-unit) * 1.5);
 }

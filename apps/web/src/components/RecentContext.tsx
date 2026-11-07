@@ -103,14 +103,14 @@ export function NextContextStart() {
   return (
     <p
       data-ui="next-context-start"
-      className="flex items-center gap-3 px-6 pt-4 pb-1 text-xs text-muted-foreground opacity-70"
+      className="flex items-center gap-3 px-6 pt-4 pb-1 text-xs text-muted-foreground"
     >
-      <span className="flex-1 border-t border-dashed border-border" aria-hidden />
+      <span className="flex-1 border-t border-border" aria-hidden />
       <span className="flex items-center gap-1.5">
         <ListStart className="size-3.5" aria-hidden />
         Next message starts a new context
       </span>
-      <span className="flex-1 border-t border-dashed border-border" aria-hidden />
+      <span className="flex-1 border-t border-border" aria-hidden />
     </p>
   );
 }

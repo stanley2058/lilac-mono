@@ -4,9 +4,14 @@ import {
   DEFAULT_DM_TIMESTAMP_GAP_MS,
   type ReadyTurnSlot,
 } from "@stanley2058/lilac-client-protocol";
-import { joinMessageTurns, lastTurnMessageTime } from "../src/message-grouping";
+import {
+  joinMessageTurns,
+  lastTurnMessageTime,
+  workflowPostsDuring,
+} from "../src/message-grouping";
 import { agentWorkStages } from "../src/agent-work-fixtures";
-import { Turn } from "../src/components/Timeline";
+import { Turn, turnPostsKey } from "../src/components/Timeline";
+import { NativeThreadStore } from "@stanley2058/lilac-client";
 import { MessageServicesContext } from "../src/components/message-services";
 
 const time = new Date(2026, 9, 19, 12).getTime();
@@ -113,4 +118,136 @@ test("a deferred assistant post with an older acceptance timestamp still joins t
   expect(
     joinMessageTurns(first, { ...next, messages: [{ ...next.messages[0]!, role: "user" }] }),
   ).toBe(false);
+});
+
+function workflowCard(id: string, at: number): ReadyTurnSlot {
+  return {
+    kind: "ready",
+    slotId: id,
+    turnId: id,
+    position: 1,
+    state: "complete",
+    messages: [
+      {
+        id,
+        role: "assistant",
+        metadata: { createdAt: at, phase: "final" },
+        parts: [
+          {
+            type: "data-workflow",
+            id: `workflow_${id}`,
+            data: workflowFrameData(),
+          },
+        ],
+      },
+    ],
+  };
+}
+function workflowFrameData() {
+  const frame = agentWorkStages.find((stage) => stage.id === "workflow")!.frames[0]!;
+  const part = frame.messages[0]!.parts.find((item) => item.type === "data-workflow");
+  if (part?.type !== "data-workflow") throw new Error("missing workflow fixture");
+  return part.data;
+}
+function agentTurn(state: ReadyTurnSlot["state"], replyAt?: number): ReadyTurnSlot {
+  return {
+    kind: "ready",
+    slotId: "agent",
+    turnId: "agent",
+    position: 0,
+    state,
+    startedAt: time,
+    settledAt: replyAt === undefined ? undefined : replyAt + 5000,
+    messages: [
+      {
+        id: "ask",
+        role: "user",
+        metadata: { authorId: "owner", createdAt: time },
+        parts: [{ type: "text", text: "Plan Saturday." }],
+      },
+      ...(replyAt === undefined
+        ? []
+        : [
+            {
+              id: "reply",
+              role: "assistant" as const,
+              metadata: { createdAt: replyAt, phase: "final" as const },
+              parts: [{ type: "text" as const, text: "Here is the plan." }],
+            },
+          ]),
+    ],
+  };
+}
+
+test("workflow cards posted during a turn fold ahead of its reply", () => {
+  const card = workflowCard("card", time + 10_000);
+  expect(workflowPostsDuring(agentTurn("complete", time + 60_000), [card])).toEqual(["card"]);
+  expect(workflowPostsDuring(agentTurn("running"), [card])).toEqual(["card"]);
+});
+
+test("workflow cards stay after a reply that began before them", () => {
+  const late = workflowCard("late", time + 90_000);
+  expect(workflowPostsDuring(agentTurn("complete", time + 60_000), [late])).toEqual([]);
+  expect(workflowPostsDuring(agentTurn("complete", time + 60_000), [post(1)])).toEqual([]);
+  expect(workflowPostsDuring(workflowCard("card", time), [late])).toEqual([]);
+});
+
+test("an incoming agent message that starts a turn is not mistaken for its reply", () => {
+  const turn = agentTurn("complete", time + 60_000);
+  const triggered: ReadyTurnSlot = {
+    ...turn,
+    messages: [
+      {
+        id: "incoming",
+        role: "assistant",
+        metadata: { createdAt: time, phase: "final", inputId: "input-1", inputMode: "prompt" },
+        parts: [{ type: "text", text: "Plan Saturday." }],
+      },
+      ...turn.messages.slice(1),
+    ],
+  };
+  expect(workflowPostsDuring(triggered, [workflowCard("card", time + 10_000)])).toEqual(["card"]);
+});
+
+test("rows around folded cards see the owner turn as their visible neighbor", () => {
+  const owner = agentTurn("complete", time + 60_000);
+  const card = { ...workflowCard("card", time + 10_000), position: 1 };
+  const after = { ...post(2), slotId: "after", turnId: "after" };
+  after.messages = [{ ...after.messages[0]!, id: "after" }];
+  const store = new NativeThreadStore();
+  store.replay({
+    kind: "window",
+    checkpoint: { protocolVersion: 1, historyGeneration: 0, projectionRevision: 1, cursor: "c" },
+    slots: [owner, card, after],
+  });
+  expect(JSON.parse(turnPostsKey(store, "agent", undefined, "card"))).toMatchObject({
+    ids: ["card"],
+    next: "after",
+  });
+  expect(turnPostsKey(store, "card", "agent", "after")).toBe("folded");
+  expect(JSON.parse(turnPostsKey(store, "after", "card", undefined))).toMatchObject({
+    ids: [],
+    previous: "agent",
+  });
+});
+
+test("a workflow card left after the reply sees the owner, not the folded card before it", () => {
+  const owner = agentTurn("complete", time + 60_000);
+  const early = { ...workflowCard("early", time + 10_000), position: 1 };
+  const late = { ...workflowCard("late", time + 90_000), position: 2 };
+  const store = new NativeThreadStore();
+  store.replay({
+    kind: "window",
+    checkpoint: { protocolVersion: 1, historyGeneration: 0, projectionRevision: 1, cursor: "c" },
+    slots: [owner, early, late],
+  });
+  expect(JSON.parse(turnPostsKey(store, "agent", undefined, "early"))).toMatchObject({
+    ids: ["early"],
+    next: "late",
+  });
+  expect(turnPostsKey(store, "early", "agent", "late")).toBe("folded");
+  expect(JSON.parse(turnPostsKey(store, "late", "early", undefined))).toMatchObject({
+    ids: [],
+    previous: "agent",
+  });
 });

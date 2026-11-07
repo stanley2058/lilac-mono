@@ -29,7 +29,10 @@ const endings = {
   },
 } as const;
 
-const cardStyles = "flex w-full min-w-0 flex-col gap-3 rounded-xl bg-muted px-4 py-3";
+const cardStyles =
+  "flex w-full min-w-0 flex-col gap-3 rounded-xl bg-muted px-4 py-3 ring-1 ring-[color-mix(in_srgb,var(--ui-primary)_28%,transparent)]";
+// Settled calls recede to an outlined row so the open question stands out.
+const settledStyles = "flex w-full min-w-0 flex-col rounded-xl px-4 py-2 ring-1 ring-border";
 
 export function QuestionCard({ question }: { question: NativeQuestion }) {
   const { canEdit, questions } = useMessageServices();
@@ -121,16 +124,16 @@ export function QuestionPrompts({
           >
             {prompt.question}
           </p>
-          <ol className="m-0 flex list-none flex-col gap-2.5 p-0">
+          <ol className="m-0 flex list-none flex-col gap-1.5 border-l-2 border-border p-0 pl-3">
             {prompt.options.map((option) => (
-              <li key={option.index} className="flex w-full min-w-0 items-start gap-3">
+              <li key={option.index} className="flex w-full min-w-0 items-baseline gap-2">
                 <span
                   aria-hidden="true"
-                  className="grid size-5 shrink-0 place-items-center rounded-md bg-foreground/8 text-xs font-semibold text-muted-foreground tabular-nums"
+                  className="w-4 shrink-0 text-sm text-muted-foreground tabular-nums"
                 >
-                  {option.index}
+                  {option.index}.
                 </span>
-                <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="flex min-w-0 flex-wrap gap-x-2">
                   <span className="text-sm font-medium text-foreground wrap-anywhere">
                     {option.label}
                   </span>
@@ -180,7 +183,7 @@ function SettledQuestion({ question, view }: { question: NativeQuestion; view: S
       ))}
     </dl>
   ) : null;
-  const shape = `${cardStyles} gap-2 text-sm`;
+  const shape = `${settledStyles} gap-2 text-sm`;
   if (!prompts.length)
     return (
       <section data-ui="question-card" data-state={view.state} className={shape}>

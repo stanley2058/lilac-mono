@@ -92,7 +92,7 @@ function RowTime({ at }: { at?: number }) {
   if (at === undefined) return null;
   return (
     <time
-      className="activity-time shrink-0 text-xs opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"
+      className="activity-time shrink-0 max-w-0 overflow-hidden whitespace-nowrap text-xs opacity-0 transition-[opacity,max-width] group-hover/row:max-w-20 group-hover/row:opacity-100 group-focus-visible/row:max-w-20 group-focus-visible/row:opacity-100"
       dateTime={new Date(at).toISOString()}
     >
       {new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}

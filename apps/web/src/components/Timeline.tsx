@@ -1,5 +1,12 @@
 import { useMessageTouchMenu } from "./use-message-touch-menu";
-import { joinMessageTurns, lastTurnMessageTime, sameMessageAuthor } from "../message-grouping";
+import { SkeletonConversation } from "./ui/skeleton";
+import {
+  isWorkflowPost,
+  joinMessageTurns,
+  lastTurnMessageTime,
+  sameMessageAuthor,
+  workflowPostsDuring,
+} from "../message-grouping";
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -50,7 +57,16 @@ import {
   type ComponentProps,
 } from "react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronRight, RotateCcw, Copy, CopyCheck, Link2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  CircleSlash,
+  RotateCcw,
+  Copy,
+  CopyCheck,
+  Link2,
+} from "lucide-react";
 import type { NativeClient, NativeThreadStore } from "@stanley2058/lilac-client";
 import {
   DEFAULT_DM_TIMESTAMP_GAP_MS,
@@ -141,6 +157,93 @@ function useJoinedTurns(
   );
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
+type TurnPosts = {
+  posts: readonly ReadyTurnSlot[];
+  folded: boolean;
+  /** The nearest visible neighbors once folded cards are skipped. */
+  previous?: string;
+  next?: string;
+};
+const noPosts: TurnPosts = { posts: [], folded: false };
+const foldedPost: TurnPosts = { posts: [], folded: true };
+
+/** Workflow cards fold into the turn that posted them, so their own rows render nothing. */
+function useTurnPosts(
+  store: NativeThreadStore,
+  slotId: string,
+  previousId: string | undefined,
+  nextId: string | undefined,
+): TurnPosts {
+  const subscribe = useCallback(
+    (listener: () => void) => store.subscribe(() => listener()),
+    [store],
+  );
+  const key = useCallback(
+    () => turnPostsKey(store, slotId, previousId, nextId),
+    [store, slotId, previousId, nextId],
+  );
+  const snapshot = useSyncExternalStore(subscribe, key, key);
+  return useMemo(() => {
+    if (!snapshot) return noPosts;
+    if (snapshot === "folded") return foldedPost;
+    const { ids, previous, next } = JSON.parse(snapshot) as {
+      ids: string[];
+      previous: string | null;
+      next: string | null;
+    };
+    const posts = ids.flatMap((id) => {
+      const slot = store.get(id);
+      return slot?.kind === "ready" ? [slot] : [];
+    });
+    return { posts, folded: false, previous: previous ?? undefined, next: next ?? undefined };
+  }, [snapshot, store]);
+}
+
+// The key carries revisions so a card's progress updates still rerender the turn that shows it.
+export function turnPostsKey(
+  store: NativeThreadStore,
+  slotId: string,
+  previousId: string | undefined,
+  nextId: string | undefined,
+): string {
+  const post = isWorkflowPost(store.get(slotId));
+  const afterPost = isWorkflowPost(previousId ? store.get(previousId) : undefined);
+  // Most rows have no workflow card beside them; skip the scan of the whole thread.
+  if (!post && !afterPost && !isWorkflowPost(nextId ? store.get(nextId) : undefined)) return "";
+  const ids = store.slotIds;
+  const index = ids.indexOf(slotId);
+  if (index < 0) return "";
+  const postsAfter = (from: number) => {
+    const slots: TurnSlot[] = [];
+    for (let at = from; at < ids.length; at++) {
+      const slot = store.get(ids[at]!);
+      if (!isWorkflowPost(slot)) break;
+      slots.push(slot!);
+    }
+    return slots;
+  };
+  // The turn before a run of cards, and the cards in that run it shows itself.
+  const ownerBefore = (at: number) => {
+    let owner = at - 1;
+    while (owner >= 0 && isWorkflowPost(store.get(ids[owner]!))) owner--;
+    if (owner < 0) return undefined;
+    return { owner, folded: workflowPostsDuring(store.get(ids[owner]!), postsAfter(owner + 1)) };
+  };
+  const before = post || afterPost ? ownerBefore(index) : undefined;
+  if (post && before?.folded.includes(slotId)) return "folded";
+  // Only when every card between them folded does this row sit directly after the owner.
+  const previous =
+    before && before.folded.length === index - 1 - before.owner ? ids[before.owner]! : null;
+  const posts = post ? [] : workflowPostsDuring(store.get(slotId), postsAfter(index + 1));
+  if (!posts.length && !previous) return "";
+  return JSON.stringify({
+    ids: posts,
+    revisions: posts.map((id) => store.getVersioned(id)?.revision),
+    previous,
+    next: posts.length ? (ids[index + 1 + posts.length] ?? null) : (nextId ?? null),
+  });
+}
+
 function startsNewDay(previous: number, next: number): boolean {
   return new Date(previous).toDateString() !== new Date(next).toDateString();
 }
@@ -165,6 +268,8 @@ export type TimelineProps = MessageServices & {
   onLatestVisibleChange?: (visible: boolean) => void;
   emptyMessage?: string;
   emptyContent?: ReactNode;
+  /** Centers the empty state and composer together, as on a new conversation. */
+  centerEmpty?: boolean;
   optimisticTurn?: OptimisticTurn;
   onOptimisticResolved?: () => void;
   timestamps?: boolean;
@@ -378,20 +483,26 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
   useLayoutEffect(() => {
     const viewport = parent.current;
     const latest = rows.find((row) => row.index === ids.length);
+    const top = (viewport?.scrollTop ?? 0) + insets.top;
+    const bottom = (viewport?.scrollTop ?? 0) + (viewport?.clientHeight ?? 0) - insets.bottom;
+    // A workflow card folded into the previous turn leaves an empty row at the very end.
     const visible =
       !!viewport &&
       !!latest &&
-      latest.end > viewport.scrollTop + insets.top &&
-      latest.start < viewport.scrollTop + viewport.clientHeight - insets.bottom;
+      (latest.end === latest.start
+        ? latest.start >= top && latest.start <= bottom
+        : latest.end > top && latest.start < bottom);
     props.onLatestVisibleChange?.(visible);
   }, [rows, ids.length, insets, props.onLatestVisibleChange]);
+  const centered = ids.length === 0 && !!props.centerEmpty;
   return (
     <MessageArrivalsContext value={arrivals}>
       <TimelineContext value={timeline}>
         <MessageServicesContext value={services}>
           <div
-            className="timeline overflow-auto overscroll-none min-h-0 flex-1 [overflow-anchor:none] chat-scroll relative overflow-y-auto overflow-x-hidden"
+            className={`timeline overflow-auto overscroll-none min-h-0 flex-1 [overflow-anchor:none] chat-scroll relative overflow-y-auto overflow-x-hidden ${centered ? "timeline-centered" : ""}`}
             ref={bindViewport}
+            data-messaging={props.timestamps || undefined}
             onScroll={(event) => {
               setReadingDisclosure(undefined);
               const viewport = event.currentTarget;
@@ -422,16 +533,20 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
             <div
               ref={measureHeader}
               data-index={0}
-              className="chat-sticky-header sticky top-0 z-3 [background:color-mix(in_srgb,_var(--ui-background)_75%,_transparent)] [backdrop-filter:blur(16px)]"
+              className="chat-sticky-header sticky top-0 z-3 [background:color-mix(in_srgb,_var(--ui-background)_var(--ui-glass-opacity),_transparent)] [backdrop-filter:blur(var(--ui-glass-blur))]"
             >
               {props.header}
             </div>
             <div
               className="virtual-canvas relative w-full timeline-canvas max-w-[var(--ui-chat-width)] m-auto"
-              style={{
-                height: Math.max(0, totalSize - headerSize - footerSize),
-                minHeight: `calc(100% - ${insets.top + insets.bottom}px)`,
-              }}
+              style={
+                centered
+                  ? undefined
+                  : {
+                      height: Math.max(0, totalSize - headerSize - footerSize),
+                      minHeight: `calc(100% - ${insets.top + insets.bottom}px)`,
+                    }
+              }
             >
               {rows.map((row) => (
                 <div
@@ -507,6 +622,9 @@ const SlotRow = memo(function SlotRow(props: {
   fallback?: ReadyTurnSlot;
 }) {
   const { client, threadId, onRewind, timestamps } = useContext(TimelineContext)!;
+  const posts = useTurnPosts(props.store, props.slotId, props.previousSlotId, props.nextSlotId);
+  const nextSlotId = posts.posts.length ? posts.next : props.nextSlotId;
+  const previousSlotId = posts.previous ?? props.previousSlotId;
   const recentContext = useRecentContext();
   const groupingContext =
     recentContext?.historyGeneration === props.store.checkpoint?.historyGeneration
@@ -514,7 +632,7 @@ const SlotRow = memo(function SlotRow(props: {
       : undefined;
   const joinedBefore = useJoinedTurns(
     props.store,
-    props.previousSlotId,
+    previousSlotId,
     props.slotId,
     groupingContext?.firstTurnPosition,
     groupingContext?.timestampGapMs,
@@ -522,31 +640,31 @@ const SlotRow = memo(function SlotRow(props: {
   const joinedAfter = useJoinedTurns(
     props.store,
     props.slotId,
-    props.nextSlotId,
+    nextSlotId,
     groupingContext?.firstTurnPosition,
     groupingContext?.timestampGapMs,
   );
   const stored = useSlot(props.store, props.slotId);
-  const previousTime = useSlotTime(props.store, timestamps ? props.previousSlotId : undefined);
+  const previousTime = useSlotTime(props.store, timestamps ? previousSlotId : undefined);
   const slot = stored?.kind === "ready" ? stored : (props.fallback ?? stored);
   useEffect(() => {
     if (stored?.kind === "deferred") void client.hydrate(threadId, props.slotId);
   }, [stored?.kind, client, threadId, props.slotId]);
-  if (!slot) return null;
+  if (!slot || posts.folded) return null;
   if (slot.kind !== "ready")
-    return (
+    return slot.kind === "failed" ? (
       <div className="history-placeholder text-center bg-surface my-3 mx-6 rounded-md flex justify-center gap-3">
-        {slot.kind === "failed" ? (
-          <>
-            <span>{slot.message}</span>
-            <Button type="button" onClick={() => void client.hydrate(threadId, slot.slotId)}>
-              Retry history
-            </Button>
-          </>
-        ) : (
-          <span>Earlier messages</span>
-        )}
+        <span>{slot.message}</span>
+        <Button type="button" onClick={() => void client.hydrate(threadId, slot.slotId)}>
+          Retry history
+        </Button>
       </div>
+    ) : (
+      <SkeletonConversation
+        label="Loading earlier messages"
+        exchanges={1}
+        className="px-6 py-4 max-workspace:px-4"
+      />
     );
   const currentContext =
     recentContext?.historyGeneration === props.store.checkpoint?.historyGeneration
@@ -564,13 +682,13 @@ const SlotRow = memo(function SlotRow(props: {
     timestamps &&
     time !== undefined &&
     (contextStart ||
-      props.previousSlotId === undefined ||
+      previousSlotId === undefined ||
       (previousTime !== undefined &&
         (time - previousTime >= gapMs || startsNewDay(previousTime, time))));
   // An idle DM without a current window means the server will open a new context on the next send.
   const nextContextStart =
     timestamps &&
-    props.nextSlotId === undefined &&
+    nextSlotId === undefined &&
     !props.fallback &&
     slot.state !== "pending" &&
     slot.state !== "running" &&
@@ -588,7 +706,12 @@ const SlotRow = memo(function SlotRow(props: {
         userRenderKey={
           props.renderKey !== props.slotId || props.fallback ? props.renderKey : undefined
         }
-        animateArrivals={!!props.fallback || props.slotId === props.store.slotIds.at(-1)}
+        animateArrivals={
+          !!props.fallback ||
+          props.slotId === props.store.slotIds.at(-1) ||
+          nextSlotId === undefined
+        }
+        posts={posts.posts}
         onRewind={onRewind}
         onLoadMore={() => void client.loadTurnPage(threadId, slot.slotId)}
       />
@@ -598,6 +721,8 @@ const SlotRow = memo(function SlotRow(props: {
 });
 
 type TurnProps = {
+  /** Workflow cards posted during this turn, shown ahead of its reply. */
+  posts?: readonly ReadyTurnSlot[];
   joinedBefore?: boolean;
   joinedAfter?: boolean;
   slot: ReadyTurnSlot;
@@ -697,17 +822,17 @@ function AgentTurn(props: TurnProps) {
   const thinkingAfter =
     active && !waiting && !tail && !finals.length && !remaining.at(-1)?.metadata?.incomplete;
   const incomingContinues = sameMessageAuthor(incomingMessage, remaining[0]);
-  const incomingSpacing = incomingContinues ? "mb-2" : "mb-6";
+  const incomingSpacing = incomingContinues ? "mb-2" : "mb-4";
   const folded = slot.state === "complete" && intermediate.length > 0;
   return (
     <article
-      className={`turn px-6 max-workspace:px-4 ${props.joinedBefore ? "pt-0" : "pt-4 max-workspace:pt-3"} ${props.joinedAfter ? "pb-0" : "pb-8 max-workspace:pb-6"}`}
+      className={`turn px-6 max-workspace:px-4 ${props.joinedBefore ? "pt-0" : "pt-1"} ${props.joinedAfter ? "pb-0" : "pb-8 max-workspace:pb-7"}`}
       data-joined-before={props.joinedBefore || undefined}
       data-joined-after={props.joinedAfter || undefined}
       data-turn-id={slot.turnId}
     >
       {firstUser ? (
-        <div className={`user-turn ml-12 max-workspace:ml-6 ${remaining.length ? "mb-6" : ""}`}>
+        <div className={`user-turn ml-12 max-workspace:ml-6 ${remaining.length ? "mb-10" : ""}`}>
           <MessageBody
             live={props.animateArrivals ?? true}
             message={firstUser}
@@ -812,6 +937,10 @@ function AgentTurn(props: TurnProps) {
               ) : (
                 <TurnMessages messages={intermediate} live={!settled} showFirstAvatar={false} />
               )}
+              {props.posts?.map((post) => {
+                const workflow = workflowCardMessage(post);
+                return workflow ? <WorkflowCard key={post.slotId} {...workflow} /> : null;
+              })}
               {waiting || thinkingAfter ? <LiveThinkingRow /> : null}
               <TurnMessages
                 messages={finals}
@@ -825,9 +954,18 @@ function AgentTurn(props: TurnProps) {
         </LiveTailContext>
       </RequestActiveContext>
       {slot.state === "failed" || slot.state === "canceled" ? (
-        <Marker className="turn-status px-0.5">
-          <MarkerContent>{slot.state === "failed" ? "Run failed" : "Stopped"}</MarkerContent>
-        </Marker>
+        <p
+          data-ui="turn-status"
+          data-state={slot.state}
+          className="inline-flex min-h-[var(--ui-control-compact)] items-center gap-1.5 rounded-full bg-muted px-2.5 text-xs font-medium text-muted-foreground ring-1 ring-border ring-inset data-[state=failed]:bg-danger/10 data-[state=failed]:text-danger data-[state=failed]:ring-danger/30 [&_svg]:size-3.5"
+        >
+          {slot.state === "failed" ? (
+            <CircleAlert aria-hidden="true" />
+          ) : (
+            <CircleSlash aria-hidden="true" />
+          )}
+          {slot.state === "failed" ? "Run failed" : "Stopped"}
+        </p>
       ) : null}
       {slot.partsCursor ? (
         <Button
@@ -1416,7 +1554,7 @@ const MessageBody = memo(function MessageBody(
           render={
             <ChatMessage
               align={self ? "end" : "start"}
-              className={`message leading-normal ${conversational ? "py-1" : "py-0"} px-0 wrap-anywhere message-${message.role} native-message text-base`}
+              className={`message leading-normal ${conversational ? "py-0.5" : "py-0"} px-0 wrap-anywhere message-${message.role} native-message text-base`}
               data-message-id={message.id}
               data-citation-source={
                 message.role === "assistant" &&
@@ -1526,7 +1664,7 @@ const MessageBody = memo(function MessageBody(
             (message.metadata?.phase !== "commentary" && !message.metadata?.incomplete)) ? (
             <div
               data-ui="message-controls"
-              className="message-controls flex items-center justify-end gap-1 text-muted-foreground text-xs mt-1"
+              className="message-controls flex items-center justify-end gap-1 text-muted-foreground text-xs"
             >
               {self ? time : copy}
               <AddReaction messageId={message.id} items={reactions} disabled={props.optimistic} />

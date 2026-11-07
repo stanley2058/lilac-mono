@@ -65,6 +65,17 @@ function workflowCardFrame(progress: {
   };
 }
 
+/** The card posts while the run works, after the prompt and before the reply begins. */
+function postedDuringRun(slot: ReadyTurnSlot): ReadyTurnSlot {
+  return {
+    ...slot,
+    messages: slot.messages.map((message) => ({
+      ...message,
+      metadata: { ...message.metadata, createdAt: demoTime + 2_000 },
+    })),
+  };
+}
+
 /** Moves workflow card times so the sample's present is `at`, keeping live timers realistic. */
 export function rebaseWorkflowTimes(slot: ReadyTurnSlot, at: number): ReadyTurnSlot {
   const shift = (value: number) => value + at - demoTime;
@@ -914,9 +925,13 @@ const flowStages = [
 export const conversationFrames = flowStages
   .flatMap((id) => {
     const frames = agentWorkStages.find((stage) => stage.id === id)!.frames;
-    if (id === "workflow") return frames.map((card) => ({ ...turn([work]), following: card }));
+    if (id === "workflow")
+      return frames.map((card) => ({ ...turn([work]), following: postedDuringRun(card) }));
     if (id === "streaming" || id === "complete")
-      return frames.map((frame) => ({ ...frame, following: workflowFrame("succeeded") }));
+      return frames.map((frame) => ({
+        ...frame,
+        following: postedDuringRun(workflowFrame("succeeded")),
+      }));
     return frames;
   })
   .map((frame) => ({

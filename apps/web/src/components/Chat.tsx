@@ -21,6 +21,7 @@ import {
   useNativeOnline,
 } from "../queries";
 import { MessageIdentityContext } from "./message-identity";
+import { ConversationWelcome } from "./ConversationWelcome";
 import {
   QuestionReplyContext,
   type QuestionReplyView,
@@ -82,6 +83,7 @@ import { attempt, IconButton, Modal, VirtualList } from "./ui";
 import { toast } from "./ui/toast";
 
 import { UploadProgressContext } from "../upload-context";
+
 const queueLabels = { prompt: "Prompt", steer: "Steering", followup: "Follow-up" };
 export type Draft = {
   text: string;
@@ -1127,20 +1129,12 @@ export function Chat(props: ChatProps) {
     return undefined;
   }
   function renderEmptyConversation() {
-    if (local)
-      return (
-        <div className="welcome">
-          <span className="brand inline-flex gap-1 items-baseline text-2xl [letter-spacing:-0.07em] font-[650]">
-            lilac
-            <span />
-          </span>
-        </div>
-      );
+    if (local) return <ConversationWelcome />;
     const retry = thread ? undefined : props.onRetryLoad;
     if (props.loadError)
       return <ConversationStatus state="error" detail={props.loadError} onRetry={retry} />;
     if (!online && !thread) return <ConversationStatus state="offline" onRetry={retry} />;
-    if (historyLoaded) return undefined;
+    if (historyLoaded) return <ConversationWelcome existing />;
     if (!online) return <ConversationStatus state="offline" />;
     return <ConversationStatus state={historyError ? "error" : "loading"} />;
   }
@@ -1154,6 +1148,7 @@ export function Chat(props: ChatProps) {
                 optimisticTurn={optimisticTurn}
                 onOptimisticResolved={resolveOptimistic}
                 emptyContent={renderEmptyConversation()}
+                centerEmpty={local || (historyLoaded && !props.loadError)}
                 header={props.header}
                 footer={composer}
                 onLatestVisibleChange={setLatestVisible}

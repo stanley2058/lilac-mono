@@ -214,7 +214,8 @@ function Bar({
         counts[key] > 0 ? (
           <span
             key={key}
-            className={`h-full transition-[width] ${segment} ${live && key === "active" ? "animate-pulse" : ""}`}
+            data-shine={(live && key === "active") || undefined}
+            className={`h-full transition-[width] ${segment}`}
             style={{ width: `${(counts[key] / Math.max(1, counts.total)) * 100}%` }}
           />
         ) : null,
