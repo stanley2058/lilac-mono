@@ -20,7 +20,17 @@ import {
   type DragEvent,
   type ReactNode,
 } from "react";
-import { ArrowRight, ArrowUp, CircleAlert, Paperclip, Square, Upload } from "lucide-react";
+import {
+  ALargeSmall,
+  ArrowRight,
+  ArrowUp,
+  CircleAlert,
+  Paperclip,
+  Square,
+  Upload,
+} from "lucide-react";
+import { createStore } from "zustand/vanilla";
+import { useStore } from "zustand";
 import { createPortal } from "react-dom";
 import { hasFileDrag, installWindowFileDrop } from "../window-file-drop";
 import "./composer-drop.css";
@@ -43,6 +53,9 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from ".
 import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
 
 const ComposerEditor = lazy(() => import("./composer-editor"));
+// The formatting buttons stay open across conversations until the viewer closes them.
+const formattingStore = createStore(() => ({ open: false }));
+const toggleFormatting = () => formattingStore.setState(({ open }) => ({ open: !open }));
 
 import { MessageIdentityContext } from "./message-identity";
 import { inputDeliveryOptions } from "../input-mode";
@@ -81,6 +94,8 @@ export type ComposerProps = Partial<Pick<ChatCommon, "client" | "scope" | "catal
 };
 
 export const Composer = memo(function Composer(props: ComposerProps) {
+  const formatting = useStore(formattingStore, (state) => state.open);
+  const [formattingSlot, setFormattingSlot] = useState<HTMLElement | null>(null);
   const workspace = useOptionalWorkspace();
   const client = props.client ?? workspace?.client;
   const scope = props.scope ?? workspace?.scope;
@@ -573,22 +588,11 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           ) : null}
         </PopoverContent>
       </Popover>
-      <div className="composer bg-surface text-card-foreground rounded-lg p-3">
+      <div className="composer text-input-foreground rounded-3xl p-2.5">
         {props.header}
         <Suspense
           fallback={
             <div role="status" aria-label="Loading editor">
-              <div className="composer-formatting flex gap-1 px-1 flex-wrap" aria-hidden="true">
-                {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((index) => (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="icon-button rounded-sm text-muted-foreground"
-                    disabled
-                    key={index}
-                  />
-                ))}
-              </div>
               <div className="composer-editor" />
             </div>
           }
@@ -614,9 +618,42 @@ export const Composer = memo(function Composer(props: ComposerProps) {
             expanded={menuSize > 0}
             activeDescendant={highlighted >= 0 ? `completion-${highlighted}` : undefined}
             disabled={disabled}
+            formattingTarget={formatting ? formattingSlot : null}
           />
         </Suspense>
-        <footer className="composer-toolbar @container pl-2 flex gap-1 items-center pt-2">
+        <footer className="composer-toolbar @container flex gap-1 items-center pt-1">
+          <input
+            ref={fileInput}
+            type="file"
+            aria-label="Attach files"
+            multiple
+            className="sr-only absolute w-px h-px overflow-hidden [clip:rect(0,_0,_0,_0)] whitespace-nowrap"
+            tabIndex={-1}
+            onChange={(event) => {
+              props.onAttach([...(event.target.files ?? [])]);
+              event.target.value = "";
+            }}
+          />
+          <IconButton
+            label="Attach files"
+            className="rounded-full"
+            disabled={disabled}
+            onClick={() => fileInput.current?.click()}
+          >
+            <Paperclip />
+          </IconButton>
+          <IconButton
+            label={formatting ? "Hide formatting" : "Show formatting"}
+            tooltip="Formatting"
+            className="rounded-full"
+            aria-pressed={formatting}
+            disabled={disabled}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={toggleFormatting}
+          >
+            <ALargeSmall className="size-5" />
+          </IconButton>
+          <span ref={setFormattingSlot} className="composer-formatting-slot contents" />
           <ModelSelector
             client={client}
             reasoning={props.reasoning}
@@ -649,25 +686,6 @@ export const Composer = memo(function Composer(props: ComposerProps) {
               </Select>
             </div>
           ) : null}
-          <input
-            ref={fileInput}
-            type="file"
-            aria-label="Attach files"
-            multiple
-            className="sr-only absolute w-px h-px overflow-hidden [clip:rect(0,_0,_0,_0)] whitespace-nowrap"
-            tabIndex={-1}
-            onChange={(event) => {
-              props.onAttach([...(event.target.files ?? [])]);
-              event.target.value = "";
-            }}
-          />
-          <IconButton
-            label="Attach files"
-            disabled={disabled}
-            onClick={() => fileInput.current?.click()}
-          >
-            <Paperclip />
-          </IconButton>
           {props.canCancel ? (
             <IconButton
               label="Cancel run"

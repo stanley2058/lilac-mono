@@ -65,11 +65,19 @@ const providerCodes: Record<string, string> = {
   anthropic: "AN",
 };
 
-export function ProviderTabIcon({ provider }: { provider: string }) {
+/** Shows the provider logo with its short code, so OpenAI and Codex stay distinct. */
+export function ProviderTabIcon({
+  provider,
+  size = "md",
+}: {
+  provider: string;
+  size?: "sm" | "md";
+}) {
   const code = providerCodes[provider];
+  const box = size === "sm" ? "size-4" : "size-5";
   return (
-    <span aria-hidden="true" className="relative inline-flex size-5 items-center justify-center">
-      <ProviderIcon provider={provider} className="size-5" />
+    <span aria-hidden="true" className={`relative inline-flex ${box} items-center justify-center`}>
+      <ProviderIcon provider={provider} className={box} />
       {code ? (
         <span className="absolute -right-1 -bottom-1 rounded-sm bg-popover px-0.5 font-mono text-provider-code leading-none font-medium text-popover-foreground">
           {code}

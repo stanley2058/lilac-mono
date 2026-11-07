@@ -1,4 +1,5 @@
 import { Kbd } from "./ui/kbd";
+import { createPortal } from "react-dom";
 import { shortcutOverlayOpen } from "../shortcuts";
 import { shouldFocusComposer } from "../composer-focus";
 import { formatBinding, ariaBinding } from "../keybindings";
@@ -326,6 +327,8 @@ export type ComposerEditorProps = {
   onSubmit?: () => void;
   expanded: boolean;
   activeDescendant?: string;
+  /** Renders the formatting buttons into this element, inline with the composer's controls. */
+  formattingTarget?: HTMLElement | null;
 };
 const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) {
   const [openCitation, setOpenCitation] = useState<OpenCitation>();
@@ -583,7 +586,12 @@ const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) 
           send: () => current.current.onSubmit?.(),
         }}
       >
-        <ComposerFormatting editor={editor} disabled={props.disabled} />
+        {props.formattingTarget
+          ? createPortal(
+              <ComposerFormatting editor={editor} disabled={props.disabled} />,
+              props.formattingTarget,
+            )
+          : null}
         <EditorContent editor={editor} />
       </CitationEditorContext>
     </AttachmentContext>
@@ -611,7 +619,7 @@ const ComposerFormatting = memo(function ComposerFormatting({
   }
   return (
     <div
-      className="composer-formatting flex gap-1 px-1 flex-wrap"
+      className="composer-formatting flex min-w-0 shrink items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
       role="toolbar"
       aria-label="Text formatting"
       onMouseDown={(event) => event.preventDefault()}

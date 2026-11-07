@@ -1,4 +1,5 @@
 import { memo, useDeferredValue, useMemo, useState, type ReactNode } from "react";
+import { SkeletonRows } from "./ui/skeleton";
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -331,8 +332,8 @@ export function ModelSelectorView({
             />
           }
         >
-          <ProviderIcon provider={current?.provider ?? ""} />
-          <span className="truncate">{current?.label ?? modelId ?? "Model"}</span>
+          <ProviderTabIcon provider={current?.provider ?? ""} size="sm" />
+          <span className="truncate pl-1">{current?.label ?? modelId ?? "Model"}</span>
           <ChevronDown className="size-3" />
         </PopoverTrigger>
         <PopoverContent
@@ -387,10 +388,11 @@ export function ModelSelectorView({
                     {legacyOpen ? legacy.map(row) : null}
                   </>
                 ) : null}
-                {!visible.length ? (
-                  <p className="px-2.5 py-4 text-sm text-muted-foreground">
-                    {loading ? "Loading…" : empty}
-                  </p>
+                {!visible.length && loading ? (
+                  <SkeletonRows label="Loading models" rows={6} />
+                ) : null}
+                {!visible.length && !loading ? (
+                  <p className="px-2.5 py-4 text-sm text-muted-foreground">{empty}</p>
                 ) : null}
                 {loadMore ? (
                   <Button
