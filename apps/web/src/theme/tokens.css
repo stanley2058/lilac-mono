@@ -37,10 +37,20 @@
   --ui-motion-spin-duration: 1s;
   --ui-motion-shine-duration: 2s;
   --ui-motion-pulse-duration: 2s;
-  --ui-shadow-sm: 0 1px 3px var(--ui-shadow-color);
-  --ui-shadow-md: 0 4px 12px var(--ui-shadow-color);
-  --ui-shadow-lg: 0 8px 24px var(--ui-shadow-color);
-  --ui-shadow-overlay: 0 1rem 4rem var(--ui-shadow-color);
+  /* Layered shadows: a tight contact shadow plus a soft ambient one. */
+  --ui-shadow-sm: 0 1px 2px var(--ui-shadow-color);
+  --ui-shadow-md: 0 1px 2px var(--ui-shadow-color), 0 6px 16px -6px var(--ui-shadow-color);
+  --ui-shadow-lg: 0 2px 4px -1px var(--ui-shadow-color), 0 12px 32px -10px var(--ui-shadow-color);
+  --ui-shadow-overlay:
+    0 4px 12px -2px var(--ui-shadow-color), 0 24px 56px -16px var(--ui-shadow-color);
+  /* Blur is reserved for a few fixed layers: headers, the composer, and open menus. */
+  --ui-glass-blur: 16px;
+  --ui-glass-opacity: 78%;
+  --ui-radius-3xl: 1.5rem;
+  --ui-message-gutter: 2.75rem;
+  --ui-header-height: 3rem;
+  /* A warm second stop for brand gradients, derived from whatever accent the theme sets. */
+  --ui-brand-warm: color-mix(in oklab, var(--ui-primary) 62%, #f2a7c3);
 }
 :root[data-animation="slow"] {
   --ui-motion-duration: 350ms;

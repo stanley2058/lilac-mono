@@ -95,7 +95,7 @@ export function resolveTheme(
     ),
     tint: `color-mix(in srgb, ${primary} 14%, ${surface})`,
     "tint-foreground": surfaceForeground,
-    overlay: "#0007",
+    overlay: "#0009",
     "shadow-color": base("widget.shadow"),
   };
   const syntax: ThemeRegistration | undefined =

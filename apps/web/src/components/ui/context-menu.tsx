@@ -44,7 +44,7 @@ function ContextMenuContent({
         <ContextMenuPrimitive.Popup
           data-slot="context-menu-content"
           className={cn(
-            "z-50 max-h-(--available-height) min-w-36 origin-(--transform-origin) overflow-x-hidden overflow-y-auto rounded-lg bg-menu p-1.5 text-menu-foreground shadow-md ring-1 ring-border duration-100 outline-none data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+            "z-50 max-h-(--available-height) min-w-52 origin-(--transform-origin) overflow-x-hidden overflow-y-auto menu-glass rounded-xl p-1.5 text-menu-foreground shadow-overlay ring-1 ring-border duration-100 outline-none data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
             className,
           )}
           {...props}
@@ -93,7 +93,7 @@ function ContextMenuItem({
       data-inset={inset}
       data-variant={variant}
       className={cn(
-        "no-underline hover:no-underline group/context-menu-item relative flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 text-sm outline-hidden select-none focus:bg-menu-selection focus:text-menu-selection-foreground data-inset:pl-7 data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 focus:*:[svg]:text-menu-selection-foreground data-[variant=destructive]:*:[svg]:text-destructive",
+        "no-underline hover:no-underline group/context-menu-item relative flex cursor-default items-center gap-2.5 rounded-lg px-2.5 py-[0.5625rem] text-sm outline-hidden select-none focus:bg-menu-selection focus:text-menu-selection-foreground data-inset:pl-7 data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-[1.125rem] focus:*:[svg]:text-menu-selection-foreground data-[variant=destructive]:*:[svg]:text-destructive",
         className,
       )}
       {...props}
@@ -118,7 +118,7 @@ function ContextMenuSubTrigger({
       data-slot="context-menu-sub-trigger"
       data-inset={inset}
       className={cn(
-        "flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 text-sm outline-hidden select-none focus:bg-menu-selection focus:text-menu-selection-foreground data-inset:pl-7 data-open:bg-menu-selection data-open:text-menu-selection-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "flex cursor-default items-center gap-2.5 rounded-lg px-2.5 py-[0.5625rem] text-sm outline-hidden select-none focus:bg-menu-selection focus:text-menu-selection-foreground data-inset:pl-7 data-open:bg-menu-selection data-open:text-menu-selection-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className,
       )}
       {...props}
@@ -206,7 +206,7 @@ function ContextMenuSeparator({ className, ...props }: ContextMenuPrimitive.Sepa
   return (
     <ContextMenuPrimitive.Separator
       data-slot="context-menu-separator"
-      className={cn("-mx-1 my-1 h-px bg-border", className)}
+      className={cn("-mx-1.5 my-1.5 h-px bg-border", className)}
       {...props}
     />
   );
