@@ -339,7 +339,7 @@ export function ModelSelectorView({
         <PopoverContent
           align="start"
           side="top"
-          className="h-[min(26rem,70vh)] w-96 max-w-[calc(100vw-2rem)] gap-0 p-0"
+          className="h-[min(26rem,70vh,var(--available-height))] w-96 max-w-[calc(100vw-2rem)] gap-0 p-0"
         >
           <div className="flex h-full min-h-0">
             <nav

@@ -331,17 +331,40 @@
   border-top-left-radius: var(--ui-radius-sm);
 }
 
+/* Phones cannot spare a gutter, so text uses the full column. The avatar shares the work summary
+   row when the reply has one and takes its own row otherwise. */
 @media (max-width: 47.5rem) {
-  :root {
-    --ui-message-gutter: 2.25rem;
-  }
   .timeline .turn {
-    padding-left: calc(var(--ui-space-unit) * 4 + var(--ui-message-gutter));
+    padding-left: calc(var(--ui-space-unit) * 4);
+  }
+  .timeline .agent-response > [data-slot="message-avatar"],
+  .timeline .native-message[data-align="start"] > [data-slot="message-avatar"] {
+    position: static;
+  }
+  .timeline
+    .agent-response:has(
+      > [data-slot="message-avatar"] + :is([data-ui="work-summary"], [data-slot="collapsible"])
+    )
+    > [data-slot="message-avatar"] {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+  .timeline .agent-response > [data-slot="message-avatar"] + [data-ui="work-summary"],
+  .timeline
+    .agent-response
+    > [data-slot="message-avatar"]
+    + [data-slot="collapsible"]
+    > [data-ui="work-summary"] {
+    padding-left: calc(var(--ui-space-unit) * 9);
   }
   .timeline .agent-response > [data-slot="message-avatar"] [data-slot="avatar"],
   .timeline .native-message[data-align="start"] > [data-slot="message-avatar"] [data-slot="avatar"] {
     width: calc(var(--ui-space-unit) * 7);
     height: calc(var(--ui-space-unit) * 7);
+  }
+  .timeline[data-messaging] .native-message.message-assistant .message-bubble > [data-slot="bubble-content"] {
+    padding: calc(var(--ui-space-unit) * 2) calc(var(--ui-space-unit) * 3);
   }
 }
 
