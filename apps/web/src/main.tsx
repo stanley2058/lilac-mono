@@ -1,4 +1,5 @@
 import { ConnectionLoading } from "./components/ui/connection-loading";
+import { SkeletonLines } from "./components/ui/skeleton";
 import { loadSavedTheme, watchSystemTheme } from "./theme/theme";
 import { SurfaceVisibilityContext } from "./components/ui/surface-visibility";
 import { Outlet, RouterProvider, useMatch } from "@tanstack/react-router";
@@ -170,7 +171,7 @@ function Root() {
   const accountProfile =
     auth?.provider === "clerk" && auth.publishableKey ? (
       <AccountLoadBoundary onReload={reload} message="Unable to load account settings.">
-        <Suspense fallback={<p role="status">Loading account…</p>}>
+        <Suspense fallback={<SkeletonLines label="Loading account" lines={5} className="py-2" />}>
           <ClerkAccount publishableKey={auth.publishableKey} />
         </Suspense>
       </AccountLoadBoundary>

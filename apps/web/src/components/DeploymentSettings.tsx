@@ -1,4 +1,5 @@
 import { useId, useRef, useState, type ReactNode } from "react";
+import { SkeletonLines } from "./ui/skeleton";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   NativeDeploymentSettings,
@@ -358,7 +359,8 @@ export function DeploymentSettings() {
     queryFn: ({ signal }) => client.rpc!.config.readDeployment({}, { signal }),
     staleTime: 0,
   });
-  if (!settings.data)
-    return <ErrorNotice message={settings.error?.message ?? (online ? "Loading…" : "Offline")} />;
+  if (!settings.data && online && !settings.error)
+    return <SkeletonLines label="Loading deployment settings" lines={6} className="py-2" />;
+  if (!settings.data) return <ErrorNotice message={settings.error?.message ?? "Offline"} />;
   return <DeploymentEditor document={settings.data} online={online} />;
 }

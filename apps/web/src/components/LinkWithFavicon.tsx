@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { SkeletonLines } from "./ui/skeleton";
 import { Globe } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import type { NativeClient } from "@stanley2058/lilac-client";
@@ -120,11 +121,7 @@ export function LinkPreviewBody({
       {preview?.title ? (
         <div className="line-clamp-2 font-medium wrap-anywhere">{preview.title}</div>
       ) : null}
-      {loading ? (
-        <div className="text-xs text-muted-foreground" role="status">
-          Loading preview…
-        </div>
-      ) : null}
+      {loading ? <SkeletonLines label="Loading preview" lines={3} /> : null}
       {preview?.description ? (
         <p className="line-clamp-3 text-sm text-muted-foreground wrap-anywhere">
           {preview.description}

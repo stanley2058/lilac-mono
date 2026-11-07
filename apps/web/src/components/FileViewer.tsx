@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { SkeletonRows } from "./ui/skeleton";
 import { fileDraftKey } from "../file-editors";
 import { FileDocumentEditor } from "./FileDocumentEditor";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
@@ -193,7 +194,7 @@ export function RightPanel({ threadId, foreground }: { threadId: string; foregro
         onAgents={() => actions.openAgents(threadId)}
         onFiles={() => actions.openFiles(threadId)}
         expandedSidebar={
-          <Suspense fallback={<p className="p-3 text-sm text-muted-foreground">Loading files…</p>}>
+          <Suspense fallback={<SkeletonRows label="Loading files" rows={8} />}>
             <WorkspaceTree threadId={threadId} active={visible} />
           </Suspense>
         }
@@ -206,9 +207,7 @@ export function RightPanel({ threadId, foreground }: { threadId: string; foregro
             return <ThreadReferenceView target={tab.target} active={visible && active} panel />;
           if (tab.type === "files")
             return (
-              <Suspense
-                fallback={<p className="p-3 text-sm text-muted-foreground">Loading files…</p>}
-              >
+              <Suspense fallback={<SkeletonRows label="Loading files" rows={8} />}>
                 <WorkspaceTree threadId={threadId} active={visible && active} />
               </Suspense>
             );
@@ -320,7 +319,7 @@ export function RightPanelTabs({
           className="file-panel-tabs-root"
         >
           <div
-            className={`file-panel-tab-bar flex items-center gap-1 flex-none pl-2 ${expanded ? "h-10 pr-2" : "h-8 pr-[calc(calc(var(--ui-space-unit)*3)_+_var(--ui-control-compact)_+_calc(var(--ui-space-unit)*2))]"}`}
+            className={`file-panel-tab-bar flex items-center gap-1 flex-none pl-2 ${expanded ? "h-10 pr-2" : "h-[var(--ui-header-height)] pr-[calc(calc(var(--ui-space-unit)*3)_+_var(--ui-control-compact)_+_calc(var(--ui-space-unit)*2))]"}`}
           >
             <TabsList
               ref={list}

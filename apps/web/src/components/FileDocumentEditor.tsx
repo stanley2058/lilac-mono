@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { SkeletonCode } from "./ui/skeleton";
 import { useStore } from "zustand";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Save, RefreshCw } from "lucide-react";
@@ -121,9 +122,13 @@ export function FileDocumentEditor({
           navigation={target}
         />
       ) : (
-        <p className="p-3 text-sm text-muted-foreground">
-          {query.isFetching ? "Loading file…" : "File unavailable"}
-        </p>
+        <>
+          {query.isFetching ? (
+            <SkeletonCode label="Loading file" />
+          ) : (
+            <p className="p-3 text-sm text-muted-foreground">File unavailable</p>
+          )}
+        </>
       )}
       <Dialog open={confirmReload} onOpenChange={setConfirmReload}>
         <DialogContent>

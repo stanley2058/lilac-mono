@@ -1,4 +1,5 @@
 import type { NativeDeploymentSettings } from "@stanley2058/lilac-client-protocol";
+import { Skeleton } from "./ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 export type StreamingMode = NativeDeploymentSettings["outputStreaming"];
@@ -26,7 +27,9 @@ export function StreamingModeSelect({
       }}
     >
       <SelectTrigger aria-label="Response streaming">
-        <SelectValue placeholder="Loading…" />
+        <SelectValue
+          placeholder={<Skeleton role="status" aria-label="Loading" className="h-3 w-20" />}
+        />
       </SelectTrigger>
       <SelectContent>
         {options.map((option) => (

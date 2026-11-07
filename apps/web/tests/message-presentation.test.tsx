@@ -387,9 +387,9 @@ describe("message presentation", () => {
     expect(exitCode).toBe(0);
     const { cold, warm } = JSON.parse(stdout) as { cold: string; warm: string };
     expect(cold).toContain("&lt;script&gt;untrusted&lt;/script&gt;");
-    expect(cold).toContain("file-code-fallback");
+    expect(cold).toContain('data-ui="code-fallback"');
     expect(warm).toContain('aria-label="File contents"');
-    expect(warm).not.toContain("file-code-fallback");
+    expect(warm).not.toContain('data-ui="code-fallback"');
     for (const html of [cold, warm]) {
       expect(html).toContain("Showing the first 64 KB.");
       expect(html).toContain("Download source.ts");

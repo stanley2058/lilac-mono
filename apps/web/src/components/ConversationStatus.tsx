@@ -1,9 +1,9 @@
 import { CircleAlert, WifiOff } from "lucide-react";
 import { Button } from "./ui/button";
-import { LoadingSpinner } from "./ui/loading-spinner";
+import { SkeletonConversation } from "./ui/skeleton";
 
 const states = {
-  loading: { icon: <LoadingSpinner />, label: "Loading" },
+  loading: { icon: null, label: "Loading conversation" },
   offline: { icon: <WifiOff className="size-4" />, label: "Offline" },
   error: { icon: <CircleAlert className="size-4" />, label: "Couldn't load conversation" },
 };
@@ -17,6 +17,13 @@ export function ConversationStatus({
   detail?: string;
   onRetry?: () => void;
 }) {
+  if (state === "loading")
+    return (
+      <SkeletonConversation
+        label="Loading conversation"
+        className="w-full px-6 pt-6 max-workspace:px-4"
+      />
+    );
   const { icon, label } = states[state];
   return (
     <div className="empty-chat gap-4 px-6 text-sm" role="status" data-state={state}>

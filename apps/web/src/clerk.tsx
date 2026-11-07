@@ -1,4 +1,5 @@
 import { ConnectionLoading } from "./components/ui/connection-loading";
+import { SkeletonLines } from "./components/ui/skeleton";
 import { createClerkSessionRefresh, resumeClerkSession } from "./clerk-session-refresh";
 import { Button } from "./components/ui/button";
 import { ClerkProvider, SignIn, UserProfile, useAuth, useClerk, useUser } from "@clerk/react";
@@ -211,7 +212,7 @@ function AccountView() {
     <UserProfile
       routing="hash"
       appearance={clerkProfileAppearance}
-      fallback={<p role="status">Loading account…</p>}
+      fallback={<SkeletonLines label="Loading account" lines={5} className="py-2" />}
     />
   );
 }

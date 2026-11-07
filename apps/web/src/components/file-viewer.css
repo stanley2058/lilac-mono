@@ -76,35 +76,37 @@
   height: var(--ui-control-compact);
 }
 
-.file-code-lines {
-  position: relative;
-  width: 100%;
+.code-fallback {
+  padding-block: 8px;
+  color: var(--ui-foreground);
 }
-.file-code-line {
-  position: absolute;
-  top: 0;
-  left: 0;
+.code-fallback-lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* Monaco draws four digit cells, then its decoration and folding lanes before the code. */
+.code-fallback-lines > li {
   display: grid;
-  grid-template-columns: 5ch minmax(0, 1fr);
-  width: 100%;
+  grid-template-columns: 4ch minmax(0, 1fr);
+  column-gap: 32px;
   min-height: var(--ui-code-line-height);
-  padding-right: calc(var(--ui-space-unit) * 3);
+  /* A long file renders every line here until Monaco loads; skip work for lines off screen. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--ui-code-line-height);
 }
-.file-code-line code {
+.code-fallback-number {
+  text-align: right;
+  color: var(--ui-line-number);
+  user-select: none;
+}
+.code-fallback code {
+  font: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: inherit;
 }
-.file-code[data-wrap="false"] .file-code-line {
-  width: max-content;
-  min-width: 100%;
-}
-.file-code[data-wrap="false"] code {
+.code-fallback[data-wrap="false"] code {
   white-space: pre;
-}
-
-.file-code-line[data-highlighted="true"] {
-  background: var(--ui-code-selection);
 }
 
 .markdown .file-link {
@@ -132,10 +134,6 @@
 
 .file-panel > .attachment-preview-body {
   padding: calc(var(--ui-space-unit) * 2);
-}
-
-.file-code-fallback[data-wrap="false"] {
-  white-space: pre;
 }
 
 .file-source-heading .file-panel-heading {

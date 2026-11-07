@@ -1,4 +1,5 @@
 import { useEffect, useEffectEvent, useState } from "react";
+import { SkeletonRows } from "./ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { FileTree, useFileTree } from "@pierre/trees/react";
 import { ChevronsDownUp, RefreshCw } from "lucide-react";
@@ -29,7 +30,6 @@ export default function WorkspaceTree({ threadId, active }: { threadId: string; 
   };
   let status: string | undefined;
   if (draft) status = "Start a conversation to browse files";
-  else if (query.isPending && !query.error) status = "Loading files…";
   else if (query.data?.truncated) status = "Showing the first 10,000 files";
   return (
     <WorkspaceTreeView
@@ -40,6 +40,7 @@ export default function WorkspaceTree({ threadId, active }: { threadId: string; 
       refreshing={query.isFetching}
       error={query.error?.message}
       status={status}
+      loading={!draft && query.isPending && !query.error}
     />
   );
 }
@@ -54,6 +55,7 @@ export function WorkspaceTreeView({
   refreshing = false,
   error,
   status,
+  loading = false,
 }: {
   paths: readonly string[];
   root?: string;
@@ -62,6 +64,7 @@ export function WorkspaceTreeView({
   refreshing?: boolean;
   error?: string;
   status?: string;
+  loading?: boolean;
 }) {
   const [search, setSearch] = useState("");
   const query = search.trim() || null;
@@ -118,7 +121,11 @@ export function WorkspaceTreeView({
       </div>
       <ErrorNotice message={error} />
       {status ? <p className="px-3 py-1 text-xs text-muted-foreground">{status}</p> : null}
-      <FileTree model={model} className="workspace-tree flex-1 min-h-0" />
+      {loading ? (
+        <SkeletonRows label="Loading files" rows={8} />
+      ) : (
+        <FileTree model={model} className="workspace-tree flex-1 min-h-0" />
+      )}
     </div>
   );
 }

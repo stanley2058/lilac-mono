@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState, useLayoutEffect, type ReactNode } from "react";
+import { SkeletonCode } from "./ui/skeleton";
 import { Eye, Code, WrapText } from "lucide-react";
 import { IconButton } from "./ui";
 import { HtmlFilePreview } from "./HtmlFilePreview";
@@ -6,6 +7,7 @@ import { Markdown } from "./Markdown";
 import { fileLanguage, type FileTarget } from "../file-target";
 import type { TextPreviewState } from "./ResourcePreview";
 import "./file-viewer.css";
+import { CodeFallback } from "./CodeEditor";
 
 const FileCode = lazy(() => import("./FileCode"));
 
@@ -58,12 +60,7 @@ export function FileSource({
       </div>
       {htmlPreview ? <HtmlFilePreview key={href} href={href} name={name} /> : null}
       {!htmlPreview && text.status === "loading" ? (
-        <div
-          className="file-status grid place-content-center flex-1 p-4 text-sm text-muted-foreground"
-          role="status"
-        >
-          Loading file…
-        </div>
+        <SkeletonCode label="Loading file" className="flex-1 min-h-0" />
       ) : null}
       {!htmlPreview && text.status === "error" ? (
         <div
@@ -80,16 +77,7 @@ export function FileSource({
               <Markdown text={text.text} wrap />
             </div>
           ) : (
-            <Suspense
-              fallback={
-                <pre
-                  className="file-code overflow-auto flex-1 min-h-0 font-mono text-sm leading-code [overscroll-behavior:contain] file-code-fallback whitespace-pre-wrap wrap-anywhere p-3"
-                  data-wrap={wrap}
-                >
-                  {text.text}
-                </pre>
-              }
-            >
+            <Suspense fallback={<CodeFallback value={text.text} wrap={wrap} />}>
               <FileCode
                 source={text.text}
                 language={fileLanguage(name)}
