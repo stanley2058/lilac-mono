@@ -83,6 +83,7 @@ import { Timeline, ThinkingIndicator, useLatestReadableTurn } from "./Timeline";
 import type { OutlineSource } from "../timeline-outline";
 import { attempt, IconButton, Modal, VirtualList } from "./ui";
 import { toast } from "./ui/toast";
+import { isConnectionFailure } from "../connection-lifecycle";
 
 import { UploadProgressContext } from "../upload-context";
 
@@ -851,7 +852,8 @@ export function Chat(props: ChatProps) {
     async (question: NativeQuestion) => {
       const rpc = client.rpc;
       const target = questionReplyTarget(question);
-      if (!rpc || !target) return "Reconnect to dismiss";
+      if (!rpc) return "Connection unavailable";
+      if (!target) return "This question can't be dismissed";
       let failure: string | undefined;
       await attempt(
         () =>
@@ -863,6 +865,7 @@ export function Chat(props: ChatProps) {
           }),
         (message) => {
           failure = message;
+          if (isConnectionFailure(message)) void client.checkConnection();
         },
       );
       return failure;
@@ -971,8 +974,17 @@ export function Chat(props: ChatProps) {
     setHistoryError(undefined);
     if (local) props.onLocalChange(threadId, (current) => ({ ...current, error: undefined }));
   });
+  // Only the source holding this failure is cleared, so a lower-priority error can still appear.
+  const dropConnectionError = useEventCallback((message: string) => {
+    void client.checkConnection();
+    if (local && localThread?.error === message)
+      props.onLocalChange(threadId, (current) => ({ ...current, error: undefined }));
+    if (error === message) setError(undefined);
+    if (historyError === message) setHistoryError(undefined);
+  });
   useEffect(() => {
     if (!composerError) return;
+    if (isConnectionFailure(composerError)) return dropConnectionError(composerError);
     const id = `composer-error:${threadId}`;
     toast.add({
       id,
@@ -981,7 +993,7 @@ export function Chat(props: ChatProps) {
       onClose: () => dismissComposerError(threadId, composerError),
     });
     return () => toast.close(id);
-  }, [composerError, threadId, dismissComposerError]);
+  }, [composerError, threadId, dismissComposerError, dropConnectionError]);
   const composer = (
     <div className="chat-bottom w-full max-w-[var(--ui-chat-width)] my-0 mx-auto pt-2 px-6 pb-6 max-workspace:px-3 max-workspace:pb-3">
       {localThread?.creation && !pendingTurn ? (

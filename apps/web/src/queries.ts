@@ -57,6 +57,10 @@ export async function loadComposerDraft(
 const subscribeBrowserOnline = onlineManager.subscribe.bind(onlineManager);
 const browserOnlineSnapshot = () => onlineManager.isOnline();
 
+export function useDeviceOnline() {
+  return useSyncExternalStore(subscribeBrowserOnline, browserOnlineSnapshot, browserOnlineSnapshot);
+}
+
 export function useNativeOnline(client: NativeClient) {
   const subscribe = useCallback(
     (listener: () => void) =>
@@ -67,12 +71,8 @@ export function useNativeOnline(client: NativeClient) {
   );
   const snapshot = useCallback(() => client.connectionState === "online", [client]);
   const online = useSyncExternalStore(subscribe, snapshot, snapshot);
-  const browserOnline = useSyncExternalStore(
-    subscribeBrowserOnline,
-    browserOnlineSnapshot,
-    browserOnlineSnapshot,
-  );
-  return online && browserOnline;
+  const deviceOnline = useDeviceOnline();
+  return online && deviceOnline;
 }
 
 export async function queryNativeRPC<T>(

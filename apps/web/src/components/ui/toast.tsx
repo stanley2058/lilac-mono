@@ -12,6 +12,7 @@ import {
   TriangleAlertIcon,
   OctagonXIcon,
   Loader2Icon,
+  WifiOffIcon,
 } from "lucide-react";
 
 const toast = ToastPrimitive.createToastManager();
@@ -151,6 +152,10 @@ function ToastIcon({ type }: { type: string | undefined }) {
 
   if (type === "error") {
     icon = <OctagonXIcon className="text-destructive" aria-hidden="true" />;
+  }
+
+  if (type === "offline") {
+    icon = <WifiOffIcon aria-hidden="true" />;
   }
 
   if (type === "loading") {

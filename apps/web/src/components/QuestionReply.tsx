@@ -15,6 +15,7 @@ import { IconButton } from "./ui";
 import { Button } from "./ui/button";
 import { LoadingSpinner } from "./ui/loading-spinner";
 import { toast } from "./ui/toast";
+import { isConnectionFailure } from "../connection-lifecycle";
 
 /** Composer header: a way into a waiting question when the user is writing a regular message. */
 export function QuestionWaiting({
@@ -90,8 +91,9 @@ export function QuestionPanel({
     const failure = await onDismiss();
     // On success the question closes and this panel unmounts, so it stays busy until then.
     if (!failure) return;
-    toast.add({ title: failure, type: "error" });
     setDismissing(false);
+    if (isConnectionFailure(failure)) return;
+    toast.add({ title: failure, type: "error" });
   }
 
   // Number keys choose an option unless the user is typing, matching the numbers shown.

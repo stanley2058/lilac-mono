@@ -15,6 +15,7 @@ import {
   blurForThreadNavigation,
 } from "./shortcuts";
 import { watchNotifications, holdNotificationLock, notificationScope } from "./notifications";
+import { isConnectionFailure, reconnectAttempt } from "./connection-lifecycle";
 import { useConnectionNotice } from "./use-connection-notice";
 import { parseReferenceHref } from "@stanley2058/lilac-client-protocol";
 import { ThreadReferenceView } from "./components/ThreadReferenceView";
@@ -43,6 +44,7 @@ import {
   profileOptions,
   searchOptions,
   threadOptions,
+  useDeviceOnline,
   useNativeOnline,
 } from "./queries";
 import { useStore } from "zustand";
@@ -151,6 +153,7 @@ function Workspace(props: AppProps) {
   const setLocalDrafts = draftStore.getState().setLocalDrafts;
   const { client, initial } = props;
   const online = useNativeOnline(client);
+  const deviceOnline = useDeviceOnline();
   const profile = useQuery({ ...profileOptions(client), enabled: online });
   const viewer = profile.data ?? initial.viewer;
   const [threads, setThreads] = useState(initial.threads.items);
@@ -841,11 +844,16 @@ function Workspace(props: AppProps) {
         source: thread,
       })),
   ];
+  const dropConnectionError = useEventCallback(() => {
+    setError(undefined);
+    void client.checkConnection();
+  });
   useEffect(() => {
     if (!error) return;
+    if (isConnectionFailure(error)) return dropConnectionError();
     toast.add({ id: "app-error", title: error, type: "error", onClose: () => setError(undefined) });
-  }, [error]);
-  useConnectionNotice(online, () => client.reconnect());
+  }, [error, dropConnectionError]);
+  useConnectionNotice({ online, deviceOnline, retry: () => reconnectAttempt(client) });
 
   const renameSidebarThread = useEventCallback((id: string, title: string) =>
     setRename({ id, title }),

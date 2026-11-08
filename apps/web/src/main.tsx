@@ -8,10 +8,12 @@ import { Button } from "./components/ui/button";
 import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Result } from "better-result";
-import { WebSessionController, webCache } from "./bootstrap";
+import { WebSessionController, webCache, type WebState } from "./bootstrap";
 import { LocalLogin } from "./auth";
 import { readAuthInfo, resourceUrl, uploadResource, type AuthInfo } from "./http";
 import { requireConnectionCredentials } from "./connection-credentials";
+import { isConnectionFailure } from "./connection-lifecycle";
+import { closeConnectionNotice, showConnectionNotice } from "./use-connection-notice";
 import { watchAppUpdates, watchAppUpdateChecks, type AppUpdate } from "./updates";
 import { showAppUpdateToast } from "./app-update-toast";
 import { AccountLoadBoundary } from "./AccountLoadBoundary";
@@ -48,6 +50,11 @@ function enterChat() {
 const start = () => {
   return sessions.start();
 };
+// Auth settings are read once at startup, and the sign-in and credential flows all depend on them.
+const reloadPage = () => {
+  location.reload();
+  return new Promise<void>(() => {});
+};
 const logout = async () => {
   const auth = await authInfo;
   if (!auth) return;
@@ -66,6 +73,13 @@ const logout = async () => {
     err: (error) => sessions.logout(async () => Result.err(error)),
   });
 };
+
+// Sign-in is the only screen that needs auth settings, so a failed read must not outlive it.
+function signInMessage(state: WebState, authError: string): string {
+  if (state.kind !== "login") return "";
+  if (state.message && state.message !== "Sign in to continue") return state.message;
+  return authError;
+}
 
 function Root() {
   const state = useSyncExternalStore(sessions.subscribe, sessions.getSnapshot);
@@ -102,17 +116,22 @@ function Root() {
     const id = showAppUpdateToast(update.activate);
     return () => toast.close(id);
   }, [update]);
-  const stateMessage =
-    state.kind === "offline" || state.kind === "login" ? state.message : undefined;
+  const loginMessage = signInMessage(state, authError);
+  const unreachable = isConnectionFailure(loginMessage);
+  const offlineReason = state.kind === "offline" ? state.message : undefined;
+  const connectionReason = offlineReason ?? (unreachable ? loginMessage : undefined);
+  const retryConnection = state.kind === "offline" ? start : reloadPage;
   useEffect(() => {
-    const message = stateMessage === "Sign in to continue" ? authError : stateMessage || authError;
-    if (!message) {
-      toast.close("session-status");
-      return;
-    }
-    toast.add({ id: "session-status", title: message, type: "error", timeout: 0 });
+    if (!connectionReason) return;
+    showConnectionNotice({ reason: connectionReason, retry: retryConnection });
+    return () => closeConnectionNotice();
+  }, [connectionReason, retryConnection]);
+  const sessionError = unreachable ? "" : loginMessage;
+  useEffect(() => {
+    if (!sessionError) return;
+    toast.add({ id: "session-status", title: sessionError, type: "error", timeout: 0 });
     return () => toast.close("session-status");
-  }, [stateMessage, authError]);
+  }, [sessionError]);
   const reload = update?.activate ?? (() => location.reload());
   if (state.kind === "starting")
     return (

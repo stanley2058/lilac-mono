@@ -1,6 +1,7 @@
 import { ModelSelector } from "./ModelSelector";
 import type { ModelReasoning } from "@stanley2058/lilac-client-protocol";
 import { toast } from "./ui/toast";
+import { isConnectionFailure } from "../connection-lifecycle";
 import { Kbd } from "./ui/kbd";
 import { useEventCallback } from "../use-event-callback";
 import { Result } from "better-result";
@@ -419,8 +420,9 @@ export const Composer = memo(function Composer(props: ComposerProps) {
         );
       },
       (message) => {
-        if (!controller.signal.aborted && dropProps.current.documentKey === documentKey)
-          toast.add({ title: message, type: "error" });
+        if (controller.signal.aborted || dropProps.current.documentKey !== documentKey) return;
+        if (isConnectionFailure(message)) return void client?.checkConnection();
+        toast.add({ title: message, type: "error" });
       },
     );
     controller.abort();

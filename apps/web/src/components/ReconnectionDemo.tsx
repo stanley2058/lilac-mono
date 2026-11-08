@@ -25,7 +25,18 @@ export function ReconnectionDemo() {
     clearTimeout(timer.current);
     setOnline(true);
   }, []);
-  useConnectionNotice(online, reconnect, "reconnection-demo");
+  const retry = useCallback(
+    () =>
+      new Promise<void>((resolve) => {
+        clearTimeout(timer.current);
+        timer.current = setTimeout(() => {
+          reconnect();
+          resolve();
+        }, 1_000);
+      }),
+    [reconnect],
+  );
+  useConnectionNotice({ online, retry, id: "reconnection-demo" });
   useEffect(
     () =>
       watchConnectionLifecycle({
