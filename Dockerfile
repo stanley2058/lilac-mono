@@ -133,7 +133,22 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # bun (user-level), pinned to the workspace packageManager version.
 COPY package.json /tmp/lilac-package.json
 RUN BUN_VERSION="$(node -e 'const pm = require("/tmp/lilac-package.json").packageManager; const match = /^bun@(.+)$/.exec(pm ?? ""); if (!match) throw new Error(`packageManager must be bun@<version>, got ${pm}`); process.stdout.write(match[1]);')" \
-  && curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}"
+  && case "$(dpkg --print-architecture)" in \
+       amd64) BUN_ARCH=x64 ;; \
+       arm64) BUN_ARCH=aarch64 ;; \
+       *) echo "Unsupported Bun architecture" >&2; exit 1 ;; \
+     esac \
+  && (curl -fSL --retry 3 --connect-timeout 15 --max-time 120 \
+        "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-${BUN_ARCH}.zip" \
+        -o /tmp/bun.zip \
+      || curl -fSL --retry 3 --connect-timeout 15 --max-time 120 \
+        "https://bun.sh/download/${BUN_VERSION}/linux/${BUN_ARCH}?avx2=true&profile=false" \
+        -o /tmp/bun.zip) \
+  && mkdir -p "$HOME/.bun/bin" \
+  && unzip -qj /tmp/bun.zip '*/bun' -d "$HOME/.bun/bin" \
+  && chmod 0755 "$HOME/.bun/bin/bun" \
+  && [ "$("$HOME/.bun/bin/bun" --version)" = "$BUN_VERSION" ] \
+  && rm /tmp/bun.zip
 USER root
 # Keep the runtime Bun executable in a stable, root-owned tools layer.
 RUN install -o root -g root -m 0755 \
