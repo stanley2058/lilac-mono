@@ -153,7 +153,8 @@ USER root
 # Keep the runtime Bun executable in a stable, root-owned tools layer.
 RUN install -o root -g root -m 0755 \
      /home/${LILAC_USER}/.bun/bin/bun \
-     /usr/local/bin/bun
+     /usr/local/bin/bun \
+  && ln -s bun /usr/local/bin/bunx
 
 # Isolate Go compilation from Bun, dependency manifests, and application metadata.
 FROM toolchain AS native-launcher
