@@ -891,6 +891,33 @@ export class DurableWorkflowStore {
     });
   }
 
+  /** Newest first. Subagent runs belong to their parent's panel, so this leaves them out. */
+  listTopLevelRuns(options: {
+    states: readonly WorkflowRunState[];
+    before?: { createdAt: number; runId: string };
+    nativeOnly?: boolean;
+    limit: number;
+  }): ResultType<WorkflowRun[], DurableWorkflowReadError> {
+    return captureWorkflowRead("list-top-level-runs", () => {
+      const clauses = [
+        `json_extract(completion_target_json, '$.kind') <> 'live_parent'`,
+        `state IN (${options.states.map(() => "?").join(",")})`,
+      ];
+      const bindings: (string | number)[] = [...options.states];
+      if (options.nativeOnly)
+        clauses.push(`json_extract(progress_target_json, '$.platform') = 'native'`);
+      if (options.before) {
+        clauses.push("(created_at < ? OR (created_at = ? AND run_id < ?))");
+        bindings.push(options.before.createdAt, options.before.createdAt, options.before.runId);
+      }
+      const rows = this.persistedRows(
+        `SELECT * FROM workflow_runs WHERE ${clauses.join(" AND ")}
+         ORDER BY created_at DESC, run_id DESC LIMIT ?`,
+      ).all(...bindings, boundedLimit(options.limit));
+      return this.decodeRows(rows, decodeWorkflowRunRow);
+    });
+  }
+
   listRunsWithExpiredClaims(input: {
     staleBefore: number;
     limit?: number;

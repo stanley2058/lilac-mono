@@ -4,11 +4,8 @@ import {
   Bot,
   CalendarClock,
   Check,
-  CircleCheck,
   CircleDashed,
-  CirclePause,
   CircleX,
-  Clock,
   Hourglass,
   MessageCircleQuestion,
   Minus,
@@ -32,40 +29,18 @@ import { Button } from "./ui/button";
 import { LoadingSpinner } from "./ui/loading-spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { useMessageServices } from "./message-services";
+import {
+  workflowSegments,
+  workflowStatuses,
+  WorkflowProgressBar,
+  WorkflowStatusIcon,
+} from "./WorkflowStatusIcon";
 
 type ActionsPart = Extract<DisplayPart, { type: "data-actions" }>;
-type Status = WorkflowCardData["status"];
 type Step = WorkflowCardData["steps"][number];
 type Counts = WorkflowCardData["progress"];
 
-const statuses: Record<Status, { label: string; icon: LucideIcon | "spinner"; tone: string }> = {
-  queued: { label: "Queued", icon: Clock, tone: "text-muted-foreground" },
-  running: { label: "Running", icon: "spinner", tone: "text-primary" },
-  blocked: { label: "Blocked", icon: TriangleAlert, tone: "text-warning" },
-  waiting: { label: "Waiting", icon: Hourglass, tone: "text-info" },
-  "waiting-reply": {
-    label: "Waiting for reply",
-    icon: MessageCircleQuestion,
-    tone: "text-warning",
-  },
-  paused: { label: "Paused", icon: CirclePause, tone: "text-muted-foreground" },
-  "needs-attention": { label: "Needs attention", icon: TriangleAlert, tone: "text-warning" },
-  succeeded: { label: "Succeeded", icon: CircleCheck, tone: "text-success" },
-  failed: { label: "Failed", icon: CircleX, tone: "text-danger" },
-  cancelled: { label: "Cancelled", icon: Ban, tone: "text-muted-foreground" },
-};
-
 const actionIcons: Record<string, LucideIcon> = { Pause, Resume: Play, Cancel: Square };
-
-/** Segments in display order. Finished work fills from the left; queued work stays empty. */
-const segments = [
-  { key: "completed", label: "complete", className: "bg-success" },
-  { key: "failed", label: "failed", className: "bg-danger" },
-  { key: "cancelled", label: "stopped", className: "bg-muted-foreground/50" },
-  { key: "active", label: "active", className: "bg-primary" },
-  { key: "waiting", label: "waiting", className: "bg-info" },
-  { key: "queued", label: "queued", className: "bg-transparent" },
-] as const satisfies readonly { key: keyof Counts; label: string; className: string }[];
 
 function useNow(active: boolean) {
   const [now, setNow] = useState(Date.now);
@@ -77,28 +52,26 @@ function useNow(active: boolean) {
   return now;
 }
 
-function StatusIcon({ status, className = "size-4" }: { status: Status; className?: string }) {
-  const { icon: Icon, tone } = statuses[status];
-  if (Icon === "spinner") return <LoadingSpinner size={16} />;
-  return <Icon aria-hidden="true" className={`${className} ${tone}`} />;
-}
-
 export function WorkflowCard({
   messageId,
   card,
   actions,
+  source,
 }: {
   messageId: string;
   card: WorkflowCardData;
   actions?: ActionsPart;
+  /** Where the run came from, for views that show the card outside its conversation. */
+  source?: ReactNode;
 }) {
   const ended = card.endedAt !== undefined;
   const now = useNow(!ended);
   const elapsed = (card.endedAt ?? now) - card.startedAt;
-  const status = statuses[card.status];
+  const status = workflowStatuses[card.status];
   return (
     <section
       data-ui="workflow-card"
+      data-workflow-card={messageId}
       data-status={card.status}
       aria-label={`Workflow ${card.name}, ${status.label}`}
       className="workflow-card flex w-full min-w-0 flex-col gap-3 rounded-xl bg-muted px-4 py-3"
@@ -115,7 +88,7 @@ export function WorkflowCard({
             data-ui="workflow-status"
             className={`m-0 flex items-center gap-1.5 text-sm ${status.tone}`}
           >
-            <StatusIcon status={card.status} />
+            <WorkflowStatusIcon status={card.status} />
             <span>{status.label}</span>
             <span className="text-muted-foreground tabular-nums">· {formatDuration(elapsed)}</span>
           </p>
@@ -135,6 +108,7 @@ export function WorkflowCard({
       {card.steps.length ? <Steps steps={card.steps} /> : null}
       <Result card={card} />
       <Footer card={card} />
+      {source}
     </section>
   );
 }
@@ -190,45 +164,17 @@ function WorkflowActions({ messageId, part }: { messageId: string; part: Actions
 }
 
 function stepSummary(counts: Counts): string {
-  return segments
+  return workflowSegments
     .filter(({ key }) => key !== "completed" && counts[key] > 0)
     .map(({ key, label }) => `${counts[key]} ${label}`)
     .join(" · ");
-}
-
-function Bar({
-  counts,
-  className = "h-1.5 w-full",
-  live = false,
-}: {
-  counts: Counts;
-  className?: string;
-  live?: boolean;
-}) {
-  return (
-    <div
-      aria-hidden="true"
-      className={`flex overflow-hidden rounded-full bg-background/70 ${className}`}
-    >
-      {segments.map(({ key, className: segment }) =>
-        counts[key] > 0 ? (
-          <span
-            key={key}
-            data-shine={(live && key === "active") || undefined}
-            className={`h-full transition-[width] ${segment}`}
-            style={{ width: `${(counts[key] / Math.max(1, counts.total)) * 100}%` }}
-          />
-        ) : null,
-      )}
-    </div>
-  );
 }
 
 function Progress({ counts, live }: { counts: Counts; live: boolean }) {
   const extra = stepSummary(counts);
   return (
     <div data-ui="workflow-progress" className="flex flex-col gap-1.5">
-      <Bar counts={counts} live={live} />
+      <WorkflowProgressBar counts={counts} live={live} />
       <p className="m-0 text-xs text-muted-foreground tabular-nums">
         {counts.completed} of {counts.total} {counts.total === 1 ? "step" : "steps"} complete
         {extra ? ` · ${extra}` : ""}

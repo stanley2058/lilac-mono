@@ -5,6 +5,7 @@ import type { NativeReferences } from "./references";
 import { resolveLinkPreview } from "./link-preview";
 import type { NativeLiveFileService } from "./resources-live";
 import type { NativeSubagents } from "./subagents";
+import type { NativeWorkflows } from "./workflows";
 import { randomUUID } from "node:crypto";
 import type {
   BootstrapReply,
@@ -44,6 +45,7 @@ export type NativeRpcServiceOptions = {
   references?: Pick<NativeReferences, "resolve" | "read" | "range">;
   files?: Pick<NativeLiveFileService, "resolve" | "tree" | "document" | "saveDocument">;
   subagents?: Pick<NativeSubagents, "list" | "read" | "stream">;
+  workflows?: Pick<NativeWorkflows, "list">;
   store: NativeStore;
   auth: NativeAuthenticator;
   installationId: string;
@@ -95,6 +97,8 @@ function summarySignature(thread: NativeThread): string {
     thread.starterDisplayName,
     thread.starterAvatarUrl,
     thread.displayStatus,
+    thread.waitingOn,
+    thread.hasActiveWorkflow,
     thread.workingSince,
     thread.preview,
   ]);
@@ -1132,6 +1136,10 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
       read: (principal, input) =>
         options.subagents?.read(principal.userId, input) ??
         Result.err(nativeFailure("not-found", "Subagent not found")),
+    },
+    workflows: {
+      list: (principal, input) =>
+        options.workflows?.list(principal.userId, input) ?? Result.ok({ items: [] }),
     },
     external: {
       list(principal, input) {

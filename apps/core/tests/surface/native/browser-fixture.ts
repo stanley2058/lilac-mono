@@ -1,9 +1,13 @@
 import type { NativeRuntimeOptions } from "../../../src/surface/native/runtime";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { Result } from "better-result";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { createNativeIntegrationFixture, nativeFixtureTextResponse } from "./integration-fixture";
 import { seedNativeBrowserFixture } from "./browser-seed";
+import type { NativeStore } from "../../../src/surface/native/store";
+import type { DurableWorkflowStore } from "../../../src/workflow/durable-workflow-store";
+import { seedNativeWorkflowRun } from "./workflow-fixture";
 
 const HTML_PREVIEW_ICON =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>';
@@ -159,6 +163,253 @@ export type BrowserFixtureClerkAuth = {
   oauthClientId?: string;
 };
 
+/** A card the agent posted during its own turn, which folds into that turn above a long reply. */
+function seedFoldedWorkflowCard(store: NativeStore, workflows: DurableWorkflowStore, now: number) {
+  const thread = store
+    .createThread("owner", { commandId: "browser-folded", title: "Agent started a workflow" })
+    .unwrap();
+  const input = store
+    .acceptInput("owner", {
+      threadId: thread.id,
+      commandId: "browser-folded-input",
+      historyGeneration: 0,
+      mode: "prompt",
+      text: "Run the release checks",
+      attachmentIds: [],
+      skillIds: [],
+    })
+    .unwrap();
+  store.settleInput(input.inputId, "admitted").unwrap();
+  store.markInputCompleted(input.inputId).unwrap();
+  const startedAt = now - 300_000;
+  const run = seedNativeWorkflowRun(workflows, {
+    id: "browser-folded",
+    name: "release-checks",
+    state: "running",
+    threadId: thread.id,
+    createdAt: startedAt,
+    completed: 1,
+    total: 4,
+  });
+  store.setWorkflowActive(thread.id, run.runId, true);
+  store
+    .postMessage("owner", thread.id, {
+      id: "browser-folded-card",
+      role: "assistant",
+      metadata: { createdAt: startedAt + 1_000 },
+      parts: [
+        {
+          type: "data-workflow",
+          id: "workflow_browser-folded-card",
+          data: {
+            name: "release-checks",
+            description: "Run the release checklist.",
+            status: "running",
+            startedAt,
+            progress: {
+              completed: 1,
+              queued: 3,
+              active: 0,
+              waiting: 0,
+              failed: 0,
+              cancelled: 0,
+              total: 4,
+            },
+            phases: [],
+            steps: [],
+            agents: { used: 1, active: 0, queued: 3 },
+            sensitive: false,
+          },
+        },
+      ],
+    })
+    .unwrap();
+  store
+    .projectTurn(thread.id, 0, "browser-folded-reply", input.turnId!, (slot) =>
+      Result.ok({
+        slot: {
+          ...slot,
+          state: "complete" as const,
+          startedAt,
+          messages: [
+            ...slot.messages,
+            {
+              id: "browser-folded-reply",
+              role: "assistant" as const,
+              metadata: { phase: "final" as const, createdAt: startedAt + 60_000 },
+              parts: [
+                {
+                  type: "text" as const,
+                  text: Array.from(
+                    { length: 80 },
+                    (_, index) => `Checklist note ${index + 1} for the running release checks.`,
+                  ).join("\n\n"),
+                },
+              ],
+            },
+          ],
+        },
+        changes: [],
+      }),
+    )
+    .unwrap();
+  workflows.upsertSurfaceBinding({
+    runId: run.runId,
+    target: { platform: "native", channelId: thread.id, replyToMessageId: null },
+    messageRef: { platform: "native", channelId: thread.id, messageId: "browser-folded-card" },
+    lastRenderedSha256: null,
+    lastError: null,
+    retryCount: 0,
+    nextAttemptAt: null,
+    permanentFailure: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+function seedBrowserWorkflowViews(store: NativeStore, workflows: DurableWorkflowStore) {
+  const now = Date.now();
+  const waiting = store
+    .createThread("owner", { commandId: "browser-waiting", title: "Waiting on subagents" })
+    .unwrap();
+  const receipt = store
+    .acceptInput("owner", {
+      threadId: waiting.id,
+      commandId: "browser-waiting-input",
+      historyGeneration: 0,
+      mode: "prompt",
+      text: "Survey the three vendors",
+      attachmentIds: [],
+      skillIds: [],
+    })
+    .unwrap();
+  store.settleInput(receipt.inputId, "admitted").unwrap();
+  store.setActiveRun(waiting.id, 0, "browser-waiting-run").unwrap();
+  store.setRunWaiting(waiting.id, "browser-waiting-run", true);
+
+  const background = store
+    .createThread("owner", { commandId: "browser-workflow", title: "Nightly dependency audit" })
+    .unwrap();
+  const running = seedNativeWorkflowRun(workflows, {
+    id: "browser-running",
+    name: "audit-routes",
+    state: "running",
+    threadId: background.id,
+    createdAt: now - 84_000,
+    completed: 3,
+    total: 7,
+  });
+  store.setWorkflowActive(background.id, running.runId, true);
+  const card = store
+    .acceptInput("owner", {
+      threadId: background.id,
+      commandId: "browser-workflow-input",
+      historyGeneration: 0,
+      mode: "prompt",
+      text: "Audit the routes",
+      attachmentIds: [],
+      skillIds: [],
+    })
+    .unwrap();
+  store.settleInput(card.inputId, "admitted").unwrap();
+  store.markInputCompleted(card.inputId).unwrap();
+  store
+    .postMessage("owner", background.id, {
+      id: "browser-workflow-card",
+      role: "assistant",
+      parts: [
+        {
+          type: "data-workflow",
+          id: "workflow_browser-workflow-card",
+          data: {
+            name: "audit-routes",
+            description: "Audit routes for missing authentication coverage.",
+            status: "running",
+            startedAt: now - 84_000,
+            progress: {
+              completed: 3,
+              queued: 3,
+              active: 1,
+              waiting: 0,
+              failed: 0,
+              cancelled: 0,
+              total: 7,
+            },
+            phases: [],
+            steps: [],
+            agents: { used: 4, active: 1, queued: 3 },
+            sensitive: false,
+          },
+        },
+        {
+          type: "data-actions",
+          id: "actions_browser-workflow-card",
+          data: {
+            requestId: "browser-workflow-card",
+            revision: 0,
+            actions: [
+              { actionId: "pause", label: "Pause", style: "secondary" },
+              { actionId: "cancel", label: "Cancel", style: "danger" },
+            ],
+          },
+        },
+      ],
+    })
+    .unwrap();
+  // Later turns push the card far above the end of the thread, as in a long conversation.
+  for (let index = 0; index < 120; index += 1)
+    store
+      .postMessage("owner", background.id, {
+        id: `browser-workflow-later-${index}`,
+        role: "assistant",
+        parts: [{ type: "text", text: `Later update ${index + 1}.` }],
+      })
+      .unwrap();
+  workflows.upsertSurfaceBinding({
+    runId: running.runId,
+    target: { platform: "native", channelId: background.id, replyToMessageId: null },
+    messageRef: {
+      platform: "native",
+      channelId: background.id,
+      messageId: "browser-workflow-card",
+    },
+    lastRenderedSha256: null,
+    lastError: null,
+    retryCount: 0,
+    nextAttemptAt: null,
+    permanentFailure: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+  seedFoldedWorkflowCard(store, workflows, now);
+  seedNativeWorkflowRun(workflows, {
+    id: "browser-discord",
+    name: "release-review",
+    state: "paused",
+    platform: "discord",
+    createdAt: now - 3_600_000,
+    completed: 2,
+    total: 4,
+  });
+  seedNativeWorkflowRun(workflows, {
+    id: "browser-failed",
+    name: "nightly-backup",
+    state: "failed",
+    createdAt: now - 7_200_000,
+    completed: 1,
+    total: 3,
+  });
+  seedNativeWorkflowRun(workflows, {
+    id: "browser-done",
+    name: "refresh-catalog",
+    state: "succeeded",
+    threadId: background.id,
+    createdAt: now - 10_800_000,
+    completed: 2,
+    total: 2,
+  });
+}
+
 export async function startNativeBrowserFixture(
   mcpRegistry?: NativeRuntimeOptions["mcpRegistry"],
   options: { port?: number; webOrigins?: string[]; clerk?: BrowserFixtureClerkAuth } = {},
@@ -274,6 +525,7 @@ export async function startNativeBrowserFixture(
     },
   });
   if (!threads) throw new Error("Browser fixture data was not seeded");
+  seedBrowserWorkflowViews(fixture.store, fixture.workflows);
   const links = Object.fromEntries(
     Object.entries(threads)
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")

@@ -29,7 +29,7 @@ import {
   type ThreadQueues,
 } from "../sidebar-order";
 import { VirtualList } from "./ui";
-import { ThreadCard } from "./ThreadSelect";
+import { ThreadCard, threadDisplayState } from "./ThreadSelect";
 import { Button } from "./ui/button";
 import { readMotionDuration } from "../theme/motion";
 import "./thread-queue.css";
@@ -271,7 +271,7 @@ export function ThreadQueue({
                 starterAvatarUrl={drag.thread.source?.starterAvatarUrl}
                 updatedAt={drag.thread.source?.updatedAt ?? 0}
                 workingSince={drag.thread.source?.workingSince}
-                state={drag.thread.source?.displayStatus ?? "idle"}
+                state={drag.thread.source ? threadDisplayState(drag.thread.source) : "idle"}
                 onSelect={() => {}}
               />
               {action ? (

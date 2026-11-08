@@ -2,6 +2,7 @@ import { findCatalogModel } from "@stanley2058/lilac-utils";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import type { QuestionService } from "../../question/question-service";
 import { QuestionContinuation } from "../../question/question-continuation";
+import { createRunWaitTracker } from "./bus-agent-runner/run-wait";
 import { autoInjectPlannerContext, decisionAutoInjectContext } from "./bus-agent-runner/text-units";
 import {
   buildGeneratedMessage,
@@ -233,6 +234,7 @@ import { type AnthropicFallbackBlobStore } from "./bus-agent-runner/anthropic-fa
 import { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
 import {
   nativeToolActivityDetail,
+  nativeToolOnlyWaits,
   nativeToolActivityLabel,
   nativeToolActivityResult,
   type NativeToolActivityResult,
@@ -1990,6 +1992,7 @@ export type NativeRunnerRequest = {
 
 export type NativeRunnerLifecycle = {
   compacted?(requestId: string, messages: readonly ModelMessage[]): void;
+  waiting?(request: Pick<NativeRunnerRequest, "requestId" | "raw">, waiting: boolean): void;
   rejected?(requestDeliveryId: string): Promise<ResultType<void, Error>>;
   validate(request: NativeRunnerRequest): ResultType<
     {
@@ -5436,6 +5439,10 @@ export async function startBusAgentRunner(params: {
 
     let liveParentSession: ReturnType<WorkflowLiveParentBridge["registerParent"]> | undefined;
     const workflowSubagentDispatcher = params.workflowSubagentDispatcher;
+    const runWait = createRunWaitTracker((waiting) => {
+      if (next.requestClient !== "native") return;
+      params.nativeExecution?.waiting?.({ requestId: next.requestId, raw: next.raw }, waiting);
+    });
     let continuationSignalVersion = 0;
     const continuationWaiters = new Set<() => void>();
     const notifyContinuationWaiters = () => {
@@ -7433,6 +7440,7 @@ export async function startBusAgentRunner(params: {
             }
 
             if (event.type === "turn_start") {
+              runWait.resume();
               nativeStep += 1;
               attemptStartFinalText = stableFinalText;
               attemptStartPartialText = stablePartialText;
@@ -7789,6 +7797,10 @@ export async function startBusAgentRunner(params: {
             }
 
             if (event.type === "tool_execution_start") {
+              runWait.toolStarted(
+                event.toolCallId,
+                nativeToolOnlyWaits({ toolName: event.toolName, event }),
+              );
               if (nativeOutput)
                 publishNativeToolActivity(
                   event.toolCallId,
@@ -7817,6 +7829,7 @@ export async function startBusAgentRunner(params: {
             }
 
             if (event.type === "tool_execution_end") {
+              runWait.toolEnded(event.toolCallId);
               state.activeRun?.activeTools.delete(event.toolCallId);
               const started = toolStartMs.get(event.toolCallId);
               const toolDurationMs = started ? Date.now() - started : undefined;
@@ -8174,6 +8187,7 @@ export async function startBusAgentRunner(params: {
               continue;
             }
             if (questions.some((question) => question.state === "pending")) {
+              runWait.enterIdleWait();
               runIdleWatchdog?.pause();
               if (liveParentSession && deferredWaitState?.hasOutstandingRuns) {
                 await waitForDeferredWake(deferredWaitState.signalVersion, continuationWaitVersion);
@@ -8189,6 +8203,7 @@ export async function startBusAgentRunner(params: {
             }
             if (!liveParentSession) break;
 
+            runWait.enterIdleWait();
             await waitForRunAtHost(
               waitForDeferredWake(deferredWaitState.signalVersion, continuationWaitVersion),
             );
@@ -8196,6 +8211,7 @@ export async function startBusAgentRunner(params: {
               continue;
             }
           }
+          runWait.resume();
           runIdleWatchdog?.stop();
 
           let isCancelled = cancelledByRequestId.has(headers.request_id);

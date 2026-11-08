@@ -873,6 +873,10 @@ export function createNativeExecution(options: {
       compacted(requestId: string, messages: readonly ModelMessage[]) {
         activeCompactions.set(requestId, messages);
       },
+      waiting(request: Pick<NativeRunnerRequest, "requestId" | "raw">, waiting: boolean) {
+        const native = parseNativeRequestEnvelope(request);
+        if (native) store.setRunWaiting(native.threadId, request.requestId, waiting);
+      },
     } satisfies NativeRunnerLifecycle,
   };
 }

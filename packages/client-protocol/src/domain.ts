@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { identitySchema, revisionSchema, runIdentitySchema } from "./replay.ts";
+import {
+  actionsPartSchema,
+  identitySchema,
+  revisionSchema,
+  runIdentitySchema,
+  workflowCardSchema,
+} from "./replay.ts";
 import { citationInputFits } from "./assistant-citations.ts";
 
 export const modelReasoningSchema = z.enum([
@@ -37,6 +43,9 @@ export const nativeThreadSchema = z.strictObject({
   starterAvatarUrl: z.string().max(2048).optional(),
   starterDisplayName: z.string().max(256).optional(),
   displayStatus: z.enum(["idle", "completed", "working", "error", "input"]).optional(),
+  /** Set on an open run. "input" needs this viewer's answer; "other" is parked on something else. */
+  waitingOn: z.enum(["input", "other"]).optional(),
+  hasActiveWorkflow: z.literal(true).optional(),
   activeRunId: runIdentitySchema.optional(),
   workingSince: revisionSchema.optional(),
   archived: z.boolean(),
@@ -292,6 +301,28 @@ export const subagentSummarySchema = z.strictObject({
   startedAt: revisionSchema,
 });
 export type SubagentSummary = z.infer<typeof subagentSummarySchema>;
+
+export const workflowRunSummarySchema = z.strictObject({
+  id: runIdentitySchema,
+  card: workflowCardSchema,
+  thread: z
+    .strictObject({
+      id: identitySchema,
+      title: z.string().max(512),
+      /** Where the thread shows this run's card. Absent until the card is posted. */
+      source: z
+        .strictObject({
+          messageId: identitySchema,
+          position: revisionSchema,
+          actions: actionsPartSchema.optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+  /** The surface that started a run with no conversation here, such as discord. */
+  platform: z.string().min(1).max(32).optional(),
+});
+export type WorkflowRunSummary = z.infer<typeof workflowRunSummarySchema>;
 
 export const workingIndicatorsSchema = z.array(z.string().trim().min(1)).min(1);
 

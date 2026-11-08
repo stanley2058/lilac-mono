@@ -144,10 +144,19 @@ const TURN_COMPLETED_AT = `MAX(COALESCE(json_extract(t.data_json,'$.value.settle
 const CANONICAL_INPUT_FILTER =
   "json_extract(i.data_json,'$.value.completedAt') IS NOT NULL AND json_extract(i.data_json,'$.value.mode')!='steer' AND json_extract(i.data_json,'$.value.state') IN ('admitted','canceled') AND EXISTS(SELECT 1 FROM native_records t WHERE t.kind='turn' AND t.id=json_extract(i.data_json,'$.value.turnId'))";
 
+function notificationBody(thread: NativeThread, preview: string) {
+  if (thread.displayStatus === "error") return "Run failed";
+  if (thread.displayStatus === "input" || thread.waitingOn === "input") return "Needs your input";
+  return preview || "Response finished";
+}
+
 export class NativeStore {
   private readonly listeners = new Set<(threadId: string) => void>();
   private readonly pendingNotifications = new Set<string>();
   private notificationScheduled = false;
+  // Runner and workflow state: both are re-reported after a restart, so neither is persisted.
+  private readonly waitingRuns = new Map<string, string>();
+  private readonly activeWorkflows = new Map<string, Set<string>>();
   constructor(
     private readonly db: Database,
     private readonly now: () => number = Date.now,
@@ -163,6 +172,23 @@ export class NativeStore {
     return this.subscribe(listener);
   }
   notifyDisplayChanged(threadId: string): void {
+    this.notify(threadId);
+  }
+
+  setRunWaiting(threadId: string, runId: string, waiting: boolean): void {
+    if (waiting === (this.waitingRuns.get(threadId) === runId)) return;
+    if (waiting) this.waitingRuns.set(threadId, runId);
+    else this.waitingRuns.delete(threadId);
+    this.notify(threadId);
+  }
+
+  setWorkflowActive(threadId: string, runId: string, active: boolean): void {
+    const runs = this.activeWorkflows.get(threadId) ?? new Set<string>();
+    if (active === runs.has(runId)) return;
+    if (active) runs.add(runId);
+    else runs.delete(runId);
+    if (runs.size) this.activeWorkflows.set(threadId, runs);
+    else this.activeWorkflows.delete(threadId);
     this.notify(threadId);
   }
 
@@ -667,7 +693,7 @@ export class NativeStore {
   private displayStatus(
     user: NativeUser,
     thread: NativeThreadRecord,
-  ): NativeStoreResult<Pick<NativeThread, "displayStatus" | "workingSince">> {
+  ): NativeStoreResult<Pick<NativeThread, "displayStatus" | "workingSince" | "waitingOn">> {
     // The sidebar needs turn state and the read frontier, never transcript bodies.
     const row = this.db
       .query<
@@ -679,8 +705,9 @@ export class NativeStore {
       .get(thread.id);
     if (!row) return Result.ok({ displayStatus: thread.activeRunId ? "working" : "idle" });
     const db = this.db;
+    const awaitsAnswer = this.awaitsAnswer(user.id, thread);
     // A run that is still going stays "working" so push and browser notifications see one run end.
-    const awaitsAnswer = !thread.activeRunId && this.awaitsAnswer(user.id, thread);
+    const waitingOn = this.waitingOn(thread, awaitsAnswer);
     return Result.gen(function* () {
       const { value: record } = yield* decodeNativeRecord(row);
       if (record.kind !== "turn")
@@ -690,6 +717,7 @@ export class NativeStore {
         return Result.ok({
           displayStatus: "working" as const,
           workingSince: turn.startedAt ?? row.first_created_at ?? undefined,
+          ...(waitingOn ? { waitingOn } : {}),
         });
       if (awaitsAnswer) return Result.ok({ displayStatus: "input" as const });
       if (turn.state === "failed") return Result.ok({ displayStatus: "error" as const });
@@ -705,6 +733,12 @@ export class NativeStore {
           (read.position === turn.position && read.message_index >= row.last_message_index));
       return Result.ok({ displayStatus: checked ? ("idle" as const) : ("completed" as const) });
     });
+  }
+
+  private waitingOn(thread: NativeThreadRecord, awaitsAnswer: boolean): NativeThread["waitingOn"] {
+    if (!thread.activeRunId) return undefined;
+    if (awaitsAnswer) return "input";
+    return this.waitingRuns.get(thread.id) === thread.activeRunId ? "other" : undefined;
   }
 
   /** A question in the current history still waits for this user's answer. */
@@ -738,6 +772,7 @@ export class NativeStore {
         starterDisplayName: starter.displayName,
         starterAvatarUrl: nativeUserDisplay(starter).avatarUrl,
         ...status,
+        ...(this.activeWorkflows.has(thread.id) ? { hasActiveWorkflow: true as const } : {}),
         archived: thread.archived,
         updatedAt: thread.updatedAt,
         revision: thread.revision,
@@ -811,7 +846,7 @@ export class NativeStore {
         .replace(/[`*_#~]/g, "")
         .replace(/\s+/g, " ")
         .trim();
-      const body = thread.displayStatus === "error" ? "Run failed" : preview || "Response finished";
+      const body = notificationBody(thread, preview);
       return Result.ok({
         threadId,
         title: `Lilac · ${thread.title || "Untitled thread"}`,

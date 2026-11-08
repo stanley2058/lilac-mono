@@ -128,6 +128,18 @@ client store, and web turn renderer. Child `agent-stream` records hold workflow 
 canonical parent request; they are excluded from the sidebar and inherit read access through verified
 workflow ancestry. Completed legacy children are projected from retained transcripts on first open.
 
+A parked run keeps `displayStatus: "working"`, so notifications still see one run end, and adds
+`waitingOn`: `input` for the viewer who must answer a pending question, `other` for everyone else once
+the runner reports that only a sync subagent, sync question, or deferred wait remains. `hasActiveWorkflow`
+marks sidebar rows for runs that outlive the primary agent. Both signals live in memory: runners re-report
+waits and the workflow store reseeds active runs at startup.
+
+`workflows.list` backs the Workflows view: live cards in the main panel, with the sidebar as a minimap
+grouped by status. It leaves out subagent runs, limits participants to threads they can read, and shows
+runs with no native conversation only to the owner. Active and finished runs are separate queries so that
+polling never re-downloads finished result text. A card's `source` holds its turn position, which opens the
+thread at that card through the timeline's history jump, and the card's actions for viewers who can edit.
+
 The web turn rail reads `threads.outline` in pages of 256 turns and `threads.outlinePreviews` for
 up to 16 hovered turns. DM outlines group turns into context windows with the same gap rule as
 session selection. A jump hydrates a deferred range with `aroundPosition`, which loads the target and

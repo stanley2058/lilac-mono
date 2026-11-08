@@ -63,6 +63,8 @@ import type {
   DisplayMessage,
   NativeDeploymentSettings,
   NativeThread,
+  WorkflowCard as WorkflowCardData,
+  WorkflowRunSummary,
 } from "@stanley2058/lilac-client-protocol";
 import logo from "./assets/logo.svg";
 import motion from "./assets/design-system/motion.mp4";
@@ -132,6 +134,11 @@ import { AgentDiscordLink } from "./components/AgentIdentity";
 import { ExternalMessages } from "./components/ExternalMessages";
 import { ExternalSkeleton } from "./components/ExternalSidebar";
 import { ThreadCard } from "./components/ThreadSelect";
+import { ViewSwitcher } from "./components/ViewSwitcher";
+import { WorkflowMinimapHeading, WorkflowMinimapRow } from "./components/WorkflowMinimap";
+import { WorkflowCardSource } from "./components/WorkflowBoard";
+import { WorkflowCard } from "./components/WorkflowCard";
+import { MessageServicesContext } from "./components/message-services";
 import { toolActivities } from "./generated/tool-activities";
 import "./design-system.css";
 import { Wordmark } from "./components/LilacMark";
@@ -197,10 +204,58 @@ const directThreadDemos: NativeThread[] = [
   },
   { ...directThreadBase, displayStatus: "error", updatedAt: now - 3 * 86_400_000 },
 ];
+const workflowCardSample: WorkflowCardData = {
+  name: "audit-routes",
+  description: "Audit routes for missing authentication coverage.",
+  status: "running",
+  startedAt: now - 84_000,
+  progress: { completed: 3, queued: 3, active: 1, waiting: 0, failed: 0, cancelled: 0, total: 7 },
+  phases: [],
+  steps: [],
+  agents: { used: 4, active: 1, queued: 3 },
+  sensitive: false,
+};
+const workflowRunSamples: WorkflowRunSummary[] = [
+  {
+    id: "audit",
+    card: workflowCardSample,
+    thread: { id: "thread", title: "Compare the two proposals" },
+  },
+  {
+    id: "reply",
+    card: {
+      ...workflowCardSample,
+      name: "release-review",
+      status: "waiting-reply",
+      startedAt: now - 3_600_000,
+      progress: { ...workflowCardSample.progress, completed: 2, queued: 2, active: 0, total: 4 },
+    },
+    platform: "discord",
+  },
+  {
+    id: "failed",
+    card: {
+      ...workflowCardSample,
+      name: "nightly-backup",
+      status: "failed",
+      endedAt: now - 7_080_000,
+      startedAt: now - 7_200_000,
+      progress: {
+        ...workflowCardSample.progress,
+        completed: 1,
+        queued: 0,
+        active: 0,
+        failed: 2,
+        total: 3,
+      },
+    },
+  },
+];
 const threadStates = [
   { state: "idle", label: "Idle", title: "Weekend reading list" },
   { state: "completed", label: "Completed · unread", title: "A few places to visit in Kyoto" },
   { state: "working", label: "Working", title: "Compare the two proposals" },
+  { state: "waiting", label: "Waiting", title: "Survey the three vendors" },
   { state: "error", label: "Error", title: "Find the missing receipt" },
   { state: "input", label: "Needs input", title: "Which date works for everyone?" },
 ] as const;
@@ -569,7 +624,7 @@ function Threads() {
                 title={title}
                 starterName={index % 2 ? "Morgan Lee" : "Alex Chen"}
                 updatedAt={now - index * 3_600_000}
-                workingSince={state === "working" ? now - 72_000 : undefined}
+                workingSince={state === "working" || state === "waiting" ? now - 72_000 : undefined}
                 now={now}
                 state={state}
                 selected={selected === state}
@@ -579,6 +634,50 @@ function Threads() {
             </div>
           ))}
         </div>
+        <Specimen title="Workflow running">
+          <ThreadCard
+            title="Nightly dependency audit"
+            starterName="Alex Chen"
+            showStarter={false}
+            updatedAt={now - 3_600_000}
+            now={now}
+            state="idle"
+            workflowActive
+            onSelect={() => {}}
+          />
+        </Specimen>
+        <Specimen title="View switcher">
+          <div className="flex justify-end gap-2">
+            <ViewSwitcher owner onChange={() => {}} />
+            <ViewSwitcher view="workflows" owner onChange={() => {}} />
+          </div>
+        </Specimen>
+        <Specimen title="Workflow minimap">
+          <div className="w-72 rounded-lg bg-sidebar p-2">
+            <WorkflowMinimapHeading label="Needs attention" count="1" />
+            <WorkflowMinimapRow run={workflowRunSamples[1]!} onSelect={() => {}} />
+            <WorkflowMinimapHeading label="Running" count="1" />
+            <WorkflowMinimapRow run={workflowRunSamples[0]!} onSelect={() => {}} />
+            <WorkflowMinimapHeading label="Failed" count="1" />
+            <WorkflowMinimapRow run={workflowRunSamples[2]!} onSelect={() => {}} />
+          </div>
+        </Specimen>
+        <Specimen title="Workflow on the board">
+          <MessageServicesContext
+            value={{
+              canEdit: true,
+              resourceUrl: (id) => id,
+              onAction: () => {},
+              onReaction: () => {},
+            }}
+          >
+            <WorkflowCard
+              messageId="sample"
+              card={workflowCardSample}
+              source={<WorkflowCardSource run={workflowRunSamples[0]!} onOpen={() => {}} />}
+            />
+          </MessageServicesContext>
+        </Specimen>
         <Specimen title="Other conversations">
           <ThreadCard
             title="Calendar Enums"

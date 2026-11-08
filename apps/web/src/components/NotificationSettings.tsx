@@ -75,7 +75,7 @@ export function NotificationSettings({
         />
         <div className="pl-4 space-y-4">
           <NotificationSetting
-            label="Response finished"
+            label="Response finished or input needed"
             value={values.completion}
             disabled={busy || !enabled}
             onChange={(completion) => void update({ completion })}

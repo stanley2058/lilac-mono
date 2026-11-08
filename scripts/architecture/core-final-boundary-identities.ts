@@ -168,6 +168,7 @@ export const CORE_FINAL_BOUNDARY_IDENTITIES = [
   ["src/surface/bridge/bus-agent-runner/native-activity-result.ts", "readActivityResult"],
   ["src/surface/bridge/bus-agent-runner/native-activity-result.ts", "nativeToolActivityResult"],
   ["src/surface/bridge/bus-agent-runner/native-activity-result.ts", "nativeToolActivityDetail"],
+  ["src/surface/bridge/bus-agent-runner/native-activity-result.ts", "nativeToolOnlyWaits"],
   ["src/surface/bridge/bus-agent-runner/stats.ts", "getToolDefsText.map.<callback@1>"],
   ["src/tools/tool-args-display.ts", "safeValidateSync"],
   ["src/tools/tool-args-display.ts", "safeValidateSync.try"],

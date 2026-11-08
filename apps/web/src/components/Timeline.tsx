@@ -94,6 +94,8 @@ import { slotIndexForPosition, visiblePositions, type OutlineSource } from "../t
 import { useEventCallback } from "../use-event-callback";
 import { citationStore } from "../citation-store";
 import { useStore } from "zustand";
+import { clearMessageTarget, messageTargetStore } from "../message-target-store";
+import { revealWorkflowCard } from "./reveal-workflow-card";
 import { copyAssistantSelection } from "../markdown-copy";
 import { WorkflowCard } from "./WorkflowCard";
 import { QuestionCard } from "./QuestionCard";
@@ -201,6 +203,15 @@ function useTurnPosts(
     });
     return { posts, folded: false, previous: previous ?? undefined, next: next ?? undefined };
   }, [snapshot, store]);
+}
+
+/** A card folded into its turn renders in that turn's row, so jumps have to aim there. */
+function renderedRowIndex(store: NativeThreadStore, slotId: string): number {
+  const ids = store.slotIds;
+  let index = ids.indexOf(slotId);
+  while (index > 0 && turnPostsKey(store, ids[index]!, ids[index - 1], ids[index + 1]) === "folded")
+    index -= 1;
+  return index;
 }
 
 // The key carries revisions so a card's progress updates still rerender the turn that shows it.
@@ -532,13 +543,18 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
       bottom,
     );
   });
-  const [jump, setJump] = useState<{ slotId: string; at: number }>();
+  const [jump, setJump] = useState<{
+    threadId: string;
+    slotId: string;
+    at: number;
+    messageId?: string;
+  }>();
   const shownThread = useRef(props.threadId);
   useLayoutEffect(() => {
     shownThread.current = props.threadId;
   }, [props.threadId]);
   const jumpRequest = useRef(0);
-  const jumpTo = useEventCallback(async (position: number) => {
+  const jumpTo = useEventCallback(async (position: number, messageId?: string) => {
     const threadId = props.threadId;
     // A newer selection or a thread switch supersedes a jump still waiting on history.
     const request = ++jumpRequest.current;
@@ -548,18 +564,43 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
       const slot = store.at(slotIndexForPosition(store.size, (index) => store.at(index), position));
       if (!slot || slot.kind === "failed") return;
       if (slot.kind === "ready") {
-        setJump({ slotId: slot.slotId, at: performance.now() });
+        setJump({ threadId, slotId: slot.slotId, at: performance.now(), messageId });
         return;
       }
       await props.client.hydrate(threadId, slot.slotId, { aroundPosition: position });
     }
   });
   const selectTurn = useCallback((position: number) => void jumpTo(position), [jumpTo]);
+  const messageTarget = useStore(messageTargetStore, (state) =>
+    state.target?.threadId === props.threadId ? state.target : undefined,
+  );
+  const positionReady = !switching && !!store.checkpoint;
+  useEffect(() => {
+    if (!messageTarget || !positionReady) return;
+    clearMessageTarget();
+    positionCitation();
+    void jumpTo(messageTarget.position, messageTarget.messageId);
+  }, [messageTarget, positionReady, positionCitation, jumpTo]);
   useLayoutEffect(() => {
     if (!jump) return;
-    const index = ids.indexOf(jump.slotId);
-    if (index >= 0) virtual.scrollToIndex(index + 1, { align: "start" });
-  }, [jump]);
+    // Timeline stays mounted across threads, so a jump must end with its thread and not restart.
+    if (jump.threadId !== props.threadId) {
+      setJump(undefined);
+      return;
+    }
+    const seek = () => {
+      const index = renderedRowIndex(store, jump.slotId);
+      if (index >= 0) virtual.scrollToIndex(index + 1, { align: "start" });
+    };
+    seek();
+    if (!jump.messageId || !parent.current) return;
+    return revealWorkflowCard({
+      viewport: parent.current,
+      messageId: jump.messageId,
+      topInset: insets.top,
+      seek,
+    });
+  }, [jump, props.threadId]);
   const centered = ids.length === 0 && !!props.centerEmpty;
   return (
     <MessageArrivalsContext value={arrivals}>

@@ -37,6 +37,7 @@
   --ui-motion-spin-duration: 1s;
   --ui-motion-shine-duration: 2s;
   --ui-motion-pulse-duration: 2s;
+  --ui-motion-breath-duration: 3.2s;
   /* Layered shadows: a tight contact shadow plus a soft ambient one. */
   --ui-shadow-sm: 0 1px 2px var(--ui-shadow-color);
   --ui-shadow-md: 0 1px 2px var(--ui-shadow-color), 0 6px 16px -6px var(--ui-shadow-color);
@@ -57,6 +58,7 @@
   --ui-motion-spin-duration: 2s;
   --ui-motion-shine-duration: 4s;
   --ui-motion-pulse-duration: 4s;
+  --ui-motion-breath-duration: 6.4s;
 }
 
 /* Agent artwork colors stay stable across application themes. */

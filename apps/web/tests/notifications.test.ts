@@ -121,6 +121,17 @@ test.each(["completed", "error"] as const)(
   },
 );
 
+test("a question during a live run notifies once, then the run's completion notifies", async () => {
+  using fixture = notificationFixture([working]);
+  const asking: NativeThread = { ...working, revision: 2, waitingOn: "input" };
+  await fixture.deliver({ kind: "thread", thread: asking });
+  expect(fixture.shown.map((item) => item.body)).toEqual(["Needs your input"]);
+  await fixture.deliver({ kind: "thread", thread: { ...asking, revision: 3 } });
+  expect(fixture.shown).toHaveLength(1);
+  await fixture.deliver({ kind: "thread", thread: { ...complete, revision: 4 } });
+  expect(fixture.shown.map((item) => item.body)).toEqual(["Needs your input", "Response finished"]);
+});
+
 test.each(["viewed", "disabled"] as const)(
   "an intermediate idle status preserves %s suppression without a later catch-up alert",
   async (reason) => {
@@ -185,6 +196,15 @@ test.each(["removed", "reconnect", "bootstrap", "archived", "revoked"] as const)
 test("alerts require a new terminal transition from an observed working state", () => {
   expect(notificationTransition(working, complete)).toBe("completion");
   expect(notificationTransition(working, { ...complete, displayStatus: "error" })).toBe("failure");
+  const asking: NativeThread = { ...working, revision: 2, waitingOn: "input" };
+  expect(notificationTransition(working, asking)).toBe("input");
+  expect(notificationTransition(asking, { ...asking, revision: 3 })).toBeUndefined();
+  expect(notificationTransition(asking, { ...complete, revision: 3 })).toBe("completion");
+  expect(
+    notificationTransition(asking, { ...complete, revision: 3, displayStatus: "input" }),
+  ).toBeUndefined();
+  expect(notificationTransition(working, { ...complete, displayStatus: "input" })).toBe("input");
+  expect(notificationTransition(working, { ...asking, waitingOn: "other" })).toBeUndefined();
   expect(notificationTransition(undefined, complete)).toBeUndefined();
   expect(notificationTransition(complete, { ...complete, revision: 3 })).toBeUndefined();
   expect(notificationTransition(working, { ...complete, revision: 1 })).toBeUndefined();

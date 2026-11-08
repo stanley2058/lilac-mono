@@ -1,5 +1,5 @@
 import { isRecord } from "@stanley2058/lilac-utils";
-import type { z } from "zod";
+import { z } from "zod";
 
 import { redactSecrets } from "../../../tools/bash-safety/format";
 import { bashInputSchema, bashOutputSchema } from "../../../tools/bash";
@@ -111,6 +111,19 @@ export function nativeToolActivityLabel(params: {
  * Display labels collapse whitespace and truncate paths, so expanded commands and edited-file
  * counts come from the original arguments.
  */
+const syncToolInputSchema = z.looseObject({ mode: z.literal("sync") });
+
+/** Sync subagents and questions hold the run open without doing work of their own. */
+export function nativeToolOnlyWaits(params: {
+  toolName: string;
+  event: { readonly args: unknown };
+}): boolean {
+  return (
+    (params.toolName === "subagent_delegate" || params.toolName === "question") &&
+    syncToolInputSchema.safeParse(params.event.args).success
+  );
+}
+
 export function nativeToolActivityDetail(params: {
   toolName: string;
   event: { readonly args: unknown };

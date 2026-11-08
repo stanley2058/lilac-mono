@@ -10,6 +10,7 @@ import type { NativeAttachmentOutput } from "../../tool-server/tools/attachment"
 import type { NativeOutputPublisher } from "./output";
 import { createNativeTitleGeneration, type NativeTitleGenerator } from "./title-generation";
 import { NativeSubagents, type SubagentReader } from "./subagents";
+import { NativeWorkflows } from "./workflows";
 import type { DurableWorkflowStore } from "../../workflow/durable-workflow-store";
 import path from "node:path";
 import { Panic, Result, type Result as ResultType } from "better-result";
@@ -315,6 +316,11 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     live: options.runner,
     streamingMode: () => deployment().outputStreaming,
   });
+  const workflows = new NativeWorkflows({
+    native: store,
+    surface,
+    workflows: options.workflows,
+  });
   const computer = new NativeComputer(store, options.mcpRegistry);
   const services = createNativeRpcServices({
     titles,
@@ -324,6 +330,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     references,
     files: liveFiles,
     subagents,
+    workflows,
     store,
     auth,
     installationId: nativeConfig.installationId ?? "operator",
@@ -600,7 +607,9 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
         { mode: "tail", offset: { type: "now" } },
         async (message) =>
           message.type === lilacEventTypes.EvtWorkflowRunChanged
-            ? subagents.reconcile(message.data.runId)
+            ? subagents
+                .reconcile(message.data.runId)
+                .andThen(() => workflows.reconcile(message.data.runId))
             : Result.ok(undefined),
         () => "retry",
       );
@@ -611,6 +620,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
         return Result.err(workflowError);
       }
       const workflowHandle = yield* workflowStarted;
+      yield* workflows.seedActive();
       workflowOutput = workflowHandle;
       observeOutput(workflowHandle);
       const sendStarted = await subscribeNativeDeferredSends({

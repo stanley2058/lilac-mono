@@ -27,6 +27,7 @@ import {
   nativeTransportSchema,
   nativeDeploymentDocumentSchema,
   subagentSummarySchema,
+  workflowRunSummarySchema,
   catalogReplySchema,
   agentIdentitySchema,
   catalogIdentifierSchema,
@@ -595,6 +596,14 @@ export const nativeContract = {
           total: z.number().int().nonnegative(),
         }),
       ),
+  },
+  workflows: {
+    list: procedure.input(pageInputSchema.extend({ state: z.enum(["active", "finished"]) })).output(
+      z.strictObject({
+        items: z.array(workflowRunSummarySchema).max(100),
+        nextCursor: identitySchema.optional(),
+      }),
+    ),
   },
   external: {
     list: procedure.input(pageInputSchema).output(

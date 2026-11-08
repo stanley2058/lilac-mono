@@ -38,6 +38,22 @@
   border-radius: var(--ui-radius-md);
 }
 
+/* Only the glyph fades, so a status icon's background and layout stay put. */
+@keyframes thread-status-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-breath] > svg {
+    animation: thread-status-breath var(--ui-motion-breath-duration) ease-in-out infinite;
+  }
+}
+
 .thread-starter [data-slot="avatar"] {
   width: var(--ui-text-lg);
   height: var(--ui-text-lg);
@@ -92,8 +108,9 @@
     pointer-events: auto;
   }
   /* Touch rows show actions inline; a running thread shows its status there instead. */
-  .thread-card[data-state="working"]:not([data-settled]) .thread-settle-button,
-  .thread-card[data-state="working"]:not([data-settled])
+  .thread-card:is([data-state="working"], [data-state="waiting"]):not([data-settled])
+    .thread-settle-button,
+  .thread-card:is([data-state="working"], [data-state="waiting"]):not([data-settled])
     .thread-card-actions:not(:has(> :not(.thread-settle-button))) {
     display: none;
   }

@@ -152,6 +152,24 @@ export function configOptions(client: NativeClient, kind: "core" | "mcp") {
   });
 }
 
+const ACTIVE_WORKFLOW_POLL_MS = 3_000;
+
+/** Only active runs poll here. Finished cards carry result text, see useNewestFinishedRuns. */
+export function workflowRunsOptions(client: NativeClient, state: "active" | "finished") {
+  return infiniteQueryOptions({
+    queryKey: ["workflows", state],
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      queryNativeRPC(client, (rpc) =>
+        rpc.workflows.list({ state, limit: 30, cursor: pageParam }, { signal }),
+      ),
+    getNextPageParam: (page) => page.nextCursor,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: state === "active" ? ACTIVE_WORKFLOW_POLL_MS : false,
+  });
+}
+
 export function externalListOptions(client: NativeClient) {
   return infiniteQueryOptions({
     queryKey: ["external", "list"],

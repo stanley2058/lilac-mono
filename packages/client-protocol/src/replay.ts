@@ -50,6 +50,24 @@ const workflowCountsSchema = {
   total: revisionSchema,
 };
 export const MAX_WORKFLOW_RESULT_LENGTH = 16_384;
+export const actionsPartSchema = z.strictObject({
+  type: z.literal("data-actions"),
+  id: identitySchema,
+  data: z.strictObject({
+    requestId: z.string().min(1).max(512),
+    revision: revisionSchema,
+    actions: z
+      .array(
+        z.strictObject({
+          actionId: z.string().min(1).max(512),
+          label: z.string().min(1).max(256),
+          style: z.enum(["primary", "secondary", "danger", "success"]),
+          disabled: z.boolean().optional(),
+        }),
+      )
+      .max(25),
+  }),
+});
 export const workflowCardSchema = z.strictObject({
   name: z.string().min(1).max(256),
   description: z.string().max(1024),
@@ -162,24 +180,7 @@ export const displayPartSchema = z.discriminatedUnion("type", [
       afterCount: revisionSchema.optional(),
     }),
   }),
-  z.strictObject({
-    type: z.literal("data-actions"),
-    id: identitySchema,
-    data: z.strictObject({
-      requestId: z.string().min(1).max(512),
-      revision: revisionSchema,
-      actions: z
-        .array(
-          z.strictObject({
-            actionId: z.string().min(1).max(512),
-            label: z.string().min(1).max(256),
-            style: z.enum(["primary", "secondary", "danger", "success"]),
-            disabled: z.boolean().optional(),
-          }),
-        )
-        .max(25),
-    }),
-  }),
+  actionsPartSchema,
   z.strictObject({
     type: z.literal("data-reactions"),
     id: identitySchema,

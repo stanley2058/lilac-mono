@@ -14125,6 +14125,129 @@ it("persists heartbeat handoff before deferred messages have surface references"
 });
 
 describe("deferred questions in the production runner", () => {
+  it("reports a native run as waiting until the answer resumes the model", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const requestId = "native:wait:test";
+    const requestDeliveryId = crypto.randomUUID();
+    const waiting = deferred<void>();
+    const reports: Array<{ requestId: string; waiting: boolean }> = [];
+    let listener: ((requestId: string) => void) | undefined;
+    let pending: QuestionCall | undefined;
+    let modelCalls = 0;
+    const questions = {
+      subscribe: (callback: (requestId: string) => void) => {
+        listener = callback;
+        return () => {
+          listener = undefined;
+        };
+      },
+      listDeferred: () => Result.ok(pending ? [pending] : []),
+      cancelRequest: async () => {},
+    } as unknown as QuestionService;
+    const config = parseCoreConfigV2ToUniversal({});
+    config.models.main = { model: "openai/question-test" };
+    const lifecycle = await observeRequestLifecycle(bus, requestId);
+    const runner = await startBusAgentRunner({
+      bus,
+      blobStore: transcriptResultValue(await createMemoryBlobStore()),
+      pluginManager,
+      questions,
+      config,
+      subscriptionId: "native-wait-test",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      nativeExecution: {
+        validate: () => Result.ok({ safetyMode: "restricted" }),
+        settled: async () => Result.ok(undefined),
+        waiting: (request, value) => {
+          reports.push({ requestId: request.requestId, waiting: value });
+          if (value) waiting.resolve(undefined);
+        },
+      },
+      issueControlCapability: () => ({ capability: "native-test", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "question-test",
+            doStream: async () => {
+              modelCalls++;
+              if (modelCalls > 1) return level1TextStep("Using staging.");
+              pending = {
+                questionCallId: "q1",
+                requestDeliveryId: "d1",
+                requestId,
+                toolCallId: "t1",
+                platform: "native",
+                mode: "deferred",
+                sessionId: "wait",
+                userId: "u1",
+                input: { questions: [] },
+                currentIndex: 0,
+                answers: [],
+                messageId: "q1",
+                state: "pending",
+                createdAt: 1,
+                updatedAt: 1,
+              };
+              return level1TextStep("NO_REPLY");
+            },
+          }),
+        }),
+    });
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestId,
+        requestDeliveryId,
+        sessionId: "native:wait",
+        requestClient: "native",
+        text: "Choose a target",
+        raw: {
+          native: {
+            requestId,
+            requestDeliveryId,
+            threadId: "wait",
+            authorUserId: "participant",
+            starterUserId: "starter",
+            turnId: "turn",
+            inputId: "input",
+            historyGeneration: 0,
+          },
+          authenticatedActor: { platform: "native", userId: "starter" },
+          authenticatedOrigin: {
+            platform: "native",
+            userId: "starter",
+            messageRef: { platform: "native", channelId: "wait", messageId: "test" },
+          },
+        },
+      });
+      expect(
+        await Promise.race([waiting.promise.then(() => "waiting"), lifecycle.terminal]),
+        lifecycle.details.join("; "),
+      ).toBe("waiting");
+      expect(reports).toEqual([{ requestId, waiting: true }]);
+      pending = {
+        ...pending!,
+        state: "answered",
+        answers: [{ questionId: "target", answer: { kind: "custom", text: "Use staging" } }],
+      };
+      listener!(requestId);
+      expect(await lifecycle.terminal).toBe("resolved");
+      expect(reports).toEqual([
+        { requestId, waiting: true },
+        { requestId, waiting: false },
+      ]);
+    } finally {
+      await lifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+
   it.each(["answer", "cancel"] as const)(
     "settles a silent pending-question request on %s",
     async (action) => {

@@ -15,7 +15,9 @@ import {
   Users,
   Pin,
   CircleAlert,
+  Hourglass,
   MessageCircleQuestion,
+  Workflow,
 } from "lucide-react";
 import type { NativeThread, NativeUser } from "@stanley2058/lilac-client-protocol";
 import {
@@ -30,11 +32,21 @@ import { AvatarGroup } from "./ui/avatar";
 import { ActorAvatar } from "./ActorAvatar";
 import "./thread-card.css";
 
-export type ThreadDisplayState = "idle" | "completed" | "working" | "error" | "input";
+export type ThreadDisplayState = "idle" | "completed" | "working" | "waiting" | "error" | "input";
+
+export function threadDisplayState(
+  thread: Pick<NativeThread, "displayStatus" | "activeRunId" | "waitingOn">,
+): ThreadDisplayState {
+  if (thread.waitingOn === "input") return "input";
+  if (thread.waitingOn === "other") return "waiting";
+  return thread.displayStatus ?? (thread.activeRunId ? "working" : "idle");
+}
+
 const states = {
   idle: { label: "Idle" },
   completed: { label: "Completed, unread" },
   working: { label: "Working" },
+  waiting: { label: "Waiting", icon: Hourglass },
   error: { label: "Run failed", icon: CircleAlert },
   input: { label: "Needs your input", icon: MessageCircleQuestion },
 } satisfies Record<ThreadDisplayState, { label: string; icon?: ComponentType }>;
@@ -51,6 +63,7 @@ export function ThreadCard({
   now,
   settleDays,
   state,
+  workflowActive,
   selected,
   pinned,
   settled,
@@ -70,6 +83,8 @@ export function ThreadCard({
   now?: number;
   settleDays?: number;
   state: ThreadDisplayState;
+  /** A workflow is running independently of this conversation's own status. */
+  workflowActive?: boolean;
   selected?: boolean;
   pinned?: boolean;
   settled?: boolean;
@@ -78,7 +93,7 @@ export function ThreadCard({
   onSelect: () => void;
 }) {
   const shortcut = useThreadShortcut(shortcutId);
-  const runningSince = state === "working" ? workingSince : undefined;
+  const runningSince = state === "working" || state === "waiting" ? workingSince : undefined;
   return (
     <div
       className={`thread-card relative min-w-0 rounded-lg ${selected ? "selected" : ""}`}
@@ -91,7 +106,7 @@ export function ThreadCard({
         className="thread-card-select absolute inset-0 w-full h-full rounded-[inherit]"
         onClick={onSelect}
         aria-keyshortcuts={shortcut.aria}
-        aria-label={`${title || "Untitled"}, ${states[state].label}${draft && !selected ? ", Draft" : ""}`}
+        aria-label={`${title || "Untitled"}, ${states[state].label}${workflowActive ? ", Workflow running" : ""}${draft && !selected ? ", Draft" : ""}`}
       />
       <span className="thread-card-copy relative pointer-events-none flex h-9 min-w-0 items-center gap-2 pr-2 pl-4">
         {state === "completed" ? (
@@ -125,7 +140,18 @@ export function ThreadCard({
                 <Pin />
               </span>
             ) : null}
-            {state === "error" || state === "input" ? <ThreadStateIcon state={state} /> : null}
+            {workflowActive ? (
+              <span
+                className="grid size-[var(--ui-text-lg)] flex-none place-items-center text-muted-foreground [&_svg]:size-[var(--ui-icon-size)]"
+                aria-label="Workflow running"
+                data-breath=""
+              >
+                <Workflow />
+              </span>
+            ) : null}
+            {state === "error" || state === "input" || state === "waiting" ? (
+              <ThreadStateIcon state={state} />
+            ) : null}
             {state === "working" ? (
               <span
                 className="thread-state-icon grid size-[var(--ui-text-lg)] flex-none place-items-center"
@@ -166,12 +192,13 @@ export function ThreadCard({
   );
 }
 
-function ThreadStateIcon({ state }: { state: "error" | "input" }) {
+function ThreadStateIcon({ state }: { state: "error" | "input" | "waiting" }) {
   const { label, icon: Icon } = states[state];
   return (
     <span
       className="thread-state-icon grid size-[var(--ui-text-lg)] flex-none place-items-center text-muted-foreground"
       aria-label={label}
+      data-breath={state === "waiting" ? "" : undefined}
     >
       <Icon />
     </span>
@@ -322,7 +349,7 @@ export function ThreadSelect({
     thread.starterId === viewer.id
       ? viewer.displayName
       : (thread.starterDisplayName ?? "Participant");
-  const state = thread.displayStatus ?? (thread.activeRunId ? "working" : "idle");
+  const state = threadDisplayState(thread);
   return (
     <Tooltip onOpenChange={setOpen}>
       <TooltipTrigger render={<div className="thread-card-trigger block min-w-0 w-full" />}>
@@ -339,6 +366,7 @@ export function ThreadSelect({
           now={now}
           settleDays={settleDays}
           state={state}
+          workflowActive={thread.hasActiveWorkflow}
           selected={selected}
           pinned={pinned}
           settled={settled}

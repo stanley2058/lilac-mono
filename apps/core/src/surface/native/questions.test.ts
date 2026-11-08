@@ -181,6 +181,27 @@ describe("native question wire", () => {
     expect(f.store.getThread("alice", f.thread.id).unwrap().displayStatus).not.toBe("input");
   });
 
+  test("during a live run the respondent sees input and others see waiting once it parks", async () => {
+    const f = await fixture();
+    const handle = (await f.service.begin(f.args)).unwrap();
+    const question = f.native
+      .read("alice", { threadId: f.thread.id, messageId: handle.questionCallId })
+      .unwrap();
+    if (question.view.state !== "pending") throw new Error("Missing question");
+    f.store.settleInput(f.request.id, "admitted").unwrap();
+    f.store.setActiveRun(f.thread.id, 0, f.request.requestId).unwrap();
+    const read = (user: string) => f.store.getThread(user, f.thread.id).unwrap();
+    expect(read("alice")).toMatchObject({ displayStatus: "working", waitingOn: "input" });
+    expect(read("owner").displayStatus).toBe("working");
+    expect(read("owner").waitingOn).toBeUndefined();
+    f.store.setRunWaiting(f.thread.id, f.request.requestId, true);
+    expect(read("alice").waitingOn).toBe("input");
+    expect(read("owner").waitingOn).toBe("other");
+    expect(f.store.notificationContent("alice", f.thread.id).unwrap().body).toBe(
+      "Needs your input",
+    );
+  });
+
   test("deferred calls never schedule the sync inactivity deadline", async () => {
     jest.useFakeTimers({ now: 0 });
     const f = await fixture();

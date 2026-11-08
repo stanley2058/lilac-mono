@@ -70,6 +70,10 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   }).then((result) => result.match({ ok: (value) => value, err: (value) => value }));
 }
 
+function needsInput(thread: NativeThread) {
+  return thread.displayStatus === "input" || thread.waitingOn === "input";
+}
+
 export function notificationTransition(previous: NativeThread | undefined, current: NativeThread) {
   if (
     !previous ||
@@ -79,9 +83,23 @@ export function notificationTransition(previous: NativeThread | undefined, curre
   )
     return;
   if (previous.displayStatus !== "working") return;
+  if (needsInput(current)) return needsInput(previous) ? undefined : "input";
   if (current.displayStatus === "completed") return "completion";
   if (current.displayStatus === "error") return "failure";
 }
+
+type NotificationKind = NonNullable<ReturnType<typeof notificationTransition>>;
+
+/** A question uses the response toggle so it needs no new stored preference. */
+function notificationEnabled(prefs: NotificationPreferences, kind: NotificationKind) {
+  return kind === "failure" ? prefs.failure : prefs.completion;
+}
+
+const notificationFallbackBody: Record<NotificationKind, string> = {
+  completion: "Response finished",
+  failure: "Run failed",
+  input: "Needs your input",
+};
 
 export function holdNotificationLock(name: string): () => void {
   const controller = new AbortController();
@@ -162,7 +180,7 @@ export function watchNotifications(options: {
     });
   }
   if (client.connectionState === "online") claimLeadership();
-  async function notify(thread: NativeThread, kind: "completion" | "failure") {
+  async function notify(thread: NativeThread, kind: NotificationKind) {
     const startedEpoch = epoch;
     const registration = await Result.tryPromise({
       try: async () => navigator.serviceWorker?.getRegistration(),
@@ -180,7 +198,7 @@ export function watchNotifications(options: {
       !leader ||
       !prefs.enabled ||
       prefs.background ||
-      !prefs[kind] ||
+      !notificationEnabled(prefs, kind) ||
       notificationPermission() !== "granted"
     )
       return;
@@ -190,7 +208,8 @@ export function watchNotifications(options: {
       epoch !== startedEpoch ||
       !current?.capabilities.read ||
       current.archived ||
-      current.displayStatus !== thread.displayStatus
+      current.displayStatus !== thread.displayStatus ||
+      current.waitingOn !== thread.waitingOn
     )
       return;
     const content = await Result.tryPromise({
@@ -203,7 +222,7 @@ export function watchNotifications(options: {
       epoch !== startedEpoch ||
       !latestPreferences.enabled ||
       latestPreferences.background ||
-      !latestPreferences[kind] ||
+      !notificationEnabled(latestPreferences, kind) ||
       (client.rpc && !content)
     )
       return;
@@ -211,12 +230,13 @@ export function watchNotifications(options: {
     if (
       !latest?.capabilities.read ||
       latest.archived ||
-      latest.displayStatus !== thread.displayStatus
+      latest.displayStatus !== thread.displayStatus ||
+      latest.waitingOn !== thread.waitingOn
     )
       return;
     const tag = content?.tag ?? `lilac:${thread.id}:${thread.revision}`;
     const title = content?.title ?? `Lilac · ${current.title || "Untitled thread"}`;
-    const body = content?.body ?? (kind === "completion" ? "Response finished" : "Run failed");
+    const body = content?.body ?? notificationFallbackBody[kind];
     if (registration?.active) {
       await Result.tryPromise({
         try: () =>
@@ -277,7 +297,12 @@ export function watchNotifications(options: {
     const kind = notificationTransition(trackWorkingThread(event.thread), event.thread);
     if (!kind || !leader || client.connectionState !== "online") return;
     const prefs = preferences.store.getState();
-    if (prefs.enabled && !prefs.background && prefs[kind] && notificationPermission() === "granted")
+    if (
+      prefs.enabled &&
+      !prefs.background &&
+      notificationEnabled(prefs, kind) &&
+      notificationPermission() === "granted"
+    )
       return notify(event.thread, kind);
   });
   return () => {

@@ -356,6 +356,11 @@ export function createNativeRouter(
         nativeRpcValue(await services.subagents.read(context.principal, input)),
       ),
     },
+    workflows: {
+      list: secured.workflows.list.handler(async ({ input, context }) =>
+        nativeRpcValue(await services.workflows.list(context.principal, input)),
+      ),
+    },
     external: {
       list: secured.external.list.handler(async ({ input, context, signal }) =>
         nativeRpcValue(await services.external.list(context.principal, input, signal)),

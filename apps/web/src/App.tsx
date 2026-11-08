@@ -57,7 +57,6 @@ import {
   Settings as SettingsIcon,
   LogOut,
   Archive,
-  Globe,
   MessageCirclePlus,
   ArchiveRestore,
   Pencil,
@@ -77,6 +76,11 @@ import { SidebarSearch } from "./components/SidebarSearch";
 const Sharing = lazy(() =>
   import("./components/Sharing").then((module) => ({ default: module.Sharing })),
 );
+// Mirrors --breakpoint-workspace, where the sidebar starts overlaying the main panel.
+const NARROW_WORKSPACE_QUERY = "(max-width: 47.5rem)";
+const WorkflowBoard = lazy(() =>
+  import("./components/WorkflowBoard").then((module) => ({ default: module.WorkflowBoard })),
+);
 const External = lazy(() =>
   import("./components/External").then((module) => ({ default: module.External })),
 );
@@ -88,6 +92,10 @@ import { SkillCatalogContext } from "./components/skill-mentions";
 import { toast } from "./components/ui/toast";
 import { refreshSidebar } from "./sidebar-queries";
 import { ExternalSidebar, ExternalSkeleton } from "./components/ExternalSidebar";
+import { ViewSwitcher, type OtherView } from "./components/ViewSwitcher";
+import { WorkflowMinimap } from "./components/WorkflowMinimap";
+import { focusWorkflowCard } from "./workflow-board-store";
+import { openThreadAtWorkflowCard, type WorkflowCardLocation } from "./message-target-store";
 import { ExternalMenuItems } from "./components/ExternalActions";
 import { SidebarQueue } from "./components/SidebarQueue";
 import { SidebarThread } from "./components/SidebarThread";
@@ -215,7 +223,9 @@ function Workspace(props: AppProps) {
       )
     : undefined;
   const settings = search.settings;
-  const viewedNotificationThread = search.view === "others" ? search.otherThread : routeThreadId;
+  const viewedRouteThread = search.view === "workflows" ? undefined : routeThreadId;
+  const viewedNotificationThread =
+    search.view === "others" ? search.otherThread : viewedRouteThread;
   const openNotificationThread = useEventCallback((threadId: string) => {
     void navigate({ to: "/threads/$threadId", params: { threadId }, search: {} });
   });
@@ -276,6 +286,7 @@ function Workspace(props: AppProps) {
 
   const archived = search.view === "archived";
   const external = search.view === "others" && viewer.role === "owner";
+  const workflowsView = search.view === "workflows";
   const externalId = search.otherThread;
   const changeView = useEventCallback((change: Partial<WorkspaceSearch>) => {
     void navigate({
@@ -552,6 +563,7 @@ function Workspace(props: AppProps) {
   const select = useEventCallback(function select(id: string) {
     blurForThreadNavigation();
     if (id === selectedRef.current) focusMainComposer();
+    // Archived lists conversations, so it stays open. The workflow board would hide this one.
     const search = { view: archived ? ("archived" as const) : undefined };
     if (id.startsWith("draft:")) {
       void navigate({ to: "/", state: { draftThreadId: id }, search });
@@ -912,9 +924,25 @@ function Workspace(props: AppProps) {
       if (focused) focusMainComposer();
     },
   });
-  const showView = useEventCallback((view?: "archived" | "others") =>
+  const showView = useEventCallback((view?: OtherView) =>
     changeView({ view, otherThread: undefined }),
   );
+  const openWorkflowThread = useEventCallback((threadId: string, source?: WorkflowCardLocation) => {
+    blurForThreadNavigation();
+    if (source) openThreadAtWorkflowCard(threadId, source);
+    if (threadId === directThread?.id) {
+      void navigate({ to: "/dm", search: {} });
+      return;
+    }
+    void navigate({ to: "/threads/$threadId", params: { threadId }, search: {} });
+  });
+  const selectWorkflowRun = useEventCallback((runId: string) => {
+    focusWorkflowCard(runId);
+    // The sidebar covers the board on narrow screens, so step aside to reveal the card.
+    if (matchMedia(NARROW_WORKSPACE_QUERY).matches && panels.getState().sidebar.open)
+      panels.getState().toggleSidebar();
+  });
+  const otherView = external || archived || workflowsView ? search.view : undefined;
   const sidebarToolbar = useMemo(
     () => (
       <div className="sidebar-search-row flex items-center gap-1 min-w-0 mb-3">
@@ -923,24 +951,7 @@ function Workspace(props: AppProps) {
           className="sidebar-tabs flex items-center gap-0.5"
           aria-label="Conversation filters and actions"
         >
-          <IconButton
-            label={archived ? "Show active conversations" : "Show archived conversations"}
-            tooltip="Archived"
-            aria-pressed={archived}
-            onClick={() => showView(archived ? undefined : "archived")}
-          >
-            <Archive />
-          </IconButton>
-          {owner ? (
-            <IconButton
-              label={external ? "Show active conversations" : "Show other conversations"}
-              tooltip="Others"
-              aria-pressed={external}
-              onClick={() => showView(external ? undefined : "others")}
-            >
-              <Globe />
-            </IconButton>
-          ) : null}
+          <ViewSwitcher view={otherView} owner={owner} onChange={showView} />
           <IconButton
             label="New conversation"
             tooltip="New conversation"
@@ -953,7 +964,7 @@ function Workspace(props: AppProps) {
         </nav>
       </div>
     ),
-    [archived, external, owner, showView, createThread],
+    [otherView, owner, showView, createThread],
   );
   const sidebarFooter = useMemo(
     () => (
@@ -989,7 +1000,8 @@ function Workspace(props: AppProps) {
     ),
     [viewer, props.sessionControl, openSettings, openDesign, logout, settingsKeys.label],
   );
-  const actionThread = !external && !reference ? (selected ?? selectedMetadata.data) : undefined;
+  const actionThread =
+    !external && !workflowsView && !reference ? (selected ?? selectedMetadata.data) : undefined;
   return (
     <MessageIdentityContext.Provider value={identities}>
       <WorkingIndicatorsContext value={workingIndicators}>
@@ -998,7 +1010,7 @@ function Workspace(props: AppProps) {
             <NativeSubagentProvider
               threadId={selectedId ?? ""}
               running={selected?.displayStatus === "working"}
-              foreground={active && !external && !reference}
+              foreground={active && !external && !workflowsView && !reference}
             >
               <Tooltip.Provider delay={350}>
                 <main
@@ -1095,7 +1107,10 @@ function Workspace(props: AppProps) {
                         {external && owner && !results ? (
                           <ExternalSidebar selectedId={externalId} onSelect={selectExternal} />
                         ) : null}
-                        {(results || !external) &&
+                        {workflowsView && !results ? (
+                          <WorkflowMinimap onSelect={selectWorkflowRun} />
+                        ) : null}
+                        {(results || (!external && !workflowsView)) &&
                           (results ? (
                             <>
                               <VirtualList
@@ -1233,7 +1248,12 @@ function Workspace(props: AppProps) {
                             <External threadId={externalId} />
                           </Suspense>
                         ) : null}
-                        {!reference && !external && selectedId && routeDraftExists
+                        {!reference && workflowsView ? (
+                          <Suspense fallback={null}>
+                            <WorkflowBoard onOpen={openWorkflowThread} />
+                          </Suspense>
+                        ) : null}
+                        {!reference && !external && !workflowsView && selectedId && routeDraftExists
                           ? (() => {
                               const thread = selected ?? selectedMetadata.data;
                               const conversationActions = thread ? (
@@ -1336,7 +1356,7 @@ function Workspace(props: AppProps) {
                               );
                             })()
                           : null}
-                        {!reference && !external && !selectedId ? (
+                        {!reference && !external && !workflowsView && !selectedId ? (
                           <div className="welcome">
                             <Button
                               title={

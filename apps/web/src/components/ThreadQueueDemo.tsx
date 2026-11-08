@@ -4,7 +4,7 @@ import type { NativeThread } from "@stanley2058/lilac-client-protocol";
 import { moveInQueues, type ThreadQueues } from "../sidebar-order";
 import { ThreadQueue } from "./ThreadQueue";
 import { ThreadSettleButton } from "./ThreadSettleButton";
-import { ThreadCard } from "./ThreadSelect";
+import { ThreadCard, threadDisplayState } from "./ThreadSelect";
 import { IconButton } from "./ui";
 const draftTitles: Record<string, string> = {
   "draft:weekend": "Plan a weekend by the river",
@@ -75,7 +75,7 @@ export function ThreadQueueDemo() {
             draft={entry.source ? replyDraft(entry.id) : "new"}
             starterName={entry.source?.starterDisplayName ?? "Alex Chen"}
             updatedAt={entry.source?.updatedAt ?? 0}
-            state={entry.source?.displayStatus ?? "idle"}
+            state={entry.source ? threadDisplayState(entry.source) : "idle"}
             selected={selected === entry.id}
             pinned={section === "pinned"}
             settled={section === "settled"}

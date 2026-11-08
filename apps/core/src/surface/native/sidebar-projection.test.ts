@@ -89,6 +89,46 @@ describe("native sidebar display projection", () => {
     f.store.close();
   });
 
+  test("a parked run is still working but tells viewers it is waiting", async () => {
+    const f = fixture();
+    f.turn("running", "running", 1_000);
+    f.store.setActiveRun(f.thread.id, 0, "active").unwrap();
+    const read = () => f.store.getThread("alice", f.thread.id).unwrap();
+    expect(read().waitingOn).toBeUndefined();
+
+    await Promise.resolve();
+    const changes: string[] = [];
+    const stop = f.store.subscribe((threadId) => changes.push(threadId));
+    const revision = read().revision;
+    f.store.setRunWaiting(f.thread.id, "active", true);
+    await Promise.resolve();
+    expect(changes).toEqual([f.thread.id]);
+    expect(read()).toMatchObject({ displayStatus: "working", waitingOn: "other", revision });
+    expect(read().workingSince).toBe(1_000);
+
+    f.store.setRunWaiting(f.thread.id, "active", true);
+    await Promise.resolve();
+    expect(changes).toEqual([f.thread.id]);
+
+    f.store.setRunWaiting(f.thread.id, "active", false);
+    expect(read().waitingOn).toBeUndefined();
+    stop();
+    f.store.close();
+  });
+
+  test("a wait reported by an earlier run does not touch the next run", () => {
+    const f = fixture();
+    f.turn("running", "running", 1_000);
+    f.store.setActiveRun(f.thread.id, 0, "first").unwrap();
+    f.store.setRunWaiting(f.thread.id, "first", true);
+    f.store.setActiveRun(f.thread.id, 0, "second").unwrap();
+    expect(f.store.getThread("alice", f.thread.id).unwrap().waitingOn).toBeUndefined();
+    f.store.setRunWaiting(f.thread.id, "second", true);
+    f.store.setRunWaiting(f.thread.id, "first", false);
+    expect(f.store.getThread("alice", f.thread.id).unwrap().waitingOn).toBe("other");
+    f.store.close();
+  });
+
   test("reading updates catalogs without changing replay, and cannot move the same-generation frontier backwards", async () => {
     const f = fixture();
     const first = f.turn("first");

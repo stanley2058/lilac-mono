@@ -155,6 +155,72 @@ test.each(["disabled", "viewed", "revoked"] as const)(
   },
 );
 
+function pendingQuestion(f: ReturnType<typeof fixture>) {
+  f.store
+    .projectTurn(f.thread.id, 0, "ask", f.receipt.turnId!, (slot) =>
+      Result.ok({
+        slot: {
+          ...slot,
+          messages: [
+            ...slot.messages,
+            {
+              id: "question",
+              role: "assistant",
+              parts: [
+                {
+                  type: "data-question",
+                  id: "question-part",
+                  data: {
+                    questionCallId: "q1",
+                    respondentId: "alice",
+                    historyGeneration: 0,
+                    view: { state: "pending" },
+                  },
+                },
+              ],
+            },
+          ] as typeof slot.messages,
+        },
+        changes: [],
+      }),
+    )
+    .unwrap();
+}
+
+test("a question during a live run pushes once, and the run's completion still pushes", async () => {
+  const sent: string[] = [];
+  const f = fixture(async (_subscription, payload) => {
+    sent.push(String(payload));
+    return { statusCode: 201, headers: {}, body: "" };
+  });
+  await Promise.resolve();
+  pendingQuestion(f);
+  await Promise.resolve();
+  expect(f.store.getThread("alice", f.thread.id).unwrap().waitingOn).toBe("input");
+  expect(sent.map((payload) => JSON.parse(payload).body)).toEqual(["Needs your input"]);
+
+  f.store.notifyDisplayChanged(f.thread.id);
+  await Promise.resolve();
+  expect(sent).toHaveLength(1);
+  await f.push.stop();
+});
+
+test("a question left pending when the run ends pushes once, not again as a completion", async () => {
+  const sent: string[] = [];
+  const f = fixture(async (_subscription, payload) => {
+    sent.push(String(payload));
+    return { statusCode: 201, headers: {}, body: "" };
+  });
+  await Promise.resolve();
+  pendingQuestion(f);
+  await Promise.resolve();
+  f.store.setActiveRun(f.thread.id, 0).unwrap();
+  await Promise.resolve();
+  expect(f.store.getThread("alice", f.thread.id).unwrap().displayStatus).toBe("input");
+  expect(sent).toHaveLength(1);
+  await f.push.stop();
+});
+
 test("expired subscriptions are removed", async () => {
   const f = fixture(async () => {
     throw new WebPushError("gone", 410, {}, "", "https://fcm.googleapis.com/x");

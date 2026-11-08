@@ -38,12 +38,17 @@ export function allowedPushEndpoint(endpoint: string): boolean {
   );
 }
 
+function needsInput(thread: NativeThread) {
+  return thread.displayStatus === "input" || thread.waitingOn === "input";
+}
+
 export class NativePush {
   private readonly viewing = new Map<
     string,
     { userId: string; threadId: string; until: number; signal?: AbortSignal; onAbort?: () => void }
   >();
   private readonly working = new Map<string, NativeThread>();
+  private readonly awaitingInput = new Set<string>();
   private readonly pending = new Set<Promise<boolean | void>>();
   private readonly escalations = new Map<string, Escalation>();
   private stopped = false;
@@ -115,6 +120,7 @@ export class NativePush {
         .match({ ok: (value) => value, err: () => undefined });
       if (!thread || thread.archived || !thread.capabilities.read) continue;
       if (thread.displayStatus === "working") this.working.set(`${userId}:${thread.id}`, thread);
+      if (needsInput(thread)) this.awaitingInput.add(`${userId}:${thread.id}`);
     }
   }
 
@@ -186,6 +192,16 @@ export class NativePush {
         .getThread(userId, threadId)
         .match({ ok: (value) => value, err: () => undefined });
       if (!thread || thread.archived || !thread.capabilities.read) {
+        this.working.delete(key);
+        this.awaitingInput.delete(key);
+        continue;
+      }
+      if (!needsInput(thread)) this.awaitingInput.delete(key);
+      else if (!this.awaitingInput.has(key)) {
+        this.awaitingInput.add(key);
+        this.notify(userId, threadId, "completion", subscriptions);
+      }
+      if (thread.displayStatus === "input") {
         this.working.delete(key);
         continue;
       }
@@ -356,6 +372,7 @@ export class NativePush {
     this.stopListening = undefined;
     await Promise.all(this.pending);
     this.working.clear();
+    this.awaitingInput.clear();
     for (const key of this.viewing.keys()) this.clearPresence(key);
   }
 }

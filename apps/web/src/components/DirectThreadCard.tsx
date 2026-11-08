@@ -1,12 +1,17 @@
 import { CopySessionIdContextMenuItem } from "./CopySessionIdMenuItem";
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from "./ui/context-menu";
 import { useContext } from "react";
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, Hourglass, MessageCircleQuestion, Workflow } from "lucide-react";
 import type { NativeThread } from "@stanley2058/lilac-client-protocol";
 import { cn } from "cn";
 import { ActorAvatar } from "./ActorAvatar";
 import { MessageIdentityContext } from "./message-identity";
-import { ThreadTime, WorkingTime, type ThreadDisplayState } from "./ThreadSelect";
+import {
+  threadDisplayState,
+  ThreadTime,
+  WorkingTime,
+  type ThreadDisplayState,
+} from "./ThreadSelect";
 import { LoadingSpinner } from "./ui/loading-spinner";
 
 export function DirectThreadCard({
@@ -21,7 +26,7 @@ export function DirectThreadCard({
   onSelect: (id: string) => void;
 }) {
   const { agent } = useContext(MessageIdentityContext);
-  const state = thread.displayStatus ?? (thread.activeRunId ? "working" : "idle");
+  const state = threadDisplayState(thread);
   const unread = state === "completed" && !selected;
   return (
     <ContextMenu>
@@ -47,7 +52,7 @@ export function DirectThreadCard({
             <span
               className={cn("flex-none text-xs text-muted-foreground", unread && "text-primary")}
             >
-              {state === "working" && thread.workingSince !== undefined ? (
+              {(state === "working" || state === "waiting") && thread.workingSince !== undefined ? (
                 <WorkingTime since={thread.workingSince} now={now} />
               ) : (
                 <ThreadTime updatedAt={thread.updatedAt} now={now} counting={false} />
@@ -67,6 +72,11 @@ export function DirectThreadCard({
                 role="img"
                 aria-label="Unread"
               />
+            ) : null}
+            {thread.hasActiveWorkflow ? (
+              <span className="contents" data-breath="">
+                <Workflow className="size-3.5 flex-none" aria-label="Workflow running" />
+              </span>
             ) : null}
             {state === "error" ? (
               <CircleAlert className="size-3.5 flex-none text-danger" aria-label="Run failed" />
@@ -93,6 +103,22 @@ function DirectThreadPreview({
       <span className="flex min-w-0 flex-1 items-center gap-1 text-primary">
         <LoadingSpinner size={12} />
         <span className="truncate">Working…</span>
+      </span>
+    );
+  if (state === "waiting")
+    return (
+      <span className="flex min-w-0 flex-1 items-center gap-1">
+        <span className="contents" data-breath="">
+          <Hourglass className="size-3 flex-none" aria-hidden="true" />
+        </span>
+        <span className="truncate">Waiting…</span>
+      </span>
+    );
+  if (state === "input")
+    return (
+      <span className="flex min-w-0 flex-1 items-center gap-1 text-primary">
+        <MessageCircleQuestion className="size-3 flex-none" aria-hidden="true" />
+        <span className="truncate">Needs your input</span>
       </span>
     );
   if (!thread.preview) return <span className="min-w-0 flex-1 truncate">No messages yet</span>;
