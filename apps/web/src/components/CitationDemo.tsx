@@ -72,7 +72,12 @@ export function CitationDemo() {
     return store;
   });
   const client = useMemo(
-    () => ({ thread: () => store, hydrate: async () => {}, loadTurnPage: async () => {} }),
+    () => ({
+      thread: () => store,
+      hydrate: async () => {},
+      loadTurnPage: async () => {},
+      subscribe: () => () => {},
+    }),
     [store],
   );
   const noop = () => {};

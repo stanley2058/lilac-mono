@@ -38,6 +38,18 @@ export function sanitizeDiagram(svg: string): string {
   return container.innerHTML;
 }
 
+/** Finished diagrams, so a row that remounts keeps its height instead of starting from the source. */
+const finished = new Map<string, string>();
+const MAX_FINISHED = 128;
+
+function rememberDiagram(source: string, svg: string) {
+  finished.delete(source);
+  finished.set(source, svg);
+  if (finished.size <= MAX_FINISHED) return;
+  const oldest = finished.keys().next().value;
+  if (oldest !== undefined) finished.delete(oldest);
+}
+
 export function renderDiagram(
   id: string,
   source: string,
@@ -52,13 +64,18 @@ export default memo(function Diagram({ source }: { source: string }) {
   const id = useId().replace(/[^a-z\d]/giu, "");
   const [rendered, setRendered] = useState<{ source: string; svg: string } | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  const known = finished.get(source);
   useEffect(() => {
-    if (!diagramSourceAllowed(source)) return;
+    if (known !== undefined || !diagramSourceAllowed(source)) return;
     let active = true;
+    function accept(svg: string) {
+      rememberDiagram(source, svg);
+      setRendered({ source, svg });
+    }
     async function render() {
       const result = await renderDiagram(`diagram-${id}`, source);
       if (!active) return;
-      result.match({ ok: (svg) => setRendered({ source, svg }), err: () => setFailed(source) });
+      result.match({ ok: accept, err: () => setFailed(source) });
     }
     // Leave a paint for conversation text before Mermaid performs synchronous layout work.
     let frame = requestAnimationFrame(() => {
@@ -68,14 +85,15 @@ export default memo(function Diagram({ source }: { source: string }) {
       active = false;
       cancelAnimationFrame(frame);
     };
-  }, [id, source]);
-  if (rendered?.source === source)
+  }, [id, source, known]);
+  const svg = known ?? (rendered?.source === source ? rendered.svg : undefined);
+  if (svg !== undefined)
     return (
       <div
         className="markdown-diagram"
         role="img"
         aria-label="Mermaid diagram"
-        dangerouslySetInnerHTML={{ __html: rendered.svg }}
+        dangerouslySetInnerHTML={{ __html: svg }}
       />
     );
   return (

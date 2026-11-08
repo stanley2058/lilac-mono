@@ -60,7 +60,12 @@ export function AgentWorkDemo() {
   const [store] = useState(() => new NativeThreadStore());
   const revision = useRef(0);
   const client = useMemo(
-    () => ({ thread: () => store, hydrate: async () => {}, loadTurnPage: async () => {} }),
+    () => ({
+      thread: () => store,
+      hydrate: async () => {},
+      loadTurnPage: async () => {},
+      subscribe: () => () => {},
+    }),
     [store],
   );
   const [text, setText] = useState("Compare a riverside walk with a museum visit for Saturday.");

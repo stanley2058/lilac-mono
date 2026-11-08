@@ -56,15 +56,26 @@ const THEME_VARIABLES = [
 ] as const;
 
 const DEFAULT_HEIGHT = 240;
+/** Heights the pages reported, so a row that remounts reserves the same space while its frame reloads. */
+const reportedHeights = new Map<string, number>();
+const MAX_REPORTED_HEIGHTS = 512;
 
-export function HtmlPreviewSkeleton() {
+function rememberHeight(src: string, height: number) {
+  reportedHeights.delete(src);
+  reportedHeights.set(src, height);
+  if (reportedHeights.size <= MAX_REPORTED_HEIGHTS) return;
+  const oldest = reportedHeights.keys().next().value;
+  if (oldest !== undefined) reportedHeights.delete(oldest);
+}
+
+export function HtmlPreviewSkeleton({ height = DEFAULT_HEIGHT }: { height?: number }) {
   return (
     <Skeleton
       data-ui="html-preview-pending"
       role="status"
       aria-label="Loading preview"
       className="w-(--ui-chat-width) max-w-full"
-      style={{ height: DEFAULT_HEIGHT }}
+      style={{ height }}
     />
   );
 }
@@ -96,7 +107,7 @@ export function HtmlPreviewFrame({
   const applied = useAppliedTheme();
   // The URL carries only the first theme; changing it would reload the page, so later themes are posted.
   const [initialSrc] = useState(() => `${src}${htmlPreviewThemeFragment(readTheme(applied.kind))}`);
-  const [height, setHeight] = useState(DEFAULT_HEIGHT);
+  const [height, setHeight] = useState(() => reportedHeights.get(src) ?? DEFAULT_HEIGHT);
   const [loaded, setLoaded] = useState(false);
   const postTheme = useCallback(() => {
     frameRef.current?.contentWindow?.postMessage(
@@ -112,7 +123,9 @@ export function HtmlPreviewFrame({
       const message = decodeHtmlPreviewFrameMessage(event.data);
       if (message?.kind === "size") {
         if (fill) return;
-        setHeight(clampHeight(message.height));
+        const next = clampHeight(message.height);
+        rememberHeight(src, next);
+        setHeight(next);
         return;
       }
       if (message?.kind !== "link") return;
@@ -121,7 +134,7 @@ export function HtmlPreviewFrame({
     }
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [fill]);
+  }, [fill, src]);
   return (
     <div
       className={
@@ -129,7 +142,7 @@ export function HtmlPreviewFrame({
       }
       aria-busy={!loaded}
     >
-      {!loaded ? <HtmlPreviewSkeleton /> : null}
+      {!loaded ? <HtmlPreviewSkeleton height={height} /> : null}
       <iframe
         ref={frameRef}
         src={initialSrc}

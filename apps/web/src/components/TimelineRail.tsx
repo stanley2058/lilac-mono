@@ -395,7 +395,8 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
           }}
           onMouseDown={(event) => event.preventDefault()}
           onClick={(event) => {
-            select(items[pointerIndex(event)]);
+            // The open card can outlast small pointer moves, and it names the turn the reader expects.
+            select(activeItem ?? items[pointerIndex(event)]);
             event.currentTarget.blur();
           }}
           onFocus={() =>

@@ -174,13 +174,7 @@ export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
         aria-label={`Preview ${target.name}`}
         onClick={() => setPreview(true)}
       >
-        <img
-          src={src}
-          alt={alt ?? ""}
-          loading="lazy"
-          decoding="async"
-          referrerPolicy="no-referrer"
-        />
+        <img src={src} alt={alt ?? ""} decoding="async" referrerPolicy="no-referrer" />
       </Button>
       {preview ? <FileTargetPreview target={target} onClose={() => setPreview(false)} /> : null}
     </FileActions>

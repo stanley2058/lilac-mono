@@ -56,7 +56,8 @@ import {
   useSyncExternalStore,
   type ComponentProps,
 } from "react";
-import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
+import { bufferedRange, useReadingAnchor } from "./use-reading-anchor";
 import {
   ChevronDown,
   ChevronRight,
@@ -265,7 +266,7 @@ export function useSlotIds(store: NativeThreadStore) {
 export type TimelineProps = MessageServices & {
   header?: ReactNode;
   footer?: ReactNode;
-  client: Pick<NativeClient, "thread" | "hydrate" | "loadTurnPage">;
+  client: Pick<NativeClient, "thread" | "hydrate" | "loadTurnPage" | "subscribe">;
   threadId: string;
   onRewind: (turnId: string) => void;
   onLatestVisibleChange?: (visible: boolean) => void;
@@ -368,6 +369,7 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
     },
     [ids, props.threadId, identities],
   );
+  const virtualRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement>>(undefined);
   const virtual = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     // Sticky chrome participates in measurements so the virtual and native scroll extents agree.
     count: ids.length + 2,
@@ -386,17 +388,34 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
     // Disclosures are measured during layout, before ResizeObserver delivers their new size.
     measureElement: (element, entry) =>
       Math.round(entry?.borderBoxSize?.[0]?.blockSize ?? element.offsetHeight),
-    overscan: 3,
+    overscan: 1,
     rangeExtractor: (range) => {
+      const buffered = virtualRef.current
+        ? bufferedRange(
+            range,
+            virtualRef.current.measurementsCache,
+            virtualRef.current.scrollOffset ?? 0,
+            parent.current?.clientHeight ?? 0,
+          )
+        : range;
       if (citationIndexRef.current !== undefined && citationIndexRef.current > 0)
-        return [...new Set([...defaultRangeExtractor(range), citationIndexRef.current])].sort(
+        return [...new Set([...defaultRangeExtractor(buffered), citationIndexRef.current])].sort(
           (a, b) => a - b,
         );
-      if (tailRenderedThread === props.threadId) return defaultRangeExtractor(range);
+      if (tailRenderedThread === props.threadId) return defaultRangeExtractor(buffered);
       const tail: number[] = [];
       for (let index = Math.max(0, range.count - 5); index < range.count; index++) tail.push(index);
       return tail;
     },
+  });
+  virtualRef.current = virtual;
+  useReadingAnchor({
+    virtual,
+    viewport: citationViewport,
+    headerInset: insets.top,
+    isReady: (index) => store.get(ids[index - 1] ?? "")?.kind === "ready",
+    following: !awayFromEnd || switching,
+    ids,
   });
   const positionCitation = useCallback(
     () => setReadingDisclosure(props.threadId),
@@ -709,17 +728,6 @@ const SlotRow = memo(function SlotRow(props: {
   const stored = useSlot(props.store, props.slotId);
   const previousTime = useSlotTime(props.store, timestamps ? previousSlotId : undefined);
   const slot = stored?.kind === "ready" ? stored : (props.fallback ?? stored);
-  const placeholder = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (stored?.kind !== "deferred") return;
-    void client.hydrate(
-      threadId,
-      props.slotId,
-      readsDownInto(placeholder.current, props.store, props.previousSlotId)
-        ? { aroundPosition: stored.position }
-        : undefined,
-    );
-  }, [stored, client, threadId, props.slotId, props.store, props.previousSlotId]);
   if (!slot || posts.folded) return null;
   if (slot.kind !== "ready")
     return slot.kind === "failed" ? (
@@ -730,13 +738,7 @@ const SlotRow = memo(function SlotRow(props: {
         </Button>
       </div>
     ) : (
-      <div ref={placeholder}>
-        <SkeletonConversation
-          label="Loading earlier messages"
-          exchanges={1}
-          className="px-6 py-4 max-workspace:px-4"
-        />
-      </div>
+      <DeferredSlot store={props.store} slot={slot} previousSlotId={props.previousSlotId} />
     );
   const currentContext =
     recentContext?.historyGeneration === props.store.checkpoint?.historyGeneration
@@ -791,6 +793,40 @@ const SlotRow = memo(function SlotRow(props: {
     </ContextMessage>
   );
 });
+
+/** Loads its range on mount, and again once connected if it mounted from the cache while offline. */
+function DeferredSlot(props: {
+  store: NativeThreadStore;
+  slot: Extract<TurnSlot, { kind: "deferred" }>;
+  previousSlotId?: string;
+}) {
+  const { client, threadId } = useContext(TimelineContext)!;
+  const placeholder = useRef<HTMLDivElement>(null);
+  const load = useEventCallback(() => {
+    void client.hydrate(
+      threadId,
+      props.slot.slotId,
+      readsDownInto(placeholder.current, props.store, props.previousSlotId)
+        ? { aroundPosition: props.slot.position }
+        : undefined,
+    );
+  });
+  useEffect(() => {
+    load();
+    return client.subscribe((event) => {
+      if (event.kind === "bootstrap") load();
+    });
+  }, [client, load, props.slot]);
+  return (
+    <div ref={placeholder}>
+      <SkeletonConversation
+        label="Loading earlier messages"
+        exchanges={1}
+        className="px-6 py-4 max-workspace:px-4"
+      />
+    </div>
+  );
+}
 
 /**
  * A gap left below a jump target fills from its top while the reader scrolls down into it; the

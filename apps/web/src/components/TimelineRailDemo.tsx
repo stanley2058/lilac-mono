@@ -135,7 +135,12 @@ export function TimelineRailDemo({ dm = false }: { dm?: boolean }) {
     return { store, outline: localOutline(slots, dm) };
   });
   const client = useMemo(
-    () => ({ thread: () => store, hydrate: async () => {}, loadTurnPage: async () => {} }),
+    () => ({
+      thread: () => store,
+      hydrate: async () => {},
+      loadTurnPage: async () => {},
+      subscribe: () => () => {},
+    }),
     [store],
   );
   const noop = () => {};

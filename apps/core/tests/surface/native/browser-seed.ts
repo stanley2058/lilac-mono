@@ -5,6 +5,7 @@ import type { SqliteTranscriptStore } from "../../../src/transcript/transcript-s
 import { NativeStore } from "../../../src/surface/native/store";
 import {
   directMessageHistory,
+  mediaReport,
   novelDraft,
   searchInvestigation,
   tripPlanning,
@@ -438,6 +439,16 @@ export function seedNativeBrowserFixture(
     "Lisbon trip",
     tripPlanning(now),
   );
+  const media = seedScript(
+    store,
+    options.transcript,
+    "browser-media",
+    "Reports with tables, images, and previews",
+    mediaReport(
+      now,
+      options.longTurns === undefined ? undefined : Math.ceil(options.longTurns / 5),
+    ),
+  );
   const dm = seedDirectMessages(options.database, options.transcript, options.dmWindows);
   const questions = seedQuestionThread(store, options.transcript);
   return {
@@ -445,6 +456,7 @@ export function seedNativeBrowserFixture(
     search,
     novel,
     trip,
+    media,
     questions,
     rich: rich.id,
     history: long.id,

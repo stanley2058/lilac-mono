@@ -155,6 +155,39 @@ export function novelDraft(now: number, turns = 180): ScriptTurn[] {
   });
 }
 
+/** Replies whose final height depends on content that loads after the row mounts. */
+function mediaAnswer(index: number): string {
+  const nodes = 3 + (index % 5);
+  const steps = Array.from(
+    { length: nodes },
+    (_, step) => `  S${step}[Step ${index}.${step}] --> S${step + 1}`,
+  ).join("\n");
+  const rows = Array.from(
+    { length: 4 + (index % 7) },
+    (_, row) => `| Run ${row} | ${index * 3 + row} ms | $x_{${row}}^2$ |`,
+  ).join("\n");
+  const blocks = [
+    `| Run | Latency | Term |\n| --- | --- | --- |\n${rows}`,
+    `![Chart ${index}](/fixture-image/900x${260 + (index % 6) * 70}-${index}.svg)`,
+    `\`\`\`mermaid\nflowchart TD\n${steps}\n\`\`\``,
+    `$$\n\\sum_{i=0}^{${index + 4}} \\frac{x_i^{${index}}}{i + ${index + 1}} = \\int_0^{${index + 1}} f(x)\\,dx\n$$`,
+    `\`\`\`html-preview-file\nreport-${index}.html\n\`\`\``,
+  ];
+  const picked = Array.from(
+    { length: 2 + (index % 3) },
+    (_, offset) => blocks[(index + offset) % blocks.length]!,
+  );
+  return [`Results for run ${index}.`, ...picked, `That covers run ${index}.`].join("\n\n");
+}
+
+export function mediaReport(now: number, turns = 60): ScriptTurn[] {
+  return Array.from({ length: turns }, (_, index) => ({
+    text: `Report on run ${index}`,
+    answer: mediaAnswer(index),
+    at: now - (turns - index) * HOUR_MS,
+  }));
+}
+
 export function tripPlanning(now: number): ScriptTurn[] {
   const steps: [string, string][] = [
     [
