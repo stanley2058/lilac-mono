@@ -5,6 +5,7 @@ import { RPCHandler } from "@orpc/server/bun-ws";
 import {
   nativeContract,
   type BootstrapReply,
+  type Hydration,
   type NativeInput,
   type NativeRpcInputs,
   type ThreadEvent,
@@ -67,6 +68,7 @@ function harness(
     beforeOpen?: () => void;
     delayedCatalog?: Promise<void>;
     bootstrap?: () => Promise<BootstrapReply>;
+    hydrate?: (input: NativeRpcInputs["streams"]["hydrate"]) => Promise<Hydration>;
   } = {},
 ) {
   const watches: unknown[] = [];
@@ -120,9 +122,13 @@ function harness(
   const reauthenticate = implement(nativeContract.connection.reauthenticate).handler(
     ({ signal }) => options.reauthenticate?.(signal) ?? Promise.resolve(bootstrap.viewer),
   );
+  const hydrate = implement(nativeContract.streams.hydrate).handler(({ input }) => {
+    if (!options.hydrate) throw new ORPCError("NOT_FOUND");
+    return options.hydrate(input);
+  });
   const handler = new RPCHandler({
     connection: { reauthenticate },
-    streams: { watch },
+    streams: { watch, hydrate },
     bootstrap: { watch: catalog },
     inputs: { submit },
     catalogs: { get: getCatalog },
@@ -845,4 +851,61 @@ test("a child shares the client store and reconnects from its checkpoint while t
   expect(child.size).toBe(0);
   expect(await h.cache.read(scope, "subagent:thread:wfrun:child")).toBeUndefined();
   unobserve();
+});
+
+test("a jump to another turn replaces a pending jump into the same range", async () => {
+  const targets: (number | undefined)[] = [];
+  const firstRequested = Promise.withResolvers<void>();
+  const releaseFirst = Promise.withResolvers<void>();
+  const range = {
+    kind: "deferred" as const,
+    slotId: "range_0_0_200",
+    position: 0,
+    endPosition: 200,
+  };
+  const turn = (position: number) => ({
+    kind: "ready" as const,
+    slotId: `slot_${position}`,
+    turnId: `turn_${position}`,
+    position,
+    messages: [],
+  });
+  const around = (position: number): Hydration => ({
+    historyGeneration: 0,
+    projectionRevision: 1,
+    slotId: range.slotId,
+    slots: [
+      { kind: "deferred", slotId: `range_0_0_${position}`, position: 0, endPosition: position },
+      turn(position),
+      {
+        kind: "deferred",
+        slotId: `range_0_${position + 1}_200`,
+        position: position + 1,
+        endPosition: 200,
+      },
+    ],
+  });
+  const test = harness({
+    bootstrap: async () => ({
+      ...bootstrap,
+      selectedThread: { kind: "window", checkpoint, slots: [range, turn(200)] },
+    }),
+    hydrate: async (input) => {
+      targets.push(input.aroundPosition);
+      if (input.aroundPosition !== 12) return around(input.aroundPosition ?? 199);
+      firstRequested.resolve();
+      await releaseFirst.promise;
+      return around(12);
+    },
+  });
+  await test.client.start("thread");
+  const first = test.client.hydrate("thread", range.slotId, { aroundPosition: 12 });
+  await firstRequested.promise;
+  await test.client.hydrate("thread", range.slotId, { aroundPosition: 100 });
+  await first;
+  releaseFirst.resolve();
+  expect(targets).toEqual([12, 100]);
+  const store = test.client.thread("thread");
+  expect(store.get("slot_100")?.kind).toBe("ready");
+  expect(store.get("slot_12")).toBeUndefined();
 });

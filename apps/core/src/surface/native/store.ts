@@ -1,4 +1,12 @@
-import type { ModelReasoning } from "@stanley2058/lilac-client-protocol";
+import {
+  OUTLINE_PAGE_TURNS,
+  startsContextWindow,
+  turnPreviewText,
+  type ModelReasoning,
+  type ThreadOutline,
+  type TurnPreview,
+} from "@stanley2058/lilac-client-protocol";
+import { outlineContextWindows } from "./outline";
 import { isNativeServiceMessage } from "./message-ownership";
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
@@ -54,6 +62,7 @@ export type NativeStoreResult<T> = ResultType<T, NativeStoreError>;
 const REPLAY_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const REPLAY_BYTE_CAP = 128 * 1024 * 1024;
 const WINDOW_BYTES = 224 * 1024;
+const WINDOW_TURNS = 5;
 const encoder = new TextEncoder();
 const sidebarActivity = `COALESCE((SELECT MAX(a.updated_at) FROM native_records a WHERE a.thread_id=r.id AND a.kind IN ('turn','input')),json_extract(r.data_json,'$.value.createdAt'))`;
 
@@ -124,6 +133,13 @@ function nullableAuthority<T>(result: NativeStoreResult<T>): NativeStoreResult<T
     return Result.err(error);
   });
 }
+
+// Turn timing shared by DM context selection and the outline, so both split windows identically.
+const TURN_POSTED = "json_extract(t.data_json,'$.value.messages[0].id')=t.id";
+const TURN_CREATED_AT = `COALESCE((SELECT MIN(json_extract(m.value,'$.metadata.createdAt')) FROM json_each(t.data_json,'$.value.messages') m),json_extract(t.data_json,'$.value.startedAt'))`;
+const TURN_COMPLETED_AT = `MAX(COALESCE(json_extract(t.data_json,'$.value.settledAt'),0),
+  COALESCE((SELECT MAX(json_extract(i.data_json,'$.value.completedAt')) FROM native_records i WHERE i.kind='input' AND i.thread_id=t.thread_id AND i.position=t.position),0),
+  COALESCE((SELECT MAX(json_extract(m.value,'$.metadata.createdAt')) FROM json_each(t.data_json,'$.value.messages') m),0))`;
 
 const CANONICAL_INPUT_FILTER =
   "json_extract(i.data_json,'$.value.completedAt') IS NOT NULL AND json_extract(i.data_json,'$.value.mode')!='steer' AND json_extract(i.data_json,'$.value.state') IN ('admitted','canceled') AND EXISTS(SELECT 1 FROM native_records t WHERE t.kind='turn' AND t.id=json_extract(i.data_json,'$.value.turnId'))";
@@ -1511,41 +1527,84 @@ export class NativeStore {
   private window(
     thread: ReplayConversation,
     before = Number.MAX_SAFE_INTEGER,
-    limit = 5,
+    after = 0,
   ): NativeStoreResult<TurnSlot[]> {
     return Result.gen(function* () {
       const records = yield* this.readRows(
-        "SELECT * FROM native_records WHERE kind='turn' AND thread_id=? AND position<? ORDER BY position DESC LIMIT ?",
-        [thread.id, before, Math.min(32, limit)],
+        "SELECT * FROM native_records WHERE kind='turn' AND thread_id=? AND position>=? AND position<? ORDER BY position DESC LIMIT ?",
+        [thread.id, after, before, WINDOW_TURNS],
       );
-      const turns: ReadyTurnSlot[] = [];
-      let bytes = 0;
-      for (const record of records) {
-        if (record.kind !== "turn") continue;
-        const size = encoder.encode(JSON.stringify(this.boundedTurn(record.value))).byteLength;
-        if (turns.length > 0 && bytes + size > WINDOW_BYTES) break;
-        turns.push(this.boundedTurn(record.value));
-        bytes += size;
-      }
-      turns.reverse();
+      const turns = this.windowTurns(records).toReversed();
       const first = turns[0];
-      const slots: TurnSlot[] = [...turns];
-      if (
-        first &&
-        this.db
-          .query(
-            "SELECT 1 FROM native_records WHERE kind='turn' AND thread_id=? AND position<? LIMIT 1",
-          )
-          .get(thread.id, first.position)
-      )
-        slots.unshift({
-          kind: "deferred",
-          slotId: `range_${thread.historyGeneration}_0_${first.position}`,
-          position: 0,
-          endPosition: first.position,
-        });
-      return Result.ok(slots);
+      if (!first) return Result.ok([]);
+      return Result.ok([...this.deferredRange(thread, after, first.position), ...turns]);
     }, this);
+  }
+
+  /**
+   * Loads the turns from `target` on, so a jump or a downward read starts at its target. One turn of
+   * lead-in keeps a loaded turn under the sticky header, so the reader's anchor survives when the
+   * range above fills in; it is dropped when it would push the target out of the byte budget.
+   */
+  private windowFrom(
+    thread: ReplayConversation,
+    target: number,
+    before: number,
+    after: number,
+  ): NativeStoreResult<TurnSlot[]> {
+    return Result.gen(function* () {
+      const records = yield* this.readRows(
+        "SELECT * FROM native_records WHERE kind='turn' AND thread_id=? AND position>=? AND position<? ORDER BY position LIMIT ?",
+        [thread.id, Math.max(after, target - 1), before, WINDOW_TURNS],
+      );
+      const withLeadIn = this.windowTurns(records);
+      const turns =
+        (withLeadIn.at(-1)?.position ?? -1) >= target
+          ? withLeadIn
+          : this.windowTurns(
+              records.filter((record) => record.kind === "turn" && record.value.position >= target),
+            );
+      const first = turns[0];
+      const last = turns.at(-1);
+      if (!first || !last) return Result.ok([]);
+      return Result.ok([
+        ...this.deferredRange(thread, after, first.position),
+        ...turns,
+        ...this.deferredRange(thread, last.position + 1, before),
+      ]);
+    }, this);
+  }
+
+  private windowTurns(records: readonly NativeRecord[]): ReadyTurnSlot[] {
+    const turns: ReadyTurnSlot[] = [];
+    let bytes = 0;
+    for (const record of records) {
+      if (record.kind !== "turn") continue;
+      const turn = this.boundedTurn(record.value);
+      const size = encoder.encode(JSON.stringify(turn)).byteLength;
+      if (turns.length > 0 && bytes + size > WINDOW_BYTES) break;
+      turns.push(turn);
+      bytes += size;
+    }
+    return turns;
+  }
+
+  private deferredRange(thread: ReplayConversation, position: number, endPosition: number) {
+    if (endPosition <= position) return [];
+    const exists = this.db
+      .query(
+        "SELECT 1 FROM native_records WHERE kind='turn' AND thread_id=? AND position>=? AND position<? LIMIT 1",
+      )
+      .get(thread.id, position, endPosition);
+    if (!exists) return [];
+    return [
+      {
+        kind: "deferred" as const,
+        slotId: `range_${thread.historyGeneration}_${position}_${endPosition}`,
+        position,
+        endPosition,
+      },
+    ];
   }
 
   sync(
@@ -1618,8 +1677,7 @@ export class NativeStore {
       historyGeneration: number;
       projectionRevision: number;
       slotId: string;
-      position?: number;
-      endPosition?: number;
+      aroundPosition?: number;
     },
   ): NativeStoreResult<Hydration> {
     return nativeStoreTransaction(this.db, () =>
@@ -1636,8 +1694,7 @@ export class NativeStore {
       historyGeneration: number;
       projectionRevision: number;
       slotId: string;
-      position?: number;
-      endPosition?: number;
+      aroundPosition?: number;
     },
   ): NativeStoreResult<Hydration> {
     return Result.gen(function* () {
@@ -1646,14 +1703,23 @@ export class NativeStore {
         thread.revision !== input.projectionRevision
       )
         return Result.err(nativeFailure("stale", "History changed before hydration"));
-      const endPosition = Number(input.slotId.split("_")[3]);
+      const [, startText, endText] = input.slotId.split("_").slice(1);
+      const position = Number(startText);
+      const endPosition = Number(endText);
+      const around = input.aroundPosition;
       if (
+        !Number.isSafeInteger(position) ||
         !Number.isSafeInteger(endPosition) ||
-        endPosition <= 0 ||
-        input.slotId !== `range_${thread.historyGeneration}_0_${endPosition}`
+        endPosition <= position ||
+        input.slotId !== `range_${thread.historyGeneration}_${position}_${endPosition}` ||
+        (around !== undefined && (around < position || around >= endPosition))
       )
         return Result.err(nativeFailure("invalid", "Hydration slot is invalid"));
-      const slots = yield* this.window(thread, endPosition);
+      const slots = yield* around === undefined
+        ? this.window(thread, endPosition, position)
+        : this.windowFrom(thread, around, endPosition, position);
+      if (slots.length === 0)
+        return Result.err(nativeFailure("stale", "History changed before hydration"));
       return Result.ok({
         historyGeneration: thread.historyGeneration,
         projectionRevision: thread.revision,
@@ -2184,11 +2250,7 @@ export class NativeStore {
         },
         [string, number]
       >(
-        `SELECT t.id,t.position,json_extract(t.data_json,'$.value.messages[0].id')=t.id AS posted,
-          COALESCE((SELECT MIN(json_extract(m.value,'$.metadata.createdAt')) FROM json_each(t.data_json,'$.value.messages') m),json_extract(t.data_json,'$.value.startedAt')) created_at,
-          MAX(COALESCE(json_extract(t.data_json,'$.value.settledAt'),0),
-            COALESCE((SELECT MAX(json_extract(i.data_json,'$.value.completedAt')) FROM native_records i WHERE i.kind='input' AND i.thread_id=t.thread_id AND i.position=t.position),0),
-            COALESCE((SELECT MAX(json_extract(m.value,'$.metadata.createdAt')) FROM json_each(t.data_json,'$.value.messages') m),0)) completed_at
+        `SELECT t.id,t.position,${TURN_POSTED} AS posted,${TURN_CREATED_AT} created_at,${TURN_COMPLETED_AT} completed_at
         FROM native_records t INDEXED BY native_records_thread_position
         WHERE t.kind='turn' AND t.thread_id=? AND t.position<? ORDER BY t.position DESC`,
       );
@@ -2203,7 +2265,7 @@ export class NativeStore {
       )) {
         if (row.created_at === null || row.completed_at === null || row.created_at > options.at)
           continue;
-        if (nextAt - row.completed_at > options.gapMs) break;
+        if (startsContextWindow(row.completed_at, nextAt, options.gapMs)) break;
         latestAt = Math.max(latestAt, row.completed_at);
         firstPosition = row.position;
         firstAt = row.created_at;
@@ -2220,6 +2282,81 @@ export class NativeStore {
         }),
       );
     });
+  }
+
+  /** A bounded page of jump targets, plus context windows for a DM. */
+  outline(
+    actorId: string,
+    threadId: string,
+    options: { beforePosition?: number; dmContextGapMs: number },
+  ): NativeStoreResult<ThreadOutline> {
+    return nativeStoreTransaction(this.db, () =>
+      this.authorizeThread(actorId, threadId).map((thread) => {
+        const gapMs = thread.kind === "dm" ? options.dmContextGapMs : undefined;
+        const rows = this.db
+          .query<
+            {
+              position: number;
+              posted: number;
+              created_at: number | null;
+              completed_at: number | null;
+            },
+            [string, number, number]
+          >(
+            `SELECT t.position,${TURN_POSTED} AS posted${gapMs === undefined ? "" : `,${TURN_CREATED_AT} created_at,${TURN_COMPLETED_AT} completed_at`}
+            FROM native_records t INDEXED BY native_records_thread_position
+            WHERE t.kind='turn' AND t.thread_id=? AND t.position<? ORDER BY t.position DESC LIMIT ?`,
+          )
+          .all(threadId, options.beforePosition ?? Number.MAX_SAFE_INTEGER, OUTLINE_PAGE_TURNS + 1)
+          .toReversed();
+        // The extra oldest row only proves earlier history exists and anchors the first window.
+        const previous = rows.length > OUTLINE_PAGE_TURNS ? rows.shift() : undefined;
+        const page = {
+          historyGeneration: thread.historyGeneration,
+          positions: rows.flatMap((row) => (row.posted ? [] : [row.position])),
+          ...(previous && rows[0] ? { earlierBefore: rows[0].position } : {}),
+        };
+        if (gapMs === undefined) return page;
+        const timing = (row: (typeof rows)[number]) => ({
+          position: row.position,
+          createdAt: row.created_at ?? null,
+          completedAt: row.created_at === null ? null : (row.completed_at ?? null),
+        });
+        return {
+          ...page,
+          windows: outlineContextWindows(
+            rows.map(timing),
+            gapMs,
+            previous ? timing(previous) : undefined,
+          ),
+        };
+      }),
+    );
+  }
+
+  outlinePreviews(
+    actorId: string,
+    input: { threadId: string; historyGeneration: number; positions: readonly number[] },
+  ): NativeStoreResult<TurnPreview[]> {
+    return nativeStoreTransaction(this.db, () =>
+      Result.gen(function* () {
+        const thread = yield* this.authorizeThread(actorId, input.threadId);
+        if (thread.historyGeneration !== input.historyGeneration)
+          return Result.err(nativeFailure("stale", "History changed before preview"));
+        const positions = [...new Set(input.positions)];
+        const records = yield* this.readRows(
+          `SELECT * FROM native_records INDEXED BY native_records_thread_position WHERE kind='turn' AND thread_id=? AND position IN (${positions.map(() => "?").join(",")}) ORDER BY position`,
+          [input.threadId, ...positions],
+        );
+        return Result.ok(
+          records.flatMap((record) =>
+            record.kind === "turn"
+              ? [{ position: record.value.position, ...turnPreviewText(record.value.messages) }]
+              : [],
+          ),
+        );
+      }, this),
+    );
   }
 
   getTurnPosition(turnId: string): NativeStoreResult<number> {

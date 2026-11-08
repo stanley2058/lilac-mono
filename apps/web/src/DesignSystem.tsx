@@ -136,6 +136,7 @@ import "./design-system.css";
 import { Wordmark } from "./components/LilacMark";
 import { ConversationWelcome } from "./components/ConversationWelcome";
 import { MessageGroupingDemo } from "./components/MessageGroupingDemo";
+import { TimelineRailDemo } from "./components/TimelineRailDemo";
 import { CodeFallback } from "./components/CodeEditor";
 import {
   SkeletonCode,
@@ -887,6 +888,12 @@ function Messages() {
         </div>
         <Specimen title="Grouping and time gaps">
           <MessageGroupingDemo />
+        </Specimen>
+        <Specimen title="Turn rail">
+          <TimelineRailDemo />
+        </Specimen>
+        <Specimen title="Turn rail in a DM">
+          <TimelineRailDemo dm />
         </Specimen>
         <Specimen title="New conversation">
           <div className="grid grid-cols-1 workspace:grid-cols-2 gap-6">

@@ -88,6 +88,9 @@ import "./message-presentation.css";
 import { Markdown } from "./Markdown";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
 import { useCitationNavigation } from "./use-citation-navigation";
+import { TimelineRail } from "./TimelineRail";
+import { slotIndexForPosition, visiblePositions, type OutlineSource } from "../timeline-outline";
+import { useEventCallback } from "../use-event-callback";
 import { citationStore } from "../citation-store";
 import { useStore } from "zustand";
 import { copyAssistantSelection } from "../markdown-copy";
@@ -273,6 +276,8 @@ export type TimelineProps = MessageServices & {
   optimisticTurn?: OptimisticTurn;
   onOptimisticResolved?: () => void;
   timestamps?: boolean;
+  /** Turn outline for the jump rail; the rail stays hidden without one. */
+  outline?: OutlineSource;
 };
 type TimelineServices = Pick<TimelineProps, "client" | "threadId" | "onRewind" | "timestamps"> & {
   measureTurn: (content: HTMLElement) => void;
@@ -494,106 +499,163 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
         : latest.end > top && latest.start < bottom);
     props.onLatestVisibleChange?.(visible);
   }, [rows, ids.length, insets, props.onLatestVisibleChange]);
+  const visibleRange = useEventCallback(() => {
+    const viewport = parent.current;
+    if (!viewport) return undefined;
+    const top = viewport.scrollTop + insets.top;
+    const bottom = viewport.scrollTop + viewport.clientHeight - insets.bottom;
+    return visiblePositions(
+      virtual
+        .getVirtualItems()
+        .filter((row) => row.index > 0 && row.index <= ids.length)
+        .map((row) => ({ start: row.start, end: row.end, slot: store.get(ids[row.index - 1]!) })),
+      top,
+      bottom,
+    );
+  });
+  const [jump, setJump] = useState<{ slotId: string; at: number }>();
+  const shownThread = useRef(props.threadId);
+  useLayoutEffect(() => {
+    shownThread.current = props.threadId;
+  }, [props.threadId]);
+  const jumpRequest = useRef(0);
+  const jumpTo = useEventCallback(async (position: number) => {
+    const threadId = props.threadId;
+    // A newer selection or a thread switch supersedes a jump still waiting on history.
+    const request = ++jumpRequest.current;
+    // A deferred range is replaced by the loaded turns around the target, so a few rounds reach it.
+    for (let round = 0; round < 4; round++) {
+      if (shownThread.current !== threadId || jumpRequest.current !== request) return;
+      const slot = store.at(slotIndexForPosition(store.size, (index) => store.at(index), position));
+      if (!slot || slot.kind === "failed") return;
+      if (slot.kind === "ready") {
+        setJump({ slotId: slot.slotId, at: performance.now() });
+        return;
+      }
+      await props.client.hydrate(threadId, slot.slotId, { aroundPosition: position });
+    }
+  });
+  const selectTurn = useCallback((position: number) => void jumpTo(position), [jumpTo]);
+  useLayoutEffect(() => {
+    if (!jump) return;
+    const index = ids.indexOf(jump.slotId);
+    if (index >= 0) virtual.scrollToIndex(index + 1, { align: "start" });
+  }, [jump]);
   const centered = ids.length === 0 && !!props.centerEmpty;
   return (
     <MessageArrivalsContext value={arrivals}>
       <TimelineContext value={timeline}>
         <MessageServicesContext value={services}>
-          <div
-            className={`timeline overflow-auto overscroll-none min-h-0 flex-1 [overflow-anchor:none] chat-scroll relative overflow-y-auto overflow-x-hidden ${centered ? "timeline-centered" : ""}`}
-            ref={bindViewport}
-            data-messaging={props.timestamps || undefined}
-            onScroll={(event) => {
-              setReadingDisclosure(undefined);
-              const viewport = event.currentTarget;
-              setAwayFromEnd(
-                viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 8,
-              );
-            }}
-            onClickCapture={(event) => {
-              if (!(event.target instanceof Element)) return;
-              const trigger = event.target.closest(
-                '[data-slot="collapsible-trigger"], [data-ui=message-expand]',
-              );
-              if (trigger?.getAttribute("aria-expanded") === "false")
-                setReadingDisclosure(props.threadId);
-            }}
-            onFocusCapture={(event) => {
-              if (
-                event.target instanceof Element &&
-                event.target.closest('[data-ui=message-card-preview][data-collapsed="true"]')
-              )
-                setReadingDisclosure(props.threadId);
-            }}
-            role="region"
-            aria-label="Conversation"
-            tabIndex={0}
-          >
-            <AssistantSelectionToolbar viewport={citationViewport} threadId={props.threadId} />
+          <div className="relative flex min-h-0 flex-1 flex-col">
             <div
-              ref={measureHeader}
-              data-index={0}
-              className="chat-sticky-header sticky top-0 z-3 [background:color-mix(in_srgb,_var(--ui-background)_var(--ui-glass-opacity),_transparent)] [backdrop-filter:blur(var(--ui-glass-blur))]"
+              className={`timeline overflow-auto overscroll-none min-h-0 flex-1 [overflow-anchor:none] chat-scroll relative overflow-y-auto overflow-x-hidden ${centered ? "timeline-centered" : ""}`}
+              ref={bindViewport}
+              data-timeline-viewport
+              data-messaging={props.timestamps || undefined}
+              onScroll={(event) => {
+                setReadingDisclosure(undefined);
+                const viewport = event.currentTarget;
+                setAwayFromEnd(
+                  viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 8,
+                );
+              }}
+              onClickCapture={(event) => {
+                if (!(event.target instanceof Element)) return;
+                const trigger = event.target.closest(
+                  '[data-slot="collapsible-trigger"], [data-ui=message-expand]',
+                );
+                if (trigger?.getAttribute("aria-expanded") === "false")
+                  setReadingDisclosure(props.threadId);
+              }}
+              onFocusCapture={(event) => {
+                if (
+                  event.target instanceof Element &&
+                  event.target.closest('[data-ui=message-card-preview][data-collapsed="true"]')
+                )
+                  setReadingDisclosure(props.threadId);
+              }}
+              role="region"
+              aria-label="Conversation"
+              tabIndex={0}
             >
-              {props.header}
-            </div>
-            <div
-              className="virtual-canvas relative w-full timeline-canvas max-w-[var(--ui-chat-width)] m-auto"
-              style={
-                centered
-                  ? undefined
-                  : {
-                      height: Math.max(0, totalSize - headerSize - footerSize),
-                      minHeight: `calc(100% - ${insets.top + insets.bottom}px)`,
-                    }
-              }
-            >
-              {rows.map((row) => (
-                <div
-                  key={row.key}
-                  data-index={row.index}
-                  ref={virtual.measureElement}
-                  className="virtual-row absolute top-0 left-0 w-full"
-                  style={{ transform: `translateY(${row.start - headerSize}px)` }}
-                >
-                  <SlotRow
-                    slotId={ids[row.index - 1]!}
-                    previousSlotId={ids[row.index - 2]}
-                    nextSlotId={ids[row.index]}
-                    store={store}
-                    renderKey={identities.key(ids[row.index - 1]!)}
-                    fallback={
-                      ids[row.index - 1] === (pending?.confirmedSlotId ?? pending?.slot.slotId)
-                        ? pending?.slot
-                        : undefined
-                    }
-                  />
-                </div>
-              ))}
-              {ids.length === 0
-                ? (props.emptyContent ?? (
-                    <div className="empty-chat">
-                      {props.emptyMessage ?? "Start a conversation."}
-                    </div>
-                  ))
-                : null}
-            </div>
-            {props.footer ? (
+              <AssistantSelectionToolbar viewport={citationViewport} threadId={props.threadId} />
               <div
-                ref={measureFooter}
-                data-index={ids.length + 1}
-                className="chat-sticky-footer sticky bottom-0 z-3"
+                ref={measureHeader}
+                data-index={0}
+                className="chat-sticky-header sticky top-0 z-3 [background:color-mix(in_srgb,_var(--ui-background)_var(--ui-glass-opacity),_transparent)] [backdrop-filter:blur(var(--ui-glass-blur))]"
               >
-                {awayFromEnd && !switching ? (
-                  <div className="scroll-to-end absolute bottom-full left-0 right-0 flex justify-center pb-2 pointer-events-none">
-                    <Button variant="secondary" onClick={() => virtual.scrollToEnd()}>
-                      <ChevronDown />
-                      Scroll to end
-                    </Button>
-                  </div>
-                ) : null}
-                {props.footer}
+                {props.header}
               </div>
+              <div
+                data-timeline-canvas
+                className="virtual-canvas relative w-full timeline-canvas max-w-[var(--ui-chat-width)] m-auto"
+                style={
+                  centered
+                    ? undefined
+                    : {
+                        height: Math.max(0, totalSize - headerSize - footerSize),
+                        minHeight: `calc(100% - ${insets.top + insets.bottom}px)`,
+                      }
+                }
+              >
+                {rows.map((row) => (
+                  <div
+                    key={row.key}
+                    data-index={row.index}
+                    ref={virtual.measureElement}
+                    className="virtual-row absolute top-0 left-0 w-full"
+                    style={{ transform: `translateY(${row.start - headerSize}px)` }}
+                  >
+                    <SlotRow
+                      slotId={ids[row.index - 1]!}
+                      previousSlotId={ids[row.index - 2]}
+                      nextSlotId={ids[row.index]}
+                      store={store}
+                      renderKey={identities.key(ids[row.index - 1]!)}
+                      fallback={
+                        ids[row.index - 1] === (pending?.confirmedSlotId ?? pending?.slot.slotId)
+                          ? pending?.slot
+                          : undefined
+                      }
+                    />
+                  </div>
+                ))}
+                {ids.length === 0
+                  ? (props.emptyContent ?? (
+                      <div className="empty-chat">
+                        {props.emptyMessage ?? "Start a conversation."}
+                      </div>
+                    ))
+                  : null}
+              </div>
+              {props.footer ? (
+                <div
+                  ref={measureFooter}
+                  data-index={ids.length + 1}
+                  className="chat-sticky-footer sticky bottom-0 z-3"
+                >
+                  {awayFromEnd && !switching ? (
+                    <div className="scroll-to-end absolute bottom-full left-0 right-0 flex justify-center pb-2 pointer-events-none">
+                      <Button variant="secondary" onClick={() => virtual.scrollToEnd()}>
+                        <ChevronDown />
+                        Scroll to end
+                      </Button>
+                    </div>
+                  ) : null}
+                  {props.footer}
+                </div>
+              ) : null}
+            </div>
+            {props.outline && !switching ? (
+              <TimelineRail
+                source={props.outline}
+                threadId={props.threadId}
+                store={store}
+                viewport={citationViewport}
+                insets={insets}
+                visibleRange={visibleRange}
+                onSelect={selectTurn}
+              />
             ) : null}
           </div>
         </MessageServicesContext>
@@ -647,9 +709,17 @@ const SlotRow = memo(function SlotRow(props: {
   const stored = useSlot(props.store, props.slotId);
   const previousTime = useSlotTime(props.store, timestamps ? previousSlotId : undefined);
   const slot = stored?.kind === "ready" ? stored : (props.fallback ?? stored);
+  const placeholder = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (stored?.kind === "deferred") void client.hydrate(threadId, props.slotId);
-  }, [stored?.kind, client, threadId, props.slotId]);
+    if (stored?.kind !== "deferred") return;
+    void client.hydrate(
+      threadId,
+      props.slotId,
+      readsDownInto(placeholder.current, props.store, props.previousSlotId)
+        ? { aroundPosition: stored.position }
+        : undefined,
+    );
+  }, [stored, client, threadId, props.slotId, props.store, props.previousSlotId]);
   if (!slot || posts.folded) return null;
   if (slot.kind !== "ready")
     return slot.kind === "failed" ? (
@@ -660,11 +730,13 @@ const SlotRow = memo(function SlotRow(props: {
         </Button>
       </div>
     ) : (
-      <SkeletonConversation
-        label="Loading earlier messages"
-        exchanges={1}
-        className="px-6 py-4 max-workspace:px-4"
-      />
+      <div ref={placeholder}>
+        <SkeletonConversation
+          label="Loading earlier messages"
+          exchanges={1}
+          className="px-6 py-4 max-workspace:px-4"
+        />
+      </div>
     );
   const currentContext =
     recentContext?.historyGeneration === props.store.checkpoint?.historyGeneration
@@ -719,6 +791,21 @@ const SlotRow = memo(function SlotRow(props: {
     </ContextMessage>
   );
 });
+
+/**
+ * A gap left below a jump target fills from its top while the reader scrolls down into it; the
+ * oldest range above the first loaded turn keeps filling from its newest end.
+ */
+function readsDownInto(
+  element: HTMLElement | null,
+  store: NativeThreadStore,
+  previousSlotId: string | undefined,
+): boolean {
+  if (!element || !previousSlotId || store.get(previousSlotId)?.kind !== "ready") return false;
+  const viewport = element.closest("[data-timeline-viewport]");
+  if (!viewport) return false;
+  return element.getBoundingClientRect().top >= viewport.getBoundingClientRect().top;
+}
 
 type TurnProps = {
   /** Workflow cards posted during this turn, shown ahead of its reply. */

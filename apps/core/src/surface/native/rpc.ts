@@ -199,6 +199,12 @@ export function createNativeRouter(
       context: secured.threads.context.handler(async ({ input, context, signal }) =>
         nativeRpcValue(await services.threads.context(context.principal, input, signal)),
       ),
+      outline: secured.threads.outline.handler(async ({ input, context, signal }) =>
+        nativeRpcValue(await services.threads.outline(context.principal, input, signal)),
+      ),
+      outlinePreviews: secured.threads.outlinePreviews.handler(async ({ input, context, signal }) =>
+        nativeRpcValue(await services.threads.outlinePreviews(context.principal, input, signal)),
+      ),
       get: secured.threads.get.handler(async ({ input, context, signal }) =>
         nativeRpcValue(await services.threads.get(context.principal, input, signal)),
       ),

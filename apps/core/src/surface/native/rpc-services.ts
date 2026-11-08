@@ -743,6 +743,20 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
           })),
         );
       },
+      outline(principal, input) {
+        return store.getDeployment().andThen((deployment) =>
+          store.outline(principal.userId, input.threadId, {
+            beforePosition: input.beforePosition,
+            dmContextGapMs: deployment.settings.dmContextGapMs,
+          }),
+        );
+      },
+      outlinePreviews(principal, input) {
+        return store.outlinePreviews(principal.userId, input).map((previews) => ({
+          historyGeneration: input.historyGeneration,
+          previews,
+        }));
+      },
       get(principal, input) {
         return auth
           .checkSession(principal)

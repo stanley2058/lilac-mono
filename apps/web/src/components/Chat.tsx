@@ -19,6 +19,7 @@ import {
   queueOptions,
   refreshQueue as refreshQueueQuery,
   useNativeOnline,
+  queryNativeRPC,
 } from "../queries";
 import { MessageIdentityContext } from "./message-identity";
 import { ConversationWelcome } from "./ConversationWelcome";
@@ -79,6 +80,7 @@ import { Button } from "./ui/button";
 import { Composer } from "./Composer";
 import { ConversationStatus } from "./ConversationStatus";
 import { Timeline, ThinkingIndicator, useLatestReadableTurn } from "./Timeline";
+import type { OutlineSource } from "../timeline-outline";
 import { attempt, IconButton, Modal, VirtualList } from "./ui";
 import { toast } from "./ui/toast";
 
@@ -127,6 +129,24 @@ export function Chat(props: ChatProps) {
   const queries = useQueryClient();
   const identity = useContext(MessageIdentityContext);
   const online = useNativeOnline(client);
+  const hasThread = !!thread;
+  const outline = useMemo<OutlineSource | undefined>(() => {
+    if (local || !hasThread) return undefined;
+    return {
+      online,
+      page: (beforePosition, signal) =>
+        queryNativeRPC(client, (rpc) =>
+          rpc.threads.outline(
+            beforePosition === undefined ? { threadId } : { threadId, beforePosition },
+            { signal },
+          ),
+        ),
+      previews: (input, signal) =>
+        queryNativeRPC(client, (rpc) =>
+          rpc.threads.outlinePreviews({ threadId, ...input }, { signal }),
+        ),
+    };
+  }, [local, hasThread, online, client, threadId]);
   const pendingQuestions = useQuery({
     ...pendingQuestionsOptions(client, threadId),
     enabled: online && !local,
@@ -1160,6 +1180,7 @@ export function Chat(props: ChatProps) {
                 onRewind={setRewindTarget}
                 rewindDisabled={active || thread?.kind === "dm"}
                 timestamps={thread?.kind === "dm"}
+                outline={outline}
                 onAction={onAction}
                 onReaction={onReaction}
                 questions={questionServices}

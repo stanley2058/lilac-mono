@@ -89,7 +89,12 @@ export class NativeClient {
   private readonly streamTasks = new Set<Promise<void>>();
   private readonly historyRequests = new Map<
     string,
-    { threadId: string; controller: AbortController }
+    {
+      threadId: string;
+      controller: AbortController;
+      done: Promise<void>;
+      aroundPosition?: number;
+    }
   >();
   private readonly cacheWrites = new Map<string, Promise<void>>();
   private transport: NativeTransport;
@@ -676,11 +681,25 @@ export class NativeClient {
       this.historyRequests.delete(key);
     }
   }
-  async hydrate(threadId: string, slotId: string): Promise<void> {
-    return this.hydrateStream({ kind: "thread", threadId }, slotId);
+  async hydrate(
+    threadId: string,
+    slotId: string,
+    options?: { aroundPosition?: number },
+  ): Promise<void> {
+    return this.hydrateStream({ kind: "thread", threadId }, slotId, options);
   }
-  async hydrateStream(target: DisplayStreamTarget, slotId: string): Promise<void> {
+  async hydrateStream(
+    target: DisplayStreamTarget,
+    slotId: string,
+    options?: { aroundPosition?: number },
+  ): Promise<void> {
     const threadId = displayStreamKey(target);
+    const key = JSON.stringify([threadId, slotId]);
+    // A caller waiting on this range shares the request already loading it, unless it targets a
+    // different turn; that jump replaces the pending one so it costs a single round trip.
+    const pending = this.historyRequests.get(key);
+    if (pending && (options?.aroundPosition ?? pending.aroundPosition) === pending.aroundPosition)
+      return pending.done;
     const rpc = this.connection;
     const store = this.thread(threadId);
     const checkpoint = store.checkpoint;
@@ -688,37 +707,48 @@ export class NativeClient {
     if (!rpc || !checkpoint || !slot || slot.slot.kind === "ready") return;
     const generation = this.generation;
     const threadEpoch = this.threadEpochs.get(threadId);
-    const key = JSON.stringify([threadId, slotId]);
-    if (this.historyRequests.has(key)) return;
+    pending?.controller.abort();
     const controller = new AbortController();
-    this.historyRequests.set(key, { threadId, controller });
-    const captured = await Result.tryPromise({
-      try: () =>
-        rpc.streams.hydrate(
-          {
-            target,
-            slotId,
-            historyGeneration: checkpoint.historyGeneration,
-            projectionRevision: checkpoint.projectionRevision,
-          },
-          { signal: controller.signal },
-        ),
-      catch: captureFailure,
+    const done = (async () => {
+      const captured = await Result.tryPromise({
+        try: () =>
+          rpc.streams.hydrate(
+            {
+              target,
+              slotId,
+              historyGeneration: checkpoint.historyGeneration,
+              projectionRevision: checkpoint.projectionRevision,
+              ...(options?.aroundPosition === undefined
+                ? {}
+                : { aroundPosition: options.aroundPosition }),
+            },
+            { signal: controller.signal },
+          ),
+        catch: captureFailure,
+      });
+      if (this.historyRequests.get(key)?.controller === controller)
+        this.historyRequests.delete(key);
+      if (
+        generation !== this.generation ||
+        threadEpoch !== this.threadEpochs.get(threadId) ||
+        this.stopped ||
+        controller.signal.aborted
+      )
+        return;
+      captured.match({
+        ok: (hydration) => {
+          store.hydrate(hydration);
+        },
+        err: (error) => store.failHydration(slotId, error.message),
+      });
+    })();
+    this.historyRequests.set(key, {
+      threadId,
+      controller,
+      done,
+      ...(options?.aroundPosition === undefined ? {} : { aroundPosition: options.aroundPosition }),
     });
-    this.historyRequests.delete(key);
-    if (
-      generation !== this.generation ||
-      threadEpoch !== this.threadEpochs.get(threadId) ||
-      this.stopped ||
-      controller.signal.aborted
-    )
-      return;
-    captured.match({
-      ok: (hydration) => {
-        store.hydrate(hydration);
-      },
-      err: (error) => store.failHydration(slotId, error.message),
-    });
+    return done;
   }
   async loadTurnPage(threadId: string, slotId: string): Promise<void> {
     return this.loadStreamTurnPage({ kind: "thread", threadId }, slotId);

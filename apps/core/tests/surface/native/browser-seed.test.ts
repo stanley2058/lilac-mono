@@ -73,16 +73,24 @@ describe("native browser fixture seeding", () => {
     const threads = seedNativeBrowserFixture(store, {
       historyTurns: 1,
       sidebarThreads: 0,
+      longTurns: 4,
+      dmWindows: 6,
       database: db,
     });
     expect(store.ensureDirectThread("owner").unwrap().id).toBe(threads.dm);
     const now = Date.now();
     const options = { gapMs: DEFAULT_DM_CONTEXT_GAP_MS, at: now };
     expect(store.selectSessionWindow(threads.dm, options).unwrap().firstPosition).toBeNull();
+    const outline = store
+      .outline("owner", threads.dm, { dmContextGapMs: DEFAULT_DM_CONTEXT_GAP_MS })
+      .unwrap();
+    // Six generated windows, then the Kyoto and release-checklist sessions.
+    expect(outline.windows).toHaveLength(8);
     const latest = store.selectSessionWindow(threads.dm, {
       ...options,
       at: now - 3 * 3_600_000 + 60_000,
     });
-    expect(latest.unwrap().firstPosition).toBe(2);
+    expect(latest.unwrap().firstPosition).toBe(outline.windows!.at(-1)!.firstPosition);
+    expect(outline.windows!.at(-1)!.endPosition - outline.windows!.at(-1)!.firstPosition).toBe(2);
   });
 });

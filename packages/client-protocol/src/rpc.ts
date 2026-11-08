@@ -1,6 +1,12 @@
 import { modelReasoningSchema, modelCatalogPageSchema } from "./domain";
 import { nativeQuestionSchema } from "./questions.ts";
 import { conversationReferenceSchema } from "./references.ts";
+import {
+  outlinePreviewInputSchema,
+  outlinePreviewsSchema,
+  threadOutlineInputSchema,
+  threadOutlineSchema,
+} from "./outline.ts";
 import type { InferContractRouterInputs, InferContractRouterOutputs } from "@orpc/contract";
 import { eventIterator, oc } from "@orpc/contract";
 import { z } from "zod";
@@ -122,6 +128,8 @@ export const hydrationInputSchema = threadIdInput.extend({
   historyGeneration: revisionSchema,
   projectionRevision: revisionSchema,
   slotId: identitySchema,
+  /** Load the turns around this position inside the deferred range instead of its newest turns. */
+  aroundPosition: revisionSchema.optional(),
 });
 export const turnPageChunkSchema = z.strictObject({
   messageId: identitySchema,
@@ -199,6 +207,7 @@ export const nativeContract = {
           slotId: identitySchema,
           historyGeneration: revisionSchema,
           projectionRevision: revisionSchema,
+          aroundPosition: revisionSchema.optional(),
         }),
       )
       .output(hydrationSchema),
@@ -284,6 +293,8 @@ export const nativeContract = {
         timestampGapMs: z.number().int().positive(),
       }),
     ),
+    outline: procedure.input(threadOutlineInputSchema).output(threadOutlineSchema),
+    outlinePreviews: procedure.input(outlinePreviewInputSchema).output(outlinePreviewsSchema),
     get: procedure.input(threadIdInput).output(nativeThreadSchema),
     list: procedure
       .input(
