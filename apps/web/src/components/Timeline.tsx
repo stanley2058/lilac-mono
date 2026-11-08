@@ -790,6 +790,10 @@ const SlotRow = memo(function SlotRow(props: {
         onLoadMore={() => void client.loadTurnPage(threadId, slot.slotId)}
       />
       {nextContextStart ? <NextContextStart /> : null}
+      {nextSlotId === undefined && !nextContextStart ? (
+        // Hover controls float in the turn's bottom padding, which leaves them touching the composer.
+        <div className="hidden h-4 [@media(hover:hover)]:block" aria-hidden="true" />
+      ) : null}
     </ContextMessage>
   );
 });
