@@ -47,6 +47,13 @@ ports 5173 and 8789 and starts there instead. `--clerk` uses Clerk authenticatio
 `apps/web/.env.local` and prints a single-use sign-in link; `--clerk-owner <user_id>` picks the owner
 when the Clerk instance has more than one user.
 
+The first browser-fixture launch generates a local database snapshot under
+`.cache/native-browser-fixture`. Later launches copy it into a fresh temporary directory and refresh
+relative timestamps. Dev-session changes never modify the snapshot. Changes to the seed, Core/shared
+source, dependency lockfile, or Bun version generate a new snapshot automatically. Remove
+`.cache/native-browser-fixture` to discard saved snapshots. Authentication and workflow views are
+initialized separately on each launch; the snapshots contain only generated chat data.
+
 To develop against a real Core installation, run `bun --cwd=apps/web run dev`. Vite proxies `/api` and
 WebSocket upgrades to `http://127.0.0.1:8789`; `LILAC_WEB_BACKEND_URL` overrides that development
 target. Add the development origin, normally `http://localhost:5173`, to `allowedOrigins`.

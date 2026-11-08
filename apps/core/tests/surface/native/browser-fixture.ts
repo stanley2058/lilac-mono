@@ -4,7 +4,8 @@ import path from "node:path";
 import { Result } from "better-result";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { createNativeIntegrationFixture, nativeFixtureTextResponse } from "./integration-fixture";
-import { seedNativeBrowserFixture } from "./browser-seed";
+import type { seedNativeBrowserFixture } from "./browser-seed";
+import { restoreNativeBrowserSnapshot } from "./browser-snapshot";
 import type { NativeStore } from "../../../src/surface/native/store";
 import type { DurableWorkflowStore } from "../../../src/workflow/durable-workflow-store";
 import { seedNativeWorkflowRun } from "./workflow-fixture";
@@ -446,10 +447,10 @@ export async function startNativeBrowserFixture(
             },
           ],
         }),
-    seed(store, transcript, database) {
-      threads = seedNativeBrowserFixture(store, { transcript, database });
-    },
     async prepare({ workspaceRoot, dataDir, config }) {
+      threads = await restoreNativeBrowserSnapshot(dataDir);
+      // Snapshot thread IDs repeat; a fresh cache scope prevents replaying an earlier dev session.
+      config.surface.native.installationId = `native-browser-fixture-${crypto.randomUUID()}`;
       config.configVersion = 3;
       config.models.catalog = {
         providers: {
@@ -460,7 +461,6 @@ export async function startNativeBrowserFixture(
         },
       };
       if (clerk) {
-        config.surface.native.installationId = "native-clerk-browser-fixture";
         config.surface.native.publicUrl = `http://localhost:${port}`;
         config.surface.native.auth = {
           provider: "clerk",
