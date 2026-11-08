@@ -41,11 +41,15 @@ function readGitCommit(workspaceRoot: string): string {
 
 function readGitDirty(workspaceRoot: string): boolean | undefined {
   try {
-    const dirtyOutput = execFileSync("git", ["status", "--short", "--untracked-files=no"], {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    const dirtyOutput = execFileSync(
+      "git",
+      ["status", "--short", "--untracked-files=no", "--ignore-submodules=all"],
+      {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
     return dirtyOutput.length > 0;
   } catch {
     return undefined;

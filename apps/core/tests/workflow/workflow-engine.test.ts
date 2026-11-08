@@ -203,6 +203,7 @@ class DeferredInterruptFailureRawBus extends LiveCapturingRawBus {
   readonly releaseInterrupt = Promise.withResolvers<void>();
   requestSubscriptionStops = 0;
   interruptDispatchEpoch: string | undefined;
+  private interruptFailed = false;
   override async publish<TData>(
     message: Omit<Message<TData>, "id" | "ts">,
     options: PublishOptions,
@@ -213,8 +214,11 @@ class DeferredInterruptFailureRawBus extends LiveCapturingRawBus {
         typeof data === "object" &&
         data !== null &&
         "queue" in data &&
-        data.queue === "interrupt"
+        data.queue === "interrupt" &&
+        // engine.stop() sends another interrupt if the run has not left its active set yet.
+        !this.interruptFailed
       ) {
+        this.interruptFailed = true;
         this.interruptDispatchEpoch = message.headers?.workflow_dispatch_epoch;
         this.interruptStarted.resolve();
         await this.releaseInterrupt.promise;

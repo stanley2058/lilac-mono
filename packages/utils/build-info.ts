@@ -118,11 +118,16 @@ function readGitBuildInfo(cwd: string): Pick<BuildInfo, "commit" | "dirty"> | nu
     ).trim();
     if (!commit) return null;
 
-    const dirtyOutput = execFileSync("git", ["status", "--short", "--untracked-files=no"], {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    // Nothing builds from the ref/ submodules, and each one would add a child `git status` per call.
+    const dirtyOutput = execFileSync(
+      "git",
+      ["status", "--short", "--untracked-files=no", "--ignore-submodules=all"],
+      {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
 
     return {
       commit,

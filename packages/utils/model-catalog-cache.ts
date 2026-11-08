@@ -44,9 +44,10 @@ export class ModelCatalogCache {
     await this.initialization;
     const now = (this.options.now ?? Date.now)();
     if (!this.pending && now - this.checkedAt >= DAY) {
+      const hasCachedRegistry = this.checkedAt > 0;
       this.checkedAt = now;
       this.pending = this.refreshInBackground();
-      if (!this.reportFatalError) await this.pending;
+      if (!this.reportFatalError && !hasCachedRegistry) await this.pending;
     }
     return this.registry;
   }

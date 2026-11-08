@@ -127,6 +127,46 @@ describe("getBuildInfo", () => {
     });
   });
 
+  it("reports dirty for tracked files but not for submodule changes", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-build-info-"));
+    const upstream = path.join(tmpRoot, "upstream");
+    const repo = path.join(tmpRoot, "repo");
+    await fs.mkdir(upstream);
+    await fs.mkdir(repo);
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-c", "protocol.file.allow=always", ...args], {
+        cwd,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Lilac Test",
+          GIT_AUTHOR_EMAIL: "lilac@example.com",
+          GIT_COMMITTER_NAME: "Lilac Test",
+          GIT_COMMITTER_EMAIL: "lilac@example.com",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    await fs.writeFile(path.join(upstream, "file.txt"), "upstream", "utf8");
+    git(upstream, "init");
+    git(upstream, "add", "file.txt");
+    git(upstream, "commit", "-m", "init");
+    await fs.writeFile(
+      path.join(repo, "package.json"),
+      JSON.stringify({ private: true, workspaces: ["apps/*", "packages/*"] }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(repo, "tracked.txt"), "tracked", "utf8");
+    git(repo, "init");
+    git(repo, "submodule", "add", upstream, "ref");
+    git(repo, "add", "package.json", "tracked.txt");
+    git(repo, "commit", "-m", "init");
+
+    await fs.writeFile(path.join(repo, "ref", "file.txt"), "changed", "utf8");
+    expect(getBuildInfo({ cwd: repo, env: {} }).dirty).toBe(false);
+
+    await fs.writeFile(path.join(repo, "tracked.txt"), "changed", "utf8");
+    expect(getBuildInfo({ cwd: repo, env: {} }).dirty).toBe(true);
+  });
+
   it("falls back to dev when no env or git metadata is available", () => {
     const buildInfo = getBuildInfo({
       cwd: "/tmp/non-repo",

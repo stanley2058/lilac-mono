@@ -378,7 +378,14 @@ describe("tool result output normalizer", () => {
       },
     });
 
-    for (const value of [cyclic, 1n, undefined]) {
+    // Indented JSON.stringify takes seconds to reject a cycle in Bun, so only one call covers it.
+    expect(
+      await normalize({ type: "json", value: cyclic } as Parameters<typeof normalize>[0], {
+        toolCallId: "cyclic",
+        toolName: "plugin",
+      }),
+    ).toEqual({ type: "text", value: "[tool result is not JSON-serializable]" });
+    for (const value of [1n, undefined] as unknown[]) {
       expect(
         await normalize({ type: "json", value } as Parameters<typeof normalize>[0], {
           toolCallId: "success",

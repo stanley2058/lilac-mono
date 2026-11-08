@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseCoreConfigV3ToUniversal } from "../core-config/v3";
@@ -94,6 +94,28 @@ test("catalog reads share one refresh and keep the snapshot on fetch failure", a
   await cache.read();
   expect(calls).toBe(1);
   await rm(dir, { recursive: true, force: true });
+});
+
+test("a stale cached catalog is returned while its refresh continues in the background", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lilac-catalog-stale-"));
+  const cachePath = path.join(dir, "catalog.json");
+  await writeFile(cachePath, JSON.stringify(registry));
+  const response = Promise.withResolvers<Response>();
+  const cache = new ModelCatalogCache({
+    snapshot: {},
+    cachePath,
+    fetch: () => response.promise,
+    now: () => Date.now() + 2 * 24 * 60 * 60 * 1000,
+  });
+
+  expect(await cache.read()).toEqual(registry);
+
+  const refreshed = Promise.withResolvers<void>();
+  cache.subscribe(() => refreshed.resolve());
+  const updated = { ...registry, other: { ...registry.anthropic!, id: "other" } };
+  response.resolve(Response.json(updated));
+  await refreshed.promise;
+  expect(cache.current()).toEqual(updated);
 });
 
 test("empty refresh cannot erase the catalog", async () => {

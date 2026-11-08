@@ -1585,9 +1585,12 @@ describe("RedisStreamsBus", () => {
         managedRedisDeliveryId(streamKey, firstGroup, firstPublished.id),
       );
       expect(await redis.keys(firstMetadataPattern)).not.toEqual([]);
+      // The lease key lasts only until the handler parks, so compare state from after that point.
       const replacementMetadata = await eventually(
         () => redis.keys(secondMetadataPattern),
-        (keys) => keys.length > 0,
+        (keys) =>
+          keys.some((key) => key.includes(":message:")) &&
+          !keys.some((key) => key.endsWith(":lease")),
       );
 
       requireOk(await firstSubscription.stop());
