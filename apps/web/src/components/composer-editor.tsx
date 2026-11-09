@@ -14,6 +14,7 @@ import { registerCitationComposer } from "../citation-store";
 import type { CitationAnchor } from "../assistant-selection";
 import { CitationChip } from "./CitationChip";
 import { ConversationBadge } from "./ConversationReference";
+import { WorkflowRunChip } from "./WorkflowRunChip";
 import { FileIcon } from "./FileIcon";
 import { SkillBadge } from "./SkillBadge";
 import { FileActions } from "./FileActions";
@@ -62,6 +63,7 @@ import {
   composerExtensions,
   attachmentNode,
   referenceNode,
+  workflowRunNode,
   citationNode,
   insertEditorCitation,
   skillNode,
@@ -78,7 +80,9 @@ import {
   type ComposerSkill,
   completeEditor,
   replaceEditorDocument,
+  chipWorkflowRunIds,
   insertEditorReference,
+  insertLiteralWorkflowRunIds,
   type CompletionRange,
 } from "./composer-tiptap";
 export {
@@ -274,6 +278,14 @@ function ReferenceElement(props: NodeViewProps) {
   );
 }
 
+function WorkflowRunElement(props: NodeViewProps) {
+  return (
+    <NodeViewWrapper as="span">
+      <WorkflowRunChip runId={props.node.attrs.runId as string} />
+    </NodeViewWrapper>
+  );
+}
+
 function SkillElement(props: NodeViewProps) {
   const context = useContext(AttachmentContext);
   const name = props.node.attrs.name as string;
@@ -338,6 +350,7 @@ const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) 
   const documentKey = useRef(props.documentKey);
   const seenAttachments = useRef(new Set<string>());
   const referencedAttachments = useRef(new Set<string>());
+  const pasting = useRef(false);
   const attachments = props.attachments ?? emptyAttachments;
   const skills = props.skills ?? emptySkills;
   const [initialDocument] = useState(() => readComposerDocument(props.text).toJSON());
@@ -362,6 +375,12 @@ const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) 
       referenceNode.extend({
         addNodeView: () =>
           ReactNodeViewRenderer(ReferenceElement, {
+            attrs: { contenteditable: "false", "data-composer-badge": "" },
+          }),
+      }),
+      workflowRunNode.extend({
+        addNodeView: () =>
+          ReactNodeViewRenderer(WorkflowRunElement, {
             attrs: { contenteditable: "false", "data-composer-badge": "" },
           }),
       }),
@@ -394,14 +413,20 @@ const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) 
       handleDOMEvents: {
         paste: (_view, event) => {
           current.current.onPaste(event);
+          pasting.current = !event.defaultPrevented;
           return event.defaultPrevented;
         },
       },
+      // ProseMirror also runs this for drops, where a chip could land inside code.
+      transformPasted: (slice, view) =>
+        pasting.current ? chipWorkflowRunIds(slice, view.state.schema) : slice,
       handlePaste: (view, event) => {
+        pasting.current = false;
         const clipboard = event.clipboardData;
         if (!clipboard) return false;
         const text = clipboard.getData("text/plain");
         const { from, to } = view.state.selection;
+        if (insertLiteralWorkflowRunIds(view, text)) return true;
         if (insertEditorReference(view, from, to, text, location.origin)) return true;
         if (clipboard.getData("text/html")) return false;
         if (!text) return false;

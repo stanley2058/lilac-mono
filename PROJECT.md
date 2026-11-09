@@ -134,10 +134,13 @@ the runner reports that only a sync subagent, sync question, or deferred wait re
 marks sidebar rows for runs that outlive the primary agent. Both signals live in memory: runners re-report
 waits and the workflow store reseeds active runs at startup.
 
-`workflows.list` backs the Workflows view: live cards in the main panel, with the sidebar as a minimap
-grouped by status. It leaves out subagent runs, limits participants to threads they can read, and shows
-runs with no native conversation only to the owner. Active and finished runs are separate queries so that
-polling never re-downloads finished result text. A card's `source` holds its turn position, which opens the
+`workflows.list` backs the Workflows view: a board with one virtualized column per status group, and a
+sidebar list of titles and statuses that selects a card on the board. It leaves out subagent runs, limits
+participants to threads they can read, and shows runs with no native conversation only to the owner. Active,
+failed, and done runs are separate queries, so columns page independently and polling never re-downloads
+ended result text. Its optional `query` matches workflow names and backs the sidebar search in this view.
+`workflows.get` reads one run by id with the same access rules. Workflow ids stay plain text in messages,
+so the agent can use them directly, and the web renders them as chips with the run's title and status. A card's `source` holds its turn position, which opens the
 thread at that card through the timeline's history jump, and the card's actions for viewers who can edit.
 
 The web turn rail reads `threads.outline` in pages of 256 turns and `threads.outlinePreviews` for

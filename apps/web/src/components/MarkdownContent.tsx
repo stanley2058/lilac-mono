@@ -23,6 +23,8 @@ import remarkCjkFriendlyGfmStrikethrough from "remark-cjk-friendly-gfm-strikethr
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { remarkChatMath } from "./remark-chat-math";
+import { isWorkflowRunId, remarkWorkflowRunIds } from "../workflow-run-id";
+import { WorkflowRunChip } from "./WorkflowRunChip";
 import { RichRenderBoundary } from "./Markdown";
 import { LinkWithFavicon } from "./LinkWithFavicon";
 import { AttachmentReference } from "./AttachmentReference";
@@ -51,6 +53,7 @@ const plugins = [
   remarkCjkFriendlyGfmStrikethrough,
   remarkMath,
   remarkChatMath,
+  remarkWorkflowRunIds,
 ];
 const rehypePlugins = [githubAlerts];
 function userPlugins(skillNames: string[]) {
@@ -170,6 +173,12 @@ const components: Components = {
   li: ListItem,
   input: TaskCheckbox,
   code: ({ className, children, node }) => {
+    if (!className && typeof children === "string" && isWorkflowRunId(children))
+      return (
+        <span {...sourceAttributes(node)}>
+          <WorkflowRunChip runId={children} />
+        </span>
+      );
     const file = !className && typeof children === "string" ? parseFilePath(children) : undefined;
     if (file)
       return (
@@ -200,6 +209,13 @@ const components: Components = {
   span: ({ node, ...props }) => {
     const skill = node?.properties.dataSkill;
     if (typeof skill === "string") return <SkillBadge name={skill} />;
+    const workflowRun = node?.properties.dataWorkflowRun;
+    if (typeof workflowRun === "string")
+      return (
+        <span {...sourceAttributes(node)}>
+          <WorkflowRunChip runId={workflowRun} />
+        </span>
+      );
     return <span {...props} />;
   },
   img: ({ node, ...props }) =>

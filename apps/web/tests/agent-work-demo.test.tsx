@@ -205,7 +205,12 @@ test("terminal workflow cards show results and reasons without controls", () => 
   expect(succeeded).toContain('data-ui="workflow-result"');
   expect(succeeded).toContain("Walk the river loop for 45 minutes");
   expect(succeeded).not.toContain('data-ui="workflow-actions"');
-  expect(renderStage("workflow-shortenedResult")).toContain("Shortened.");
+  const shortened = renderStage("workflow-shortenedResult");
+  expect(shortened).toMatch(/data-ui="workflow-result-body"[^>]*max-h-96[^>]*overflow-y-auto/u);
+  expect(shortened.indexOf("Shortened.")).toBeGreaterThan(shortened.lastIndexOf("Route notes:"));
+  expect(renderStage("workflow-failed")).toMatch(
+    /data-ui="workflow-reason"[^>]*max-h-96[^>]*overflow-y-auto/u,
+  );
   expect(renderStage("workflow-largeResult")).toContain("too large to show here");
   expect(renderStage("workflow-failed")).toContain("The route service returned an error.");
   expect(renderStage("workflow-sensitive")).toContain("sensitive input");

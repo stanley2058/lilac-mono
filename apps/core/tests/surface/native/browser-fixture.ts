@@ -366,6 +366,25 @@ function seedBrowserWorkflowViews(store: NativeStore, workflows: DurableWorkflow
         parts: [{ type: "text", text: `Later update ${index + 1}.` }],
       })
       .unwrap();
+  store
+    .postMessage("owner", background.id, {
+      id: "browser-workflow-mentions",
+      role: "assistant",
+      metadata: { phase: "final" },
+      parts: [
+        {
+          type: "text",
+          text: [
+            `The run ${running.runId} is still going, and \`${running.runId}\` is the same one.`,
+            "An unknown id stays as text: wfrun:unknown-run.",
+            "```text",
+            running.runId,
+            "```",
+          ].join("\n\n"),
+        },
+      ],
+    })
+    .unwrap();
   workflows.upsertSurfaceBinding({
     runId: running.runId,
     target: { platform: "native", channelId: background.id, replyToMessageId: null },
@@ -409,6 +428,46 @@ function seedBrowserWorkflowViews(store: NativeStore, workflows: DurableWorkflow
     completed: 2,
     total: 2,
   });
+}
+
+/** Enough ended runs to exercise board paging, search, and long results in the dev server. */
+function seedBrowserWorkflowHistory(workflows: DurableWorkflowStore) {
+  const now = Date.now();
+  const report = Array.from(
+    { length: 60 },
+    (_, section) =>
+      `#### ${section + 1}. Check the route\n\n- **Priority:** P${section % 3}\n- **Evidence:** The handler reads the session before the owner role.\n`,
+  ).join("\n");
+  for (let index = 0; index < 120; index += 1)
+    seedNativeWorkflowRun(workflows, {
+      id: `browser-history-${index}`,
+      name: `${index % 2 ? "nightly-audit" : "refresh-index"}-${index}`,
+      state: index % 10 === 9 ? "cancelled" : "succeeded",
+      platform: "discord",
+      createdAt: now - 14_400_000 - index * 60_000,
+      completed: 2,
+      total: 2,
+      result:
+        index % 3
+          ? `Checked ${index} routes. All clear.`
+          : { routes: index, report: report.slice(0, 16_000) },
+    });
+  for (let index = 0; index < 45; index += 1)
+    seedNativeWorkflowRun(workflows, {
+      id: `browser-history-failed-${index}`,
+      name: `nightly-backup-${index}`,
+      state: "failed",
+      platform: "discord",
+      createdAt: now - 14_400_000 - index * 90_000,
+      completed: 1,
+      total: 3,
+      detail:
+        index % 4
+          ? "The route service returned an error."
+          : Array.from({ length: 80 }, (_, frame) => `at frame${frame} (runtime.ts:${frame})`).join(
+              "\n",
+            ),
+    });
 }
 
 export async function startNativeBrowserFixture(
@@ -526,6 +585,7 @@ export async function startNativeBrowserFixture(
   });
   if (!threads) throw new Error("Browser fixture data was not seeded");
   seedBrowserWorkflowViews(fixture.store, fixture.workflows);
+  seedBrowserWorkflowHistory(fixture.workflows);
   const links = Object.fromEntries(
     Object.entries(threads)
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")

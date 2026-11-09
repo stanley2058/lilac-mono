@@ -45,7 +45,7 @@ export type NativeRpcServiceOptions = {
   references?: Pick<NativeReferences, "resolve" | "read" | "range">;
   files?: Pick<NativeLiveFileService, "resolve" | "tree" | "document" | "saveDocument">;
   subagents?: Pick<NativeSubagents, "list" | "read" | "stream">;
-  workflows?: Pick<NativeWorkflows, "list">;
+  workflows?: Pick<NativeWorkflows, "list" | "get">;
   store: NativeStore;
   auth: NativeAuthenticator;
   installationId: string;
@@ -1140,6 +1140,9 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
     workflows: {
       list: (principal, input) =>
         options.workflows?.list(principal.userId, input) ?? Result.ok({ items: [] }),
+      get: (principal, input) =>
+        options.workflows?.get(principal.userId, input) ??
+        Result.err(nativeFailure("not-found", "Workflow not found")),
     },
     external: {
       list(principal, input) {

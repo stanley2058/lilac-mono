@@ -154,18 +154,48 @@ export function configOptions(client: NativeClient, kind: "core" | "mcp") {
 
 const ACTIVE_WORKFLOW_POLL_MS = 3_000;
 
-/** Only active runs poll here. Finished cards carry result text, see useNewestFinishedRuns. */
-export function workflowRunsOptions(client: NativeClient, state: "active" | "finished") {
+export type WorkflowListState = "active" | "failed" | "done";
+
+const ACTIVE_WORKFLOW_CHIP_POLL_MS = 10_000;
+
+/** Lives under the workflow key so an action on any card also refreshes this run. */
+export function workflowRunOptions(
+  client: NativeClient | undefined,
+  runId: string,
+  preview: boolean,
+) {
+  return queryOptions({
+    queryKey: ["workflows", "run", runId, preview],
+    queryFn: ({ signal }) =>
+      queryNativeRPC(client!, (rpc) => rpc.workflows.get({ runId, preview }, { signal })),
+    refetchInterval: (query) =>
+      query.state.data && query.state.data.card.endedAt === undefined
+        ? ACTIVE_WORKFLOW_CHIP_POLL_MS
+        : false,
+  });
+}
+
+/**
+ * Only active runs poll here. Ended runs carry result text and rarely change, so returning to the
+ * window does not reload their history. useNewestFinishedRuns adds the ones that end.
+ */
+export function workflowRunsOptions(
+  client: NativeClient,
+  state: WorkflowListState,
+  query: string = "",
+) {
   return infiniteQueryOptions({
-    queryKey: ["workflows", state],
+    queryKey: ["workflows", state, query],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       queryNativeRPC(client, (rpc) =>
-        rpc.workflows.list({ state, limit: 30, cursor: pageParam }, { signal }),
+        rpc.workflows.list(
+          { state, limit: 30, cursor: pageParam, ...(query ? { query } : {}) },
+          { signal },
+        ),
       ),
     getNextPageParam: (page) => page.nextCursor,
-    staleTime: 0,
-    refetchOnWindowFocus: true,
+    staleTime: state === "active" ? 0 : Infinity,
     refetchInterval: state === "active" ? ACTIVE_WORKFLOW_POLL_MS : false,
   });
 }

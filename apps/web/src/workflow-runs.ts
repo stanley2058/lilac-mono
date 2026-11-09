@@ -1,8 +1,18 @@
 import { useEffect, useMemo } from "react";
-import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useQueryClient,
+  type InfiniteData,
+} from "@tanstack/react-query";
 import type { WorkflowCard, WorkflowRunSummary } from "@stanley2058/lilac-client-protocol";
 import { attempt } from "./components/ui";
-import { queryNativeRPC, useNativeOnline, workflowRunsOptions } from "./queries";
+import {
+  queryNativeRPC,
+  useNativeOnline,
+  workflowRunsOptions,
+  type WorkflowListState,
+} from "./queries";
 import { useWorkspace } from "./workspace-context";
 
 type WorkflowStatus = WorkflowCard["status"];
@@ -12,34 +22,36 @@ const sections = [
     id: "attention",
     label: "Needs attention",
     statuses: ["needs-attention", "waiting-reply", "blocked"],
-    finished: false,
+    list: "active",
   },
-  { id: "running", label: "Running", statuses: ["running", "waiting", "queued"], finished: false },
-  { id: "paused", label: "Paused", statuses: ["paused"], finished: false },
-  { id: "failed", label: "Failed", statuses: ["failed"], finished: true },
-  { id: "finished", label: "Finished", statuses: ["succeeded", "cancelled"], finished: true },
+  { id: "running", label: "Running", statuses: ["running", "waiting", "queued"], list: "active" },
+  { id: "paused", label: "Paused", statuses: ["paused"], list: "active" },
+  { id: "failed", label: "Failed", statuses: ["failed"], list: "failed" },
+  { id: "finished", label: "Finished", statuses: ["succeeded", "cancelled"], list: "done" },
 ] as const satisfies readonly {
   id: string;
   label: string;
   statuses: readonly WorkflowStatus[];
-  finished: boolean;
+  list: WorkflowListState;
 }[];
 
 export type WorkflowSection = {
   id: (typeof sections)[number]["id"];
   label: string;
-  finished: boolean;
+  list: WorkflowListState;
   runs: WorkflowRunSummary[];
 };
 
-/** Empty sections are dropped. Both the minimap and the board follow this order. */
+/** Every section is always present, so board columns keep their positions when they empty. */
 export function workflowSections(runs: readonly WorkflowRunSummary[]): WorkflowSection[] {
-  return sections.flatMap(({ id, label, statuses, finished }) => {
-    const matching = runs.filter((run) =>
+  return sections.map(({ id, label, statuses, list }) => ({
+    id,
+    label,
+    list,
+    runs: runs.filter((run) =>
       statuses.some((status: WorkflowStatus) => status === run.card.status),
-    );
-    return matching.length ? [{ id, label, finished, runs: matching }] : [];
-  });
+    ),
+  }));
 }
 
 const NEWEST_FINISHED_POLL_MS = 30_000;
@@ -75,19 +87,18 @@ export function mergeNewestFinishedRuns<PageParam>(
  * Catches runs that started and ended between two polls of the active list. Refetching the
  * infinite query instead would download every loaded page of finished results each time.
  */
-export function useNewestFinishedRuns() {
+export function useNewestFinishedRuns(query: string) {
   const { client } = useWorkspace();
   const queries = useQueryClient();
   const online = useNativeOnline(client);
   useEffect(() => {
     if (!online) return;
-    const { queryKey } = workflowRunsOptions(client, "finished");
-    const timer = setInterval(() => {
-      if (document.hidden) return;
-      void attempt(
+    const refresh = (state: "failed" | "done") => {
+      const { queryKey } = workflowRunsOptions(client, state, query);
+      return attempt(
         async () => {
           const newest = await queryNativeRPC(client, (rpc) =>
-            rpc.workflows.list({ state: "finished", limit: 30 }),
+            rpc.workflows.list({ state, limit: 30, ...(query ? { query } : {}) }),
           );
           const history = queries.getQueryData(queryKey);
           if (!history) return;
@@ -100,42 +111,75 @@ export function useNewestFinishedRuns() {
         },
         () => {},
       );
+    };
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      void refresh("failed");
+      void refresh("done");
     }, NEWEST_FINISHED_POLL_MS);
     return () => clearInterval(timer);
-  }, [client, online, queries]);
+  }, [client, online, queries, query]);
 }
 
-export function useWorkflowRuns() {
+function useWorkflowList(state: WorkflowListState, query: string) {
   const { client } = useWorkspace();
   const online = useNativeOnline(client);
-  const active = useInfiniteQuery({ ...workflowRunsOptions(client, "active"), enabled: online });
-  const finished = useInfiniteQuery({
-    ...workflowRunsOptions(client, "finished"),
+  return useInfiniteQuery({
+    ...workflowRunsOptions(client, state, query),
     enabled: online,
+    // Typing a search keeps the board in place until the new matches arrive.
+    placeholderData: online ? keepPreviousData : undefined,
   });
+}
+
+type WorkflowList = ReturnType<typeof useWorkflowList>;
+
+function loadable(list: WorkflowList) {
+  return list.hasNextPage && !list.isFetchNextPageError;
+}
+
+export function useWorkflowRuns(query: string) {
+  const active = useWorkflowList("active", query);
+  const failed = useWorkflowList("failed", query);
+  const done = useWorkflowList("done", query);
   const activeRuns = active.data?.pages;
-  const finishedRuns = finished.data?.pages;
+  const failedRuns = failed.data?.pages;
+  const doneRuns = done.data?.pages;
   const grouped = useMemo(() => {
-    // Finished wins for a run that just ended and is still in the last active page.
+    // An ended list wins for a run that just ended and is still in the last active page.
     const runs = new Map<string, WorkflowRunSummary>();
-    for (const page of [...(activeRuns ?? []), ...(finishedRuns ?? [])])
+    for (const page of [...(activeRuns ?? []), ...(failedRuns ?? []), ...(doneRuns ?? [])])
       for (const run of page.items) runs.set(run.id, run);
     return workflowSections([...runs.values()]);
-  }, [activeRuns, finishedRuns]);
+  }, [activeRuns, failedRuns, doneRuns]);
+  const lists: Record<WorkflowListState, WorkflowList> = { active, failed, done };
+  const perList = <T>(read: (list: WorkflowList) => T): Record<WorkflowListState, T> => ({
+    active: read(active),
+    failed: read(failed),
+    done: read(done),
+  });
+  const loadMore = (state: WorkflowListState) => {
+    if (lists[state].hasNextPage) void lists[state].fetchNextPage({ cancelRefetch: false });
+  };
   return {
     sections: grouped,
-    loaded: !!active.data && !!finished.data,
-    error: active.error?.message ?? finished.error?.message,
-    moreActive: active.hasNextPage,
-    moreFinished: finished.hasNextPage,
+    loaded: !!active.data && !!failed.data && !!done.data,
+    error: active.error?.message ?? failed.error?.message ?? done.error?.message,
+    more: perList((list) => list.hasNextPage),
+    /** A failed page stops loading here, or reaching the end of a list would request it forever. */
+    loadable: perList(loadable),
+    fetching: perList((list) => list.isFetchingNextPage),
+    hasMore: loadable(active) || loadable(failed) || loadable(done),
+    fetchingAny: active.isFetchingNextPage || failed.isFetchingNextPage || done.isFetchingNextPage,
     activeIds: useMemo(
       () => (activeRuns ?? []).flatMap((page) => page.items.map((run) => run.id)),
       [activeRuns],
     ),
-    fetching: active.isFetchingNextPage || finished.isFetchingNextPage,
-    loadMore() {
-      if (active.hasNextPage) void active.fetchNextPage({ cancelRefetch: false });
-      else if (finished.hasNextPage) void finished.fetchNextPage({ cancelRefetch: false });
+    loadMore,
+    /** Pages in sidebar order, so earlier sections fill before later ones grow. */
+    loadNext() {
+      const next = (["active", "failed", "done"] as const).find((state) => loadable(lists[state]));
+      if (next) loadMore(next);
     },
   };
 }

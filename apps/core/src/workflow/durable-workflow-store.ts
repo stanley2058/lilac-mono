@@ -896,6 +896,8 @@ export class DurableWorkflowStore {
     states: readonly WorkflowRunState[];
     before?: { createdAt: number; runId: string };
     nativeOnly?: boolean;
+    /** Case-insensitive substring of the workflow name. */
+    nameQuery?: string;
     limit: number;
   }): ResultType<WorkflowRun[], DurableWorkflowReadError> {
     return captureWorkflowRead("list-top-level-runs", () => {
@@ -906,6 +908,12 @@ export class DurableWorkflowStore {
       const bindings: (string | number)[] = [...options.states];
       if (options.nativeOnly)
         clauses.push(`json_extract(progress_target_json, '$.platform') = 'native'`);
+      if (options.nameQuery) {
+        clauses.push(
+          "revision_id IN (SELECT revision_id FROM workflow_revisions WHERE instr(lower(name), lower(?)) > 0)",
+        );
+        bindings.push(options.nameQuery);
+      }
       if (options.before) {
         clauses.push("(created_at < ? OR (created_at = ? AND run_id < ?))");
         bindings.push(options.before.createdAt, options.before.createdAt, options.before.runId);

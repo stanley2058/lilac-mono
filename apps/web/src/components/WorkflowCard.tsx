@@ -6,7 +6,9 @@ import {
   Check,
   CircleDashed,
   CircleX,
+  Copy,
   Hourglass,
+  Maximize2,
   MessageCircleQuestion,
   Minus,
   Pause,
@@ -24,9 +26,10 @@ import type {
 } from "@stanley2058/lilac-client-protocol";
 import { formatDuration } from "../activity-presentation";
 import { Markdown } from "./Markdown";
-import { IconButton } from "./ui";
+import { attempt, IconButton } from "./ui";
 import { Button } from "./ui/button";
 import { LoadingSpinner } from "./ui/loading-spinner";
+import { toast } from "./ui/toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { useMessageServices } from "./message-services";
 import {
@@ -39,6 +42,7 @@ import {
 type ActionsPart = Extract<DisplayPart, { type: "data-actions" }>;
 type Step = WorkflowCardData["steps"][number];
 type Counts = WorkflowCardData["progress"];
+type WorkflowCardBody = "scroll" | "preview" | "full";
 
 const actionIcons: Record<string, LucideIcon> = { Pause, Resume: Play, Cancel: Square };
 
@@ -57,12 +61,23 @@ export function WorkflowCard({
   card,
   actions,
   source,
+  body = "scroll",
+  onOpen,
+  runId,
+  selected = false,
 }: {
   messageId: string;
   card: WorkflowCardData;
   actions?: ActionsPart;
   /** Where the run came from, for views that show the card outside its conversation. */
   source?: ReactNode;
+  /** How long text fits the card: a bounded scroll area, a short preview, or in full. */
+  body?: WorkflowCardBody;
+  /** Opens the card somewhere with room for its full text. */
+  onOpen?: () => void;
+  /** Lets people copy the id to ask the agent about this run. Timeline cards do not receive it. */
+  runId?: string;
+  selected?: boolean;
 }) {
   const ended = card.endedAt !== undefined;
   const now = useNow(!ended);
@@ -73,8 +88,9 @@ export function WorkflowCard({
       data-ui="workflow-card"
       data-workflow-card={messageId}
       data-status={card.status}
+      data-selected={selected || undefined}
       aria-label={`Workflow ${card.name}, ${status.label}`}
-      className="workflow-card flex w-full min-w-0 flex-col gap-3 rounded-xl bg-muted px-4 py-3"
+      className="workflow-card flex w-full min-w-0 flex-col gap-3 rounded-xl bg-muted px-4 py-3 transition-shadow data-[selected]:ring-2 data-[selected]:ring-primary data-[selected]:ring-inset"
     >
       <header className="flex min-w-0 items-start gap-3">
         <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-background/60">
@@ -84,32 +100,78 @@ export function WorkflowCard({
           <h3 className="m-0 truncate font-mono text-sm font-semibold text-foreground">
             {card.name}
           </h3>
-          <p
+          <div
             data-ui="workflow-status"
-            className={`m-0 flex items-center gap-1.5 text-sm ${status.tone}`}
+            className={`flex min-w-0 items-center gap-1.5 text-sm ${status.tone}`}
           >
-            <WorkflowStatusIcon status={card.status} />
-            <span>{status.label}</span>
-            <span className="text-muted-foreground tabular-nums">· {formatDuration(elapsed)}</span>
-          </p>
+            <span className="flex shrink-0">
+              <WorkflowStatusIcon status={card.status} />
+            </span>
+            <span className="min-w-0 truncate">{status.label}</span>
+            <span className="shrink-0 whitespace-nowrap text-muted-foreground tabular-nums">
+              · {formatDuration(elapsed)}
+            </span>
+          </div>
         </div>
         {actions?.data.actions.length ? (
           <WorkflowActions messageId={messageId} part={actions} />
         ) : null}
       </header>
       {card.description ? (
-        <p className="m-0 text-sm text-muted-foreground text-pretty">{card.description}</p>
+        <p
+          className={`m-0 text-sm text-muted-foreground text-pretty ${body === "preview" ? "line-clamp-3" : ""}`}
+        >
+          {card.description}
+        </p>
       ) : null}
       {card.progress.total > 0 ? (
         <Progress counts={card.progress} live={card.status === "running"} />
       ) : null}
-      <Notice card={card} now={now} />
-      {card.phases.length > 1 ? <Phases phases={card.phases} /> : null}
+      <Notice card={card} now={now} body={body} />
+      {card.phases.length > 1 ? (
+        <Phases phases={card.phases} limit={body === "preview" ? PREVIEW_PHASES : undefined} />
+      ) : null}
       {card.steps.length ? <Steps steps={card.steps} /> : null}
-      <Result card={card} />
+      <Result card={card} body={body} />
       <Footer card={card} />
-      {source}
+      {source || onOpen || runId ? (
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-col">{source}</div>
+          {runId ? <CopyWorkflowId runId={runId} /> : null}
+          {onOpen ? (
+            <IconButton label="Open workflow" onClick={onOpen}>
+              <Maximize2 />
+            </IconButton>
+          ) : null}
+        </div>
+      ) : null}
     </section>
+  );
+}
+
+function CopyWorkflowId({ runId }: { runId: string }) {
+  const [copiedAt, setCopiedAt] = useState(0);
+  useEffect(() => {
+    if (!copiedAt) return;
+    const timer = setTimeout(() => setCopiedAt(0), 2000);
+    return () => clearTimeout(timer);
+  }, [copiedAt]);
+  return (
+    <IconButton
+      label="Copy workflow ID"
+      tooltip={copiedAt ? "Copied" : "Copy workflow ID"}
+      onClick={() =>
+        void attempt(
+          async () => {
+            await navigator.clipboard.writeText(runId);
+            setCopiedAt(Date.now());
+          },
+          () => toast.add({ title: "Copy unavailable", type: "error" }),
+        )
+      }
+    >
+      {copiedAt ? <Check /> : <Copy />}
+    </IconButton>
   );
 }
 
@@ -217,7 +279,15 @@ function Callout({
   );
 }
 
-function Notice({ card, now }: { card: WorkflowCardData; now: number }) {
+function Notice({
+  card,
+  now,
+  body,
+}: {
+  card: WorkflowCardData;
+  now: number;
+  body: WorkflowCardBody;
+}) {
   if (card.status === "needs-attention")
     return (
       <Callout icon={TriangleAlert} tone="text-warning">
@@ -231,7 +301,16 @@ function Notice({ card, now }: { card: WorkflowCardData; now: number }) {
         icon={card.status === "failed" ? CircleX : Ban}
         tone={card.status === "failed" ? "text-danger" : "text-muted-foreground"}
       >
-        <span className="whitespace-pre-wrap wrap-anywhere">{card.reason}</span>
+        {body === "preview" && isLongText(card.reason) ? (
+          <TextPreview text={card.reason} />
+        ) : (
+          <span
+            data-ui="workflow-reason"
+            className={`whitespace-pre-wrap wrap-anywhere ${body === "scroll" ? "max-h-96 overflow-y-auto" : ""}`}
+          >
+            {card.reason}
+          </span>
+        )}
       </Callout>
     );
   const wait = card.wait;
@@ -275,10 +354,11 @@ function phaseState(phase: Counts): { label: string; icon: ReactNode } {
   return { label: "Queued", icon: icon(CircleDashed, "text-muted-foreground") };
 }
 
-function Phases({ phases }: { phases: WorkflowCardData["phases"] }) {
+function Phases({ phases, limit }: { phases: WorkflowCardData["phases"]; limit?: number }) {
+  const hidden = limit === undefined ? 0 : Math.max(0, phases.length - limit);
   return (
     <ol data-ui="workflow-phases" className="m-0 flex list-none flex-wrap gap-1.5 p-0">
-      {phases.map((phase, index) => {
+      {phases.slice(0, limit).map((phase, index) => {
         const state = phaseState(phase);
         return (
           <li
@@ -296,6 +376,14 @@ function Phases({ phases }: { phases: WorkflowCardData["phases"] }) {
           </li>
         );
       })}
+      {hidden ? (
+        <li
+          data-ui="workflow-phases-more"
+          className="rounded-full bg-background/60 px-2.5 py-0.5 text-xs text-muted-foreground tabular-nums"
+        >
+          +{hidden}
+        </li>
+      ) : null}
     </ol>
   );
 }
@@ -349,7 +437,46 @@ function Steps({ steps }: { steps: WorkflowCardData["steps"] }) {
   );
 }
 
-function Result({ card }: { card: WorkflowCardData }) {
+const PREVIEW_PHASES = 6;
+const PREVIEW_CHARS = 280;
+const PREVIEW_LINES = 4;
+
+function isLongText(text: string) {
+  return text.length > PREVIEW_CHARS || text.split("\n", PREVIEW_LINES + 1).length > PREVIEW_LINES;
+}
+
+/** Preview text stays plain so a long board does not pay for Markdown it never shows. */
+function TextPreview({ text }: { text: string }) {
+  return (
+    <p
+      data-ui="workflow-text-preview"
+      className="m-0 line-clamp-4 text-sm whitespace-pre-wrap wrap-anywhere"
+    >
+      {text.slice(0, PREVIEW_CHARS)}
+    </p>
+  );
+}
+
+function ResultBody({
+  text,
+  body,
+  children,
+}: {
+  text: string;
+  body: WorkflowCardBody;
+  children: ReactNode;
+}) {
+  if (body === "scroll")
+    return (
+      <div data-ui="workflow-result-body" className="max-h-96 min-w-0 overflow-y-auto">
+        {children}
+      </div>
+    );
+  if (body === "preview") return <TextPreview text={text} />;
+  return children;
+}
+
+function Result({ card, body }: { card: WorkflowCardData; body: WorkflowCardBody }) {
   if (card.status === "succeeded" && card.sensitive)
     return (
       <p className="m-0 text-sm text-muted-foreground">
@@ -364,15 +491,20 @@ function Result({ card }: { card: WorkflowCardData }) {
         The result is too large to show here. Ask Lilac for the full result.
       </p>
     );
+  const markdown = (
+    <Markdown
+      text={result.kind === "json" ? `\`\`\`json\n${result.text}\n\`\`\`` : result.text}
+      wrap
+    />
+  );
   return (
     <div
       data-ui="workflow-result"
       className="flex min-w-0 flex-col gap-1 rounded-lg bg-background/60 px-3 py-2"
     >
-      <Markdown
-        text={result.kind === "json" ? `\`\`\`json\n${result.text}\n\`\`\`` : result.text}
-        wrap
-      />
+      <ResultBody text={result.text} body={body}>
+        {markdown}
+      </ResultBody>
       {result.truncated ? (
         <p className="m-0 text-xs text-muted-foreground">
           Shortened. Ask Lilac for the full result.

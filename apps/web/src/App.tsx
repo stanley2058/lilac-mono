@@ -93,7 +93,7 @@ import { toast } from "./components/ui/toast";
 import { refreshSidebar } from "./sidebar-queries";
 import { ExternalSidebar, ExternalSkeleton } from "./components/ExternalSidebar";
 import { ViewSwitcher, type OtherView } from "./components/ViewSwitcher";
-import { WorkflowMinimap } from "./components/WorkflowMinimap";
+import { WorkflowSidebar } from "./components/WorkflowSidebar";
 import { focusWorkflowCard } from "./workflow-board-store";
 import { openThreadAtWorkflowCard, type WorkflowCardLocation } from "./message-target-store";
 import { ExternalMenuItems } from "./components/ExternalActions";
@@ -308,7 +308,7 @@ function Workspace(props: AppProps) {
   const queries = useQueryClient();
   const searchResults = useInfiniteQuery({
     ...searchOptions(client, searchQuery),
-    enabled: online && !!searchQuery,
+    enabled: online && !!searchQuery && !workflowsView,
     placeholderData: online ? keepPreviousData : undefined,
   });
   const changeSearchQuery = useEventCallback((query: string) => {
@@ -316,12 +316,14 @@ function Workspace(props: AppProps) {
     if (!query) void queries.resetQueries({ queryKey: ["search"] });
     setSearchQuery(query);
   });
-  const results = searchQuery
-    ? {
-        items: keyedSearchHits(searchResults.data?.pages.flatMap((page) => page.items) ?? []),
-        nextCursor: searchResults.hasNextPage,
-      }
-    : undefined;
+  // The workflows view searches workflow titles, so the same query filters its lists instead.
+  const results =
+    searchQuery && !workflowsView
+      ? {
+          items: keyedSearchHits(searchResults.data?.pages.flatMap((page) => page.items) ?? []),
+          nextCursor: searchResults.hasNextPage,
+        }
+      : undefined;
   const searching = searchResults.isFetching;
   useEffect(() => {
     if (searchResults.error) setError(searchResults.error.message);
@@ -946,7 +948,10 @@ function Workspace(props: AppProps) {
   const sidebarToolbar = useMemo(
     () => (
       <div className="sidebar-search-row flex items-center gap-1 min-w-0 mb-3">
-        <SidebarSearch onSearch={changeSearchQuery} />
+        <SidebarSearch
+          label={workflowsView ? "Search workflows" : "Search conversations"}
+          onSearch={changeSearchQuery}
+        />
         <nav
           className="sidebar-tabs flex items-center gap-0.5"
           aria-label="Conversation filters and actions"
@@ -964,7 +969,7 @@ function Workspace(props: AppProps) {
         </nav>
       </div>
     ),
-    [otherView, owner, showView, createThread],
+    [otherView, workflowsView, owner, showView, createThread],
   );
   const sidebarFooter = useMemo(
     () => (
@@ -1108,7 +1113,7 @@ function Workspace(props: AppProps) {
                           <ExternalSidebar selectedId={externalId} onSelect={selectExternal} />
                         ) : null}
                         {workflowsView && !results ? (
-                          <WorkflowMinimap onSelect={selectWorkflowRun} />
+                          <WorkflowSidebar query={searchQuery} onSelect={selectWorkflowRun} />
                         ) : null}
                         {(results || (!external && !workflowsView)) &&
                           (results ? (
@@ -1250,7 +1255,7 @@ function Workspace(props: AppProps) {
                         ) : null}
                         {!reference && workflowsView ? (
                           <Suspense fallback={null}>
-                            <WorkflowBoard onOpen={openWorkflowThread} />
+                            <WorkflowBoard query={searchQuery} onOpen={openWorkflowThread} />
                           </Suspense>
                         ) : null}
                         {!reference && !external && !workflowsView && selectedId && routeDraftExists

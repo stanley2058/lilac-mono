@@ -598,12 +598,28 @@ export const nativeContract = {
       ),
   },
   workflows: {
-    list: procedure.input(pageInputSchema.extend({ state: z.enum(["active", "finished"]) })).output(
-      z.strictObject({
-        items: z.array(workflowRunSummarySchema).max(100),
-        nextCursor: identitySchema.optional(),
-      }),
-    ),
+    list: procedure
+      .input(
+        pageInputSchema.extend({
+          state: z.enum(["active", "finished", "failed", "done"]),
+          query: z.string().min(1).max(256).optional(),
+        }),
+      )
+      .output(
+        z.strictObject({
+          items: z.array(workflowRunSummarySchema).max(100),
+          nextCursor: identitySchema.optional(),
+        }),
+      ),
+    get: procedure
+      .input(
+        z.strictObject({
+          runId: runIdentitySchema,
+          /** Leaves out result and failure text, for callers that only show the title and status. */
+          preview: z.boolean().optional(),
+        }),
+      )
+      .output(workflowRunSummarySchema),
   },
   external: {
     list: procedure.input(pageInputSchema).output(

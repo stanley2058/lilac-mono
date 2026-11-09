@@ -55,17 +55,53 @@ test("runs group by what they need, most urgent first, keeping list order within
   ]);
 });
 
-test("empty sections are dropped", () => {
-  expect(workflowSections([run("busy", "running")]).map((section) => section.id)).toEqual([
-    "running",
+test("every section stays present so board columns keep their positions", () => {
+  const sections = workflowSections([run("busy", "running")]);
+  expect(sections.map((section) => [section.id, section.runs.length])).toEqual([
+    ["attention", 0],
+    ["running", 1],
+    ["paused", 0],
+    ["failed", 0],
+    ["finished", 0],
   ]);
-  expect(workflowSections([])).toEqual([]);
+  expect(workflowSections([]).map((section) => section.id)).toHaveLength(5);
+});
+
+test("columns page from the list that holds their statuses", () => {
+  const lists = Object.fromEntries(
+    workflowSections([]).map((section) => [section.id, section.list]),
+  );
+  expect(lists).toEqual({
+    attention: "active",
+    running: "active",
+    paused: "active",
+    failed: "failed",
+    finished: "done",
+  });
 });
 
 test("only active runs poll the whole list; finished history stays put", () => {
   const client = {} as NativeClient;
   expect(workflowRunsOptions(client, "active").refetchInterval).toBe(3_000);
-  expect(workflowRunsOptions(client, "finished").refetchInterval).toBe(false);
+  expect(workflowRunsOptions(client, "done").refetchInterval).toBe(false);
+  expect(workflowRunsOptions(client, "failed").refetchInterval).toBe(false);
+});
+
+test("returning to the window reloads active runs and leaves ended history alone", () => {
+  const client = {} as NativeClient;
+  expect(workflowRunsOptions(client, "active").staleTime).toBe(0);
+  expect(workflowRunsOptions(client, "done").staleTime).toBe(Infinity);
+  expect(workflowRunsOptions(client, "failed").staleTime).toBe(Infinity);
+});
+
+test("a search has its own cache entry under the state it filters", () => {
+  const client = {} as NativeClient;
+  expect([...workflowRunsOptions(client, "done").queryKey]).toEqual(["workflows", "done", ""]);
+  expect([...workflowRunsOptions(client, "done", "audit").queryKey]).toEqual([
+    "workflows",
+    "done",
+    "audit",
+  ]);
 });
 
 test("a newest page adds unseen runs and keeps loaded history and cursors", () => {

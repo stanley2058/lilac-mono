@@ -23,6 +23,8 @@ export function seedNativeWorkflowRun(
     createdAt: number;
     completed?: number;
     total?: number;
+    result?: WorkflowRun["result"];
+    detail?: string;
   },
 ) {
   const resources = normalizeWorkflowResourcePolicy({
@@ -128,6 +130,8 @@ export function seedNativeWorkflowRun(
       from: "running",
       to: options.state,
       now: options.createdAt + 60_000,
+      detail: options.detail,
+      result: options.result,
     });
   return run;
 }

@@ -131,6 +131,38 @@ test("a deferred question ends the run and leaves only its respondent on input",
   }
 });
 
+test("the workflow list pages past one page over the wire", async () => {
+  const fixture = await createNativeIntegrationFixture();
+  try {
+    const owner = fixture.connect().client;
+    for (let index = 0; index < 32; index += 1)
+      seedNativeWorkflowRun(fixture.workflows, {
+        id: `run-${index}`,
+        name: `audit-${index}`,
+        state: "succeeded",
+        platform: "discord",
+        createdAt: 1_000 - index,
+      });
+    const first = await owner.workflows.list({ state: "done", limit: 30 });
+    expect(first.items).toHaveLength(30);
+    const second = await owner.workflows.list({
+      state: "done",
+      limit: 30,
+      cursor: first.nextCursor,
+    });
+    expect(second.items.map((run) => run.card.name)).toEqual(["audit-30", "audit-31"]);
+    expect(second.nextCursor).toBeUndefined();
+
+    const search = await owner.workflows.list({ state: "done", limit: 30, query: "AUDIT-31" });
+    expect(search.items.map((run) => run.card.name)).toEqual(["audit-31"]);
+
+    const one = await owner.workflows.get({ runId: search.items[0]!.id, preview: true });
+    expect(one.card.name).toBe("audit-31");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("the workflow list applies owner and thread access over the wire", async () => {
   const fixture = await createNativeIntegrationFixture({
     additionalLocalUsers: [

@@ -22,23 +22,30 @@ const ACTIVE_STATES = [
   "blocked",
   "paused",
 ] as const satisfies readonly WorkflowRunState[];
-const FINISHED_STATES = [
-  "succeeded",
-  "failed",
-  "cancelled",
-] as const satisfies readonly WorkflowRunState[];
+const LISTED_STATES = {
+  active: ACTIVE_STATES,
+  finished: ["succeeded", "failed", "cancelled"],
+  failed: ["failed"],
+  done: ["succeeded", "cancelled"],
+} as const satisfies Record<string, readonly WorkflowRunState[]>;
 
 function activeState(state: WorkflowRunState) {
   return ACTIVE_STATES.some((active) => active === state);
 }
 
+/** Run ids contain colons, which the wire's identity format rejects, so cursors are encoded. */
+function encodeCursor(position: { createdAt: number; runId: string }) {
+  return Buffer.from(`${position.createdAt}_${position.runId}`).toString("base64url");
+}
+
 function decodeCursor(cursor: string | undefined) {
   if (cursor === undefined) return Result.ok(undefined);
-  const separator = cursor.indexOf("_");
-  const createdAt = Number(cursor.slice(0, separator));
+  const decoded = Buffer.from(cursor, "base64url").toString();
+  const separator = decoded.indexOf("_");
+  const createdAt = Number(decoded.slice(0, separator));
   if (separator < 1 || !Number.isSafeInteger(createdAt))
     return Result.err(nativeFailure("invalid", "Invalid workflow cursor"));
-  return Result.ok({ createdAt, runId: cursor.slice(separator + 1) });
+  return Result.ok({ createdAt, runId: decoded.slice(separator + 1) });
 }
 
 /** Native thread that owns a run's progress card, when there is one. */
@@ -96,7 +103,7 @@ export class NativeWorkflows {
   /** Owners also see runs with no native conversation; everyone else only sees threads they can read. */
   async list(
     actorId: string,
-    input: { state: "active" | "finished"; cursor?: string; limit?: number },
+    input: { state: keyof typeof LISTED_STATES; query?: string; cursor?: string; limit?: number },
   ) {
     return Result.gen(async function* (this: NativeWorkflows) {
       const user = yield* this.options.native.getUser(actorId);
@@ -107,14 +114,15 @@ export class NativeWorkflows {
       const page = () =>
         Result.ok<WorkflowRunPage>({
           items,
-          ...(before ? { nextCursor: `${before.createdAt}_${before.runId}` } : {}),
+          ...(before ? { nextCursor: encodeCursor(before) } : {}),
         });
       for (let batch = 0; batch < MAX_SCANNED_BATCHES; batch += 1) {
         const runs = yield* this.options.workflows
           .listTopLevelRuns({
-            states: input.state === "active" ? ACTIVE_STATES : FINISHED_STATES,
+            states: LISTED_STATES[input.state],
             before,
             nativeOnly: !owner,
+            nameQuery: input.query,
             limit: limit + 1,
           })
           .mapError(() => nativeFailure("sqlite", "Workflows are unavailable"));
@@ -127,6 +135,24 @@ export class NativeWorkflows {
         if (runs.length <= limit) return Result.ok<WorkflowRunPage>({ items });
       }
       return page();
+    }, this);
+  }
+
+  /** A missing run and one the viewer cannot see fail alike, so an id reveals nothing. */
+  async get(actorId: string, input: { runId: string; preview?: boolean }) {
+    return Result.gen(async function* (this: NativeWorkflows) {
+      const user = yield* this.options.native.getUser(actorId);
+      const run = yield* this.options.workflows
+        .getRun(input.runId)
+        .mapError(() => nativeFailure("sqlite", "Workflows are unavailable"));
+      const summary =
+        run && run.completionTarget.kind !== "live_parent"
+          ? yield* Result.await(this.summary(actorId, user.role === "owner", run))
+          : undefined;
+      if (!summary) return Result.err(nativeFailure("not-found", "Workflow not found"));
+      if (!input.preview) return Result.ok(summary);
+      const { result: _result, reason: _reason, ...card } = summary.card;
+      return Result.ok<WorkflowRunSummary>({ ...summary, card });
     }, this);
   }
 

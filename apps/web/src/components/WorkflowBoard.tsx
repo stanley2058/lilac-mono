@@ -1,16 +1,31 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import { ArrowUpRight } from "lucide-react";
 import type { WorkflowRunSummary } from "@stanley2058/lilac-client-protocol";
 import { resourceUrl } from "../http";
 import type { WorkflowCardLocation } from "../message-target-store";
-import { setVisibleWorkflowCards, workflowBoardStore } from "../workflow-board-store";
-import { useNewestFinishedRuns, useWorkflowRuns } from "../workflow-runs";
+import {
+  closeWorkflowCard,
+  openWorkflowCard,
+  resetWorkflowBoard,
+  workflowBoardStore,
+  workflowCardFocused,
+} from "../workflow-board-store";
+import { useNewestFinishedRuns, useWorkflowRuns, type WorkflowSection } from "../workflow-runs";
 import { useWorkspace } from "../workspace-context";
 import { MessageServicesContext, type MessageServices } from "./message-services";
 import { Button } from "./ui/button";
-import { attempt, ErrorNotice } from "./ui";
+import { attempt, ErrorNotice, Modal, VirtualList } from "./ui";
 import { toast } from "./ui/toast";
 import { Skeleton } from "./ui/skeleton";
 import { WorkflowCard } from "./WorkflowCard";
@@ -47,13 +62,16 @@ export function WorkflowCardSource({
   );
 }
 
-const BoardCard = memo(function BoardCard({
+type OpenThread = (threadId: string, source?: WorkflowCardLocation) => void;
+
+export function WorkflowRunCard({
   run,
-  onOpen,
+  onOpenThread,
+  ...card
 }: {
   run: WorkflowRunSummary;
-  onOpen: (threadId: string, source?: WorkflowCardLocation) => void;
-}) {
+  onOpenThread: OpenThread;
+} & Pick<ComponentProps<typeof WorkflowCard>, "body" | "onOpen" | "selected">) {
   const { client } = useWorkspace();
   const queries = useQueryClient();
   const threadId = run.thread?.id;
@@ -82,117 +100,227 @@ const BoardCard = memo(function BoardCard({
     [client, queries, threadId],
   );
   return (
-    <div
-      data-run-id={run.id}
-      tabIndex={-1}
-      className="scroll-mt-[calc(var(--ui-header-height)+var(--ui-space-unit)*2)] outline-none"
-    >
-      <MessageServicesContext value={services}>
-        <WorkflowCard
-          messageId={run.thread?.source?.messageId ?? run.id}
-          card={run.card}
-          actions={run.thread?.source?.actions}
-          source={<WorkflowCardSource run={run} onOpen={onOpen} />}
-        />
-      </MessageServicesContext>
+    <MessageServicesContext value={services}>
+      <WorkflowCard
+        messageId={run.thread?.source?.messageId ?? run.id}
+        card={run.card}
+        actions={run.thread?.source?.actions}
+        source={<WorkflowCardSource run={run} onOpen={onOpenThread} />}
+        runId={run.id}
+        {...card}
+      />
+    </MessageServicesContext>
+  );
+}
+
+const BoardCard = memo(function BoardCard({
+  run,
+  onOpenThread,
+}: {
+  run: WorkflowRunSummary;
+  onOpenThread: OpenThread;
+}) {
+  const selected = useStore(workflowBoardStore, (state) => state.focus?.runId === run.id);
+  const takeFocus = useStore(
+    workflowBoardStore,
+    (state) => state.focus?.runId === run.id && state.focus.pending,
+  );
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!takeFocus) return;
+    root.current?.focus({ preventScroll: true });
+    workflowCardFocused();
+  }, [takeFocus]);
+  return (
+    <div ref={root} data-run-id={run.id} tabIndex={-1} className={workflowTrackRowClass}>
+      <WorkflowRunCard
+        run={run}
+        onOpenThread={onOpenThread}
+        body="preview"
+        onOpen={() => openWorkflowCard(run.id)}
+        selected={selected}
+      />
     </div>
   );
 });
 
-function useVisibleCards(root: React.RefObject<HTMLDivElement | null>, signature: string) {
-  useEffect(() => {
-    const container = root.current;
-    if (!container) return;
-    const visible = new Set<string>();
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const id = entry.target instanceof HTMLElement ? entry.target.dataset.runId : undefined;
-          if (!id) continue;
-          if (entry.isIntersecting) visible.add(id);
-          else visible.delete(id);
-        }
-        setVisibleWorkflowCards(new Set(visible));
-      },
-      { root: container },
-    );
-    for (const card of container.querySelectorAll("[data-run-id]")) observer.observe(card);
-    return () => {
-      observer.disconnect();
-      setVisibleWorkflowCards(new Set());
-    };
-  }, [root, signature]);
+/**
+ * A run can briefly be in no list while it moves from active to ended, and the card updates live, so
+ * the dialog reads the current run and keeps the last one it saw.
+ */
+function BoardDialog({
+  sections,
+  onOpenThread,
+}: {
+  sections: readonly WorkflowSection[];
+  onOpenThread: OpenThread;
+}) {
+  const runId = useStore(workflowBoardStore, (state) => state.openRunId);
+  const current = useMemo(
+    () =>
+      runId
+        ? sections.flatMap((section) => section.runs).find((run) => run.id === runId)
+        : undefined,
+    [sections, runId],
+  );
+  const [held, setHeld] = useState<WorkflowRunSummary>();
+  if (current && current !== held) setHeld(current);
+  const run = current ?? held;
+  if (!run) return null;
+  return (
+    <Modal open={!!runId} wide title="Workflow" onClose={closeWorkflowCard}>
+      <WorkflowRunCard run={run} onOpenThread={onOpenThread} body="full" />
+    </Modal>
+  );
 }
 
-export function WorkflowBoard({
+/** Holds the index from the moment of selection, so later list changes do not scroll the track. */
+function useRevealTarget(runs: readonly WorkflowRunSummary[]) {
+  const focus = useStore(workflowBoardStore, (state) => state.focus);
+  const [target, setTarget] = useState<{ key: number; index: number }>();
+  if (focus && focus.key !== target?.key)
+    setTarget({ key: focus.key, index: runs.findIndex((run) => run.id === focus.runId) });
+  return target && target.index >= 0 ? target : undefined;
+}
+
+export const workflowTrackListClass = "flex-1 [scrollbar-gutter:stable]";
+export const workflowTrackRowClass = "pr-2 pb-3 outline-none";
+
+export function WorkflowTrackFrame({
+  ref,
+  id,
+  label,
+  count,
+  more = false,
+  children,
+}: {
+  ref?: Ref<HTMLElement>;
+  id: string;
+  label: string;
+  count: number;
+  more?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <section
+      ref={ref}
+      data-ui="workflow-track"
+      data-section={id}
+      aria-label={label}
+      className="flex min-h-0 w-84 max-w-[85vw] shrink-0 flex-col"
+    >
+      <h2 className="m-0 flex items-center gap-2 px-1 pb-2 text-sm font-medium">
+        <span>{label}</span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {count}
+          {more ? "+" : ""}
+        </span>
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+function BoardTrack({
+  section,
+  loaded,
+  more,
+  loadable,
+  loading,
+  onLoadMore,
   onOpen,
 }: {
-  onOpen: (threadId: string, source?: WorkflowCardLocation) => void;
+  section: WorkflowSection;
+  loaded: boolean;
+  more: boolean;
+  loadable: boolean;
+  loading: boolean;
+  onLoadMore: () => void;
+  onOpen: OpenThread;
 }) {
+  const reveal = useRevealTarget(section.runs);
+  const root = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (reveal) root.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [reveal]);
+  return (
+    <WorkflowTrackFrame
+      ref={root}
+      id={section.id}
+      label={section.label}
+      count={section.runs.length}
+      more={more}
+    >
+      {loaded ? (
+        <VirtualList
+          items={section.runs}
+          itemKey={(run) => run.id}
+          label={section.label}
+          className={workflowTrackListClass}
+          estimate={260}
+          hasMore={loadable}
+          loading={loading}
+          onEndReached={onLoadMore}
+          reveal={reveal}
+          // Active columns share a cursor, so an empty one would page through every active run.
+          loadOnlyAfterScroll={section.list === "active"}
+          render={(run) => <BoardCard run={run} onOpenThread={onOpen} />}
+        />
+      ) : (
+        <Skeleton className="h-40 w-full rounded-xl" />
+      )}
+    </WorkflowTrackFrame>
+  );
+}
+
+export function WorkflowBoard({ query, onOpen }: { query: string; onOpen: OpenThread }) {
   const queries = useQueryClient();
-  const runs = useWorkflowRuns();
-  useNewestFinishedRuns();
-  const ordered = runs.sections.flatMap((section) => section.runs);
-  const root = useRef<HTMLDivElement>(null);
-  const end = useRef<HTMLDivElement>(null);
-  useVisibleCards(root, ordered.map((run) => run.id).join());
+  const runs = useWorkflowRuns(query);
+  useNewestFinishedRuns(query);
+  useEffect(() => resetWorkflowBoard, []);
 
-  const focus = useStore(workflowBoardStore, (state) => state.focus);
-  useLayoutEffect(() => {
-    if (!focus) return;
-    const card = root.current?.querySelector<HTMLElement>(
-      `[data-run-id="${CSS.escape(focus.runId)}"]`,
-    );
-    card?.scrollIntoView({ block: "start" });
-    card?.focus({ preventScroll: true });
-  }, [focus]);
-
-  // Runs that leave the active list show up in the finished one, which is not polled.
+  // Runs that leave the active list show up in the ended lists, which are not polled.
   const previousActive = useRef(runs.activeIds);
   useEffect(() => {
     const current = new Set(runs.activeIds);
     const ended = previousActive.current.some((id) => !current.has(id));
     previousActive.current = runs.activeIds;
-    if (ended) void queries.invalidateQueries({ queryKey: ["workflows", "finished"] });
+    if (!ended) return;
+    void queries.invalidateQueries({ queryKey: ["workflows", "failed"] });
+    void queries.invalidateQueries({ queryKey: ["workflows", "done"] });
   }, [runs.activeIds, queries]);
 
-  const more = runs.moreActive || runs.moreFinished;
-  const { loadMore } = runs;
-  const loadMoreRef = useRef(loadMore);
-  loadMoreRef.current = loadMore;
-  useEffect(() => {
-    const sentinel = end.current;
-    if (!sentinel || !more) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry?.isIntersecting) loadMoreRef.current();
-      },
-      { root: root.current, rootMargin: "400px" },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [more, ordered.length]);
-
+  const empty = runs.loaded && runs.sections.every((section) => !section.runs.length);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="thread-header flex items-center gap-2 h-[var(--ui-header-height)] min-h-0 px-6 py-0.5 max-workspace:pl-15 group-[.sidebar-hidden]/workspace:pl-15">
         <h1 className="m-0 truncate text-base font-medium">Workflows</h1>
       </header>
-      <div ref={root} className="min-h-0 flex-1 overflow-y-auto" data-ui="workflow-board">
-        <div className="mx-auto flex w-full max-w-[var(--ui-chat-width)] flex-col gap-3 px-6 pt-2 pb-6 max-workspace:px-3">
-          <ErrorNotice message={runs.error} />
-          {!runs.loaded && !runs.error
-            ? [0, 1, 2].map((index) => <Skeleton key={index} className="h-40 w-full rounded-xl" />)
-            : null}
-          {runs.loaded && ordered.length === 0 ? (
-            <p className="m-0 py-16 text-center text-sm text-muted-foreground">No workflows yet</p>
-          ) : null}
-          {ordered.map((run) => (
-            <BoardCard key={run.id} run={run} onOpen={onOpen} />
+      <ErrorNotice message={runs.error} />
+      {empty ? (
+        <p className="m-0 py-16 text-center text-sm text-muted-foreground">
+          {query ? "No matching workflows" : "No workflows yet"}
+        </p>
+      ) : (
+        <div
+          className="flex min-h-0 flex-1 scroll-px-6 gap-2 overflow-x-auto px-6 pt-2 pb-3 max-workspace:scroll-px-3 max-workspace:px-3"
+          data-ui="workflow-board"
+        >
+          {runs.sections.map((section) => (
+            <BoardTrack
+              key={section.id}
+              section={section}
+              loaded={runs.loaded}
+              more={runs.more[section.list]}
+              loadable={runs.loadable[section.list]}
+              loading={runs.fetching[section.list]}
+              onLoadMore={() => runs.loadMore(section.list)}
+              onOpen={onOpen}
+            />
           ))}
-          <div ref={end} aria-hidden="true" className="h-px" />
         </div>
-      </div>
+      )}
+      <BoardDialog sections={runs.sections} onOpenThread={onOpen} />
     </div>
   );
 }

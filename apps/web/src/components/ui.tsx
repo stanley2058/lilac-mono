@@ -121,6 +121,8 @@ export function VirtualList<T>({
   fillBeforeIndex,
   emptyState,
   animateChanges = false,
+  reveal,
+  loadOnlyAfterScroll = false,
 }: {
   items: readonly T[];
   itemKey: (item: T) => string;
@@ -137,6 +139,10 @@ export function VirtualList<T>({
   fillBeforeIndex?: number;
   emptyState?: ReactNode;
   animateChanges?: boolean;
+  /** Scrolls an item to the top each time this object changes. */
+  reveal?: { index: number };
+  /** For lists that share a cursor with others, where a short list must not page for itself. */
+  loadOnlyAfterScroll?: boolean;
 }) {
   const parent = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLDivElement>(null);
@@ -166,12 +172,16 @@ export function VirtualList<T>({
     virtual.getTotalSize() - (virtual.scrollOffset ?? 0) - (virtual.scrollRect?.height ?? 0);
   const nearEnd = remaining < estimate * 3;
   const reachEnd = useEffectEvent(() => onEndReached?.());
+  const canLoad = !loadOnlyAfterScroll || (virtual.scrollOffset ?? 0) > 0;
   useEffect(() => {
-    if (nearEnd && hasMore && !loading) reachEnd();
-  }, [nearEnd, hasMore, loading, items.length]);
+    if (nearEnd && hasMore && !loading && canLoad) reachEnd();
+  }, [nearEnd, hasMore, loading, canLoad, items.length]);
   useEffect(() => {
     if (activeIndex !== undefined) virtual.scrollToIndex(activeIndex, { align: "auto" });
   }, [activeIndex, virtual]);
+  useEffect(() => {
+    if (reveal) virtual.scrollToIndex(reveal.index, { align: "start" });
+  }, [reveal, virtual]);
   return (
     <div
       ref={parent}

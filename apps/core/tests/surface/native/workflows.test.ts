@@ -90,6 +90,98 @@ test("active and finished runs are listed separately", async () => {
   expect(names((await listFinished("owner")).unwrap().items)).toEqual(["ok", "bad"]);
 });
 
+test("one run reads with the list's access rules, and a preview drops its long text", async () => {
+  const mine = store.createThread("alice", { commandId: "mine" }).unwrap();
+  const run = seedNativeWorkflowRun(workflows, {
+    id: "mine",
+    name: "mine",
+    state: "succeeded",
+    threadId: mine.id,
+    createdAt: 2,
+    result: "All clear.",
+  });
+  const external = seedNativeWorkflowRun(workflows, {
+    id: "external",
+    name: "external",
+    state: "failed",
+    platform: "discord",
+    createdAt: 1,
+    detail: "It broke.",
+  });
+
+  const full = (await service.get("alice", { runId: run.runId })).unwrap();
+  expect(full.card.result).toMatchObject({ text: "All clear." });
+  const preview = (await service.get("alice", { runId: run.runId, preview: true })).unwrap();
+  expect(preview.card).toMatchObject({ name: "mine", status: "succeeded" });
+  expect(preview.card.result).toBeUndefined();
+
+  const failed = (await service.get("owner", { runId: external.runId, preview: true })).unwrap();
+  expect(failed.card.status).toBe("failed");
+  expect(failed.card.reason).toBeUndefined();
+  expect((await service.get("owner", { runId: external.runId })).unwrap().card.reason).toBe(
+    "It broke.",
+  );
+
+  const hidden = (await service.get("bob", { runId: run.runId })).isErr();
+  const absent = (await service.get("bob", { runId: "wfrun:absent" })).isErr();
+  expect([hidden, absent]).toEqual([true, true]);
+  const message = (result: Awaited<ReturnType<typeof service.get>>) =>
+    result.match({ ok: () => "", err: (error) => error.message });
+  expect(message(await service.get("bob", { runId: run.runId }))).toBe(
+    message(await service.get("bob", { runId: "wfrun:absent" })),
+  );
+});
+
+test("failed and done runs page separately, so failures never wait on successes", async () => {
+  seedNativeWorkflowRun(workflows, { id: "ok-1", name: "ok-1", state: "succeeded", createdAt: 5 });
+  seedNativeWorkflowRun(workflows, { id: "stop", name: "stop", state: "cancelled", createdAt: 4 });
+  seedNativeWorkflowRun(workflows, { id: "ok-2", name: "ok-2", state: "succeeded", createdAt: 3 });
+  seedNativeWorkflowRun(workflows, { id: "bad", name: "bad", state: "failed", createdAt: 2 });
+  seedNativeWorkflowRun(workflows, { id: "live", name: "live", state: "running", createdAt: 1 });
+
+  const failed = (await service.list("owner", { state: "failed", limit: 1 })).unwrap();
+  expect(names(failed.items)).toEqual(["bad"]);
+  expect(failed.nextCursor).toBeUndefined();
+
+  const first = (await service.list("owner", { state: "done", limit: 2 })).unwrap();
+  expect(names(first.items)).toEqual(["ok-1", "stop"]);
+  const second = (
+    await service.list("owner", { state: "done", limit: 2, cursor: first.nextCursor })
+  ).unwrap();
+  expect(names(second.items)).toEqual(["ok-2"]);
+});
+
+test("a query matches any part of the name, ignores case, and keeps paging and access", async () => {
+  const mine = store.createThread("alice", { commandId: "mine" }).unwrap();
+  const seeds = [
+    ["nightly-backup", "running", undefined],
+    ["nightly-audit", "running", mine.id],
+    ["audit-routes", "running", undefined],
+  ] as const;
+  seeds.forEach(([name, state, threadId], index) =>
+    seedNativeWorkflowRun(workflows, {
+      id: name,
+      name,
+      state,
+      ...(threadId ? { threadId } : { platform: "discord" as const }),
+      createdAt: seeds.length - index,
+    }),
+  );
+  const search = (actor: string, query: string, cursor?: string) =>
+    service.list(actor, { state: "active", query, limit: 1, cursor });
+
+  const first = (await search("owner", "NIGHTLY")).unwrap();
+  expect(names(first.items)).toEqual(["nightly-backup"]);
+  const second = (await search("owner", "NIGHTLY", first.nextCursor)).unwrap();
+  expect(names(second.items)).toEqual(["nightly-audit"]);
+  expect(second.nextCursor).toBeUndefined();
+
+  expect(names((await search("owner", "rout")).unwrap().items)).toEqual(["audit-routes"]);
+  expect((await search("owner", "%")).unwrap().items).toEqual([]);
+  expect((await search("owner", "absent")).unwrap().items).toEqual([]);
+  expect(names((await search("alice", "nightly")).unwrap().items)).toEqual(["nightly-audit"]);
+});
+
 function postCard(threadId: string, runId: string, messageId: string) {
   store
     .postMessage("alice", threadId, {

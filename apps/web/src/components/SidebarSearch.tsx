@@ -3,7 +3,13 @@ import { Search, X } from "lucide-react";
 import { IconButton } from "./ui";
 import { Input } from "./ui/input";
 
-export function SidebarSearch({ onSearch }: { onSearch: (query: string) => void }) {
+export function SidebarSearch({
+  label,
+  onSearch,
+}: {
+  label: string;
+  onSearch: (query: string) => void;
+}) {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query.trim());
   useEffect(() => {
@@ -17,7 +23,7 @@ export function SidebarSearch({ onSearch }: { onSearch: (query: string) => void 
         className="pl-9 pr-9"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
-        aria-label="Search conversations"
+        aria-label={label}
         placeholder="Search"
       />
       {query ? (

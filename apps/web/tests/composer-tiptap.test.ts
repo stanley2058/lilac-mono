@@ -2,6 +2,7 @@ import { expect, it } from "bun:test";
 import { Editor } from "@tiptap/core";
 import { EditorState, TextSelection, AllSelection } from "@tiptap/pm/state";
 import { history, undo } from "@tiptap/pm/history";
+import { Fragment, Slice } from "@tiptap/pm/model";
 import {
   readComposerDocument,
   writeComposerDocument,
@@ -11,6 +12,7 @@ import {
   composerExtensions,
   attachmentNode,
   referenceNode,
+  workflowRunNode,
   citationNode,
   insertEditorCitation,
   skillNode,
@@ -19,7 +21,9 @@ import {
   captureEditorPaste,
   composerCompletionPrefix,
   completeEditor,
+  chipWorkflowRunIds,
   insertEditorReference,
+  insertLiteralWorkflowRunIds,
 } from "../src/components/composer-tiptap";
 import { createComposerEditor, composerMarkdown } from "../src/components/composer-document";
 import {
@@ -107,7 +111,14 @@ it("restores copied citation chips and leaves citation examples in code literal"
 function headlessEditor(text: string) {
   const editor = new Editor({
     element: null,
-    extensions: [...composerExtensions, attachmentNode, referenceNode, skillNode, citationNode],
+    extensions: [
+      ...composerExtensions,
+      attachmentNode,
+      referenceNode,
+      workflowRunNode,
+      skillNode,
+      citationNode,
+    ],
     content: readComposerDocument(text).toJSON(),
   });
   // Tiptap treats an unmounted editor as destroyed even though its transactions work headlessly.
@@ -127,6 +138,92 @@ it("converts a keyboard-inserted reference at its replacement range and supports
   expect(editor.state.selection.from).toBe(9);
   expect(composerText(editor.state.doc)).toContain("before ");
   expect(composerText(editor.state.doc)).toEndWith(" after");
+  undo(editor.state, editor.view.dispatch);
+  expect(composerText(editor.state.doc)).toBe("before replace after");
+  editor.destroy();
+});
+
+const workflowRunId = `wfrun:${"a".repeat(64)}`;
+
+function workflowRunNodes(doc: ReturnType<typeof readComposerDocument>) {
+  const found: string[] = [];
+  doc.descendants((node) => {
+    if (node.type.name === "composer_workflow_run") found.push(node.attrs.runId);
+  });
+  return found;
+}
+
+it("reads a workflow id into a chip and writes it back as the same plain text", () => {
+  const text = `Check ${workflowRunId} and tell me.`;
+  const doc = readComposerDocument(text);
+  expect(workflowRunNodes(doc)).toEqual([workflowRunId]);
+  expect(writeComposerDocument(doc)).toBe(text);
+});
+
+it("keeps workflow ids in inline code and code blocks as code", () => {
+  for (const text of [`Use \`${workflowRunId}\` here`, `\`\`\`\n${workflowRunId}\n\`\`\``]) {
+    const doc = readComposerDocument(text);
+    expect(workflowRunNodes(doc)).toEqual([]);
+    expect(writeComposerDocument(doc)).toBe(text);
+  }
+});
+
+it("keeps marks on a workflow id through a draft round trip", () => {
+  const text = `**${workflowRunId}** and ~~${workflowRunId}~~`;
+  const doc = readComposerDocument(text);
+  expect(workflowRunNodes(doc)).toHaveLength(2);
+  expect(writeComposerDocument(doc)).toBe(text);
+});
+
+it("pastes a workflow id into code as literal text without splitting the code", () => {
+  const block = headlessEditor("```\nhello\n```");
+  block.commands.setTextSelection(3);
+  expect(insertLiteralWorkflowRunIds(block.view, workflowRunId)).toBe(true);
+  expect(block.state.doc.childCount).toBe(1);
+  expect(block.state.doc.firstChild?.type.name).toBe("codeBlock");
+  expect(block.state.doc.textContent).toBe(`he${workflowRunId}llo`);
+  expect(insertEditorReference(block.view, 3, 3, workflowRunId, "https://l.example")).toBe(false);
+  block.destroy();
+
+  const inlineCode = headlessEditor("`hello`");
+  inlineCode.commands.setTextSelection(3);
+  expect(insertLiteralWorkflowRunIds(inlineCode.view, workflowRunId)).toBe(true);
+  expect(workflowRunNodes(inlineCode.state.doc)).toEqual([]);
+  expect(writeComposerDocument(inlineCode.state.doc)).toBe(`\`he${workflowRunId}llo\``);
+  inlineCode.destroy();
+
+  const prose = headlessEditor("hello");
+  prose.commands.setTextSelection(3);
+  expect(insertLiteralWorkflowRunIds(prose.view, workflowRunId)).toBe(false);
+  prose.destroy();
+});
+
+it("converts workflow ids in a rich-text paste and leaves code literal", () => {
+  const doc = composerSchema.nodes.paragraph!.create(null, [
+    composerSchema.text(`See ${workflowRunId} `, [composerSchema.marks.bold!.create()]),
+    composerSchema.text(workflowRunId, [composerSchema.marks.code!.create()]),
+  ]);
+  const block = composerSchema.nodes.codeBlock!.create(null, composerSchema.text(workflowRunId));
+  const slice = chipWorkflowRunIds(
+    new Slice(Fragment.fromArray([doc, block]), 0, 0),
+    composerSchema,
+  );
+  const found: string[] = [];
+  slice.content.descendants((node) => {
+    if (node.type.name === "composer_workflow_run") found.push(node.marks[0]!.type.name);
+  });
+  expect(found).toEqual(["bold"]);
+  expect(slice.content.child(1).textContent).toBe(workflowRunId);
+});
+
+it("converts a pasted workflow id at its replacement range and supports undo", () => {
+  const editor = headlessEditor("before replace after");
+  editor.registerPlugin(history());
+  expect(insertEditorReference(editor.view, 8, 15, ` ${workflowRunId} `, "https://l.example")).toBe(
+    true,
+  );
+  expect(workflowRunNodes(editor.state.doc)).toEqual([workflowRunId]);
+  expect(composerText(editor.state.doc)).toBe(`before ${workflowRunId} after`);
   undo(editor.state, editor.view.dispatch);
   expect(composerText(editor.state.doc)).toBe("before replace after");
   editor.destroy();

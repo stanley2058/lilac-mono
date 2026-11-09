@@ -133,11 +133,18 @@ import { SidebarSearch } from "./components/SidebarSearch";
 import { AgentDiscordLink } from "./components/AgentIdentity";
 import { ExternalMessages } from "./components/ExternalMessages";
 import { ExternalSkeleton } from "./components/ExternalSidebar";
+import { Skeleton } from "./components/ui/skeleton";
 import { ThreadCard } from "./components/ThreadSelect";
 import { ViewSwitcher } from "./components/ViewSwitcher";
-import { WorkflowMinimapHeading, WorkflowMinimapRow } from "./components/WorkflowMinimap";
-import { WorkflowCardSource } from "./components/WorkflowBoard";
+import { WorkflowSidebarRow } from "./components/WorkflowSidebar";
+import {
+  WorkflowCardSource,
+  workflowTrackListClass,
+  WorkflowTrackFrame,
+  workflowTrackRowClass,
+} from "./components/WorkflowBoard";
 import { WorkflowCard } from "./components/WorkflowCard";
+import { WorkflowRunBadge, WorkflowRunChip } from "./components/WorkflowRunChip";
 import { MessageServicesContext } from "./components/message-services";
 import { toolActivities } from "./generated/tool-activities";
 import "./design-system.css";
@@ -214,6 +221,18 @@ const workflowCardSample: WorkflowCardData = {
   steps: [],
   agents: { used: 4, active: 1, queued: 3 },
   sensitive: false,
+};
+const workflowResultSample: WorkflowCardData = {
+  ...workflowCardSample,
+  status: "succeeded",
+  endedAt: now - 60_000,
+  progress: { ...workflowCardSample.progress, completed: 7, queued: 0, active: 0 },
+  agents: { used: 4, active: 0, queued: 0 },
+  result: {
+    kind: "text",
+    text: "Route notes: every admin route checks the session and the owner role. ".repeat(12),
+    truncated: true,
+  },
 };
 const workflowRunSamples: WorkflowRunSummary[] = [
   {
@@ -595,6 +614,7 @@ function Foundations() {
 }
 function Threads() {
   const [selected, setSelected] = useState("working");
+  const [workflowOpen, setWorkflowOpen] = useState(false);
   const [action, setAction] = useState("");
   useThreadTargets(
     threadStates.map(({ state }) => state),
@@ -652,17 +672,14 @@ function Threads() {
             <ViewSwitcher view="workflows" owner onChange={() => {}} />
           </div>
         </Specimen>
-        <Specimen title="Workflow minimap">
+        <Specimen title="Workflow list">
           <div className="w-72 rounded-lg bg-sidebar p-2">
-            <WorkflowMinimapHeading label="Needs attention" count="1" />
-            <WorkflowMinimapRow run={workflowRunSamples[1]!} onSelect={() => {}} />
-            <WorkflowMinimapHeading label="Running" count="1" />
-            <WorkflowMinimapRow run={workflowRunSamples[0]!} onSelect={() => {}} />
-            <WorkflowMinimapHeading label="Failed" count="1" />
-            <WorkflowMinimapRow run={workflowRunSamples[2]!} onSelect={() => {}} />
+            <WorkflowSidebarRow run={workflowRunSamples[1]!} onSelect={() => {}} />
+            <WorkflowSidebarRow run={workflowRunSamples[0]!} onSelect={() => {}} />
+            <WorkflowSidebarRow run={workflowRunSamples[2]!} onSelect={() => {}} />
           </div>
         </Specimen>
-        <Specimen title="Workflow on the board">
+        <Specimen title="Workflow board">
           <MessageServicesContext
             value={{
               canEdit: true,
@@ -671,11 +688,65 @@ function Threads() {
               onReaction: () => {},
             }}
           >
-            <WorkflowCard
-              messageId="sample"
-              card={workflowCardSample}
-              source={<WorkflowCardSource run={workflowRunSamples[0]!} onOpen={() => {}} />}
-            />
+            <div className="flex h-144 max-h-[70dvh] gap-2 overflow-x-auto">
+              <WorkflowTrackFrame id="running" label="Running" count={1}>
+                <VirtualList
+                  items={[workflowRunSamples[0]!]}
+                  itemKey={(run) => run.id}
+                  label="Running"
+                  className={workflowTrackListClass}
+                  estimate={260}
+                  render={(run) => (
+                    <div className={workflowTrackRowClass}>
+                      <WorkflowCard
+                        messageId={run.id}
+                        card={run.card}
+                        source={<WorkflowCardSource run={run} onOpen={() => {}} />}
+                        runId="wfrun:example-run"
+                        onOpen={() => setWorkflowOpen(true)}
+                        body="preview"
+                      />
+                    </div>
+                  )}
+                />
+              </WorkflowTrackFrame>
+              <WorkflowTrackFrame id="finished" label="Finished" count={1} more>
+                <VirtualList
+                  items={[workflowResultSample]}
+                  itemKey={(card) => card.name}
+                  label="Finished"
+                  className={workflowTrackListClass}
+                  estimate={260}
+                  render={(card) => (
+                    <div className={workflowTrackRowClass}>
+                      <WorkflowCard
+                        messageId="sample-result"
+                        card={card}
+                        runId="wfrun:example-run"
+                        onOpen={() => setWorkflowOpen(true)}
+                        body="preview"
+                        selected
+                      />
+                    </div>
+                  )}
+                />
+              </WorkflowTrackFrame>
+              <WorkflowTrackFrame id="paused" label="Paused" count={0}>
+                <VirtualList
+                  items={[]}
+                  itemKey={() => ""}
+                  label="Paused"
+                  className={workflowTrackListClass}
+                  render={() => null}
+                />
+              </WorkflowTrackFrame>
+              <WorkflowTrackFrame id="failed" label="Failed" count={0}>
+                <Skeleton className="h-40 w-full rounded-xl" />
+              </WorkflowTrackFrame>
+            </div>
+            <Modal open={workflowOpen} wide title="Workflow" onClose={() => setWorkflowOpen(false)}>
+              <WorkflowCard messageId="sample-result" card={workflowResultSample} body="full" />
+            </Modal>
           </MessageServicesContext>
         </Specimen>
         <Specimen title="Other conversations">
@@ -1440,6 +1511,9 @@ function Attachments() {
         <Specimen title="Right panel tabs">
           <div className="flex flex-wrap gap-2 mb-3">
             <ConversationBadge target={{ surface: "native", sessionId: "example-thread" }} />
+            <WorkflowRunBadge run={workflowRunSamples[0]!} onClick={() => {}} />
+            <WorkflowRunBadge run={workflowRunSamples[2]!} onClick={() => {}} />
+            <WorkflowRunChip runId="wfrun:unknown-run" />
             <ConversationBadge
               target={{
                 surface: "discord",
@@ -1594,7 +1668,7 @@ function Controls() {
           </label>
           <div className="ds-field flex flex-col gap-2 text-sm">
             <span>Search</span>
-            <SidebarSearch onSearch={setSearch} />
+            <SidebarSearch label="Search conversations" onSearch={setSearch} />
             {directThreadDemos.map((thread, index) => (
               <DirectThreadCard
                 key={thread.displayStatus ?? "idle"}

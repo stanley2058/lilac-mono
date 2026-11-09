@@ -1,7 +1,7 @@
 import { Extension, Node, getSchema, type Editor, type JSONContent } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
-import { Slice, type Node as DocumentNode, type Schema } from "@tiptap/pm/model";
+import { Fragment, Slice, type Node as DocumentNode, type Schema } from "@tiptap/pm/model";
 import { EditorState, TextSelection, Plugin } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import {
@@ -20,6 +20,7 @@ import {
 } from "./composer-document";
 import type { Attachment } from "../types";
 import { skillMentionPattern } from "./skill-mentions";
+import { isWorkflowRunId, splitWorkflowRunIds } from "../workflow-run-id";
 
 export const attachmentNode = Node.create({
   name: "composer_attachment",
@@ -47,6 +48,21 @@ export const referenceNode = Node.create({
     "span",
     { ...HTMLAttributes, "data-composer-reference": "", contenteditable: "false" },
     HTMLAttributes.url,
+  ],
+});
+/** Saves as the plain id, so the agent receives text it can use directly. */
+export const workflowRunNode = Node.create({
+  name: "composer_workflow_run",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: false,
+  addAttributes: () => ({ runId: { default: "" } }),
+  parseHTML: () => [{ tag: "span[data-composer-workflow-run]" }],
+  renderHTML: ({ HTMLAttributes }) => [
+    "span",
+    { ...HTMLAttributes, "data-composer-workflow-run": "", contenteditable: "false" },
+    HTMLAttributes.runId,
   ],
 });
 export const citationNode = Node.create({
@@ -110,6 +126,62 @@ export const skillNode = Node.create({
   ],
 });
 
+function insertedInlineNode(schema: Schema, text: string, origin: string) {
+  if (isWorkflowRunId(text)) return schema.nodes.composer_workflow_run!.create({ runId: text });
+  const target = parseReferenceHref(text, origin);
+  return target
+    ? schema.nodes.composer_reference!.create({ url: referenceHref(target) })
+    : undefined;
+}
+
+function positionInCode(state: EditorState, position: number) {
+  const resolved = state.doc.resolve(position);
+  const isCode = (mark: { type: { name: string } }) => mark.type.name === "code";
+  return (
+    resolved.parent.type.spec.code === true ||
+    resolved.marks().some(isCode) ||
+    (state.storedMarks?.some(isCode) ?? false)
+  );
+}
+
+/** A chip cannot sit inside code, and placing one there would split the surrounding code apart. */
+export function insertLiteralWorkflowRunIds(view: EditorView, text: string): boolean {
+  if (!positionInCode(view.state, view.state.selection.from)) return false;
+  if (!splitWorkflowRunIds(text).some((part) => part.runId)) return false;
+  view.dispatch(view.state.tr.insertText(text).scrollIntoView());
+  return true;
+}
+
+function chipWorkflowRunIdsInFragment(fragment: Fragment, schema: Schema): Fragment {
+  const nodes: DocumentNode[] = [];
+  fragment.forEach((node) => {
+    if (node.isText && !node.marks.some((mark) => mark.type.name === "code")) {
+      for (const part of splitWorkflowRunIds(node.text ?? ""))
+        nodes.push(
+          part.runId
+            ? schema.nodes.composer_workflow_run!.create({ runId: part.text }, null, node.marks)
+            : schema.text(part.text, node.marks),
+        );
+      return;
+    }
+    nodes.push(
+      node.isLeaf || node.type.spec.code
+        ? node
+        : node.copy(chipWorkflowRunIdsInFragment(node.content, schema)),
+    );
+  });
+  return Fragment.fromArray(nodes);
+}
+
+/** Rich-text pastes skip the plain-text reader, so their ids are converted here. */
+export function chipWorkflowRunIds(slice: Slice, schema: Schema): Slice {
+  return new Slice(
+    chipWorkflowRunIdsInFragment(slice.content, schema),
+    slice.openStart,
+    slice.openEnd,
+  );
+}
+
 export function insertEditorReference(
   view: EditorView,
   from: number,
@@ -117,9 +189,9 @@ export function insertEditorReference(
   text: string,
   origin: string,
 ): boolean {
-  const target = parseReferenceHref(text.trim(), origin);
-  if (!target) return false;
-  const node = view.state.schema.nodes.composer_reference!.create({ url: referenceHref(target) });
+  if (isWorkflowRunId(text.trim()) && positionInCode(view.state, from)) return false;
+  const node = insertedInlineNode(view.state.schema, text.trim(), origin);
+  if (!node) return false;
   const transaction = view.state.tr;
   if (transaction.selection.from !== from || transaction.selection.to !== to)
     transaction.setSelection(TextSelection.create(transaction.doc, from, to));
@@ -195,6 +267,7 @@ export const composerSchema = getSchema([
   ...composerExtensions,
   attachmentNode,
   referenceNode,
+  workflowRunNode,
   skillNode,
   citationNode,
 ]);
@@ -230,7 +303,13 @@ function inline(nodes: ComposerNode[]): JSONContent[] {
         .split("\n")
         .flatMap<JSONContent>((text, index) => [
           ...(index ? [{ type: "hardBreak" }] : []),
-          ...(text ? [{ type: "text", text, marks: nodeMarks }] : []),
+          ...(node.code
+            ? [{ type: "text", text, marks: nodeMarks }].filter(() => text)
+            : splitWorkflowRunIds(text).map((part) =>
+                part.runId
+                  ? { type: workflowRunNode.name, attrs: { runId: part.text }, marks: nodeMarks }
+                  : { type: "text", text: part.text, marks: nodeMarks },
+              )),
         ]);
     }
     if (node.type === "composer_attachment")
@@ -316,19 +395,19 @@ function blocks(nodes: ComposerBlock[]): JSONContent[] {
 export function readComposerDocument(text: string, schema: Schema = composerSchema): DocumentNode {
   return schema.nodeFromJSON({ type: "doc", content: blocks(createComposerEditor(text).children) });
 }
+function leafMarks(node: DocumentNode) {
+  return Object.fromEntries(
+    node.marks.map((mark) => [
+      mark.type.name === "strike" ? "strikethrough" : mark.type.name,
+      true,
+    ]),
+  );
+}
 function leaves(node: DocumentNode): ComposerNode[] {
   const result: ComposerNode[] = [];
   node.forEach((child) => {
     if (child.isText) {
-      result.push({
-        text: child.text ?? "",
-        ...Object.fromEntries(
-          child.marks.map((mark) => [
-            mark.type.name === "strike" ? "strikethrough" : mark.type.name,
-            true,
-          ]),
-        ),
-      });
+      result.push({ text: child.text ?? "", ...leafMarks(child) });
       return;
     }
     if (child.type.name === "hardBreak") {
@@ -337,6 +416,10 @@ function leaves(node: DocumentNode): ComposerNode[] {
     }
     if (child.type.name === "composer_skill") {
       result.push({ text: child.attrs.text });
+      return;
+    }
+    if (child.type.name === workflowRunNode.name) {
+      result.push({ text: child.attrs.runId, ...leafMarks(child) });
       return;
     }
     result.push({ type: child.type.name, ...child.attrs, children: [{ text: "" }] });
