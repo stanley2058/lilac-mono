@@ -187,13 +187,29 @@
 @media (hover: hover) {
   .timeline .native-message > .message-controls {
     position: absolute;
-    top: calc(100% + 2px);
+    /* The offset is padding so the bar's hover area touches the message. */
+    top: 100%;
+    padding-top: calc(var(--ui-space-unit) * 0.5);
     right: 0;
     z-index: 2;
   }
   .timeline .native-message[data-align="start"] > .message-controls {
     right: auto;
     left: 0;
+  }
+  /* The bar is narrower than most messages, so the hover area spans the bar's whole row. It stops
+     where other content follows in the same turn, which it would otherwise cover. */
+  .timeline .native-message:has(> .message-controls):not(:has(+ *))::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    right: 0;
+    left: 0;
+    height: calc(var(--ui-space-unit) * 8.5);
+  }
+  /* Each virtual row is a stacking context, and the next row would cover the bar's bottom edge. */
+  .timeline .virtual-row:has(.native-message:hover) {
+    z-index: 1;
   }
 }
 .native-message:hover > .message-controls,
