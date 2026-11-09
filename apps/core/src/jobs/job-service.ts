@@ -124,6 +124,16 @@ function signalProcessGroup(pid: number, signal: "SIGTERM" | "SIGKILL"): void {
   Result.try({ try: () => process.kill(-pid, signal), catch: () => null });
 }
 
+function jobLogFields(job: JobRecord) {
+  return {
+    jobId: job.jobId,
+    mode: job.mode,
+    requestId: job.requestId,
+    sessionId: job.sessionId,
+    toolCallId: job.toolCallId,
+  };
+}
+
 function logStoreFailure(operation: string, error: JobStoreError): void {
   logger.error("job store operation failed", {
     operation,
@@ -171,11 +181,12 @@ export class JobService {
       .listActive()
       .match({ ok: (jobs) => jobs, err: (error) => (logStoreFailure("reconcile", error), []) });
     for (const job of active) {
-      if (job.pid !== null && job.processStartTicks !== null) {
-        if (readProcessStartTicks(job.pid) === job.processStartTicks) {
-          signalProcessGroup(job.pid, "SIGKILL");
-        }
-      }
+      const identified =
+        job.pid !== null &&
+        job.processStartTicks !== null &&
+        readProcessStartTicks(job.pid) === job.processStartTicks;
+      if (identified && job.pid !== null) signalProcessGroup(job.pid, "SIGKILL");
+      logger.warn("job lost after restart", { ...jobLogFields(job), killed: identified });
       this.#store
         .finish(job.jobId, {
           status: "lost",
@@ -300,10 +311,7 @@ export class JobService {
   }
 
   async pendingEvents(sessionId: string): Promise<JobEvent[]> {
-    const pending = this.#store.listPending(sessionId).match({
-      ok: (values) => values,
-      err: (error) => (logStoreFailure("list-pending", error), []),
-    });
+    const pending = this.#listPending(sessionId, "list-pending");
     const events: JobEvent[] = [];
     for (const job of pending) {
       const output = (
@@ -402,10 +410,7 @@ export class JobService {
     stopReason: JobStopReason,
   ): Promise<void> {
     await this.#stopSessionJobs(sessionId, stopReason, (job) => job.createdAt >= createdAtOrAfter);
-    const pending = this.#store.listPending(sessionId).match({
-      ok: (values) => values,
-      err: (error) => (logStoreFailure("list-pending", error), []),
-    });
+    const pending = this.#listPending(sessionId, "list-pending");
     this.#store
       .suppress(pending.filter((job) => job.createdAt >= createdAtOrAfter).map((job) => job.jobId))
       .match({
@@ -428,6 +433,13 @@ export class JobService {
       this.#scheduleHardKill(job);
     }
     await Promise.all(running.map((job) => job.done));
+  }
+
+  #listPending(sessionId: string, operation: string): JobRecord[] {
+    return this.#store.listPending(sessionId).match({
+      ok: (values) => values,
+      err: (error) => (logStoreFailure(operation, error), []),
+    });
   }
 
   #ownedJob(sessionId: string, jobId: string): ResultType<JobRecord, JobServiceError> {
@@ -543,6 +555,7 @@ export class JobService {
       this.#scheduleHardKill(running);
     }, timeoutMs);
     running.deadlineTimer.unref?.();
+    logger.info("job spawned", { ...jobLogFields(job), pid: child.pid, timeoutMs });
 
     void this.#superviseJob({
       job,
@@ -561,6 +574,7 @@ export class JobService {
   }
 
   #failSpawn(job: JobRecord, message: string): ResultType<JobRecord, JobServiceError> {
+    logger.error("job spawn failed", { ...jobLogFields(job), errorMessage: message });
     return this.#store
       .finish(job.jobId, {
         status: "failed",
@@ -600,20 +614,31 @@ export class JobService {
     if (this.#closing) return;
 
     const stop = running.requestedStop;
-    const finished = this.#store.finish(job.jobId, {
+    const ending = {
       status: stop?.status ?? "exited",
       exitCode: stop ? null : exitCode,
       stopReason: stop?.stopReason ?? null,
       delivery: stop?.delivery ?? "pending",
       outputBytes: capture.bytes,
       outputTruncated: capture.truncated,
-    });
+    } as const;
+    const finished = this.#store.finish(job.jobId, ending);
     finished.match({
       ok: () => undefined,
       err: (error) => logStoreFailure("finish", error),
     });
+    const endFields = {
+      ...jobLogFields(job),
+      ...ending,
+      durationMs: this.#now() - job.createdAt,
+    };
+    if (ending.status === "timed_out" || (ending.status === "exited" && exitCode !== 0)) {
+      logger.warn("job ended", endFields);
+    } else {
+      logger.info("job ended", endFields);
+    }
     this.#notify();
-    if ((stop?.delivery ?? "pending") === "pending") this.#scheduleWake(job.sessionId);
+    if (ending.delivery === "pending") this.#scheduleWake(job.sessionId);
   }
 
   async #captureStream(input: {
@@ -702,10 +727,7 @@ export class JobService {
     const port = this.#wakePort;
     // A busy session drains events at its next turn boundary. Its settlement reschedules this.
     if (!port || this.#closing || this.#isSessionBusy(sessionId)) return;
-    const pending = this.#store.listPending(sessionId).match({
-      ok: (values) => values,
-      err: (error) => (logStoreFailure("wake-list", error), []),
-    });
+    const pending = this.#listPending(sessionId, "wake-list");
     const wakeable = pending.filter((job) => job.runProfile === "primary");
     if (wakeable.length === 0) return;
 
@@ -735,10 +757,14 @@ export class JobService {
         return "unavailable";
       },
     });
+    const jobIds = wakeable.map((job) => job.jobId).join(",");
     if (outcome === "unavailable") {
+      logger.info("job wake unavailable", { sessionId, wakeId, jobIds });
       this.#scheduleWakeRetry(sessionId);
       return;
     }
+    if (outcome === "accepted") logger.info("job wake delivered", { sessionId, wakeId, jobIds });
+    else logger.info("job wake abandoned", { sessionId, wakeId, jobIds });
     this.#wakeRetries.delete(sessionId);
     if (outcome !== "abandon") return;
     this.#store.suppress(wakeable.map((job) => job.jobId)).match({

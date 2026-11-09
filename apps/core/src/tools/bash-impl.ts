@@ -893,7 +893,12 @@ function buildLocalSpawnArgs(command: string, stdinMode: BashStdinMode): string[
 }
 
 export type BackgroundBashLaunch =
-  | { readonly kind: "blocked"; readonly message: string }
+  | {
+      readonly kind: "blocked";
+      readonly message: string;
+      readonly reason: string;
+      readonly segment: string | null;
+    }
   | {
       readonly kind: "ready";
       readonly launch: {
@@ -928,7 +933,12 @@ export async function prepareBackgroundBashLaunch(
 ): Promise<BackgroundBashLaunch> {
   const cwdTarget = parseSshCwdTarget(cwd);
   if (cwdTarget.kind === "ssh") {
-    return { kind: "blocked", message: "Background jobs cannot run on SSH targets." };
+    return {
+      kind: "blocked",
+      message: "Background jobs cannot run on SSH targets.",
+      reason: "ssh_target",
+      segment: null,
+    };
   }
   const resolvedCwd = cwdTarget.cwd ? expandTilde(cwdTarget.cwd) : process.cwd();
   if (!dangerouslyAllow) {
@@ -939,6 +949,8 @@ export async function prepareBackgroundBashLaunch(
     if (blocked) {
       return {
         kind: "blocked",
+        reason: blocked.reason,
+        segment: blocked.segment ? redactSecrets(blocked.segment) : null,
         message: formatBlockedMessage({
           reason: blocked.reason,
           hint: blocked.hint,
