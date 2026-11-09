@@ -1,10 +1,5 @@
 import { linkPreviewUrl, readPublicResource } from "./public-resource";
 export { isPublicLinkAddress, linkPreviewUrl } from "./public-resource";
-import metascraper from "metascraper";
-import metascraperTitle from "metascraper-title";
-import metascraperDescription from "metascraper-description";
-import metascraperImage from "metascraper-image";
-import metascraperLogo from "metascraper-logo";
 import { Result, TaggedError } from "better-result";
 import type { NativeRpcOutputs } from "@stanley2058/lilac-client-protocol";
 
@@ -16,29 +11,49 @@ function cleanText(value: string | null | undefined, limit: number): string | un
   return value?.replace(/\s+/gu, " ").trim().slice(0, limit) || undefined;
 }
 
-const scrape = metascraper([
-  metascraperTitle(),
-  metascraperDescription(),
-  metascraperImage(),
-  metascraperLogo(),
-  {
-    // The favicon plugin probes URLs itself; keep all network access in the guarded fetcher.
-    icon: ({ htmlDom, url }) => {
-      const base =
-        linkPreviewUrl(htmlDom("base[href]").first().attr("href") ?? "", url)?.href ?? url;
-      for (const selector of ['link[rel~="icon" i]', 'link[rel="apple-touch-icon" i]']) {
-        for (const element of htmlDom(selector).toArray()) {
-          const href = htmlDom(element).attr("href");
-          const icon = href ? linkPreviewUrl(href, base) : undefined;
-          if (icon) return icon.href;
+// Loaded on the first preview: metascraper costs about 33 MiB of RSS per process.
+async function createScraper() {
+  const [
+    { default: metascraper },
+    { default: metascraperTitle },
+    { default: metascraperDescription },
+    { default: metascraperImage },
+    { default: metascraperLogo },
+  ] = await Promise.all([
+    import("metascraper"),
+    import("metascraper-title"),
+    import("metascraper-description"),
+    import("metascraper-image"),
+    import("metascraper-logo"),
+  ]);
+  return metascraper([
+    metascraperTitle(),
+    metascraperDescription(),
+    metascraperImage(),
+    metascraperLogo(),
+    {
+      // The favicon plugin probes URLs itself; keep all network access in the guarded fetcher.
+      icon: ({ htmlDom, url }) => {
+        const base =
+          linkPreviewUrl(htmlDom("base[href]").first().attr("href") ?? "", url)?.href ?? url;
+        for (const selector of ['link[rel~="icon" i]', 'link[rel="apple-touch-icon" i]']) {
+          for (const element of htmlDom(selector).toArray()) {
+            const href = htmlDom(element).attr("href");
+            const icon = href ? linkPreviewUrl(href, base) : undefined;
+            if (icon) return icon.href;
+          }
         }
-      }
-      return undefined;
+        return undefined;
+      },
     },
-  },
-]);
+  ]);
+}
+
+let scraper: ReturnType<typeof createScraper> | undefined;
 
 export async function parseLinkPreview(html: string, href: string): Promise<LinkPreview> {
+  scraper ??= createScraper();
+  const scrape = await scraper;
   const metadata = await scrape({ html, url: href });
   return {
     title: cleanText(metadata.title, 512),

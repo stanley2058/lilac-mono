@@ -1,4 +1,5 @@
-import ts from "typescript-codegen";
+import type ts from "typescript-codegen";
+import { typescript } from "./typescript-compiler";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
 import { sha256 } from "./workflow-definition";
@@ -78,7 +79,7 @@ export function parseWorkflowCallSiteManifestUnchecked(
 }
 
 function propertyName(name: ts.PropertyName): string | null {
-  return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : null;
+  return typescript.isIdentifier(name) || typescript.isStringLiteral(name) ? name.text : null;
 }
 
 export function compileWorkflowSourceResult(
@@ -88,42 +89,43 @@ export function compileWorkflowSourceResult(
   const invalid = (message: string): ResultType<never, WorkflowSourceCompileFailed> =>
     Result.err(new WorkflowSourceCompileFailed({ message }));
   if (sha256(source) !== sourceSha256) return invalid("Workflow compiler source hash mismatch");
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = typescript.createSourceFile(
     "workflow.js",
     source,
-    ts.ScriptTarget.ESNext,
+    typescript.ScriptTarget.ESNext,
     true,
-    ts.ScriptKind.JS,
+    typescript.ScriptKind.JS,
   );
   const importStatement = sourceFile.statements[0];
   const exportStatement = sourceFile.statements[sourceFile.statements.length - 1];
-  if (!importStatement || !ts.isImportDeclaration(importStatement)) {
+  if (!importStatement || !typescript.isImportDeclaration(importStatement)) {
     return invalid("Workflow compiler expected the validated virtual import");
   }
-  if (!exportStatement || !ts.isExportAssignment(exportStatement)) {
+  if (!exportStatement || !typescript.isExportAssignment(exportStatement)) {
     return invalid("Workflow compiler expected the validated default export");
   }
   const definitionCall = exportStatement.expression;
-  if (!ts.isCallExpression(definitionCall)) return invalid("Workflow definition call is missing");
+  if (!typescript.isCallExpression(definitionCall))
+    return invalid("Workflow definition call is missing");
   const definition = definitionCall.arguments[0];
-  if (!definition || !ts.isObjectLiteralExpression(definition)) {
+  if (!definition || !typescript.isObjectLiteralExpression(definition)) {
     return invalid("Workflow definition object is missing");
   }
   const run = definition.properties.find(
     (property): property is ts.MethodDeclaration =>
-      ts.isMethodDeclaration(property) &&
+      typescript.isMethodDeclaration(property) &&
       property.name !== undefined &&
       propertyName(property.name) === "run",
   );
   const parameter = run?.parameters[0];
-  if (!run?.body || !parameter || !ts.isObjectBindingPattern(parameter.name)) {
+  if (!run?.body || !parameter || !typescript.isObjectBindingPattern(parameter.name)) {
     return invalid("Workflow run context must use object destructuring");
   }
   for (const element of parameter.name.elements) {
     if (
       element.dotDotDotToken ||
       element.initializer ||
-      !ts.isIdentifier(element.name) ||
+      !typescript.isIdentifier(element.name) ||
       (element.propertyName !== undefined &&
         propertyName(element.propertyName) !== element.name.text) ||
       !CONTEXT_NAMES.has(element.name.text)
@@ -144,8 +146,8 @@ export function compileWorkflowSourceResult(
   const manifest: WorkflowCallSiteManifestEntry[] = [];
   const visit = (node: ts.Node): void => {
     if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
+      typescript.isCallExpression(node) &&
+      typescript.isIdentifier(node.expression) &&
       isHostCallKind(node.expression.text)
     ) {
       const kind = node.expression.text;
@@ -157,7 +159,7 @@ export function compileWorkflowSourceResult(
         text: `${JSON.stringify(callSiteId)}${node.arguments.length > 0 ? ", " : ""}`,
       });
     }
-    ts.forEachChild(node, visit);
+    typescript.forEachChild(node, visit);
   };
   visit(sourceFile);
 

@@ -1,4 +1,4 @@
-import { tavily, type TavilyClient } from "@tavily/core";
+import type { TavilyClient } from "@tavily/core";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
 import { normalizeBaseUrl, withAbortSignal } from "./shared";
@@ -66,6 +66,8 @@ export class TavilyWebSearchProvider implements WebSearchProvider {
 
     const apiBaseUrlRaw = this.config.apiBaseUrl?.trim();
     const apiBaseURL = apiBaseUrlRaw ? normalizeBaseUrl(apiBaseUrlRaw) : undefined;
+    // Loaded on first use: the client costs about 12 MiB of RSS, and this method is synchronous.
+    const { tavily }: typeof import("@tavily/core") = require("@tavily/core");
     this.client = tavily({
       apiKey,
       apiBaseURL,

@@ -1,5 +1,5 @@
 import Exa from "exa-js";
-import { tavily, type TavilyClient } from "@tavily/core";
+import type { TavilyClient } from "@tavily/core";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
 
@@ -381,7 +381,11 @@ export function createProviderPageExtractor(params: {
   return new DefaultProviderPageExtractor({
     ...params,
     fetch,
-    createTavilyClient: (options) => tavily(options),
+    // Loaded on first use: the client costs about 12 MiB of RSS, and this factory is synchronous.
+    createTavilyClient: (options) => {
+      const { tavily }: typeof import("@tavily/core") = require("@tavily/core");
+      return tavily(options);
+    },
     createExaClient: (apiKey, baseUrl) => (baseUrl ? new Exa(apiKey, baseUrl) : new Exa(apiKey)),
   });
 }

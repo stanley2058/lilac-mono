@@ -59,8 +59,6 @@ import {
 } from "@stanley2058/lilac-utils";
 import { defineServerTool, type ServerTool, type ServerToolCallOptions } from "../types";
 
-import { chromium } from "playwright";
-
 import {
   clearGithubAppSecret,
   deriveApiBaseUrl,
@@ -340,6 +338,7 @@ function isRootUser(): boolean {
 async function ensurePlaywrightChromiumInstalled(options: {
   withDeps: boolean;
 }): Promise<ResultType<{ installed: boolean; executablePath: string }, ServerToolFailure>> {
+  const { chromium } = await import("playwright");
   const pwPath = chromium.executablePath();
   const exists = await Bun.file(pwPath).exists();
   if (exists) {

@@ -1,5 +1,4 @@
 import { Readability } from "@mozilla/readability";
-import { JSDOM } from "jsdom";
 import TurndownService from "turndown";
 
 export type PageFormat = "markdown" | "text" | "html";
@@ -212,6 +211,8 @@ export class PageContent {
     params: { preprocessor: PagePreprocessor; signal?: AbortSignal },
   ): ParsedPageContent {
     checkPageSignal(params.signal);
+    // Loaded on first parse: jsdom costs about 40 MiB of RSS, and this method is synchronous.
+    const { JSDOM }: typeof import("jsdom") = require("jsdom");
     const dom = new JSDOM(html, { url });
 
     if (params.preprocessor === "readability") {

@@ -1,5 +1,5 @@
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
-import { chromium, type Browser, type Page } from "playwright";
+import type { Browser, Page } from "playwright";
 import { createLogger } from "@stanley2058/lilac-utils";
 
 import type { MarkdownTableData } from "../../../shared/markdown-table-renderer";
@@ -105,6 +105,7 @@ async function launchDiscordTableBrowser(): Promise<Browser> {
     Bun.which("google-chrome") ??
     Bun.which("google-chrome-stable") ??
     undefined;
+  const { chromium } = await import("playwright");
   return chromium.launch({ headless: true, executablePath });
 }
 

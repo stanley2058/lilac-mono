@@ -3,7 +3,7 @@ import { Panic, Result, type Result as ResultType } from "better-result";
 import type { Logger } from "@stanley2058/simple-module-logger";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
 
 import {
   buildSimpleHtmlContent,
@@ -154,6 +154,7 @@ export class DefaultBrowserPageAcquisition implements BrowserPageAcquisition {
     const system = await this.findSystemChromiumExecutable();
     if (system) return { strategy: "system", executablePath: system };
 
+    const { chromium } = await import("playwright");
     const playwrightPath = chromium.executablePath();
     if (!(await Bun.file(playwrightPath).exists())) {
       throw new Error(
@@ -181,6 +182,7 @@ export class DefaultBrowserPageAcquisition implements BrowserPageAcquisition {
   private async launchBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
     const launch = await this.resolveChromiumLaunchOptions();
     this.logger.logDebug("Launching browser...");
+    const { chromium } = await import("playwright");
     const browser = await chromium.launch({
       headless: true,
       executablePath: launch.executablePath,

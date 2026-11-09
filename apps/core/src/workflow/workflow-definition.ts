@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import ts from "typescript-codegen";
+import type ts from "typescript-codegen";
+import { typescript } from "./typescript-compiler";
 import { z } from "zod";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
@@ -238,7 +239,11 @@ function failValidation(state: WorkflowValidationState, message: string): void {
 }
 
 function propertyName(node: ts.PropertyName, state: WorkflowValidationState): string | undefined {
-  if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)) {
+  if (
+    typescript.isIdentifier(node) ||
+    typescript.isStringLiteral(node) ||
+    typescript.isNumericLiteral(node)
+  ) {
     return node.text;
   }
   failValidation(state, "Workflow metadata cannot use computed property names");
@@ -254,8 +259,9 @@ function literalValue(
     failValidation(state, "Workflow metadata exceeds maximum depth");
     return undefined;
   }
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-  if (ts.isNumericLiteral(node)) {
+  if (typescript.isStringLiteral(node) || typescript.isNoSubstitutionTemplateLiteral(node))
+    return node.text;
+  if (typescript.isNumericLiteral(node)) {
     const value = Number(node.text);
     if (!Number.isFinite(value)) {
       failValidation(state, "Workflow numeric literals must be finite");
@@ -263,25 +269,26 @@ function literalValue(
     }
     return value;
   }
-  if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
-  if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
-  if (node.kind === ts.SyntaxKind.NullKeyword) return null;
+  if (node.kind === typescript.SyntaxKind.TrueKeyword) return true;
+  if (node.kind === typescript.SyntaxKind.FalseKeyword) return false;
+  if (node.kind === typescript.SyntaxKind.NullKeyword) return null;
   if (
-    ts.isPrefixUnaryExpression(node) &&
-    (node.operator === ts.SyntaxKind.MinusToken || node.operator === ts.SyntaxKind.PlusToken) &&
-    ts.isNumericLiteral(node.operand)
+    typescript.isPrefixUnaryExpression(node) &&
+    (node.operator === typescript.SyntaxKind.MinusToken ||
+      node.operator === typescript.SyntaxKind.PlusToken) &&
+    typescript.isNumericLiteral(node.operand)
   ) {
     const value = Number(node.operand.text);
     if (!Number.isFinite(value)) {
       failValidation(state, "Workflow numeric literals must be finite");
       return undefined;
     }
-    return node.operator === ts.SyntaxKind.MinusToken ? -value : value;
+    return node.operator === typescript.SyntaxKind.MinusToken ? -value : value;
   }
-  if (ts.isArrayLiteralExpression(node)) {
+  if (typescript.isArrayLiteralExpression(node)) {
     const output: JsonValue[] = [];
     for (const element of node.elements) {
-      if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) {
+      if (typescript.isSpreadElement(element) || typescript.isOmittedExpression(element)) {
         failValidation(state, "Workflow metadata arrays cannot contain spreads or holes");
         return undefined;
       }
@@ -291,10 +298,10 @@ function literalValue(
     }
     return output;
   }
-  if (ts.isObjectLiteralExpression(node)) {
+  if (typescript.isObjectLiteralExpression(node)) {
     const output: Record<string, JsonValue> = {};
     for (const property of node.properties) {
-      if (!ts.isPropertyAssignment(property)) {
+      if (!typescript.isPropertyAssignment(property)) {
         failValidation(state, "Workflow metadata objects require explicit literal properties");
         return undefined;
       }
@@ -319,20 +326,20 @@ function literalValue(
 }
 
 function syntaxError(source: string): string | null {
-  const result = ts.transpileModule(source, {
+  const result = typescript.transpileModule(source, {
     fileName: "workflow.js",
     reportDiagnostics: true,
     compilerOptions: {
       allowJs: true,
       checkJs: false,
-      module: ts.ModuleKind.ESNext,
-      target: ts.ScriptTarget.ESNext,
+      module: typescript.ModuleKind.ESNext,
+      target: typescript.ScriptTarget.ESNext,
     },
   });
   const diagnostic = result.diagnostics?.find(
-    (item) => item.category === ts.DiagnosticCategory.Error,
+    (item) => item.category === typescript.DiagnosticCategory.Error,
   );
-  return diagnostic ? ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n") : null;
+  return diagnostic ? typescript.flattenDiagnosticMessageText(diagnostic.messageText, "\n") : null;
 }
 
 function assertNoForbiddenSyntax(
@@ -347,17 +354,17 @@ function assertNoForbiddenSyntax(
 
   const visit = (node: ts.Node): void => {
     if (state.error) return;
-    if (ts.isNumericLiteral(node) && !Number.isFinite(Number(node.text))) {
+    if (typescript.isNumericLiteral(node) && !Number.isFinite(Number(node.text))) {
       failValidation(state, "Workflow numeric literals must be finite");
       return;
     }
-    if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+    if (typescript.isCallExpression(node)) {
+      if (node.expression.kind === typescript.SyntaxKind.ImportKeyword) {
         failValidation(state, "Dynamic import is not allowed in workflows");
         return;
       }
       if (
-        ts.isIdentifier(node.expression) &&
+        typescript.isIdentifier(node.expression) &&
         ["require", "eval", "Function"].includes(node.expression.text)
       ) {
         failValidation(state, `${node.expression.text} is not allowed in workflows`);
@@ -365,14 +372,14 @@ function assertNoForbiddenSyntax(
       }
     }
     if (
-      ts.isNewExpression(node) &&
-      ts.isIdentifier(node.expression) &&
+      typescript.isNewExpression(node) &&
+      typescript.isIdentifier(node.expression) &&
       node.expression.text === "Function"
     ) {
       failValidation(state, "Function constructor is not allowed in workflows");
       return;
     }
-    ts.forEachChild(node, visit);
+    typescript.forEachChild(node, visit);
   };
   visit(sourceFile);
 }
@@ -387,7 +394,7 @@ function assertHelperParameters(
       parameter.dotDotDotToken ||
       parameter.initializer ||
       parameter.questionToken ||
-      !ts.isIdentifier(parameter.name)
+      !typescript.isIdentifier(parameter.name)
     ) {
       failValidation(state, "Workflow helper parameters must be plain identifiers");
       return;
@@ -409,7 +416,7 @@ function assertHelperFunction(
     return;
   }
   if (
-    (ts.isFunctionDeclaration(helper) || ts.isFunctionExpression(helper)) &&
+    (typescript.isFunctionDeclaration(helper) || typescript.isFunctionExpression(helper)) &&
     helper.name &&
     (helper.name.text === "defineWorkflow" || WORKFLOW_RUN_CONTEXT_NAMES.has(helper.name.text))
   ) {
@@ -422,8 +429,8 @@ function assertHelperFunction(
   const assertInstrumentableHostCalls = (node: ts.Node): void => {
     if (state.error) return;
     if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
+      typescript.isCallExpression(node) &&
+      typescript.isIdentifier(node.expression) &&
       WORKFLOW_HOST_CALL_NAMES.has(node.expression.text) &&
       !parameters.has(node.expression.text)
     ) {
@@ -433,7 +440,7 @@ function assertHelperFunction(
       );
       return;
     }
-    ts.forEachChild(node, assertInstrumentableHostCalls);
+    typescript.forEachChild(node, assertInstrumentableHostCalls);
   };
   assertInstrumentableHostCalls(helper.body);
   assertNoShadowedWorkflowBindings(helper.body, state);
@@ -445,7 +452,7 @@ function assertTopLevelHelpers(
 ): void {
   const bindings = new Set<string>(["defineWorkflow"]);
   for (const statement of statements) {
-    if (ts.isFunctionDeclaration(statement)) {
+    if (typescript.isFunctionDeclaration(statement)) {
       if (!statement.name) {
         failValidation(state, "Workflow helper function declarations must be named");
         return;
@@ -461,8 +468,8 @@ function assertTopLevelHelpers(
       continue;
     }
     if (
-      !ts.isVariableStatement(statement) ||
-      !(statement.declarationList.flags & ts.NodeFlags.Const)
+      !typescript.isVariableStatement(statement) ||
+      !(statement.declarationList.flags & typescript.NodeFlags.Const)
     ) {
       failValidation(
         state,
@@ -471,7 +478,7 @@ function assertTopLevelHelpers(
       return;
     }
     for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+      if (!typescript.isIdentifier(declaration.name) || !declaration.initializer) {
         failValidation(state, "Workflow top-level constants require an identifier and initializer");
         return;
       }
@@ -482,8 +489,8 @@ function assertTopLevelHelpers(
       }
       bindings.add(name);
       if (
-        ts.isArrowFunction(declaration.initializer) ||
-        ts.isFunctionExpression(declaration.initializer)
+        typescript.isArrowFunction(declaration.initializer) ||
+        typescript.isFunctionExpression(declaration.initializer)
       ) {
         assertHelperFunction(declaration.initializer, state);
         if (state.error) return;
@@ -510,18 +517,18 @@ function assertBindingSafeHostCalls(
 ): void {
   const helpers = new Map<string, WorkflowHelperInfo>();
   for (const statement of sourceFile.statements.slice(1, -1)) {
-    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
+    if (typescript.isFunctionDeclaration(statement) && statement.name && statement.body) {
       helpers.set(statement.name.text, {
         parameters: statement.parameters.map((parameter) => parameter.name.getText(sourceFile)),
         body: statement.body,
       });
-    } else if (ts.isVariableStatement(statement)) {
+    } else if (typescript.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         if (
-          ts.isIdentifier(declaration.name) &&
+          typescript.isIdentifier(declaration.name) &&
           declaration.initializer &&
-          (ts.isArrowFunction(declaration.initializer) ||
-            ts.isFunctionExpression(declaration.initializer))
+          (typescript.isArrowFunction(declaration.initializer) ||
+            typescript.isFunctionExpression(declaration.initializer))
         ) {
           helpers.set(declaration.name.text, {
             parameters: declaration.initializer.parameters.map((parameter) =>
@@ -536,19 +543,23 @@ function assertBindingSafeHostCalls(
 
   const run = definition.properties.find(
     (property): property is ts.MethodDeclaration =>
-      ts.isMethodDeclaration(property) &&
+      typescript.isMethodDeclaration(property) &&
       property.name !== undefined &&
       propertyName(property.name, state) === "run",
   );
   if (state.error) return;
-  if (!run?.body || !run.parameters[0] || !ts.isObjectBindingPattern(run.parameters[0].name))
+  if (
+    !run?.body ||
+    !run.parameters[0] ||
+    !typescript.isObjectBindingPattern(run.parameters[0].name)
+  )
     return;
 
   const assertBody = (body: ts.Node, hostBindings: ReadonlySet<string>): void => {
     const visit = (node: ts.Node): void => {
       if (state.error) return;
-      if (ts.isCallExpression(node)) {
-        if (ts.isPropertyAccessExpression(node.expression)) {
+      if (typescript.isCallExpression(node)) {
+        if (typescript.isPropertyAccessExpression(node.expression)) {
           if (WORKFLOW_HOST_CALL_NAMES.has(node.expression.name.text)) {
             failValidation(
               state,
@@ -556,11 +567,11 @@ function assertBindingSafeHostCalls(
             );
             return;
           }
-        } else if (ts.isElementAccessExpression(node.expression)) {
+        } else if (typescript.isElementAccessExpression(node.expression)) {
           const key = node.expression.argumentExpression;
           if (
-            (ts.isStringLiteral(key) && WORKFLOW_HOST_CALL_NAMES.has(key.text)) ||
-            (ts.isIdentifier(key) && WORKFLOW_HOST_CALL_NAMES.has(key.text))
+            (typescript.isStringLiteral(key) && WORKFLOW_HOST_CALL_NAMES.has(key.text)) ||
+            (typescript.isIdentifier(key) && WORKFLOW_HOST_CALL_NAMES.has(key.text))
           ) {
             failValidation(state, "Workflow host APIs cannot be called through computed members");
             return;
@@ -568,7 +579,8 @@ function assertBindingSafeHostCalls(
         }
 
         const directHost =
-          ts.isIdentifier(node.expression) && WORKFLOW_HOST_CALL_NAMES.has(node.expression.text);
+          typescript.isIdentifier(node.expression) &&
+          WORKFLOW_HOST_CALL_NAMES.has(node.expression.text);
         if (directHost && !hostBindings.has(node.expression.text)) {
           failValidation(
             state,
@@ -580,12 +592,12 @@ function assertBindingSafeHostCalls(
           let current: ts.Node = node;
           while (current.parent && current.parent !== body) {
             current = current.parent;
-            if (ts.isFunctionLike(current)) {
+            if (typescript.isFunctionLike(current)) {
               if ("body" in current && current.body === body) break;
               const parentCall = current.parent;
               const deterministicallyScoped =
-                ts.isCallExpression(parentCall) &&
-                ts.isIdentifier(parentCall.expression) &&
+                typescript.isCallExpression(parentCall) &&
+                typescript.isIdentifier(parentCall.expression) &&
                 (parentCall.expression.text === "pipeline" ||
                   parentCall.expression.text === "phase") &&
                 parentCall.arguments.some((argument) => argument === current);
@@ -600,7 +612,7 @@ function assertBindingSafeHostCalls(
             }
           }
         }
-        const helper = ts.isIdentifier(node.expression)
+        const helper = typescript.isIdentifier(node.expression)
           ? helpers.get(node.expression.text)
           : undefined;
         helper?.parameters.forEach((parameter, index) => {
@@ -608,7 +620,7 @@ function assertBindingSafeHostCalls(
           const argument = node.arguments[index];
           if (
             !argument ||
-            !ts.isIdentifier(argument) ||
+            !typescript.isIdentifier(argument) ||
             argument.text !== parameter ||
             !hostBindings.has(parameter)
           ) {
@@ -619,7 +631,7 @@ function assertBindingSafeHostCalls(
           }
         });
         node.arguments.forEach((argument, index) => {
-          if (ts.isIdentifier(argument) && WORKFLOW_HOST_CALL_NAMES.has(argument.text)) {
+          if (typescript.isIdentifier(argument) && WORKFLOW_HOST_CALL_NAMES.has(argument.text)) {
             if (!hostBindings.has(argument.text) || helper?.parameters[index] !== argument.text) {
               failValidation(
                 state,
@@ -633,11 +645,11 @@ function assertBindingSafeHostCalls(
         if (!directHost) visit(node.expression);
         return;
       }
-      if (ts.isIdentifier(node) && WORKFLOW_HOST_CALL_NAMES.has(node.text)) {
+      if (typescript.isIdentifier(node) && WORKFLOW_HOST_CALL_NAMES.has(node.text)) {
         const parent = node.parent;
         const isPropertyName =
-          (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
-          ((ts.isPropertyAssignment(parent) || ts.isMethodDeclaration(parent)) &&
+          (typescript.isPropertyAccessExpression(parent) && parent.name === node) ||
+          ((typescript.isPropertyAssignment(parent) || typescript.isMethodDeclaration(parent)) &&
             parent.name === node);
         if (!isPropertyName) {
           failValidation(
@@ -647,14 +659,14 @@ function assertBindingSafeHostCalls(
           return;
         }
       }
-      ts.forEachChild(node, visit);
+      typescript.forEachChild(node, visit);
     };
     visit(body);
   };
 
   const runBindings = new Set(
     run.parameters[0].name.elements.flatMap((element) =>
-      ts.isIdentifier(element.name) && WORKFLOW_HOST_CALL_NAMES.has(element.name.text)
+      typescript.isIdentifier(element.name) && WORKFLOW_HOST_CALL_NAMES.has(element.name.text)
         ? [element.name.text]
         : [],
     ),
@@ -674,11 +686,11 @@ function assertBindingSafeHostCalls(
   for (const [name, helper] of helpers) {
     const called = new Set<string>();
     const visit = (node: ts.Node): void => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      if (typescript.isCallExpression(node) && typescript.isIdentifier(node.expression)) {
         if (WORKFLOW_HOST_CALL_NAMES.has(node.expression.text)) directlyHostCalling.add(name);
         if (helpers.has(node.expression.text)) called.add(node.expression.text);
       }
-      ts.forEachChild(node, visit);
+      typescript.forEachChild(node, visit);
     };
     visit(helper.body);
     callsByHelper.set(name, called);
@@ -698,13 +710,13 @@ function assertBindingSafeHostCalls(
     const invocations: ts.CallExpression[] = [];
     const collect = (node: ts.Node): void => {
       if (
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
+        typescript.isCallExpression(node) &&
+        typescript.isIdentifier(node.expression) &&
         node.expression.text === helperName
       ) {
         invocations.push(node);
       }
-      ts.forEachChild(node, collect);
+      typescript.forEachChild(node, collect);
     };
     collect(run.body);
     for (const helper of helpers.values()) collect(helper.body);
@@ -717,14 +729,14 @@ function assertBindingSafeHostCalls(
     }
     for (const invocation of invocations) {
       let current: ts.Node = invocation;
-      while (current.parent && !ts.isFunctionLike(current.parent)) {
+      while (current.parent && !typescript.isFunctionLike(current.parent)) {
         current = current.parent;
         if (
-          ts.isForStatement(current) ||
-          ts.isForInStatement(current) ||
-          ts.isForOfStatement(current) ||
-          ts.isWhileStatement(current) ||
-          ts.isDoStatement(current)
+          typescript.isForStatement(current) ||
+          typescript.isForInStatement(current) ||
+          typescript.isForOfStatement(current) ||
+          typescript.isWhileStatement(current) ||
+          typescript.isDoStatement(current)
         ) {
           failValidation(
             state,
@@ -737,14 +749,14 @@ function assertBindingSafeHostCalls(
       const containerBody = container && "body" in container ? container.body : undefined;
       if (
         container &&
-        ts.isFunctionLike(container) &&
-        !ts.isMethodDeclaration(container) &&
+        typescript.isFunctionLike(container) &&
+        !typescript.isMethodDeclaration(container) &&
         ![...helpers.values()].some((helper) => helper.body === containerBody)
       ) {
         const parentCall = container.parent;
         const callbackIsDeterministicallyScoped =
-          ts.isCallExpression(parentCall) &&
-          ts.isIdentifier(parentCall.expression) &&
+          typescript.isCallExpression(parentCall) &&
+          typescript.isIdentifier(parentCall.expression) &&
           (parentCall.expression.text === "pipeline" || parentCall.expression.text === "phase") &&
           parentCall.arguments.some((argument) => argument === container);
         if (!callbackIsDeterministicallyScoped) {
@@ -758,12 +770,12 @@ function assertBindingSafeHostCalls(
     }
     const assertDirectReference = (node: ts.Node): void => {
       if (state.error) return;
-      if (ts.isIdentifier(node) && node.text === helperName) {
+      if (typescript.isIdentifier(node) && node.text === helperName) {
         const parent = node.parent;
         const declarationName =
-          (ts.isFunctionDeclaration(parent) || ts.isVariableDeclaration(parent)) &&
+          (typescript.isFunctionDeclaration(parent) || typescript.isVariableDeclaration(parent)) &&
           parent.name === node;
-        const directCall = ts.isCallExpression(parent) && parent.expression === node;
+        const directCall = typescript.isCallExpression(parent) && parent.expression === node;
         if (!declarationName && !directCall) {
           failValidation(
             state,
@@ -772,7 +784,7 @@ function assertBindingSafeHostCalls(
           return;
         }
       }
-      ts.forEachChild(node, assertDirectReference);
+      typescript.forEachChild(node, assertDirectReference);
     };
     assertDirectReference(run.body);
     if (state.error) return;
@@ -796,25 +808,25 @@ function assertStaticHostCallArguments(
     requiredKeys?: ReadonlySet<string>;
     removedKeys?: ReadonlySet<string>;
   }): void => {
-    if (!ts.isObjectLiteralExpression(input.node)) return;
+    if (!typescript.isObjectLiteralExpression(input.node)) return;
     let hasDynamicShape = false;
     let hasDynamicValue = false;
     const keys = new Set<string>();
     const staticValues: Record<string, JsonValue> = {};
     for (const property of input.node.properties) {
-      if (ts.isSpreadAssignment(property)) {
+      if (typescript.isSpreadAssignment(property)) {
         hasDynamicShape = true;
         continue;
       }
       let name: string;
-      if (ts.isShorthandPropertyAssignment(property)) {
+      if (typescript.isShorthandPropertyAssignment(property)) {
         name = property.name.text;
         hasDynamicValue = true;
-      } else if (ts.isPropertyAssignment(property)) {
+      } else if (typescript.isPropertyAssignment(property)) {
         if (
-          ts.isComputedPropertyName(property.name) &&
-          (ts.isStringLiteral(property.name.expression) ||
-            ts.isNumericLiteral(property.name.expression))
+          typescript.isComputedPropertyName(property.name) &&
+          (typescript.isStringLiteral(property.name.expression) ||
+            typescript.isNumericLiteral(property.name.expression))
         ) {
           name = property.name.expression.text;
         } else {
@@ -870,7 +882,7 @@ function assertStaticHostCallArguments(
 
   const visit = (node: ts.Node): void => {
     if (state.error) return;
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+    if (typescript.isCallExpression(node) && typescript.isIdentifier(node.expression)) {
       const name = node.expression.text;
       if (name === "agent") {
         if (node.arguments.length < 2) {
@@ -940,7 +952,7 @@ function assertStaticHostCallArguments(
         }
       }
     }
-    ts.forEachChild(node, visit);
+    typescript.forEachChild(node, visit);
   };
   visit(sourceFile);
 }
@@ -955,22 +967,22 @@ function extractDefinitionObject(
     return undefined;
   }
 
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = typescript.createSourceFile(
     "workflow.js",
     source,
-    ts.ScriptTarget.ESNext,
+    typescript.ScriptTarget.ESNext,
     true,
-    ts.ScriptKind.JS,
+    typescript.ScriptKind.JS,
   );
   assertNoForbiddenSyntax(sourceFile, source, state);
   if (state.error) return undefined;
   const importStatement = sourceFile.statements[0];
-  if (!importStatement || !ts.isImportDeclaration(importStatement)) {
+  if (!importStatement || !typescript.isImportDeclaration(importStatement)) {
     failValidation(state, "Workflow first statement must import defineWorkflow");
     return undefined;
   }
   if (
-    !ts.isStringLiteral(importStatement.moduleSpecifier) ||
+    !typescript.isStringLiteral(importStatement.moduleSpecifier) ||
     importStatement.moduleSpecifier.text !== "@lilac/workflow"
   ) {
     failValidation(state, 'Workflow may import only from "@lilac/workflow"');
@@ -983,10 +995,10 @@ function extractDefinitionObject(
   const clause = importStatement.importClause;
   if (
     !clause ||
-    clause.phaseModifier === ts.SyntaxKind.TypeKeyword ||
+    clause.phaseModifier === typescript.SyntaxKind.TypeKeyword ||
     clause.name ||
     !clause.namedBindings ||
-    !ts.isNamedImports(clause.namedBindings) ||
+    !typescript.isNamedImports(clause.namedBindings) ||
     clause.namedBindings.elements.length !== 1
   ) {
     failValidation(
@@ -1009,7 +1021,7 @@ function extractDefinitionObject(
   const exportStatement = sourceFile.statements[sourceFile.statements.length - 1];
   if (
     !exportStatement ||
-    !ts.isExportAssignment(exportStatement) ||
+    !typescript.isExportAssignment(exportStatement) ||
     exportStatement.isExportEquals
   ) {
     failValidation(state, "Workflow last statement must be the default defineWorkflow export");
@@ -1019,8 +1031,8 @@ function extractDefinitionObject(
   if (state.error) return undefined;
   const call = exportStatement.expression;
   if (
-    !ts.isCallExpression(call) ||
-    !ts.isIdentifier(call.expression) ||
+    !typescript.isCallExpression(call) ||
+    !typescript.isIdentifier(call.expression) ||
     call.expression.text !== "defineWorkflow" ||
     call.arguments.length !== 1
   ) {
@@ -1028,7 +1040,7 @@ function extractDefinitionObject(
     return undefined;
   }
   const definition = call.arguments[0];
-  if (!definition || !ts.isObjectLiteralExpression(definition)) {
+  if (!definition || !typescript.isObjectLiteralExpression(definition)) {
     failValidation(state, "defineWorkflow requires one object literal");
     return undefined;
   }
@@ -1072,12 +1084,12 @@ function extractStaticMetadata(
     }
     seen.add(name);
     if (name === "run") {
-      if (!ts.isMethodDeclaration(property)) {
+      if (!typescript.isMethodDeclaration(property)) {
         failValidation(state, "Workflow run must use async method syntax");
         return undefined;
       }
       const isAsync = property.modifiers?.some(
-        (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+        (modifier) => modifier.kind === typescript.SyntaxKind.AsyncKeyword,
       );
       if (!isAsync || !property.body || property.parameters.length !== 1) {
         failValidation(
@@ -1087,7 +1099,7 @@ function extractStaticMetadata(
         return undefined;
       }
       const parameter = property.parameters[0];
-      if (!parameter || !ts.isObjectBindingPattern(parameter.name)) {
+      if (!parameter || !typescript.isObjectBindingPattern(parameter.name)) {
         failValidation(state, "Workflow run context must use object destructuring");
         return undefined;
       }
@@ -1095,7 +1107,7 @@ function extractStaticMetadata(
         if (
           element.dotDotDotToken ||
           element.initializer ||
-          !ts.isIdentifier(element.name) ||
+          !typescript.isIdentifier(element.name) ||
           (element.propertyName !== undefined &&
             propertyName(element.propertyName, state) !== element.name.text) ||
           !WORKFLOW_RUN_CONTEXT_NAMES.has(element.name.text)
@@ -1112,7 +1124,7 @@ function extractStaticMetadata(
       hasRun = true;
       continue;
     }
-    if (!ts.isPropertyAssignment(property)) {
+    if (!typescript.isPropertyAssignment(property)) {
       failValidation(state, `Workflow ${name} must be an explicit static property`);
       return undefined;
     }
@@ -1133,9 +1145,9 @@ function extractStaticMetadata(
 }
 
 function bindingNames(name: ts.BindingName): string[] {
-  if (ts.isIdentifier(name)) return [name.text];
+  if (typescript.isIdentifier(name)) return [name.text];
   return name.elements.flatMap((element) =>
-    ts.isOmittedExpression(element) ? [] : bindingNames(element.name),
+    typescript.isOmittedExpression(element) ? [] : bindingNames(element.name),
   );
 }
 
@@ -1144,13 +1156,17 @@ function assertNoShadowedWorkflowBindings(body: ts.Node, state: WorkflowValidati
   const visit = (node: ts.Node): void => {
     if (state.error) return;
     let names: string[];
-    if (ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) {
+    if (
+      typescript.isVariableDeclaration(node) ||
+      typescript.isParameter(node) ||
+      typescript.isBindingElement(node)
+    ) {
       names = bindingNames(node.name);
     } else if (
-      ts.isFunctionDeclaration(node) ||
-      ts.isClassDeclaration(node) ||
-      ts.isFunctionExpression(node) ||
-      ts.isClassExpression(node)
+      typescript.isFunctionDeclaration(node) ||
+      typescript.isClassDeclaration(node) ||
+      typescript.isFunctionExpression(node) ||
+      typescript.isClassExpression(node)
     ) {
       names = node.name ? [node.name.text] : [];
     } else {
@@ -1162,7 +1178,7 @@ function assertNoShadowedWorkflowBindings(body: ts.Node, state: WorkflowValidati
         return;
       }
     }
-    ts.forEachChild(node, visit);
+    typescript.forEachChild(node, visit);
   };
   visit(body);
 }
