@@ -18,6 +18,7 @@ import {
   ConversationThreadOperationFailed,
   ConversationThreadService as RuntimeConversationThreadService,
   ConversationThreadSummaryParseError,
+  encodeInlineFileData,
   filterUtilityModelAttachments,
   selectAutoInjectPlannerModel,
 } from "../../src/conversation/thread-service";
@@ -3355,6 +3356,37 @@ describe("conversation thread store", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("encodes inline file bytes as base64 and leaves other parts unchanged", () => {
+    const bytes = new Uint8Array([0, 1, 2, 3, 4, 250, 251, 252]).subarray(2, 6);
+    const text = { type: "text" as const, text: "See this diagram" };
+    const url = new URL("https://example.com/diagram.png");
+    const linked = { type: "file" as const, data: url, mediaType: "image/png" };
+    const [encoded] = encodeInlineFileData([
+      {
+        role: "user",
+        content: [
+          text,
+          linked,
+          { type: "file", data: bytes, filename: "diagram.png", mediaType: "image/png" },
+        ],
+      },
+    ]);
+
+    expect(encoded).toEqual({
+      role: "user",
+      content: [
+        text,
+        linked,
+        {
+          type: "file",
+          data: Buffer.from([2, 3, 4, 250]).toString("base64"),
+          filename: "diagram.png",
+          mediaType: "image/png",
+        },
+      ],
+    });
   });
 
   it("filters planner media using the utility model capability", () => {

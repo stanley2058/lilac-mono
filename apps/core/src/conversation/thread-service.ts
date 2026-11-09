@@ -989,6 +989,20 @@ function supportsUtilityModelAttachment(
   );
 }
 
+// The AI SDK base64-encodes Uint8Array file data through String.fromCodePoint chunks, which adds
+// hundreds of MB of RSS for a few MB of attachments. A base64 string passes through unencoded.
+export function encodeInlineFileData(messages: readonly ModelMessage[]): ModelMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "user" || !Array.isArray(message.content)) return message;
+    const content: Exclude<UserContent, string> = message.content.map((part) => {
+      if (part.type !== "file" || !(part.data instanceof Uint8Array)) return part;
+      const { buffer, byteOffset, byteLength } = part.data;
+      return { ...part, data: Buffer.from(buffer, byteOffset, byteLength).toString("base64") };
+    });
+    return { ...message, content };
+  });
+}
+
 export function filterUtilityModelAttachments(
   messages: readonly ModelMessage[],
   capability: ModelCapabilityInfo | null,
@@ -1649,13 +1663,15 @@ export async function defaultSummarizer(input: {
       ].join("\n")
     : null;
   const capability = await resolveUtilityModelCapability(input.cfg, resolved.spec);
-  const messages = await buildThreadSummaryModelMessages({
-    previous,
-    promptContextSection,
-    messages: input.messages,
-    omittedMessages: input.omittedMessages ?? 0,
-    capability,
-  });
+  const messages = encodeInlineFileData(
+    await buildThreadSummaryModelMessages({
+      previous,
+      promptContextSection,
+      messages: input.messages,
+      omittedMessages: input.omittedMessages ?? 0,
+      capability,
+    }),
+  );
 
   const instructions = buildThreadSummaryInstructions();
   const onLanguageModelCallEnd = createThreadLanguageModelUsageLogger({
