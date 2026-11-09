@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { Panic } from "better-result";
 
 import { createLogger } from "@stanley2058/lilac-utils";
@@ -210,6 +210,121 @@ describe("tool server health state", () => {
     await health.runWatchdog();
     expect(unhealthySnapshot?.info.process.lastMemoryIncident?.trigger).toMatchObject({
       streak: 1,
+    });
+  });
+
+  describe("memory limits", () => {
+    const MiB = 1024 * 1024;
+    const originalMemoryUsage = process.memoryUsage;
+    afterEach(() => {
+      process.memoryUsage = originalMemoryUsage;
+    });
+
+    function setMemory(input: { rss: number; heapUsed: number; external: number }) {
+      const memory = {
+        rss: input.rss * MiB,
+        heapUsed: input.heapUsed * MiB,
+        heapTotal: input.heapUsed * MiB,
+        external: input.external * MiB,
+        arrayBuffers: 0,
+      };
+      process.memoryUsage = Object.assign(() => memory, { rss: () => memory.rss });
+    }
+
+    function createWatchedHealth() {
+      const logger = createLogger({ module: "health-state-test" });
+      const warn = spyOn(logger, "warn").mockImplementation(() => undefined);
+      const onUnhealthy = mock(() => undefined);
+      const health = createToolServerHealthState({
+        logger,
+        watchdogFailureThreshold: 2,
+        runtimeDiagnosticSampler: () => RUNTIME_SAMPLE,
+        onUnhealthy,
+      });
+      const warnings = () => warn.mock.calls.map(([message]) => message);
+      return { health, onUnhealthy, warnings };
+    }
+
+    async function memoryCheck(health: ReturnType<typeof createToolServerHealthState>) {
+      const snapshot = await health.getSnapshot();
+      return snapshot.checks.find((check) => check.name === "process.memory");
+    }
+
+    it("stays healthy at the largest usage recorded in production incidents", async () => {
+      const { health, onUnhealthy } = createWatchedHealth();
+      // 2026-11-09 summarization burst, then the 2026-11-06 main heap peak.
+      for (const memory of [
+        { rss: 1534, heapUsed: 169, external: 34 },
+        { rss: 1763, heapUsed: 243, external: 20 },
+        { rss: 1662, heapUsed: 603, external: 88 },
+      ]) {
+        setMemory(memory);
+        expect((await memoryCheck(health))?.ok).toBe(true);
+        await health.runWatchdog();
+        await health.runWatchdog();
+      }
+      expect(onUnhealthy).not.toHaveBeenCalled();
+    });
+
+    it("warns without restarting while only rss is elevated, then recovers", async () => {
+      const { health, onUnhealthy, warnings } = createWatchedHealth();
+      setMemory({ rss: 1600, heapUsed: 170, external: 40 });
+      await health.runWatchdog();
+      await health.runWatchdog();
+      await health.runWatchdog();
+
+      expect(onUnhealthy).not.toHaveBeenCalled();
+      expect(warnings()).toEqual(["process rss exceeded warning level"]);
+      const active = await health.getSnapshot();
+      expect(active.info.process.lastMemoryIncident?.status).toBe("active");
+
+      setMemory({ rss: 900, heapUsed: 170, external: 40 });
+      await health.runWatchdog();
+      const recovered = await health.getSnapshot();
+      expect(recovered.info.process.lastMemoryIncident?.status).toBe("recovered");
+    });
+
+    it("restarts when the main isolate exceeds its limit with low rss", async () => {
+      const { health, onUnhealthy, warnings } = createWatchedHealth();
+      setMemory({ rss: 1000, heapUsed: 700, external: 68 });
+
+      expect(await memoryCheck(health)).toMatchObject({
+        ok: false,
+        reason: `main isolate memory ${768 * MiB} exceeded limit ${768 * MiB}`,
+      });
+      await health.runWatchdog();
+      expect(onUnhealthy).not.toHaveBeenCalled();
+      await health.runWatchdog();
+      expect(onUnhealthy).toHaveBeenCalledTimes(1);
+      expect(warnings()).toEqual(["process memory exceeded watchdog limit"]);
+    });
+
+    it("restarts at the rss ceiling even when the main isolate is small", async () => {
+      const { health, onUnhealthy } = createWatchedHealth();
+      setMemory({ rss: 4096, heapUsed: 170, external: 40 });
+
+      expect(await memoryCheck(health)).toMatchObject({
+        ok: false,
+        reason: `rss ${4096 * MiB} exceeded limit ${4096 * MiB}`,
+      });
+      await health.runWatchdog();
+      await health.runWatchdog();
+      expect(onUnhealthy).toHaveBeenCalledTimes(1);
+    });
+
+    it("logs the limit when an rss warning escalates into a failure", async () => {
+      const { health, onUnhealthy, warnings } = createWatchedHealth();
+      setMemory({ rss: 1600, heapUsed: 170, external: 40 });
+      await health.runWatchdog();
+      setMemory({ rss: 1600, heapUsed: 800, external: 40 });
+      await health.runWatchdog();
+      await health.runWatchdog();
+
+      expect(warnings()).toEqual([
+        "process rss exceeded warning level",
+        "process memory exceeded watchdog limit",
+      ]);
+      expect(onUnhealthy).toHaveBeenCalledTimes(1);
     });
   });
 

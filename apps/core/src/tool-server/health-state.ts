@@ -157,6 +157,8 @@ export type ToolServerHealthConfig = {
   eventLoopLagFailStreak?: number;
   toolCallOverdueGraceMs?: number;
   maxRssBytes?: number;
+  warnRssBytes?: number;
+  maxMainIsolateBytes?: number;
 };
 
 type ToolServerHealthStateOptions = ToolServerHealthConfig & {
@@ -178,7 +180,12 @@ const DEFAULT_EVENT_LOOP_FAIL_STREAK = 3;
 const DEFAULT_WATCHDOG_INTERVAL_MS = 5_000;
 const DEFAULT_WATCHDOG_FAILURE_THRESHOLD = 3;
 const DEFAULT_TOOL_CALL_OVERDUE_GRACE_MS = 15_000;
-const DEFAULT_MAX_RSS_BYTES = 1_500 * 1024 * 1024;
+// Worker isolates share this process, so RSS includes bursts that a restart cannot usefully bound.
+// heapUsed and external exclude worker heaps, which makes them the restart signal for Core itself.
+// The RSS ceiling still catches native leaks and runaway workers, which those counters cannot see.
+const DEFAULT_MAX_MAIN_ISOLATE_BYTES = 768 * 1024 * 1024;
+const DEFAULT_MAX_RSS_BYTES = 4_096 * 1024 * 1024;
+const DEFAULT_WARN_RSS_BYTES = 1_500 * 1024 * 1024;
 const MEMORY_HISTORY_SIZE = 60;
 
 function previewReason(reason: unknown): string {
@@ -215,6 +222,8 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
   const toolCallOverdueGraceMs =
     options.toolCallOverdueGraceMs ?? DEFAULT_TOOL_CALL_OVERDUE_GRACE_MS;
   const maxRssBytes = options.maxRssBytes ?? DEFAULT_MAX_RSS_BYTES;
+  const warnRssBytes = options.warnRssBytes ?? DEFAULT_WARN_RSS_BYTES;
+  const maxMainIsolateBytes = options.maxMainIsolateBytes ?? DEFAULT_MAX_MAIN_ISOLATE_BYTES;
 
   let initialized = false;
   let listening = false;
@@ -325,9 +334,12 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
       };
       lastMemoryIncident = activeMemoryIncident;
       snapshot.info.process.lastMemoryIncident = activeMemoryIncident;
-      options.logger.warn("process memory exceeded watchdog limit", {
-        incident: activeMemoryIncident,
-      });
+      options.logger.warn(
+        streak > 0
+          ? "process memory exceeded watchdog limit"
+          : "process rss exceeded warning level",
+        { incident: activeMemoryIncident },
+      );
       return;
     }
 
@@ -347,6 +359,11 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
     };
     lastMemoryIncident = activeMemoryIncident;
     snapshot.info.process.lastMemoryIncident = activeMemoryIncident;
+    if (streak === 1) {
+      options.logger.warn("process memory exceeded watchdog limit", {
+        incident: activeMemoryIncident,
+      });
+    }
   }
 
   function recordMemoryRecovery(snapshot: ToolServerHealthSnapshot): void {
@@ -484,6 +501,13 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
     }
   }
 
+  function describeMemoryFailure(memory: ToolServerMemoryUsage): string | undefined {
+    if (memory.rss >= maxRssBytes) return `rss ${memory.rss} exceeded limit ${maxRssBytes}`;
+    const mainIsolateBytes = memory.heapUsed + memory.external;
+    if (mainIsolateBytes < maxMainIsolateBytes) return undefined;
+    return `main isolate memory ${mainIsolateBytes} exceeded limit ${maxMainIsolateBytes}`;
+  }
+
   async function getSnapshot(): Promise<ToolServerHealthSnapshot> {
     const transportListening = listening && ((await options.listeningProbe?.()) ?? true);
     const now = Date.now();
@@ -497,15 +521,16 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
     };
     memoryHistory.push({ at: now, ...memoryUsage });
     if (memoryHistory.length > MEMORY_HISTORY_SIZE) memoryHistory.shift();
+    const memoryFailureReason = describeMemoryFailure(memory);
+    const memoryLimits = { maxRssBytes, warnRssBytes, maxMainIsolateBytes };
     const memoryCheck: ToolServerHealthCheck = {
       name: "process.memory",
-      ok: memory.rss < maxRssBytes,
+      ok: memoryFailureReason === undefined,
       impact: "live",
-      reason:
-        memory.rss >= maxRssBytes ? `rss ${memory.rss} exceeded limit ${maxRssBytes}` : undefined,
+      reason: memoryFailureReason,
       details: {
         ...memoryUsage,
-        maxRssBytes,
+        ...memoryLimits,
       },
     };
     const checks: ToolServerHealthCheck[] = [
@@ -582,7 +607,8 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
         const attempt = await Result.tryPromise({
           try: async () => {
             const external = await options.externalHealthProvider!({
-              includeMemoryDiagnostics: memory.rss >= maxRssBytes,
+              includeMemoryDiagnostics:
+                memoryFailureReason !== undefined || memory.rss >= warnRssBytes,
             });
             if (external.checks) checks.push(...external.checks);
             externalInfo = external.info;
@@ -606,11 +632,10 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
     if (memoryDiagnostics) {
       checks[3] = {
         name: "process.memory",
-        ok: memory.rss < maxRssBytes,
+        ok: memoryFailureReason === undefined,
         impact: "live",
-        reason:
-          memory.rss >= maxRssBytes ? `rss ${memory.rss} exceeded limit ${maxRssBytes}` : undefined,
-        details: { ...memoryUsage, maxRssBytes, diagnostics: memoryDiagnostics },
+        reason: memoryFailureReason,
+        details: { ...memoryUsage, ...memoryLimits, diagnostics: memoryDiagnostics },
       };
     }
 
@@ -712,7 +737,8 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
       snapshot.checks.find((check) => check.name === "process.memory")?.ok === false;
     const { triggeringCheck, triggeringStreak } = updateUnhealthyStreaks(snapshot);
     const memoryStreak = unhealthyStreaks.get("process.memory") ?? 0;
-    if (memoryFailed) recordMemoryFailure(snapshot, memoryStreak);
+    const memoryElevated = memoryFailed || snapshot.info.process.memory.rss >= warnRssBytes;
+    if (memoryElevated) recordMemoryFailure(snapshot, memoryStreak);
     else recordMemoryRecovery(snapshot);
 
     if (!triggeringCheck || triggeringStreak === undefined) return;
