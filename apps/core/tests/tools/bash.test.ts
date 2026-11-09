@@ -31,8 +31,10 @@ import {
   type ToolResultArtifactStore,
 } from "../../src/artifacts/tool-result-artifact-store";
 
+// uutils `cat` (the default on Ubuntu 26.04) exits 0 on an unreadable stdin, so probe with the
+// `read` builtin. It returns 1 for both EOF and a read error, and only the error prints a message.
 const STDIN_PROBE_COMMAND =
-  "if cat >/dev/null 2>&1; then echo stdin_read_ok; else echo stdin_read_err; exit 7; fi";
+  'if [ -z "$(read -r _ 2>&1)" ]; then echo stdin_read_ok; else echo stdin_read_err; exit 7; fi';
 
 type MockFetch = (
   input: Parameters<typeof fetch>[0],
