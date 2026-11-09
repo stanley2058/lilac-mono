@@ -1,4 +1,4 @@
-import type { ModelsDevModel, ModelsDevRegistry } from "./model-catalog-schema";
+import type { ModelCatalog, ModelsDevModel } from "./model-catalog-schema";
 
 export function modelFamily(model: Pick<ModelsDevModel, "id" | "family">): string | undefined {
   if (model.family) return model.family;
@@ -27,7 +27,7 @@ export function newestModels(models: readonly ModelsDevModel[]): Map<string, Mod
   return latest;
 }
 
-export function claudeAliasTarget(registry: ModelsDevRegistry, alias: string): string | undefined {
+export function claudeAliasTarget(catalog: ModelCatalog, alias: string): string | undefined {
   if (!["opus", "sonnet", "haiku", "fable"].includes(alias)) return undefined;
-  return newestModels(Object.values(registry.anthropic?.models ?? {})).get(`claude-${alias}`)?.id;
+  return newestModels(catalog.models("anthropic")).get(`claude-${alias}`)?.id;
 }

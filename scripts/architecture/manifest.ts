@@ -2130,17 +2130,16 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "core-config/v1.ts", exportName },
         category: "projection" as const,
       })),
-      ...["ModelCatalogCache.refresh", "ModelCatalogCache.initialize"].map((exportName) => ({
-        identity: { module: "model-catalog-cache.ts", exportName },
-        category: "wire" as const,
-      })),
       {
-        identity: {
-          module: "model-catalog-schema.ts",
-          exportName: "decodeModelsDevRegistry",
-        },
+        identity: { module: "model-catalog-cache.ts", exportName: "ModelCatalogCache.refresh" },
         category: "wire",
       },
+      ...["decodeModelsDevRegistry", "decodeModelsDevProviderInfo", "decodeModelsDevModel"].map(
+        (exportName) => ({
+          identity: { module: "model-catalog-schema.ts", exportName },
+          category: "wire" as const,
+        }),
+      ),
       {
         identity: {
           module: "model-capability.ts",
@@ -5494,7 +5493,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "6b96acfd02dded2b24310db6550d1a08e0952523edb1b4363bc8100d550846fa";
+  "41735f0c6556a1cbdcb6df455ff62612cdf043c323e188991c81ad3752ba76cb";
 
 export const architectureManifest = {
   version: 1,

@@ -49,13 +49,42 @@ const modelsDevProviderSchema = z.object({
   doc: z.string().optional(),
   models: z.record(z.string(), modelsDevModelSchema),
 });
+const modelsDevProviderInfoSchema = modelsDevProviderSchema.omit({ models: true });
 const modelsDevRegistrySchema = z.record(z.string(), modelsDevProviderSchema);
 
 export type ModelsDevRegistry = z.output<typeof modelsDevRegistrySchema>;
-export type ModelsDevProvider = z.output<typeof modelsDevProviderSchema>;
+export type ModelsDevProviderInfo = z.output<typeof modelsDevProviderInfoSchema>;
 export type ModelsDevModel = z.output<typeof modelsDevModelSchema>;
+
+export type ModelCatalog = {
+  providerIds(): string[];
+  provider(id: string): ModelsDevProviderInfo | undefined;
+  model(provider: string, id: string): ModelsDevModel | undefined;
+  models(provider: string): ModelsDevModel[];
+  modelIds(provider: string): string[];
+};
 
 export function decodeModelsDevRegistry(value: unknown): ModelsDevRegistry | undefined {
   const parsed = modelsDevRegistrySchema.safeParse(value);
   return parsed.success && Object.keys(parsed.data).length > 0 ? parsed.data : undefined;
+}
+
+export function decodeModelsDevProviderInfo(value: unknown): ModelsDevProviderInfo | undefined {
+  const parsed = modelsDevProviderInfoSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+export function decodeModelsDevModel(value: unknown): ModelsDevModel | undefined {
+  const parsed = modelsDevModelSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+export function registryModelCatalog(registry: ModelsDevRegistry): ModelCatalog {
+  return {
+    providerIds: () => Object.keys(registry),
+    provider: (id) => registry[id],
+    model: (provider, id) => registry[provider]?.models[id],
+    models: (provider) => Object.values(registry[provider]?.models ?? {}),
+    modelIds: (provider) => Object.keys(registry[provider]?.models ?? {}),
+  };
 }

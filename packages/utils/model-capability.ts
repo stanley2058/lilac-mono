@@ -2,8 +2,9 @@ import type { LanguageModelUsage } from "ai";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import {
   decodeModelsDevRegistry,
-  type ModelsDevRegistry,
-  type ModelsDevProvider,
+  registryModelCatalog,
+  type ModelCatalog,
+  type ModelsDevProviderInfo,
   type ModelsDevModel,
 } from "./model-catalog-schema";
 import { modelCatalogCache } from "./model-catalog-cache";
@@ -108,7 +109,7 @@ const DEFAULT_PROVIDER_ALIASES = {
 } as const satisfies Record<string, string>;
 
 type RegistryLookupResult = {
-  providerEntry: ModelsDevProvider;
+  providerEntry: ModelsDevProviderInfo;
   modelEntry: ModelsDevModel;
 };
 
@@ -163,10 +164,6 @@ export function parseModelSpecifier(spec: string): ParsedModelSpecifier {
   return resolved.value;
 }
 
-function listSomeKeys(input: Record<string, unknown>, max: number): string[] {
-  return Object.keys(input).slice(0, max);
-}
-
 export class ModelCapability {
   private readonly overrides: ModelCapabilityOverrides;
   private readonly providerAliases: Record<string, string>;
@@ -175,7 +172,7 @@ export class ModelCapability {
   private readonly fetchFn: typeof fetch;
 
   private registryPromise: Promise<
-    ResultType<ModelsDevRegistry, ModelCapabilityResolutionFailed>
+    ResultType<ModelCatalog, ModelCapabilityResolutionFailed>
   > | null = null;
 
   constructor(options?: ModelCapabilityOptions) {
@@ -220,13 +217,12 @@ export class ModelCapability {
   }
 
   private lookupModelEntry(
-    providerEntry: ModelsDevProvider | undefined,
+    catalog: ModelCatalog,
+    provider: string,
     model: string,
   ): ModelsDevModel | null {
-    if (!providerEntry) return null;
-
     for (const candidate of this.modelLookupCandidates(model)) {
-      const modelEntry = providerEntry.models[candidate];
+      const modelEntry = catalog.model(provider, candidate);
       if (modelEntry) return modelEntry;
     }
 
@@ -234,12 +230,12 @@ export class ModelCapability {
   }
 
   private lookupWithFallback(params: {
-    registry: ModelsDevRegistry;
+    catalog: ModelCatalog;
     provider: string;
     model: string;
   }): RegistryLookupResult | null {
-    const providerEntry = params.registry[params.provider];
-    const directModelEntry = this.lookupModelEntry(providerEntry, params.model);
+    const providerEntry = params.catalog.provider(params.provider);
+    const directModelEntry = this.lookupModelEntry(params.catalog, params.provider, params.model);
     if (providerEntry && directModelEntry) {
       return {
         providerEntry,
@@ -255,8 +251,12 @@ export class ModelCapability {
     if (!nested) return null;
 
     const fallbackProvider = this.normalizeProvider(nested.provider);
-    const fallbackProviderEntry = params.registry[fallbackProvider];
-    const fallbackModelEntry = this.lookupModelEntry(fallbackProviderEntry, nested.model);
+    const fallbackProviderEntry = params.catalog.provider(fallbackProvider);
+    const fallbackModelEntry = this.lookupModelEntry(
+      params.catalog,
+      fallbackProvider,
+      nested.model,
+    );
     if (!fallbackProviderEntry || !fallbackModelEntry) {
       return null;
     }
@@ -268,7 +268,7 @@ export class ModelCapability {
   }
 
   private resolveModelCost(params: {
-    registry: ModelsDevRegistry;
+    catalog: ModelCatalog;
     provider: string;
     model: string;
     modelEntry: ModelsDevModel;
@@ -286,8 +286,7 @@ export class ModelCapability {
     if (!nested) return cost;
 
     const nestedProvider = this.normalizeProvider(nested.provider);
-    const nestedProviderEntry = params.registry[nestedProvider];
-    const nestedModelEntry = this.lookupModelEntry(nestedProviderEntry, nested.model);
+    const nestedModelEntry = this.lookupModelEntry(params.catalog, nestedProvider, nested.model);
     const nestedTier = nestedModelEntry?.cost?.context_over_200k;
     if (!nestedTier) return cost;
 
@@ -333,7 +332,7 @@ export class ModelCapability {
 
   private async loadRegistryResult(
     signal?: AbortSignal,
-  ): Promise<ResultType<ModelsDevRegistry, ModelCapabilityResolutionFailed>> {
+  ): Promise<ResultType<ModelCatalog, ModelCapabilityResolutionFailed>> {
     if (this.fetchFn === fetch && this.apiUrl === "https://models.dev/api.json") {
       return Result.ok(await modelCatalogCache.read());
     }
@@ -376,7 +375,7 @@ export class ModelCapability {
         const payload = decodeOutcome.value;
         const registry = decodeModelsDevRegistry(payload);
         return registry
-          ? Result.ok(registry)
+          ? Result.ok(registryModelCatalog(registry))
           : Result.err(
               new ModelCapabilityResolutionFailed({
                 spec: this.apiUrl,
@@ -542,25 +541,25 @@ export class ModelCapability {
       );
     }
 
-    const registryResult = await this.loadRegistryResult(options?.signal);
-    const registry = registryResult.match<ModelsDevRegistry | ModelCapabilityResolutionFailed>({
+    const catalogResult = await this.loadRegistryResult(options?.signal);
+    const catalog = catalogResult.match<ModelCatalog | ModelCapabilityResolutionFailed>({
       ok: (value) => value,
       err: (error) => error,
     });
-    if (ModelCapabilityResolutionFailed.is(registry)) return Result.err(registry);
+    if (ModelCapabilityResolutionFailed.is(catalog)) return Result.err(catalog);
     const lookedUp = this.lookupWithFallback({
-      registry,
+      catalog,
       provider,
       model:
         parsedSpec.provider === "claude-code"
-          ? (claudeAliasTarget(registry, parsedSpec.model) ?? parsedSpec.model)
+          ? (claudeAliasTarget(catalog, parsedSpec.model) ?? parsedSpec.model)
           : parsedSpec.model,
     });
 
     if (!lookedUp) {
-      const providerEntry = registry[provider];
+      const providerEntry = catalog.provider(provider);
       if (!providerEntry) {
-        const available = listSomeKeys(registry, 10);
+        const available = catalog.providerIds().slice(0, 10);
         return Result.err(
           new ModelCapabilityResolutionFailed({
             spec,
@@ -569,7 +568,7 @@ export class ModelCapability {
         );
       }
 
-      const available = listSomeKeys(providerEntry.models, 10);
+      const available = catalog.modelIds(provider).slice(0, 10);
       return Result.err(
         new ModelCapabilityResolutionFailed({
           spec,
@@ -580,7 +579,7 @@ export class ModelCapability {
 
     const { providerEntry, modelEntry } = lookedUp;
     const cost = this.resolveModelCost({
-      registry,
+      catalog,
       provider: parsedSpec.provider,
       model: parsedSpec.model,
       modelEntry,

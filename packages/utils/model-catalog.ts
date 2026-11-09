@@ -6,7 +6,7 @@ import { MODEL_REASONING_EFFORTS } from "./core-config/types";
 import { env } from "./env";
 import { modelCatalogCache } from "./model-catalog-cache";
 import { claudeAliasTarget, modelFamily, newestModels } from "./model-catalog-family";
-import type { ModelsDevModel, ModelsDevRegistry } from "./model-catalog-schema";
+import type { ModelCatalog, ModelsDevModel } from "./model-catalog-schema";
 import { modelRuleDefaults } from "./model-rules";
 
 export type CatalogModel = {
@@ -113,31 +113,31 @@ export function configuredCatalogProviders(config: CoreConfig): string[] {
 
 function catalogMetadata(
   config: CoreConfig,
-  registry: ModelsDevRegistry,
+  catalog: ModelCatalog,
   spec: string,
   seen = new Set<string>(),
 ): ModelsDevModel | undefined {
   if (seen.has(spec)) return undefined;
   seen.add(spec);
   const inherited = config.models.capability.overrides[spec]?.inherit;
-  if (inherited && inherited !== spec) return catalogMetadata(config, registry, inherited, seen);
+  if (inherited && inherited !== spec) return catalogMetadata(config, catalog, inherited, seen);
   const slash = spec.indexOf("/");
   const provider = spec.slice(0, slash);
   const model = spec.slice(slash + 1);
   const upstream = { codex: "openai", "claude-code": "anthropic" }[provider] ?? provider;
-  const target = provider === "claude-code" ? (claudeAliasTarget(registry, model) ?? model) : model;
-  return registry[upstream]?.models[target];
+  const target = provider === "claude-code" ? (claudeAliasTarget(catalog, model) ?? model) : model;
+  return catalog.model(upstream, target);
 }
 
 export function projectModelCatalog(
   config: CoreConfig,
-  registry: ModelsDevRegistry = modelCatalogCache.current(),
+  catalog: ModelCatalog = modelCatalogCache.current(),
 ): CatalogModel[] {
   const models = new Map<string, CatalogModel>();
   const enabled = configuredCatalogProviders(config);
   for (const provider of enabled) {
     const upstream = { codex: "openai", "claude-code": "anthropic" }[provider] ?? provider;
-    const entries = Object.values(registry[upstream]?.models ?? {}).filter(textModel);
+    const entries = catalog.models(upstream).filter(textModel);
     const latest = newestModels(entries);
     const vendors = newestByVendor(entries);
     for (const entry of entries) {
@@ -165,7 +165,7 @@ export function projectModelCatalog(
     }
     if (provider !== "claude-code") continue;
     for (const alias of CLAUDE_ALIASES) {
-      const target = claudeAliasTarget(registry, alias);
+      const target = claudeAliasTarget(catalog, alias);
       const base = target ? models.get(`${provider}/${target}`) : undefined;
       if (!base) continue;
       const id = `${provider}/${alias}`;
@@ -222,7 +222,7 @@ export function projectModelCatalog(
   }
   for (const entry of models.values()) {
     const spec = `${entry.provider}/${entry.model}`;
-    const metadata = catalogMetadata(config, registry, spec);
+    const metadata = catalogMetadata(config, catalog, spec);
     if (metadata) {
       const supported =
         metadata.reasoning_options?.flatMap((option) =>
@@ -242,10 +242,10 @@ export function projectModelCatalog(
 
 export function catalogReleaseDate(
   config: CoreConfig,
-  registry: ModelsDevRegistry,
+  catalog: ModelCatalog,
   model: Pick<CatalogModel, "provider" | "model">,
 ): string | undefined {
-  return catalogMetadata(config, registry, `${model.provider}/${model.model}`)?.release_date;
+  return catalogMetadata(config, catalog, `${model.provider}/${model.model}`)?.release_date;
 }
 
 export function findCatalogModel(config: CoreConfig, id: string): CatalogModel | undefined {

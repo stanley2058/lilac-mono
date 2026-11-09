@@ -84,8 +84,11 @@ fields are ignored.
 ### Model catalog and option rules
 
 V3 discovers selectable models from models.dev for configured runtime providers. The build bundles a
-snapshot; Core shares one memory catalog and caches validated JSON in `DATA_DIR/cache/models.dev.json`.
-Stale data refreshes at most daily in the background. Failed refreshes retain the last good data.
+snapshot that seeds a shared SQLite store at `DATA_DIR/cache/models.dev.sqlite`. Every Core worker reads
+single rows from it, and only the main isolate fetches. Stale data refreshes at most daily in the
+background. Failed refreshes retain the last good data. The store is a rebuildable cache: deleting it, or
+upgrading to a build with a different store version, reseeds it from the snapshot. Upgraded installs can
+delete the unused `DATA_DIR/cache/models.dev.json`.
 `models.catalog.providers.<provider>` accepts `auto` (default), `enabled`, or `disabled`.
 Enabling a catalog does not supply credentials or install a provider adapter.
 
