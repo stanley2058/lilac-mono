@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -33,6 +33,20 @@ describe("job tool", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  function untilLogContains(jobId: string, text: string): Promise<void> {
+    const logPath = path.join(dir, "logs", `${jobId}.log`);
+    return new Promise((resolve) => {
+      const poll = () => {
+        if (existsSync(logPath) && readFileSync(logPath, "utf8").includes(text)) {
+          resolve();
+          return;
+        }
+        setImmediate(poll);
+      };
+      poll();
+    });
+  }
+
   function call(input: Record<string, unknown>, overrides: { context?: unknown } = {}) {
     const created = createJobTool({ service: jobs, defaultCwd: tmpdir(), runProfile: "primary" });
     return created.execute!(
@@ -58,11 +72,12 @@ describe("job tool", () => {
     const listed = await call({ action: "list" });
     expect(listed["jobs"].map((job: { jobId: string }) => job.jobId)).toEqual([jobId]);
 
+    await untilLogContains(jobId, "ready");
+    const read = await call({ action: "read", jobId });
+    expect(read["output"]).toBe("ready\n");
+
     const stopped = await call({ action: "stop", jobId });
     expect(stopped["job"].status).toBe("stopped");
-
-    const read = await call({ action: "read", jobId });
-    expect(read["output"]).toContain("ready");
   });
 
   it("applies foreground Bash's guardrails", async () => {

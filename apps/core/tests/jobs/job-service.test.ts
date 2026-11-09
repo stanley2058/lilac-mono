@@ -154,6 +154,21 @@ describe("JobService", () => {
     expect(read.output.output).not.toContain(secret);
   });
 
+  it("shows a running job's output before the job ends", async () => {
+    const job = ok<JobRecord>(
+      await start(service, "printf 'listening on :3000\\n'; sleep 60", {
+        mode: "service",
+        literalSecrets: ["a-secret-longer-than-the-output-line-so-far"],
+      }),
+    );
+    await untilLogContains(job.jobId, "listening on :3000");
+    const read = ok<{ job: JobRecord; output: { output: string } }>(
+      await service.read(owner.sessionId, job.jobId, {}),
+    );
+    expect(read.job.status).toBe("running");
+    expect(read.output.output).toBe("listening on :3000\n");
+  });
+
   it("caps captured output and keeps the job running to completion", async () => {
     const job = ok<JobRecord>(
       await start(service, `head -c ${JOB_LIMITS.maxOutputBytes + 1024} /dev/zero | tr '\\0' 'x'`),
@@ -469,6 +484,20 @@ describe("JobService", () => {
     return new Promise((resolve) => {
       const poll = () => {
         if (ok<JobRecord | null>(store.get(jobId))?.delivery === delivery) {
+          resolve();
+          return;
+        }
+        setImmediate(poll);
+      };
+      poll();
+    });
+  }
+
+  function untilLogContains(jobId: string, text: string): Promise<void> {
+    const logPath = path.join(dir, "logs", `${jobId}.log`);
+    return new Promise((resolve) => {
+      const poll = () => {
+        if (existsSync(logPath) && readFileSync(logPath, "utf8").includes(text)) {
           resolve();
           return;
         }

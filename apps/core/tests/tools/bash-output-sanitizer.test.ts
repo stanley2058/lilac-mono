@@ -8,6 +8,7 @@ import { Panic } from "better-result";
 import {
   BashOutputCleanupError,
   BashOutputStreamAndCleanupError,
+  createBashOutputSanitizer,
   createBashOutputSanitizerTransform,
   getPreOverflowRawByteLimit,
   MAX_PRE_OVERFLOW_RAW_BYTES,
@@ -93,6 +94,14 @@ describe("bash output sanitizer stream", () => {
     expect(await sanitizeChunks(["before secret-", "token after"], ["secret-token"])).toBe(
       "before <redacted> after",
     );
+  });
+
+  it("releases output at once unless it could be the start of a secret", () => {
+    const sanitizer = createBashOutputSanitizer(["a-long-secret-value"]);
+    const encode = (text: string) => new TextEncoder().encode(text);
+    expect(sanitizer.write(encode("listening on :3000\n"))).toBe("listening on :3000\n");
+    expect(sanitizer.write(encode("token a-long-sec"))).toBe("");
+    expect(sanitizer.write(encode("ret-value\n"))).toBe("token <redacted>\n");
   });
 
   it("applies pattern redaction across stream chunks", async () => {

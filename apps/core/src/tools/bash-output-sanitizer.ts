@@ -102,7 +102,10 @@ class StreamingLiteralRedactor {
     let cursor = 0;
 
     while (cursor < input.length) {
-      if (!final && input.length - cursor < this.maxSecretLength) break;
+      // Hold back only text that the next chunk could complete into a secret, so a quiet
+      // long-running process still shows its latest output. This runs before matching
+      // because a longer secret takes precedence over a shorter one at the same position.
+      if (!final && this.couldStartSecret(input, cursor)) break;
 
       const secret = this.secrets.find((value) => input.startsWith(value, cursor));
       if (secret) {
@@ -111,19 +114,21 @@ class StreamingLiteralRedactor {
         continue;
       }
 
-      const startsSurrogatePair =
-        /[\uD800-\uDBFF]/u.test(input[cursor] ?? "") &&
-        /[\uDC00-\uDFFF]/u.test(input[cursor + 1] ?? "");
-      if (startsSurrogatePair && !final && input.length - (cursor + 1) < this.maxSecretLength) {
-        break;
-      }
-
-      output += input[cursor];
-      cursor += 1;
+      const codePoint = String.fromCodePoint(input.codePointAt(cursor) ?? 0);
+      output += codePoint;
+      cursor += codePoint.length;
     }
 
     this.carry = final ? "" : input.slice(cursor);
     return output;
+  }
+
+  private couldStartSecret(input: string, cursor: number): boolean {
+    if (input.length - cursor >= this.maxSecretLength) return false;
+    const remaining = input.slice(cursor);
+    return this.secrets.some(
+      (secret) => secret.length > remaining.length && secret.startsWith(remaining),
+    );
   }
 }
 
