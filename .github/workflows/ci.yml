@@ -16,7 +16,7 @@ permissions:
 jobs:
   ci:
     name: Source checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       REDIS_URL: redis://127.0.0.1:6379
@@ -46,6 +46,12 @@ jobs:
           sudo apt-get install -y fd-find ripgrep
           sudo ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
+      # GitHub has no Debian runners. Match the GNU coreutils in the Debian images.
+      - name: Use GNU coreutils
+        run: |
+          sudo apt-get install -y --allow-remove-essential coreutils-from-gnu coreutils-from-uutils-
+          cat --version | grep -F 'GNU coreutils'
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -54,7 +60,7 @@ jobs:
 
   docker-image:
     name: Docker image smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
 
     steps:

@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=ubuntu:24.04
+ARG BASE_IMAGE=debian:13
 ARG NODE_MAJOR=22
 ARG CONTAINER_UID=1000
 
@@ -71,13 +71,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
      fi \
   && rm -rf /var/lib/apt/lists/*
 
-# Ubuntu/Debian call it "fdfind"
+# Debian calls it "fdfind"
 RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 ARG CONTAINER_UID
 
 # Create a dedicated regular user instead of inheriting an image account's
-# groups or account settings. Ubuntu reserves UID/GID 1000 for `ubuntu`.
+# groups or account settings.
 RUN case "$CONTAINER_UID" in \
       ''|*[!0-9]*) echo "CONTAINER_UID must be a numeric regular-user UID" >&2; exit 1 ;; \
     esac \
@@ -87,22 +87,14 @@ RUN case "$CONTAINER_UID" in \
   && if id -u "$LILAC_USER" >/dev/null 2>&1; then \
        userdel --remove "$LILAC_USER"; \
      fi \
-  && existing_user="$(getent passwd "$CONTAINER_UID" | cut -d: -f1 || true)" \
-  && if [ -n "$existing_user" ]; then \
-       if [ "$existing_user" != "ubuntu" ]; then \
-         echo "CONTAINER_UID is already assigned to a base-image account" >&2; exit 1; \
-       fi; \
-       userdel --remove ubuntu; \
+  && if getent passwd "$CONTAINER_UID" >/dev/null 2>&1; then \
+       echo "CONTAINER_UID is already assigned to a base-image account" >&2; exit 1; \
      fi \
   && if getent group "$LILAC_USER" >/dev/null 2>&1; then \
        groupdel "$LILAC_USER"; \
      fi \
-  && existing_group="$(getent group "$CONTAINER_UID" | cut -d: -f1 || true)" \
-  && if [ -n "$existing_group" ]; then \
-       if [ "$existing_group" != "ubuntu" ]; then \
-         echo "CONTAINER_UID is already assigned to a base-image group" >&2; exit 1; \
-       fi; \
-       groupdel ubuntu; \
+  && if getent group "$CONTAINER_UID" >/dev/null 2>&1; then \
+       echo "CONTAINER_UID is already assigned to a base-image group" >&2; exit 1; \
      fi \
   && groupadd --gid "$CONTAINER_UID" "$LILAC_USER" \
   && useradd --create-home --uid "$CONTAINER_UID" --gid "$LILAC_USER" \
