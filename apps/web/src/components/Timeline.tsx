@@ -6,6 +6,7 @@ import {
   lastTurnMessageTime,
   sameMessageAuthor,
   workflowPostsDuring,
+  latestReadableTurnId,
 } from "../message-grouping";
 import {
   ContextMenu,
@@ -312,13 +313,10 @@ function useMessageServicesValue({
 
 export function useLatestReadableTurn(store: NativeThreadStore) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
-  const snapshot = useCallback(() => {
-    const id = store.slotIds.at(-1);
-    const slot = id ? store.get(id) : undefined;
-    if (slot?.kind !== "ready" || slot.state === "pending" || slot.state === "running")
-      return undefined;
-    return slot.turnId;
-  }, [store]);
+  const snapshot = useCallback(
+    () => latestReadableTurnId(store.slotIds, (id) => store.get(id)),
+    [store],
+  );
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
@@ -770,6 +768,8 @@ const SlotRow = memo(function SlotRow(props: {
   const previousTime = useSlotTime(props.store, timestamps ? previousSlotId : undefined);
   const slot = stored?.kind === "ready" ? stored : (props.fallback ?? stored);
   if (!slot || posts.folded) return null;
+  // A background job's wake runs with no message and appears only if the agent writes a reply.
+  if (slot.kind === "ready" && slot.messages.length === 0) return null;
   if (slot.kind !== "ready")
     return slot.kind === "failed" ? (
       <div className="history-placeholder text-center bg-surface my-3 mx-6 rounded-md flex justify-center gap-3">

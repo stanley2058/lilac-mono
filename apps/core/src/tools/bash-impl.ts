@@ -892,6 +892,92 @@ function buildLocalSpawnArgs(command: string, stdinMode: BashStdinMode): string[
   return ["bash", "-c", `exec 0>/dev/null; ${command}`];
 }
 
+export type BackgroundBashLaunch =
+  | { readonly kind: "blocked"; readonly message: string }
+  | {
+      readonly kind: "ready";
+      readonly launch: {
+        readonly args: readonly string[];
+        readonly cwd: string;
+        readonly env: NodeJS.ProcessEnv;
+        readonly literalSecrets: readonly string[];
+        readonly redactedCommand: string;
+      };
+    };
+
+/** Applies foreground Bash's guardrails and environment to a command that runs as a job. */
+export async function prepareBackgroundBashLaunch(
+  { command, cwd, dangerouslyAllow }: Pick<BashToolInput, "command" | "cwd" | "dangerouslyAllow">,
+  {
+    context,
+    toolCallId,
+    controlCapability,
+    subagentProfile,
+  }: {
+    context: {
+      requestId: string;
+      requestDeliveryId?: string;
+      sessionId: string;
+      requestClient: string;
+      currentTurnUserId?: string;
+    };
+    toolCallId: string;
+    controlCapability?: string;
+    subagentProfile?: string;
+  },
+): Promise<BackgroundBashLaunch> {
+  const cwdTarget = parseSshCwdTarget(cwd);
+  if (cwdTarget.kind === "ssh") {
+    return { kind: "blocked", message: "Background jobs cannot run on SSH targets." };
+  }
+  const resolvedCwd = cwdTarget.cwd ? expandTilde(cwdTarget.cwd) : process.cwd();
+  if (!dangerouslyAllow) {
+    const blocked = analyzeBashCommand(command, {
+      cwd: resolvedCwd,
+      protectedPaths: [path.resolve(env.dataDir, "secret")],
+    });
+    if (blocked) {
+      return {
+        kind: "blocked",
+        message: formatBlockedMessage({
+          reason: blocked.reason,
+          hint: blocked.hint,
+          command,
+          segment: blocked.segment,
+          redact: redactSecrets,
+        }),
+      };
+    }
+  }
+  const githubEnv = await getGithubEnvForBash({ dataDir: env.dataDir });
+  const vcsEnv = resolveVcsEnv({ dataDir: env.dataDir });
+  const toolEnv = await loadToolEnv(env.dataDir);
+  return {
+    kind: "ready",
+    launch: {
+      args: buildLocalSpawnArgs(command, DEFAULT_BASH_STDIN_MODE),
+      cwd: resolvedCwd,
+      env: buildBashChildEnv({
+        toolEnv,
+        githubEnv,
+        vcsEnv,
+        context,
+        resolvedCwd,
+        toolCallId,
+        controlCapability,
+        subagentProfile,
+      }),
+      literalSecrets: [
+        ...Object.values(toolEnv),
+        ...Object.entries(githubEnv)
+          .filter(([name]) => name.includes("TOKEN"))
+          .map(([, value]) => value),
+      ].map(stripAnsiEscapeSequences),
+      redactedCommand: redactSecrets(command),
+    },
+  };
+}
+
 export async function executeBash(
   { command, cwd, timeoutMs, stdinMode, dangerouslyAllow }: BashToolInput,
   {

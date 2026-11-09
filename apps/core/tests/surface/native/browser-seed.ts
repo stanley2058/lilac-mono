@@ -327,6 +327,52 @@ export function seedNativeBrowserFixture(
       `Saved the visible note for fixture ${index + 1}.`,
     );
   }
+  const jobWake = store
+    .createThread("owner", { commandId: "browser-job-wake", title: "Hidden background job wake" })
+    .unwrap();
+  completedTurn(
+    store,
+    options.transcript,
+    jobWake.id,
+    0,
+    "Start the dev server.",
+    "The dev server is running.",
+  );
+  const silentWake = completedTurn(
+    store,
+    options.transcript,
+    jobWake.id,
+    1,
+    "This turn stands in for a silent wake.",
+    "This reply is removed below.",
+  );
+  // A wake the agent answered with NO_REPLY is a settled turn with no display messages.
+  options.database
+    .query(
+      "UPDATE native_records SET data_json=json_set(data_json,'$.value.messages',json('[]')) WHERE id=?",
+    )
+    .run(silentWake.turnId!);
+  completedTurn(
+    store,
+    options.transcript,
+    jobWake.id,
+    2,
+    "Is the server still up?",
+    "Yes, it is still running.",
+  );
+  const latestSilentWake = completedTurn(
+    store,
+    options.transcript,
+    jobWake.id,
+    3,
+    "This turn stands in for a silent wake at the end of the thread.",
+    "This reply is removed below.",
+  );
+  options.database
+    .query(
+      "UPDATE native_records SET data_json=json_set(data_json,'$.value.messages',json('[]')) WHERE id=?",
+    )
+    .run(latestSilentWake.turnId!);
   const rich = store
     .createThread("owner", { commandId: "browser-rich", title: "Markdown, math, and diagrams" })
     .unwrap();
@@ -458,6 +504,7 @@ export function seedNativeBrowserFixture(
     trip,
     media,
     questions,
+    jobWake: jobWake.id,
     rich: rich.id,
     history: long.id,
     largeTurn: largeTurn.id,

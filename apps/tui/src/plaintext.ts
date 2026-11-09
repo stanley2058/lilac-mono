@@ -41,6 +41,11 @@ export function messageText(message: DisplayMessage): string {
   return safeText(`${message.metadata?.authorId ?? message.role}:\n${parts.join("\n")}`);
 }
 
+/** A background job's wake runs with no message and appears only if the agent writes a reply. */
+export function isHiddenSlot(slot: TurnSlot): boolean {
+  return slot.kind === "ready" && slot.messages.length === 0;
+}
+
 export function slotText(slot: TurnSlot): string {
   if (slot.kind === "failed")
     return safeText(`History unavailable: ${slot.message}. :older retries.`);

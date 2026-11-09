@@ -1,3 +1,4 @@
+import type { JobWakeDelivery } from "../../jobs/job-service";
 import { captureError } from "../../shared/error-capture";
 import {
   createLogger,
@@ -40,7 +41,11 @@ import {
   type RequestCompositionResult,
 } from "../bridge/request-composition";
 import { deleteDiscordRequestBlobHandles } from "../bridge/request-composition/attachments";
-import { formatDiscordMessageRequestId } from "../bridge/request-ids";
+import { prepareStoredMessagesForBus } from "../bridge/request-composition/prepare-bus-messages";
+import {
+  formatDiscordJobWakeRequestId,
+  formatDiscordMessageRequestId,
+} from "../bridge/request-ids";
 import { recordRequestLatencyStage } from "../bridge/request-latency-trace";
 
 import {
@@ -365,9 +370,17 @@ type RouterDeliverySubscription = {
   stop(): Promise<ResultType<void, EventDeliveryStopFailed>>;
 };
 
+export type DiscordJobWakeInput = {
+  readonly wakeId: string;
+  readonly sessionId: string;
+  readonly originMessageId: string | null;
+  readonly promptText: string;
+};
+
 export type DiscordRequestRouter = {
   readonly done: Promise<ResultType<void, EventDeliveryDoneError>>;
   stop(): Promise<void>;
+  publishJobWake(input: DiscordJobWakeInput): Promise<ResultType<JobWakeDelivery, Error>>;
 };
 
 export type ResidualDiscordRequestRouter = {
@@ -1861,6 +1874,69 @@ export async function startDiscordRequestRouter(
     return transformPendingUserTextImpl(item);
   }
 
+  /**
+   * Starts a run without posting anything to the channel. Its history is the session's latest
+   * transcript, and its request ID binds it to the job's origin message, so the run keeps that
+   * person's authority and any reply it chooses to send threads under that message.
+   */
+  async function publishJobWake(
+    input: DiscordJobWakeInput,
+  ): Promise<ResultType<JobWakeDelivery, Error>> {
+    if (!input.originMessageId) return Result.ok("unavailable");
+    const originRef: MsgRef = {
+      platform: "discord",
+      channelId: input.sessionId,
+      messageId: input.originMessageId,
+    };
+    const origin = (await adapter.readMsg(originRef)).match({
+      ok: (message) => message,
+      err: () => null,
+    });
+    if (origin?.session.platform !== "discord") return Result.ok("unavailable");
+    const { parentChannelId, guildId } = origin.session;
+
+    const transcript = params.transcriptStore?.getLatestTranscriptBySession?.({
+      sessionId: input.sessionId,
+    });
+    const history = transcript?.match({ ok: (value) => value, err: () => null });
+    if (!history) return Result.ok("unavailable");
+    const prepared = await prepareStoredMessagesForBus({
+      blobStore: params.blobStore,
+      messages: [...history.messages, { role: "user", content: input.promptText }],
+    });
+    const bus = prepared.match({ ok: (value) => value, err: () => null });
+    if (!bus) return Result.ok("unavailable");
+
+    const isDm = guildId === undefined;
+    const published = await publishBusRequest({
+      requestDeliveryId: input.wakeId,
+      requestId: formatDiscordJobWakeRequestId({
+        channelId: input.sessionId,
+        messageId: input.originMessageId,
+        wakeId: input.wakeId,
+      }),
+      sessionId: input.sessionId,
+      sessionConfigId: isDm
+        ? input.sessionId
+        : resolveSessionConfigId({ cfg, sessionId: input.sessionId, parentChannelId, guildId }),
+      parentChannelId,
+      queue: "prompt",
+      triggerType: "reply",
+      sessionMode: isDm ? "active" : getSessionMode(cfg, input.sessionId, parentChannelId, guildId),
+      messages: bus.messages,
+      inputHandles: bus.inputHandles,
+      corePrimaryLineage: createFreshOnlyLineage("job-wake", history.messages.length),
+      originMessage: origin,
+      raw: {
+        triggerType: "reply",
+        jobWake: true,
+        chainMessageIds: [input.originMessageId],
+        participantUserIds: [origin.userId],
+      },
+    });
+    return published.map(() => "accepted" as const).mapError((error) => new Error(error.message));
+  }
+
   async function flushPendingMentionReplyBatchAsFollowUp(input: {
     sessionId: string;
     sourceRequestId: string;
@@ -3230,6 +3306,7 @@ export async function startDiscordRequestRouter(
     residualRouter: null,
     result: Result.ok({
       done,
+      publishJobWake,
       stop: async () => {
         await adaptRouterSubscriptionsStop(subscriptions).finally(() => {
           for (const b of buffers.values()) {

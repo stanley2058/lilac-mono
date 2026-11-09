@@ -1,3 +1,5 @@
+import { nativeSessionId } from "./native-protocol";
+import type { JobService } from "../../jobs/job-service";
 import type { NativeQuestions } from "./questions";
 import type { NativePush } from "./push";
 import type { NativeComputer } from "./computer";
@@ -39,6 +41,7 @@ import type { NativeSearchStore } from "./store-search";
 import type { NativeSurfaceStore } from "./store-surface";
 
 export type NativeRpcServiceOptions = {
+  jobs?: Pick<JobService, "stopSession">;
   questions?: Pick<NativeQuestions, "read" | "pending" | "dismiss">;
   push?: NativePush;
   computer?: Pick<NativeComputer, "read">;
@@ -153,6 +156,22 @@ class CoalescedWake {
 
 export function createNativeRpcServices(options: NativeRpcServiceOptions): NativeRpcServices {
   const { store, auth, catalogs, config, execution, resources, search, external } = options;
+
+  /**
+   * Settling is a per-user sidebar preference that needs only read access, so a viewer who cannot
+   * edit the thread moves their own sidebar without stopping anything for other participants.
+   */
+  function stopJobsForSettledThread(
+    actorId: string,
+    input: { readonly threadId: string; readonly section: string },
+  ): void {
+    if (input.section !== "settled" || !options.jobs) return;
+    const canEdit = store.authorizeThread(actorId, input.threadId, true).match({
+      ok: () => true,
+      err: () => false,
+    });
+    if (canEdit) void options.jobs.stopSession(nativeSessionId(input.threadId), "thread_settled");
+  }
   let catalogCursor = randomUUID();
   store.subscribe(() => {
     catalogCursor = randomUUID();
@@ -735,7 +754,10 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
         return store.listSidebar(principal.userId, input);
       },
       move(principal, input) {
-        return store.moveSidebarThread(principal.userId, input);
+        return store.moveSidebarThread(principal.userId, input).map((moved) => {
+          stopJobsForSettledThread(principal.userId, input);
+          return moved;
+        });
       },
     },
     threads: {
@@ -807,11 +829,15 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
               input.reasoning ??
                 (input.modelId && input.modelId !== thread.modelId ? undefined : thread.reasoning),
             );
-          return store.updateThread(principal.userId, {
+          const updated = yield* store.updateThread(principal.userId, {
             ...input,
             revision: input.expectedRevision,
             commandId: randomUUID(),
           });
+          if (input.archived === true) {
+            void options.jobs?.stopSession(nativeSessionId(input.threadId), "thread_archived");
+          }
+          return Result.ok(updated);
         });
       },
       async delete(principal, input) {

@@ -1,3 +1,7 @@
+import { formatJobWakeText } from "../jobs/job-events";
+import { JobService } from "../jobs/job-service";
+import { SqliteJobStore } from "../jobs/job-store";
+import { nativeThreadId } from "../surface/native/native-protocol";
 import { ConversationThreadSearchPool } from "../conversation/thread-search-pool";
 import { nativeFailure } from "../surface/native/errors";
 import { openNativeInstallation, type NativeInstallation } from "../surface/native/installation";
@@ -2008,6 +2012,8 @@ export async function createCoreRuntime(
   let requestDeliveryStore: ReturnType<typeof createCoreRequestDelivery>["store"] | null = null;
   let agentRunJournal: SqliteAgentRunJournal | null = null;
   let questionStore: SqliteQuestionStore | null = null;
+  let jobStore: SqliteJobStore | null = null;
+  let jobService: JobService | null = null;
   let durableWorkflowStore: DurableWorkflowStore | null = null;
   let transcriptStore: SqliteTranscriptStore | null = null;
   let resourceService: CoreResourceService | null = null;
@@ -2040,6 +2046,15 @@ export async function createCoreRuntime(
         ? async () => {
             agentRunJournal?.close();
             agentRunJournal = null;
+          }
+        : undefined,
+    );
+    await cleanup.run(
+      "jobStore.createFailure.close",
+      jobStore
+        ? async () => {
+            jobStore?.close();
+            jobStore = null;
           }
         : undefined,
     );
@@ -2186,6 +2201,40 @@ export async function createCoreRuntime(
       });
     },
   });
+  const jobServiceCreation = Result.try({
+    try: () => {
+      const store = new SqliteJobStore({ dbPath: path.join(env.dataDir, "background-jobs.db") });
+      jobStore = store;
+      return new JobService({ store, logDir: path.join(env.dataDir, "background-jobs") });
+    },
+    catch: captureRuntimeError,
+  }).mapError((captured) =>
+    projectCapturedRuntimeError(captured, "Background job store creation failed"),
+  );
+  const jobServiceError = jobServiceCreation.match({
+    ok: (service) => {
+      jobService = service;
+      // Runs before the agent runner so recovered requests see their jobs as lost.
+      service.reconcileAfterRestart();
+      return null;
+    },
+    err: (error) => error,
+  });
+  if (jobServiceError) {
+    if (isPanic(jobServiceError)) {
+      return finishCoreRuntimeCreateFailure({ kind: "panic", panic: jobServiceError });
+    }
+    return finishCoreRuntimeCreateFailure({
+      kind: "result",
+      result: Result.err(
+        new CoreRuntimeCreateFailed({
+          operation: "request-delivery",
+          cause: jobServiceError,
+          message: "Background job store creation failed",
+        }),
+      ),
+    });
+  }
   const questionStoreCreation = Result.try({
     try: () =>
       new SqliteQuestionStore({
@@ -3146,6 +3195,7 @@ export async function createCoreRuntime(
             );
             nativeRuntime = nativeRuntimeResultToHost(
               await createNativeRuntime({
+                ...(jobService ? { jobs: jobService } : {}),
                 installation: nativeInstallation,
                 bus: durableBus,
                 blobs: activeBlobStore,
@@ -3763,6 +3813,7 @@ export async function createCoreRuntime(
               durableWorkflowStore: activeDurableWorkflowStore,
               workflowProgressCards: workflowProgressProjector,
               questions: questionService,
+              ...(jobService ? { jobs: jobService } : {}),
               mcpRegistry,
               mcpOAuthProviders,
               mcpOAuthCallback,
@@ -3976,6 +4027,7 @@ export async function createCoreRuntime(
           // Start agent runner last so it can't publish replies before relay is online.
           const startedAgentRunner = await startBusAgentRunner({
             questions: questionService,
+            ...(jobService ? { jobs: jobService } : {}),
             bus: durableBus,
             blobStore: activeBlobStore,
             requestDelivery: requestDeliveryCoordinator,
@@ -4072,6 +4124,31 @@ export async function createCoreRuntime(
             nativeRuntimeResultToHost(await nativeRuntime.recoverOperator());
             nativeRuntimeResultToHost(await nativeRuntime.execution.recoverMutations());
           }
+          jobService?.startWakes({
+            isSessionBusy: (sessionId) => stopAgentRunner?.isSessionBusy(sessionId) ?? true,
+            port: {
+              deliver: async ({ wakeId, sessionId, jobs }) => {
+                const owner = jobs[0];
+                if (owner?.platform === "native" && nativeRuntime) {
+                  return nativeRuntime.deliverJobWake({
+                    wakeId,
+                    threadId: nativeThreadId(sessionId),
+                    userId: owner.userId,
+                    text: formatJobWakeText(jobs),
+                  });
+                }
+                if (owner?.platform === "discord" && stopRouter) {
+                  return stopRouter.publishJobWake({
+                    wakeId,
+                    sessionId,
+                    originMessageId: owner.originMessageId,
+                    promptText: formatJobWakeText(jobs),
+                  });
+                }
+                return Result.ok("unavailable");
+              },
+            },
+          });
 
           logger.debug("Bus agent runner started");
 
@@ -4424,6 +4501,7 @@ export async function createCoreRuntime(
     if (stopPass === "full") {
       // Stop in reverse order (best-effort).
       await safe("agentRunner.stop", () => stopAgentRunner?.stop() ?? Promise.resolve());
+      await safe("jobService.close", () => jobService?.close() ?? Promise.resolve());
       await safe("native.output.stop", () => nativeRuntime?.stopOutput() ?? Promise.resolve());
       await safe("questionService.stop", () => questionService?.stop() ?? Promise.resolve());
       questionService = null;
@@ -4558,6 +4636,11 @@ export async function createCoreRuntime(
       await safe("agentRunJournal.close", async () => {
         agentRunJournal?.close();
         agentRunJournal = null;
+      });
+      await safe("jobStore.close", async () => {
+        jobStore?.close();
+        jobStore = null;
+        jobService = null;
       });
       await safe("questionStore.close", async () => {
         questionStore?.close();

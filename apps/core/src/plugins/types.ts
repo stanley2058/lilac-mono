@@ -24,6 +24,7 @@ import type { McpOAuthCallbackControl } from "../mcp/oauth-callback";
 import type { RegisteredSurfacePlatform } from "../surface/types";
 import type { AttachmentOutputLifecycle } from "../tools/attachment-output-lifecycle";
 import type { ResourceAccess } from "../resource";
+import type { JobService } from "../jobs/job-service";
 import type { QuestionService } from "../question/question-service";
 
 export type CoreToolPluginRuntime = {
@@ -50,6 +51,7 @@ export type CoreToolPluginRuntime = {
   durableWorkflowStore?: DurableWorkflowStore;
   workflowProgressCards?: WorkflowProgressCardService;
   questions?: QuestionService;
+  jobs?: JobService;
 };
 
 const BOUNDED_BUILTIN_OUTPUT = Symbol("bounded-builtin-output");

@@ -59,6 +59,24 @@ export function joinMessageTurns(
   );
 }
 
+/**
+ * The turn to mark read once it settles. A background job's silent wake has no messages to read, so
+ * the turn before it stays the reader's latest.
+ */
+export function latestReadableTurnId(
+  slotIds: readonly string[],
+  slotById: (id: string) => TurnSlot | undefined,
+): string | undefined {
+  for (const id of slotIds.toReversed()) {
+    const slot = slotById(id);
+    if (slot?.kind === "ready" && slot.messages.length === 0) continue;
+    if (slot?.kind !== "ready" || slot.state === "pending" || slot.state === "running")
+      return undefined;
+    return slot.turnId;
+  }
+  return undefined;
+}
+
 /** Core posts each workflow progress card as its own one-message slot, outside any agent turn. */
 export function isWorkflowPost(slot: TurnSlot | undefined): boolean {
   if (slot?.kind !== "ready" || slot.messages.length !== 1) return false;

@@ -1,3 +1,4 @@
+import { parseRequestId } from "../../../src/surface/bridge/request-ids";
 import { afterEach, describe, expect, it, jest, spyOn } from "bun:test";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 
@@ -894,6 +895,99 @@ describe("Discord authenticated-origin publication", () => {
       },
     });
     readMsg.mockRestore();
+  });
+
+  describe("publishJobWake", () => {
+    const originRef = { platform: "discord" as const, channelId: "channel", messageId: "origin" };
+    const session = { platform: "discord" as const, channelId: "channel", guildId: "guild" };
+    const origin: SurfaceMessage = {
+      ref: originRef,
+      session,
+      userId: "owner",
+      text: "start the build",
+      ts: 1,
+    };
+    const wakeInput = {
+      wakeId: crypto.randomUUID(),
+      sessionId: "channel",
+      originMessageId: "origin",
+      promptText: "Background job update",
+    };
+    const history = [
+      { role: "user" as const, content: "start the build" },
+      { role: "assistant" as const, content: "Started." },
+    ];
+
+    async function startRouter(adapter: FakeAdapter, transcript: unknown = { messages: history }) {
+      const published: { data: Record<string, unknown>; headers: unknown }[] = [];
+      const bus = createLilacBus(createInMemoryRawBus());
+      const router = await startBusRequestRouter({
+        adapter,
+        bus,
+        subscriptionId: `job-wake-${crypto.randomUUID()}`,
+        config: parseCoreConfigV1ToUniversal({}),
+        transcriptStore: {
+          getLatestTranscriptBySession: () => Result.ok(transcript),
+        } as never,
+        requestDelivery: {
+          prepareAndPublish: async ({ envelope }) => {
+            published.push({ data: envelope.data, headers: envelope.headers });
+            return Result.ok(undefined);
+          },
+        },
+      });
+      return { router, published };
+    }
+
+    it("starts a run from the transcript without posting to the channel", async () => {
+      const adapter = new FakeAdapter({ "channel:origin": origin });
+      const send = spyOn(adapter, "sendMsg");
+      const { router, published } = await startRouter(adapter);
+
+      const delivered = await router.publishJobWake(wakeInput);
+
+      expect(delivered).toEqual(Result.ok("accepted"));
+      expect(send).not.toHaveBeenCalled();
+      expect(published).toHaveLength(1);
+      const { data, headers } = published[0]!;
+      expect(data["requestDeliveryId"]).toBe(wakeInput.wakeId);
+      expect(headers).toMatchObject({
+        request_id: `discord:channel:origin:wake:${wakeInput.wakeId}`,
+        session_id: "channel",
+      });
+      expect(data["raw"]).toMatchObject({
+        jobWake: true,
+        authenticatedOrigin: { platform: "discord", userId: "owner", messageRef: originRef },
+      });
+      const messages = data["messages"] as { role: string; content: unknown }[];
+      expect(messages).toHaveLength(3);
+      expect(messages.at(-1)).toEqual({ role: "user", content: wakeInput.promptText });
+      await router.stop();
+    });
+
+    it("binds the wake's request ID to the origin message for trust and replies", () => {
+      expect(parseRequestId(`discord:channel:origin:wake:${wakeInput.wakeId}`)).toEqual({
+        kind: "discord_message",
+        channelId: "channel",
+        messageId: "origin",
+        wakeId: wakeInput.wakeId,
+      });
+    });
+
+    it("leaves the event pending when the origin or history is unavailable", async () => {
+      const missing = await startRouter(new FakeAdapter({}));
+      expect(await missing.router.publishJobWake(wakeInput)).toEqual(Result.ok("unavailable"));
+      expect(await missing.router.publishJobWake({ ...wakeInput, originMessageId: null })).toEqual(
+        Result.ok("unavailable"),
+      );
+      expect(missing.published).toEqual([]);
+      await missing.router.stop();
+
+      const noHistory = await startRouter(new FakeAdapter({ "channel:origin": origin }), null);
+      expect(await noHistory.router.publishJobWake(wakeInput)).toEqual(Result.ok("unavailable"));
+      expect(noHistory.published).toEqual([]);
+      await noHistory.router.stop();
+    });
   });
 
   it("does not publish when the authenticated-origin re-read fails", async () => {

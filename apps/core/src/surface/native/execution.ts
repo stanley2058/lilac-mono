@@ -1,3 +1,4 @@
+import type { JobService } from "../../jobs/job-service";
 import type { ModelMessage } from "ai";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -55,6 +56,7 @@ export function createNativeExecution(options: {
   deliveryState?: (
     deliveryId: string,
   ) => ResultType<"missing" | "owned" | "completed" | "failed" | "cancelled", Error>;
+  jobs?: Pick<JobService, "stopSession" | "stopSessionJobsSince">;
 }) {
   const { store } = options;
   const publications = new Map<string, Promise<ResultType<void, Error>>>();
@@ -696,6 +698,13 @@ export function createNativeExecution(options: {
       const runner = options.runner();
       if (!runner) return Result.err(nativeFailure("conflict", "Native runner is unavailable"));
       yield* Result.await(runner.cancelNativeSession(nativeSessionId(request.threadId)));
+      const rewindCutoff = yield* store.getTurnInputCreatedAt(request.threadId, request.turnId);
+      if (rewindCutoff !== null)
+        await options.jobs?.stopSessionJobsSince(
+          nativeSessionId(request.threadId),
+          rewindCutoff,
+          "thread_rewound",
+        );
       if (rewound.historyGeneration === undefined || rewound.text === undefined)
         return Result.err(nativeFailure("invalid", "Rewind receipt is incomplete"));
       yield* reconcileCanonical(request.threadId);
@@ -713,6 +722,7 @@ export function createNativeExecution(options: {
       const runner = options.runner();
       if (!runner) return Result.err(nativeFailure("conflict", "Native runner is unavailable"));
       yield* Result.await(runner.cancelNativeSession(nativeSessionId(request.threadId)));
+      await options.jobs?.stopSession(nativeSessionId(request.threadId), "thread_deleted");
       if (deleted.historyGeneration === undefined)
         return Result.err(nativeFailure("invalid", "Deletion receipt is incomplete"));
       yield* reconcileCanonical(request.threadId);

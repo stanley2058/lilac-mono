@@ -1,5 +1,7 @@
 import { findCatalogModel } from "@stanley2058/lilac-utils";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
+import { planJobEventBoundary } from "../../jobs/job-events";
+import type { JobService } from "../../jobs/job-service";
 import type { QuestionService } from "../../question/question-service";
 import { QuestionContinuation } from "../../question/question-continuation";
 import { createRunWaitTracker } from "./bus-agent-runner/run-wait";
@@ -249,6 +251,7 @@ import {
   parseCustomCommandFromRaw,
   parseBufferedForActiveRequestIdFromRaw,
   getParticipantUserIdsFromRaw,
+  isJobWakeRequestRaw,
   parseRequestControlFromRaw,
   parseRequestModelOverrideFromRaw,
   parseParentChannelIdFromRaw,
@@ -2688,6 +2691,8 @@ type SessionQueue = {
     resolvedProviderFamily: HistoryProviderState["lastFamily"] | null;
     partialText: string;
     liveParent: ReturnType<WorkflowLiveParentBridge["registerParent"]> | undefined;
+    hasPendingJobEvents?: () => boolean;
+    stopAwaitJobs?: () => Promise<void>;
     materializeStoredMessages:
       | ((messages: readonly StoredMessageV1[]) => Promise<ModelMessage[]>)
       | null;
@@ -2837,6 +2842,7 @@ export function formatBusAgentRunnerDrainFailureForLog(
 
 export async function startBusAgentRunner(params: {
   questions?: QuestionService;
+  jobs?: JobService;
   bus: LilacBus;
   blobStore: AnthropicFallbackBlobStore;
   resourceAccess?: Pick<ResourceAccess, "describe" | "open">;
@@ -3993,6 +3999,9 @@ export async function startBusAgentRunner(params: {
             await reloadCoreConfigIfNeeded();
 
             const intakeRunProfile = parseSubagentMetaFromRaw(raw).profile;
+            if (intakeRunProfile === "primary" && !isJobWakeRequestRaw(raw)) {
+              params.jobs?.noteUserInput(sessionId);
+            }
             const entry: Enqueued = {
               queueEntryId: msg.id,
               ...(acceptedRecord ? { requestDeliveryId: acceptedRecord.requestDeliveryId } : {}),
@@ -5455,6 +5464,7 @@ export async function startBusAgentRunner(params: {
     const stopQuestionNotifications = params.questions?.subscribe((requestId) => {
       if (requestId === next.requestId) notifyContinuationWaiters();
     });
+    const stopJobNotifications = params.jobs?.subscribe(notifyContinuationWaiters);
     const deferredQuestions = () =>
       params.questions ? adaptToolResultToHost(params.questions.listDeferred(next.requestId)) : [];
     const waitForContinuationSignalSince = async (version: number, abortSignal?: AbortSignal) => {
@@ -5477,7 +5487,10 @@ export async function startBusAgentRunner(params: {
       liveParentSignalVersion: number,
       continuationVersion: number,
     ) => {
-      if (!liveParentSession) return;
+      if (!liveParentSession) {
+        await waitForContinuationSignalSince(continuationVersion);
+        return;
+      }
       const controller = new AbortController();
       await Promise.race([
         liveParentSession.waitForSignalSince(liveParentSignalVersion, controller.signal),
@@ -5510,6 +5523,10 @@ export async function startBusAgentRunner(params: {
       resolvedProviderFamily: null,
       partialText: next.recovery?.partialText ?? "",
       liveParent: liveParentSession,
+      hasPendingJobEvents: () => params.jobs?.hasPendingEvents(next.sessionId) ?? false,
+      stopAwaitJobs: async () => {
+        await params.jobs?.stopAwaitJobs(next.requestId, "user_stop");
+      },
       materializeStoredMessages: null,
       rememberStoredMessages: (providerMessages, storedMessages) => {
         settleStoredMessageIdentityRemember(
@@ -5521,6 +5538,7 @@ export async function startBusAgentRunner(params: {
       setCurrentTurnContext: () => undefined,
       cancel: () => {
         cancelledByRequestId.add(headers.request_id);
+        void params.jobs?.stopAwaitJobs(next.requestId, "user_stop");
         notifyContinuationWaiters();
         customCommandAbortController?.abort();
         rejectPreAgentCancellation?.(new PreAgentRunCancelledError());
@@ -7215,6 +7233,32 @@ export async function startBusAgentRunner(params: {
             });
             return selectDrain();
           };
+          const drainJobEvents = async (
+            modelInputMessages: readonly ModelMessage[],
+          ): Promise<{ append: ModelMessage[]; forceNextTurn: boolean }> => {
+            const jobs = params.jobs;
+            if (!jobs?.hasPendingEvents(next.sessionId)) {
+              return { append: [], forceNextTurn: false };
+            }
+            const plan = planJobEventBoundary({
+              canonicalMessages: agent.state.messages,
+              modelInputMessages,
+              events: await jobs.pendingEvents(next.sessionId),
+            });
+            jobs.acknowledgeEvents(plan.consumedJobIds);
+            if (
+              plan.append.length > 0 &&
+              runProfile === "primary" &&
+              next.requestClient === "discord"
+            ) {
+              next.corePrimaryLineage = degradeCorePrimaryLineageForMutation(
+                "deferred-result-insertion",
+                agent.state.messages.length,
+              );
+              if (state.activeRun) state.activeRun.corePrimaryLineage = next.corePrimaryLineage;
+            }
+            return { append: plan.append, forceNextTurn: plan.forceNextTurn };
+          };
           let pendingSilentTurnStartIndex: number | null = null;
           const removePendingSilentTurn = () => {
             if (pendingSilentTurnStartIndex === null) return;
@@ -7253,13 +7297,15 @@ export async function startBusAgentRunner(params: {
               abortSignal: context.abortSignal,
             });
             const decision = adaptDeferredDrainToHost(drained);
+            const jobEvents = await drainJobEvents(context.modelInputMessages);
             const answers = questionContinuation.drain(
               deferredQuestions(),
               context.modelInputMessages,
             );
             return {
-              append: [...decision.append, ...answers],
-              forceNextTurn: decision.forceNextTurn || answers.length > 0,
+              append: [...decision.append, ...jobEvents.append, ...answers],
+              forceNextTurn:
+                decision.forceNextTurn || jobEvents.forceNextTurn || answers.length > 0,
             };
           });
 
@@ -8139,6 +8185,19 @@ export async function startBusAgentRunner(params: {
             return;
           }
 
+          // Events waiting since the last run reach the model with this run's first turn.
+          const startingJobEvents = (await drainJobEvents([])).append;
+          if (startingJobEvents.length > 0) {
+            if (parsedCustomCommand) {
+              agent.appendMessages(startingJobEvents);
+              responseStartIndex = agent.state.messages.length;
+            } else {
+              initialMessages = [...initialMessages, ...startingJobEvents];
+              initialMessagesEndWithGeneratedContext = true;
+              responseStartIndex += startingJobEvents.length;
+            }
+          }
+
           if (state.activeRun) state.activeRun.started = true;
           runIdleWatchdog?.start();
 
@@ -8179,6 +8238,15 @@ export async function startBusAgentRunner(params: {
               continue;
             }
 
+            // The agent has gone idle, so it has seen every event already in its history.
+            const jobEvents = await drainJobEvents(agent.state.messages);
+            if (cancelledByRequestId.has(headers.request_id)) break;
+            if (jobEvents.append.length > 0) {
+              agent.appendMessages(jobEvents.append);
+              await waitForRunAtHost(agent.continue());
+              continue;
+            }
+
             const questions = deferredQuestions();
             const answers = questionContinuation.drain(questions, agent.state.messages);
             if (answers.length > 0) {
@@ -8194,6 +8262,17 @@ export async function startBusAgentRunner(params: {
               } else {
                 await waitForContinuationSignalSince(continuationWaitVersion);
               }
+              runIdleWatchdog?.start();
+              if (cancelledByRequestId.has(headers.request_id)) break;
+              continue;
+            }
+            if (params.jobs?.hasActiveAwait(next.requestId)) {
+              runWait.enterIdleWait();
+              runIdleWatchdog?.pause();
+              await waitForDeferredWake(
+                deferredWaitState?.signalVersion ?? 0,
+                continuationWaitVersion,
+              );
               runIdleWatchdog?.start();
               if (cancelledByRequestId.has(headers.request_id)) break;
               continue;
@@ -9011,6 +9090,7 @@ export async function startBusAgentRunner(params: {
           });
         }
         stopQuestionNotifications?.();
+        stopJobNotifications?.();
         if (params.questions)
           terminalCleanups.push({
             label: "questions-cancel",
@@ -9094,6 +9174,7 @@ export async function startBusAgentRunner(params: {
         }
         await liveParentSession?.close();
         stopQuestionNotifications?.();
+        stopJobNotifications?.();
         await params.questions?.cancelRequest(next.requestId);
         await Promise.all([...level1ToolsetReleases].map(releaseLevel1Toolset));
       }
@@ -9221,6 +9302,13 @@ export async function startBusAgentRunner(params: {
       state.running = false;
       cancelledByRequestId.delete(headers.request_id);
       shutdownAbortRequestIds.delete(headers.request_id);
+      if (!terminalPanic && shouldTerminalizeRequest) {
+        await params.jobs?.onRunSettled({
+          requestId: next.requestId,
+          sessionId: next.sessionId,
+          isPrimary: runProfile === "primary",
+        });
+      }
       if (!terminalPanic && !checkpointWriterAbandoned) {
         startSessionQueueDrain(sessionId, state);
       }
@@ -9633,6 +9721,10 @@ export async function startBusAgentRunner(params: {
     resumeAcceptedDelivery,
     discardPausedRecoveredDelivery,
     cancelNativeSession,
+    isSessionBusy(sessionId: string): boolean {
+      const state = bySession.get(sessionId);
+      return Boolean(state && (state.running || state.activeRun || state.queue.length > 0));
+    },
     readSubagentSnapshot(sessionId: string, requestId: string, includeMessages = false) {
       const state = bySession.get(sessionId);
       const run = state?.activeRun;
@@ -9862,7 +9954,9 @@ async function applyToRunningAgent(
     );
   }
 
-  const hasBufferedCompletions = liveParent?.snapshot().hasPendingCompletions ?? false;
+  const hasBufferedCompletions =
+    (liveParent?.snapshot().hasPendingCompletions ?? false) ||
+    (activeRun?.hasPendingJobEvents?.() ?? false);
 
   if (!agent.state.isStreaming) {
     switch (entry.queue) {
@@ -9888,6 +9982,7 @@ async function applyToRunningAgent(
           retainAppliedControl({ kind: "pending" });
           cancelledByRequestId.add(entry.requestId);
           await liveParent?.cancelAll("parent request aborted");
+          await activeRun?.stopAwaitJobs?.();
           agent.cancel();
           notifyWaiters?.();
           return;
@@ -9926,6 +10021,7 @@ async function applyToRunningAgent(
         retainAppliedControl({ kind: "pending" });
         cancelledByRequestId.add(entry.requestId);
         await liveParent?.cancelAll("parent request aborted");
+        await activeRun?.stopAwaitJobs?.();
         agent.cancel();
         notifyWaiters?.();
         return;

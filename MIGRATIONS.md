@@ -518,6 +518,16 @@ its retained message content or history generation changes, including edits, rew
 Model selection, titles, archiving, and grant changes preserve existing summaries. Downgrading requires
 rebuilding the derived index for the older runtime; do not reuse cross-surface derived rows with an older binary.
 
+### Background jobs
+
+Core creates `background-jobs.db` and the `background-jobs/` log directory on first start. No existing
+data changes. Canonical transcripts can gain `job_event` generated messages. A build that predates
+them reads one as ordinary tagged user text, so a rollback keeps working but shows the model those
+messages without their generated marking. A rollback leaves the new database and logs unused, and any
+job still running at that point is not reported or stopped by the older build. Older web clients show
+a wake's native turn as an empty row, and an older build cannot parse an in-flight Discord wake's
+request ID, so drain work before rolling back.
+
 ## MCP and computer-use integration
 
 ### MCP subagent access defaults to disabled

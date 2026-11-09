@@ -17,7 +17,7 @@ import type { TuiSession } from "./session.ts";
 import { Result } from "better-result";
 import { rethrowTuiDefect, captureTuiException } from "./fatal.ts";
 import { TuiController } from "./controller.ts";
-import { safeText, slotText, textWindow } from "./plaintext.ts";
+import { isHiddenSlot, safeText, slotText, textWindow } from "./plaintext.ts";
 
 const colors = {
   background: "#17161b",
@@ -94,6 +94,7 @@ export function TuiApp(props: {
       .slice(Math.max(0, end - 5), end)
       .map((id) => store.get(id))
       .filter((slot) => slot !== undefined)
+      .filter((slot) => !isHiddenSlot(slot))
       .map(slotText)
       .join("\n\n");
   });

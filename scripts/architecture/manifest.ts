@@ -1420,6 +1420,14 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "src/tools/question.ts", exportName },
         category: "request" as const,
       })),
+      {
+        identity: { module: "src/jobs/job-store.ts", exportName: "decodeJobRow" },
+        category: "persistence",
+      },
+      ...["formatJobToolArgs", "createJobTool.execute"].map((exportName) => ({
+        identity: { module: "src/tools/job.ts", exportName },
+        category: "request" as const,
+      })),
       ...[
         ["src/transcript/transcript-persistence-codec.ts", "normalizeStoredMessagesV1"],
         ["src/surface/bridge/agent-run-journal/index.ts", "deserialize.andThen.<callback@1>"],
@@ -3342,6 +3350,12 @@ const CORE_SQLITE_TRANSACTION_CONSUMERS = [
     module: "src/question/question-store.ts",
     exportName,
   })),
+  ...["SqliteJobStore.reserve", "SqliteJobStore.finish", "SqliteJobStore.claimWake"].map(
+    (exportName) => ({
+      module: "src/jobs/job-store.ts",
+      exportName,
+    }),
+  ),
   {
     module: "scripts/legacy-graceful-restart-blob-migration.ts",
     exportName: "commitLegacyGracefulRestartMigration",
@@ -3586,6 +3600,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             { include: "src/surface/native/store.ts" },
             { include: "src/conversation/thread-store.ts" },
             { include: "src/question/question-store.ts" },
+            { include: "src/jobs/job-store.ts" },
             { include: "scripts/legacy-graceful-restart-blob-migration.ts" },
             { include: "src/surface/bridge/agent-run-journal/index.ts" },
             { include: "src/surface/bridge/request-delivery/sqlite-store.ts" },

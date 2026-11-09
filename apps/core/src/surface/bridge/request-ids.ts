@@ -11,6 +11,8 @@ export type ParsedRequestId =
       kind: "discord_message";
       channelId: string;
       messageId: string;
+      /** Set for a background job's wake, a separate request bound to the job's origin message. */
+      wakeId?: string;
     }
   | {
       kind: "discord_slash";
@@ -36,6 +38,14 @@ export function formatDiscordMessageRequestId(input: {
   messageId: string;
 }): string {
   return `discord:${input.channelId}:${input.messageId}`;
+}
+
+export function formatDiscordJobWakeRequestId(input: {
+  channelId: string;
+  messageId: string;
+  wakeId: string;
+}): string {
+  return `discord:${input.channelId}:${input.messageId}:wake:${input.wakeId}`;
 }
 
 export function formatDiscordSlashRequestId(input: {
@@ -69,6 +79,14 @@ export function parseRequestId(requestId: string): ParsedRequestId | null {
     const parts = requestId.split(":");
     if (parts.length === 3 && parts[1] && parts[2]) {
       return { kind: "discord_message", channelId: parts[1], messageId: parts[2] };
+    }
+    if (parts.length === 5 && parts[1] && parts[2] && parts[3] === "wake" && parts[4]) {
+      return {
+        kind: "discord_message",
+        channelId: parts[1],
+        messageId: parts[2],
+        wakeId: parts[4],
+      };
     }
     if (parts.length === 4 && parts[1] && parts[2] === "slash" && parts[3]) {
       return { kind: "discord_slash", channelId: parts[1], interactionId: parts[3] };

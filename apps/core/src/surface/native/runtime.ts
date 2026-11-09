@@ -1,3 +1,5 @@
+import { NATIVE_JOB_WAKE_COMMAND_PREFIX } from "./store";
+import type { JobService, JobWakeDelivery } from "../../jobs/job-service";
 import type { ModelReasoningEffort } from "@stanley2058/lilac-utils";
 import { NativeQuestions } from "./questions";
 import { reconcileNativeDeferredSends, subscribeNativeDeferredSends } from "./deferred-sends";
@@ -88,6 +90,7 @@ type NativeOutputSubscription = {
 };
 
 export type NativeRuntimeOptions = {
+  jobs?: JobService;
   generateTitle?: NativeTitleGenerator;
   installation: NativeInstallation;
   bus: LilacBus;
@@ -179,6 +182,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
   });
   const htmlPreviews = new NativeHtmlPreviews({ store, files: liveFiles, resources });
   const execution = createNativeExecution({
+    ...(options.jobs ? { jobs: options.jobs } : {}),
     expandReferences: (userId, text) =>
       references.expand(userId, text, new URL(options.getConfig().surface.native.publicUrl).origin),
     metrics,
@@ -323,6 +327,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
   });
   const computer = new NativeComputer(store, options.mcpRegistry);
   const services = createNativeRpcServices({
+    ...(options.jobs ? { jobs: options.jobs } : {}),
     titles,
     questions,
     push,
@@ -894,7 +899,49 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
   function scopedThreads(request: NativeRunnerRequest) {
     return search.forThread(parseNativeRequestEnvelope(request)?.threadId ?? "");
   }
+  /** Admits a turn only the agent sees. It stays hidden unless the agent writes a reply. */
+  function deliverJobWake(input: {
+    readonly wakeId: string;
+    readonly threadId: string;
+    readonly userId: string | null;
+    readonly text: string;
+  }): ResultType<JobWakeDelivery, Error> {
+    const threadResult = store.getThreadRecord(input.threadId);
+    const thread = threadResult.match({ ok: (value) => value, err: () => null });
+    if (!thread || thread.deleted || thread.archived) return Result.ok("abandon");
+    if (thread.mutationPending) return Result.ok("unavailable");
+    const actorId = input.userId ?? thread.starterId;
+    const authorized = store.authorizeThread(actorId, thread.id, true).match({
+      ok: () => true,
+      err: () => false,
+    });
+    if (!authorized) return Result.ok("abandon");
+    const model = resolveModel(thread.modelId).match({ ok: (value) => value, err: () => null });
+    if (!model) return Result.ok("unavailable");
+    return store
+      .acceptSurfaceInput(
+        actorId,
+        {
+          threadId: thread.id,
+          commandId: `${NATIVE_JOB_WAKE_COMMAND_PREFIX}${input.wakeId}`,
+          historyGeneration: thread.historyGeneration,
+          text: input.text,
+          attachmentIds: [],
+          skillIds: [],
+          mode: thread.activeRunId ? "followup" : "prompt",
+        },
+        "lilac",
+        undefined,
+        model,
+      )
+      .map((): JobWakeDelivery => {
+        kick(thread.id);
+        return "accepted";
+      });
+  }
+
   return Result.ok({
+    deliverJobWake,
     descriptor,
     adapter,
     execution,

@@ -1,3 +1,4 @@
+import type { JobService } from "../../../src/jobs/job-service";
 import { DurableWorkflowStore } from "../../../src/workflow/durable-workflow-store";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -139,6 +140,7 @@ export async function createNativeIntegrationFixture(
     model?: MockLanguageModelV4;
     /** Runs the shared question service and offers the question tool to the model. */
     questions?: boolean;
+    jobs?: JobService;
     seed?: (
       store: import("../../../src/surface/native/store").NativeStore,
       transcript: SqliteTranscriptStore,
@@ -328,6 +330,7 @@ export async function createNativeIntegrationFixture(
   const warnings: { message: string; error: Error }[] = [];
   const runtime = integrationValue(
     await createNativeRuntime({
+      ...(options.jobs ? { jobs: options.jobs } : {}),
       generateTitle: async () =>
         Result.ok({ title: "Fixture conversation", needsRefinement: false }),
       installation,
@@ -377,6 +380,7 @@ export async function createNativeIntegrationFixture(
   const pluginManager = fixturePluginManager(questions);
   runner = await startBusAgentRunner({
     questions,
+    ...(options.jobs ? { jobs: options.jobs } : {}),
     bus,
     blobStore: blobs,
     config,

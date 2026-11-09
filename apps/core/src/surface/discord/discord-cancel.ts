@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 
 import {
+  formatDiscordJobWakeRequestId,
   formatDiscordMessageRequestId,
   formatDiscordSlashRequestId,
   parseRequestId,
@@ -28,7 +29,9 @@ export function buildCancelCustomId(input: {
 
   const parsed = parseRequestId(input.requestId);
   if (parsed?.kind === "discord_message" && parsed.channelId === input.sessionId) {
-    const id = `${PREFIX_V2}${input.sessionId}:m:${parsed.messageId}`;
+    const id = parsed.wakeId
+      ? `${PREFIX_V2}${input.sessionId}:w:${parsed.messageId}:${parsed.wakeId}`
+      : `${PREFIX_V2}${input.sessionId}:m:${parsed.messageId}`;
     if (id.length <= DISCORD_CUSTOM_ID_MAX_LENGTH) return id;
   }
   if (parsed?.kind === "discord_slash" && parsed.channelId === input.sessionId) {
@@ -74,6 +77,14 @@ export function parseCancelCustomId(customId: string): {
       return {
         sessionId,
         requestId: formatDiscordSlashRequestId({ channelId: sessionId, interactionId: id }),
+      };
+    }
+    if (kind === "w") {
+      const [messageId, wakeId] = id.split(":");
+      if (!messageId || !wakeId) return null;
+      return {
+        sessionId,
+        requestId: formatDiscordJobWakeRequestId({ channelId: sessionId, messageId, wakeId }),
       };
     }
     return null;

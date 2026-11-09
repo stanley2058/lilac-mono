@@ -275,7 +275,7 @@ type BashOutputSanitizer = {
   end(): string;
 };
 
-function createBashOutputSanitizer(literalSecrets: readonly string[]): BashOutputSanitizer {
+export function createBashOutputSanitizer(literalSecrets: readonly string[]): BashOutputSanitizer {
   const decoder = new StringDecoder("utf8");
   const ansiStripper = new StreamingAnsiStripper();
   const redactor = new StreamingLiteralRedactor(literalSecrets);

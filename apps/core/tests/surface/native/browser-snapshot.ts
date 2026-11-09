@@ -24,6 +24,7 @@ const snapshotSchema = z.strictObject({
     trip: z.string(),
     media: z.string(),
     questions: z.string(),
+    jobWake: z.string(),
     rich: z.string(),
     history: z.string(),
     largeTurn: z.string(),

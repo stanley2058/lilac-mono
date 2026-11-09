@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { messageText, safeText, slotText, textWindow } from "../src/plaintext.ts";
+import { isHiddenSlot, messageText, safeText, slotText, textWindow } from "../src/plaintext.ts";
 import { deliveryMode, hasSkill } from "../src/controller.ts";
 
 describe("terminal display", () => {
@@ -8,6 +8,24 @@ describe("terminal display", () => {
       safeText("hi\x1b]52;c;c2VjcmV0\x07there\x1b[2J!\x1bPpayload\x1b\\\x9b31m\u202etest"),
     ).toBe("hithere!test");
     expect(safeText("one\ntwo\tthree")).toBe("one\ntwo\tthree");
+  });
+  test("hides a wake's turn until the agent writes something", () => {
+    const hidden = {
+      kind: "ready",
+      slotId: "t",
+      turnId: "t",
+      position: 0,
+      messages: [],
+      state: "complete",
+    };
+    expect(isHiddenSlot(hidden as never)).toBe(true);
+    expect(
+      isHiddenSlot({
+        ...hidden,
+        messages: [{ id: "m", role: "assistant", parts: [{ type: "text", text: "Reply" }] }],
+      } as never),
+    ).toBe(false);
+    expect(isHiddenSlot({ kind: "deferred", slotId: "d" } as never)).toBe(false);
   });
   test("retains markdown, math and diagram source without rendering", () => {
     const source = "| A | B |\n|---|---|\n$x$\n```mermaid\nflowchart LR\n```";

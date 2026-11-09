@@ -141,6 +141,10 @@ const TURN_COMPLETED_AT = `MAX(COALESCE(json_extract(t.data_json,'$.value.settle
   COALESCE((SELECT MAX(json_extract(i.data_json,'$.value.completedAt')) FROM native_records i WHERE i.kind='input' AND i.thread_id=t.thread_id AND i.position=t.position),0),
   COALESCE((SELECT MAX(json_extract(m.value,'$.metadata.createdAt')) FROM json_each(t.data_json,'$.value.messages') m),0))`;
 
+/** An input with this command ID prefix runs its turn without a visible message. */
+export const NATIVE_JOB_WAKE_COMMAND_PREFIX = "job-wake:";
+const TURN_VISIBLE = "json_array_length(data_json,'$.value.messages')>0";
+
 const CANONICAL_INPUT_FILTER =
   "json_extract(i.data_json,'$.value.completedAt') IS NOT NULL AND json_extract(i.data_json,'$.value.mode')!='steer' AND json_extract(i.data_json,'$.value.state') IN ('admitted','canceled') AND EXISTS(SELECT 1 FROM native_records t WHERE t.kind='turn' AND t.id=json_extract(i.data_json,'$.value.turnId'))";
 
@@ -700,11 +704,18 @@ export class NativeStore {
         NativePersistedRow & { last_message_index: number; first_created_at: number | null },
         [string]
       >(
-        `SELECT format_version,json_object('kind','turn','value',json_set(json_extract(data_json,'$.value'),'$.messages',json('[]'))) AS data_json,json_array_length(data_json,'$.value.messages')-1 AS last_message_index,json_extract(data_json,'$.value.messages[0].metadata.createdAt') AS first_created_at FROM native_records WHERE kind='turn' AND thread_id=? ORDER BY position DESC LIMIT 1`,
+        `SELECT format_version,json_object('kind','turn','value',json_set(json_extract(data_json,'$.value'),'$.messages',json('[]'))) AS data_json,json_array_length(data_json,'$.value.messages')-1 AS last_message_index,json_extract(data_json,'$.value.messages[0].metadata.createdAt') AS first_created_at FROM native_records WHERE kind='turn' AND thread_id=? AND ${TURN_VISIBLE} ORDER BY position DESC LIMIT 1`,
       )
       .get(thread.id);
     if (!row) return Result.ok({ displayStatus: thread.activeRunId ? "working" : "idle" });
     const db = this.db;
+    // A wake's run stays out of the sidebar until the agent writes something.
+    const runIsVisible =
+      this.db
+        .query<{ visible: number }, [string]>(
+          `SELECT ${TURN_VISIBLE} AS visible FROM native_records WHERE kind='turn' AND thread_id=? ORDER BY position DESC LIMIT 1`,
+        )
+        .get(thread.id)?.visible === 1;
     const awaitsAnswer = this.awaitsAnswer(user.id, thread);
     // A run that is still going stays "working" so push and browser notifications see one run end.
     const waitingOn = this.waitingOn(thread, awaitsAnswer);
@@ -713,7 +724,7 @@ export class NativeStore {
       if (record.kind !== "turn")
         return Result.err(nativeFailure("invalid", "Thread display projection is not a turn"));
       const turn = record.value;
-      if (thread.activeRunId || turn.state === "running")
+      if ((thread.activeRunId && runIsVisible) || turn.state === "running")
         return Result.ok({
           displayStatus: "working" as const,
           workingSince: turn.startedAt ?? row.first_created_at ?? undefined,
@@ -812,7 +823,7 @@ export class NativeStore {
       const thread = yield* this.authorizeThread(actorId, threadId);
       const row = this.db
         .query<{ turn_id: string; input_id: string | null }, [string]>(
-          "SELECT id AS turn_id,json_extract(data_json,'$.value.messages[0].metadata.inputId') AS input_id FROM native_records WHERE kind='turn' AND thread_id=? ORDER BY position DESC LIMIT 1",
+          `SELECT id AS turn_id,json_extract(data_json,'$.value.messages[0].metadata.inputId') AS input_id FROM native_records WHERE kind='turn' AND thread_id=? AND ${TURN_VISIBLE} ORDER BY position DESC LIMIT 1`,
         )
         .get(threadId);
       if (!row?.input_id) return Result.ok(undefined);
@@ -1854,7 +1865,7 @@ export class NativeStore {
       slotId: turnId,
       turnId,
       position: this.nextTurnPosition(thread.id),
-      messages: [message],
+      messages: input.commandId.startsWith(NATIVE_JOB_WAKE_COMMAND_PREFIX) ? [] : [message],
       state: "pending",
     };
     this.writeRecord(turnId, { kind: "turn", value: slot }, thread.id, slot.position);
@@ -2333,12 +2344,13 @@ export class NativeStore {
             {
               position: number;
               posted: number;
+              hidden: number;
               created_at: number | null;
               completed_at: number | null;
             },
             [string, number, number]
           >(
-            `SELECT t.position,${TURN_POSTED} AS posted${gapMs === undefined ? "" : `,${TURN_CREATED_AT} created_at,${TURN_COMPLETED_AT} completed_at`}
+            `SELECT t.position,${TURN_POSTED} AS posted,json_array_length(t.data_json,'$.value.messages')=0 AS hidden${gapMs === undefined ? "" : `,${TURN_CREATED_AT} created_at,${TURN_COMPLETED_AT} completed_at`}
             FROM native_records t INDEXED BY native_records_thread_position
             WHERE t.kind='turn' AND t.thread_id=? AND t.position<? ORDER BY t.position DESC LIMIT ?`,
           )
@@ -2348,7 +2360,7 @@ export class NativeStore {
         const previous = rows.length > OUTLINE_PAGE_TURNS ? rows.shift() : undefined;
         const page = {
           historyGeneration: thread.historyGeneration,
-          positions: rows.flatMap((row) => (row.posted ? [] : [row.position])),
+          positions: rows.flatMap((row) => (row.posted || row.hidden ? [] : [row.position])),
           ...(previous && rows[0] ? { earlierBefore: rows[0].position } : {}),
         };
         if (gapMs === undefined) return page;
@@ -2699,6 +2711,19 @@ export class NativeStore {
             .run(eventId, threadId, historyGeneration);
         return Result.ok(undefined);
       }, this),
+    );
+  }
+
+  /** Rewind cancels the target's input but keeps its record, so this still answers afterwards. */
+  getTurnInputCreatedAt(threadId: string, turnId: string): NativeStoreResult<number | null> {
+    return nativeStoreTransaction(this.db, () =>
+      this.readRows(
+        "SELECT * FROM native_records WHERE kind='input' AND thread_id=? AND json_extract(data_json,'$.value.turnId')=? AND json_extract(data_json,'$.value.mode')!='steer' LIMIT 1",
+        [threadId, turnId],
+      ).map((rows) => {
+        const input = rows[0];
+        return input?.kind === "input" ? input.value.createdAt : null;
+      }),
     );
   }
 

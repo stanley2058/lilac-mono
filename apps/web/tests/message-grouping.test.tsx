@@ -5,6 +5,7 @@ import {
   type ReadyTurnSlot,
 } from "@stanley2058/lilac-client-protocol";
 import {
+  latestReadableTurnId,
   joinMessageTurns,
   lastTurnMessageTime,
   workflowPostsDuring,
@@ -250,4 +251,31 @@ test("a workflow card left after the reply sees the owner, not the folded card b
     ids: [],
     previous: "agent",
   });
+});
+
+const ready = (turnId: string, state: string, messages: unknown[]) =>
+  ({ kind: "ready", slotId: turnId, turnId, position: 0, state, messages }) as never;
+const message = { id: "m", role: "assistant", parts: [] };
+
+function latest(slots: Record<string, never>) {
+  return latestReadableTurnId(Object.keys(slots), (id) => slots[id]);
+}
+
+test("latestReadableTurnId: returns the latest settled turn", () => {
+  expect(latest({ a: ready("a", "complete", [message]) })).toBe("a");
+});
+
+test("latestReadableTurnId: waits while the latest turn is running", () => {
+  expect(
+    latest({ a: ready("a", "complete", [message]), b: ready("b", "running", [message]) }),
+  ).toBeUndefined();
+});
+
+test("latestReadableTurnId: skips a silent wake, settled or running, which has nothing to read", () => {
+  expect(latest({ a: ready("a", "complete", [message]), b: ready("b", "complete", []) })).toBe("a");
+  expect(latest({ a: ready("a", "complete", [message]), b: ready("b", "running", []) })).toBe("a");
+});
+
+test("latestReadableTurnId: has nothing to mark when only a silent wake exists", () => {
+  expect(latest({ a: ready("a", "complete", []) })).toBeUndefined();
 });

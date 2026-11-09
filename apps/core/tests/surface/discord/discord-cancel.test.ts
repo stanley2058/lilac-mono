@@ -41,4 +41,14 @@ describe("discord cancel customId", () => {
     const requestId = "x".repeat(200);
     expect(buildCancelCustomId({ sessionId, requestId })).toBeNull();
   });
+
+  it("round-trips a job wake's request ID, which differs from its origin message's request", () => {
+    const requestId = `discord:123456789012345678:234567890123456789:wake:${crypto.randomUUID()}`;
+    const customId = buildCancelCustomId({ sessionId: "123456789012345678", requestId });
+    expect(customId?.length).toBeLessThanOrEqual(100);
+    expect(parseCancelCustomId(customId!)).toEqual({
+      sessionId: "123456789012345678",
+      requestId,
+    });
+  });
 });

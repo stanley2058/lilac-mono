@@ -21,6 +21,8 @@ export function preserveAgentRunnerRaw(message: {
   return raw;
 }
 
+const NATIVE_SERVICE_USER_ID = "lilac";
+
 export type ParsedSubagentMeta = {
   profile: AgentRunProfile;
   depth: number;
@@ -176,6 +178,22 @@ export type RequestControl = {
   cancelQueued: boolean;
   targetMessageId: string | null;
 };
+
+const jobWakeRawSchema = z
+  .object({
+    jobWake: z.literal(true).optional(),
+    native: z.object({ authorUserId: z.string() }).loose().optional(),
+  })
+  .loose();
+
+/** True for requests a background job started, which do not count as input from a person. */
+export function isJobWakeRequestRaw(raw: unknown): boolean {
+  const parsed = jobWakeRawSchema.safeParse(raw);
+  if (!parsed.success) return false;
+  return (
+    parsed.data.jobWake === true || parsed.data.native?.authorUserId === NATIVE_SERVICE_USER_ID
+  );
+}
 
 export function parseRequestControlFromRaw(raw: unknown): RequestControl {
   if (!isRecord(raw)) {

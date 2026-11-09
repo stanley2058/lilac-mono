@@ -1,3 +1,4 @@
+import { createCorePrimaryLineageFreshOnlyV2 } from "@stanley2058/lilac-event-bus";
 import { executeAiSdkModelCall } from "@stanley2058/lilac-agent/adapters/ai-sdk/model-call";
 import type { QuestionService } from "../../../src/question/question-service";
 import type { QuestionCall } from "../../../src/question/question-domain";
@@ -14,6 +15,7 @@ import {
 } from "../../../src/surface/native/output";
 import { afterAll, beforeAll, describe, expect, it, jest, spyOn } from "bun:test";
 import path from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -238,7 +240,10 @@ import type {
   SurfaceSession,
 } from "../../../src/surface/types";
 import { SurfaceAdapterTestBase } from "../../helpers/surface-adapter-test-base";
+import { JobService } from "../../../src/jobs/job-service";
+import { SqliteJobStore } from "../../../src/jobs/job-store";
 import {
+  isJobWakeRequestRaw,
   parseSubagentMetaFromRaw,
   parseWorkflowRequestHintFromRaw,
 } from "../../../src/surface/bridge/bus-agent-runner/raw";
@@ -14246,6 +14251,544 @@ describe("deferred questions in the production runner", () => {
       await pluginManager.destroy();
       await bus.close();
     }
+  });
+
+  describe("background jobs", () => {
+    function jobHarness() {
+      const dir = mkdtempSync(path.join(tmpdir(), "lilac-runner-jobs-"));
+      const store = new SqliteJobStore({ dbPath: path.join(dir, "jobs.db") });
+      const jobs = new JobService({ store, logDir: path.join(dir, "logs") });
+      return {
+        dir,
+        store,
+        jobs,
+        close: async () => {
+          await jobs.close();
+          store.close();
+          rmSync(dir, { recursive: true, force: true });
+        },
+      };
+    }
+
+    function nativeRaw(requestId: string, requestDeliveryId: string, threadId: string) {
+      return {
+        native: {
+          requestId,
+          requestDeliveryId,
+          threadId,
+          authorUserId: "participant",
+          starterUserId: "starter",
+          turnId: "turn",
+          inputId: "input",
+          historyGeneration: 0,
+        },
+        authenticatedActor: { platform: "native", userId: "starter" },
+        authenticatedOrigin: {
+          platform: "native",
+          userId: "starter",
+          messageRef: { platform: "native", channelId: threadId, messageId: "test" },
+        },
+      };
+    }
+
+    const jobOwner = (requestId: string, sessionId: string) => ({
+      requestId,
+      requestDeliveryId: null,
+      sessionId,
+      platform: "native" as const,
+      userId: "starter",
+      originMessageId: "test",
+      runProfile: "primary",
+    });
+
+    const launch = (command: string) => ({
+      args: ["bash", "-c", command],
+      cwd: tmpdir(),
+      env: process.env,
+      literalSecrets: [],
+      redactedCommand: command,
+    });
+
+    function promptHasJobEvent(prompt: unknown, jobId: string): boolean {
+      const text = JSON.stringify(prompt);
+      return text.includes("LILAC_GENERATED") && text.includes(jobId);
+    }
+
+    it("parks the request on an await job, then resumes with its event", async () => {
+      const harness = jobHarness();
+      const bus = createLilacBus(createInMemoryRawBus());
+      const pluginManager = corePrimaryTestPluginManager();
+      const requestId = "native:job-await:test";
+      const requestDeliveryId = crypto.randomUUID();
+      const parked = deferred<void>();
+      const gate = path.join(harness.dir, "gate");
+      let jobId = "";
+      let modelCalls = 0;
+      let secondPrompt: unknown;
+      const config = parseCoreConfigV2ToUniversal({});
+      config.models.main = { model: "openai/job-test" };
+      const lifecycle = await observeRequestLifecycle(bus, requestId);
+      const runner = await startBusAgentRunner({
+        bus,
+        blobStore: transcriptResultValue(await createMemoryBlobStore()),
+        pluginManager,
+        jobs: harness.jobs,
+        config,
+        subscriptionId: "job-await-test",
+        reportFatalPanic: (panic) => {
+          throw panic;
+        },
+        nativeExecution: {
+          validate: () => Result.ok({ safetyMode: "trusted" }),
+          settled: async () => Result.ok(undefined),
+          waiting: (_request, value) => {
+            if (value) parked.resolve(undefined);
+          },
+        },
+        issueControlCapability: () => ({ capability: "native-test", principal: null }),
+        createAgent: (options) =>
+          new AiSdkPiAgent({
+            ...options,
+            model: new MockLanguageModelV4({
+              modelId: "job-test",
+              doStream: async (call) => {
+                modelCalls++;
+                if (modelCalls > 1) {
+                  secondPrompt = call.prompt;
+                  return level1TextStep("The build finished.");
+                }
+                const started = await harness.jobs.start({
+                  owner: jobOwner(requestId, "native:job-await"),
+                  toolCallId: "call-1",
+                  mode: "await",
+                  label: "build",
+                  launch: launch(`until [ -e '${gate}' ]; do sleep 0.02; done; echo built`),
+                });
+                jobId = started.match({
+                  ok: (job) => job.jobId,
+                  err: (error) => {
+                    throw error;
+                  },
+                });
+                return level1TextStep("NO_REPLY");
+              },
+            }),
+          }),
+      });
+      try {
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          requestDeliveryId,
+          sessionId: "native:job-await",
+          requestClient: "native",
+          text: "Run the build",
+          raw: nativeRaw(requestId, requestDeliveryId, "job-await"),
+        });
+        expect(
+          await Promise.race([parked.promise.then(() => "parked"), lifecycle.terminal]),
+          lifecycle.details.join("; "),
+        ).toBe("parked");
+        expect(modelCalls).toBe(1);
+
+        writeFileSync(gate, "");
+
+        expect(await lifecycle.terminal).toBe("resolved");
+        expect(modelCalls).toBe(2);
+        expect(promptHasJobEvent(secondPrompt, jobId)).toBe(true);
+        expect(JSON.stringify(secondPrompt)).toContain("built");
+        expect(harness.jobs.hasPendingEvents("native:job-await")).toBe(false);
+      } finally {
+        await lifecycle.stop();
+        await runner.stop();
+        await pluginManager.destroy();
+        await bus.close();
+        await harness.close();
+      }
+    });
+
+    it("finishes the request while a service job keeps running", async () => {
+      const harness = jobHarness();
+      const bus = createLilacBus(createInMemoryRawBus());
+      const pluginManager = corePrimaryTestPluginManager();
+      const requestId = "native:job-service:test";
+      const requestDeliveryId = crypto.randomUUID();
+      let jobId = "";
+      const config = parseCoreConfigV2ToUniversal({});
+      config.models.main = { model: "openai/job-test" };
+      const lifecycle = await observeRequestLifecycle(bus, requestId);
+      const runner = await startBusAgentRunner({
+        bus,
+        blobStore: transcriptResultValue(await createMemoryBlobStore()),
+        pluginManager,
+        jobs: harness.jobs,
+        config,
+        subscriptionId: "job-service-test",
+        reportFatalPanic: (panic) => {
+          throw panic;
+        },
+        nativeExecution: {
+          validate: () => Result.ok({ safetyMode: "trusted" }),
+          settled: async () => Result.ok(undefined),
+        },
+        issueControlCapability: () => ({ capability: "native-test", principal: null }),
+        createAgent: (options) =>
+          new AiSdkPiAgent({
+            ...options,
+            model: new MockLanguageModelV4({
+              modelId: "job-test",
+              doStream: async () => {
+                const started = await harness.jobs.start({
+                  owner: jobOwner(requestId, "native:job-service"),
+                  toolCallId: "call-1",
+                  mode: "service",
+                  label: "dev server",
+                  launch: launch("sleep 60"),
+                });
+                jobId = started.match({
+                  ok: (job) => job.jobId,
+                  err: (error) => {
+                    throw error;
+                  },
+                });
+                return level1TextStep("The server is running.");
+              },
+            }),
+          }),
+      });
+      try {
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          requestDeliveryId,
+          sessionId: "native:job-service",
+          requestClient: "native",
+          text: "Start the server",
+          raw: nativeRaw(requestId, requestDeliveryId, "job-service"),
+        });
+        expect(await lifecycle.terminal, lifecycle.details.join("; ")).toBe("resolved");
+        const job = harness.store.get(jobId).match({ ok: (value) => value, err: () => null });
+        expect(job?.status).toBe("running");
+      } finally {
+        await lifecycle.stop();
+        await runner.stop();
+        await pluginManager.destroy();
+        await bus.close();
+        await harness.close();
+      }
+    });
+
+    it("hands an event left over from an earlier run to the next run's first turn", async () => {
+      const harness = jobHarness();
+      const bus = createLilacBus(createInMemoryRawBus());
+      const pluginManager = corePrimaryTestPluginManager();
+      const requestId = "native:job-next:test";
+      const requestDeliveryId = crypto.randomUUID();
+      const exited = deferred<void>();
+      const unsubscribe = harness.jobs.subscribe(() => exited.resolve(undefined));
+      const started = await harness.jobs.start({
+        owner: jobOwner("earlier-request", "native:job-next"),
+        toolCallId: "call-earlier",
+        mode: "service",
+        label: "dev server",
+        launch: launch("echo crashed; exit 1"),
+      });
+      const jobId = started.match({
+        ok: (job) => job.jobId,
+        err: (error) => {
+          throw error;
+        },
+      });
+      await exited.promise;
+      unsubscribe();
+      let firstPrompt: unknown;
+      const config = parseCoreConfigV2ToUniversal({});
+      config.models.main = { model: "openai/job-test" };
+      const lifecycle = await observeRequestLifecycle(bus, requestId);
+      const runner = await startBusAgentRunner({
+        bus,
+        blobStore: transcriptResultValue(await createMemoryBlobStore()),
+        pluginManager,
+        jobs: harness.jobs,
+        config,
+        subscriptionId: "job-next-test",
+        reportFatalPanic: (panic) => {
+          throw panic;
+        },
+        nativeExecution: {
+          validate: () => Result.ok({ safetyMode: "trusted" }),
+          settled: async () => Result.ok(undefined),
+        },
+        issueControlCapability: () => ({ capability: "native-test", principal: null }),
+        createAgent: (options) =>
+          new AiSdkPiAgent({
+            ...options,
+            model: new MockLanguageModelV4({
+              modelId: "job-test",
+              doStream: async (call) => {
+                firstPrompt ??= call.prompt;
+                return level1TextStep("The server crashed earlier.");
+              },
+            }),
+          }),
+      });
+      try {
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          requestDeliveryId,
+          sessionId: "native:job-next",
+          requestClient: "native",
+          text: "How is the server?",
+          raw: nativeRaw(requestId, requestDeliveryId, "job-next"),
+        });
+        expect(await lifecycle.terminal, lifecycle.details.join("; ")).toBe("resolved");
+        expect(promptHasJobEvent(firstPrompt, jobId)).toBe(true);
+        expect(harness.jobs.hasPendingEvents("native:job-next")).toBe(false);
+      } finally {
+        await lifecycle.stop();
+        await runner.stop();
+        await pluginManager.destroy();
+        await bus.close();
+        await harness.close();
+      }
+    });
+
+    it("stops await jobs on the user's Stop and leaves service jobs running", async () => {
+      const harness = jobHarness();
+      const bus = createLilacBus(createInMemoryRawBus());
+      const pluginManager = corePrimaryTestPluginManager();
+      const requestId = "native:job-stop:test";
+      const requestDeliveryId = crypto.randomUUID();
+      const parked = deferred<void>();
+      const jobIds = { await: "", service: "" };
+      const config = parseCoreConfigV2ToUniversal({});
+      config.models.main = { model: "openai/job-test" };
+      const lifecycle = await observeRequestLifecycle(bus, requestId);
+      const runner = await startBusAgentRunner({
+        bus,
+        blobStore: transcriptResultValue(await createMemoryBlobStore()),
+        pluginManager,
+        jobs: harness.jobs,
+        config,
+        subscriptionId: "job-stop-test",
+        reportFatalPanic: (panic) => {
+          throw panic;
+        },
+        nativeExecution: {
+          validate: () => Result.ok({ safetyMode: "trusted" }),
+          settled: async () => Result.ok(undefined),
+          waiting: (_request, value) => {
+            if (value) parked.resolve(undefined);
+          },
+        },
+        issueControlCapability: () => ({ capability: "native-test", principal: null }),
+        createAgent: (options) =>
+          new AiSdkPiAgent({
+            ...options,
+            model: new MockLanguageModelV4({
+              modelId: "job-test",
+              doStream: async () => {
+                for (const mode of ["await", "service"] as const) {
+                  const started = await harness.jobs.start({
+                    owner: jobOwner(requestId, "native:job-stop"),
+                    toolCallId: `call-${mode}`,
+                    mode,
+                    label: mode,
+                    launch: launch("sleep 60"),
+                  });
+                  jobIds[mode] = started.match({
+                    ok: (job) => job.jobId,
+                    err: (error) => {
+                      throw error;
+                    },
+                  });
+                }
+                return level1TextStep("NO_REPLY");
+              },
+            }),
+          }),
+      });
+      const read = (jobId: string) =>
+        harness.store.get(jobId).match({ ok: (value) => value, err: () => null });
+      try {
+        const raw = nativeRaw(requestId, requestDeliveryId, "job-stop");
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          requestDeliveryId,
+          sessionId: "native:job-stop",
+          requestClient: "native",
+          text: "Run both",
+          raw,
+        });
+        expect(
+          await Promise.race([parked.promise.then(() => "parked"), lifecycle.terminal]),
+          lifecycle.details.join("; "),
+        ).toBe("parked");
+
+        // The web's Stop reaches the runner through this call.
+        const canceled = await runner.cancelNativeSession("native:job-stop");
+        expect(canceled.match({ ok: () => true, err: () => false })).toBe(true);
+
+        expect(await lifecycle.terminal).toBe("cancelled");
+        expect(read(jobIds.await)?.stopReason).toBe("user_stop");
+        expect(read(jobIds.await)?.delivery).toBe("suppressed");
+        expect(read(jobIds.service)?.status).toBe("running");
+      } finally {
+        await lifecycle.stop();
+        await runner.stop();
+        await pluginManager.destroy();
+        await bus.close();
+        await harness.close();
+      }
+    });
+
+    it("stops await jobs when an interrupt cancels the run", async () => {
+      const harness = jobHarness();
+      const bus = createLilacBus(createInMemoryRawBus());
+      const pluginManager = corePrimaryTestPluginManager();
+      const requestId = "github:job-interrupt:test";
+      const started = deferred<string>();
+      const config = parseCoreConfigV2ToUniversal({});
+      config.models.main = { model: "openai/job-test" };
+      const lifecycle = await observeRequestLifecycle(bus, requestId);
+      const runner = await startBusAgentRunner({
+        bus,
+        blobStore: transcriptResultValue(await createMemoryBlobStore()),
+        pluginManager,
+        jobs: harness.jobs,
+        config,
+        subscriptionId: "job-interrupt-test",
+        reportFatalPanic: (panic) => {
+          throw panic;
+        },
+        issueControlCapability: () => ({ capability: "job-test", principal: null }),
+        createAgent: (options) =>
+          new AiSdkPiAgent({
+            ...options,
+            model: new MockLanguageModelV4({
+              modelId: "job-test",
+              doStream: async () => {
+                const job = await harness.jobs.start({
+                  owner: jobOwner(requestId, "job-interrupt"),
+                  toolCallId: "call-1",
+                  mode: "await",
+                  label: "build",
+                  launch: launch("sleep 60"),
+                });
+                started.resolve(
+                  job.match({
+                    ok: (value) => value.jobId,
+                    err: (error) => {
+                      throw error;
+                    },
+                  }),
+                );
+                return level1TextStep("NO_REPLY");
+              },
+            }),
+          }),
+      });
+      try {
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          sessionId: "job-interrupt",
+          text: "Run the build",
+        });
+        const jobId = await started.promise;
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          sessionId: "job-interrupt",
+          queue: "interrupt",
+          text: "",
+          messages: [],
+          raw: { cancel: true },
+        });
+        expect(await lifecycle.terminal, lifecycle.details.join("; ")).toBe("cancelled");
+        const job = harness.store.get(jobId).match({ ok: (value) => value, err: () => null });
+        expect(job?.stopReason).toBe("user_stop");
+      } finally {
+        await lifecycle.stop();
+        await runner.stop();
+        await pluginManager.destroy();
+        await bus.close();
+        await harness.close();
+      }
+    });
+
+    it("gives a Discord wake the authority of the message that started the job", async () => {
+      const bus = createLilacBus(createInMemoryRawBus());
+      const contexts: Record<string, unknown>[] = [];
+      const pluginManager = corePrimaryTestPluginManager((requestContext) => {
+        contexts.push(requestContext as Record<string, unknown>);
+      });
+      const sessionId = "wake-channel";
+      const originRef = { platform: "discord", channelId: sessionId, messageId: "origin" };
+      const raw = {
+        authenticatedOrigin: { platform: "discord", userId: "owner", messageRef: originRef },
+      };
+      const plainRequestId = `discord:${sessionId}:origin`;
+      const wakeRequestId = `discord:${sessionId}:origin:wake:${crypto.randomUUID()}`;
+      const config = parseCoreConfigV2ToUniversal({});
+      config.models.main = { model: "openai/job-test" };
+      const runner = await startBusAgentRunner({
+        bus,
+        blobStore: transcriptResultValue(await createMemoryBlobStore()),
+        pluginManager,
+        config,
+        subscriptionId: "job-discord-wake-test",
+        reportFatalPanic: (panic) => {
+          throw panic;
+        },
+        issueControlCapability: () => ({ capability: "job-test", principal: null }),
+        createAgent: (options) =>
+          new AiSdkPiAgent({
+            ...options,
+            model: new MockLanguageModelV4({
+              modelId: "job-test",
+              doStream: async () => level1TextStep("NO_REPLY"),
+            }),
+          }),
+      });
+      try {
+        for (const requestId of [plainRequestId, wakeRequestId]) {
+          const lifecycle = await observeRequestLifecycle(bus, requestId);
+          await publishRunnerRequest({
+            bus,
+            requestId,
+            sessionId,
+            requestClient: "discord",
+            text: "Background job update",
+            corePrimaryLineage: transcriptResultValue(
+              createCorePrimaryLineageFreshOnlyV2("job-wake", 0),
+            ),
+            raw: requestId === wakeRequestId ? { ...raw, jobWake: true } : raw,
+          });
+          expect(await lifecycle.terminal, lifecycle.details.join("; ")).toBe("resolved");
+          await lifecycle.stop();
+        }
+        expect(contexts).toHaveLength(2);
+        const [plain, wake] = contexts;
+        expect(wake?.["safetyMode"]).toBe(plain?.["safetyMode"]);
+        expect(wake?.["currentTurnUserId"]).toBe("owner");
+        expect(wake?.["requestInitiator"]).toEqual(plain?.["requestInitiator"]);
+        expect(wake?.["serverOwnedRequest"]).toBe(plain?.["serverOwnedRequest"]);
+      } finally {
+        await runner.stop();
+        await pluginManager.destroy();
+        await bus.close();
+      }
+    });
+
+    it("does not treat a wake as input from a person", () => {
+      expect(isJobWakeRequestRaw({ jobWake: true })).toBe(true);
+      expect(isJobWakeRequestRaw({ native: { authorUserId: "lilac" } })).toBe(true);
+      expect(isJobWakeRequestRaw({ native: { authorUserId: "participant" } })).toBe(false);
+      expect(isJobWakeRequestRaw(undefined)).toBe(false);
+    });
   });
 
   it.each(["answer", "cancel"] as const)(

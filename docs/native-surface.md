@@ -161,6 +161,10 @@ to be reattached or removed before sending. Sidebar rows show the starter and ac
 archive and delete replace the timestamp on hover or focus. A completed indicator remains until the
 latest settled turn is visible in the foreground tab. Working and failed runs have separate states.
 
+Settling or archiving a conversation stops its background jobs without telling the agent, as deleting
+it does. Settling is a per-user preference, so it stops jobs only when that person has edit access.
+Moving a conversation back does not restart them.
+
 The thread's model selection applies to new full turns. Active runs retain their selected model.
 With config v3, the picker searches the available provider catalog and configured aliases. Favorites
 belong to the user; reasoning belongs to the thread and resets to the new model's default on a model
