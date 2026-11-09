@@ -162,6 +162,8 @@ export type TimelineRailProps = {
   /** The first and last turn positions intersecting the reading band. */
   visibleRange: () => { first: number; last: number } | undefined;
   onSelect: (position: number) => void;
+  /** Wheel input the rail forwards to the conversation, which reaches the viewport only as a scroll. */
+  onWheel: (event: Pick<WheelEvent, "deltaY">) => void;
 };
 
 export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps) {
@@ -199,7 +201,7 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
       setWindowAnchor((value) => (value?.key === startItem.key ? value : railAnchor(startItem)));
   }, [startItem]);
 
-  const { viewport, visibleRange } = props;
+  const { viewport, visibleRange, onWheel } = props;
   // Scroll position drives strip highlights through data attributes, so scrolling never rerenders
   // the strips themselves; only a change of the current turn does.
   const follow = useCallback(() => {
@@ -293,6 +295,7 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
         // Scrolling from the rail moves the conversation, and the tick window follows it.
         setHeld(false);
         setActiveAnchor(undefined);
+        onWheel(event);
         viewport.scrollBy({ top: event.deltaY * wheelUnit(event.deltaMode, viewport) });
       };
       node.addEventListener("wheel", wheel, { passive: false });
@@ -301,7 +304,7 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
         node.removeEventListener("wheel", wheel);
       };
     },
-    [viewport],
+    [viewport, onWheel],
   );
 
   // The hit area reaches 4px past the first and last ticks so edge ticks are easy to hit.

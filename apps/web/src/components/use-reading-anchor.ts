@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import type { Range, VirtualItem, Virtualizer } from "@tanstack/react-virtual";
 import { useEventCallback } from "../use-event-callback";
+import type { ScrollMode } from "./use-timeline-scroll";
 
 type TimelineVirtualizer = Virtualizer<HTMLDivElement, HTMLDivElement>;
 type Key = VirtualItem["key"];
@@ -12,8 +13,6 @@ type ReadingAnchor = {
   /** The block at the reading line, and its offset inside the row. */
   block: HTMLElement | undefined;
   inset: number;
-  /** The row the virtualizer anchors on by itself when the list changes, unless that is the header. */
-  ownKey: Key | undefined;
 };
 
 /** Rows this far past the screen stay mounted, so their heights settle before the reader arrives. */
@@ -57,22 +56,9 @@ export function resizeCorrection(input: {
   return Math.abs(moved - input.delta) <= 1 ? input.delta : moved;
 }
 
-/** What the virtualizer compares to decide whether to restore its own anchor when the list changes. */
-type ListEdges = { count: number; first: Key | undefined; last: Key | undefined };
-
-function listEdges(virtual: TimelineVirtualizer): ListEdges {
-  const { count, getItemKey } = virtual.options;
-  return {
-    count,
-    first: count > 0 ? getItemKey(0) : undefined,
-    last: count > 0 ? getItemKey(count - 1) : undefined,
-  };
-}
-
-export function virtualizerAnchors(previous: ListEdges, next: ListEdges): boolean {
-  return (
-    previous.count !== next.count || previous.first !== next.first || previous.last !== next.last
-  );
+/** The header row's key, which tells a pending scroll correction which thread it belongs to. */
+function headerKey(virtual: TimelineVirtualizer): Key | undefined {
+  return virtual.options.count > 0 ? virtual.options.getItemKey(0) : undefined;
 }
 
 function readingBlock(row: HTMLElement, line: number): HTMLElement {
@@ -143,15 +129,17 @@ export function useReadingAnchor({
   viewport,
   headerInset,
   isReady,
-  following,
+  mode,
+  currentMode,
   ids,
 }: {
   virtual: TimelineVirtualizer;
   viewport: HTMLDivElement | null;
   headerInset: number;
   isReady: (index: number) => boolean;
-  /** At the end of the list, where the virtualizer keeps the newest content in view instead. */
-  following: boolean;
+  /** The anchor applies only while reading; the timeline places the content otherwise. */
+  mode: ScrollMode;
+  currentMode: () => ScrollMode;
   ids: readonly string[];
 }) {
   const anchor = useRef<ReadingAnchor>(undefined);
@@ -160,10 +148,14 @@ export function useReadingAnchor({
   const ready = useRef(isReady);
   ready.current = isReady;
   const [, rerender] = useReducer((count: number) => count + 1, 0);
-  const previous = useRef<{ ids: readonly string[]; edges: ListEdges }>(undefined);
+  const previous = useRef<readonly string[]>(undefined);
   const clamped = useRef<ClampedShift>(undefined);
 
   const capture = useEventCallback(() => {
+    if (currentMode() !== "read") {
+      anchor.current = undefined;
+      return;
+    }
     const offset = viewport?.scrollTop ?? virtual.scrollOffset ?? 0;
     const line = offset + inset.current;
     const item = virtual
@@ -177,24 +169,26 @@ export function useReadingAnchor({
     if (row && Math.abs(row.getBoundingClientRect().height - item.size) > 1) return;
     const lineY = (viewport?.getBoundingClientRect().top ?? 0) + inset.current;
     const block = row ? readingBlock(row, lineY) : undefined;
-    const own = virtual.getVirtualItemForOffset(offset);
     anchor.current = {
       key: item.key,
       start: item.start,
       block,
       inset: row && block ? block.getBoundingClientRect().top - row.getBoundingClientRect().top : 0,
-      ownKey: own && own.index > 0 ? own.key : undefined,
     };
   });
 
   useLayoutEffect(() => {
     virtual.shouldAdjustScrollPositionOnItemSizeChange = (changed, delta, instance) => {
+      const current = currentMode();
+      // Following keeps the bottom still; the timeline pins it again after the render.
+      if (current === "follow") return true;
+      if (current === "position") return false;
       // Rows measured in one batch arrive with offsets from before the batch's earlier corrections.
       instance.getTotalSize();
       const item = instance.measurementsCache[changed.index] ?? changed;
-      const current = anchor.current;
-      const sameRow = current?.key === item.key;
-      const aboveAnchor = !!current && !sameRow && item.start < current.start;
+      const reading = anchor.current;
+      const sameRow = reading?.key === item.key;
+      const aboveAnchor = !!reading && !sameRow && item.start < reading.start;
       const correction = resizeCorrection({
         start: item.start,
         end: item.end,
@@ -202,9 +196,9 @@ export function useReadingAnchor({
         firstMeasure: !instance.itemSizeCache.has(item.key),
         aboveAnchor,
         delta,
-        moved: sameRow ? movedInsideRow(virtual, current) : undefined,
+        moved: sameRow ? movedInsideRow(virtual, reading) : undefined,
       });
-      if (aboveAnchor) current.start += delta;
+      if (aboveAnchor) reading.start += delta;
       if (correction === delta) return true;
       // The virtualizer can only apply the whole delta, and part of this change is below the reader.
       if (correction !== 0 && viewport)
@@ -212,14 +206,14 @@ export function useReadingAnchor({
           virtual,
           viewport,
           correction + (clamped.current?.amount ?? 0),
-          listEdges(virtual).first,
+          headerKey(virtual),
         );
       return false;
     };
     return () => {
       virtual.shouldAdjustScrollPositionOnItemSizeChange = undefined;
     };
-  }, [virtual, viewport]);
+  }, [virtual, viewport, currentMode]);
 
   useEffect(() => {
     if (!viewport) return;
@@ -235,36 +229,28 @@ export function useReadingAnchor({
     };
   }, [viewport, capture]);
 
-  const restoreAfterRowsChange = useEventCallback((edges: ListEdges) => {
+  const restoreAfterRowsChange = useEventCallback(() => {
     const current = anchor.current;
-    if (!current || following || !viewport) return;
-    const handled =
-      virtual.options.anchorTo === "end" &&
-      virtualizerAnchors(edges, listEdges(virtual)) &&
-      current.ownKey !== undefined &&
-      indexOfKey(virtual, current.ownKey) >= 0;
-    if (handled) return;
+    if (!current || currentMode() !== "read" || !viewport) return;
     const start = virtual.measurementsCache[indexOfKey(virtual, current.key)]?.start;
     if (start === undefined || Math.abs(start - current.start) <= 0.5) return;
-    shiftScroll(virtual, viewport, start - current.start, listEdges(virtual).first);
+    shiftScroll(virtual, viewport, start - current.start, headerKey(virtual));
     rerender();
   });
 
   useLayoutEffect(() => {
     if (!clamped.current || !viewport) return;
-    clamped.current = retryClampedShift(
-      clamped.current,
-      virtual,
-      viewport,
-      listEdges(virtual).first,
-    );
+    if (currentMode() !== "read") {
+      clamped.current = undefined;
+      return;
+    }
+    clamped.current = retryClampedShift(clamped.current, virtual, viewport, headerKey(virtual));
   });
 
   const totalSize = virtual.getTotalSize();
   useLayoutEffect(() => {
-    if (previous.current && previous.current.ids !== ids)
-      restoreAfterRowsChange(previous.current.edges);
-    previous.current = { ids, edges: listEdges(virtual) };
+    if (previous.current && previous.current !== ids) restoreAfterRowsChange();
+    previous.current = ids;
     capture();
-  }, [ids, totalSize, virtual, restoreAfterRowsChange, capture]);
+  }, [ids, totalSize, mode, virtual, restoreAfterRowsChange, capture]);
 }

@@ -59,6 +59,7 @@ import {
 } from "react";
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { bufferedRange, useReadingAnchor } from "./use-reading-anchor";
+import { useTimelineScroll } from "./use-timeline-scroll";
 import {
   ChevronDown,
   ChevronRight,
@@ -363,17 +364,11 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
     if (footerRef.current) observer.observe(footerRef.current);
     return () => observer.disconnect();
   }, []);
-  const [positionedThread, setPositionedThread] = useState<string>();
-  const [tailRenderedThread, setTailRenderedThread] = useState<string>();
-  const switching = positionedThread !== props.threadId;
   const [awayFromEnd, setAwayFromEnd] = useState(false);
-  const [readingDisclosure, setReadingDisclosure] = useState<string>();
   const getItemKey = useCallback(
     (index: number) => {
       if (index === 0) return `${props.threadId}:header`;
-      // The last key must change on append so followOnAppend sees the new turn.
-      if (index === ids.length + 1)
-        return `${props.threadId}:footer:${identities.key(ids.at(-1) ?? "empty")}`;
+      if (index === ids.length + 1) return `${props.threadId}:footer`;
       return identities.key(ids[index - 1]!);
     },
     [ids, props.threadId, identities],
@@ -382,9 +377,6 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
   const virtual = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     // Sticky chrome participates in measurements so the virtual and native scroll extents agree.
     count: ids.length + 2,
-    anchorTo: readingDisclosure === props.threadId ? "start" : "end",
-    followOnAppend: readingDisclosure !== props.threadId,
-    scrollEndThreshold: 8,
     scrollPaddingStart: insets.top,
     scrollPaddingEnd: insets.bottom,
     getScrollElement: () => parent.current,
@@ -411,25 +403,30 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
         return [...new Set([...defaultRangeExtractor(buffered), citationIndexRef.current])].sort(
           (a, b) => a - b,
         );
-      if (tailRenderedThread === props.threadId) return defaultRangeExtractor(buffered);
-      const tail: number[] = [];
-      for (let index = Math.max(0, range.count - 5); index < range.count; index++) tail.push(index);
-      return tail;
+      return defaultRangeExtractor(buffered);
     },
   });
   virtualRef.current = virtual;
+  const scroll = useTimelineScroll({
+    threadId: props.threadId,
+    store,
+    virtual,
+    viewport: citationViewport,
+    readingInset: insets.top,
+    ready: !!store.checkpoint && tailHydrated,
+    ids,
+  });
+  const switching = scroll.positioning;
   useReadingAnchor({
     virtual,
     viewport: citationViewport,
     headerInset: insets.top,
     isReady: (index) => store.get(ids[index - 1] ?? "")?.kind === "ready",
-    following: !awayFromEnd || switching,
+    mode: scroll.mode,
+    currentMode: scroll.currentMode,
     ids,
   });
-  const positionCitation = useCallback(
-    () => setReadingDisclosure(props.threadId),
-    [props.threadId],
-  );
+  const positionCitation = scroll.stopFollowing;
   citationIndexRef.current = useCitationNavigation({
     threadId: props.threadId,
     store,
@@ -480,19 +477,6 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
   const totalSize = virtual.getTotalSize();
   const headerSize = virtual.measurementsCache[0]?.size ?? 0;
   const footerSize = virtual.measurementsCache[ids.length + 1]?.size ?? 0;
-  useLayoutEffect(() => {
-    if (!switching) return;
-    setReadingDisclosure(undefined);
-    virtual.scrollToEnd();
-    setAwayFromEnd(false);
-    if (!store.checkpoint || !tailHydrated || totalSize !== virtual.getTotalSize()) return;
-    // Measure the normal overscan before completing the initial thread position.
-    if (tailRenderedThread !== props.threadId) {
-      setTailRenderedThread(props.threadId);
-      return;
-    }
-    setPositionedThread(props.threadId);
-  });
   useLayoutEffect(() => {
     const viewport = parent.current;
     setAwayFromEnd(
@@ -587,6 +571,7 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
       return;
     }
     const seek = () => {
+      scroll.stopFollowing();
       const index = renderedRowIndex(store, jump.slotId);
       if (index >= 0) virtual.scrollToIndex(index + 1, { align: "start" });
     };
@@ -611,26 +596,32 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
               data-timeline-viewport
               data-messaging={props.timestamps || undefined}
               onScroll={(event) => {
-                setReadingDisclosure(undefined);
+                scroll.handlers.onScroll();
                 const viewport = event.currentTarget;
                 setAwayFromEnd(
                   viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 8,
                 );
               }}
+              onWheel={scroll.handlers.onWheel}
+              onKeyDown={scroll.handlers.onKeyDown}
+              onTouchStart={scroll.handlers.onTouchStart}
+              onTouchMove={scroll.handlers.onTouchMove}
+              onPointerDown={scroll.handlers.onPointerDown}
+              onFocus={scroll.handlers.onFocus}
               onClickCapture={(event) => {
                 if (!(event.target instanceof Element)) return;
                 const trigger = event.target.closest(
                   '[data-slot="collapsible-trigger"], [data-ui=message-expand]',
                 );
-                if (trigger?.getAttribute("aria-expanded") === "false")
-                  setReadingDisclosure(props.threadId);
+                // An expanding disclosure grows down from where the reader is looking.
+                if (trigger?.getAttribute("aria-expanded") === "false") scroll.stopFollowing();
               }}
               onFocusCapture={(event) => {
                 if (
                   event.target instanceof Element &&
                   event.target.closest('[data-ui=message-card-preview][data-collapsed="true"]')
                 )
-                  setReadingDisclosure(props.threadId);
+                  scroll.stopFollowing();
               }}
               role="region"
               aria-label="Conversation"
@@ -692,9 +683,9 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
                   data-index={ids.length + 1}
                   className="chat-sticky-footer sticky bottom-0 z-3"
                 >
-                  {awayFromEnd && !switching ? (
+                  {awayFromEnd && scroll.mode === "read" ? (
                     <div className="scroll-to-end absolute bottom-full left-0 right-0 flex justify-center pb-2 pointer-events-none">
-                      <Button variant="secondary" onClick={() => virtual.scrollToEnd()}>
+                      <Button variant="secondary" onClick={scroll.followEnd}>
                         <ChevronDown />
                         Scroll to end
                       </Button>
@@ -713,6 +704,7 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
                 insets={insets}
                 visibleRange={visibleRange}
                 onSelect={selectTurn}
+                onWheel={scroll.handlers.onWheel}
               />
             ) : null}
           </div>

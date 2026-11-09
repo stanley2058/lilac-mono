@@ -148,6 +148,12 @@ up to 16 hovered turns. DM outlines group turns into context windows with the sa
 session selection. A jump hydrates a deferred range with `aroundPosition`, which loads the target and
 leaves deferred ranges on both sides.
 
+`useTimelineScroll` places a thread before its first paint: at the bottom, or at the reading
+position saved when the reader last left that thread above the bottom. Saved positions live in web
+memory keyed by thread store, so a reload or store eviction opens at the bottom. The timeline follows
+the bottom until wheel, touch, key, scrollbar, or focus input moves the reader up; other scrolls, such
+as the composer revealing its caret, return to the bottom.
+
 `useReadingAnchor` keeps the content at the reading line in place while rows above it change height or
 a deferred range fills in. Rows within 1.5 viewports of the screen stay mounted so media settles
 before the reader reaches it.

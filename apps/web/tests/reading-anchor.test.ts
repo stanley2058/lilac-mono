@@ -4,7 +4,6 @@ import {
   resizeCorrection,
   retryClampedShift,
   shiftScroll,
-  virtualizerAnchors,
 } from "../src/components/use-reading-anchor";
 
 const rows = Array.from({ length: 20 }, (_, index) => ({
@@ -76,20 +75,6 @@ describe("resizeCorrection", () => {
 
   test("a row across the line without an anchored block is left alone", () => {
     expect(resizeCorrection({ ...resize, start: 800, end: 1400 })).toBe(0);
-  });
-});
-
-describe("virtualizerAnchors", () => {
-  const edges = { count: 3, first: "header", last: "footer:a" };
-
-  test("is true when the row count or an edge key changes", () => {
-    expect(virtualizerAnchors(edges, { ...edges, count: 4 })).toBe(true);
-    expect(virtualizerAnchors(edges, { ...edges, last: "footer:b" })).toBe(true);
-    expect(virtualizerAnchors(edges, { ...edges, first: "other" })).toBe(true);
-  });
-
-  test("is false when a middle range is replaced by one row", () => {
-    expect(virtualizerAnchors(edges, { ...edges })).toBe(false);
   });
 });
 
