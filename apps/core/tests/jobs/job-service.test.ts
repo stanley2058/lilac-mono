@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, readdirSync, readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Result } from "better-result";
@@ -45,8 +45,8 @@ describe("JobService", () => {
   let service: JobService;
   const services: JobService[] = [];
 
-  function createService(): JobService {
-    const created = new JobService({ store, logDir: path.join(dir, "logs") });
+  function createService(options: { now?: () => number } = {}): JobService {
+    const created = new JobService({ store, logDir: path.join(dir, "logs"), ...options });
     services.push(created);
     return created;
   }
@@ -97,6 +97,48 @@ describe("JobService", () => {
     await Promise.all(services.splice(0).map((created) => created.close()));
     store.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("closes an output handle when preparing the read fails", async () => {
+    const job = ok<JobRecord>(await start(service, "printf output"));
+    await untilEnded(service, job.jobId);
+    const logPath = path.join(dir, "logs", `${job.jobId}.log`);
+    const handles = () =>
+      readdirSync("/proc/self/fd").filter((entry) => {
+        try {
+          return readlinkSync(`/proc/self/fd/${entry}`) === logPath;
+        } catch {
+          return false;
+        }
+      }).length;
+    const before = handles();
+    expect((await service.read(owner.sessionId, job.jobId, { tailBytes: -1 })).status).toBe(
+      "error",
+    );
+    expect(handles()).toBe(before);
+  });
+
+  it("expires ended jobs during the hourly retention tick", async () => {
+    let now = Date.now();
+    const retained = createService({ now: () => now });
+    const job = ok<JobRecord>(await start(retained, "true"));
+    await untilEnded(retained, job.jobId);
+    retained.acknowledgeEvents([job.jobId]);
+    const intervals = spyOn(globalThis, "setInterval");
+    try {
+      retained.startWakes({
+        port: { deliver: async () => Result.ok<JobWakeDelivery>("accepted") },
+        isSessionBusy: () => true,
+      });
+      const retentionTick = intervals.mock.calls[0]?.[0];
+      expect(typeof retentionTick).toBe("function");
+      now =
+        (ok<JobRecord | null>(store.get(job.jobId))?.endedAt ?? now) + JOB_LIMITS.retentionMs + 1;
+      if (typeof retentionTick === "function") retentionTick();
+      expect(ok<JobRecord | null>(store.get(job.jobId))).toBeNull();
+    } finally {
+      intervals.mockRestore();
+    }
   });
 
   it("holds the request while an await job runs and leaves an event when it exits", async () => {

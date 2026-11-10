@@ -2976,7 +2976,7 @@ const CORE_WORKFLOW_ROW_PERSISTED_CONSUMERS = [
   "decodeWorkflowArtifactRow",
 ].map(
   (exportName): PersistedStoreConsumerRegistration => ({
-    identity: { module: "src/workflow/durable-workflow-store.ts", exportName },
+    identity: { module: "src/workflow/workflow-store-rows.ts", exportName },
     codecs: [CORE_WORKFLOW_ROW_PERSISTED_CODEC.identity],
   }),
 );
@@ -3403,7 +3403,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                 },
                 { include: "src/workflow/workflow-persistence-codec.ts" },
                 { include: "src/workflow/workflow-artifact-store.ts" },
-                { include: "src/workflow/durable-workflow-store.ts" },
+                { include: "src/workflow/workflow-store-rows.ts" },
                 {
                   include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC.identity.module,
                 },
@@ -4027,6 +4027,13 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
         : []),
       ...(root === "apps/core"
         ? ([
+            {
+              identity: {
+                module: "src/workflow/workflow-call-input.ts",
+                exportName: "decodeWorkflowCallInput",
+              },
+              category: "projection" as const,
+            },
             ...[
               "decodeConversationThreadStringArray",
               "decodeConversationThreadImportance",

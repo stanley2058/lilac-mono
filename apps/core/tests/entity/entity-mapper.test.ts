@@ -103,3 +103,15 @@ describe("createDiscordEntityMapper.normalizeIncomingText", () => {
     expect(mapper.normalizeIncomingText("hi <@999>")).toBe("hi @BotAlias");
   });
 });
+
+it("reads renamed Discord entities after the mapper has resolved them", () => {
+  const store = new DiscordSurfaceStore(":memory:");
+  const mapper = createDiscordEntityMapper({ cfg: buildCfg(), store });
+  store.upsertUserName({ userId: "999", username: "before", updatedTs: 1 });
+  expect(mapper.normalizeIncomingText("<@999>")).toBe("@before");
+  expect(mapper.rewriteOutgoingText("@before")).toBe("<@999>");
+  store.upsertUserName({ userId: "999", username: "after", updatedTs: 2 });
+  expect(mapper.normalizeIncomingText("<@999>")).toBe("@after");
+  expect(mapper.rewriteOutgoingText("@after")).toBe("<@999>");
+  store.close();
+});
