@@ -4,19 +4,30 @@ import type { NativeClient } from "@stanley2058/lilac-client";
 export function createThreadPresence(client: Pick<NativeClient, "rpc" | "subscribe">) {
   const clientId = crypto.randomUUID();
   let viewedThread: string | undefined;
+  // The view last sent to the server. Focus and blur repeat the same view, which needs no report.
+  let reported: { threadId?: string } | undefined;
 
   async function report() {
     const rpc = client.rpc;
-    if (!rpc) return;
-    await Result.tryPromise({
-      try: () => rpc.notifications.presence({ clientId, threadId: viewedThread }),
+    const threadId = viewedThread;
+    if (!rpc) {
+      reported = undefined;
+      return;
+    }
+    const sent = { threadId };
+    reported = sent;
+    const result = await Result.tryPromise({
+      try: () => rpc.notifications.presence({ clientId, threadId }),
       catch: () => "Presence unavailable",
     });
+    if (result.isErr() && reported === sent) reported = undefined;
   }
 
-  function view(threadId?: string) {
+  /** Settles once the report, if one was needed, has finished. */
+  function view(threadId?: string): Promise<void> {
+    if (reported && reported.threadId === threadId) return Promise.resolve();
     viewedThread = threadId;
-    void report();
+    return report();
   }
 
   function start() {
@@ -30,7 +41,7 @@ export function createThreadPresence(client: Pick<NativeClient, "rpc" | "subscri
     return () => {
       clearInterval(timer);
       unsubscribe();
-      view();
+      void view();
     };
   }
 

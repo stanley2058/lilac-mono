@@ -246,7 +246,7 @@ function Workspace(props: AppProps) {
     const update = () => {
       release?.();
       release = undefined;
-      presence.view(
+      void presence.view(
         active && !settings && document.visibilityState === "visible" && document.hasFocus()
           ? viewedNotificationThread
           : undefined,
@@ -264,7 +264,7 @@ function Workspace(props: AppProps) {
         );
     };
     const hide = () => {
-      presence.view();
+      void presence.view();
       release?.();
       release = undefined;
     };
@@ -275,7 +275,7 @@ function Workspace(props: AppProps) {
     window.addEventListener("blur", update);
     document.addEventListener("visibilitychange", update);
     return () => {
-      presence.view();
+      void presence.view();
       release?.();
       window.removeEventListener("pagehide", hide);
       window.removeEventListener("pageshow", update);
