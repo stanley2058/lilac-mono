@@ -12,7 +12,11 @@ import {
 import {
   bootstrapReplySchema,
   replayCheckpointSchema,
-  turnSlotSchema,
+  deferredTurnSlotSchema,
+  displayMessageSchema,
+  displayPartSchema,
+  failedTurnSlotSchema,
+  readyTurnSlotSchema,
   revisionSchema,
   identitySchema,
   type BootstrapReply,
@@ -73,12 +77,20 @@ const threadRowSchema = z.strictObject({
   updatedAt: revisionSchema,
   bytes: revisionSchema,
 });
+// Patches append parts and messages to a stored slot, so it can outgrow the wire caps on both.
+const cachedTurnSlotSchema = z.discriminatedUnion("kind", [
+  readyTurnSlotSchema.extend({
+    messages: z.array(displayMessageSchema.extend({ parts: z.array(displayPartSchema) })),
+  }),
+  deferredTurnSlotSchema,
+  failedTurnSlotSchema,
+]);
 const slotRowSchema = z.strictObject({
   key: z.string(),
   threadKey: z.string(),
   scopeKey: z.string(),
   bytes: revisionSchema,
-  data: z.strictObject({ revision: revisionSchema, slot: turnSlotSchema }),
+  data: z.strictObject({ revision: revisionSchema, slot: cachedTurnSlotSchema }),
 });
 const bootstrapRowSchema = z.strictObject({
   key: z.string(),

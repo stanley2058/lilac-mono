@@ -538,3 +538,45 @@ test("the sidebar reads every conversation with an unsent reply in one transacti
   expect(transactions).toHaveBeenCalledTimes(1);
   transactions.mockRestore();
 });
+
+function oversizedPatch(parts: number): CachePatch {
+  const value = patch();
+  const slot = value.put[0]!.slot;
+  if (slot.kind !== "ready") throw new Error("expected a ready slot");
+  slot.messages[0]!.parts = Array.from({ length: parts }, (_, index) => ({
+    type: "text" as const,
+    text: `part ${index}`,
+  }));
+  return value;
+}
+
+test("a stored slot past the wire part cap still reads back from the cache", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory);
+  await first.commit(scope, "thread", oversizedPatch(129));
+  first.close();
+  const value = await cache(factory).read(scope, "thread");
+  const slot = value?.slots[0]?.slot;
+  expect(slot?.kind === "ready" ? slot.messages[0]?.parts.length : undefined).toBe(129);
+});
+
+test("replacing an oversized stored slot subtracts its bytes from the thread total", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory);
+  await first.commit(scope, "thread", oversizedPatch(129));
+  await first.commit(scope, "thread", patch(2, "short"));
+  first.close();
+  const raw = await openRaw(factory);
+  const [thread, slots] = await Promise.all(
+    (["threads", "slots"] as const).map(
+      (store) =>
+        new Promise<{ bytes: number }[]>((resolve, reject) => {
+          const request = raw.transaction(store, "readonly").objectStore(store).getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        }),
+    ),
+  );
+  raw.close();
+  expect(thread?.[0]?.bytes).toBe(slots?.reduce((sum, row) => sum + row.bytes, 0));
+});
