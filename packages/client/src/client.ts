@@ -12,7 +12,13 @@ import type {
   DisplayStreamTarget,
   NativeTransport,
 } from "@stanley2058/lilac-client-protocol";
-import { type CacheScope, type NativeCache, NoNativeCache } from "./cache.ts";
+import {
+  mergeCachePatches,
+  type CachePatch,
+  type CacheScope,
+  type NativeCache,
+  NoNativeCache,
+} from "./cache.ts";
 import { DisplayCatalogCache } from "./catalog.ts";
 import { NativeThreadStore } from "./thread-store.ts";
 import { createNativeRPC, reconnectDelay, type NativeRPC } from "./transport.ts";
@@ -96,6 +102,7 @@ export class NativeClient {
       aroundPosition?: number;
     }
   >();
+  private readonly pendingCachePatches = new Map<string, CachePatch>();
   private readonly cacheWrites = new Map<string, Promise<void>>();
   private transport: NativeTransport;
   private httpFallback = false;
@@ -172,12 +179,20 @@ export class NativeClient {
     store.subscribe(({ patch }) => {
       if (!patch || this.stopped || this.stores.get(threadId) !== store) return;
       this.emit({ kind: "checkpoint", threadId, checkpoint: patch.checkpoint });
-      const previous = this.cacheWrites.get(threadId) ?? Promise.resolve();
-      const write = previous.then(() => this.persist(threadId, patch));
-      this.cacheWrites.set(threadId, write);
-      void write.then(() => {
-        if (this.cacheWrites.get(threadId) === write) this.cacheWrites.delete(threadId);
+      this.pendingCachePatches.set(
+        threadId,
+        mergeCachePatches(this.pendingCachePatches.get(threadId), patch),
+      );
+      if (this.cacheWrites.has(threadId)) return;
+      const write = Promise.resolve().then(async () => {
+        while (this.pendingCachePatches.has(threadId)) {
+          const pending = this.pendingCachePatches.get(threadId)!;
+          this.pendingCachePatches.delete(threadId);
+          await this.persist(threadId, pending);
+        }
+        this.cacheWrites.delete(threadId);
       });
+      this.cacheWrites.set(threadId, write);
     });
     this.stores.set(threadId, store);
     this.trimStores(threadId);
@@ -582,9 +597,17 @@ export class NativeClient {
       case "thread":
         this.emit(event);
         return;
-      case "input":
+      case "input": {
+        const commandId = event.receipt.commandId;
+        const input = commandId ? this.pending.get(commandId) : undefined;
+        if (commandId && input?.threadId === threadId) {
+          this.pending.delete(commandId);
+          this.receipts.set(commandId, { input, receipt: event.receipt });
+          if (this.receipts.size > 256) this.receipts.delete(this.receipts.keys().next().value!);
+        }
         this.emit({ ...event, threadId });
         return;
+      }
       case "deleted":
       case "revoked":
         this.streamFailures.set(threadId, "Conversation is no longer available.");

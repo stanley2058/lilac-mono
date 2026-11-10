@@ -274,6 +274,10 @@ export class DiscordSearchStore {
       ON discord_search_messages(channel_id, ts DESC);
     `);
 
+    const hadFts =
+      this.db
+        .query("SELECT 1 FROM sqlite_master WHERE name='discord_search_messages_fts'")
+        .get() !== null;
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS discord_search_messages_fts
       USING fts5(
@@ -322,7 +326,7 @@ export class DiscordSearchStore {
 
     const rowCount = typeof rowCountRow?.c === "number" ? rowCountRow.c : 0;
     const ftsCount = typeof ftsCountRow?.c === "number" ? ftsCountRow.c : 0;
-    if (rowCount > 0 && ftsCount === 0) {
+    if (rowCount > 0 && (!hadFts || ftsCount === 0)) {
       this.db.run(
         "INSERT INTO discord_search_messages_fts(discord_search_messages_fts) VALUES ('rebuild')",
       );

@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { replayReplySchema, turnPageSchema } from "@stanley2058/lilac-client-protocol";
+import { NativeThreadStore } from "../../../../../packages/client/src/thread-store";
 import type { NativeInput, ReadyTurnSlot, TurnPage } from "@stanley2058/lilac-client-protocol";
 import { NativeStore } from "./store";
 
@@ -51,6 +53,273 @@ function fixture() {
 }
 
 describe("native store adversarial regressions", () => {
+  for (const oversized of [false, true]) {
+    test(
+      oversized
+        ? "oversized structured parts page and reconstruct without cursor loops"
+        : "129 tiny parts produce schema-valid replay and hydrate every part",
+      () => {
+        const { store, thread, submit } = fixture();
+        const receipt = submit("paging");
+        const parts = oversized
+          ? [
+              {
+                type: "data-activity" as const,
+                id: "tool",
+                data: {
+                  kind: "tool" as const,
+                  label: "tool",
+                  state: "complete" as const,
+                  detail: "\u0001".repeat(65_536),
+                  output: "漢".repeat(65_536),
+                },
+              },
+            ]
+          : Array.from({ length: 129 }, () => ({ type: "text" as const, text: "x" }));
+        store
+          .appendMessage(thread.id, 0, receipt.turnId!, {
+            id: "assistant",
+            role: "assistant",
+            parts,
+          })
+          .unwrap();
+        const reply = store.sync("owner", thread.id).unwrap();
+        expect(replayReplySchema.safeParse(reply).success).toBe(true);
+        const client = new NativeThreadStore();
+        client.replay(reply);
+        const visited = new Set<string>();
+        for (let n = 0; n < 100; n++) {
+          const slot = client.get(receipt.turnId!);
+          if (slot?.kind !== "ready") throw new Error("missing turn");
+          if (!slot.partsCursor) {
+            expect(slot.messages.find((message) => message.id === "assistant")?.parts).toEqual(
+              parts,
+            );
+            store.close();
+            return;
+          }
+          const cursor = slot.partsCursor;
+          expect(visited.has(cursor)).toBe(false);
+          if (visited.has(cursor)) throw new Error("cursor did not advance");
+          visited.add(cursor);
+          const page = store
+            .turnPage("owner", {
+              threadId: thread.id,
+              turnId: receipt.turnId!,
+              historyGeneration: 0,
+              projectionRevision: reply.checkpoint.projectionRevision,
+              cursor,
+            })
+            .unwrap();
+          expect(turnPageSchema.safeParse(page).success).toBe(true);
+          expect(client.turnPage(receipt.turnId!, cursor, page)).toBe("applied");
+        }
+        throw new Error("paging exceeded bound");
+      },
+    );
+  }
+
+  test("fragment paging restarts after a revision bump and finishes", () => {
+    const { store, thread, submit } = fixture();
+    const receipt = submit("fragment");
+    const parts = [
+      {
+        type: "data-activity" as const,
+        id: "tool",
+        data: {
+          kind: "tool" as const,
+          label: "tool",
+          state: "complete" as const,
+          detail: "\u0001".repeat(65_536),
+          output: "漢".repeat(65_536),
+        },
+      },
+    ];
+    store
+      .appendMessage(thread.id, 0, receipt.turnId!, {
+        id: "assistant",
+        role: "assistant",
+        parts,
+      })
+      .unwrap();
+    const client = new NativeThreadStore();
+    client.replay(store.sync("owner", thread.id).unwrap());
+    let cachedCursor: string | undefined;
+    client.subscribe((change) => {
+      const slot = change.patch?.put.find((value) => value.slot.slotId === receipt.turnId)?.slot;
+      if (slot?.kind === "ready") cachedCursor = slot.partsCursor;
+    });
+    for (let n = 0; n < 30; n++) {
+      const slot = client.get(receipt.turnId!);
+      if (slot?.kind !== "ready") throw new Error("missing turn");
+      if (!slot.partsCursor) {
+        expect(slot.messages.find((message) => message.id === "assistant")?.parts).toEqual(parts);
+        store.close();
+        return;
+      }
+      const page = store
+        .turnPage("owner", {
+          threadId: thread.id,
+          turnId: receipt.turnId!,
+          historyGeneration: 0,
+          projectionRevision: client.checkpoint!.projectionRevision,
+          cursor: slot.partsCursor,
+        })
+        .unwrap();
+      client.turnPage(slot.slotId, slot.partsCursor, page);
+      if (n !== 0) continue;
+      expect(cachedCursor).toBe("p_1_0");
+      store
+        .updateThread("owner", { threadId: thread.id, commandId: "rename", title: "renamed" })
+        .unwrap();
+      client.replay(store.sync("owner", thread.id, client.checkpoint).unwrap());
+    }
+    throw new Error("fragment paging stuck");
+  });
+
+  test("delta sync bounds a newly appended 129-part message and pages the remainder", () => {
+    const { store, thread, submit } = fixture();
+    const receipt = submit("delta");
+    const initial = store.sync("owner", thread.id).unwrap();
+    const parts = Array.from({ length: 129 }, () => ({ type: "text" as const, text: "x" }));
+    store
+      .appendMessage(thread.id, 0, receipt.turnId!, {
+        id: "assistant",
+        role: "assistant",
+        parts,
+      })
+      .unwrap();
+    const reply = store.sync("owner", thread.id, initial.checkpoint).unwrap();
+    expect(replayReplySchema.safeParse(reply).success).toBe(true);
+    const client = new NativeThreadStore();
+    client.replay(initial);
+    client.replay(reply);
+    for (let n = 0; n < 10; n++) {
+      const slot = client.get(receipt.turnId!);
+      if (slot?.kind !== "ready") throw new Error("missing turn");
+      if (!slot.partsCursor) {
+        expect(slot.messages.find((message) => message.id === "assistant")?.parts).toEqual(parts);
+        store.close();
+        return;
+      }
+      const page = store
+        .turnPage("owner", {
+          threadId: thread.id,
+          turnId: receipt.turnId!,
+          historyGeneration: 0,
+          projectionRevision: reply.checkpoint.projectionRevision,
+          cursor: slot.partsCursor,
+        })
+        .unwrap();
+      expect(client.turnPage(slot.slotId, slot.partsCursor, page)).toBe("applied");
+    }
+    throw new Error("delta remainder stuck");
+  });
+
+  test("part cursors accept both zero-offset forms and emit the legacy form at part boundaries", () => {
+    const { store, thread, submit } = fixture();
+    const receipt = submit("cursors");
+    store
+      .appendMessage(thread.id, 0, receipt.turnId!, {
+        id: "assistant",
+        role: "assistant",
+        parts: Array.from({ length: 129 }, () => ({ type: "text", text: "x" })),
+      })
+      .unwrap();
+    const checkpoint = store.sync("owner", thread.id).unwrap().checkpoint;
+    const page = (cursor: string) =>
+      store
+        .turnPage("owner", {
+          threadId: thread.id,
+          turnId: receipt.turnId!,
+          historyGeneration: 0,
+          projectionRevision: checkpoint.projectionRevision,
+          cursor,
+        })
+        .unwrap();
+    expect(page("p_1_0")).toEqual(page("p_1_0_0"));
+    expect(page("p_1_0").nextCursor?.split("_")).toHaveLength(3);
+    store.close();
+  });
+
+  test("outline preview skips whitespace-only assistant messages", () => {
+    const { store, thread, submit } = fixture();
+    const receipt = submit("preview");
+    for (const [id, text] of [
+      ["reply", "Useful reply"],
+      ["blank", "\n\t\r\u000b\f\u00a0\u2028\u3000\ufeff"],
+    ]) {
+      store
+        .appendMessage(thread.id, 0, receipt.turnId!, {
+          id: id!,
+          role: "assistant",
+          parts: [{ type: "text", text: text! }],
+        })
+        .unwrap();
+    }
+    const previews = store
+      .outlinePreviews("owner", {
+        threadId: thread.id,
+        historyGeneration: 0,
+        positions: [0],
+      })
+      .unwrap();
+    expect(previews[0]?.reply).toBe("Useful reply");
+    store.close();
+  });
+
+  test("syncs past an oversized change row written by older Core", () => {
+    const db = new Database(":memory:");
+    const store = new NativeStore(db);
+    store.initialize().unwrap();
+    store
+      .upsertUser({
+        id: "owner",
+        providerId: "owner",
+        displayName: "Owner",
+        role: "owner",
+        toolMode: "full",
+      })
+      .unwrap();
+    const thread = store.createThread("owner", { commandId: "create" }).unwrap();
+    const receipt = store
+      .acceptInput("owner", {
+        threadId: thread.id,
+        historyGeneration: 0,
+        commandId: "legacy",
+        text: "legacy",
+        mode: "prompt",
+        attachmentIds: [],
+        skillIds: [],
+      })
+      .unwrap();
+    const first = store.sync("owner", thread.id).unwrap();
+    const message = {
+      id: "big",
+      role: "assistant" as const,
+      parts: Array.from({ length: 129 }, (_, index) => ({
+        type: "text" as const,
+        text: `p${index}`,
+      })),
+    };
+    store.appendMessage(thread.id, 0, receipt.turnId!, message).unwrap();
+    const row = db
+      .query<{ revision: number; data_json: string }, [string]>(
+        "SELECT revision,data_json FROM native_changes WHERE thread_id=? ORDER BY revision DESC LIMIT 1",
+      )
+      .get(thread.id)!;
+    // Older Core stored the whole oversized message as one unbounded change.
+    const legacy = JSON.parse(row.data_json);
+    legacy.value.changes = [
+      { kind: "append-message", turnId: receipt.turnId, position: 0, message },
+    ];
+    db.query(
+      "UPDATE native_changes SET data_json=?, kind='turn' WHERE thread_id=? AND revision=?",
+    ).run(JSON.stringify(legacy), thread.id, row.revision);
+    expect(store.sync("owner", thread.id, first.checkpoint).unwrap().kind).toBe("window");
+    store.close();
+  });
+
   test("canceling a started follow-up drops the queue inherited from its previous run", () => {
     const { store, thread, submit, start } = fixture();
     const first = submit("first");

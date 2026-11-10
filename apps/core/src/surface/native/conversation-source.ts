@@ -176,20 +176,35 @@ export function readNativeConversationMessages(db: Database, threadId: string) {
 export function readNativeConversationAttachments(
   db: Database,
   channelId: string,
-  messageId: string,
-): Result<z.infer<typeof nativeAttachmentProjectionSchema>, PersistedDataError> {
-  return decodeNativeAttachmentProjection(
-    db
-      .query(`SELECT
-    json_extract(p.value,'$.data.resourceId') AS id,
-    json_extract(p.value,'$.data.name') AS filename,
-    json_extract(p.value,'$.data.mediaType') AS mimeType,
-    json_extract(p.value,'$.data.size') AS size
-    FROM native_conversation.native_records r JOIN json_each(r.data_json,'$.value.messages') m
-    JOIN json_each(m.value,'$.parts') p
-    WHERE r.kind='turn' AND r.thread_id=? AND json_extract(m.value,'$.id')=?
-      AND json_extract(p.value,'$.type')='data-resource' AND json_extract(p.value,'$.data.state')='ready'
-    ORDER BY CAST(p.key AS INTEGER)`)
-      .all(channelId, messageId),
-  );
+  messageIds: readonly string[],
+): Result<Map<string, z.infer<typeof nativeAttachmentProjectionSchema>>, PersistedDataError> {
+  return Result.gen(function* () {
+    const attachments = new Map<string, z.infer<typeof nativeAttachmentProjectionSchema>>();
+    if (messageIds.length === 0) return Result.ok(attachments);
+    const rows = db
+      .query<
+        { messageId: string; id: string; filename: string; mimeType: string; size: number },
+        (string | number)[]
+      >(`SELECT
+      json_extract(m.value,'$.id') AS messageId,
+      json_extract(p.value,'$.data.resourceId') AS id,
+      json_extract(p.value,'$.data.name') AS filename,
+      json_extract(p.value,'$.data.mediaType') AS mimeType,
+      json_extract(p.value,'$.data.size') AS size
+      FROM native_conversation.native_records r JOIN json_each(r.data_json,'$.value.messages') m
+      JOIN json_each(m.value,'$.parts') p
+      WHERE r.kind='turn' AND r.thread_id=? AND json_extract(m.value,'$.id') IN (${messageIds.map(() => "?").join(",")})
+        AND json_extract(p.value,'$.type')='data-resource' AND json_extract(p.value,'$.data.state')='ready'
+      ORDER BY r.position, CAST(m.key AS INTEGER), CAST(p.key AS INTEGER)`)
+      .all(channelId, ...messageIds);
+    for (const messageId of messageIds) {
+      const values = yield* decodeNativeAttachmentProjection(
+        rows
+          .filter((row) => row.messageId === messageId)
+          .map(({ messageId: _, ...value }) => value),
+      );
+      attachments.set(messageId, values);
+    }
+    return Result.ok(attachments);
+  });
 }

@@ -1545,7 +1545,10 @@ export class ConversationThreadStore {
     if (!first || !last) return null;
 
     const now = Date.now();
-    const updatedAt = Math.max(...input.messages.map((message) => message.updated_ts));
+    const updatedAt = input.messages.reduce(
+      (latest, message) => Math.max(latest, message.updated_ts),
+      0,
+    );
     const inputHash = computeThreadInputHash(input.messages);
     const existing = this.getThread(input.threadId);
     const hashChanged = existing?.summary_input_hash !== inputHash;
@@ -1631,6 +1634,24 @@ export class ConversationThreadStore {
         null,
       ],
     );
+
+    const membership = this.db
+      .query<{ channel_id: string; message_id: string; ts: number }, [string]>(
+        "SELECT channel_id,message_id,ts FROM conversation_thread_messages WHERE thread_id=? ORDER BY ordinal",
+      )
+      .all(input.threadId);
+    if (
+      membership.length === input.messages.length &&
+      membership.every((row, index) => {
+        const message = input.messages[index]!;
+        return (
+          row.channel_id === message.channel_id &&
+          row.message_id === message.message_id &&
+          row.ts === message.ts
+        );
+      })
+    )
+      return input.threadId;
 
     this.db.run("DELETE FROM conversation_thread_messages WHERE thread_id = ?", [input.threadId]);
     for (let i = 0; i < input.messages.length; i++) {
@@ -1791,6 +1812,19 @@ export class ConversationThreadStore {
       ts: number;
     }>;
 
+    const nativeAttachments =
+      threadId.startsWith("native:") && rows[0]
+        ? selectResultValue(
+            readNativeConversationAttachments(
+              this.db,
+              rows[0].channel_id,
+              rows.map((row) => row.message_id),
+            ),
+          )
+        : new Map<string, DiscordIndexedAttachmentMeta[]>();
+    const discordAttachments = threadId.startsWith("native:")
+      ? new Map<string, DiscordIndexedAttachmentMeta[]>()
+      : this.listMessageAttachments(rows);
     return rows.map((row) => ({
       surface: threadId.startsWith("native:") ? "native" : "discord",
       channelId: row.channel_id,
@@ -1800,42 +1834,44 @@ export class ConversationThreadStore {
       userName: row.user_name ?? undefined,
       text: row.text,
       ts: row.ts,
-      attachments: threadId.startsWith("native:")
-        ? selectResultValue(
-            readNativeConversationAttachments(this.db, row.channel_id, row.message_id),
-          )
-        : this.listMessageAttachments(row.channel_id, row.message_id),
+      attachments:
+        (threadId.startsWith("native:") ? nativeAttachments : discordAttachments).get(
+          row.message_id,
+        ) ?? [],
     }));
   }
 
   private listMessageAttachments(
-    channelId: string,
-    messageId: string,
-  ): DiscordIndexedAttachmentMeta[] {
+    messages: readonly { channel_id: string; message_id: string }[],
+  ): Map<string, DiscordIndexedAttachmentMeta[]> {
+    const attachments = new Map<string, DiscordIndexedAttachmentMeta[]>();
+    if (messages.length === 0) return attachments;
     const rows = this.db
       .query<
         {
+          message_id: string;
           attachment_id: string | null;
           filename: string | null;
           mime_type: string | null;
           size: number | null;
         },
-        [string, string]
-      >(
-        `
-        SELECT attachment_id, filename, mime_type, size
-        FROM discord_search_message_attachments
-        WHERE channel_id = ? AND message_id = ?
-        ORDER BY ordinal ASC
-        `,
-      )
-      .all(channelId, messageId);
-    return rows.map((row) => ({
-      ...(row.attachment_id ? { id: row.attachment_id } : {}),
-      ...(row.filename ? { filename: row.filename } : {}),
-      ...(row.mime_type ? { mimeType: row.mime_type } : {}),
-      ...(row.size !== null ? { size: row.size } : {}),
-    }));
+        string[]
+      >(`
+      SELECT message_id,attachment_id,filename,mime_type,size FROM discord_search_message_attachments
+      WHERE channel_id=? AND message_id IN (${messages.map(() => "?").join(",")}) ORDER BY message_id,ordinal
+    `)
+      .all(messages[0]!.channel_id, ...messages.map((message) => message.message_id));
+    for (const row of rows) {
+      const values = attachments.get(row.message_id) ?? [];
+      values.push({
+        ...(row.attachment_id ? { id: row.attachment_id } : {}),
+        ...(row.filename ? { filename: row.filename } : {}),
+        ...(row.mime_type ? { mimeType: row.mime_type } : {}),
+        ...(row.size !== null ? { size: row.size } : {}),
+      });
+      attachments.set(row.message_id, values);
+    }
+    return attachments;
   }
 
   countThreadMessages(threadId: string): number {

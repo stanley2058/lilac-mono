@@ -3808,6 +3808,10 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               identity: { module: "src/client.ts", exportName: "captureFailure" },
               category: "wire" as const,
             },
+            {
+              identity: { module: "src/thread-store.ts", exportName: "decodeDisplayPartFragment" },
+              category: "wire" as const,
+            },
           ]
         : []),
       ...(root === "apps/core"

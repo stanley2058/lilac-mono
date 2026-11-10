@@ -136,6 +136,9 @@ export const turnPageChunkSchema = z.strictObject({
   messageId: identitySchema,
   partIndex: revisionSchema,
   part: displayPartSchema,
+  fragment: z
+    .strictObject({ offset: revisionSchema, total: revisionSchema, json: z.string().max(16_384) })
+    .optional(),
 });
 export const turnPageSchema = z
   .strictObject({
