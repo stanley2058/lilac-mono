@@ -10,11 +10,24 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from "react";
-import { queryOptions, skipToken, useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { Result } from "better-result";
+import {
+  queryOptions,
+  skipToken,
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "cn";
 import type { NativeThreadStore } from "@stanley2058/lilac-client";
-import { turnPreviewText, type TurnPreview } from "@stanley2058/lilac-client-protocol";
+import {
+  turnPreviewText,
+  type ThreadOutline,
+  type TurnPreview,
+} from "@stanley2058/lilac-client-protocol";
 import {
   RAIL_MIN_ITEMS,
   mergeOutlinePages,
@@ -32,6 +45,7 @@ import {
   railTrackStart,
   railVisibleCount,
   slotIndexForPosition,
+  spliceNewestOutlinePage,
   windowTimeRange,
   type OutlineSource,
   type RailAnchor,
@@ -73,15 +87,19 @@ export function useRailOutline(
     // Turns can arrive while the rail is unmounted, and the revision check only sees later changes.
     refetchOnMount: "always",
   });
-  const { refetch, data } = query;
+  const { data } = query;
+  const queries = useQueryClient();
   // The last revision fetched while connected; one seen offline refetches once the connection returns.
   const online = !!source?.online;
   const fetched = useRef(online ? revision : undefined);
   useEffect(() => {
-    if (!online || fetched.current === revision) return;
+    if (!source?.online || generation === undefined || fetched.current === revision) return;
     fetched.current = revision;
-    void refetch({ cancelRefetch: false });
-  }, [online, revision, refetch]);
+    // Turns change only at the newest end, so earlier pages the reader loaded stay as they are.
+    const controller = new AbortController();
+    void refreshNewestOutlinePage(queries, source, threadId, generation, controller.signal);
+    return () => controller.abort();
+  }, [source, threadId, generation, revision, queries]);
   const items = useMemo(() => {
     const pages = data?.pages.filter((page) => page.historyGeneration === generation) ?? [];
     return railItems(mergeOutlinePages(pages));
@@ -93,6 +111,21 @@ export function useRailOutline(
     loadEarlier: query.fetchNextPage,
     loadingEarlier: query.isFetchingNextPage,
   };
+}
+
+async function refreshNewestOutlinePage(
+  queries: QueryClient,
+  source: OutlineSource,
+  threadId: string,
+  generation: number,
+  signal: AbortSignal,
+) {
+  const queryKey = ["thread-outline", threadId, generation];
+  const fresh = await Result.tryPromise(() => source.page(undefined, signal));
+  if (fresh.isErr() || signal.aborted) return;
+  queries.setQueryData<InfiniteData<ThreadOutline, number | undefined>>(queryKey, (current) =>
+    current ? { ...current, pages: spliceNewestOutlinePage(current.pages, fresh.value) } : current,
+  );
 }
 
 function previewOptions(
