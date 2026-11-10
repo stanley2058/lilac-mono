@@ -2871,6 +2871,14 @@ export async function startBusAgentRunner(params: {
   const ignoreDetachedFailure = async (operation: Promise<unknown>): Promise<void> => {
     await Result.tryPromise({ try: () => operation, catch: () => undefined });
   };
+  /** Logs a detached operation's failure, or forwards its Panic, once nobody awaits it. */
+  const superviseDetachedOperation = async (operation: Promise<unknown>): Promise<void> => {
+    const settled = await Result.tryPromise({ try: () => operation, catch: captureError });
+    settled.match({
+      ok: () => undefined,
+      err: ({ cause }) => superviseAgentRunnerBackgroundFailure(cause),
+    });
+  };
   const isRunnerAdmissionStop = (error: EventDeliveryStopped): boolean =>
     runnerAdmissionStopped && error.reason === "requested";
   const startSubscription = (): Promise<void> => {
@@ -7955,8 +7963,12 @@ export async function startBusAgentRunner(params: {
       // Subscription shutdown waits for in-flight bus handlers, so it must not outlive the caller's deadline.
       const subscriptionStopped = stopSubscription();
       void ignoreDetachedFailure(subscriptionStopped);
-      if (await settlesBefore([subscriptionStopped], deadlineAtMs)) await subscriptionStopped;
-      else logger.warn("agent-runner subscription stop exceeded shutdown wait", { deadlineAtMs });
+      if (await settlesBefore([subscriptionStopped], deadlineAtMs)) {
+        await subscriptionStopped;
+      } else {
+        logger.warn("agent-runner subscription stop exceeded shutdown wait", { deadlineAtMs });
+        void ignoreDetachedFailure(superviseDetachedOperation(subscriptionStopped));
+      }
       await stopRunCheckpointWriters(deadlineAtMs);
       if (
         terminalCleanupCompletion &&

@@ -754,6 +754,49 @@ describe("session queue admission", () => {
       await baseBus.close();
     }
   });
+  it("reports a subscription stop panic that lands after the deadline", async () => {
+    const baseBus = createLilacBus(createInMemoryRawBus());
+    const failStop = deferred<void>();
+    const panic = new Panic({ message: "subscription stop invariant failed" });
+    const bus: typeof baseBus = {
+      ...baseBus,
+      subscribeTopic: async (topic, opts, handler, deliveryPolicy) => {
+        const started = await baseBus.subscribeTopic(topic, opts, handler, deliveryPolicy);
+        return started.map((subscription) => ({
+          done: subscription.done,
+          stop: async () => {
+            await failStop.promise;
+            throw panic;
+          },
+        }));
+      },
+    };
+    const reported = deferred<unknown>();
+    const pluginManager = corePrimaryTestPluginManager();
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "stop-subscription-late-panic",
+      reportFatalPanic: (fatal) => reported.resolve(fatal),
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({
+        capability: "stop-subscription-late-panic",
+        principal: null,
+      }),
+      createAgent: () => {
+        throw new Error("no request is published");
+      },
+    });
+    try {
+      await runner.stop({ deadlineAtMs: Date.now() + 20 });
+      failStop.resolve(undefined);
+      await expect(reported.promise).resolves.toBe(panic);
+    } finally {
+      failStop.resolve(undefined);
+      await pluginManager.destroy();
+      await baseBus.close();
+    }
+  });
   it("evicts session state once its runs finish", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const pluginManager = corePrimaryTestPluginManager();
