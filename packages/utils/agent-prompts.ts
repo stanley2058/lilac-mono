@@ -677,18 +677,25 @@ export function applyBasePromptForProvider(params: {
 export async function promptWorkspaceSignature(options?: { dataDir?: string }): Promise<{
   promptDir: string;
   maxMtimeMs: number | null;
+  fingerprint: string;
 }> {
   const promptDir = resolvePromptDir({ dataDir: options?.dataDir });
 
   let maxMtimeMs: number | null = null;
+  const metadata: string[] = [];
 
   for (const name of CORE_PROMPT_FILES) {
     const p = path.join(promptDir, name);
     const inspected = await settlePromiseResult(() => Bun.file(p).stat());
     if (inspected.kind === "panic") throw inspected.panic;
-    if (inspected.kind === "failure") continue;
-    maxMtimeMs = Math.max(maxMtimeMs ?? 0, inspected.value.mtimeMs);
+    if (inspected.kind === "failure") {
+      metadata.push(`${name}:missing`);
+      continue;
+    }
+    const stat = inspected.value;
+    metadata.push(`${name}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`);
+    maxMtimeMs = Math.max(maxMtimeMs ?? 0, stat.mtimeMs);
   }
 
-  return { promptDir, maxMtimeMs };
+  return { promptDir, maxMtimeMs, fingerprint: JSON.stringify(metadata) };
 }

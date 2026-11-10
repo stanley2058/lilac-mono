@@ -131,8 +131,24 @@ function catalogMetadata(
 
 export function projectModelCatalog(
   config: CoreConfig,
-  catalog: ModelCatalog = modelCatalogCache.current(),
+  source: ModelCatalog = modelCatalogCache.current(),
 ): CatalogModel[] {
+  const indexes = new Map<string, Map<string, ModelsDevModel>>();
+  const index = (provider: string) => {
+    let models = indexes.get(provider);
+    if (!models) {
+      models = new Map(source.models(provider).map((model) => [model.id, model]));
+      indexes.set(provider, models);
+    }
+    return models;
+  };
+  const catalog: ModelCatalog = {
+    providerIds: () => source.providerIds(),
+    provider: (id) => source.provider(id),
+    model: (provider, id) => index(provider).get(id),
+    models: (provider) => [...index(provider).values()],
+    modelIds: (provider) => [...index(provider).keys()],
+  };
   const models = new Map<string, CatalogModel>();
   const enabled = configuredCatalogProviders(config);
   for (const provider of enabled) {

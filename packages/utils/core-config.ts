@@ -153,9 +153,18 @@ export function getDiscordSessionAliasValue(alias: DiscordSessionAliasConfig | u
     comment: alias.comment,
   };
 }
+function configFileFingerprint(stat: {
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}): string {
+  return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
 let cached: CoreConfig | null = null;
-let cachedMtimeMs: number | null = null;
-let cachedPromptMaxMtimeMs: number | null = null;
+let cachedFingerprint: string | null = null;
+let cachedPromptFingerprint: string | null = null;
 let warnedPromptNewFilesKey: string | null = null;
 
 export function resolveCoreConfigPath(options?: { dataDir?: string }): string {
@@ -364,13 +373,15 @@ export async function getCoreConfig(options?: {
     if (!inspectOutcome.ok && isPanic(inspectOutcome.error)) throw inspectOutcome.error;
     const cacheMatches =
       inspectOutcome.ok &&
-      cachedMtimeMs !== null &&
-      inspectOutcome.value.stat.mtimeMs === cachedMtimeMs &&
-      cachedPromptMaxMtimeMs !== null &&
-      inspectOutcome.value.promptSig.maxMtimeMs === cachedPromptMaxMtimeMs;
+      cachedFingerprint !== null &&
+      configFileFingerprint(inspectOutcome.value.stat) === cachedFingerprint &&
+      cachedPromptFingerprint !== null &&
+      inspectOutcome.value.promptSig.fingerprint === cachedPromptFingerprint;
     if (cacheMatches) return cached;
   }
 
+  const beforeStat = configFileFingerprint(await Bun.file(filePath).stat());
+  const beforePrompts = (await promptWorkspaceSignature()).fingerprint;
   const raw = await Bun.file(filePath).text();
   const decoded = decodeCoreConfigYaml(raw);
   const decodedValue = decoded.match<unknown | CoreConfigYamlInvalid>({
@@ -411,13 +422,17 @@ export async function getCoreConfig(options?: {
   const stat = await capturePromiseResult(() => Bun.file(filePath).stat());
   const statOutcome = captureResultOutcome(stat);
   if (!statOutcome.ok && isPanic(statOutcome.error)) throw statOutcome.error;
-  cachedMtimeMs = statOutcome.ok ? statOutcome.value.mtimeMs : null;
+  cachedFingerprint = statOutcome.ok ? configFileFingerprint(statOutcome.value) : null;
 
   const signature = await capturePromiseResult(() => promptWorkspaceSignature());
   const signatureOutcome = captureResultOutcome(signature);
   if (!signatureOutcome.ok && isPanic(signatureOutcome.error)) throw signatureOutcome.error;
-  cachedPromptMaxMtimeMs = signatureOutcome.ok ? signatureOutcome.value.maxMtimeMs : null;
+  cachedPromptFingerprint = signatureOutcome.ok ? signatureOutcome.value.fingerprint : null;
 
+  if (cachedFingerprint !== beforeStat || cachedPromptFingerprint !== beforePrompts) {
+    cachedFingerprint = null;
+    cachedPromptFingerprint = null;
+  }
   return nextCfg;
 }
 

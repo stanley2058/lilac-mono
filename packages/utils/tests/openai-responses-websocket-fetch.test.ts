@@ -71,7 +71,7 @@ class FakeWebSocket {
     this.emit("close", new CloseEvent("close", { code, reason: "closed" }));
   }
 
-  emitMessage(data: string): void {
+  emitMessage(data: unknown): void {
     this.emit("message", new MessageEvent("message", { data }));
   }
 
@@ -151,6 +151,75 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 2_000): Promise<T
 }
 
 describe("createOpenAIResponsesWebSocketFetch", () => {
+  it("closes dedicated sockets as well as the reusable socket", async () => {
+    const fetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+    const request = () =>
+      fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        body: JSON.stringify({ stream: true, input: "hi" }),
+      });
+    const responses = await Promise.all([request(), request()]);
+    const reads = responses.map((response) => response.text().catch(() => "closed"));
+    fetch.close();
+    expect(
+      FakeWebSocket.instances.every((socket) => socket.readyState === FakeWebSocket.CLOSED),
+    ).toBe(true);
+    await Promise.all(reads);
+  });
+
+  it("fails a response that exceeds the unread stream budget", async () => {
+    const fetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+    const socket = FakeWebSocket.instances[0]!;
+    socket.emitMessage(
+      JSON.stringify({ type: "response.output_text.delta", delta: "x".repeat(17 * 1024 * 1024) }),
+    );
+    await expect(response.text()).rejects.toThrow("exceeded");
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+    fetch.close();
+  });
+
+  it("closes a socket when its response body is cancelled", async () => {
+    const fetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+    await response.body!.cancel();
+    expect(FakeWebSocket.instances[0]!.readyState).toBe(FakeWebSocket.CLOSED);
+    fetch.close();
+  });
+
+  it("decodes asynchronous frames in arrival order", async () => {
+    const fetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+    const decoded = Promise.withResolvers<ArrayBuffer>();
+    const socket = FakeWebSocket.instances[0]!;
+    socket.emitMessage(
+      new (class extends Blob {
+        override arrayBuffer() {
+          return decoded.promise;
+        }
+      })(["pending"]),
+    );
+    socket.emitMessage(JSON.stringify({ type: "response.completed", response: { id: "r" } }));
+    decoded.resolve(
+      new TextEncoder().encode(
+        JSON.stringify({ type: "response.output_text.delta", delta: "first" }),
+      ).buffer,
+    );
+    const text = await response.text();
+    expect(text).toContain('"delta":"first"');
+    expect(text.indexOf('"delta":"first"')).toBeLessThan(text.indexOf("response.completed"));
+    fetch.close();
+  });
+
   it("routes streaming /responses calls through websocket", async () => {
     const selections: Array<Record<string, unknown>> = [];
     const fallbackCalls: unknown[] = [];
@@ -1351,6 +1420,8 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     });
 
     const secondTextPromise = secondResponse.text();
+    const retried = Promise.withResolvers<void>();
+    FakeWebSocket.onSend = () => retried.resolve();
     socket?.emitMessage(
       JSON.stringify({
         type: "response.metadata",
@@ -1371,7 +1442,7 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
         },
       }),
     );
-    await Promise.resolve();
+    await retried.promise;
 
     expect(sentBody(socket, 2)).toEqual({
       type: "response.create",

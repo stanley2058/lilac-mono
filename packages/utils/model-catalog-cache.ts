@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import bundledSnapshotBytes from "./model-catalog-snapshot.json.txt" with { type: "text" };
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { findWorkspaceRoot } from "./find-root";
@@ -115,9 +116,7 @@ function openStore(filename: string, seed: () => ModelsDevRegistry): Database {
 }
 
 function bundledSnapshot(): ModelsDevRegistry {
-  // Loaded only to seed a new store because this module costs about 22 MB of RSS per isolate.
-  const snapshot: typeof import("./model-catalog-snapshot.generated") = require("./model-catalog-snapshot.generated");
-  return decodeModelsDevRegistry(snapshot.default) ?? {};
+  return decodeModelsDevRegistry(JSON.parse(bundledSnapshotBytes)) ?? {};
 }
 
 export class ModelCatalogCache {
