@@ -304,7 +304,7 @@ export const CORE_FINAL_BOUNDARY_IDENTITIES = [
   ],
   ["src/surface/bridge/bus-agent-runner.ts", "getSubagentOkFromResult"],
   ["src/surface/bridge/bus-agent-runner.ts", "decodeDeferredSubagentAcceptedResult"],
-  ["src/surface/bridge/bus-agent-runner.ts", "collectAutoInjectedThreadIds"],
+  ["src/surface/bridge/bus-agent-runner.ts", "collectAutoInjectedEntryIds"],
   ["src/surface/bridge/bus-agent-runner.ts", "closeLegacyDeferredSubagentCalls"],
   ["src/surface/bridge/bus-agent-runner.ts", "validateCorePrimaryLineageAtRunnerIntake"],
   ["src/surface/bridge/bus-agent-runner.ts", "appendAutoInjectedThreadSearchLineage"],

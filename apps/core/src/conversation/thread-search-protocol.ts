@@ -17,6 +17,9 @@ const allowlist = z.strictObject({
 const scope = { filters: filters.optional(), allowlist: allowlist.optional() };
 const hit = z.object({
   threadId: z.string(),
+  entryOrdinal: z.number().int().nonnegative(),
+  anchorOrdinal: z.number().int().nonnegative().optional(),
+  summaryUpdatedAt: z.number(),
   channelId: z.string(),
   guildId: z.string().optional(),
   parentChannelId: z.string().optional(),

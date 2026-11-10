@@ -10089,6 +10089,26 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
     });
   });
 
+  it("records the recalled entry and tells the model where its subject starts", () => {
+    const messages = buildAutoInjectedThreadSearchMessages({
+      toolCallId: "auto-thread-2",
+      entries: [
+        {
+          surface: "discord" as const,
+          threadId: "thread-1",
+          entryId: "thread-1#1",
+          offset: 12,
+          title: "Second subject",
+        },
+      ],
+    });
+
+    expect(generatedMessageMetadata(messages[0]!)).toMatchObject({ threadIds: ["thread-1#1"] });
+    expect(readGeneratedPayload(messages).entries).toEqual([
+      { surface: "discord", threadId: "thread-1", offset: 12, title: "Second subject" },
+    ]);
+  });
+
   it("appends one deterministic unsliceable synthetic segment after the current boundary", () => {
     const sourceMessages = [
       { role: "user", content: "historical" },

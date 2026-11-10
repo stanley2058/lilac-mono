@@ -3,7 +3,10 @@ import {
   readNativeConversationThreads,
   readNativeConversationMessages,
   readNativeConversationAttachments,
+  readNativeConversationTurnTimings,
+  readNativeDmContextGapMs,
 } from "../surface/native/conversation-source";
+import { startsContextWindow } from "@stanley2058/lilac-client-protocol";
 import { SUMMARY_QUIET_MS } from "./thread-summary-policy";
 import { CONVERSATION_FACET_WEIGHTS as FACET_WEIGHTS } from "./thread-search-weights";
 import { Database } from "bun:sqlite";
@@ -60,7 +63,7 @@ function selectResultValue<T, E extends Error>(result: ResultType<T, E>): T {
   return select();
 }
 
-export const CONVERSATION_THREAD_SUMMARY_VERSION = 5;
+export const CONVERSATION_THREAD_SUMMARY_VERSION = 6;
 export const CONVERSATION_THREAD_EMBEDDING_VERSION = 1;
 
 export type ConversationThreadKind = "discord_thread" | "inferred_channel_thread" | "native_thread";
@@ -152,6 +155,8 @@ export type ConversationThreadSummaryInput = {
   aboutness?: ConversationThreadAboutnessInput;
   importance?: ConversationThreadImportance;
   importanceReasons?: string[];
+  /** The message where this entry's subject starts. Unknown ids are dropped. */
+  anchorMessageId?: string;
 };
 
 export type ConversationThreadSummary = {
@@ -164,8 +169,26 @@ export type ConversationThreadSummary = {
   importanceReasons: string[];
 };
 
+/** One retrieval record of a thread. A thread that covers several subjects has several. */
+export type ConversationThreadSummaryEntry = ConversationThreadSummary & {
+  entryOrdinal: number;
+  anchorOrdinal?: number;
+};
+
+export type ConversationThreadEntryFacet = ConversationThreadFacetInput & {
+  entryOrdinal: number;
+};
+
+export function conversationThreadEntryId(threadId: string, entryOrdinal: number): string {
+  return entryOrdinal === 0 ? threadId : `${threadId}#${entryOrdinal}`;
+}
+
 export type ConversationThreadSearchHit = {
   threadId: string;
+  entryOrdinal: number;
+  anchorOrdinal?: number;
+  /** When the entry was written. A re-summary replaces every entry, so it detects stale hits. */
+  summaryUpdatedAt: number;
   channelId: string;
   guildId?: string;
   parentChannelId?: string;
@@ -208,6 +231,7 @@ export type ConversationThreadSearchAllowlist = {
 export type ConversationThreadReadResult = {
   thread: ConversationThreadRow;
   summary: ConversationThreadSummary | null;
+  entries: ConversationThreadSummaryEntry[];
   messages: ConversationThreadMessage[];
   totalMessages: number;
 };
@@ -230,20 +254,49 @@ type IndexedMessageRow = {
   reply_to_message_id: string | null;
 };
 
+type SummaryEntryRow = PersistedConversationThreadSummaryRow & {
+  entry_ordinal: number;
+  summary_updated_at: number;
+  anchor_ordinal: number | null;
+};
+
 type ThreadSearchRow = ConversationThreadRow &
-  PersistedConversationThreadSummaryRow & {
+  SummaryEntryRow & {
     lexical_score: number;
   };
 
 type ThreadSemanticSearchRow = ConversationThreadRow &
-  PersistedConversationThreadSummaryRow & {
+  SummaryEntryRow & {
     semantic_score: number;
   };
 
+type NativeDmState = { revision: string; windows: string };
+
 type FacetRow = {
+  entry_ordinal: number;
   facet: ConversationThreadEmbeddingFacet;
   text: string;
 };
+
+const SUMMARY_ENTRY_COLUMNS = `
+          s.title,
+          s.brief,
+          s.topics_json,
+          s.retrieval_hints_json,
+          s.aboutness_json,
+          s.importance,
+          s.importance_reasons_json,
+          s.created_at,
+          s.updated_at,
+          s.summary_format_version,
+          s.entry_ordinal,
+          s.updated_at AS summary_updated_at,
+          am.ordinal AS anchor_ordinal`;
+
+const SUMMARY_ENTRY_ANCHOR_JOIN = `
+        LEFT JOIN conversation_thread_messages am
+          ON am.thread_id = s.thread_id
+         AND am.message_id = s.anchor_message_id`;
 
 const SEMANTIC_SIMILARITY_FLOOR = 0.15;
 
@@ -362,29 +415,114 @@ function computeThreadInputHash(messages: readonly IndexedMessageRow[]): string 
   );
 }
 
-function computeSummaryHash(summary: ConversationThreadSummary): string {
+function computeFacetHash(facets: readonly ConversationThreadEntryFacet[]): string {
   return stableHash(
-    [
-      summary.title,
-      summary.brief,
-      ...summary.topics,
-      ...summary.retrievalHints,
-      ...summary.aboutness.domains,
-      ...summary.aboutness.situations,
-      ...summary.aboutness.complaintTargets,
-      ...summary.aboutness.entities,
-      ...summary.aboutness.userWouldAskForThisAs,
-    ].join("\u001f"),
+    [...facets]
+      .sort((a, b) => a.entryOrdinal - b.entryOrdinal || a.facet.localeCompare(b.facet))
+      .map((facet) => [facet.entryOrdinal, facet.facet, facet.text].join("\u001f"))
+      .join("\u001e"),
   );
 }
 
-function computeFacetHash(facets: readonly ConversationThreadFacetInput[]): string {
-  return stableHash(
-    [...facets]
-      .sort((a, b) => a.facet.localeCompare(b.facet))
-      .map((facet) => [facet.facet, facet.text].join("\u001f"))
-      .join("\u001e"),
-  );
+function buildEntryFacets(
+  summary: ConversationThreadSummary,
+  entryOrdinal: number,
+): ConversationThreadEntryFacet[] {
+  const facets: ConversationThreadFacetInput[] = [
+    {
+      facet: "combined",
+      text: [
+        summary.title,
+        summary.brief,
+        summary.retrievalHints.join("\n"),
+        summary.aboutness.userWouldAskForThisAs.join("\n"),
+        summary.aboutness.complaintTargets.join("\n"),
+        summary.aboutness.domains.join("\n"),
+        summary.aboutness.situations.join("\n"),
+        summary.aboutness.entities.join("\n"),
+        summary.topics.join("\n"),
+      ].join("\n\n"),
+    },
+    {
+      facet: "userWouldAskForThisAs",
+      text: summary.aboutness.userWouldAskForThisAs.join("\n"),
+    },
+    {
+      facet: "aboutnessComplaintTargets",
+      text: summary.aboutness.complaintTargets.join("\n"),
+    },
+    { facet: "aboutnessDomains", text: summary.aboutness.domains.join("\n") },
+    { facet: "aboutnessSituations", text: summary.aboutness.situations.join("\n") },
+    { facet: "aboutnessEntities", text: summary.aboutness.entities.join("\n") },
+    { facet: "retrievalHints", text: summary.retrievalHints.join("\n") },
+    { facet: "title", text: summary.title },
+    { facet: "brief", text: summary.brief },
+    { facet: "topics", text: summary.topics.join("\n") },
+  ];
+  return facets
+    .filter((facet) => facet.text.trim().length > 0)
+    .map((facet) => ({ ...facet, entryOrdinal }));
+}
+
+type NativeTurnTiming = {
+  position: number;
+  created_at: number | null;
+  completed_at: number | null;
+};
+
+/**
+ * Splits a DM into context windows with the gap rule the agent uses. Turns without messages
+ * still carry timing, so they can bridge a gap between two visible turns.
+ */
+function splitNativeDmWindows<T extends { turn_position: number }>(
+  messages: readonly T[],
+  turns: readonly NativeTurnTiming[],
+  gapMs: number,
+): T[][] {
+  const windowByTurn = new Map<number, number>();
+  let window = 0;
+  let lastCompletedAt: number | null = null;
+  for (const { position, created_at: createdAt, completed_at: completedAt } of turns) {
+    const timed = createdAt !== null && completedAt !== null;
+    if (timed && lastCompletedAt !== null && startsContextWindow(lastCompletedAt, createdAt, gapMs))
+      window += 1;
+    windowByTurn.set(position, window);
+    if (timed) lastCompletedAt = completedAt;
+  }
+  const windows = new Map<number, T[]>();
+  for (const message of messages) {
+    const index = windowByTurn.get(message.turn_position) ?? window;
+    const members = windows.get(index);
+    if (members) members.push(message);
+    else windows.set(index, [message]);
+  }
+  return [...windows.values()];
+}
+
+function nativeIndexedMessage(
+  message: Pick<
+    IndexedMessageRow,
+    "channel_id" | "message_id" | "user_id" | "user_name" | "text" | "ts"
+  >,
+  updatedAt: number,
+): IndexedMessageRow {
+  return {
+    channel_id: message.channel_id,
+    message_id: message.message_id,
+    user_id: message.user_id,
+    user_name: message.user_name,
+    text: message.text,
+    ts: message.ts,
+    guild_id: null,
+    parent_channel_id: null,
+    session_type: "thread",
+    edited_ts: null,
+    updated_ts: updatedAt,
+    attachments_hash: null,
+    is_chat: 1,
+    reply_to_channel_id: null,
+    reply_to_message_id: null,
+  };
 }
 
 function facetWeightSql(alias: string): string {
@@ -631,7 +769,7 @@ function resolveThreadGroupingMode(input: {
 }
 
 export type ConversationThreadSummaryWriteResult = {
-  facets: ConversationThreadFacetInput[];
+  facets: ConversationThreadEntryFacet[];
   embeddingInputHash: string;
 };
 
@@ -656,6 +794,9 @@ export class ConversationThreadStore {
   private readonly mainAgentUserNames: ReadonlySet<string>;
   private hasNativeSource = false;
   private nativeDataVersion: number | undefined;
+  // Reading a whole DM to recompute its windows is costly, so skip a DM whose source and indexed
+  // windows both match what this store last built. Other store instances write the same windows.
+  private readonly nativeDmStates = new Map<string, NativeDmState>();
   private readonly onPersistenceDiagnostic: (
     diagnostic: ConversationThreadPersistenceDiagnostic,
   ) => void;
@@ -690,6 +831,7 @@ export class ConversationThreadStore {
     installNativeConversationSource(this.db, databasePath);
     this.hasNativeSource = true;
     this.nativeDataVersion = undefined;
+    this.nativeDmStates.clear();
   }
 
   private installMessageSource(): void {
@@ -707,7 +849,8 @@ export class ConversationThreadStore {
       .get()?.data_version;
     if (version !== undefined && version === this.nativeDataVersion) return;
     const startedAt = performance.now();
-    this.db.transaction(() => this.materializeNativeThreads()).immediate();
+    const dmStates = this.db.transaction(() => this.materializeNativeThreads()).immediate();
+    for (const [threadId, state] of dmStates) this.nativeDmStates.set(threadId, state);
     // Remember the version from before the scan so a concurrent commit cannot be skipped.
     this.nativeDataVersion = version;
     threadStoreLogger.debug("conversation.thread.native_refresh", {
@@ -715,42 +858,111 @@ export class ConversationThreadStore {
     });
   }
 
-  private materializeNativeThreads(): void {
+  /** Returns the state of every DM it rebuilt, to record once the transaction commits. */
+  private materializeNativeThreads(): Map<string, NativeDmState> {
     const threads = selectResultValue(readNativeConversationThreads(this.db));
-    const activeIds = new Set(threads.map((thread) => `native:${thread.id}`));
+    const gapMs = selectResultValue(readNativeDmContextGapMs(this.db));
+    const sourceIds = new Set(threads.map((thread) => thread.id));
     for (const row of this.db
-      .query<{ thread_id: string }, []>(
-        "SELECT thread_id FROM conversation_threads WHERE kind='native_thread'",
+      .query<{ thread_id: string; channel_id: string }, []>(
+        "SELECT thread_id,channel_id FROM conversation_threads WHERE kind='native_thread'",
       )
       .all()) {
-      if (!activeIds.has(row.thread_id)) this.deleteThread(row.thread_id);
+      if (!sourceIds.has(row.channel_id)) this.deleteThread(row.thread_id);
     }
+    // A DM hidden by a pending mutation loses its windows, so it must rebuild when it returns.
+    for (const threadId of this.nativeDmStates.keys()) {
+      if (!sourceIds.has(threadId)) this.nativeDmStates.delete(threadId);
+    }
+    const dmStates = new Map<string, NativeDmState>();
     for (const thread of threads) {
+      if (thread.dm === 1) {
+        const state = this.materializeNativeDm(thread, gapMs);
+        if (state) dmStates.set(thread.id, state);
+        continue;
+      }
       const threadId = `native:${thread.id}`;
       const existing = this.getThread(threadId);
       const hash = `native:${stableHash(thread.revision)}`;
       if (existing?.summary_input_hash === hash) continue;
-      const sourceMessages = selectResultValue(readNativeConversationMessages(this.db, thread.id));
-      const messages: IndexedMessageRow[] = sourceMessages.map((message) => ({
-        ...message,
-        guild_id: null,
-        parent_channel_id: null,
-        session_type: "thread",
-        edited_ts: null,
-        updated_ts: thread.updated_at,
-        attachments_hash: null,
-        is_chat: 1,
-        reply_to_channel_id: null,
-        reply_to_message_id: null,
-      }));
       // Rebuild changed native entries so removed text cannot survive in a previous summary.
       this.deleteThread(threadId);
-      this.upsertThread({ threadId, kind: "native_thread", parentChannelId: null, messages });
+      this.upsertThread({
+        threadId,
+        kind: "native_thread",
+        parentChannelId: null,
+        messages: selectResultValue(readNativeConversationMessages(this.db, thread.id)).map(
+          (message) => nativeIndexedMessage(message, thread.updated_at),
+        ),
+      });
       this.db.run(
         "UPDATE conversation_threads SET summary_input_hash=?,updated_at=?,end_ts=? WHERE thread_id=?",
         [hash, thread.updated_at, thread.updated_at, threadId],
       );
     }
+    return dmStates;
+  }
+
+  private readNativeDmWindowState(threadId: string): string {
+    return this.db
+      .query<{ thread_id: string; summary_input_hash: string | null }, [string]>(
+        "SELECT thread_id,summary_input_hash FROM conversation_threads WHERE kind='native_thread' AND channel_id=? ORDER BY thread_id",
+      )
+      .all(threadId)
+      .map((row) => `${row.thread_id}\u001f${row.summary_input_hash}`)
+      .join("\u001e");
+  }
+
+  /**
+   * Indexes a DM as one thread per context window so a closed window is summarized once.
+   * Returns null when the DM is unchanged since this store last built it.
+   */
+  private materializeNativeDm(
+    thread: { id: string; revision: string; updated_at: number },
+    gapMs: number,
+  ): NativeDmState | null {
+    const turns = selectResultValue(readNativeConversationTurnTimings(this.db, thread.id));
+    // Turn timing moves window boundaries without changing any message, so it is part of the source.
+    const revision = stableHash(
+      [
+        gapMs,
+        thread.revision,
+        ...turns.flatMap((turn) => [turn.created_at, turn.completed_at]),
+      ].join("\u001f"),
+    );
+    const built = this.nativeDmStates.get(thread.id);
+    if (built?.revision === revision && built.windows === this.readNativeDmWindowState(thread.id)) {
+      return null;
+    }
+    const source = selectResultValue(readNativeConversationMessages(this.db, thread.id));
+    const windows = splitNativeDmWindows(source, turns, gapMs).map((window) =>
+      window.map((message) => nativeIndexedMessage(message, thread.updated_at)),
+    );
+    const windowIds = new Set<string>();
+    for (const [index, messages] of windows.entries()) {
+      const threadId = `native:${thread.id}:${messages[0]!.message_id}`;
+      windowIds.add(threadId);
+      if (this.getThread(threadId)?.summary_input_hash === computeThreadInputHash(messages)) {
+        continue;
+      }
+      this.deleteThread(threadId);
+      this.upsertThread({ threadId, kind: "native_thread", parentChannelId: null, messages });
+      if (index < windows.length - 1) continue;
+      // The open window stays quiet-gated on the thread's last update, like other native threads.
+      this.db.run("UPDATE conversation_threads SET updated_at=?,end_ts=? WHERE thread_id=?", [
+        thread.updated_at,
+        thread.updated_at,
+        threadId,
+      ]);
+    }
+    for (const row of this.db
+      .query<{ thread_id: string }, [string]>(
+        "SELECT thread_id FROM conversation_threads WHERE kind='native_thread' AND channel_id=?",
+      )
+      .all(thread.id)) {
+      if (!windowIds.has(row.thread_id)) this.deleteThread(row.thread_id);
+    }
+    return { revision, windows: this.readNativeDmWindowState(thread.id) };
   }
 
   close(): void {
@@ -873,10 +1085,11 @@ export class ConversationThreadStore {
   private migrate(): void {
     const reset = this.db.transaction(() => {
       const current = this.db
-        .query("SELECT name FROM sqlite_master WHERE name='conversation_index_v2'")
+        .query("SELECT name FROM sqlite_master WHERE name='conversation_index_v3'")
         .get();
       if (current) return;
       for (const table of [
+        "conversation_index_v2",
         "conversation_thread_facets_fts",
         "conversation_thread_embeddings",
         "conversation_thread_facets",
@@ -885,8 +1098,8 @@ export class ConversationThreadStore {
         "conversation_threads",
       ])
         this.db.run(`DROP TABLE IF EXISTS ${table}`);
-      this.db.run("CREATE TABLE conversation_index_v2 (version INTEGER NOT NULL)");
-      this.db.run("INSERT INTO conversation_index_v2 VALUES (2)");
+      this.db.run("CREATE TABLE conversation_index_v3 (version INTEGER NOT NULL)");
+      this.db.run("INSERT INTO conversation_index_v3 VALUES (3)");
     });
     reset();
 
@@ -969,7 +1182,9 @@ export class ConversationThreadStore {
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS conversation_thread_summaries (
-        thread_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        entry_ordinal INTEGER NOT NULL DEFAULT 0,
+        anchor_message_id TEXT,
         title TEXT NOT NULL,
         brief TEXT NOT NULL,
         topics_json TEXT NOT NULL,
@@ -979,7 +1194,8 @@ export class ConversationThreadStore {
         importance_reasons_json TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        summary_format_version INTEGER
+        summary_format_version INTEGER,
+        PRIMARY KEY (thread_id, entry_ordinal)
       );
     `);
 
@@ -1021,10 +1237,11 @@ export class ConversationThreadStore {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS conversation_thread_facets (
         thread_id TEXT NOT NULL,
+        entry_ordinal INTEGER NOT NULL DEFAULT 0,
         facet TEXT NOT NULL,
         text TEXT NOT NULL,
         updated_at INTEGER NOT NULL,
-        PRIMARY KEY (thread_id, facet)
+        PRIMARY KEY (thread_id, entry_ordinal, facet)
       );
     `);
 
@@ -1077,12 +1294,13 @@ export class ConversationThreadStore {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS conversation_thread_embeddings (
         thread_id TEXT NOT NULL,
+        entry_ordinal INTEGER NOT NULL DEFAULT 0,
         facet TEXT NOT NULL,
         model_id TEXT NOT NULL,
         dimensions INTEGER NOT NULL,
         embedding BLOB NOT NULL,
         updated_at INTEGER NOT NULL,
-        PRIMARY KEY (thread_id, facet, model_id)
+        PRIMARY KEY (thread_id, entry_ordinal, facet, model_id)
       );
     `);
 
@@ -1419,10 +1637,22 @@ export class ConversationThreadStore {
       .get(threadId);
   }
 
+  /** A DM is indexed per context window, so its bare native id resolves to the newest window. */
+  findThread(threadId: string): ConversationThreadRow | null {
+    const exact = this.getThread(threadId);
+    if (exact || !this.hasNativeSource || !threadId.startsWith("native:")) return exact;
+    return this.db
+      .query<ConversationThreadRow, [string]>(
+        "SELECT * FROM conversation_threads WHERE kind='native_thread' AND channel_id = ? ORDER BY start_ts DESC LIMIT 1",
+      )
+      .get(threadId.slice("native:".length));
+  }
+
+  /** The thread's first entry. Use `listSummaryEntries` for every subject it covers. */
   getSummary(threadId: string): ResultType<ConversationThreadSummary | null, PersistedDataError> {
     const row = this.db
       .query<ConversationThreadSummaryRow, [string]>(
-        "SELECT * FROM conversation_thread_summaries WHERE thread_id = ?",
+        "SELECT * FROM conversation_thread_summaries WHERE thread_id = ? ORDER BY entry_ordinal ASC LIMIT 1",
       )
       .get(threadId);
     if (!row) return Result.ok(null);
@@ -1437,6 +1667,37 @@ export class ConversationThreadStore {
       },
     });
     return finish();
+  }
+
+  listSummaryEntries(
+    threadId: string,
+  ): ResultType<ConversationThreadSummaryEntry[], PersistedDataError> {
+    const rows = this.db
+      .query<SummaryEntryRow, [string]>(
+        `
+        SELECT s.thread_id, ${SUMMARY_ENTRY_COLUMNS}
+        FROM conversation_thread_summaries s
+        ${SUMMARY_ENTRY_ANCHOR_JOIN}
+        WHERE s.thread_id = ?
+        ORDER BY s.entry_ordinal ASC
+        `,
+      )
+      .all(threadId);
+    const entries: ConversationThreadSummaryEntry[] = [];
+    for (const row of rows) {
+      const decoded = decodeConversationThreadSummaryRow(row);
+      const decodeError = resultErrorOrNull(decoded);
+      if (decodeError) {
+        this.reportPersistenceError(decodeError);
+        return Result.err(decodeError);
+      }
+      entries.push({
+        ...summaryFromDecodedRow(selectResultValue(decoded).value),
+        entryOrdinal: row.entry_ordinal,
+        ...(row.anchor_ordinal !== null ? { anchorOrdinal: row.anchor_ordinal } : {}),
+      });
+    }
+    return Result.ok(entries);
   }
 
   getMessagePosition(
@@ -1572,14 +1833,14 @@ export class ConversationThreadStore {
     offset?: number,
     limit?: number,
   ): ResultType<ConversationThreadReadResult | null, PersistedDataError> {
-    const thread = this.getThread(threadId);
+    const thread = this.findThread(threadId);
     if (!thread) return Result.ok(null);
-    const summary = this.getSummary(threadId);
-    return summary.map((value) => ({
+    return this.listSummaryEntries(thread.thread_id).map((entries) => ({
       thread,
-      summary: value,
-      messages: this.listMessages(threadId, offset, limit),
-      totalMessages: this.countThreadMessages(threadId),
+      summary: entries[0] ?? null,
+      entries,
+      messages: this.listMessages(thread.thread_id, offset, limit),
+      totalMessages: this.countThreadMessages(thread.thread_id),
     }));
   }
 
@@ -1862,10 +2123,11 @@ export class ConversationThreadStore {
     );
   }
 
+  /** Replaces every entry of the thread. Pass several summaries when it covers several subjects. */
   upsertSummary(
     threadId: string,
     summaryInputHash: string,
-    summary: ConversationThreadSummaryInput,
+    summary: ConversationThreadSummaryInput | readonly ConversationThreadSummaryInput[],
     promptContextHash: string | null = null,
     options?: { ifCurrent?: boolean },
   ): ResultType<
@@ -1873,44 +2135,16 @@ export class ConversationThreadStore {
     ConversationThreadSqliteDriverFailure
   > {
     this.refreshNativeThreads();
-    const normalized = normalizeSummary(summary);
-    const now = Date.now();
-    const topicsJson = JSON.stringify(normalized.topics);
-    const retrievalHintsJson = JSON.stringify(normalized.retrievalHints);
-    const aboutnessJson = JSON.stringify(normalized.aboutness);
-    const importanceReasonsJson = JSON.stringify(normalized.importanceReasons);
-    const embeddingHash = computeSummaryHash(normalized);
-    const facets: ConversationThreadFacetInput[] = [
-      {
-        facet: "combined",
-        text: [
-          normalized.title,
-          normalized.brief,
-          normalized.retrievalHints.join("\n"),
-          normalized.aboutness.userWouldAskForThisAs.join("\n"),
-          normalized.aboutness.complaintTargets.join("\n"),
-          normalized.aboutness.domains.join("\n"),
-          normalized.aboutness.situations.join("\n"),
-          normalized.aboutness.entities.join("\n"),
-          normalized.topics.join("\n"),
-        ].join("\n\n"),
-      },
-      {
-        facet: "userWouldAskForThisAs",
-        text: normalized.aboutness.userWouldAskForThisAs.join("\n"),
-      },
-      {
-        facet: "aboutnessComplaintTargets",
-        text: normalized.aboutness.complaintTargets.join("\n"),
-      },
-      { facet: "aboutnessDomains", text: normalized.aboutness.domains.join("\n") },
-      { facet: "aboutnessSituations", text: normalized.aboutness.situations.join("\n") },
-      { facet: "aboutnessEntities", text: normalized.aboutness.entities.join("\n") },
-      { facet: "retrievalHints", text: normalized.retrievalHints.join("\n") },
-      { facet: "title", text: normalized.title },
-      { facet: "brief", text: normalized.brief },
-      { facet: "topics", text: normalized.topics.join("\n") },
-    ];
+    const inputs = Array.isArray(summary) ? summary : [summary];
+    const entries = inputs.map((input, entryOrdinal) => {
+      const normalized = normalizeSummary(input);
+      return {
+        normalized,
+        anchorMessageId: input.anchorMessageId ?? null,
+        facets: buildEntryFacets(normalized, entryOrdinal),
+      };
+    });
+    const facets = entries.flatMap((entry) => entry.facets);
 
     const transaction = runBunSqliteTransaction(
       this.db,
@@ -1924,47 +2158,52 @@ export class ConversationThreadStore {
           if (current?.summary_input_hash !== summaryInputHash) return Result.ok(false);
         }
 
-        this.db.run(
-          `
-        INSERT INTO conversation_thread_summaries (
-            thread_id, title, brief, topics_json, retrieval_hints_json, aboutness_json, importance, importance_reasons_json, created_at, updated_at, summary_format_version
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(thread_id) DO UPDATE SET
-          title=excluded.title,
-          brief=excluded.brief,
-          topics_json=excluded.topics_json,
-          retrieval_hints_json=excluded.retrieval_hints_json,
-          aboutness_json=excluded.aboutness_json,
-          importance=excluded.importance,
-          importance_reasons_json=excluded.importance_reasons_json,
-            summary_format_version=excluded.summary_format_version,
-          updated_at=excluded.updated_at
-        `,
-          [
-            threadId,
-            normalized.title,
-            normalized.brief,
-            topicsJson,
-            retrievalHintsJson,
-            aboutnessJson,
-            normalized.importance,
-            importanceReasonsJson,
-            now,
-            now,
-            CONVERSATION_THREAD_SUMMARY_FORMAT_VERSION,
-          ],
-        );
-
+        // Entries are identified by their write time, so it must advance on every replacement.
+        const replaced = this.db
+          .query<{ updated_at: number | null }, [string]>(
+            "SELECT MAX(updated_at) AS updated_at FROM conversation_thread_summaries WHERE thread_id = ?",
+          )
+          .get(threadId);
+        const now = Math.max(Date.now(), (replaced?.updated_at ?? 0) + 1);
+        this.db.run("DELETE FROM conversation_thread_summaries WHERE thread_id = ?", [threadId]);
         this.db.run("DELETE FROM conversation_thread_facets WHERE thread_id = ?", [threadId]);
         this.db.run("DELETE FROM conversation_thread_embeddings WHERE thread_id = ?", [threadId]);
-        for (const facet of facets) {
-          if (facet.text.trim().length === 0) continue;
+        for (const [entryOrdinal, entry] of entries.entries()) {
           this.db.run(
             `
-          INSERT INTO conversation_thread_facets (thread_id, facet, text, updated_at)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO conversation_thread_summaries (
+            thread_id, entry_ordinal, anchor_message_id, title, brief, topics_json, retrieval_hints_json, aboutness_json, importance, importance_reasons_json, created_at, updated_at, summary_format_version
+          ) VALUES (
+            ?, ?,
+            (SELECT message_id FROM conversation_thread_messages WHERE thread_id = ? AND message_id = ?),
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          )
           `,
-            [threadId, facet.facet, facet.text, now],
+            [
+              threadId,
+              entryOrdinal,
+              threadId,
+              entry.anchorMessageId,
+              entry.normalized.title,
+              entry.normalized.brief,
+              JSON.stringify(entry.normalized.topics),
+              JSON.stringify(entry.normalized.retrievalHints),
+              JSON.stringify(entry.normalized.aboutness),
+              entry.normalized.importance,
+              JSON.stringify(entry.normalized.importanceReasons),
+              now,
+              now,
+              CONVERSATION_THREAD_SUMMARY_FORMAT_VERSION,
+            ],
+          );
+        }
+        for (const facet of facets) {
+          this.db.run(
+            `
+          INSERT INTO conversation_thread_facets (thread_id, entry_ordinal, facet, text, updated_at)
+          VALUES (?, ?, ?, ?, ?)
+          `,
+            [threadId, facet.entryOrdinal, facet.facet, facet.text, now],
           );
         }
 
@@ -1995,26 +2234,23 @@ export class ConversationThreadStore {
     );
     return transaction.map((written) => {
       if (!written) return null;
-      const filteredFacets = facets.filter((facet) => facet.text.trim().length > 0);
-      return {
-        facets: filteredFacets,
-        embeddingInputHash: computeFacetHash(filteredFacets) || embeddingHash,
-      };
+      return { facets, embeddingInputHash: computeFacetHash(facets) };
     });
   }
 
-  listFacets(threadId: string): ConversationThreadFacetInput[] {
+  listFacets(threadId: string): ConversationThreadEntryFacet[] {
     const rows = this.db
       .query(
         `
-        SELECT facet, text
+        SELECT entry_ordinal, facet, text
         FROM conversation_thread_facets
         WHERE thread_id = ?
-        ORDER BY ${facetWeightSql("conversation_thread_facets")} DESC, facet ASC
+        ORDER BY entry_ordinal ASC, ${facetWeightSql("conversation_thread_facets")} DESC, facet ASC
         `,
       )
       .all(threadId) as FacetRow[];
     return rows.map((row) => ({
+      entryOrdinal: row.entry_ordinal,
       facet: row.facet,
       text: row.text,
     }));
@@ -2029,7 +2265,7 @@ export class ConversationThreadStore {
         SELECT f.text
         FROM conversation_thread_facets f JOIN conversation_threads t ON t.thread_id=f.thread_id
         WHERE f.facet = 'combined' AND ${filter.sql}
-        ORDER BY f.thread_id ASC
+        ORDER BY f.thread_id ASC, f.entry_ordinal ASC
         `,
       )
       .all(...filter.values) as Array<{ text: string }>;
@@ -2047,6 +2283,7 @@ export class ConversationThreadStore {
     modelId: string;
     dimensions: number;
     embeddings: ReadonlyArray<{
+      entryOrdinal: number;
       facet: ConversationThreadEmbeddingFacet;
       embedding: Float32Array;
     }>;
@@ -2066,10 +2303,18 @@ export class ConversationThreadStore {
         this.db.run(
           `
           INSERT INTO conversation_thread_embeddings (
-            thread_id, facet, model_id, dimensions, embedding, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?)
+            thread_id, entry_ordinal, facet, model_id, dimensions, embedding, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
           `,
-          [input.threadId, item.facet, input.modelId, input.dimensions, item.embedding, now],
+          [
+            input.threadId,
+            item.entryOrdinal,
+            item.facet,
+            input.modelId,
+            input.dimensions,
+            item.embedding,
+            now,
+          ],
         );
       }
 
@@ -2105,29 +2350,24 @@ export class ConversationThreadStore {
         `
         SELECT
           t.*,
-          s.title,
-          s.brief,
-          s.topics_json,
-          s.retrieval_hints_json,
-          s.aboutness_json,
-          s.importance,
-          s.importance_reasons_json,
-          s.created_at,
-          s.updated_at,
-          s.summary_format_version,
+          ${SUMMARY_ENTRY_COLUMNS},
           max(fm.facet_score) AS lexical_score
         FROM (
           SELECT
             f.thread_id,
+            f.entry_ordinal,
             ${facetWeightSql("f")} AS facet_score
           FROM conversation_thread_facets_fts
           JOIN conversation_thread_facets f ON f.rowid = conversation_thread_facets_fts.rowid
           WHERE conversation_thread_facets_fts MATCH ?
         ) fm
         JOIN conversation_threads t ON t.thread_id = fm.thread_id
-        JOIN conversation_thread_summaries s ON s.thread_id = t.thread_id
+        JOIN conversation_thread_summaries s
+          ON s.thread_id = fm.thread_id
+         AND s.entry_ordinal = fm.entry_ordinal
+        ${SUMMARY_ENTRY_ANCHOR_JOIN}
         WHERE ${filter.sql}
-        GROUP BY t.thread_id
+        GROUP BY t.thread_id, s.entry_ordinal
         ORDER BY lexical_score DESC, t.end_ts DESC
         LIMIT ?
         `,
@@ -2150,6 +2390,9 @@ export class ConversationThreadStore {
       const lexicalScore = row.lexical_score ?? 0;
       hits.push({
         threadId: row.thread_id,
+        entryOrdinal: row.entry_ordinal,
+        ...(row.anchor_ordinal !== null ? { anchorOrdinal: row.anchor_ordinal } : {}),
+        summaryUpdatedAt: row.summary_updated_at,
         channelId: row.channel_id,
         guildId: row.guild_id ?? undefined,
         parentChannelId: row.parent_channel_id ?? undefined,
@@ -2209,24 +2452,18 @@ export class ConversationThreadStore {
         )
         SELECT
           t.*,
-          s.title,
-          s.brief,
-          s.topics_json,
-          s.retrieval_hints_json,
-          s.aboutness_json,
-          s.importance,
-          s.importance_reasons_json,
-          s.created_at,
-          s.updated_at,
-          s.summary_format_version,
+          ${SUMMARY_ENTRY_COLUMNS},
           -min(hits.rank) AS lexical_score
         FROM hits
         JOIN conversation_thread_facets f ON f.rowid = hits.rowid
         JOIN conversation_threads t ON t.thread_id = f.thread_id
-        JOIN conversation_thread_summaries s ON s.thread_id = t.thread_id
+        JOIN conversation_thread_summaries s
+          ON s.thread_id = f.thread_id
+         AND s.entry_ordinal = f.entry_ordinal
+        ${SUMMARY_ENTRY_ANCHOR_JOIN}
         WHERE ${filter.sql}
           ${excludeSql}
-        GROUP BY t.thread_id
+        GROUP BY t.thread_id, s.entry_ordinal
         ORDER BY lexical_score DESC, t.end_ts DESC
         LIMIT ?
         `,
@@ -2249,6 +2486,9 @@ export class ConversationThreadStore {
       const lexicalScore = row.lexical_score ?? 0;
       hits.push({
         threadId: row.thread_id,
+        entryOrdinal: row.entry_ordinal,
+        ...(row.anchor_ordinal !== null ? { anchorOrdinal: row.anchor_ordinal } : {}),
+        summaryUpdatedAt: row.summary_updated_at,
         channelId: row.channel_id,
         guildId: row.guild_id ?? undefined,
         parentChannelId: row.parent_channel_id ?? undefined,
@@ -2310,9 +2550,19 @@ export class ConversationThreadStore {
         .all(JSON.stringify(input.hits.map((hit) => hit.threadId)), ...filter.values)
         .map((row) => row.thread_id),
     );
+    const entryKey = (threadId: string, entryOrdinal: number, updatedAt: number) =>
+      `${threadId}\u001f${entryOrdinal}\u001f${updatedAt}`;
+    const currentEntries = new Set(
+      this.db
+        .query<{ thread_id: string; entry_ordinal: number; updated_at: number }, [string]>(
+          "SELECT thread_id,entry_ordinal,updated_at FROM conversation_thread_summaries WHERE thread_id IN (SELECT value FROM json_each(?))",
+        )
+        .all(JSON.stringify([...eligible]))
+        .map((row) => entryKey(row.thread_id, row.entry_ordinal, row.updated_at)),
+    );
     return input.hits.filter(
       (hit) =>
-        eligible.has(hit.threadId) &&
+        currentEntries.has(entryKey(hit.threadId, hit.entryOrdinal, hit.summaryUpdatedAt)) &&
         (hit.kind !== "native_thread" ||
           this.getThread(hit.threadId)?.summary_input_hash === hit.sourceRevision),
     );
@@ -2341,7 +2591,7 @@ export class ConversationThreadStore {
       .query(
         `
         WITH scores AS (
-        SELECT t.thread_id, t.end_ts,
+        SELECT t.thread_id, e.entry_ordinal, t.end_ts,
           sum(
             max(
               0.0,
@@ -2352,32 +2602,26 @@ export class ConversationThreadStore {
         FROM conversation_thread_embeddings e
         JOIN conversation_thread_facets f
           ON f.thread_id = e.thread_id
+         AND f.entry_ordinal = e.entry_ordinal
          AND f.facet = e.facet
         JOIN conversation_threads t ON t.thread_id = e.thread_id
-        JOIN conversation_thread_summaries s ON s.thread_id = t.thread_id
         WHERE e.model_id = ?
           AND e.dimensions = ?
           AND ${filter.sql}
-        GROUP BY t.thread_id
+        GROUP BY t.thread_id, e.entry_ordinal
         ORDER BY semantic_score DESC, t.end_ts DESC
         LIMIT ?
         )
         SELECT
           t.*,
-          s.title,
-          s.brief,
-          s.topics_json,
-          s.retrieval_hints_json,
-          s.aboutness_json,
-          s.importance,
-          s.importance_reasons_json,
-          s.created_at,
-          s.updated_at,
-          s.summary_format_version,
+          ${SUMMARY_ENTRY_COLUMNS},
           scores.semantic_score
         FROM scores
         JOIN conversation_threads t ON t.thread_id = scores.thread_id
-        JOIN conversation_thread_summaries s ON s.thread_id = scores.thread_id
+        JOIN conversation_thread_summaries s
+          ON s.thread_id = scores.thread_id
+         AND s.entry_ordinal = scores.entry_ordinal
+        ${SUMMARY_ENTRY_ANCHOR_JOIN}
         ORDER BY scores.semantic_score DESC, t.end_ts DESC
         `,
       )
@@ -2405,6 +2649,9 @@ export class ConversationThreadStore {
       const semanticScore = row.semantic_score ?? 0;
       hits.push({
         threadId: row.thread_id,
+        entryOrdinal: row.entry_ordinal,
+        ...(row.anchor_ordinal !== null ? { anchorOrdinal: row.anchor_ordinal } : {}),
+        summaryUpdatedAt: row.summary_updated_at,
         channelId: row.channel_id,
         guildId: row.guild_id ?? undefined,
         parentChannelId: row.parent_channel_id ?? undefined,

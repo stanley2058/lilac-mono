@@ -34,6 +34,7 @@ import {
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 
 import {
+  conversationThreadEntryId,
   type ConversationThreadMessage,
   type ConversationThreadRow,
   type ConversationThreadSearchFilters,
@@ -42,6 +43,7 @@ import {
   type ConversationThreadSqliteDriverFailure,
   type ConversationThreadStore,
   type ConversationThreadSummary,
+  type ConversationThreadSummaryEntry,
   type ConversationThreadSummaryInput,
   type ConversationThreadSummaryWriteResult,
   type ConversationThreadSummarizationEligibility,
@@ -68,6 +70,7 @@ import { adaptToolResultToHost } from "../tools/tool-result-adapters";
 const SUMMARY_HEAD_MESSAGES = 40;
 const SUMMARY_TAIL_MESSAGES = 160;
 const SUMMARY_MAX_MESSAGES = SUMMARY_HEAD_MESSAGES + SUMMARY_TAIL_MESSAGES;
+const SUMMARY_MAX_ENTRIES = 5;
 const DEFAULT_READ_LIMIT = 50;
 const DEFAULT_SEARCH_MIN_SCORE = 0.1;
 
@@ -130,7 +133,8 @@ const COVERAGE_STOP_WORDS = new Set([
   "with",
 ]);
 
-const threadSummarySchema = z.object({
+const threadSummaryEntrySchema = z.object({
+  startOrdinal: z.number().int(),
   title: z.string(),
   brief: z.string(),
   topics: z.array(z.string()),
@@ -145,6 +149,8 @@ const threadSummarySchema = z.object({
   importance: z.enum(["low", "medium", "high"]),
   importanceReasons: z.array(z.string()),
 });
+
+const threadSummarySchema = z.object({ entries: z.array(threadSummaryEntrySchema) });
 
 const queryAboutnessSchema = z.object({
   domains: z.array(z.string()),
@@ -271,6 +277,10 @@ export type ConversationThreadSearchResult = {
   results: Array<{
     surface: "discord" | "native";
     threadId: string;
+    /** Identifies one entry of the thread. The first entry's id is the thread id. */
+    entryId?: string;
+    /** The `conversation.thread.read` offset where this entry's subject starts. */
+    offset?: number;
     title: string;
     brief: string;
     topics?: string[];
@@ -361,6 +371,8 @@ export type ConversationThreadReadOutput = {
     };
     importance?: "low" | "medium" | "high";
     importanceReasons?: string[];
+    /** Every subject of a thread that covers several. The fields above describe the first. */
+    entries?: Array<{ title: string; brief: string; offset?: number }>;
     session: {
       platform: "discord" | "native";
       channelId: string;
@@ -453,16 +465,26 @@ function conversationThreadOperationFailed(
   });
 }
 
+/** A generated entry. `startOrdinal` is the transcript ordinal where its subject starts. */
+export type ConversationThreadGeneratedEntry = ConversationThreadSummaryInput & {
+  startOrdinal?: number;
+};
+
+/** One summary for the whole thread, or one entry per subject. */
+export type ConversationThreadSummarizerOutput =
+  | ConversationThreadSummaryInput
+  | readonly ConversationThreadGeneratedEntry[];
+
 export type ConversationThreadSummarizer = (input: {
   cfg: CoreConfig;
   jobId?: string;
   threadId: string;
   attempt?: number;
-  previousSummary: ConversationThreadSummary | null;
+  previousEntries: readonly ConversationThreadSummary[];
   promptContext: ConversationThreadPromptContext | null;
   messages: readonly ConversationThreadSummaryMessage[];
   omittedMessages?: number;
-}) => Promise<ConversationThreadSummaryInput>;
+}) => Promise<ConversationThreadSummarizerOutput>;
 
 export type ConversationThreadSummaryAttachment = DiscordAttachmentMeta & { data?: Uint8Array };
 
@@ -880,6 +902,35 @@ function captureConversationThreadSqliteOperation(
   })();
 }
 
+/**
+ * Identifies one written generation of an entry. A re-summary during a search can return two
+ * generations of the same entry, which must stay apart until the stale one is filtered out.
+ */
+function searchHitRevision(hit: ConversationThreadSearchHit): string {
+  return [
+    conversationThreadEntryId(hit.threadId, hit.entryOrdinal),
+    hit.summaryUpdatedAt,
+    hit.sourceRevision,
+  ].join("\u001f");
+}
+
+/**
+ * Keeps the first `limit` entries with every generation of each, so a stale generation that
+ * ranks first cannot push the current one out before it is filtered.
+ */
+function takeSearchEntries<T extends ConversationThreadSearchHit>(
+  hits: readonly T[],
+  limit: number,
+): T[] {
+  const entryIds = new Set<string>();
+  return hits.filter((hit) => {
+    const entryId = conversationThreadEntryId(hit.threadId, hit.entryOrdinal);
+    if (!entryIds.has(entryId) && entryIds.size >= limit) return false;
+    entryIds.add(entryId);
+    return true;
+  });
+}
+
 function formatTime(ts: number): string {
   return new Date(ts).toISOString();
 }
@@ -903,7 +954,7 @@ export async function buildThreadSummaryModelMessages(input: {
     {
       type: "text",
       text: [
-        "## Previous summary",
+        "## Previous entries",
         input.previous,
         "",
         ...(input.promptContextSection ? [input.promptContextSection, ""] : []),
@@ -1424,12 +1475,12 @@ function parseConversationThreadJson(
 
 function parseSummaryJson(
   text: string,
-): ResultType<ConversationThreadSummaryInput, ConversationThreadSummaryParseError> {
+): ResultType<ConversationThreadGeneratedEntry[], ConversationThreadSummaryParseError> {
   const parsed = parseConversationThreadJson(text, "summary JSON parse failed: malformed JSON");
   return parsed.andThen((value) => {
     const decoded = threadSummarySchema.safeParse(value);
     return decoded.success
-      ? Result.ok(decoded.data)
+      ? Result.ok(decoded.data.entries)
       : Result.err(
           new ConversationThreadSummaryParseError(
             `summary JSON parse failed: ${decoded.error.message}`,
@@ -1618,36 +1669,55 @@ function countSummarizationEligibility(
   return counts;
 }
 
+function formatPreviousEntryForSummary(entry: ConversationThreadSummary, index: number): string {
+  return [
+    `Previous entry ${index + 1}`,
+    `Previous title: ${entry.title}`,
+    `Previous brief: ${entry.brief}`,
+    `Previous topics: ${entry.topics.join(", ") || "(none)"}`,
+    `Previous retrieval hints: ${entry.retrievalHints.join("; ") || "(none)"}`,
+    `Previous aboutness domains: ${entry.aboutness.domains.join("; ") || "(none)"}`,
+    `Previous aboutness situations: ${entry.aboutness.situations.join("; ") || "(none)"}`,
+    `Previous complaint targets: ${entry.aboutness.complaintTargets.join("; ") || "(none)"}`,
+    `Previous aboutness entities: ${entry.aboutness.entities.join("; ") || "(none)"}`,
+    `Previous user-would-ask phrases: ${entry.aboutness.userWouldAskForThisAs.join("; ") || "(none)"}`,
+    `Previous importance: ${entry.importance}`,
+    `Previous importance reasons: ${entry.importanceReasons.join("; ") || "(none)"}`,
+  ].join("\n");
+}
+
+/** Caps the entries and turns each transcript ordinal into the message id the store anchors on. */
+function resolveGeneratedEntries(
+  generated: ConversationThreadSummarizerOutput,
+  messages: readonly ConversationThreadSummaryMessage[],
+): ConversationThreadSummaryInput[] {
+  const entries: readonly ConversationThreadGeneratedEntry[] = Array.isArray(generated)
+    ? generated
+    : [generated];
+  if (entries.length === 0) return [buildFallbackSummary(messages)];
+  return entries.slice(0, SUMMARY_MAX_ENTRIES).map(({ startOrdinal, ...entry }) => {
+    const anchor = messages.find((message) => message.ordinal === startOrdinal);
+    return { ...entry, ...(anchor ? { anchorMessageId: anchor.messageId } : {}) };
+  });
+}
+
 export async function defaultSummarizer(input: {
   cfg: CoreConfig;
   jobId?: string;
   threadId: string;
   attempt?: number;
-  previousSummary: ConversationThreadSummary | null;
+  previousEntries: readonly ConversationThreadSummary[];
   promptContext: ConversationThreadPromptContext | null;
   messages: readonly ConversationThreadSummaryMessage[];
   omittedMessages?: number;
   abortSignal?: AbortSignal;
-}): Promise<ResultType<ConversationThreadSummaryInput, ConversationThreadGenerationError>> {
+}): Promise<ResultType<ConversationThreadGeneratedEntry[], ConversationThreadGenerationError>> {
   const resolvedResult = resolveSummarizationModel(input.cfg);
   const resolvedError = resultErrorOrNull(resolvedResult);
   if (resolvedError) return Result.err(resolvedError);
   const resolved = selectResultValue(resolvedResult);
-  const previous = input.previousSummary
-    ? [
-        `Previous title: ${input.previousSummary.title}`,
-        `Previous brief: ${input.previousSummary.brief}`,
-        `Previous topics: ${input.previousSummary.topics.join(", ") || "(none)"}`,
-        `Previous retrieval hints: ${input.previousSummary.retrievalHints.join("; ") || "(none)"}`,
-        `Previous aboutness domains: ${input.previousSummary.aboutness.domains.join("; ") || "(none)"}`,
-        `Previous aboutness situations: ${input.previousSummary.aboutness.situations.join("; ") || "(none)"}`,
-        `Previous complaint targets: ${input.previousSummary.aboutness.complaintTargets.join("; ") || "(none)"}`,
-        `Previous aboutness entities: ${input.previousSummary.aboutness.entities.join("; ") || "(none)"}`,
-        `Previous user-would-ask phrases: ${input.previousSummary.aboutness.userWouldAskForThisAs.join("; ") || "(none)"}`,
-        `Previous importance: ${input.previousSummary.importance}`,
-        `Previous importance reasons: ${input.previousSummary.importanceReasons.join("; ") || "(none)"}`,
-      ].join("\n")
-    : "(none)";
+  const previous =
+    input.previousEntries.map(formatPreviousEntryForSummary).join("\n\n") || "(none)";
 
   const promptContextSection = input.promptContext
     ? [
@@ -1719,7 +1789,7 @@ export async function defaultSummarizer(input: {
     "summarize-thread",
     "Summary generation failed",
   );
-  return generated.map((value) => value.output);
+  return generated.map((value) => value.output.entries);
 }
 
 async function defaultQueryAboutnessSummarizer(input: {
@@ -1898,27 +1968,36 @@ export function buildAutoInjectQueryPlanInstructions(): string {
 
 export function buildThreadSummaryInstructions(): string {
   return [
-    "You create compact, stable thread summaries for a conversation memory index.",
+    "You create compact, stable summary entries for a conversation memory index.",
     "",
     "# Task",
     "Summarize the conversation thread in user's input for future semantic retrieval.",
-    "Keep stable wording when the previous summary is still accurate; avoid unnecessary drift after small updates.",
+    "Keep stable wording when the previous entries are still accurate; avoid unnecessary drift after small updates.",
+    "",
+    "## Entries",
+    "- Return one entry per distinct subject of the thread. Most threads have one subject and need exactly one entry.",
+    "- Add another entry only when the thread turns to an unrelated subject that someone would search for separately, such as a new request made hours later or an unrelated question asked in the same channel.",
+    "- Follow-ups, tangents, clarifications, and steps of the same task belong to one entry.",
+    `- Return at most ${SUMMARY_MAX_ENTRIES} entries, ordered by where each subject starts. Merge the least important subjects when there are more.`,
+    "- Each entry stands alone: every field describes only that entry's subject, never the thread as a whole.",
+    "- Keep the previous split when it still fits the transcript.",
     "",
     "## Format",
     "Return exactly one JSON object and nothing else.",
     "",
-    'Shape: {"title":"...","brief":"...","topics":["..."],"retrievalHints":["..."],"aboutness":{"domains":["..."],"situations":["..."],"complaintTargets":["..."],"entities":["..."],"userWouldAskForThisAs":["..."]},"importance":"low|medium|high","importanceReasons":["..."]}',
+    'Shape: {"entries":[{"startOrdinal":0,"title":"...","brief":"...","topics":["..."],"retrievalHints":["..."],"aboutness":{"domains":["..."],"situations":["..."],"complaintTargets":["..."],"entities":["..."],"userWouldAskForThisAs":["..."]},"importance":"low|medium|high","importanceReasons":["..."]}]}',
     "",
-    "- title: concise thread title, under 120 characters.",
+    "- startOrdinal: the bracketed number of the first transcript message that belongs to the entry's subject.",
+    "- title: concise title of the entry's subject, under 120 characters.",
     "- brief: compact summary, under 1024 characters.",
     "- topics: short descriptive subject phrases, not canonical tags.",
-    "- retrievalHints: short search-query-like phrases a future user might type from memory to find this thread.",
-    "- aboutness: positive-only retrieval evidence for what the thread is actually about.",
+    "- retrievalHints: short search-query-like phrases a future user might type from memory to find this entry.",
+    "- aboutness: positive-only retrieval evidence for what the entry is actually about.",
     "- aboutness.domains: broad real-world or project domains.",
-    "- aboutness.situations: concrete situations, actions, or events in the thread.",
-    "- aboutness.complaintTargets: what frustration, venting, or criticism is directed at when present. Use an empty array when the thread is not a complaint or vent.",
+    "- aboutness.situations: concrete situations, actions, or events in the entry.",
+    "- aboutness.complaintTargets: what frustration, venting, or criticism is directed at when present. Use an empty array when the entry is not a complaint or vent.",
     "- aboutness.entities: important people, projects, tools, organizations, files, commands, errors, or named concepts.",
-    "- aboutness.userWouldAskForThisAs: natural future-search phrases someone might type to find this kind of prior thread.",
+    "- aboutness.userWouldAskForThisAs: natural future-search phrases someone might type to find this kind of prior conversation.",
     "- importance: low, medium, or high, based on durable future value.",
     "- importanceReasons: brief reasons explaining the rating for debugging.",
     "",
@@ -1926,27 +2005,27 @@ export function buildThreadSummaryInstructions(): string {
     "Preserve exact names, code identifiers, product names, error messages, quoted phrases, and useful source-language wording when they improve retrieval.",
     "Never use first-person pronouns like I, me, my, mine, we, us, our, or ours in title, topics, retrievalHints, aboutness, or importanceReasons; use the relevant person's name, project name, or stable role instead.",
     "Avoid ambiguous pronouns in retrievalHints and aboutness.userWouldAskForThisAs. Each phrase should stand alone without needing the reader to know who I/me/they/he/she refers to.",
-    "Do not create negative aboutness fields or list what the thread is not about. Only encode positive evidence from the transcript and background context.",
+    "Do not create negative aboutness fields or list what the entry is not about. Only encode positive evidence from the transcript and background context.",
     "",
     "## Retrieval hints",
     "- Retrieval hints are alternate semantic access paths, not tags or summaries.",
-    "- Use 4-8 hints for substantive threads; use fewer for shallow threads.",
+    "- Use 4-8 hints for substantive entries; use fewer for shallow entries.",
     "- Each hint should usually be 2-12 words.",
     "- Prefer natural user-intent phrases someone might actually type later, not dense mini-summaries or implementation notes.",
     "- Cover multiple abstraction levels: broad remembered wording, moderate subject/object wording, and exact names only when they are likely search handles.",
     "- Keep each hint focused on one access path. Do not pack every important detail into every hint.",
     "- Prefer the wording a person would remember later over the most precise wording present in the transcript.",
-    "- Drop incidental qualifiers, counts, durations, severities, versions, and exact identifiers unless they are central to why someone would search for the thread.",
+    "- Drop incidental qualifiers, counts, durations, severities, versions, and exact identifiers unless they are central to why someone would search for the entry.",
     "- Do not solve broad lookup with fixed domain-specific synonym lists. Infer the right abstraction level from the transcript.",
     "- Avoid generic standalone hints like help, code, app, bug, AI, question, discussion, or notes.",
     "- Avoid near-duplicates; each hint should add a meaningfully different retrieval path.",
     "- Do not invent context, labels, emotions, tools, or technologies not present or strongly implied.",
-    "- When updating an existing summary, keep accurate previous hints stable; only change hints that are stale, misleading, redundant, or clearly improved by new transcript content.",
+    "- When updating existing entries, keep accurate previous hints stable; only change hints that are stale, misleading, redundant, or clearly improved by new transcript content.",
     "",
     "## Aboutness",
     "- Aboutness fields should capture the intended subject, domain, and object of discussion, not just emotional tone.",
-    "- For emotionally similar threads, distinguish what the emotion is about without turning the phrase into a full summary.",
-    "- userWouldAskForThisAs should contain 3-8 realistic user queries for substantive threads, using the same broad-to-specific abstraction ladder as retrievalHints.",
+    "- For emotionally similar entries, distinguish what the emotion is about without turning the phrase into a full summary.",
+    "- userWouldAskForThisAs should contain 3-8 realistic user queries for substantive entries, using the same broad-to-specific abstraction ladder as retrievalHints.",
     "- complaintTargets should be specific and positive-only, but avoid encoding incidental details as targets.",
     "- Do not invent domains, entities, situations, or complaint targets not present or strongly implied by the transcript.",
     "",
@@ -2087,10 +2166,17 @@ export class ConversationThreadService {
     const current = await this.searchStore({ type: "current", hits: recalled, filters, allowlist });
     const currentError = resultErrorOrNull(current);
     if (currentError) return Result.err(currentError);
-    const currentIds = new Set(selectResultValue(current).map((hit) => hit.threadId));
-    const currentHits = recalled.filter((hit) => currentIds.has(hit.threadId));
+    const currentRevisions = new Set(selectResultValue(current).map(searchHitRevision));
+    const currentHits = recalled.filter((hit) => currentRevisions.has(searchHitRevision(hit)));
+    const entryIds = new Set<string>();
     const hits = this.applyAboutnessCoverage(currentHits, queryAboutness)
       .filter((hit) => hit.score >= minScore)
+      .filter((hit) => {
+        const entryId = conversationThreadEntryId(hit.threadId, hit.entryOrdinal);
+        if (entryIds.has(entryId)) return false;
+        entryIds.add(entryId);
+        return true;
+      })
       .slice(0, limit);
     const result = {
       meta: {
@@ -2201,7 +2287,8 @@ export class ConversationThreadService {
       ...lexicalHits.slice(0, Math.max(1, input.limit - semanticLimit)),
       ...semanticHits,
     ]) {
-      if (!merged.has(hit.threadId)) merged.set(hit.threadId, hit);
+      const entryId = conversationThreadEntryId(hit.threadId, hit.entryOrdinal);
+      if (!merged.has(entryId)) merged.set(entryId, hit);
     }
     return Result.ok(this.formatShortlist("hybrid", [...merged.values()].slice(0, input.limit)));
   }
@@ -2329,7 +2416,7 @@ export class ConversationThreadService {
       return Result.ok({
         thread: this.formatMetadataThread({
           thread: value.thread,
-          summary: value.summary,
+          entries: value.entries,
           messageCount: value.totalMessages,
         }),
         page: {
@@ -2376,7 +2463,7 @@ export class ConversationThreadService {
     const missing: string[] = [];
 
     for (const threadId of threadIds) {
-      const thread = this.params.store.getThread(threadId);
+      const thread = this.params.store.findThread(threadId);
       if (!thread) {
         missing.push(threadId);
         continue;
@@ -2398,15 +2485,14 @@ export class ConversationThreadService {
         );
       }
 
-      const summaryResult = this.params.store.getSummary(threadId);
-      const summaryError = resultErrorOrNull(summaryResult);
-      if (summaryError) return Result.err(summaryError);
-      const summary = selectResultValue(summaryResult);
+      const entriesResult = this.params.store.listSummaryEntries(thread.thread_id);
+      const entriesError = resultErrorOrNull(entriesResult);
+      if (entriesError) return Result.err(entriesError);
       threads.push(
         this.formatMetadataThread({
           thread,
-          summary,
-          messageCount: this.params.store.countThreadMessages(threadId),
+          entries: selectResultValue(entriesResult),
+          messageCount: this.params.store.countThreadMessages(thread.thread_id),
         }),
       );
     }
@@ -2617,18 +2703,18 @@ export class ConversationThreadService {
             return;
           }
           const summaryIsStale = item.summaryIsStale;
-          const previousSummary = this.params.store.getSummary(thread.thread_id);
-          const previousSummaryError = previousSummary.match({
+          const previousEntries = this.params.store.listSummaryEntries(thread.thread_id);
+          const previousEntriesError = previousEntries.match({
             ok: () => null,
             err: (error) => error,
           });
-          if (previousSummaryError) {
-            recordFailure(previousSummaryError.message);
+          if (previousEntriesError) {
+            recordFailure(previousEntriesError.message);
             return;
           }
-          const previousSummaryValue = previousSummary.match({
+          const previousEntryValues = previousEntries.match({
             ok: (value) => value,
-            err: () => null,
+            err: () => [],
           });
           if (summaryRead.omittedMessages > 0) {
             this.logger.debug("thread summarization transcript truncated", {
@@ -2666,7 +2752,7 @@ export class ConversationThreadService {
                   summarize,
                   cfg,
                   promptContext,
-                  previousSummary: previousSummaryValue,
+                  previousEntries: previousEntryValues,
                   messages: summaryMessages,
                   omittedMessages: summaryRead.omittedMessages,
                 });
@@ -2674,7 +2760,10 @@ export class ConversationThreadService {
                   this.params.store.upsertSummary(
                     thread.thread_id,
                     thread.summary_input_hash ?? "",
-                    value ?? buildFallbackSummary(summaryMessages),
+                    resolveGeneratedEntries(
+                      value ?? buildFallbackSummary(summaryMessages),
+                      summaryMessages,
+                    ),
                     promptContext?.hash ?? null,
                     { ifCurrent: true },
                   ),
@@ -2829,10 +2918,10 @@ export class ConversationThreadService {
     summarize?: ConversationThreadSummarizer;
     cfg: CoreConfig;
     promptContext: ConversationThreadPromptContext | null;
-    previousSummary: ConversationThreadSummary | null;
+    previousEntries: readonly ConversationThreadSummary[];
     messages: readonly ConversationThreadSummaryMessage[];
     omittedMessages: number;
-  }): Promise<ResultType<ConversationThreadSummaryInput, ConversationThreadGenerationError>> {
+  }): Promise<ResultType<ConversationThreadSummarizerOutput, ConversationThreadGenerationError>> {
     let lastError: ConversationThreadSummaryParseError | null = null;
     for (let attempt = 1; attempt <= SUMMARY_PARSE_MAX_ATTEMPTS; attempt++) {
       const generationInput = {
@@ -2841,7 +2930,7 @@ export class ConversationThreadService {
         threadId: input.threadId,
         attempt,
         promptContext: input.promptContext,
-        previousSummary: input.previousSummary,
+        previousEntries: input.previousEntries,
         messages: input.messages,
         omittedMessages: input.omittedMessages,
       };
@@ -2852,9 +2941,14 @@ export class ConversationThreadService {
             "summarize-thread",
             "Summary generation failed",
           )
-        : await defaultSummarizer(generationInput);
+        : (await defaultSummarizer(generationInput)).map(
+            (entries): ConversationThreadSummarizerOutput => entries,
+          );
       const completed = summary.match<
-        () => ResultType<ConversationThreadSummaryInput, ConversationThreadGenerationError> | null
+        () => ResultType<
+          ConversationThreadSummarizerOutput,
+          ConversationThreadGenerationError
+        > | null
       >({
         ok: (value) => () => Result.ok(value),
         err: (error) => () => {
@@ -2990,6 +3084,7 @@ export class ConversationThreadService {
     }
 
     const embeddings: Array<{
+      entryOrdinal: number;
       facet: (typeof input.facets)[number]["facet"];
       embedding: Float32Array;
     }> = [];
@@ -3043,6 +3138,7 @@ export class ConversationThreadService {
         return Result.err(error);
       }
       embeddings.push({
+        entryOrdinal: facet.entryOrdinal,
         facet: facet.facet,
         embedding,
       });
@@ -3178,9 +3274,10 @@ export class ConversationThreadService {
       ) {
         return;
       }
-      const existing = candidates.get(hit.threadId);
+      const revision = searchHitRevision(hit);
+      const existing = candidates.get(revision);
       if (!existing) {
-        candidates.set(hit.threadId, hit);
+        candidates.set(revision, hit);
         return;
       }
       existing.lexicalScore = Math.max(existing.lexicalScore, hit.lexicalScore);
@@ -3261,12 +3358,13 @@ export class ConversationThreadService {
     }
 
     return Result.ok(
-      [...candidates.values()]
-        .sort((left, right) => {
+      takeSearchEntries(
+        [...candidates.values()].sort((left, right) => {
           if (left.score !== right.score) return right.score - left.score;
           return right.endTs - left.endTs;
-        })
-        .slice(0, input.limit),
+        }),
+        input.limit,
+      ),
     );
   }
 
@@ -3334,9 +3432,10 @@ export class ConversationThreadService {
           lexicalScore: hit.lexicalScore,
           semanticScore: hit.semanticScore,
         };
-        const existing = candidates.get(hit.threadId);
+        const revision = searchHitRevision(hit);
+        const existing = candidates.get(revision);
         if (!existing) {
-          candidates.set(hit.threadId, {
+          candidates.set(revision, {
             ...hit,
             score: contribution,
             queryAttribution: [attribution],
@@ -3368,12 +3467,13 @@ export class ConversationThreadService {
     }
 
     return Result.ok(
-      [...candidates.values()]
-        .sort((left, right) => {
+      takeSearchEntries(
+        [...candidates.values()].sort((left, right) => {
           if (left.score !== right.score) return right.score - left.score;
           return right.endTs - left.endTs;
-        })
-        .slice(0, input.limit),
+        }),
+        input.limit,
+      ),
     );
   }
 
@@ -3381,10 +3481,12 @@ export class ConversationThreadService {
     return {
       threadId: hit.threadId,
       surface: hit.kind === "native_thread" ? ("native" as const) : ("discord" as const),
+      ...(hit.anchorOrdinal ? { offset: hit.anchorOrdinal } : {}),
       title: hit.title,
       brief: hit.brief,
       ...(verbose
         ? {
+            entryId: conversationThreadEntryId(hit.threadId, hit.entryOrdinal),
             topics: hit.topics,
             retrievalHints: hit.retrievalHints,
             aboutness: hit.aboutness,
@@ -3421,21 +3523,31 @@ export class ConversationThreadService {
 
   private formatMetadataThread(input: {
     thread: ConversationThreadRow;
-    summary: ConversationThreadSummary | null;
+    entries: readonly ConversationThreadSummaryEntry[];
     messageCount: number;
   }): ConversationThreadReadOutput["thread"] {
+    const summary = input.entries[0];
     return {
       threadId: input.thread.thread_id,
       surface: input.thread.kind === "native_thread" ? "native" : "discord",
-      ...(input.summary
+      ...(summary
         ? {
-            title: input.summary.title,
-            brief: input.summary.brief,
-            topics: input.summary.topics,
-            retrievalHints: input.summary.retrievalHints,
-            aboutness: input.summary.aboutness,
-            importance: input.summary.importance,
-            importanceReasons: input.summary.importanceReasons,
+            title: summary.title,
+            brief: summary.brief,
+            topics: summary.topics,
+            retrievalHints: summary.retrievalHints,
+            aboutness: summary.aboutness,
+            importance: summary.importance,
+            importanceReasons: summary.importanceReasons,
+          }
+        : {}),
+      ...(input.entries.length > 1
+        ? {
+            entries: input.entries.map((entry) => ({
+              title: entry.title,
+              brief: entry.brief,
+              ...(entry.anchorOrdinal ? { offset: entry.anchorOrdinal } : {}),
+            })),
           }
         : {}),
       session: {

@@ -520,7 +520,7 @@ describe("conversation thread store", () => {
       embeddingInputHash: "embedding-input",
       modelId: "test-model",
       dimensions: 2,
-      embeddings: [{ facet: "title", embedding: new Float32Array([1, 0]) }],
+      embeddings: [{ entryOrdinal: 0, facet: "title", embedding: new Float32Array([1, 0]) }],
     });
     const summarized = threadStore.getThread(threadId)!;
     const membershipBefore = readThreadResult(threadStore, threadId)!.messages.map(
@@ -3923,10 +3923,10 @@ describe("conversation thread store", () => {
       modelId: "test-2d",
       dimensions: 2,
       embeddings: [
-        { facet: "combined", embedding: match },
-        { facet: "brief", embedding: miss },
-        { facet: "topics", embedding: miss },
-        { facet: "title", embedding: miss },
+        { entryOrdinal: 0, facet: "combined", embedding: match },
+        { entryOrdinal: 0, facet: "brief", embedding: miss },
+        { entryOrdinal: 0, facet: "topics", embedding: miss },
+        { entryOrdinal: 0, facet: "title", embedding: miss },
       ],
     });
     threadStore.upsertEmbeddings({
@@ -3935,10 +3935,10 @@ describe("conversation thread store", () => {
       modelId: "test-2d",
       dimensions: 2,
       embeddings: [
-        { facet: "combined", embedding: miss },
-        { facet: "brief", embedding: match },
-        { facet: "topics", embedding: match },
-        { facet: "title", embedding: match },
+        { entryOrdinal: 0, facet: "combined", embedding: miss },
+        { entryOrdinal: 0, facet: "brief", embedding: match },
+        { entryOrdinal: 0, facet: "topics", embedding: match },
+        { entryOrdinal: 0, facet: "title", embedding: match },
       ],
     });
 

@@ -2873,7 +2873,11 @@ const CORE_NATIVE_RECORD_PERSISTED_CONSUMERS = [
     exportName,
   })),
   { module: "src/surface/native/store-surface.ts", exportName: "decodeMessageRow" },
-  ...["readNativeConversationThreads", "readNativeConversationMessages"].map((exportName) => ({
+  ...[
+    "readNativeConversationThreads",
+    "readNativeConversationMessages",
+    "readNativeDmContextGapMs",
+  ].map((exportName) => ({
     module: "src/surface/native/conversation-source.ts",
     exportName,
   })),
@@ -2901,6 +2905,7 @@ const CORE_THREAD_PERSISTED_CODECS = [
 
 const CORE_THREAD_PERSISTED_CONSUMERS = [
   "ConversationThreadStore.getSummary",
+  "ConversationThreadStore.listSummaryEntries",
   "ConversationThreadStore.search",
   "ConversationThreadStore.searchAnyTerm",
   "ConversationThreadStore.searchSemantic",
@@ -3958,6 +3963,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             ...[
               "decodeNativeThreadProjection",
               "decodeNativeMessageProjection",
+              "decodeNativeTurnTimingProjection",
               "decodeNativeAttachmentProjection",
             ].map((exportName) => ({
               identity: { module: "src/surface/native/conversation-source.ts", exportName },
@@ -4644,6 +4650,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             ...[
               "decodeNativeThreadProjection",
               "decodeNativeMessageProjection",
+              "decodeNativeTurnTimingProjection",
               "decodeNativeAttachmentProjection",
               "readNativeConversationAttachments",
             ].map((exportName) => ({

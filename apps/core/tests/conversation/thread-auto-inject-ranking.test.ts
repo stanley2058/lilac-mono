@@ -52,6 +52,45 @@ function search(
 }
 
 describe("auto-injected thread ranking", () => {
+  it("ranks and excludes each entry of one thread separately", () => {
+    const queryPlan = plan();
+    const entry = (entryId: string, title: string) => ({
+      surface: "discord" as const,
+      threadId: "shared-thread",
+      entryId,
+      title,
+      brief: "Safari lost the session after the callback.",
+      score: 0.4,
+      retrievalHints: ["OAuth callback login loop", "OAuth callback cookie"],
+      aboutness: {
+        domains: ["authentication"],
+        situations: ["login loop after OAuth callback"],
+        complaintTargets: ["OAuth callback cookie"],
+        entities: ["OAuth"],
+        userWouldAskForThisAs: ["OAuth callback login loop"],
+      },
+    });
+    const rank = (excludedEntryIds?: ReadonlySet<string>) =>
+      rankAutoInjectedThreadSearchResults({
+        plan: queryPlan,
+        searches: [
+          {
+            searchIndex: 0,
+            result: search(queryPlan, [
+              entry("shared-thread", "OAuth callback login loop"),
+              entry("shared-thread#1", "OAuth callback login loop on Safari"),
+            ]),
+          },
+        ],
+        excludedEntryIds,
+        limit: 3,
+        expansionMinConfidence: EXPANSION_MIN_CONFIDENCE,
+      }).selected.map((candidate) => candidate.result.entryId);
+
+    expect(rank()).toEqual(["shared-thread", "shared-thread#1"]);
+    expect(rank(new Set(["shared-thread"]))).toEqual(["shared-thread#1"]);
+  });
+
   it("keeps one recall-floor result below the expansion confidence threshold", () => {
     const queryPlan = plan();
     const ranked = rankAutoInjectedThreadSearchResults({

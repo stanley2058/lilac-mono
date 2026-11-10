@@ -1069,13 +1069,17 @@ export type AutoInjectedThreadSearchPayload = {
   entries: Array<{
     surface: "discord" | "native";
     threadId: string;
+    /** The `conversation.thread.read` offset where the recalled subject starts. */
+    offset?: number;
     title: string;
     brief?: string;
     timeRange?: string;
   }>;
 };
 
-type AutoInjectedThreadSearchEntry = AutoInjectedThreadSearchPayload["entries"][number];
+type AutoInjectedThreadSearchEntry = AutoInjectedThreadSearchPayload["entries"][number] & {
+  entryId?: string;
+};
 
 type AutoInjectedThreadRankingDiagnostic = {
   threadId: string;
@@ -1129,6 +1133,7 @@ export function buildAutoInjectedThreadSearchMessages(params: {
     entries: params.entries.map((entry) => ({
       threadId: entry.threadId,
       surface: entry.surface,
+      ...(entry.offset ? { offset: entry.offset } : {}),
       title: entry.title,
       ...(entry.brief ? { brief: entry.brief } : {}),
       ...(entry.timeRange ? { timeRange: entry.timeRange } : {}),
@@ -1139,7 +1144,8 @@ export function buildAutoInjectedThreadSearchMessages(params: {
     buildGeneratedMessage({
       kind: "conversation_recall",
       id: params.toolCallId,
-      threadIds: payload.entries.map((entry) => entry.threadId),
+      // Entry ids, so another subject of the same thread can still be recalled later.
+      threadIds: params.entries.map((entry) => entry.entryId ?? entry.threadId),
       content: JSON.stringify({
         note: params.note ?? "auto-injected after long user input",
         ...payload,
@@ -1174,21 +1180,24 @@ function formatAutoInjectedThreadSearchResult(
   const brief = formatAutoInjectedThreadBrief(result.brief);
   return {
     threadId: result.threadId,
+    entryId: result.entryId ?? result.threadId,
     surface: result.surface,
+    ...(result.offset ? { offset: result.offset } : {}),
     title: result.title,
     ...(brief ? { brief } : {}),
     ...(timeRange ? { timeRange } : {}),
   };
 }
 
-function collectAutoInjectedThreadIds(messages: readonly ModelMessage[]): Set<string> {
-  const threadIds = new Set<string>();
+/** A thread's first entry id is its thread id, which is what older transcripts recorded. */
+function collectAutoInjectedEntryIds(messages: readonly ModelMessage[]): Set<string> {
+  const entryIds = new Set<string>();
 
   for (const message of messages) {
     const generated = generatedMessageMetadata(message);
     if (generated?.kind === "conversation_recall" && Array.isArray(generated.threadIds)) {
       for (const id of generated.threadIds) {
-        if (typeof id === "string") threadIds.add(id);
+        if (typeof id === "string") entryIds.add(id);
       }
       continue;
     }
@@ -1209,12 +1218,12 @@ function collectAutoInjectedThreadIds(messages: readonly ModelMessage[]): Set<st
       for (const entry of entries) {
         if (!isRecord(entry)) continue;
         const threadId = entry.threadId;
-        if (typeof threadId === "string" && threadId.length > 0) threadIds.add(threadId);
+        if (typeof threadId === "string" && threadId.length > 0) entryIds.add(threadId);
       }
     }
   }
 
-  return threadIds;
+  return entryIds;
 }
 
 function padLocalDatePart(value: number): string {
@@ -1451,11 +1460,9 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(
     createConversationThreadAutoInjectUsageAccumulator({ requestId: params.requestId });
   const latestInput = latestUserInput(params.userMessages);
   const text = autoInjectPlannerContext(latestInput.text, params.previousMessages ?? []);
-  const previouslyInjectedThreadIds = collectAutoInjectedThreadIds(params.previousMessages ?? []);
+  const previouslyInjectedEntryIds = collectAutoInjectedEntryIds(params.previousMessages ?? []);
   const minTextUnits =
-    previouslyInjectedThreadIds.size > 0
-      ? autoInject.followUpMinTextUnits
-      : autoInject.minTextUnits;
+    previouslyInjectedEntryIds.size > 0 ? autoInject.followUpMinTextUnits : autoInject.minTextUnits;
   if (
     !latestInput.hasAttachment &&
     !shouldRunAutoInjectedThreadSearch({
@@ -1589,7 +1596,7 @@ export async function maybeBuildAutoInjectedThreadSearchMessages(
           plan,
           searches: successfulSearches,
           corpusDocuments,
-          excludedThreadIds: previouslyInjectedThreadIds,
+          excludedEntryIds: previouslyInjectedEntryIds,
           limit: autoInject.limit,
           expansionMinConfidence: autoInject.expansionMinConfidence,
         });

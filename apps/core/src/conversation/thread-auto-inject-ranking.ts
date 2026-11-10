@@ -131,6 +131,11 @@ function normalizedReciprocalRank(input: {
   return sum / Math.max(1, input.queryCount);
 }
 
+/** A thread yields one result per subject, so results are ranked and excluded per entry. */
+function entryId(result: SearchEntry): string {
+  return result.entryId ?? result.threadId;
+}
+
 function candidateDocument(result: SearchEntry): string {
   return [
     result.title,
@@ -238,13 +243,13 @@ export function rankAutoInjectedThreadSearchResults(input: {
   plan: ConversationThreadAutoInjectQueryPlan;
   searches: readonly AutoInjectRankingSearchResult[];
   corpusDocuments?: readonly string[];
-  excludedThreadIds?: ReadonlySet<string>;
+  excludedEntryIds?: ReadonlySet<string>;
   limit: number;
   expansionMinConfidence: number;
 }): AutoInjectRankingResult {
   const candidates = input.searches.flatMap(({ searchIndex, result }) =>
     result.results
-      .filter((entry) => !input.excludedThreadIds?.has(entry.threadId))
+      .filter((entry) => !input.excludedEntryIds?.has(entryId(entry)))
       .map((entry, index) => ({ searchIndex, result: entry, rank: index + 1 })),
   );
   if (candidates.length === 0 || input.limit <= 0) {
@@ -256,18 +261,18 @@ export function rankAutoInjectedThreadSearchResults(input: {
       ? input.corpusDocuments
       : candidates.map((candidate) => candidateDocument(candidate.result));
   const idf = buildInverseDocumentFrequency(corpusDocuments);
-  const bestByThreadId = new Map<string, RankedAutoInjectCandidate>();
+  const bestByEntryId = new Map<string, RankedAutoInjectCandidate>();
   for (const candidate of candidates) {
     const plan = input.plan.searches[candidate.searchIndex];
     if (!plan) continue;
     const ranked = rankCandidate({ ...candidate, plan, idf });
-    const existing = bestByThreadId.get(candidate.result.threadId);
+    const existing = bestByEntryId.get(entryId(candidate.result));
     if (!existing || compareRankedCandidates(ranked, existing) < 0) {
-      bestByThreadId.set(candidate.result.threadId, ranked);
+      bestByEntryId.set(entryId(candidate.result), ranked);
     }
   }
 
-  const ranked = [...bestByThreadId.values()].sort(compareRankedCandidates);
+  const ranked = [...bestByEntryId.values()].sort(compareRankedCandidates);
   const floor = ranked[0];
   if (!floor) return { selected: [], highestRejectedByConfidence: null };
   const selected: RankedAutoInjectThread[] = [{ ...floor, selection: "recall-floor" }];

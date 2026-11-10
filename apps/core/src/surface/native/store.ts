@@ -55,6 +55,7 @@ import {
   type NativeUser,
 } from "./codec";
 import { nativeUserDisplay } from "./identity";
+import { TURN_CREATED_AT, turnCompletedAtSql } from "./turn-timing";
 import { nativeFailure, type NativeStoreFailure } from "./errors";
 
 export type NativeStoreError = NativeStoreFailure | PersistedDataError;
@@ -155,12 +156,8 @@ function nullableAuthority<T>(result: NativeStoreResult<T>): NativeStoreResult<T
   });
 }
 
-// Turn timing shared by DM context selection and the outline, so both split windows identically.
 const TURN_POSTED = "json_extract(t.data_json,'$.value.messages[0].id')=t.id";
-const TURN_CREATED_AT = `COALESCE((SELECT MIN(json_extract(m.value,'$.metadata.createdAt')) FROM json_each(t.data_json,'$.value.messages') m),json_extract(t.data_json,'$.value.startedAt'))`;
-const TURN_COMPLETED_AT = `MAX(COALESCE(json_extract(t.data_json,'$.value.settledAt'),0),
-  COALESCE((SELECT MAX(json_extract(i.data_json,'$.value.completedAt')) FROM native_records i WHERE i.kind='input' AND i.thread_id=t.thread_id AND i.position=t.position),0),
-  COALESCE((SELECT MAX(json_extract(m.value,'$.metadata.createdAt')) FROM json_each(t.data_json,'$.value.messages') m),0))`;
+const TURN_COMPLETED_AT = turnCompletedAtSql();
 
 /** An input with this command ID prefix runs its turn without a visible message. */
 export const NATIVE_JOB_WAKE_COMMAND_PREFIX = "job-wake:";

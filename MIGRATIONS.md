@@ -518,6 +518,32 @@ its retained message content or history generation changes, including edits, rew
 Model selection, titles, archiving, and grant changes preserve existing summaries. Downgrading requires
 rebuilding the derived index for the older runtime; do not reuse cross-surface derived rows with an older binary.
 
+### Conversation memory entries and DM context windows
+
+A conversation thread can now hold several summary entries, one per distinct subject. Summary, facet,
+and embedding rows are keyed by thread and entry ordinal. The first open without the
+`conversation_index_v3` marker drops and recreates the derived thread, summary, facet, FTS, and
+embedding tables, as the `conversation_index_v2` cutover did. No summaries are copied. Recall is
+incomplete until the summarization worker has regenerated every quiet eligible thread and its
+embeddings; manual `conversation.thread.runSummarization` can trigger it. Retained Discord messages,
+native records, and canonical transcripts are unchanged.
+
+Search and automatic recall return one result per entry. A result keeps its `threadId` and adds
+`offset` when the entry's subject starts after the first message; pass it to
+`conversation.thread.read`. Verbose results add `entryId`, which is the thread ID for the first entry
+and `<threadId>#<ordinal>` for later ones. Metadata and reads list every entry under `entries` when a
+thread has more than one. Entry ordinals are reassigned whenever a thread is summarized again.
+Automatic recall records entry IDs, so a later turn can recall another subject of a thread it already
+recalled. Transcripts written before this change recorded thread IDs, which exclude the first entry.
+
+The permanent native DM is indexed as one conversation thread per context window, using the same
+turn-timing gap rule and deployment DM context gap as the agent's context selection. Window IDs are
+`native:<threadId>:<firstMessageId>`. A closed window is summarized once; only the open window is
+rebuilt when the DM receives a message. `native:<threadId>` for a DM resolves to its newest window in
+metadata and reads. Other native threads keep `native:<threadId>`. Changing the DM context gap
+re-splits the DM on the next refresh. Downgrading requires rebuilding the derived index for the older
+runtime.
+
 ### Background jobs
 
 Core creates `background-jobs.db` and the `background-jobs/` log directory on first start. No existing

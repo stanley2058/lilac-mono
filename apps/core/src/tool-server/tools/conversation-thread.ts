@@ -245,7 +245,7 @@ export class ConversationThread implements ServerTool {
         [CONVERSATION_THREAD_CALLABLE_IDS.search]: callable({
           name: "Conversation Thread Search",
           description:
-            "Search summarized Discord and native conversation threads. Every result identifies its source surface. Returns compact threadId, title, and brief by default; use verbose for metadata/diagnostics or conversation.thread.read to expand a result. Multi-query combines variants of one intent into one merged ranking.",
+            "Search summarized Discord and native conversation threads. Every result identifies its source surface. Returns compact threadId, title, and brief by default; use verbose for metadata/diagnostics or conversation.thread.read to expand a result. A thread that covers several subjects returns one result per subject; pass a result's offset to conversation.thread.read to start at that subject. Multi-query combines variants of one intent into one merged ranking.",
           inputSchema: searchInputSchema,
           primaryPositional: { field: "query", variadic: true },
           run: async (input, opts) => {
@@ -261,7 +261,7 @@ export class ConversationThread implements ServerTool {
         [CONVERSATION_THREAD_CALLABLE_IDS.metadata]: callable({
           name: "Conversation Thread Metadata",
           description:
-            "Read conversation thread summary metadata by ids without loading transcript messages. Supports up to 20 threadIds for candidate comparison.",
+            "Read conversation thread summary metadata by ids without loading transcript messages. A thread that covers several subjects lists each under entries. Supports up to 20 threadIds for candidate comparison.",
           inputSchema: metadataInputSchema,
           primaryPositional: { field: "threadIds", variadic: true },
           run: async (input, opts) => {
