@@ -728,16 +728,19 @@ export class WebNativeCache implements NativeCache {
     const pending = [...this.pendingDrafts.values()];
     this.pendingDrafts.clear();
     if (!pending.length) return;
-    const started = Result.try(() => {
-      const tx = db.transaction("drafts", "readwrite");
-      const store = tx.objectStore("drafts");
-      for (const { scope, threadId, value } of pending) {
-        const key = threadKey(scope, threadId);
-        if (draftIsEmpty(value)) store.delete(key);
-        else store.put({ key, scopeKey: cacheScopeKey(scope), ...value, updatedAt: Date.now() });
-      }
-      tx.commit();
-      return tx;
+    const started = Result.try({
+      try: () => {
+        const tx = db.transaction("drafts", "readwrite");
+        const store = tx.objectStore("drafts");
+        for (const { scope, threadId, value } of pending) {
+          const key = threadKey(scope, threadId);
+          if (draftIsEmpty(value)) store.delete(key);
+          else store.put({ key, scopeKey: cacheScopeKey(scope), ...value, updatedAt: Date.now() });
+        }
+        tx.commit();
+        return tx;
+      },
+      catch: () => undefined,
     });
     const committed = started.match({ ok: completed, err: () => Promise.resolve(false) });
     void this.attempt(() => assertCommitted(committed)).then(() => {
