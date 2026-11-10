@@ -24,7 +24,8 @@ export type AppProps = {
   onLogout: () => Promise<void>;
   sessionControl?: ReactNode;
   accountProfile?: ReactNode;
-  draftCache?: Pick<WebNativeCache, "readDraft" | "saveDraft" | "listLocalDrafts" | "deleteDraft">;
+  draftCache?: Pick<WebNativeCache, "readDraft" | "saveDraft" | "listLocalDrafts" | "deleteDraft"> &
+    Partial<Pick<WebNativeCache, "flushDrafts">>;
 };
 export type Attachment = {
   key: string;

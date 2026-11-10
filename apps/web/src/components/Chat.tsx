@@ -79,7 +79,7 @@ import { deliverPendingInput, type PendingInput } from "../pending-input";
 import { pendingTurnSlot } from "../pending-message";
 export type { PendingInput } from "../pending-input";
 import { Button } from "./ui/button";
-import { Composer } from "./Composer";
+import { Composer, type ComposerProps } from "./Composer";
 import { ConversationStatus } from "./ConversationStatus";
 import { Timeline, useLatestReadableTurn } from "./Timeline";
 import { QueuedMessage, QueuedMessages } from "./QueuedMessage";
@@ -102,6 +102,14 @@ export type Draft = {
   savedText?: string;
 };
 const emptyDraft: Draft = { text: "", skillIds: [], attachments: [] };
+/** What the conversation needs from a draft. Typing changes only the text, which the composer reads. */
+type DraftSummary = Omit<Draft, "text"> & { hasText: boolean };
+const summarizeDraft = ({ text, ...draft }: Draft): DraftSummary => ({
+  ...draft,
+  hasText: !!text.trim(),
+});
+const emptySummary = summarizeDraft(emptyDraft);
+const draftText = (draft: Draft) => draft.text;
 export type ChatProps = Pick<ChatCommon, "catalog" | "onError"> & {
   threadId: string;
   thread?: NativeThread;
@@ -192,14 +200,25 @@ export function Chat(props: ChatProps) {
     replyMessageId && replyPrompt
       ? questionDraftKey(threadId, replyMessageId, replyPrompt.ordinal)
       : threadId;
-  const draftOptions = composerDraftOptions(scope, draftKey, draftCache);
+  const draftOptions = useMemo(
+    () => composerDraftOptions(scope, draftKey, draftCache),
+    [scope, draftKey, draftCache],
+  );
+  // Draft writes wait for a pause in typing; leaving the conversation writes them now.
+  useEffect(() => () => void draftCache?.flushDrafts?.(), [draftCache, threadId]);
+  const draftInitialData = draftKey === threadId ? props.draft : undefined;
   const draftQuery = useQuery({
     ...draftOptions,
-    initialData: draftKey === threadId ? props.draft : undefined,
+    initialData: draftInitialData,
     enabled: !local,
+    select: summarizeDraft,
   });
-  const draft = localThread?.draft ?? draftQuery.data ?? emptyDraft;
+  const draft = localThread ? summarizeDraft(localThread.draft) : (draftQuery.data ?? emptySummary);
   const draftLoaded = local ? !!localThread : !draftQuery.isPending;
+  const draftSource = useMemo(
+    () => ({ local, threadId, options: draftOptions, initialData: draftInitialData }),
+    [local, threadId, draftOptions, draftInitialData],
+  );
   const [view, setView] = useState<{
     id: string;
     error?: string;
@@ -424,7 +443,7 @@ export function Chat(props: ChatProps) {
     };
   }, [client, store, threadId, local, queries]);
   const regularDraftEmpty =
-    draftKey === threadId ? !draft.text.trim() && !draft.attachments.length : false;
+    draftKey === threadId ? !draft.hasText && !draft.attachments.length : false;
   const autoReply = draftLoaded
     ? autoReplyQuestion(answerable, replyChoice, regularDraftEmpty)
     : undefined;
@@ -797,12 +816,15 @@ export function Chat(props: ChatProps) {
     const current =
       prompt.ordinal === replyPrompt?.ordinal
         ? draft
-        : getDraft(questionDraftKey(threadId, replyMessageId!, prompt.ordinal));
-    return promptAnswered({
-      option: progress.options[prompt.ordinal],
-      text: current.text,
-      attachments: current.attachments.length,
-    });
+        : summarizeDraft(getDraft(questionDraftKey(threadId, replyMessageId!, prompt.ordinal)));
+    return (
+      current.hasText ||
+      promptAnswered({
+        option: progress.options[prompt.ordinal],
+        text: "",
+        attachments: current.attachments.length,
+      })
+    );
   });
   const replyChosen = replyPrompt ? progress.options[replyPrompt.ordinal] : undefined;
   const replyLast =
@@ -1000,7 +1022,8 @@ export function Chat(props: ChatProps) {
       return;
     }
     pool.remove(threadId, key);
-    commitDraft({ ...draft, attachments: draft.attachments.filter((id) => id !== key) });
+    const current = getDraft();
+    commitDraft({ ...current, attachments: current.attachments.filter((id) => id !== key) });
   });
   const composerRetryAttachment = useEventCallback((key: string) => pool.retry(threadId, key));
   const composerModelChange = useEventCallback((modelId: string, reasoning?: ModelReasoning) => {
@@ -1098,19 +1121,21 @@ export function Chat(props: ChatProps) {
           type="button"
           variant="ghost"
           className="text-primary py-2 px-3 text-sm"
-          onClick={() =>
+          onClick={() => {
+            const current = getDraft();
             commitDraft({
-              ...draft,
-              text: draft.savedText ?? "",
-              savedText: draft.text || undefined,
-            })
-          }
+              ...current,
+              text: current.savedText ?? "",
+              savedText: current.text || undefined,
+            });
+          }}
         >
           Restore previous draft
         </Button>
       ) : null}
       <div hidden={!editable}>
-        <Composer
+        <DraftComposer
+          source={draftSource}
           documentKey={draftKey}
           header={questionHeader()}
           placeholder={replyPrompt ? answerPlaceholder(replyChosen !== undefined) : undefined}
@@ -1120,7 +1145,6 @@ export function Chat(props: ChatProps) {
           loadingDraft={!draftLoaded}
           windowDrop={props.foreground}
           catalog={props.catalog}
-          text={draft.text}
           skillIds={draft.skillIds}
           onSkills={composerSkills}
           commandId={draft.commandId}
@@ -1152,7 +1176,7 @@ export function Chat(props: ChatProps) {
           question={replyQuestion}
           step={replyStep}
           chosen={replyChosen}
-          typed={!!draft.text.trim()}
+          typed={draft.hasText}
           answered={replyAnswered}
           disabled={!draftLoaded}
           onChoose={questionChoose}
@@ -1238,4 +1262,29 @@ export function Chat(props: ChatProps) {
       </div>
     </MessageIdentityContext>
   );
+}
+
+type DraftTextSource = {
+  local: boolean;
+  threadId: string;
+  options: ReturnType<typeof composerDraftOptions>;
+  initialData?: Draft;
+};
+
+/** Reads the draft text, so typing rerenders the composer instead of the whole conversation. */
+function DraftComposer({
+  source,
+  ...props
+}: Omit<ComposerProps, "text"> & { source: DraftTextSource }) {
+  const { drafts } = useWorkspace();
+  const localText = useStore(drafts, (state) =>
+    source.local ? (state.localDrafts.get(source.threadId)?.draft.text ?? "") : "",
+  );
+  const saved = useQuery({
+    ...source.options,
+    initialData: source.initialData,
+    enabled: !source.local,
+    select: draftText,
+  });
+  return <Composer {...props} text={source.local ? localText : (saved.data ?? "")} />;
 }
