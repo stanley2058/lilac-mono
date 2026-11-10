@@ -90,6 +90,7 @@ import {
   customCommandExecutionErrorText,
   consumeAssistantTextDelta,
   consumeReasoningChunkEvent,
+  type ReasoningChunkState,
   completeLevel1ToolMapping,
   createAssistantTextPartBoundaryState,
   captureBusAgentRunnerOperation,
@@ -792,6 +793,24 @@ describe("reasoning chunk streaming", () => {
       snapshot: null,
     });
     expect(state.chunks.has("reasoning-1")).toBe(false);
+  });
+});
+
+describe("reasoning snapshot cap", () => {
+  it("caps published snapshots at the relay limit and keeps the full chunk", () => {
+    const state: ReasoningChunkState = { chunks: new Map(), seq: 0 };
+    consumeReasoningChunkEvent(state, { type: "start", chunkId: "r" });
+    let snapshot: { delta: string; seq: number } | null = null;
+    for (let index = 0; index < 50; index += 1) {
+      snapshot = consumeReasoningChunkEvent(state, {
+        type: "delta",
+        chunkId: "r",
+        delta: "x".repeat(200),
+      }).snapshot;
+    }
+    expect(state.chunks.get("r")).toHaveLength(10_000);
+    expect(snapshot?.delta).toHaveLength(4_001);
+    expect(snapshot?.seq).toBe(50);
   });
 });
 

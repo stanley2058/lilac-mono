@@ -45,6 +45,7 @@ import type { TranscriptStore } from "../../transcript/transcript-store";
 import { adaptEventPublishResultToHost } from "../../shared/event-bus-result";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import { formatBridgeTaggedErrorForLog } from "./bridge-log";
+import { REASONING_DETAIL_MAX_CHARS } from "./bus-agent-runner/output-publisher";
 import {
   finishDiscordMessageLatencyTrace,
   recordRequestLatencyStage,
@@ -422,12 +423,10 @@ function parseRouterSessionMode(raw: string | undefined): "mention" | "active" |
   return undefined;
 }
 
-const MAX_REASONING_DETAIL_CHARS = 4_000;
-
 function clampReasoningDetail(text: string): string {
   const normalized = text.trim();
-  if (normalized.length <= MAX_REASONING_DETAIL_CHARS) return normalized;
-  return `${normalized.slice(0, MAX_REASONING_DETAIL_CHARS - 1)}…`;
+  if (normalized.length <= REASONING_DETAIL_MAX_CHARS) return normalized;
+  return `${normalized.slice(0, REASONING_DETAIL_MAX_CHARS - 1)}…`;
 }
 
 function appendReasoningDetail(base: string, delta: string): string {

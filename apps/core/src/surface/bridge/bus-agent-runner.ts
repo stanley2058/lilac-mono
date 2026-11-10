@@ -269,6 +269,7 @@ import {
 import {
   type AgentOutputPublishFailed,
   createAgentOutputPublisher,
+  REASONING_DETAIL_MAX_CHARS,
 } from "./bus-agent-runner/output-publisher";
 import {
   latestUserInput,
@@ -823,7 +824,8 @@ export function consumeReasoningChunkEvent(
   state.seq += 1;
   return {
     publishStart,
-    snapshot: { delta: chunk, seq: state.seq },
+    // One character past the relay limit is enough for the relay to mark the detail truncated.
+    snapshot: { delta: chunk.slice(0, REASONING_DETAIL_MAX_CHARS + 1), seq: state.seq },
   };
 }
 
