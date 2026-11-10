@@ -743,10 +743,10 @@ caches and deployments need no data rewrite. Deployments can roll back without m
 
 ## Native client cache projection and receipt correlation
 
-Cache scopes already include projection version 1 alongside the installation, principal and protocol
-version. Cache keys retain that separation. This change preserves the version 1 cache shape, including
-its existing opaque parts cursor. No native database or cache data conversion is required. Future
-projection changes must select a new projection version before reusing cached display records.
+Cache keys now use projection version 2 alongside the installation, principal and protocol version.
+The shared client selects the effective key version, preserving the version 1 scope input shape used
+by existing callers. Version 1 cache keys are no longer read, so blank placeholders cached by older
+bundles are discarded. No native database or cache data conversion is required.
 
 Input receipts and input events now include an optional `commandId`. Updated clients accept receipts
 without it from older servers. When present, the client matches it to a pending command in the same
@@ -756,10 +756,18 @@ retain their existing meaning. Deploy the updated protocol package with Core and
 Turn pages can include an optional `fragment` on a chunk for a part larger than the page byte budget.
 Its `offset` and `total` count UTF-16 code units in the serialized part, and `json` carries the fragment.
 The chunk's `part` is an empty text placeholder until reconstruction finishes. Existing cursor forms
-remain accepted; fragment cursors add a fourth offset segment. Updated clients reassemble and validate
-the full part before display. Cache checkpoints retain the beginning of an incomplete part so reloads
+remain accepted; fragment cursors add a fourth offset segment when the offset is nonzero. Updated
+clients reassemble and validate the full part before display. Cache checkpoints retain the beginning of an incomplete part so reloads
 can replay its fragments. Deploy Core and clients together before opening oversized structured parts.
-Older clients continue to use ordinary, unfragmented pages.
+Core sends fragments to every client. Older bundles cannot reconstruct them and may display and cache
+blank placeholders, so deploy the updated clients with Core. Incomplete parts resume from the
+three-segment start cursor. Part-boundary cursors also use three segments, which older Core builds
+accept after rollback. Four-segment cursors remain accepted by updated Core, including a zero offset.
+Rollback clients and Core together; version 2 cache keys are separate from older bundles' version 1 keys.
+
+Replay changes containing messages over the 128-part wire limit now force a bounded replay window.
+The window exposes remaining parts through its parts cursor. Canonical stored turns remain complete;
+no database rewrite is required.
 
 The file editor now accepts UTF-8 documents up to 256 KiB. This leaves room for JSON escaping and RPC
 metadata inside the 2 MiB HTTP and WebSocket limits. Larger files remain readable through resource tools.

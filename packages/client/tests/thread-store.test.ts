@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ReadyTurnSlot, ReplayCheckpoint } from "@stanley2058/lilac-client-protocol";
 import { NativeThreadStore } from "../src/thread-store.ts";
-import { MemoryNativeCache, NoNativeCache, type CacheScope } from "../src/cache.ts";
+import { MemoryNativeCache, NoNativeCache, cacheScopeKey, type CacheScope } from "../src/cache.ts";
 import { DisplayCatalogCache } from "../src/catalog.ts";
 
 const checkpoint = (revision = 1, generation = 0): ReplayCheckpoint => ({
@@ -370,4 +370,37 @@ describe("cache and catalog", () => {
     expect(catalogs.complete(scope, "$", "").map((item) => item.id)).toEqual(["skill"]);
     expect(catalogs.complete(scope, "/", "skill:aaa").map((item) => item.id)).toEqual(["skill"]);
   });
+});
+
+test("cache scope keys discard projection version 1 records", () => {
+  expect(JSON.parse(cacheScopeKey(scope))).toEqual(["install", "owner", 1, 2]);
+});
+test("an invalid fragment publishes a restart cursor", () => {
+  const store = new NativeThreadStore();
+  const slot = { ...ready(0), partsCursor: "p_0_1" };
+  store.replay({ kind: "window", checkpoint: checkpoint(), slots: [slot] });
+  let published: string | undefined;
+  store.subscribe((change) => {
+    const put = change.patch?.put[0]?.slot;
+    if (put?.kind === "ready") published = put.partsCursor;
+  });
+  expect(
+    store.turnPage(slot.slotId, "p_0_1", {
+      turnId: slot.turnId,
+      historyGeneration: 0,
+      projectionRevision: 1,
+      messages: [],
+      chunks: [
+        {
+          messageId: "message_0",
+          partIndex: 1,
+          part: { type: "text", text: "" },
+          fragment: { offset: 0, total: 1, json: "!" },
+        },
+      ],
+      nextCursor: "p_1_0",
+    }),
+  ).toBe("applied");
+  expect(store.get(slot.slotId)).toMatchObject({ partsCursor: "p_0_1" });
+  expect(published).toBe("p_0_1");
 });

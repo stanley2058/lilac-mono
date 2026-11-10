@@ -1213,7 +1213,9 @@ export class NativeStore {
       this.writeRecord(next.id, { kind: "agent-stream", value: next }, next.parentThreadId);
     else this.writeRecord(next.id, { kind: "thread", value: next }, next.id);
     const boundedChanges =
-      encoder.encode(JSON.stringify(changes)).byteLength < WINDOW_BYTES && changes.length <= 128
+      encoder.encode(JSON.stringify(changes)).byteLength < WINDOW_BYTES &&
+      changes.length <= 128 &&
+      changes.every(isBoundedReplayChange)
         ? changes
         : [];
     const replay: NativeRecord = {
@@ -2430,7 +2432,7 @@ export class NativeStore {
               WHERE json_extract(p.value,'$.type')='text') AS user_text,
             (SELECT substr(group_concat(substr(json_extract(p.value,'$.text'),1,8192),' '),1,8192)
               FROM json_each((SELECT m.value FROM json_each(r.data_json,'$.value.messages') m WHERE json_extract(m.value,'$.role')='assistant'
-                AND EXISTS(SELECT 1 FROM json_each(m.value,'$.parts') p WHERE json_extract(p.value,'$.type')='text' AND trim(json_extract(p.value,'$.text'))!='')
+                AND EXISTS(SELECT 1 FROM json_each(m.value,'$.parts') p WHERE json_extract(p.value,'$.type')='text' AND trim(json_extract(p.value,'$.text'), ' '||char(9,10,13))!='')
                 ORDER BY COALESCE(json_extract(m.value,'$.metadata.phase')='final',0) DESC, CAST(m.key AS INTEGER) DESC LIMIT 1),'$.parts') p
               WHERE json_extract(p.value,'$.type')='text') AS reply_text
           FROM native_records r INDEXED BY native_records_thread_position WHERE r.kind='turn' AND r.thread_id=? AND r.position IN (${positions.map(() => "?").join(",")}) ORDER BY r.position
@@ -3876,7 +3878,10 @@ export class NativeStore {
               projectionRevision: thread.revision,
               messages,
               chunks,
-              nextCursor: `p_${messageIndex}_${partIndex}_${fragmentOffset}`,
+              nextCursor:
+                fragmentOffset === 0
+                  ? `p_${messageIndex}_${partIndex}`
+                  : `p_${messageIndex}_${partIndex}_${fragmentOffset}`,
             });
           chunks.push(chunk);
           bytes += size;
@@ -4227,4 +4232,13 @@ function finalAssistantText(messages: readonly DisplayMessage[]) {
     messages.findLast((message) => message.metadata?.phase === "final" && hasText(message)) ??
     messages.findLast((message) => message.metadata?.phase === undefined && hasText(message));
   return message ? messageText(message) : "";
+}
+
+function isBoundedReplayChange(change: LiveUpdate["changes"][number]): boolean {
+  if (change.kind === "append-message") return change.message.parts.length <= 128;
+  if (change.kind !== "insert") return true;
+  return (
+    change.slot.messages.length <= 128 &&
+    change.slot.messages.every((message) => message.parts.length <= 128)
+  );
 }

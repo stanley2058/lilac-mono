@@ -4,7 +4,7 @@ import { createToolServer } from "../../tool-server/create-tool-server";
 import { SqliteTranscriptStore } from "../../transcript/transcript-store";
 import { parseCoreConfigV2ToUniversal } from "@stanley2058/lilac-utils";
 import { projectNativeOutput } from "./output-projection";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Result } from "better-result";
 import type { WorkflowCard } from "@stanley2058/lilac-client-protocol";
@@ -267,7 +267,10 @@ describe("native surface adapter", () => {
     (await output.push({ type: "text.delta", delta: "\r\n\r\ntail" })).unwrap();
     expect((await f.scoped.listMsg(f.ref)).unwrap()[0]?.text).toBe("first\n\n");
     const checkpoint = f.store.sync("owner", f.source.id).unwrap().checkpoint;
+    const update = spyOn(f.store, "updateSurfaceMessage");
     (await output.push({ type: "text.delta", delta: " more" })).unwrap();
+    expect(update).not.toHaveBeenCalled();
+    update.mockRestore();
     expect(f.store.sync("owner", f.source.id).unwrap().checkpoint).toEqual(checkpoint);
     (
       await output.push({

@@ -315,30 +315,16 @@ export class NativeThreadStore {
       messages = [...messages, message];
     }
     for (const received of page.chunks ?? []) {
-      let chunk = received;
-      if (received.fragment) {
-        const fragment = received.fragment;
-        const key = JSON.stringify([
-          page.historyGeneration,
-          page.projectionRevision,
-          page.turnId,
-          received.messageId,
-          received.partIndex,
-        ]);
-        const previous = fragment.offset === 0 ? "" : (this.fragments.get(key) ?? "");
-        if (previous.length !== fragment.offset) return "ignored";
-        const json = previous + fragment.json;
-        if (json.length < fragment.total) {
-          this.fragments.set(key, json);
-          resumeCursor = `p_${messagePosition(page.messages, received.messageId, messages)}_${received.partIndex}_0`;
-          continue;
-        }
-        const decoded = decodeDisplayPartFragment(json);
-        if (!decoded) return "ignored";
-        this.fragments.delete(key);
-        resumeCursor = undefined;
-        chunk = { ...received, part: decoded };
+      const restartCursor = `p_${messagePosition(page.messages, received.messageId, messages)}_${received.partIndex}`;
+      const result = this.pageChunk(page, received);
+      if (result === "restart")
+        return this.restartPart(slotId, target, restartCursor, messages, page.projectionRevision);
+      if (result === "pending") {
+        resumeCursor = restartCursor;
+        continue;
       }
+      const chunk = result;
+      resumeCursor = undefined;
       const index = indexes.get(chunk.messageId);
       if (index === undefined) return "ignored";
       const message = messages[index];
@@ -375,6 +361,60 @@ export class NativeThreadStore {
         ],
         remove: [],
       },
+    });
+    return "applied";
+  }
+  private pageChunk(
+    page: TurnPage,
+    received: NonNullable<TurnPage["chunks"]>[number],
+  ): NonNullable<TurnPage["chunks"]>[number] | "pending" | "restart" {
+    if (!received.fragment) return received;
+    const fragment = received.fragment;
+    const key = JSON.stringify([
+      page.historyGeneration,
+      page.projectionRevision,
+      page.turnId,
+      received.messageId,
+      received.partIndex,
+    ]);
+    const previous = fragment.offset === 0 ? "" : (this.fragments.get(key) ?? "");
+    if (previous.length !== fragment.offset) {
+      this.fragments.delete(key);
+      return "restart";
+    }
+    const json = previous + fragment.json;
+    if (json.length < fragment.total) {
+      this.fragments.set(key, json);
+      return "pending";
+    }
+    this.fragments.delete(key);
+    const decoded = decodeDisplayPartFragment(json);
+    if (!decoded) return "restart";
+    return { ...received, part: decoded };
+  }
+  private restartPart(
+    slotId: string,
+    target: CachedSlot,
+    cursor: string,
+    messages: DisplayMessage[],
+    revision: number,
+  ): ApplyOutcome {
+    if (!this.current || target.slot.kind !== "ready") return "ignored";
+    const value = {
+      revision,
+      slot: {
+        ...target.slot,
+        messages: [...messages].sort(
+          (a, b) => (a.metadata?.position ?? 0) - (b.metadata?.position ?? 0),
+        ),
+        partsCursor: cursor,
+      },
+    };
+    this.slots.set(slotId, value);
+    this.publish({
+      slotIds: [slotId],
+      structure: false,
+      patch: { checkpoint: this.current, replace: false, put: [value], remove: [] },
     });
     return "applied";
   }
