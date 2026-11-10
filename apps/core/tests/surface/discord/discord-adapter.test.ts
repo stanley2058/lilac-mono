@@ -1984,6 +1984,92 @@ describe("DiscordAdapter.deleteMsg", () => {
   });
 });
 
+describe("DiscordAdapter reactions", () => {
+  it("adds a reaction by id without reading the message first", async () => {
+    const calls: string[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => {
+              calls.push("fetch");
+              throw new Error("unexpected message read");
+            },
+            react: async (messageId: string, emoji: string) => {
+              calls.push(`react:${messageId}:${emoji}`);
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.addReaction(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      "👀",
+    );
+
+    expect(result.status).toBe("ok");
+    expect(calls).toEqual(["react:m1:👀"]);
+  });
+
+  it("classifies a missing message when adding a reaction", async () => {
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            react: async () => {
+              throw Object.assign(new Error("Unknown Message"), { code: 10_008, status: 404 });
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.addReaction(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      "👀",
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected reaction failure");
+    expect(result.error).toBeInstanceOf(SurfaceMessageNotFound);
+  });
+
+  it("removes a reaction through a cache-backed message read", async () => {
+    const fetchCalls: unknown[] = [];
+    const removed: string[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async (input: unknown) => {
+              fetchCalls.push(input);
+              return {
+                reactions: {
+                  resolve: (emoji: string) =>
+                    emoji === "👀" ? { remove: async () => void removed.push(emoji) } : null,
+                },
+              };
+            },
+          },
+        }),
+      },
+    };
+    const ref = { platform: "discord", channelId: "c1", messageId: "m1" } as const;
+
+    const present = await adapter.removeReaction(ref, "👀");
+    const absent = await adapter.removeReaction(ref, "✅");
+
+    expect(present.status).toBe("ok");
+    expect(absent.status).toBe("ok");
+    expect(fetchCalls).toEqual([{ message: "m1" }, { message: "m1" }]);
+    expect(removed).toEqual(["👀"]);
+  });
+});
+
 describe("DiscordAdapter.editMsg", () => {
   it("replaces only the embed description for single-embed bot messages", async () => {
     const editCalls: Array<Record<string, unknown>> = [];
