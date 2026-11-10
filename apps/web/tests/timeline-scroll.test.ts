@@ -8,12 +8,19 @@ import {
 } from "../src/components/use-timeline-scroll";
 
 describe("scrollOutcome", () => {
-  const following = { mode: "follow", pinnedTop: 900, dragging: false } as const;
+  const following = { mode: "follow", pinnedTop: 900, dragging: false, leaving: false } as const;
 
   test("reaching the bottom follows it again", () => {
     expect(scrollOutcome({ ...following, mode: "read", distance: 0.5, scrollTop: 899.5 })).toBe(
       "follow",
     );
+  });
+
+  test("the first frames of a scroll up from the bottom keep reading", () => {
+    // Chrome at 1.25x moves a wheel notch's first frame 0.8px, still inside the slack.
+    expect(
+      scrollOutcome({ ...following, mode: "read", leaving: true, distance: 0.6, scrollTop: 899.4 }),
+    ).toBe("read");
   });
 
   test("a scroll nobody dragged, such as an editor revealing its caret, returns to the bottom", () => {

@@ -43,8 +43,10 @@ export function scrollOutcome(input: {
   pinnedTop: number;
   /** The reader holds a pointer on the conversation, dragging its scrollbar or a text selection. */
   dragging: boolean;
+  /** The reader started scrolling up from the bottom, and the scroll has not yet passed the slack. */
+  leaving: boolean;
 }): "follow" | "pin" | "read" {
-  if (input.distance <= END_SLACK) return "follow";
+  if (input.distance <= END_SLACK) return input.leaving ? "read" : "follow";
   if (input.mode === "read") return "read";
   // Editors and focus changes scroll too; only a pointer drag upward is the reader leaving here.
   return input.dragging && input.scrollTop < input.pinnedTop - END_SLACK ? "read" : "pin";
@@ -101,6 +103,8 @@ export function useTimelineScroll({
   const modeRef = useRef<"follow" | "read">("follow");
   const pinnedTop = useRef(0);
   const dragging = useRef(false);
+  // A wheel notch animates from frames under 1px, so its first scroll events still sit at the bottom.
+  const leaving = useRef(false);
   const touchY = useRef<number>(undefined);
   const opening = useRef<{
     threadId: string;
@@ -116,7 +120,9 @@ export function useTimelineScroll({
   const setMode = useEventCallback((next: "follow" | "read") => {
     modeRef.current = next;
     setSettledMode(next);
-    if (next === "follow") savedPositions.delete(store);
+    if (next !== "follow") return;
+    leaving.current = false;
+    savedPositions.delete(store);
   });
   const place = useEventCallback((element: HTMLDivElement, offset: number) => {
     element.scrollTop = offset;
@@ -197,16 +203,20 @@ export function useTimelineScroll({
   const leaveEnd = useEventCallback(() => {
     if (currentMode() !== "follow" || !viewport || viewport.scrollTop <= 0) return;
     setMode("read");
+    leaving.current = true;
   });
 
   const onScroll = useEventCallback(() => {
     if (!viewport || currentMode() === "position") return;
+    const distance = distanceFromEnd(viewport);
+    if (distance > END_SLACK) leaving.current = false;
     const outcome = scrollOutcome({
       mode: modeRef.current,
-      distance: distanceFromEnd(viewport),
+      distance,
       scrollTop: viewport.scrollTop,
       pinnedTop: pinnedTop.current,
       dragging: dragging.current,
+      leaving: leaving.current,
     });
     if (outcome !== "read") {
       follow();
@@ -250,11 +260,27 @@ export function useTimelineScroll({
     if (currentMode() !== "position") follow();
   });
 
+  const onScrollEnd = useEventCallback(() => {
+    if (!leaving.current) return;
+    leaving.current = false;
+    // A scroll too short to pass the slack ends at the bottom, which the reader still follows.
+    if (viewport && distanceFromEnd(viewport) <= END_SLACK) followEnd();
+  });
+
   return {
     positioning,
     mode: positioning ? ("position" as const) : settledMode,
     currentMode,
-    handlers: { onScroll, onWheel, onKeyDown, onTouchStart, onTouchMove, onPointerDown, onFocus },
+    handlers: {
+      onScroll,
+      onScrollEnd,
+      onWheel,
+      onKeyDown,
+      onTouchStart,
+      onTouchMove,
+      onPointerDown,
+      onFocus,
+    },
     stopFollowing,
     followEnd,
   };

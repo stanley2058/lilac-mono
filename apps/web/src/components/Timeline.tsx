@@ -356,6 +356,7 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
                   viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 8,
                 );
               }}
+              onScrollEnd={scroll.handlers.onScrollEnd}
               onWheel={scroll.handlers.onWheel}
               onKeyDown={scroll.handlers.onKeyDown}
               onTouchStart={scroll.handlers.onTouchStart}
