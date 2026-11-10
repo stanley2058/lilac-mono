@@ -362,7 +362,7 @@ export function Settings({
 }
 
 export function People() {
-  const { client } = useWorkspace();
+  const { client, authProvider } = useWorkspace();
   const online = useNativeOnline(client);
   const queries = useQueryClient();
   const userQuery = useInfiniteQuery({
@@ -399,37 +399,39 @@ export function People() {
         message={change.error?.message ?? userQuery.error?.message}
         onDismiss={change.error ? () => change.reset() : undefined}
       />
-      <div className="inline-form flex gap-2 mb-4 items-center">
-        <Input
-          aria-label="Existing Clerk user ID"
-          placeholder="Clerk user ID"
-          value={providerId}
-          onChange={(event) => setProviderId(event.target.value)}
-        />
-        <Select
-          items={[
-            { value: "restricted", label: "Restricted" },
-            { value: "full", label: "Full access" },
-          ]}
-          value={mode}
-          onValueChange={(value) => setMode(value === "full" ? "full" : "restricted")}
-        >
-          <SelectTrigger aria-label="Tool access for added user">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="restricted">Restricted</SelectItem>
-            <SelectItem value="full">Full access</SelectItem>
-          </SelectContent>
-        </Select>
-        <IconButton
-          label="Add existing user"
-          disabled={!online || mutating || !providerId.trim()}
-          onClick={() => change.mutate({ providerUserId: providerId.trim(), toolMode: mode })}
-        >
-          <UserPlus />
-        </IconButton>
-      </div>
+      {authProvider === "clerk" ? (
+        <div className="inline-form flex gap-2 mb-4 items-center">
+          <Input
+            aria-label="Existing Clerk user ID"
+            placeholder="Clerk user ID"
+            value={providerId}
+            onChange={(event) => setProviderId(event.target.value)}
+          />
+          <Select
+            items={[
+              { value: "restricted", label: "Restricted" },
+              { value: "full", label: "Full access" },
+            ]}
+            value={mode}
+            onValueChange={(value) => setMode(value === "full" ? "full" : "restricted")}
+          >
+            <SelectTrigger aria-label="Tool access for added user">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="restricted">Restricted</SelectItem>
+              <SelectItem value="full">Full access</SelectItem>
+            </SelectContent>
+          </Select>
+          <IconButton
+            label="Add existing user"
+            disabled={!online || mutating || !providerId.trim()}
+            onClick={() => change.mutate({ providerUserId: providerId.trim(), toolMode: mode })}
+          >
+            <UserPlus />
+          </IconButton>
+        </div>
+      ) : null}
       <VirtualList
         items={users}
         itemKey={(user) => user.id}

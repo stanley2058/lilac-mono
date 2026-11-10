@@ -1380,8 +1380,8 @@ function Workspace(props: AppProps) {
                             <Button
                               title={
                                 newThreadKeys.label
-                                  ? `New thread (${newThreadKeys.label})`
-                                  : "New thread"
+                                  ? `New conversation (${newThreadKeys.label})`
+                                  : "New conversation"
                               }
                               aria-keyshortcuts={newThreadKeys.aria}
                               onClick={createThread}

@@ -204,6 +204,7 @@ function Root() {
       onLogout={logout}
       sessionControl={sessionControl}
       accountProfile={accountProfile}
+      authProvider={auth?.provider}
     />
   );
 }

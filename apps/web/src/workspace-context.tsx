@@ -15,7 +15,7 @@ import { releaseDraftAttachments } from "./draft-thread";
 
 type WorkspaceServices = Pick<
   AppProps,
-  "client" | "scope" | "upload" | "resourceUrl" | "draftCache" | "accountProfile"
+  "client" | "scope" | "upload" | "resourceUrl" | "draftCache" | "accountProfile" | "authProvider"
 > & {
   fileEditors: ReturnType<typeof createFileEditors>;
   keybindings: ReturnType<typeof createKeybindings>;
@@ -39,7 +39,7 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
   // Stores are rebuilt per installation and principal, not per scope object, which the compiler
   // cannot express.
   "use no memo";
-  const { client, scope, upload, resourceUrl, draftCache, accountProfile } = props;
+  const { client, scope, upload, resourceUrl, draftCache, accountProfile, authProvider } = props;
   useEffect(() => watchConnectionLifecycle(client), [client]);
   const keybindings = useMemo(
     () => createKeybindings(scope),
@@ -92,6 +92,7 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
       resourceUrl,
       draftCache,
       accountProfile,
+      authProvider,
       pool,
       drafts,
       notifications,
@@ -110,6 +111,7 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
       resourceUrl,
       draftCache,
       accountProfile,
+      authProvider,
       pool,
       drafts,
       notifications,

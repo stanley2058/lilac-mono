@@ -67,20 +67,20 @@ export const defaultKeybindings: Keybindings = {
   thread10: binding("Digit0", true),
 };
 export const shortcutLabels: Record<ShortcutAction, string> = {
-  newThread: "New thread",
+  newThread: "New conversation",
   settings: "Open settings",
   sidebar: "Toggle left sidebar",
   rightPanel: "Toggle right panel",
-  thread1: "Thread 1",
-  thread2: "Thread 2",
-  thread3: "Thread 3",
-  thread4: "Thread 4",
-  thread5: "Thread 5",
-  thread6: "Thread 6",
-  thread7: "Thread 7",
-  thread8: "Thread 8",
-  thread9: "Thread 9",
-  thread10: "Thread 10",
+  thread1: "Conversation 1",
+  thread2: "Conversation 2",
+  thread3: "Conversation 3",
+  thread4: "Conversation 4",
+  thread5: "Conversation 5",
+  thread6: "Conversation 6",
+  thread7: "Conversation 7",
+  thread8: "Conversation 8",
+  thread9: "Conversation 9",
+  thread10: "Conversation 10",
 };
 export function isMacKeyboard() {
   return typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
