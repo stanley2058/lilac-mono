@@ -220,6 +220,8 @@ export function ThreadQueue({
         fillBeforeIndex={rows.findIndex((row) => row.id === "heading:settled")}
         label="Conversations"
         className={`thread-list flex-1 thread-queue ${drag ? "is-dragging" : ""}`}
+        // A keyboard drag moves with the arrow keys, so rows stop taking them while one runs.
+        roving={{ primary: ".thread-card-select", selected: "[aria-current]", enabled: !drag }}
         scrollFade
         hasMore={hasMore}
         loading={loading}
@@ -329,7 +331,7 @@ function QueueItem({
       onKeyDown={(event) => {
         if (event.target === event.currentTarget) draggable.listeners?.onKeyDown?.(event);
       }}
-      role="listitem"
+      role="group"
       aria-label={`Move ${title || "Untitled"}`}
       onMouseDownCapture={(event) => {
         if (

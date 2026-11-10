@@ -327,8 +327,20 @@ export function RightPanelTabs({
               aria-label="Right panel tabs"
             >
               {tabs.items.map((tab) => (
-                <div className="file-panel-tab relative flex flex-none max-w-48" key={tab.id}>
-                  <TabsTrigger value={tab.id}>
+                <div
+                  className="file-panel-tab relative flex flex-none max-w-48"
+                  role="presentation"
+                  key={tab.id}
+                >
+                  <TabsTrigger
+                    value={tab.id}
+                    aria-keyshortcuts="Delete"
+                    onKeyDown={(event) => {
+                      if (event.key !== "Delete" && event.key !== "Backspace") return;
+                      event.preventDefault();
+                      onClose(tab.id);
+                    }}
+                  >
                     {tab.type === "agents" ? <Bot /> : null}
                     {tab.type === "files" ? <Files /> : null}
                     {tab.type === "thread" ? (
@@ -344,12 +356,20 @@ export function RightPanelTabs({
                     ) : null}
                     <span>
                       {tabName(tab)}
-                      {dirtyIds?.has(tab.id) ? <span aria-label="Unsaved edits"> •</span> : null}
+                      {dirtyIds?.has(tab.id) ? (
+                        <span role="img" aria-label="Unsaved edits">
+                          {" "}
+                          •
+                        </span>
+                      ) : null}
                     </span>
                   </TabsTrigger>
+                  {/* A tab list holds only tabs; keyboard users close a tab with Delete. */}
                   <IconButton
                     className="file-tab-close"
                     label={`Close ${tabName(tab)}`}
+                    tabIndex={-1}
+                    aria-hidden
                     onClick={() => onClose(tab.id)}
                   >
                     <X />

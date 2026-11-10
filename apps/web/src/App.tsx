@@ -1132,6 +1132,7 @@ function Workspace(props: AppProps) {
                                 itemKey={(hit) => hit.key}
                                 label="Search results"
                                 className="thread-list flex-1"
+                                roving={{ selected: "[aria-current]" }}
                                 estimate={92}
                                 render={(hit) => (
                                   <SearchThreadButton
@@ -1210,6 +1211,10 @@ function Workspace(props: AppProps) {
                                   items={sidebarThreads}
                                   itemKey={(thread) => thread.id}
                                   label="Conversations"
+                                  roving={{
+                                    primary: ".thread-card-select",
+                                    selected: "[aria-current]",
+                                  }}
                                   scrollFade
                                   hasMore={!!nextCursor && !threadListError}
                                   loading={loadingThreads}

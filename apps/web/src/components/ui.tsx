@@ -18,6 +18,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { X } from "lucide-react";
 import { createVirtualListMotion } from "./virtual-list-motion";
+import { useRovingRows } from "./roving-rows";
 import { Result } from "better-result";
 
 export function IconButton({
@@ -123,6 +124,7 @@ export function VirtualList<T>({
   animateChanges = false,
   reveal,
   loadOnlyAfterScroll = false,
+  roving,
 }: {
   items: readonly T[];
   itemKey: (item: T) => string;
@@ -143,6 +145,8 @@ export function VirtualList<T>({
   reveal?: { index: number };
   /** For lists that share a cursor with others, where a short list must not page for itself. */
   loadOnlyAfterScroll?: boolean;
+  /** Makes the list one tab stop that arrow keys move through. */
+  roving?: { primary?: string; selected?: string; enabled?: boolean };
 }) {
   // TanStack Virtual returns a mutable virtualizer, which the compiler cannot memoize safely.
   "use no memo";
@@ -184,11 +188,19 @@ export function VirtualList<T>({
   useEffect(() => {
     if (reveal) virtual.scrollToIndex(reveal.index, { align: "start" });
   }, [reveal, virtual]);
+  useRovingRows(parent, {
+    enabled: !!roving && roving.enabled !== false,
+    count: items.length,
+    primary: roving?.primary,
+    selected: roving?.selected,
+    scrollToIndex: (index) => virtual.scrollToIndex(index, { align: "auto" }),
+  });
   return (
     <div
       ref={parent}
       className={`virtual-list overflow-auto relative min-h-0 pr-1 mr-[calc(-1_*_calc(var(--ui-space-unit)*1))] ${className} ${scrollFade && (remaining > 1 || hasMore) ? "scroll-fade" : ""}`}
       aria-busy={loading || undefined}
+      data-roving-list={roving ? "" : undefined}
       aria-label={presentation ? undefined : label}
       role={presentation ? "presentation" : "list"}
     >

@@ -105,6 +105,7 @@ export function ThreadCard({
         variant="ghost"
         className="thread-card-select absolute inset-0 w-full h-full rounded-[inherit]"
         onClick={onSelect}
+        aria-current={selected ? "page" : undefined}
         aria-keyshortcuts={shortcut.aria}
         aria-label={`${title || "Untitled"}, ${states[state].label}${workflowActive ? ", Workflow running" : ""}${draft && !selected ? ", Draft" : ""}`}
       />
@@ -112,12 +113,14 @@ export function ThreadCard({
         {state === "completed" ? (
           <span
             className="thread-unread-dot absolute top-1/2 left-[0.3125rem] size-1.5 -translate-y-1/2 rounded-full bg-primary"
+            role="img"
             aria-label={states.completed.label}
           />
         ) : null}
         {draft && !selected ? (
           <span
             className="thread-draft-icon text-draft flex-none grid place-items-center"
+            role="img"
             aria-label="Draft"
           >
             <SquarePen />
@@ -136,13 +139,18 @@ export function ThreadCard({
         <span className="thread-card-meta flex-none flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="thread-card-status flex items-center gap-1">
             {pinned ? (
-              <span className="thread-pin grid place-items-center flex-none" aria-label="Pinned">
+              <span
+                className="thread-pin grid place-items-center flex-none"
+                role="img"
+                aria-label="Pinned"
+              >
                 <Pin />
               </span>
             ) : null}
             {workflowActive ? (
               <span
                 className="grid size-[var(--ui-text-lg)] flex-none place-items-center text-muted-foreground [&_svg]:size-[var(--ui-icon-size)]"
+                role="img"
                 aria-label="Workflow running"
                 data-breath=""
               >
@@ -155,6 +163,7 @@ export function ThreadCard({
             {state === "working" ? (
               <span
                 className="thread-state-icon grid size-[var(--ui-text-lg)] flex-none place-items-center"
+                role="img"
                 aria-label={states[state].label}
               >
                 <LoadingSpinner size={14} />
@@ -197,6 +206,7 @@ function ThreadStateIcon({ state }: { state: "error" | "input" | "waiting" }) {
   return (
     <span
       className="thread-state-icon grid size-[var(--ui-text-lg)] flex-none place-items-center text-muted-foreground"
+      role="img"
       aria-label={label}
       data-breath={state === "waiting" ? "" : undefined}
     >
