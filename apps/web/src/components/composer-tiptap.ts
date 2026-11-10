@@ -1,6 +1,8 @@
 import { Extension, Node, getSchema, type Editor, type JSONContent } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
+import Heading from "@tiptap/extension-heading";
+import Paragraph from "@tiptap/extension-paragraph";
 import { Fragment, Slice, type Node as DocumentNode, type Schema } from "@tiptap/pm/model";
 import { EditorState, TextSelection, Plugin } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
@@ -252,14 +254,20 @@ const horizontalRule = Node.create({
   renderHTML: () => ["hr"],
 });
 
+// Mod-Alt-0..6 belong to the thread shortcuts; the editor would otherwise consume them first.
+const noShortcuts = { addKeyboardShortcuts: () => ({}) };
+
 export const composerExtensions = [
   StarterKit.configure({
     link: false,
     underline: false,
     horizontalRule: false,
     trailingNode: false,
-    heading: { levels: [1, 2, 3, 4, 5, 6] },
+    heading: false,
+    paragraph: false,
   }),
+  Paragraph.extend(noShortcuts),
+  Heading.extend(noShortcuts).configure({ levels: [1, 2, 3, 4, 5, 6] }),
   indentation,
   horizontalRule,
 ];

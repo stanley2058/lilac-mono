@@ -434,3 +434,20 @@ it("inserts a pasted reference into an empty document without a leading space", 
   );
   expect(writeComposerDocument(state.doc)).toBe("[#native:thread](/?ref=native%3Athread)");
 });
+
+it("leaves Ctrl+Alt+digit to the thread shortcuts", () => {
+  const editor = headlessEditor("text");
+  const press = (digit: string, key: string, modifiers: Partial<KeyboardEvent>) => {
+    const keyCode = 48 + Number(digit);
+    const event = { key, keyCode, ctrlKey: true, altKey: false, shiftKey: false, ...modifiers };
+    // An unmounted editor keeps its keymaps on the extension manager, not on the state.
+    return editor.extensionManager.plugins.some((plugin) =>
+      plugin.props.handleKeyDown?.call(plugin, editor.view, event as KeyboardEvent),
+    );
+  };
+  for (const digit of ["0", "1", "2", "3", "4", "5", "6"])
+    expect(press(digit, digit, { altKey: true })).toBe(false);
+  expect(editor.state.doc.firstChild?.type.name).toBe("paragraph");
+  expect(press("7", "&", { shiftKey: true })).toBe(true);
+  expect(editor.state.doc.firstChild?.type.name).toBe("orderedList");
+});
