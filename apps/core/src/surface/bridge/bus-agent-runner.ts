@@ -235,7 +235,7 @@ import { resolveSessionSafetyMode, type SessionSafetyMode } from "../session-pol
 import type { AuthenticatedSurfaceOrigin, MsgRef, SurfacePrincipal } from "../types";
 import type { SurfaceProtocolResolver } from "../runtime-descriptor";
 import type { NativeOutputPublisher } from "../native/output";
-import { selectNativeTurnMessages } from "../native/turn-transcript";
+import { selectNativeRunMessages } from "../native/turn-transcript";
 import type {
   CustomCommandExecutionError,
   CustomCommandManager,
@@ -6435,7 +6435,12 @@ export async function startBusAgentRunner(params: {
                     isPrimary: runProfile === "primary",
                     didCompact: isCompactionCheckpoint,
                     ...(next.requestClient === "native"
-                      ? { nativeRequestId: headers.request_id }
+                      ? {
+                          native: {
+                            requestId: headers.request_id,
+                            requestMessages: next.messages,
+                          },
+                        }
                       : {}),
                   });
                 })();
@@ -6926,7 +6931,7 @@ export async function startBusAgentRunner(params: {
                 if (next.requestClient === "native") {
                   const messages = safeFinalMessages.length > 0 ? safeFinalMessages : next.messages;
                   return runProfile === "primary" && completedCompactionCount === 0
-                    ? selectNativeTurnMessages(messages, headers.request_id)
+                    ? selectNativeRunMessages(messages, headers.request_id, next.messages)
                     : messages;
                 }
                 return runProfile === "primary" ? responseMessages : safeFinalMessages;
@@ -7951,11 +7956,15 @@ export function selectPersistedTranscriptMessages(input: {
   isPrimary: boolean;
   didCompact: boolean;
   /** Native history is rebuilt from per-turn rows, so a native row keeps its own input too. */
-  nativeRequestId?: string;
+  native?: { requestId: string; requestMessages: readonly ModelMessage[] };
 }): ModelMessage[] {
   if (!input.isPrimary || input.didCompact) return [...input.finalMessages];
-  if (input.nativeRequestId)
-    return selectNativeTurnMessages(input.finalMessages, input.nativeRequestId);
+  if (input.native)
+    return selectNativeRunMessages(
+      input.finalMessages,
+      input.native.requestId,
+      input.native.requestMessages,
+    );
   return input.finalMessages.slice(input.responseStartIndex);
 }
 

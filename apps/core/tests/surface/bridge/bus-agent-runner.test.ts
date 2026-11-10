@@ -1379,20 +1379,60 @@ describe("selectPersistedTranscriptMessages", () => {
       { role: "assistant", content: "answer one" },
     ] satisfies ModelMessage[];
     const own = [opening, { role: "assistant", content: "answer two" }] satisfies ModelMessage[];
-    const select = (overrides: { didCompact?: boolean; nativeRequestId?: string }) =>
+    const select = (overrides: { didCompact?: boolean; requestId?: string }) =>
       selectPersistedTranscriptMessages({
         finalMessages: [...history, ...own],
         responseStartIndex: 3,
         isPrimary: true,
-        didCompact: false,
-        ...overrides,
+        didCompact: overrides.didCompact ?? false,
+        native: {
+          requestId: overrides.requestId ?? "native:t1:m2",
+          requestMessages: [...history, opening],
+        },
       });
-    expect(select({ nativeRequestId: "native:t1:m2" })).toEqual(own);
-    expect(select({ nativeRequestId: "native:t1:m2", didCompact: true })).toEqual([
-      ...history,
-      ...own,
+    expect(select({})).toEqual(own);
+    expect(select({ didCompact: true })).toEqual([...history, ...own]);
+    expect(select({ requestId: "native:t1:other" })).toEqual([...history, ...own]);
+  });
+
+  it("persists full native context when a recovered checkpoint holds a new compaction summary", () => {
+    const opening = {
+      role: "user",
+      content:
+        '<LILAC_META:v1>{"platform":"native","thread_id":"t1","message_id":"m3"}</LILAC_META:v1>\nthird',
+    } satisfies ModelMessage;
+    const summary = (text: string) =>
+      ({
+        role: "user",
+        content: `<context-compaction>\n${text}\n</context-compaction>`,
+      }) satisfies ModelMessage;
+    const answer = { role: "assistant", content: "answer three" } satisfies ModelMessage;
+    const select = (finalMessages: ModelMessage[], requestMessages: ModelMessage[]) =>
+      selectPersistedTranscriptMessages({
+        finalMessages,
+        responseStartIndex: 0,
+        isPrimary: true,
+        didCompact: false,
+        native: { requestId: "native:t1:m3", requestMessages },
+      });
+    const earlier = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "answer one" },
+    ] satisfies ModelMessage[];
+    expect(select([summary("new"), opening, answer], [...earlier, opening])).toEqual([
+      summary("new"),
+      opening,
+      answer,
     ]);
-    expect(select({ nativeRequestId: "native:t1:other" })).toEqual([...history, ...own]);
+    expect(select([summary("old"), opening, answer], [summary("old"), opening])).toEqual([
+      opening,
+      answer,
+    ]);
+    expect(select([summary("newer"), opening, answer], [summary("old"), opening])).toEqual([
+      summary("newer"),
+      opening,
+      answer,
+    ]);
   });
 
   it("keeps non-primary full-transcript persistence unchanged", () => {

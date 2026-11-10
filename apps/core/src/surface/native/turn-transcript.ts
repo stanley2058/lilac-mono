@@ -38,3 +38,32 @@ export function selectNativeTurnMessages<T extends TranscriptMessage>(
   const start = messages.findIndex((message) => opensNativeTurn(message, requestId));
   return start < 0 ? [...messages] : messages.slice(start);
 }
+
+function messageText(message: TranscriptMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .flatMap((part) => (part.type === "text" ? [part.text ?? ""] : []))
+    .join("\n");
+}
+
+function compactionSummaries(messages: readonly TranscriptMessage[]): string[] {
+  return messages
+    .filter((message) => message.role === "user")
+    .map(messageText)
+    .filter((text) => text.startsWith("<context-compaction>"));
+}
+
+/**
+ * Selects what a native primary run persists. A run whose context holds a compaction summary that
+ * its request did not carry in replaced history that earlier rows hold, so it keeps the full
+ * context. That includes a compaction a recovered run inherited from its checkpoint.
+ */
+export function selectNativeRunMessages<T extends TranscriptMessage>(
+  messages: readonly T[],
+  requestId: string,
+  requestMessages: readonly TranscriptMessage[],
+): T[] {
+  const carried = new Set(compactionSummaries(requestMessages));
+  if (compactionSummaries(messages).some((summary) => !carried.has(summary))) return [...messages];
+  return selectNativeTurnMessages(messages, requestId);
+}

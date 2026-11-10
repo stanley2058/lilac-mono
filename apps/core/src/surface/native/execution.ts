@@ -269,8 +269,9 @@ export function createNativeExecution(options: {
         if (!snapshot) return Result.ok(empty);
         if (snapshot.contextMeta || !opensNativeTurn(snapshot.messages[0], turn.requestId)) {
           const full = yield* fullRowHistory(thread, start, turn, snapshot.messages);
-          if (full.messages.length > 0)
-            turns.push({ requestId: full.firstRequestId ?? turn.requestId, ...full });
+          // A full row that cannot reach `start` leaves no valid prefix for the later turns.
+          if (full.messages.length === 0) return Result.ok(empty);
+          turns.push({ requestId: full.firstRequestId ?? turn.requestId, ...full });
           break;
         }
         turns.push({ requestId: turn.requestId, messages: snapshot.messages });

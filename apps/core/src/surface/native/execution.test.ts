@@ -20,7 +20,7 @@ import {
 } from "@stanley2058/lilac-event-bus";
 import { SqliteTranscriptStore } from "../../transcript/transcript-store";
 import { createNativeExecution } from "./execution";
-import { selectNativeTurnMessages } from "./turn-transcript";
+import { selectNativeRunMessages } from "./turn-transcript";
 import { NativeStore } from "./store";
 import { parseNativeRequestMetadata } from "../authenticated-request";
 import {
@@ -1287,30 +1287,37 @@ describe("native turn transcripts", () => {
   const harness = (mode: Mode, direct = false) => {
     const f = fixture(undefined, direct);
     let finished = 0;
-    const finish = async (compacted = false) => {
+    /**
+     * A checkpoint is a run that compacted. A recovered run inherited that compaction from its
+     * checkpoint, so it has no compaction metadata.
+     */
+    const finish = async (compaction?: "checkpoint" | "recovered") => {
       finished += 1;
       const request = f.request();
       const published = storedMessagesV1Schema.parse(f.published.at(-1)!.data.messages);
       const answer: StoredMessageV1 = { role: "assistant", content: `a${finished}` };
-      const all = [...published, answer];
-      const turnOnly = !compacted && (mode === "turn" || (mode === "mixed" && finished > 2));
+      const all: StoredMessageV1[] = compaction
+        ? [
+            { role: "user", content: "<context-compaction>summary</context-compaction>" },
+            published.at(-1)!,
+            answer,
+          ]
+        : [...published, answer];
+      const turnRows = mode === "turn" || (mode === "mixed" && finished > 2);
       value(
         f.transcripts.saveRequestTranscript({
           ...request,
           requestClient: "native",
-          ...(compacted
-            ? {
-                contextMeta: { type: "compaction", formatVersion: 1 } as const,
-                messages: [
-                  { role: "user", content: "<context-compaction>summary</context-compaction>" },
-                  published.at(-1)!,
-                  answer,
-                ],
-              }
-            : { messages: turnOnly ? selectNativeTurnMessages(all, request.requestId) : all }),
+          ...(compaction === "checkpoint"
+            ? { contextMeta: { type: "compaction", formatVersion: 1 } as const, messages: all }
+            : {
+                messages: turnRows
+                  ? selectNativeRunMessages(all, request.requestId, published)
+                  : all,
+              }),
         }),
       );
-      if (turnOnly) {
+      if (turnRows && !compaction) {
         const saved = value(f.transcripts.getRequestTranscript({ requestId: request.requestId }));
         expect(labels(saved!.messages)).toEqual([`m${finished}`, `a${finished}`]);
       }
@@ -1389,7 +1396,7 @@ describe("native turn transcripts", () => {
       await send(1_000);
       await finish();
       await send(2_000);
-      await finish(true);
+      await finish("checkpoint");
       await send(3_000);
       await finish();
       expect(value(f.execution.context("owner", f.thread.id)).hasSummary).toBe(true);
@@ -1404,5 +1411,180 @@ describe("native turn transcripts", () => {
     } finally {
       f.close();
     }
+  });
+  test("a turn row cannot extend history when the selected start falls inside a checkpoint", async () => {
+    const { f, finish, send } = harness("turn");
+    try {
+      await send(1_000);
+      await finish();
+      await send(2_000);
+      await finish("checkpoint");
+      await send(3_000);
+      await finish();
+      f.setMaxAge(2_500);
+      expect((await send(4_000)).history).toEqual(["m4"]);
+    } finally {
+      f.close();
+    }
+  });
+
+  test.each<Mode>(["turn", "full"])(
+    "keeps a compaction a recovered run inherited for the next turn from %s rows",
+    async (mode) => {
+      const { f, finish, send } = harness(mode);
+      try {
+        await send(1_000);
+        await finish();
+        await send(2_000);
+        await finish();
+        await send(3_000);
+        await finish("recovered");
+        expect((await send(4_000)).history).toEqual([
+          "<context-compaction>summary</context-compaction>",
+          "m3",
+          "a3",
+          "m4",
+        ]);
+      } finally {
+        f.close();
+      }
+    },
+  );
+});
+
+describe("native turn row differential", () => {
+  type Scenario = {
+    direct?: boolean;
+    cut?: number;
+    compact?: number;
+    mixed?: boolean;
+    steer?: boolean;
+    failed?: boolean;
+    rewind?: boolean;
+    gap?: boolean;
+    resume?: boolean;
+    recoveredCompact?: boolean;
+  };
+  const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+  const normalized = (messages: readonly StoredMessageV1[]): unknown => {
+    const ids = new Map<string, string>();
+    return JSON.parse(
+      JSON.stringify(messages).replace(uuid, (id) => {
+        if (!ids.has(id)) ids.set(id, `id${ids.size}`);
+        return ids.get(id)!;
+      }),
+    );
+  };
+
+  /**
+   * Runs six turns and returns each published history. Full rows are what native runs persisted
+   * before per-turn rows, so both row shapes must rebuild the same context.
+   */
+  async function publishedHistories(fullRows: boolean, scenario: Scenario) {
+    const f = fixture(undefined, scenario.direct);
+    const histories: unknown[] = [];
+    const turnIds: (string | undefined)[] = [];
+    try {
+      if (scenario.direct) f.setDmGap(1_500);
+      for (let turn = 1; turn <= 6; turn += 1) {
+        f.setNow(scenario.gap && turn >= 4 ? turn * 1_000 + 5_000 : turn * 1_000);
+        if (turn === 4 && scenario.cut) f.setMaxAge(scenario.cut);
+        const receipt = f.submit(`m${turn}`, turn === 3 ? "followup" : "prompt");
+        turnIds.push(value(f.store.getInput(receipt.inputId))?.turnId);
+        value(await f.execution.kick(f.thread.id));
+        const request = f.request();
+        const published = storedMessagesV1Schema.parse(f.published.at(-1)!.data.messages);
+        histories.push(normalized(published));
+        let all: StoredMessageV1[] = [...published];
+        if (scenario.steer && turn === 2) {
+          f.submit("steering", "steer");
+          value(await f.execution.kick(f.thread.id));
+          all.push(...storedMessagesV1Schema.parse(f.published.at(-1)!.data.messages));
+        }
+        all.push({ role: "user", content: `generated context ${turn}` });
+        const compacts = scenario.compact === turn || (scenario.recoveredCompact && turn === 3);
+        const withTools = !scenario.compact && !scenario.recoveredCompact;
+        if (withTools && turn === 2)
+          all.push({
+            role: "assistant",
+            content: [{ type: "tool-call", toolCallId: "call", toolName: "inspect", input: {} }],
+          });
+        if (withTools && turn === 3)
+          all.push({
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call",
+                toolName: "inspect",
+                output: { type: "text", value: "result" },
+              },
+            ],
+          });
+        all.push({ role: "assistant", content: `a${turn}` });
+        if (compacts)
+          all = [
+            { role: "user", content: "<context-compaction>summary</context-compaction>" },
+            published.at(-1)!,
+            { role: "assistant", content: `a${turn}` },
+          ];
+        if (scenario.resume && turn === 3)
+          all.push({ role: "user", content: "resume after crash" });
+        const checkpoint = scenario.compact === turn;
+        const messages =
+          fullRows || checkpoint || (scenario.mixed && turn < 3)
+            ? all
+            : selectNativeRunMessages(all, request.requestId, published);
+        value(
+          f.transcripts.saveRequestTranscript({
+            ...request,
+            requestClient: "native",
+            messages,
+            ...(checkpoint && !scenario.failed
+              ? { contextMeta: { type: "compaction", formatVersion: 1 } as const }
+              : {}),
+          }),
+        );
+        const outcome =
+          scenario.failed && turn === 3 ? "failed" : turn === 5 ? "cancelled" : "completed";
+        value(await f.execution.runnerLifecycle.settled(request, outcome));
+        if (scenario.rewind && turn === 4) {
+          const thread = value(f.store.getThreadRecord(f.thread.id));
+          value(
+            await f.execution.rewind("owner", {
+              threadId: f.thread.id,
+              commandId: crypto.randomUUID(),
+              turnId: turnIds[2]!,
+              historyGeneration: thread.historyGeneration,
+              revision: thread.revision,
+            }),
+          );
+        }
+      }
+      return histories;
+    } finally {
+      f.close();
+    }
+  }
+
+  test.each<Scenario>([
+    {},
+    { steer: true },
+    { mixed: true },
+    { direct: true },
+    { direct: true, gap: true },
+    { cut: 2_500 },
+    { cut: 1_500 },
+    { compact: 2 },
+    { compact: 2, cut: 2_500 },
+    { compact: 2, cut: 1_500 },
+    { compact: 3, failed: true },
+    { rewind: true },
+    { resume: true },
+    { recoveredCompact: true },
+  ])("per-turn rows rebuild the history full rows rebuild for %j", async (scenario) => {
+    expect(await publishedHistories(false, scenario)).toEqual(
+      await publishedHistories(true, scenario),
+    );
   });
 });
