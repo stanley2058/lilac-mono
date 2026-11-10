@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { ServerToolResult } from "@stanley2058/lilac-plugin-runtime";
 import { Panic } from "better-result";
 
-import { Onboarding } from "../../src/tool-server/tools/onboarding";
+import { Onboarding, installGithubTarGzBinary } from "../../src/tool-server/tools/onboarding";
 
 function onboardingWith(
   overrides: Partial<ConstructorParameters<typeof Onboarding>[0]> = {},
@@ -233,4 +233,47 @@ describe("onboarding default skills", () => {
     });
     expect(fetchCalls).toBe(0);
   });
+});
+
+it("cleans downloaded assets when a release checksum fails", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-checksum-"));
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+    Object.assign(
+      async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/releases/latest"))
+          return Response.json({
+            tag_name: "v1",
+            assets: [
+              { name: "binary.tar.gz", browser_download_url: "https://example.test/binary" },
+              { name: "checksums.txt", browser_download_url: "https://example.test/checksums" },
+            ],
+          });
+        return new Response(
+          url.endsWith("checksums") ? `${"0".repeat(64)}  binary.tar.gz` : "bad archive",
+        );
+      },
+      { preconnect: fetch.preconnect },
+    ),
+  );
+  try {
+    const result = await installGithubTarGzBinary({
+      repo: "owner/repo",
+      destPath: path.join(root, "bin"),
+      tmpDir: root,
+      tarAssetName: () => "binary.tar.gz",
+      checksumAssetName: () => "checksums.txt",
+      findExtractedPath: async () => null,
+      overwrite: true,
+      network: true,
+    });
+    expect(result.isErr()).toBe(true);
+    expect(result.match({ ok: () => "unexpected", err: (error) => error.message })).toContain(
+      "Checksum mismatch",
+    );
+    expect(await fs.readdir(root)).toEqual([]);
+  } finally {
+    fetchSpy.mockRestore();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

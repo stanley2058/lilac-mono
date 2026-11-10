@@ -1232,6 +1232,7 @@ export type TranscriptStore = {
   }): RecentAgentWriteSnapshot[];
 
   listDiscoveryRecords?(): TranscriptDiscoveryRecord[];
+  getDiscoveryVersion?(): string;
 
   close(): void;
 };
@@ -5346,6 +5347,12 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
     }
 
     return out;
+  }
+
+  getDiscoveryVersion(): string {
+    const local = this.db.query<{ changes: number }, []>("SELECT total_changes() AS changes").get();
+    const external = this.db.query<{ data_version: number }, []>("PRAGMA data_version").get();
+    return `${local?.changes ?? 0}:${external?.data_version ?? 0}`;
   }
 
   listDiscoveryRecords(): TranscriptDiscoveryRecord[] {

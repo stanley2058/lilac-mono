@@ -3571,3 +3571,42 @@ describe("Discord projection parity", () => {
     });
   }
 });
+
+it("limits restricted message edits and deletes to the bot's messages", async () => {
+  const channelId = "123456789012345678";
+  const messages: SurfaceMessage[] = ["human", "bot"].map((userId, index) => ({
+    ref: { platform: "discord", channelId, messageId: `11111111111111111${index}` },
+    session: { platform: "discord", channelId },
+    userId,
+    text: "hello",
+    ts: 1,
+  }));
+  const adapter = new FakeAdapter([], { [channelId]: messages });
+  const tool = new Surface({
+    adapter,
+    config: testConfig({
+      surface: { discord: { botName: "lilac", allowedChannelIds: [channelId] } },
+    }),
+  });
+  for (const callable of ["surface.messages.edit", "surface.messages.delete"]) {
+    const input = {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "111111111111111110",
+      ...(callable.endsWith("edit") ? { text: "changed" } : {}),
+    };
+    expect(
+      (await tool.callResult(callable, input, { context: { safetyMode: "restricted" } })).isErr(),
+    ).toBe(true);
+    expect(
+      await tool.callResult(
+        callable,
+        { ...input, messageId: "111111111111111111" },
+        { context: { safetyMode: "restricted" } },
+      ),
+    ).toMatchObject({ status: "ok" });
+    expect(
+      (await tool.callResult(callable, input, { context: { safetyMode: "trusted" } })).isOk(),
+    ).toBe(true);
+  }
+});

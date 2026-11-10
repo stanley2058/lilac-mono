@@ -151,7 +151,7 @@ function getGlobSearchRoots(patterns: readonly string[]): string[] {
   return deduped.length > 0 ? deduped : [""];
 }
 
-export const READ_ERROR_CODES = ["NOT_FOUND", "PERMISSION", "UNKNOWN"] as const;
+export const READ_ERROR_CODES = ["NOT_FOUND", "PERMISSION", "MEDIA_TOO_LARGE", "UNKNOWN"] as const;
 export type ReadErrorCode = (typeof READ_ERROR_CODES)[number];
 
 export const WRITE_ERROR_CODES = [
@@ -190,7 +190,7 @@ type FileSystemFailureDetails = {
   readonly message: string;
 };
 
-function toBasicFsErrorCode(code: string | undefined): ReadErrorCode {
+function toBasicFsErrorCode(code: string | undefined): Exclude<ReadErrorCode, "MEDIA_TOO_LARGE"> {
   if (code === "ENOENT") return "NOT_FOUND";
   if (code === "EACCES" || code === "EPERM") return "PERMISSION";
   return "UNKNOWN";
@@ -264,7 +264,7 @@ export type ReadFileResult =
       success: false;
       resolvedPath: string;
       error: {
-        code: ReadErrorCode;
+        code: Exclude<ReadErrorCode, "MEDIA_TOO_LARGE">;
         message: string;
       };
     };
@@ -1221,7 +1221,7 @@ export class FileSystem {
             success: false,
             resolvedPath,
             error: {
-              code: "UNKNOWN",
+              code: "MEDIA_TOO_LARGE",
               message: `File is too large to inline (${stats.value.size} bytes; maximum ${maxBytes} bytes): ${resolvedPath}`,
             },
           });

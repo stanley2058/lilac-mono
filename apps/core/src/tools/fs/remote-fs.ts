@@ -273,39 +273,12 @@ async function sshExecRemoteFsRunnerJson<T>(params: {
   if (runnerCommandError) return Result.err(runnerCommandError);
   const runnerCommand = selectResultValue(runnerCommandResult);
 
-  const script = `#!/usr/bin/env bash
-set -euo pipefail
-
-REMOTE_CWD=$(cat <<'__LILAC_REMOTE_CWD__'
-${params.cwd}
-__LILAC_REMOTE_CWD__
-)
-
-if [ -n "$REMOTE_CWD" ]; then
-  if [ "$REMOTE_CWD" = "~" ]; then
-    REMOTE_CWD="$HOME"
-  elif [[ "$REMOTE_CWD" == "~/"* ]]; then
-    REMOTE_CWD="$HOME/\${REMOTE_CWD:2}"
-  fi
-
-  if [ ! -d "$REMOTE_CWD" ]; then
-    echo '{"ok":false,"error":"Remote cwd does not exist or is not a directory"}'
-    exit 0
-  fi
-
-  if ! cd "$REMOTE_CWD"; then
-    echo '{"ok":false,"error":"Remote cwd is not accessible"}'
-    exit 0
-  fi
-fi
-
+  const encodedInput = Buffer.from(inputJson).toString("base64");
+  const script = `set -euo pipefail
 run_remote_fs_runner() {
 ${runnerCommand}
 }
-
-run_remote_fs_runner <<'__LILAC_INPUT__'
-${inputJson}
-__LILAC_INPUT__
+printf '%s' '${encodedInput}' | base64 -d | run_remote_fs_runner
 `;
 
   const executed = (
@@ -314,6 +287,7 @@ __LILAC_INPUT__
         sshExecBash({
           host: params.host,
           cmd: script,
+          cwd: params.cwd,
           timeoutMs: params.timeoutMs,
           signal: params.signal,
           maxOutputChars: params.maxOutputChars,
@@ -468,7 +442,15 @@ export async function remoteGlob(params: {
       decodeResponse: decodeRemoteGlobResponseJson,
     });
     const runnerError = runnerRes.match({ ok: () => null, err: (error) => error });
-    if (!runnerError || runnerError._tag === "SshExecutionCancelledError") return runnerRes;
+    if (
+      !runnerError ||
+      [
+        "SshExecutionCancelledError",
+        "SshExecutionTimedOutError",
+        "SshExecutionOutputCappedError",
+      ].includes(runnerError._tag)
+    )
+      return runnerRes;
   }
 
   const source = await getRemoteRunnerJsText();
@@ -530,7 +512,15 @@ export async function remoteGrep(params: {
       decodeResponse: decodeRemoteGrepResponseJson,
     });
     const runnerError = runnerRes.match({ ok: () => null, err: (error) => error });
-    if (!runnerError || runnerError._tag === "SshExecutionCancelledError") return runnerRes;
+    if (
+      !runnerError ||
+      [
+        "SshExecutionCancelledError",
+        "SshExecutionTimedOutError",
+        "SshExecutionOutputCappedError",
+      ].includes(runnerError._tag)
+    )
+      return runnerRes;
   }
 
   const source = await getRemoteRunnerJsText();

@@ -138,3 +138,16 @@ describe("GithubOutputStream", () => {
     expect(comments[0]).not.toContain("In reply to");
   });
 });
+
+it("splits large final output within GitHub's comment limit", async () => {
+  const comments: string[] = [];
+  const stream = new GithubOutputStream(
+    { platform: "github", channelId: "owner/repo#1" },
+    createApi(comments),
+  );
+  await stream.push({ type: "text.set", text: "x".repeat(140_000) });
+  const result = await stream.finish();
+  expect(result.isOk()).toBe(true);
+  expect(comments).toHaveLength(3);
+  expect(comments.every((comment) => comment.length <= 65_536)).toBe(true);
+});

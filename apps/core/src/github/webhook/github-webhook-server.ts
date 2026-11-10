@@ -16,6 +16,10 @@ import {
   getIssue,
   getPullRequest,
   listIssueComments,
+  createIssueComment,
+  hasGithubCollaboratorPermission,
+  deleteIssueCommentReactionById,
+  deleteIssueReactionById,
 } from "../github-api";
 import {
   claimGithubAcknowledgement,
@@ -26,11 +30,27 @@ import {
   setGithubAck,
   setGithubLatestRequestForSession,
   setGithubRequestMeta,
+  clearGithubRequest,
+  clearGithubAck,
+  getGithubAck,
 } from "../github-state";
-import { isMarkedGithubAgentComment } from "../github-comment-marker";
+import { isMarkedGithubAgentComment, markGithubAgentComment } from "../github-comment-marker";
 import { parseGithubWorkflowActionReply } from "../../surface/github/github-actions";
 import { adaptEventPublishResultToHost } from "../../shared/event-bus-result";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
+
+export const githubWebhookApi = {
+  addEyesReactionToIssue,
+  addEyesReactionToIssueComment,
+  getIssue,
+  getPullRequest,
+  listIssueComments,
+  createIssueComment,
+  hasGithubCollaboratorPermission,
+  deleteIssueCommentReactionById,
+  deleteIssueReactionById,
+};
+type GithubWebhookApi = typeof githubWebhookApi;
 
 type GithubWebhookOptions = {
   bus: LilacBus;
@@ -50,6 +70,7 @@ const githubIssueCommentPayloadSchema = z.object({
   comment: z.object({
     id: z.number().int().positive(),
     body: z.string(),
+    author_association: z.string().optional(),
     html_url: z.string().optional(),
     created_at: z.string().optional(),
     user: z.object({ login: z.string().min(1) }).optional(),
@@ -409,6 +430,47 @@ function newGithubRequestId(input: {
   return input.suffix ? `${base}:${input.suffix}` : base;
 }
 
+export function githubDeliveryId(deliveryId: string | undefined, operation: string): string {
+  if (!deliveryId) return crypto.randomUUID();
+  return `github-delivery:${crypto.createHash("sha256").update(deliveryId).digest("hex")}:${operation}`;
+}
+
+async function cleanupFailedGithubRequest(
+  requestId: string,
+  logger: Logger,
+  api: GithubWebhookApi,
+): Promise<void> {
+  const meta = getGithubRequestMeta(requestId);
+  const ack = getGithubAck(requestId);
+  if (meta && ack) {
+    const [owner, repo] = meta.repoFullName.split("/");
+    if (owner && repo) {
+      const deleted = await captureGithubWebhookOperation("remove failed acknowledgement", () =>
+        ack.target.kind === "comment"
+          ? api.deleteIssueCommentReactionById({
+              owner,
+              repo,
+              commentId: ack.target.commentId,
+              reactionId: ack.reactionId,
+            })
+          : api.deleteIssueReactionById({
+              owner,
+              repo,
+              issueNumber: ack.target.issueNumber,
+              reactionId: ack.reactionId,
+            }),
+      );
+      deleted.match({
+        ok: () => undefined,
+        err: (error) =>
+          logger.warn("failed to remove acknowledgement", formatTaggedErrorForLog(error)),
+      });
+    }
+  }
+  clearGithubAck(requestId);
+  clearGithubRequest(requestId);
+}
+
 const githubSessionOperationTails = new Map<string, Promise<void>>();
 
 async function runGithubSessionOperation<T>(
@@ -451,6 +513,37 @@ export async function startGithubWebhookServer(options: GithubWebhookOptions): P
     botLogins,
   });
 
+  const app = createGithubWebhookApp({
+    secret,
+    path,
+    logger,
+    reportFatalError: options.reportFatalError,
+    handle: (event, projected, deliveryId) =>
+      handleEvent({ bus: options.bus, logger, event, projected, botLogins, deliveryId }),
+  });
+
+  const server = app.listen({ port, maxRequestBodySize: 2 * 1024 * 1024 });
+  logger.info("GitHub webhook server started", { port, path });
+
+  return {
+    stop: async () => {
+      await captureGithubWebhookOperation("server stop", async () => server.stop());
+    },
+  };
+}
+
+export function createGithubWebhookApp(options: {
+  secret: string;
+  path: string;
+  logger: Logger;
+  reportFatalError: (error: Error) => void;
+  handle: (
+    event: string,
+    projected: ProjectedGithubWebhookEvent,
+    deliveryId?: string,
+  ) => Promise<unknown>;
+}) {
+  const { secret, path, logger } = options;
   const seen = new Map<string, number>();
   const DEDUPE_TTL_MS = 10 * 60 * 1000;
 
@@ -462,110 +555,104 @@ export async function startGithubWebhookServer(options: GithubWebhookOptions): P
     }
     const exp = seen.get(deliveryId);
     if (exp && exp > now) return true;
-    seen.set(deliveryId, now + DEDUPE_TTL_MS);
     return false;
   }
 
+  const queued = new WeakMap<
+    Request,
+    { event: string; deliveryId?: string; projected: ProjectedGithubWebhookEvent }
+  >();
   const app = new Elysia();
 
-  app.post(path, async ({ request, set }) => {
-    const startedAt = Date.now();
-    const event = request.headers.get("x-github-event") ?? "";
-    const deliveryId = request.headers.get("x-github-delivery") ?? undefined;
-    const sig256 = request.headers.get("x-hub-signature-256");
+  app.post(
+    path,
+    async ({ request, set }) => {
+      const startedAt = Date.now();
+      const event = request.headers.get("x-github-event") ?? "";
+      const deliveryId = request.headers.get("x-github-delivery") ?? undefined;
+      const sig256 = request.headers.get("x-hub-signature-256");
 
-    const raw = new Uint8Array(await request.arrayBuffer());
-    if (!verifyGithubWebhookSignature({ secret, signature256: sig256, rawBody: raw })) {
-      logger.warn("github.webhook.rejected", {
-        event,
-        deliveryId,
-        reason: "invalid_signature",
-        statusCode: 401,
-        durationMs: Date.now() - startedAt,
-      });
-      set.status = 401;
-      return { ok: false, error: "invalid signature" };
-    }
-
-    if (dedupe(deliveryId)) {
-      logger.info("github.webhook.deduped", {
-        event,
-        deliveryId,
-        statusCode: 200,
-        durationMs: Date.now() - startedAt,
-      });
-      return { ok: true, deduped: true };
-    }
-
-    const payload = await captureGithubWebhookOperation("decode JSON", async () =>
-      JSON.parse(new TextDecoder().decode(raw)),
-    );
-    return payload.match({
-      err: () => async () => {
+      const raw = new Uint8Array(await request.arrayBuffer());
+      if (!verifyGithubWebhookSignature({ secret, signature256: sig256, rawBody: raw })) {
         logger.warn("github.webhook.rejected", {
           event,
           deliveryId,
-          reason: "invalid_json",
-          statusCode: 400,
+          reason: "invalid_signature",
+          statusCode: 401,
           durationMs: Date.now() - startedAt,
         });
-        set.status = 400;
-        return { ok: false, error: "invalid json" };
-      },
-      ok: (payload) => async () => {
-        const projected = decodeGithubWebhookEvent(event, payload);
+        set.status = 401;
+        return { ok: false, error: "invalid signature" };
+      }
+
+      if (dedupe(deliveryId)) {
+        logger.info("github.webhook.deduped", {
+          event,
+          deliveryId,
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+        });
+        return { ok: true, deduped: true };
+      }
+
+      const payload = await captureGithubWebhookOperation("decode JSON", async () =>
+        JSON.parse(new TextDecoder().decode(raw)),
+      );
+      return payload.match<() => Promise<{ ok: boolean; error?: string }>>({
+        err: () => async () => {
+          logger.warn("github.webhook.rejected", {
+            event,
+            deliveryId,
+            reason: "invalid_json",
+            statusCode: 400,
+            durationMs: Date.now() - startedAt,
+          });
+          set.status = 400;
+          return { ok: false, error: "invalid json" };
+        },
+        ok: (payload) => async () => {
+          queued.set(request, {
+            event,
+            deliveryId,
+            projected: decodeGithubWebhookEvent(event, payload),
+          });
+          return { ok: true };
+        },
+      })();
+    },
+    {
+      afterResponse: async ({ request }) => {
+        const item = queued.get(request);
+        if (!item) return;
+        queued.delete(request);
         const handled = await superviseGithubWebhookHandler({
           reportFatalError: options.reportFatalError,
-          run: () =>
-            handleEvent({
-              bus: options.bus,
-              logger,
-              event,
-              projected,
-              botLogins,
-            }),
+          run: () => options.handle(item.event, item.projected, item.deliveryId),
         });
-        return handled.match({
-          ok: (result) => () => {
-            logger.info("github.webhook.ingress", {
-              event,
-              deliveryId,
-              action: result.action,
-              repo: result.repoFullName,
-              handled: result.handled,
-              reason: result.reason,
-              requestIdOut: result.requestId,
-              statusCode: 200,
-              durationMs: Date.now() - startedAt,
+        handled.match({
+          ok: () => {
+            if (item.deliveryId) seen.set(item.deliveryId, Date.now() + DEDUPE_TTL_MS);
+            logger.info("github.webhook.handled", {
+              event: item.event,
+              deliveryId: item.deliveryId,
             });
-            return { ok: true };
           },
-          err: (error) => () => {
-            logger.error("webhook handler failed", formatTaggedErrorForLog(error));
-            logger.error("github.webhook.rejected", formatTaggedErrorForLog(error));
-            set.status = 500;
-            return { ok: false, error: error.message };
-          },
-        })();
+          err: (error) => logger.error("webhook handler failed", formatTaggedErrorForLog(error)),
+        });
       },
-    })();
-  });
-
-  const server = app.listen({ port });
-  logger.info("GitHub webhook server started", { port, path });
-
-  return {
-    stop: async () => {
-      await captureGithubWebhookOperation("server stop", async () => server.stop());
     },
-  };
+  );
+
+  return app;
 }
 
-async function handleEvent(input: {
+export async function handleEvent(input: {
   bus: LilacBus;
   logger: Logger;
   event: string;
   projected: ProjectedGithubWebhookEvent;
+  deliveryId?: string;
+  api?: GithubWebhookApi;
   botLogins: readonly string[];
 }): Promise<{
   handled: boolean;
@@ -580,6 +667,8 @@ async function handleEvent(input: {
       const repoFullName = projected.payload.repository.full_name;
       const requestId = await onIssueCommentCreated({
         bus: input.bus,
+        api: input.api ?? githubWebhookApi,
+        deliveryId: input.deliveryId,
         logger: input.logger,
         repoFullName,
         payload: projected.payload,
@@ -597,6 +686,8 @@ async function handleEvent(input: {
       const repoFullName = projected.payload.repository.full_name;
       const requestId = await onReviewRequested({
         bus: input.bus,
+        api: input.api ?? githubWebhookApi,
+        deliveryId: input.deliveryId,
         logger: input.logger,
         repoFullName,
         payload: projected.payload,
@@ -614,6 +705,8 @@ async function handleEvent(input: {
       const repoFullName = projected.payload.repository.full_name;
       const requestId = await onPullRequestSynchronize({
         bus: input.bus,
+        api: input.api ?? githubWebhookApi,
+        deliveryId: input.deliveryId,
         logger: input.logger,
         repoFullName,
         payload: projected.payload,
@@ -642,13 +735,74 @@ async function handleEvent(input: {
   }
 }
 
+export async function isGithubCommenterTrusted(input: {
+  association?: string;
+  login?: string;
+  checkPermission: (login: string) => Promise<boolean>;
+}): Promise<boolean> {
+  if (!input.login) return false;
+  if (["OWNER", "MEMBER", "COLLABORATOR"].includes(input.association ?? "")) return true;
+  return input.checkPermission(input.login);
+}
+
+export async function rejectGithubCommenterOnce(input: {
+  login: string;
+  listComments: (page: number) => Promise<Array<{ body?: string }>>;
+  reply: (body: string) => Promise<unknown>;
+}): Promise<void> {
+  const body = markGithubAgentComment(
+    `@${input.login}: Only repository collaborators can start Lilac requests.`,
+  );
+  for (let page = 1; ; page++) {
+    const comments = await input.listComments(page);
+    if (comments.some((comment) => comment.body === body)) return;
+    if (comments.length < 100) break;
+  }
+  await input.reply(body);
+}
+
 async function onIssueCommentCreated(input: {
   bus: LilacBus;
   logger: Logger;
   repoFullName: string;
+  deliveryId?: string;
   payload: z.output<typeof githubIssueCommentPayloadSchema>;
   botLogins: readonly string[];
+  api: GithubWebhookApi;
 }): Promise<string | null> {
+  const author = input.payload.comment.user?.login;
+  const issueNumber = input.payload.issue.number;
+  const [owner, repo] = input.repoFullName.split("/");
+  if (!owner || !repo) return null;
+  const candidate =
+    parseIssueCommentTrigger(input.payload.comment.body, input.botLogins) !== null ||
+    parseGithubWorkflowActionReply(input.payload.comment.body) !== null;
+  if (!candidate || isMarkedGithubAgentComment(input.payload.comment.body)) return null;
+  const trusted = await isGithubCommenterTrusted({
+    association: input.payload.comment.author_association,
+    login: author,
+    checkPermission: (login) => input.api.hasGithubCollaboratorPermission({ owner, repo, login }),
+  });
+  if (!trusted) {
+    const key = `${input.repoFullName}#${issueNumber}:rejection:${author ?? "unknown"}`;
+    const rejected = await captureGithubWebhookOperation("reject untrusted commenter", () =>
+      runGithubSessionOperation(key, () =>
+        rejectGithubCommenterOnce({
+          login: author ?? "unknown",
+          listComments: (page) =>
+            input.api.listIssueComments({ owner, repo, number: issueNumber, limit: 100, page }),
+          reply: (body) => input.api.createIssueComment({ owner, repo, issueNumber, body }),
+        }),
+      ),
+    );
+    rejected.match({
+      ok: () => undefined,
+      err: (error) =>
+        input.logger.warn("failed to reject commenter", formatTaggedErrorForLog(error)),
+    });
+    return null;
+  }
+
   const actionPayload = input.payload;
   if (actionPayload.comment.user) {
     const workflowAction = parseGithubWorkflowActionReply(actionPayload.comment.body);
@@ -675,11 +829,9 @@ async function onIssueCommentCreated(input: {
     }
   }
 
-  const issueNumber = input.payload.issue.number;
   const commentId = input.payload.comment.id;
   const body = input.payload.comment.body;
   const htmlUrl = input.payload.comment.html_url;
-  const author = input.payload.comment.user?.login;
   if (typeof body !== "string" || body.trim().length === 0) return null;
 
   if (isMarkedGithubAgentComment(body)) {
@@ -708,64 +860,14 @@ async function onIssueCommentCreated(input: {
     return null;
   }
 
-  const [owner, repo] = input.repoFullName.split("/");
-  if (!owner || !repo) return null;
-
   const sessionId = `${input.repoFullName}#${issueNumber}`;
   const requestId = newGithubRequestId({
     sessionId,
     triggerId: String(commentId),
   });
 
-  input.logger.info("github trigger: issue_comment", {
-    repo: input.repoFullName,
-    issueNumber,
-    commentId,
-    requestId,
-  });
-
-  // Ack quickly with 👀 (best-effort).
-  const ack = await captureGithubWebhookOperation("issue comment acknowledgement", () =>
-    addEyesReactionToIssueComment({
-      owner,
-      repo,
-      commentId,
-    }),
-  );
-  ack.match({
-    ok: (reactionId) => {
-      setGithubAck(requestId, {
-        target: { kind: "comment", commentId, issueNumber },
-        reactionId,
-      });
-    },
-    err: (error) => {
-      input.logger.warn("failed to add eyes reaction", formatTaggedErrorForLog(error));
-    },
-  });
-
-  const issueData = await getIssue({ owner, repo, number: issueNumber });
-  const recent = await listIssueComments({ owner, repo, number: issueNumber, limit: 30 });
-
-  const triggerText = commandText.trim().length > 0 ? commandText : body;
-
-  const prompt = buildIssuePrompt({
-    repoFullName: input.repoFullName,
-    issueNumber,
-    issueTitle: issueData.title,
-    issueBody: issueData.body ?? null,
-    issueUrl: issueData.html_url,
-    triggerUrl: typeof htmlUrl === "string" ? htmlUrl : undefined,
-    triggerAuthor: typeof author === "string" ? author : undefined,
-    triggerBody: safePreview(triggerText),
-    recentComments: recent.map((c) => ({
-      author: typeof c.user?.login === "string" ? c.user.login : undefined,
-      body: typeof c.body === "string" ? safePreview(c.body, 1000) : undefined,
-    })),
-  });
-
-  const messages: BusMessageV2[] = [{ role: "user", content: prompt }];
-
+  const latestTransition = setGithubLatestRequestForSession(sessionId, requestId);
+  let published = false;
   setGithubRequestMeta({
     requestId,
     sessionId,
@@ -773,43 +875,117 @@ async function onIssueCommentCreated(input: {
     issueNumber,
     trigger: { kind: "comment", commentId, issueNumber },
     createdAtMs: Date.now(),
+    actorLogin: author,
   });
+  return await (async () => {
+    input.logger.info("github trigger: issue_comment", {
+      repo: input.repoFullName,
+      issueNumber,
+      commentId,
+      requestId,
+    });
 
-  adaptEventPublishResultToHost(
-    await input.bus.publish(
-      lilacEventTypes.CmdRequestMessage,
-      {
-        requestDeliveryId: crypto.randomUUID(),
-        queue: "prompt",
-        messages,
-        raw: {
-          ...projectGithubAuthenticatedActor(typeof author === "string" ? author : undefined),
-          github: {
-            repoFullName: input.repoFullName,
-            issueNumber,
-            trigger: { kind: "comment", commentId },
+    // Ack quickly with 👀 (best-effort).
+    const ack = await captureGithubWebhookOperation("issue comment acknowledgement", () =>
+      input.api.addEyesReactionToIssueComment({
+        owner,
+        repo,
+        commentId,
+      }),
+    );
+    ack.match({
+      ok: (reactionId) => {
+        setGithubAck(requestId, {
+          target: { kind: "comment", commentId, issueNumber },
+          reactionId,
+        });
+      },
+      err: (error) => {
+        input.logger.warn("failed to add eyes reaction", formatTaggedErrorForLog(error));
+      },
+    });
+
+    const issueData = await input.api.getIssue({ owner, repo, number: issueNumber });
+    const recent = await input.api.listIssueComments({
+      owner,
+      repo,
+      number: issueNumber,
+      limit: 30,
+      page: Math.max(1, Math.ceil((issueData.comments ?? 0) / 30)),
+    });
+
+    const triggerText = commandText.trim().length > 0 ? commandText : body;
+
+    const prompt = buildIssuePrompt({
+      repoFullName: input.repoFullName,
+      issueNumber,
+      issueTitle: issueData.title,
+      issueBody: issueData.body ?? null,
+      issueUrl: issueData.html_url,
+      triggerUrl: typeof htmlUrl === "string" ? htmlUrl : undefined,
+      triggerAuthor: typeof author === "string" ? author : undefined,
+      triggerBody: safePreview(triggerText),
+      recentComments: recent.map((c) => ({
+        author: typeof c.user?.login === "string" ? c.user.login : undefined,
+        body: typeof c.body === "string" ? safePreview(c.body, 1000) : undefined,
+      })),
+    });
+
+    const messages: BusMessageV2[] = [{ role: "user", content: prompt }];
+
+    setGithubRequestMeta({
+      requestId,
+      sessionId,
+      repoFullName: input.repoFullName,
+      issueNumber,
+      trigger: { kind: "comment", commentId, issueNumber },
+      createdAtMs: Date.now(),
+      actorLogin: author,
+    });
+
+    adaptEventPublishResultToHost(
+      await input.bus.publish(
+        lilacEventTypes.CmdRequestMessage,
+        {
+          requestDeliveryId: githubDeliveryId(input.deliveryId, "prompt"),
+          queue: "prompt",
+          messages,
+          raw: {
+            ...projectGithubAuthenticatedActor(typeof author === "string" ? author : undefined),
+            github: {
+              repoFullName: input.repoFullName,
+              issueNumber,
+              trigger: { kind: "comment", commentId },
+            },
           },
         },
-      },
-      {
-        headers: {
-          request_id: requestId,
-          session_id: sessionId,
-          request_client: "github",
+        {
+          headers: {
+            request_id: requestId,
+            session_id: sessionId,
+            request_client: "github",
+          },
         },
-      },
-    ),
-  );
+      ),
+    );
 
-  return requestId;
+    published = true;
+    return requestId;
+  })().finally(async () => {
+    if (published) return;
+    restoreGithubLatestRequestForSession(latestTransition);
+    await cleanupFailedGithubRequest(requestId, input.logger, input.api);
+  });
 }
 
 async function onReviewRequested(input: {
   bus: LilacBus;
   logger: Logger;
   repoFullName: string;
+  deliveryId?: string;
   payload: z.output<typeof githubReviewRequestedPayloadSchema>;
   botLogins: readonly string[];
+  api: GithubWebhookApi;
 }): Promise<string | null> {
   const requestedLogin = input.payload.requested_reviewer?.login;
   if (!requestedLogin) {
@@ -831,8 +1007,6 @@ async function onReviewRequested(input: {
   }
 
   const prNumber = input.payload.pull_request.number;
-  const headSha = input.payload.pull_request.head.sha;
-
   const [owner, repo] = input.repoFullName.split("/");
   if (!owner || !repo) return null;
 
@@ -841,12 +1015,22 @@ async function onReviewRequested(input: {
     const requestId = newGithubRequestId({
       sessionId,
       triggerId: String(prNumber),
-      suffix: headSha.slice(0, 8),
+      suffix: input.deliveryId ?? crypto.randomUUID(),
     });
     const previousRequestId = getGithubLatestRequestForSession(sessionId);
     const acknowledgementClaim = claimGithubAcknowledgement(previousRequestId, requestId);
     const latestTransition = setGithubLatestRequestForSession(sessionId, requestId);
     let startupCompleted = false;
+    setGithubRequestMeta({
+      requestId,
+      sessionId,
+      repoFullName: input.repoFullName,
+      issueNumber: prNumber,
+      trigger: { kind: "issue", issueNumber: prNumber },
+      createdAtMs: Date.now(),
+      actorLogin: senderLogin,
+      pr: { prNumber, headSha: input.payload.pull_request.head.sha, mode: "review" },
+    });
 
     return await (async () => {
       input.logger.info("github trigger: review_requested", {
@@ -859,7 +1043,7 @@ async function onReviewRequested(input: {
       // Ack quickly on the PR description (issue).
       if (acknowledgementClaim.kind === "unclaimed") {
         const ack = await captureGithubWebhookOperation("review acknowledgement", () =>
-          addEyesReactionToIssue({ owner, repo, issueNumber: prNumber }),
+          input.api.addEyesReactionToIssue({ owner, repo, issueNumber: prNumber }),
         );
         ack.match({
           ok: (reactionId) => {
@@ -874,7 +1058,7 @@ async function onReviewRequested(input: {
         });
       }
 
-      const prData = await getPullRequest({ owner, repo, number: prNumber });
+      const prData = await input.api.getPullRequest({ owner, repo, number: prNumber });
       const prompt = buildPrReviewPrompt({
         repoFullName: input.repoFullName,
         prNumber,
@@ -892,6 +1076,7 @@ async function onReviewRequested(input: {
         issueNumber: prNumber,
         trigger: { kind: "issue", issueNumber: prNumber },
         createdAtMs: Date.now(),
+        actorLogin: senderLogin,
         pr: { prNumber, headSha: prData.head.sha, mode: "review" },
       });
 
@@ -899,7 +1084,7 @@ async function onReviewRequested(input: {
         await input.bus.publish(
           lilacEventTypes.CmdRequestMessage,
           {
-            requestDeliveryId: crypto.randomUUID(),
+            requestDeliveryId: githubDeliveryId(input.deliveryId, "prompt"),
             queue: "prompt",
             messages,
             raw: {
@@ -927,10 +1112,11 @@ async function onReviewRequested(input: {
 
       startupCompleted = true;
       return requestId;
-    })().finally(() => {
+    })().finally(async () => {
       if (!startupCompleted) {
         rollbackGithubAcknowledgementClaim(acknowledgementClaim);
         restoreGithubLatestRequestForSession(latestTransition);
+        await cleanupFailedGithubRequest(requestId, input.logger, input.api);
       }
     });
   });
@@ -940,7 +1126,9 @@ async function onPullRequestSynchronize(input: {
   bus: LilacBus;
   logger: Logger;
   repoFullName: string;
+  deliveryId?: string;
   payload: z.output<typeof githubPullRequestSynchronizePayloadSchema>;
+  api: GithubWebhookApi;
 }): Promise<string | null> {
   const prNumber = input.payload.pull_request.number;
   const headSha = input.payload.pull_request.head.sha;
@@ -974,10 +1162,10 @@ async function onPullRequestSynchronize(input: {
     const requestId = newGithubRequestId({
       sessionId,
       triggerId: String(prNumber),
-      suffix: headSha.slice(0, 8),
+      suffix: input.deliveryId ?? crypto.randomUUID(),
     });
 
-    const prData = await getPullRequest({ owner, repo, number: prNumber });
+    const prData = await input.api.getPullRequest({ owner, repo, number: prNumber });
     const prompt = buildPrReviewPrompt({
       repoFullName: input.repoFullName,
       prNumber,
@@ -1003,6 +1191,7 @@ async function onPullRequestSynchronize(input: {
         issueNumber: prNumber,
         trigger: { kind: "issue", issueNumber: prNumber },
         createdAtMs: Date.now(),
+        actorLogin: meta.actorLogin,
         pr: { prNumber, headSha: prData.head.sha, mode: "review" },
       });
 
@@ -1010,10 +1199,11 @@ async function onPullRequestSynchronize(input: {
         await input.bus.publish(
           lilacEventTypes.CmdRequestMessage,
           {
-            requestDeliveryId: crypto.randomUUID(),
+            requestDeliveryId: githubDeliveryId(input.deliveryId, "prompt"),
             queue: "prompt",
             messages,
             raw: {
+              ...projectGithubAuthenticatedActor(meta.actorLogin),
               github: {
                 repoFullName: input.repoFullName,
                 prNumber,
@@ -1042,7 +1232,7 @@ async function onPullRequestSynchronize(input: {
         await input.bus.publish(
           lilacEventTypes.CmdRequestMessage,
           {
-            requestDeliveryId: crypto.randomUUID(),
+            requestDeliveryId: githubDeliveryId(input.deliveryId, "interrupt"),
             queue: "interrupt",
             messages: [
               {
@@ -1064,10 +1254,11 @@ async function onPullRequestSynchronize(input: {
       );
 
       return requestId;
-    })().finally(() => {
+    })().finally(async () => {
       if (!replacementPublished) {
         rollbackGithubAcknowledgementClaim(acknowledgementClaim);
         restoreGithubLatestRequestForSession(latestTransition);
+        await cleanupFailedGithubRequest(requestId, input.logger, input.api);
       }
     });
   });

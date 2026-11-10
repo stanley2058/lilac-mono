@@ -272,6 +272,31 @@ describe("read attachments", () => {
     expect(parts[1]!.data).toEqual({ type: "data", data: pdf.toString("base64") });
   });
 
+  it("drops retained URL attachment bytes when the call is aborted", async () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axh8h0AAAAASUVORK5CYII=",
+      "base64",
+    );
+    const read = fsTool(baseDir, {
+      readFileDirectImageSupported: true,
+      readRemoteMedia: async () => Result.ok({ data: png }),
+    }).read;
+    const controller = new AbortController();
+    const input = { path: "https://example.test/image.png" };
+    const output = await resolveExecuteResult(
+      read.execute!(input, {
+        toolCallId: "aborted-image",
+        messages: [],
+        context: {},
+        abortSignal: controller.signal,
+      }),
+    );
+    expect(isAttachmentResult(output)).toBe(true);
+    controller.abort();
+    const model = await read.toModelOutput!({ toolCallId: "aborted-image", input, output });
+    expect(model.type).toBe("error-text");
+  });
+
   it("returns URL images through the existing attachment output", async () => {
     const pngBase64 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axh8h0AAAAASUVORK5CYII=";

@@ -13,6 +13,7 @@ import { githubReplyPrefix, parseGithubSessionId } from "../../github/github-ids
 import { markGithubAgentComment } from "../../github/github-comment-marker";
 import {
   clearGithubAck,
+  clearGithubRequest,
   getGithubAck,
   getGithubLatestRequestForSession,
   getGithubRequestMeta,
@@ -227,7 +228,10 @@ async function clearGithubIngressAcknowledgement(
   api: GithubAcknowledgementApi,
 ): Promise<ResultType<void, SurfaceIngressAcknowledgementCleanupFailed>> {
   const ack = getGithubAck(input.requestId);
-  if (!ack) return Result.ok(undefined);
+  if (!ack) {
+    clearGithubRequest(input.requestId);
+    return Result.ok(undefined);
+  }
 
   const deleted = await deleteGithubAcknowledgement(
     {
@@ -238,6 +242,7 @@ async function clearGithubIngressAcknowledgement(
     api,
   ).finally(() => {
     clearGithubAck(input.requestId);
+    clearGithubRequest(input.requestId);
   });
 
   return deleted.match<ResultType<void, SurfaceIngressAcknowledgementCleanupFailed>>({
@@ -274,7 +279,10 @@ export function createGithubRelayPolicy(
     finalization: {
       isFinalResponseSuperseded: ({ requestId, sessionId }) => {
         const latest = getGithubLatestRequestForSession(sessionId);
-        return latest !== undefined && latest !== requestId;
+        return (
+          getGithubRequestMeta(requestId)?.superseded === true ||
+          (latest !== undefined && latest !== requestId)
+        );
       },
       clearIngressAcknowledgement: (finalizationInput) =>
         clearGithubIngressAcknowledgement(finalizationInput, acknowledgementApi),

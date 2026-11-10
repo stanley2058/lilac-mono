@@ -1,5 +1,5 @@
 import { watch } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -8,7 +8,7 @@ import {
   decodeRemoteRunnerResponseJson,
   type BundledRemoteRunnerRequest,
 } from "@stanley2058/lilac-fs";
-import { Panic } from "better-result";
+import { Panic, Result } from "better-result";
 import { z } from "zod";
 import type { Tool } from "ai";
 
@@ -242,6 +242,73 @@ printf '%s' '{"ok":true,"value":{"variant":"future"}}'
       input: { patchText: "*** Begin Patch\n*** End Patch" },
     };
   }
+
+  it("multiplexes connections and uploads a runner source once per host and hash", async () => {
+    const scriptsDir = path.join(tempDir, "scripts");
+    const argsPath = path.join(tempDir, "args");
+    await mkdir(scriptsDir);
+    const existing = await readFile(sshPath, "utf8");
+    await writeFile(
+      sshPath,
+      existing
+        .replace("set -euo pipefail", `set -euo pipefail\nprintf '%s\\n' "$@" > '${argsPath}'`)
+        .replace(
+          'exec "$@"',
+          `SCRIPT=$(mktemp '${scriptsDir}/script.XXXXXX')\ncat >"$SCRIPT"\nexec "$@" <"$SCRIPT"`,
+        ),
+    );
+    const js = `console.log(JSON.stringify({ marker: '${crypto.randomUUID()}' }));`;
+    const params = {
+      host: "fakehost",
+      cwd: "~",
+      js,
+      input: { op: "fs.glob" as const, denyPaths: [], input: { patterns: ["*"], maxEntries: 1 } },
+      timeoutMs: 5000,
+      maxOutputChars: 1000,
+      decodeResponse: () => Result.ok(null),
+    };
+    expect((await sshExecScriptJson(params)).isOk()).toBe(true);
+    expect((await sshExecScriptJson(params)).isOk()).toBe(true);
+    const scripts = await Promise.all(
+      (await readdir(scriptsDir)).map((name) => readFile(path.join(scriptsDir, name), "utf8")),
+    );
+    const commands = scripts.map((script) => {
+      const encoded = /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(script)![1]!;
+      const fields = JSON.parse(Buffer.from(encoded, "base64").toString()) as string[];
+      return Buffer.from(fields[1]!, "base64").toString();
+    });
+    expect(
+      commands.filter((command) => command.includes(Buffer.from(js).toString("base64"))),
+    ).toHaveLength(1);
+    const args = await readFile(argsPath, "utf8");
+    expect(args).toContain("ControlMaster=auto");
+    expect(args).toContain("ControlPersist=60");
+    expect(args).toContain("ControlPath=");
+  });
+
+  it("does not retry capped FFF output through the bundled runner", async () => {
+    process.env.LILAC_REMOTE_FS_RUNNER_COMMAND = "printf '%0500001d' 0";
+    const callsPath = path.join(tempDir, "ssh-calls");
+    const existing = await readFile(sshPath, "utf8");
+    await writeFile(
+      sshPath,
+      existing.replace(
+        "set -euo pipefail",
+        `set -euo pipefail\nprintf 'call\\n' >> '${callsPath}'`,
+      ),
+    );
+    const result = await remoteGlob({
+      host: "fakehost",
+      cwd: "~",
+      patterns: ["*"],
+      denyPaths: [],
+      fsBackend: "fff",
+    });
+    expect(result.match({ ok: () => "unexpected", err: (error) => error._tag })).toBe(
+      "SshExecutionOutputCappedError",
+    );
+    expect((await readFile(callsPath, "utf8")).trim().split("\n")).toHaveLength(1);
+  });
 
   it("runs large remote commands without passing them as a bash argument", async () => {
     const padding = "x".repeat(200_000);

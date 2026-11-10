@@ -345,6 +345,7 @@ export class McpRegistry implements McpRegistryApi {
   private readonly callSignals = new AsyncLocalStorage<AbortSignal | undefined>();
   private readonly publishedTools = new WeakMap<McpCatalogTool, McpCatalogTool>();
   private readonly definitions = new WeakMap<McpRegistryClient, ListToolsResult>();
+  private readonly recoveryRestartAfter = new Map<string, number>();
   private readonly recoveries = new Map<
     string,
     { controller: AbortController; promise: Promise<void> }
@@ -647,6 +648,7 @@ export class McpRegistry implements McpRegistryApi {
     options: Parameters<NonNullable<McpConvertedTool["execute"]>>[1],
   ) {
     options?.abortSignal?.throwIfAborted();
+    this.startRecovery(handle.serverId);
     const recovery = this.recoveries.get(handle.serverId);
     if (recovery) await this.waitForRecovery(recovery.promise, options?.abortSignal);
     options?.abortSignal?.throwIfAborted();
@@ -696,8 +698,11 @@ export class McpRegistry implements McpRegistryApi {
       entry.status.phase === "configuration"
     )
       return;
+    const now = Date.now();
+    if (now < (this.recoveryRestartAfter.get(serverId) ?? 0)) return;
     const existing = this.recoveries.get(serverId);
     if (existing && !existing.controller.signal.aborted) return;
+    this.recoveryRestartAfter.set(serverId, now + RECOVERY_DEADLINE_MS);
     const controller = new AbortController();
     const promise = this.observeRecovery(serverId, entry, controller.signal);
     this.recoveries.set(serverId, { controller, promise });

@@ -9,6 +9,8 @@ export type GithubRequestMeta = {
   issueNumber: number;
   trigger: ReactionTarget;
   createdAtMs: number;
+  actorLogin?: string;
+  superseded?: boolean;
   pr?: {
     prNumber: number;
     headSha: string;
@@ -39,6 +41,7 @@ export type GithubLatestRequestTransition = {
   sessionId: string;
   requestId: string;
   previousRequestId: string | undefined;
+  previousWasSuperseded?: boolean;
 };
 
 const latestBySession = new Map<string, string>();
@@ -50,8 +53,11 @@ export function setGithubLatestRequestForSession(
   requestId: string,
 ): GithubLatestRequestTransition {
   const previousRequestId = latestBySession.get(sessionId);
+  const previousMeta = previousRequestId ? metaByRequest.get(previousRequestId) : undefined;
+  const previousWasSuperseded = previousMeta?.superseded;
+  if (previousMeta && previousRequestId !== requestId) previousMeta.superseded = true;
   latestBySession.set(sessionId, requestId);
-  return { sessionId, requestId, previousRequestId };
+  return { sessionId, requestId, previousRequestId, previousWasSuperseded };
 }
 
 export function getGithubLatestRequestForSession(sessionId: string): string | undefined {
@@ -64,6 +70,8 @@ export function restoreGithubLatestRequestForSession(
   if (latestBySession.get(transition.sessionId) !== transition.requestId) return false;
 
   if (transition.previousRequestId) {
+    const previousMeta = metaByRequest.get(transition.previousRequestId);
+    if (previousMeta) previousMeta.superseded = transition.previousWasSuperseded;
     latestBySession.set(transition.sessionId, transition.previousRequestId);
   } else {
     latestBySession.delete(transition.sessionId);
@@ -72,7 +80,10 @@ export function restoreGithubLatestRequestForSession(
 }
 
 export function setGithubRequestMeta(meta: GithubRequestMeta) {
-  metaByRequest.set(meta.requestId, meta);
+  metaByRequest.set(meta.requestId, {
+    ...meta,
+    superseded: metaByRequest.get(meta.requestId)?.superseded,
+  });
 }
 
 export function getGithubRequestMeta(requestId: string): GithubRequestMeta | undefined {
@@ -126,4 +137,12 @@ export function rollbackGithubAcknowledgementClaim(claim: GithubAcknowledgementC
   ackByRequest.delete(claim.requestId);
   ackByRequest.set(claim.previousRequestId, claim.acknowledgement);
   return true;
+}
+
+export function clearGithubRequest(requestId: string): void {
+  const meta = metaByRequest.get(requestId);
+  if (meta && latestBySession.get(meta.sessionId) === requestId)
+    latestBySession.delete(meta.sessionId);
+  metaByRequest.delete(requestId);
+  ackByRequest.delete(requestId);
 }
