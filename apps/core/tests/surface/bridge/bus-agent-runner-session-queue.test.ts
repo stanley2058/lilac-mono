@@ -772,6 +772,7 @@ describe("session queue admission", () => {
     const firstStarted = deferred<void>();
     const releaseFirst = deferred<void>();
     const secondModelCall = deferred<number>();
+    const releaseSecond = deferred<void>();
     let agentsCreated = 0;
     let modelCalls = 0;
     // Only the running agent's materialization opens resources, so this gates the steer there.
@@ -805,8 +806,9 @@ describe("session queue admission", () => {
               if (modelCalls === 1) {
                 firstStarted.resolve(undefined);
                 await releaseFirst.promise;
-              } else {
+              } else if (modelCalls === 2) {
                 secondModelCall.resolve(agentsCreated);
+                await releaseSecond.promise;
               }
               return level1TextStep("done");
             },
@@ -846,11 +848,23 @@ describe("session queue admission", () => {
       releaseControl.resolve(undefined);
       await steer;
       await expect(secondModelCall.promise).resolves.toBe(2);
-      await runner.waitForIdle();
+      // The rerouted steer must run inside the session's tracked state, so later work queues behind it.
+      expect(runner.trackedSessionCount()).toBe(1);
+      expect(runner.isSessionBusy(sessionId)).toBe(true);
+      await publishRunnerRequest({
+        bus,
+        requestId: "github:ended-target-control:third",
+        sessionId,
+        text: "third request",
+      });
       expect(modelCalls).toBe(2);
+      releaseSecond.resolve(undefined);
+      await runner.waitForIdle();
+      expect(modelCalls).toBe(3);
     } finally {
       releaseFirst.resolve(undefined);
       releaseControl.resolve(undefined);
+      releaseSecond.resolve(undefined);
       await runner.stop();
       await pluginManager.destroy();
       await bus.close();

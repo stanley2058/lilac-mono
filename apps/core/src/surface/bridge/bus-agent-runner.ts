@@ -2041,7 +2041,7 @@ export async function startBusAgentRunner(params: {
 
             const requestControl = parseRequestControlFromRaw(entry.raw);
 
-            const state = bySession.get(sessionId) ?? createSessionQueue(sessionId);
+            let state = bySession.get(sessionId) ?? createSessionQueue(sessionId);
             bySession.set(sessionId, state);
 
             const logQueueTransition = (input: {
@@ -2352,6 +2352,9 @@ export async function startBusAgentRunner(params: {
             };
             // A control whose run ended while its messages loaded is routed as if it arrived after.
             const routeAfterTargetEnded = async (): Promise<void> => {
+              // The ended run may have evicted this session's state while the control loaded.
+              state = bySession.get(sessionId) ?? createSessionQueue(sessionId);
+              bySession.set(sessionId, state);
               if (state.running) return routeBehindOtherRequest();
               return routeToIdleSession();
             };
