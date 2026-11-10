@@ -165,7 +165,7 @@ async function captureDiscordOutputOperation<T>(
         };
       }
       if (cause instanceof DiscordEmbedEditFailed) {
-        const classified = classifyDiscordSurfaceError(operation, cause.cause, cause.message);
+        const classified = classifyDiscordSurfaceError(operation, cause.cause);
         if (classified) return { kind: "result", result: Result.err(classified) };
         return { kind: "failure", cause };
       }

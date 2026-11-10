@@ -115,6 +115,7 @@ const discordOperationErrorSchema = z
     code: z.number().int().optional(),
     status: z.number().int().optional(),
     retry_after: z.number().nonnegative().optional(),
+    message: z.string().min(1).optional(),
   })
   .loose();
 
@@ -165,7 +166,7 @@ export function captureDiscordSurfaceError(cause: unknown): Error | Panic {
 export function classifyDiscordSurfaceError(
   operation: SurfaceOperation,
   error: unknown,
-  message = "Discord operation failed",
+  messageOverride?: string,
 ): SurfaceOperationError | null {
   if (error instanceof DiscordAdapterUnavailable) {
     return new SurfaceUnavailable({ platform: "discord", operation, message: error.message });
@@ -173,6 +174,7 @@ export function classifyDiscordSurfaceError(
   const parsed = discordOperationErrorSchema.safeParse(error);
   if (!parsed.success) return null;
   const { code, status, retry_after: retryAfterSeconds } = parsed.data;
+  const message = messageOverride ?? parsed.data.message ?? "Discord operation failed";
   if (code === 10_003 || code === 10_008 || status === 404) {
     return new SurfaceMessageNotFound({ platform: "discord", operation, message });
   }

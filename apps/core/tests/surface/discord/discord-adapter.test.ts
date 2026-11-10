@@ -264,6 +264,20 @@ describe("classifyDiscordSurfaceError", () => {
     expect(classified).toMatchObject({ platform: "discord", operation: "send-message" });
   });
 
+  it("keeps the Discord error message", () => {
+    const cause = Object.assign(new Error("Invalid Form Body\nembeds[0].description"), {
+      code: 50_035,
+      status: 400,
+    });
+    expect(classifyDiscordSurfaceError("send-message", cause)).toMatchObject({
+      _tag: "SurfaceInvalidInput",
+      message: "Invalid Form Body\nembeds[0].description",
+    });
+    expect(classifyDiscordSurfaceError("send-message", { status: 503 })).toMatchObject({
+      message: "Discord operation failed",
+    });
+  });
+
   it("classifies adapter availability and leaves unknown defects unclassified", () => {
     expect(
       classifyDiscordSurfaceError(
