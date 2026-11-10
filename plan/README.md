@@ -7,7 +7,10 @@ facts are incorporated into those documents and remain available in Git history.
 
 ## Active
 
-None. Native surface implementation is complete. See [setup and operation](../docs/native-surface.md)
+- [Repository audit fixes (2026-11)](audit-2026-11.md): approved fixes from the November audit, split
+  into lanes A to I.
+
+Native surface implementation is complete. See [setup and operation](../docs/native-surface.md)
 and [verification](../docs/native-surface-verification.md).
 
 Only plans listed under **Active** are repository-wide implementation plans. A task-specific plan is
