@@ -1928,6 +1928,62 @@ it("preserves idle presence when the configured status message changes", async (
   }
 });
 
+describe("DiscordAdapter.deleteMsg", () => {
+  it("deletes by id without reading the message first", async () => {
+    const calls: string[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => {
+              calls.push("fetch");
+              throw new Error("unexpected message read");
+            },
+            delete: async (messageId: string) => {
+              calls.push(`delete:${messageId}`);
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.deleteMsg({
+      platform: "discord",
+      channelId: "c1",
+      messageId: "m1",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(calls).toEqual(["delete:m1"]);
+  });
+
+  it("classifies a missing message", async () => {
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            delete: async () => {
+              throw Object.assign(new Error("Unknown Message"), { code: 10_008, status: 404 });
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.deleteMsg({
+      platform: "discord",
+      channelId: "c1",
+      messageId: "m1",
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected delete failure");
+    expect(result.error).toBeInstanceOf(SurfaceMessageNotFound);
+  });
+});
+
 describe("DiscordAdapter.editMsg", () => {
   it("replaces only the embed description for single-embed bot messages", async () => {
     const editCalls: Array<Record<string, unknown>> = [];
@@ -1970,7 +2026,7 @@ describe("DiscordAdapter.editMsg", () => {
     );
 
     expect(editCalls).toHaveLength(1);
-    expect(fetchCalls).toEqual([{ message: "m1", cache: false, force: true }]);
+    expect(fetchCalls).toEqual([{ message: "m1" }]);
     expect(editCalls[0]?.content).toBeUndefined();
 
     const embeds = editCalls[0]?.embeds as Array<{ toJSON(): Record<string, unknown> }> | undefined;

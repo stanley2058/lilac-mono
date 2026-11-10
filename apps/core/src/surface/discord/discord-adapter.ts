@@ -1764,8 +1764,9 @@ export class DiscordAdapter implements SurfaceAdapter {
       );
     }
 
+    // Gateway updates keep cached messages current, so only a cache miss needs a REST read.
     const messageResult = await captureDiscordOperation("edit-message", () =>
-      channel.messages.fetch({ message: discordRef.messageId, cache: false, force: true }),
+      channel.messages.fetch({ message: discordRef.messageId }),
     );
     const messageError = messageResult.match({ ok: () => null, err: (error) => error });
     if (messageError) return Result.err(messageError);
@@ -1871,7 +1872,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const fetchError = fetched.match({ ok: () => null, err: (error) => error });
     if (fetchError) return Result.err(fetchError);
     const channel = selectResultValue(fetched);
-    if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
+    if (!channel || !("messages" in channel) || !channel.messages?.delete) {
       return Result.err(
         new SurfaceMessageNotFound({
           platform: "discord",
@@ -1881,13 +1882,8 @@ export class DiscordAdapter implements SurfaceAdapter {
       );
     }
 
-    const message = await captureDiscordOperation("delete-message", () =>
-      channel.messages.fetch({ message: discordRef.messageId, cache: false, force: true }),
-    );
-    const messageError = message.match({ ok: () => null, err: (error) => error });
-    if (messageError) return Result.err(messageError);
     const deleted = await captureDiscordOperation("delete-message", () =>
-      selectResultValue(message).delete(),
+      channel.messages.delete(discordRef.messageId),
     );
     return deleted.map(() => undefined);
   }

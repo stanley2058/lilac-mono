@@ -192,6 +192,11 @@ function createDiscordClient(
         if (messageId === "missing") throw { code: 10_008 };
         return messages.get(messageId) ?? createMessage({}, messageId);
       },
+      delete: async (messageId: string) => {
+        if (messageId === "missing") throw { code: 10_008 };
+        log.deletes.push(messageId);
+        messages.delete(messageId);
+      },
     },
   };
 
