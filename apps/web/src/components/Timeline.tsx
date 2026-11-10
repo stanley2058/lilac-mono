@@ -822,6 +822,10 @@ const SlotRow = memo(function SlotRow(props: {
     currentContext.firstTurnPosition === null;
   return (
     <ContextMessage summarized={summarized}>
+      {previousSlotId === undefined && !separated ? (
+        // Turns leave their spacing below, so the first one would touch the sticky header.
+        <div className="h-6 max-workspace:h-4" aria-hidden="true" />
+      ) : null}
       {separated ? <TimestampSeparator at={time} contextStart={contextStart} /> : null}
       <Turn
         slot={slot}
