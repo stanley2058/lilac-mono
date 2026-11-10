@@ -26,9 +26,11 @@ import {
   railItemInView,
   railItems,
   railLayout,
+  railFocusIndex,
+  railPageStart,
   railPreviewChunks,
+  railTrackStart,
   railVisibleCount,
-  railWindowStart,
   slotIndexForPosition,
   windowTimeRange,
   type OutlineSource,
@@ -36,6 +38,7 @@ import {
   type RailItem,
   type RailPreviewChunk,
 } from "../timeline-outline";
+import { readMotionDuration } from "../theme/motion";
 import { useRecentContext } from "./RecentContext";
 import { IconButton } from "./ui";
 
@@ -159,12 +162,21 @@ export type TimelineRailProps = {
   store: NativeThreadStore;
   viewport: HTMLDivElement | null;
   insets: { top: number; bottom: number };
-  /** The first and last turn positions intersecting the reading band. */
-  visibleRange: () => { first: number; last: number } | undefined;
+  /**
+   * The first and last turn positions intersecting the reading band, and the fractional position at
+   * its middle.
+   */
+  visibleRange: () => { first: number; last: number; focus: number } | undefined;
   onSelect: (position: number) => void;
   /** Wheel input the rail forwards to the conversation, which reaches the viewport only as a scroll. */
   onWheel: (event: Pick<WheelEvent, "deltaY">) => void;
 };
+
+/**
+ * A window the reader holds still. Hovering holds it while the pointer stays on the rail; paging holds
+ * it until the conversation scrolls. It is kept by item, so prepending an older page leaves it in place.
+ */
+type RailHold = { anchor: RailAnchor; offset: number; paged: boolean };
 
 export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps) {
   const { items, generation, hasEarlier, loadEarlier, loadingEarlier } = useRailOutline(
@@ -177,10 +189,16 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
   const [railHeight, setRailHeight] = useState(0);
   // Hover is kept by item, so prepending an older outline page leaves it on the same turn.
   const [activeAnchor, setActiveAnchor] = useState<RailAnchor>();
-  // While the pointer rests on the rail the tick window holds still, so ticks never slide under it.
-  const [held, setHeld] = useState(false);
-  const [windowAnchor, setWindowAnchor] = useState<RailAnchor>();
+  const [hold, setHold] = useState<RailHold>();
+  // The followed window, rounded, plus whether ticks continue past each edge. It changes once per item.
+  const [rest, setRest] = useState({ start: 0, top: false, bottom: false });
   const strips = useRef(new Map<string, HTMLSpanElement>());
+  const track = useRef<HTMLSpanElement>(null);
+  const followStart = useRef(0);
+  // The outline the track was last placed for; a different one may number the ticks differently.
+  const placedItems = useRef<readonly RailItem[]>([]);
+  const holdRef = useRef(hold);
+  const glideUntil = useRef(0);
   const pointer = useRef<{ x: number; y: number }>(undefined);
   const recentContext = useRecentContext();
   const contextStart =
@@ -188,33 +206,60 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
 
   const visible = railVisibleCount(railHeight);
   const shown = Math.min(items.length, visible);
-  // The window is remembered by item, so prepending an older outline page leaves it in place.
   const indexOf = useMemo(() => new Map(items.map((item, index) => [item.key, index])), [items]);
-  const previousStart = railAnchorIndex(items, indexOf, windowAnchor);
-  const start =
-    held && previousStart !== undefined
-      ? Math.min(previousStart, items.length - shown)
-      : railWindowStart(previousStart, current, items.length, visible);
-  const startItem = items[start];
-  useEffect(() => {
-    if (startItem)
-      setWindowAnchor((value) => (value?.key === startItem.key ? value : railAnchor(startItem)));
-  }, [startItem]);
+  const holdIndex = hold && railAnchorIndex(items, indexOf, hold.anchor);
+  const heldStart =
+    hold && holdIndex !== undefined
+      ? Math.max(0, Math.min(holdIndex + hold.offset, items.length - shown))
+      : undefined;
+  const center = Math.round(heldStart ?? rest.start);
+  // Strips a page beyond each edge stay mounted, so a paged window slides in instead of popping.
+  const sliceStart = Math.max(0, center - visible);
+  const sliceEnd = Math.min(items.length, center + 2 * visible);
+  useLayoutEffect(() => {
+    holdRef.current = hold;
+  }, [hold]);
+
+  // Changing what the window shows glides it there; reading moves it with the scroll position.
+  const changeHold = useCallback((next: RailHold | undefined) => {
+    glideUntil.current = performance.now() + RAIL_GLIDE_MS;
+    setHold(next);
+  }, []);
 
   const { viewport, visibleRange, onWheel } = props;
-  // Scroll position drives strip highlights through data attributes, so scrolling never rerenders
-  // the strips themselves; only a change of the current turn does.
+  // Scroll position drives the track transform and strip highlights directly, so scrolling rerenders
+  // the rail only when the current item or the rounded window start changes.
   const follow = useCallback(() => {
     const range = visibleRange();
     if (!range) return;
-    for (const item of items.slice(start, start + shown)) {
+    const free = railTrackStart(railFocusIndex(items, range.focus), items.length, visible);
+    followStart.current = free;
+    const start = heldStart ?? free;
+    // A changed outline can renumber the ticks, so the track moves to the new numbering at once.
+    const glide =
+      performance.now() < glideUntil.current &&
+      placedItems.current === items &&
+      readMotionDuration() > 0;
+    if (track.current) placeTrack(track.current, start, visible, glide);
+    placedItems.current = items;
+    for (const item of items.slice(sliceStart, sliceEnd)) {
       const strip = strips.current.get(item.key);
       const next = railItemInView(item, range.first, range.last) ? "true" : "false";
       if (strip && strip.dataset.inView !== next) strip.dataset.inView = next;
     }
     const index = railCurrentIndex(items, range.first);
     setCurrent((value) => (value === index ? value : index));
-  }, [items, visibleRange, start, shown]);
+    const next = {
+      start: Math.round(free),
+      top: free > 0.01,
+      bottom: free < items.length - shown - 0.01,
+    };
+    setRest((value) =>
+      value.start === next.start && value.top === next.top && value.bottom === next.bottom
+        ? value
+        : next,
+    );
+  }, [items, visibleRange, visible, shown, heldStart, sliceStart, sliceEnd]);
 
   useEffect(() => {
     if (!viewport) return;
@@ -222,6 +267,11 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
     const schedule = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(follow);
+    };
+    const scrolled = () => {
+      // Reading on releases a paged window, which glides back to the reading position.
+      if (holdRef.current?.paged) changeHold(undefined);
+      schedule();
     };
     const measure = () => {
       const viewportWidth = viewport.getBoundingClientRect().width;
@@ -242,28 +292,28 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
       schedule();
     };
     measure();
-    viewport.addEventListener("scroll", schedule, { passive: true });
+    viewport.addEventListener("scroll", scrolled, { passive: true });
     const resize = new ResizeObserver(measure);
     resize.observe(viewport);
     const canvas = viewport.querySelector("[data-timeline-canvas]");
     if (canvas) resize.observe(canvas);
     return () => {
       cancelAnimationFrame(frame);
-      viewport.removeEventListener("scroll", schedule);
+      viewport.removeEventListener("scroll", scrolled);
       resize.disconnect();
     };
-  }, [viewport, follow]);
+  }, [viewport, follow, changeHold]);
 
-  // Strips that enter the window or the fisheye mount unhighlighted until the next pass.
+  // Strips that enter the slice or the fisheye mount unhighlighted until the next pass.
   useLayoutEffect(() => {
     follow();
   }, [follow, activeAnchor]);
 
   // Reading back to the start of the outline fetches the next older page.
   useEffect(() => {
-    if (start === 0 && current !== null && current < 4 && hasEarlier && !loadingEarlier)
+    if (rest.start === 0 && current !== null && current < 4 && hasEarlier && !loadingEarlier)
       void loadEarlier();
-  }, [start, current, hasEarlier, loadingEarlier, loadEarlier]);
+  }, [rest.start, current, hasEarlier, loadingEarlier, loadEarlier]);
 
   const activeIndex = railAnchorIndex(items, indexOf, activeAnchor) ?? null;
   const activeItem = activeIndex === null ? undefined : items[activeIndex];
@@ -293,7 +343,7 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
         if (!viewport || event.ctrlKey || event.deltaY === 0) return;
         event.preventDefault();
         // Scrolling from the rail moves the conversation, and the tick window follows it.
-        setHeld(false);
+        if (holdRef.current) changeHold(undefined);
         setActiveAnchor(undefined);
         onWheel(event);
         viewport.scrollBy({ top: event.deltaY * wheelUnit(event.deltaMode, viewport) });
@@ -304,21 +354,42 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
         node.removeEventListener("wheel", wheel);
       };
     },
-    [viewport, onWheel],
+    [viewport, onWheel, changeHold],
   );
 
+  const windowStart = () => heldStart ?? followStart.current;
+  // During a glide the pointer targets the tick under it, not the one arriving there.
+  const displayedStart = () => (track.current ? trackStart(track.current) : windowStart());
   // The hit area reaches 4px past the first and last ticks so edge ticks are easy to hit.
   const pointerIndex = (event: MouseEvent<HTMLElement>) =>
-    railIndexAt(event.clientY - event.currentTarget.getBoundingClientRect().top - 4, start, shown);
+    railIndexAt(
+      event.clientY - event.currentTarget.getBoundingClientRect().top - 4,
+      displayedStart(),
+      shown,
+    );
   const select = (item: RailItem | undefined) => {
     if (!item) return;
     setActiveAnchor(undefined);
+    if (hold) changeHold(undefined);
     props.onSelect(item.position);
+  };
+  const page = (direction: -1 | 1) => {
+    const from = windowStart();
+    if (direction < 0 && from < 0.5 && hasEarlier && !loadingEarlier) void loadEarlier();
+    const anchor = railAnchor(items[railPageStart(from, direction, items.length, visible)]);
+    setActiveAnchor(undefined);
+    if (anchor) changeHold({ anchor, offset: 0, paged: true });
+  };
+  const holdForHover = () => {
+    if (hold) return;
+    const start = followStart.current;
+    const anchor = railAnchor(items[Math.floor(start)]);
+    if (anchor) setHold({ anchor, offset: start - Math.floor(start), paged: false });
   };
   const keyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const move = (index: number) => {
       event.preventDefault();
-      setHeld(false);
+      if (hold && !hold.paged) changeHold(undefined);
       activate(Math.max(0, Math.min(items.length - 1, index)));
     };
     const base = activeIndex ?? current ?? items.length - 1;
@@ -342,13 +413,14 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
 
   if (items.length < RAIL_MIN_ITEMS) return null;
   const strip = layout.hitStripWidth > 0;
-  const previous = current === null ? undefined : items[current - 1];
-  const next = current === null ? undefined : items[current + 1];
+  const start = heldStart ?? rest.start;
   // Keyboard focus can move past the window edge; the card then pins to the nearest tick.
   const activeOffset =
     activeIndex === null ? 0 : Math.max(0, Math.min(shown - 1, activeIndex - start));
-  const fadeTop = start > 0 || !!hasEarlier;
-  const fadeBottom = start + shown < items.length;
+  const fadeTop = (heldStart === undefined ? rest.top : heldStart > 0.01) || !!hasEarlier;
+  const fadeBottom =
+    heldStart === undefined ? rest.bottom : heldStart < items.length - shown - 0.01;
+  const windows = items[0]?.kind === "window";
   return (
     <div
       ref={bindRail}
@@ -374,11 +446,17 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
         }}
         onMouseLeave={() => {
           pointer.current = undefined;
-          setHeld(false);
+          if (hold && !hold.paged) changeHold(undefined);
           activate(null);
         }}
       >
-        <RailStep direction="previous" item={previous} interactive={strip} onSelect={select} />
+        <RailStep
+          direction="previous"
+          label={windows ? "Show earlier conversations" : "Show earlier turns"}
+          disabled={!fadeTop}
+          interactive={strip}
+          onPage={page}
+        />
         <button
           type="button"
           aria-label={railLabel(activeItem)}
@@ -390,7 +468,7 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
           onMouseMove={(event) => {
             const last = pointer.current;
             pointer.current = { x: event.clientX, y: event.clientY };
-            setHeld(true);
+            holdForHover();
             // Heading right toward an open card keeps it, so a diagonal path can reach its rows.
             if (activeItem && last && event.clientX - last.x > Math.abs(event.clientY - last.y))
               return;
@@ -410,26 +488,32 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
           }}
           onKeyDown={keyDown}
         >
-          {items.slice(start, start + shown).map((item, offset) => {
-            const index = start + offset;
-            return (
-              <RailStrip
-                key={item.key}
-                item={item}
-                top={RAIL_ITEM_SPACING * offset + 4}
-                // Strips beyond the fisheye share one tier, so a hover move rerenders only its neighbors.
-                distance={activeIndex === null ? null : Math.min(3, Math.abs(index - activeIndex))}
-                context={
-                  item.kind === "window" &&
-                  contextStart !== null &&
-                  contextStart !== undefined &&
-                  item.window.firstPosition <= contextStart &&
-                  contextStart < item.window.endPosition
-                }
-                strips={strips.current}
-              />
-            );
-          })}
+          <span aria-hidden className="pointer-events-none absolute inset-0 overflow-y-clip">
+            <span ref={track} className="absolute inset-x-0 top-0">
+              {items.slice(sliceStart, sliceEnd).map((item, offset) => {
+                const index = sliceStart + offset;
+                return (
+                  <RailStrip
+                    key={item.key}
+                    item={item}
+                    top={RAIL_ITEM_SPACING * index + 4}
+                    // Strips beyond the fisheye share one tier, so a hover move rerenders only its neighbors.
+                    distance={
+                      activeIndex === null ? null : Math.min(3, Math.abs(index - activeIndex))
+                    }
+                    context={
+                      item.kind === "window" &&
+                      contextStart !== null &&
+                      contextStart !== undefined &&
+                      item.window.firstPosition <= contextStart &&
+                      contextStart < item.window.endPosition
+                    }
+                    strips={strips.current}
+                  />
+                );
+              })}
+            </span>
+          </span>
         </button>
         {activeItem ? (
           <div
@@ -443,11 +527,54 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
             <RailPreview item={activeItem} preview={preview} onSelect={props.onSelect} />
           </div>
         ) : null}
-        <RailStep direction="next" item={next} interactive={strip} onSelect={select} />
+        <RailStep
+          direction="next"
+          label={windows ? "Show later conversations" : "Show later turns"}
+          disabled={!fadeBottom}
+          interactive={strip}
+          onPage={page}
+        />
       </div>
     </div>
   );
 });
+
+/** How long a paged or released window takes to slide to its new range. */
+const RAIL_GLIDE_MS = 220;
+
+function trackTransform(start: number): string {
+  return `translateY(${-start * RAIL_ITEM_SPACING}px)`;
+}
+
+/**
+ * Moves the track to `start`. A glide from farther than one window first jumps to one window away, since
+ * only the ticks a window beyond the destination stay mounted.
+ */
+function placeTrack(node: HTMLElement, start: number, reach: number, glide: boolean) {
+  if (!glide) {
+    node.style.transition = "none";
+    node.style.transform = trackTransform(start);
+    return;
+  }
+  // An interrupted glide continues from where it is painted, not from its old destination.
+  const from = trackStart(node);
+  const near = Math.max(start - reach, Math.min(start + reach, from));
+  if (near !== from) jumpTrack(node, near);
+  node.style.transition = `transform ${RAIL_GLIDE_MS}ms ease-out`;
+  node.style.transform = trackTransform(start);
+}
+
+function jumpTrack(node: HTMLElement, start: number) {
+  node.style.transition = "none";
+  node.style.transform = trackTransform(start);
+  // Reading layout commits the jump, so the next transition starts from it.
+  void node.offsetHeight;
+}
+
+/** The first shown tick as currently painted, including partway through a glide. */
+function trackStart(node: HTMLElement): number {
+  return -new DOMMatrixReadOnly(getComputedStyle(node).transform).m42 / RAIL_ITEM_SPACING;
+}
 
 /** Fades the window's cut edges so more ticks read as continuing past them. */
 function railFade(top: boolean, bottom: boolean): string | undefined {
@@ -464,9 +591,9 @@ function wheelUnit(mode: number, viewport: HTMLElement): number {
 }
 
 /** Edge cards align with their strip instead of centering, so they never leave the rail. */
-function cardOffset(index: number | null, count: number): string {
-  if (index === 0) return "0%";
-  if (index === count - 1) return "-100%";
+function cardOffset(index: number, count: number): string {
+  if (index < 0.5) return "0%";
+  if (index > count - 1.5) return "-100%";
   return "-50%";
 }
 
@@ -522,17 +649,18 @@ const RailStrip = memo(function RailStrip({
 
 function RailStep({
   direction,
-  item,
+  label,
+  disabled,
   interactive,
-  onSelect,
+  onPage,
 }: {
   direction: "previous" | "next";
-  item: RailItem | undefined;
+  label: string;
+  disabled: boolean;
   interactive: boolean;
-  onSelect: (item: RailItem | undefined) => void;
+  onPage: (direction: -1 | 1) => void;
 }) {
   const previous = direction === "previous";
-  const label = previous ? "Previous turn" : "Next turn";
   return (
     <span
       className={cn(
@@ -545,8 +673,8 @@ function RailStep({
         label={label}
         tooltipSide={previous ? "top" : "bottom"}
         className="size-6"
-        disabled={!item}
-        onClick={() => onSelect(item)}
+        disabled={disabled}
+        onClick={() => onPage(previous ? -1 : 1)}
       >
         {previous ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
       </IconButton>

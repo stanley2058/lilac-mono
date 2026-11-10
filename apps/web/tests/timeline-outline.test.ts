@@ -4,9 +4,11 @@ import {
   mergeOutlinePages,
   railCurrentIndex,
   railLayout,
+  railPageStart,
   railIndexAt,
   railVisibleCount,
-  railWindowStart,
+  railTrackStart,
+  railFocusIndex,
   railItemInView,
   railAnchor,
   railAnchorIndex,
@@ -102,7 +104,7 @@ describe("timeline outline", () => {
         150,
         260,
       ),
-    ).toEqual({ first: 11, last: 29 });
+    ).toEqual({ first: 11, last: 29, focus: 12.9 });
   });
 
   test("keeps the rail and its hover strip beside the content", () => {
@@ -124,19 +126,33 @@ describe("timeline outline", () => {
     ]);
   });
 
-  test("scrolls a fixed-spacing tick window only near its edges", () => {
-    expect(railVisibleCount(600)).toBe(64);
+  test("slides a capped tick window with the reading position", () => {
+    expect(railVisibleCount(600)).toBe(9);
     expect(railVisibleCount(80)).toBe(2);
-    // A fresh rail shows the newest ticks.
-    expect(railWindowStart(undefined, null, 300, 64)).toBe(236);
-    // Reading inside the window keeps it still.
-    expect(railWindowStart(236, 260, 300, 64)).toBe(236);
-    // Approaching the top edge scrolls it by the overshoot only.
-    expect(railWindowStart(236, 238, 300, 64)).toBe(234);
-    expect(railWindowStart(236, 10, 300, 64)).toBe(6);
-    expect(railWindowStart(undefined, 3, 40, 64)).toBe(0);
-    expect(railIndexAt(-20, 100, 64)).toBe(100);
-    expect(railIndexAt(19, 100, 64)).toBe(102);
-    expect(railIndexAt(9_999, 100, 64)).toBe(163);
+    const items = railItems({ positions: [0, 1, 2, 5, 9] });
+    expect(railFocusIndex(items, 1.25)).toBe(1.25);
+    // A gap between turns reads as the end of the turn before it.
+    expect(railFocusIndex(items, 3.5)).toBe(3);
+    expect(railFocusIndex(items, 9.5)).toBe(4.5);
+    // The item being read sits in the middle until the window reaches either end.
+    expect(railTrackStart(150.5, 300, 9)).toBe(146);
+    expect(railTrackStart(150.75, 300, 9)).toBe(146.25);
+    expect(railTrackStart(2, 300, 9)).toBe(0);
+    expect(railTrackStart(299.5, 300, 9)).toBe(291);
+    expect(railTrackStart(3, 5, 9)).toBe(0);
+    expect(railIndexAt(-20, 100, 9)).toBe(100);
+    expect(railIndexAt(19, 100, 9)).toBe(102);
+    expect(railIndexAt(9_999, 100, 9)).toBe(108);
+    expect(railIndexAt(0, 3.6, 9)).toBe(4);
+    expect(railIndexAt(9_999, 3.6, 9)).toBe(12);
+  });
+
+  test("pages the tick window with two ticks of overlap", () => {
+    expect(railPageStart(100, -1, 300, 9)).toBe(93);
+    expect(railPageStart(99.6, -1, 300, 9)).toBe(93);
+    expect(railPageStart(100, 1, 300, 9)).toBe(107);
+    expect(railPageStart(3, -1, 300, 9)).toBe(0);
+    expect(railPageStart(288, 1, 300, 9)).toBe(291);
+    expect(railPageStart(0, 1, 6, 9)).toBe(0);
   });
 });

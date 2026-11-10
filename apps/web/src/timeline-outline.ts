@@ -30,6 +30,7 @@ export type RailItem = RailTurn | RailWindow;
 
 export const RAIL_ITEM_SPACING = 8;
 export const RAIL_MIN_ITEMS = 2;
+const RAIL_MAX_ITEMS = 9;
 /** Height kept free above and below the ticks for the step buttons. */
 const RAIL_VERTICAL_RESERVE = 96;
 const RAIL_STRIP_LEFT = 12;
@@ -96,37 +97,46 @@ function railWindow(window: ContextWindowOutline, positions: readonly number[]):
   };
 }
 
-/** Ticks that fit the rail at a fixed spacing; longer outlines scroll through this many. */
+/** Ticks shown at a fixed spacing, up to a cap; longer outlines scroll through this many. */
 export function railVisibleCount(railHeight: number): number {
-  return Math.max(
-    RAIL_MIN_ITEMS,
-    Math.floor((railHeight - RAIL_VERTICAL_RESERVE) / RAIL_ITEM_SPACING) + 1,
-  );
+  const fit = Math.floor((railHeight - RAIL_VERTICAL_RESERVE) / RAIL_ITEM_SPACING) + 1;
+  return Math.max(RAIL_MIN_ITEMS, Math.min(RAIL_MAX_ITEMS, fit));
+}
+
+/** The window start after paging one window minus two overlapping ticks toward older or newer items. */
+export function railPageStart(start: number, direction: -1 | 1, count: number, visible: number) {
+  const step = Math.max(1, visible - 2);
+  const target = Math.round(start) + direction * step;
+  return Math.max(0, Math.min(target, count - Math.min(count, visible)));
 }
 
 /**
- * The first item of the tick window. It moves only when the current item comes within a few ticks
- * of an edge, so the ticks scroll gently while reading instead of recentering on every turn.
+ * The reading position in item units: the index of the item at the viewport's middle plus how far
+ * the middle has read through it. Gaps between outline items count toward the next item.
  */
-export function railWindowStart(
-  previous: number | undefined,
-  current: number | null,
-  count: number,
-  visible: number,
-): number {
-  if (count <= visible) return 0;
-  const last = count - visible;
-  const target = current ?? count - 1;
-  const margin = Math.min(4, Math.floor(visible / 4));
-  let start = Math.max(0, Math.min(previous ?? last, last));
-  if (target < start + margin) start = target - margin;
-  if (target > start + visible - 1 - margin) start = target - (visible - 1 - margin);
-  return Math.max(0, Math.min(start, last));
+export function railFocusIndex(items: readonly RailItem[], focus: number): number {
+  const index = railCurrentIndex(items, Math.floor(focus));
+  if (index === null) return 0;
+  const item = items[index]!;
+  const start = item.kind === "turn" ? item.position : item.window.firstPosition;
+  const span = Math.max(1, railItemEnd(item) - start);
+  return index + Math.max(0, Math.min(1, (focus - start) / span));
 }
 
-/** The item under a pointer `offset` pixels below the first shown tick. */
+/**
+ * The first shown tick as a fractional index, so the ticks slide with the conversation. The item at the
+ * reading position stays in the middle of the window until the window reaches either end.
+ */
+export function railTrackStart(focusIndex: number, count: number, visible: number): number {
+  const start = focusIndex - 0.5 - (Math.min(count, visible) - 1) / 2;
+  return Math.max(0, Math.min(start, count - Math.min(count, visible)));
+}
+
+/** The item under a pointer `offset` pixels below the window top, for a fractional window `start`. */
 export function railIndexAt(offset: number, start: number, shown: number): number {
-  return start + Math.max(0, Math.min(shown - 1, Math.round(offset / RAIL_ITEM_SPACING)));
+  const first = Math.ceil(start - 0.5);
+  const index = Math.round(offset / RAIL_ITEM_SPACING + start);
+  return Math.max(first, Math.min(first + shown - 1, index));
 }
 
 export function railItemEnd(item: RailItem): number {
@@ -237,19 +247,26 @@ export function visiblePositions(
   rows: readonly { start: number; end: number; slot: TurnSlot | undefined }[],
   top: number,
   bottom: number,
-): { first: number; last: number } | undefined {
+): { first: number; last: number; focus: number } | undefined {
+  const middle = (top + bottom) / 2;
   let first: number | undefined;
   let last: number | undefined;
+  let focus: number | undefined;
   for (const row of rows) {
     const slot = row.slot;
-    if (!slot || row.end <= top || row.start >= bottom) continue;
+    if (!slot) continue;
+    const span = slot.kind === "ready" ? 1 : slot.endPosition - slot.position;
+    const read = (middle - row.start) / Math.max(1, row.end - row.start);
+    if (row.start <= middle) focus = slot.position + span * Math.max(0, Math.min(1, read));
+    else focus ??= slot.position;
+    if (row.end <= top || row.start >= bottom) continue;
     const start = slot.position;
     const end = slot.kind === "ready" ? slot.position : slot.endPosition - 1;
     first = first === undefined ? start : Math.min(first, start);
     last = last === undefined ? end : Math.max(last, end);
   }
   if (first === undefined || last === undefined) return undefined;
-  return { first, last };
+  return { first, last, focus: focus ?? first };
 }
 
 /** The index of the slot holding a turn position, by binary search over ordered slots. */
