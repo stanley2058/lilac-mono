@@ -1388,15 +1388,23 @@ describe("SqliteTranscriptStore", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("classifies retention SQLite failures and rolls back the saved transcript", async () => {
+  it("keeps the saved transcript when retention pruning fails", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-retention-save-rollback-"));
     const dbPath = path.join(dir, "transcripts.db");
-    const store = new SqliteTranscriptStore(dbPath, undefined, undefined, {
-      retention: {
-        maxAgeMs: { kind: "unlimited" },
-        maxRequests: { kind: "bounded", value: 1 },
+    const lifecycle: Array<{ event: string; detail: unknown }> = [];
+    const store = new SqliteTranscriptStore(
+      dbPath,
+      (_level, event, detail) => {
+        lifecycle.push({ event, detail });
       },
-    });
+      undefined,
+      {
+        retention: {
+          maxAgeMs: { kind: "unlimited" },
+          maxRequests: { kind: "bounded", value: 1 },
+        },
+      },
+    );
     resultValue(
       store.saveRequestTranscript({
         requestId: "retained-before-failure",
@@ -1423,24 +1431,29 @@ describe("SqliteTranscriptStore", () => {
       messages: [{ role: "user", content: "second" }],
     });
 
-    expect(saved.status).toBe("error");
-    if (saved.status === "error") {
-      expect(saved.error).toBeInstanceOf(TranscriptStoreSqliteDriverFailure);
-      if (TranscriptStoreSqliteDriverFailure.is(saved.error)) {
-        expect(saved.error.operation).toBe("save-request-transcript");
-      }
-    }
+    expect(saved.status).toBe("ok");
     expect(raw.query("SELECT * FROM retention_save_probe").all()).toEqual([]);
     expect(
-      raw.query<{ request_id: string }, []>("SELECT request_id FROM request_transcripts").all(),
-    ).toEqual([{ request_id: "retained-before-failure" }]);
+      raw
+        .query<{ request_id: string }, []>(
+          "SELECT request_id FROM request_transcripts ORDER BY request_id",
+        )
+        .all(),
+    ).toEqual([
+      { request_id: "retained-before-failure" },
+      { request_id: "rolled-back-after-failure" },
+    ]);
+    expect(lifecycle).toContainEqual({
+      event: "transcript retention prune failed",
+      detail: expect.objectContaining({ operation: "prune-retention" }),
+    });
 
     raw.close();
     store.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("preserves retention Panic identity and rolls back the saved transcript", async () => {
+  it("preserves retention Panic identity after the saved transcript commits", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-retention-save-panic-"));
     const dbPath = path.join(dir, "transcripts.db");
     const retentionPanic = new Panic({ message: "retention policy invariant failed" });
@@ -1459,7 +1472,9 @@ describe("SqliteTranscriptStore", () => {
       }),
     ).toThrow(retentionPanic);
     const raw = new Database(dbPath);
-    expect(raw.query("SELECT * FROM request_transcripts").all()).toEqual([]);
+    expect(raw.query("SELECT request_id FROM request_transcripts").all()).toEqual([
+      { request_id: "rolled-back-after-panic" },
+    ]);
 
     raw.close();
     store.close();
@@ -1825,6 +1840,7 @@ describe("SqliteTranscriptStore", () => {
     original.close();
     const legacy = new Database(dbPath);
     legacy.run("DROP TRIGGER delete_transcript_surface_aliases");
+    legacy.run("DROP INDEX IF EXISTS idx_surface_message_to_request_deleted");
     legacy.run("ALTER TABLE surface_message_to_request DROP COLUMN deleted_ts");
     legacy.run("ALTER TABLE core_resources DROP COLUMN image_preview_json");
     legacy.run("DROP TABLE core_native_transcript_refs");
@@ -3031,6 +3047,7 @@ describe("SqliteTranscriptStore", () => {
     store.close();
     const schema7 = new Database(dbPath);
     schema7.run("DROP TRIGGER delete_transcript_surface_aliases");
+    schema7.run("DROP INDEX IF EXISTS idx_surface_message_to_request_deleted");
     schema7.run("ALTER TABLE surface_message_to_request DROP COLUMN deleted_ts");
     schema7.run("DROP TABLE core_agent_run_checkpoint_blobs");
     schema7.run("DROP TABLE core_transcript_blob_refs");

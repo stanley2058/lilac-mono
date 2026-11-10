@@ -430,6 +430,13 @@ Claude continuation bindings are reverified against retained canonical transcrip
 Unverifiable bindings are retired and continuation starts fresh. Existing transcripts do not acquire
 guessed bindings. Corrupt historical rows can block migration rather than receive invented digests.
 
+Startup creates three retention indexes when missing: `idx_request_transcripts_updated`,
+`idx_request_transcripts_checkpoint_candidates`, and `idx_surface_message_to_request_deleted`. They
+leave schema 14 unchanged, and older builds ignore them. The first start on a large database spends
+time building them. Retention pruning now runs in its own transaction after each save, so a pruning
+failure logs `transcript retention prune failed` and keeps the saved transcript. To restore an exact
+pre-upgrade schema, drop the three indexes; an older binary does not need that.
+
 ### Accepted work and agent-run checkpoints
 
 Core adds `agent_run_wal_metadata`, `agent_run_wal_events`, and `agent_run_wal_heads` to

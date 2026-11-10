@@ -3183,6 +3183,7 @@ const CORE_SQLITE_TRANSACTION_CONSUMERS = [
     exportName: "SqliteTranscriptStore.saveRequestTranscript",
   },
   ...[
+    "SqliteTranscriptStore.pruneRetentionAfterSave",
     "SqliteTranscriptStore.admitCoreSurfaceProjection",
     "SqliteTranscriptStore.saveCorePrimaryLineageManifest",
     "SqliteTranscriptStore.unlinkSurfaceMessage",

@@ -326,6 +326,7 @@ describe("Core resource SQLite store", () => {
 
     const schema6 = new Database(dbPath);
     schema6.run("DROP TRIGGER delete_transcript_surface_aliases");
+    schema6.run("DROP INDEX IF EXISTS idx_surface_message_to_request_deleted");
     schema6.run("ALTER TABLE surface_message_to_request DROP COLUMN deleted_ts");
     schema6.run("DROP TABLE core_agent_run_checkpoint_blobs");
     schema6.run("DROP TABLE core_transcript_blob_refs");

@@ -1999,6 +1999,19 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
           [14, Date.now()],
         );
       }
+      // Retention pruning filters by age; without these indexes it scans every transcript row.
+      this.db.run(`
+        CREATE INDEX IF NOT EXISTS idx_request_transcripts_updated
+        ON request_transcripts(updated_ts)
+      `);
+      this.db.run(`
+        CREATE INDEX IF NOT EXISTS idx_request_transcripts_checkpoint_candidates
+        ON request_transcripts(updated_ts) WHERE context_meta_json IS NOT NULL
+      `);
+      this.db.run(`
+        CREATE INDEX IF NOT EXISTS idx_surface_message_to_request_deleted
+        ON surface_message_to_request(deleted_ts) WHERE deleted_ts IS NOT NULL
+      `);
       const foreignKeyFailures = this.db
         .query<DecodedTranscriptForeignKeyFailureRow, []>("PRAGMA foreign_key_check")
         .all()
@@ -2216,7 +2229,7 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
             });
             if (lineageDecision.kind === "error") return Result.err(lineageDecision.error);
           }
-          return Result.ok(this.pruneRetention(now));
+          return Result.ok([]);
         };
 
         const digestRetained = this.db
@@ -2289,10 +2302,33 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
       err: (error) => () => Result.err(error),
       ok: (events) => () => {
         this.emitDeferredTranscriptEvents(events);
+        this.pruneRetentionAfterSave(now).match({
+          ok: (pruned) => this.emitDeferredTranscriptEvents(pruned),
+          err: (error) =>
+            this.emitLifecycleDiagnostic("warn", "transcript retention prune failed", {
+              operation: error.operation,
+              code: error.code,
+            }),
+        });
         return Result.ok(undefined);
       },
     });
     return finish();
+  }
+
+  /** Prunes in its own transaction so retention work never holds or fails a transcript save. */
+  private pruneRetentionAfterSave(
+    now: number,
+  ): ResultType<readonly DeferredTranscriptEvent[], TranscriptStoreSqliteDriverFailure> {
+    return runBunSqliteTransaction<
+      readonly DeferredTranscriptEvent[],
+      never,
+      TranscriptStoreSqliteDriverFailure
+    >(
+      this.db,
+      () => Result.ok(this.pruneRetention(now)),
+      (cause) => classifyTranscriptSqliteDriverFailure("prune-retention", cause),
+    );
   }
 
   registerOrGet(inputValue: {
