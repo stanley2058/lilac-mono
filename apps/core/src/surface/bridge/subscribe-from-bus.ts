@@ -42,6 +42,7 @@ import { parseRequestControlFromRaw } from "./bus-agent-runner/raw";
 import { isPossibleNoReplyPrefix, resolveReplyDeliveryFromFinalText } from "./reply-directive";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
+import { consumerId } from "../../shared/event-bus-consumer";
 import { adaptEventPublishResultToHost } from "../../shared/event-bus-result";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import { formatBridgeTaggedErrorForLog } from "./bridge-log";
@@ -409,10 +410,6 @@ async function stopResultSubscription(subscription: ResultSubscription): Promise
   adaptBusToAdapterSubscriptionStop(await subscription.stop());
 }
 
-function getConsumerId(prefix: string): string {
-  return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
-}
-
 function scheduleTimeout(callback: () => void, delayMs: number): () => void {
   const timeout = setTimeout(callback, delayMs);
   return () => clearTimeout(timeout);
@@ -542,7 +539,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     {
       mode: "fanout",
       subscriptionId: `${subscriptionId}:cmd_request`,
-      consumerId: getConsumerId(`${subscriptionId}:cmd_request`),
+      consumerId: consumerId(`${subscriptionId}:cmd_request`),
       batch: { maxWaitMs: 1000 },
     },
     async (msg): Promise<ResultType<void, CmdRequestDeliveryError>> => {
@@ -633,7 +630,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     {
       mode: "fanout",
       subscriptionId: `${subscriptionId}:cmd_surface`,
-      consumerId: getConsumerId(`${subscriptionId}:cmd_surface`),
+      consumerId: consumerId(`${subscriptionId}:cmd_surface`),
       batch: { maxWaitMs: 1000 },
     },
     async (msg): Promise<ResultType<void, CmdSurfaceDeliveryError>> => {
@@ -743,7 +740,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     {
       mode: "fanout",
       subscriptionId,
-      consumerId: getConsumerId(subscriptionId),
+      consumerId: consumerId(subscriptionId),
       batch: { maxWaitMs: 1000 },
     },
     async (msg): Promise<ResultType<void, EvtRequestDeliveryError>> => {

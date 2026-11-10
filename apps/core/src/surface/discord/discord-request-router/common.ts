@@ -229,10 +229,6 @@ export function shouldRunDirectReplyMentionGate(input: {
   return hasNonSelfMentionToken({ text: input.text, botNames: input.botNames });
 }
 
-export function consumerId(prefix: string): string {
-  return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
-}
-
 export function randomRequestId(): string {
   return formatGenericRequestId();
 }

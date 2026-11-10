@@ -29,7 +29,9 @@ import {
 import { createCoreClaudeComposition } from "../../agent/claude-composition";
 /* oxlint-disable eslint/no-control-regex */
 
+import { createFreshOnlyLineage } from "../../shared/core-primary-lineage";
 import { captureError } from "../../shared/error-capture";
+import { consumerId } from "../../shared/event-bus-consumer";
 
 import {
   type CallWarning,
@@ -76,7 +78,6 @@ import {
 } from "@stanley2058/lilac-utils";
 import {
   corePrimaryLineageV2Schema,
-  createCorePrimaryLineageFreshOnlyV2,
   decodeCorePrimaryLineageV2,
   EventDeliveryStopped,
   extendCoreLineagePrefixDigestV2,
@@ -369,10 +370,6 @@ export function resolveCoreStableNamedContinuation(input: {
 export { shouldUsePersistentCoreClaudeRuntime } from "../../agent/claude-composition";
 
 export { resolveStoredResourceProviderTarget } from "../../agent/agent-composition";
-
-function consumerId(prefix: string): string {
-  return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
-}
 
 export function rethrowBusAgentRunnerPanic(
   cause: unknown,
@@ -836,10 +833,11 @@ function estimateTokensFromValue(value: unknown): number {
 }
 
 // Tool results are immutable once produced, so each one is stringified for its estimate once.
-const toolOutputTokenEstimates = new WeakMap<object, number>();
+type ToolResultOutput = Extract<ToolContent[number], { type: "tool-result" }>["output"];
 
-function estimateToolOutputTokens(output: unknown): number {
-  if (typeof output !== "object" || output === null) return estimateTokensFromValue(output);
+const toolOutputTokenEstimates = new WeakMap<ToolResultOutput, number>();
+
+function estimateToolOutputTokens(output: ToolResultOutput): number {
   const cached = toolOutputTokenEstimates.get(output);
   if (cached !== undefined) return cached;
   const estimate = estimateTokensFromValue(output);
@@ -2040,20 +2038,6 @@ export type BusAgentRunnerRequestDelivery = Pick<
   >,
   "handleDelivery" | "replaceAcceptedWork" | "terminalize"
 >;
-
-function createFreshOnlyLineage(reason: string, currentCanonicalStart = 0): CorePrimaryLineageV2 {
-  const created = createCorePrimaryLineageFreshOnlyV2(reason, currentCanonicalStart);
-  const selectLineage = created.match<() => CorePrimaryLineageV2>({
-    ok: (lineage) => () => lineage,
-    err: () => () => ({
-      state: "fresh-only",
-      lineageVersion: 2,
-      currentCanonicalStart: 0,
-      reason: "lineage-fallback-construction-failed",
-    }),
-  });
-  return selectLineage();
-}
 
 export function validateCorePrimaryLineageAtRunnerIntake(input: {
   requestClient: AdapterPlatform;
