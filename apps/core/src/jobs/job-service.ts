@@ -150,6 +150,7 @@ export class JobService {
   readonly #wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #wakeRetries = new Map<string, number>();
   readonly #wakeRetryDelaysMs: readonly number[];
+  readonly #maxOutputBytes: number;
   #wakePort: JobWakePort | null = null;
   #isSessionBusy: (sessionId: string) => boolean = () => false;
   #closing = false;
@@ -159,8 +160,10 @@ export class JobService {
     readonly logDir: string;
     readonly now?: () => number;
     readonly wakeRetryDelaysMs?: readonly number[];
+    readonly maxOutputBytes?: number;
   }) {
     this.#wakeRetryDelaysMs = input.wakeRetryDelaysMs ?? JOB_LIMITS.wakeRetryDelaysMs;
+    this.#maxOutputBytes = input.maxOutputBytes ?? JOB_LIMITS.maxOutputBytes;
     this.#store = input.store;
     this.#logDir = input.logDir;
     this.#now = input.now ?? Date.now;
@@ -649,9 +652,10 @@ export class JobService {
   }): Promise<void> {
     const { stream, literalSecrets, logHandle, capture } = input;
     const sanitizer = createBashOutputSanitizer(literalSecrets);
+    const maxOutputBytes = this.#maxOutputBytes;
     const append = async (text: string) => {
       const bytes = Buffer.from(text, "utf8");
-      const remaining = JOB_LIMITS.maxOutputBytes - capture.bytes;
+      const remaining = maxOutputBytes - capture.bytes;
       // Output past the cap is still drained, because a full pipe would stall the job.
       if (remaining <= 0) {
         capture.truncated ||= bytes.byteLength > 0;

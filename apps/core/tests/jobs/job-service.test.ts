@@ -170,14 +170,17 @@ describe("JobService", () => {
   });
 
   it("caps captured output and keeps the job running to completion", async () => {
+    const maxOutputBytes = 64 * 1024;
+    const capped = new JobService({ store, logDir: path.join(dir, "logs"), maxOutputBytes });
+    services.push(capped);
     const job = ok<JobRecord>(
-      await start(service, `head -c ${JOB_LIMITS.maxOutputBytes + 1024} /dev/zero | tr '\\0' 'x'`),
+      await start(capped, `head -c ${maxOutputBytes + 1024} /dev/zero | tr '\\0' 'x'`),
     );
-    const ended = await untilEnded(service, job.jobId);
+    const ended = await untilEnded(capped, job.jobId);
     expect(ended.status).toBe("exited");
     expect(ended.outputTruncated).toBe(true);
-    expect(ended.outputBytes).toBe(JOB_LIMITS.maxOutputBytes);
-  }, 30_000);
+    expect(ended.outputBytes).toBe(maxOutputBytes);
+  });
 
   it("stops a job on request without leaving an event for the agent", async () => {
     const job = ok<JobRecord>(await start(service, "sleep 60", { mode: "service" }));
