@@ -176,6 +176,14 @@ function trimMap<T>(map: Map<string, T>, limit: number): void {
     map.delete(key);
   }
 }
+function trimScope<T>(map: Map<string, T>, scopeKey: string, limit: number): void {
+  const prefix = JSON.stringify([scopeKey]).slice(0, -1);
+  const keys = [...map.keys()].filter((key) => key.startsWith(prefix));
+  for (const key of keys.slice(0, Math.max(0, keys.length - limit))) map.delete(key);
+}
+function draftIsEmpty(draft: WebDraft): boolean {
+  return !draft.text.trim() && !draft.skillIds.length && !draft.commandId && !draft.savedText;
+}
 
 export class WebNativeCache implements NativeCache {
   private readonly memory = new MemoryNativeCache();
@@ -554,25 +562,31 @@ export class WebNativeCache implements NativeCache {
       ...(draft.modelId === undefined ? {} : { modelId: draft.modelId }),
     };
     const key = threadKey(scope, threadId);
+    const scopeKey = cacheScopeKey(scope);
     this.drafts.delete(key);
+    // An empty draft reads back the same as a missing row, so it frees its slot under the cap.
+    if (draftIsEmpty(value)) {
+      await this.attempt(async (db) => {
+        const tx = db.transaction("drafts", "readwrite");
+        const done = completed(tx);
+        tx.objectStore("drafts").delete(key);
+        await assertCommitted(done);
+      });
+      return;
+    }
     this.drafts.set(key, value);
-    trimMap(this.drafts, this.maxThreads);
+    trimScope(this.drafts, scopeKey, this.maxThreads);
     await this.attempt(async (db) => {
       const tx = db.transaction("drafts", "readwrite");
       const done = completed(tx);
       const store = tx.objectStore("drafts");
-      store.put({
-        key,
-        scopeKey: cacheScopeKey(scope),
-        ...value,
-        updatedAt: Date.now(),
-      });
-      const count = await idbRequest(store.count());
+      store.put({ key, scopeKey, ...value, updatedAt: Date.now() });
+      const count = await idbRequest(store.index("scope").count(scopeKey));
       if (typeof count === "number" && count <= this.maxThreads) {
         await assertCommitted(done);
         return;
       }
-      const all = await idbRequest(store.getAll());
+      const all = await idbRequest(store.index("scope").getAll(scopeKey));
       const rows = Array.isArray(all)
         ? all
             .map(decodeDraftRow)
@@ -596,7 +610,7 @@ export class WebNativeCache implements NativeCache {
       return decodeDraft(row);
     });
     if (epoch !== this.epoch) return { text: "", skillIds: [] };
-    if (value !== undefined) this.drafts.set(key, value);
+    if (value !== undefined && !draftIsEmpty(value)) this.drafts.set(key, value);
     return value ? structuredClone(value) : { text: "", skillIds: [] };
   }
   async listLocalDrafts(scope: CacheScope): Promise<{ threadId: string; draft: WebDraft }[]> {

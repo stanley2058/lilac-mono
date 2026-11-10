@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBFactory, IDBIndex, IDBObjectStore } from "fake-indexeddb";
 import type { CachePatch, CacheScope } from "@stanley2058/lilac-client";
 import type { BootstrapReply } from "@stanley2058/lilac-client-protocol";
 import { WebNativeCache } from "../src/cache";
@@ -338,7 +338,7 @@ test("local draft discovery ignores malformed keys and forged scope indexes", as
 test("draft writes avoid reading all draft bodies until the storage cap requires eviction", async () => {
   const factory = new IDBFactory();
   const first = cache(factory, { maxThreads: 2 });
-  const getAll = spyOn(IDBObjectStore.prototype, "getAll");
+  const getAll = spyOn(IDBIndex.prototype, "getAll");
   await first.saveDraft(scope, "draft:first", { text: "First", skillIds: [] });
   await first.saveDraft(scope, "draft:second", { text: "Second", skillIds: [] });
   await first.saveDraft(scope, "draft:first", { text: "First edited", skillIds: [] });
@@ -365,4 +365,58 @@ test("revoking a parent removes persisted child streams across cache instances a
   expect(await second.read(scope, "thread")).toBeUndefined();
   expect(await second.read(scope, child)).toBeUndefined();
   expect(await second.read(otherScope, child)).toBeDefined();
+});
+
+async function draftRowKeys(factory: IDBFactory): Promise<string[]> {
+  const raw = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = factory.open("lilac-native-v1", 1);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
+    const request = raw.transaction("drafts", "readonly").objectStore("drafts").getAllKeys();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  raw.close();
+  return keys.map((key) => JSON.parse(String(key))[1] as string).sort();
+}
+
+test("clearing a draft deletes its row so empty drafts never evict real ones", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory, { maxThreads: 2 });
+  await first.saveDraft(scope, "kept", { text: "Keep me", skillIds: [] });
+  await first.saveDraft(scope, "question", { text: "Typed answer", skillIds: [] });
+  await first.saveDraft(scope, "question", { text: "", skillIds: [] });
+  await first.saveDraft(scope, "cleared", { text: "  ", skillIds: [] });
+  await first.saveDraft(scope, "newer", { text: "Newer", skillIds: [] });
+  first.close();
+  expect(await draftRowKeys(factory)).toEqual(["kept", "newer"]);
+  const reopened = cache(factory, { maxThreads: 2 });
+  expect((await reopened.readDraft(scope, "kept")).text).toBe("Keep me");
+  expect((await reopened.readDraft(scope, "question")).text).toBe("");
+});
+
+test("draft eviction counts each principal separately", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory, { maxThreads: 2 });
+  const other = { ...scope, principalId: "other" };
+  await first.saveDraft(scope, "draft:mine-1", { text: "Mine 1", skillIds: [] });
+  await first.saveDraft(scope, "draft:mine-2", { text: "Mine 2", skillIds: [] });
+  await first.saveDraft(other, "draft:theirs-1", { text: "Theirs 1", skillIds: [] });
+  await first.saveDraft(other, "draft:theirs-2", { text: "Theirs 2", skillIds: [] });
+  first.close();
+  const reopened = cache(factory, { maxThreads: 2 });
+  expect((await reopened.listLocalDrafts(scope)).map((entry) => entry.threadId).sort()).toEqual([
+    "draft:mine-1",
+    "draft:mine-2",
+  ]);
+});
+
+test("in-memory drafts are capped per principal when IndexedDB is unavailable", async () => {
+  const first = cache(null, { maxThreads: 1 });
+  const other = { ...scope, principalId: "other" };
+  await first.saveDraft(scope, "draft:mine", { text: "Mine", skillIds: [] });
+  await first.saveDraft(other, "draft:theirs", { text: "Theirs", skillIds: [] });
+  expect((await first.readDraft(scope, "draft:mine")).text).toBe("Mine");
 });
