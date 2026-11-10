@@ -73,19 +73,21 @@ const run = async () => {
   }
   committed = true;
 };
-await run().catch(async (failure) => {
-  if (!committed) {
-    for (const file of staged.toReversed()) {
-      if (file.published && file.previous !== undefined) {
-        await fs.writeFile(file.temporary, file.previous, { mode: file.mode });
-        await fs.chmod(file.temporary, file.mode);
-        await fs.chown(file.temporary, 1000, 1000);
-        await fs.rename(file.temporary, file.filename);
-      }
-      if (file.published && file.previous === undefined) await fs.rm(file.filename, { force: true });
-      await fs.rm(file.temporary, { force: true });
-    }
+const restorePrevious = async (file) => {
+  await fs.writeFile(file.temporary, file.previous, { mode: file.mode });
+  await fs.chmod(file.temporary, file.mode);
+  await fs.chown(file.temporary, 1000, 1000);
+  await fs.rename(file.temporary, file.filename);
+};
+const rollback = async () => {
+  for (const file of staged.toReversed()) {
+    if (file.published && file.previous !== undefined) await restorePrevious(file);
+    if (file.published && file.previous === undefined) await fs.rm(file.filename, { force: true });
+    await fs.rm(file.temporary, { force: true });
   }
+};
+await run().catch(async (failure) => {
+  if (!committed) await rollback();
   if (request.action === "read" && failure?.code === "ENOENT") {
     process.exitCode = 44;
     return;

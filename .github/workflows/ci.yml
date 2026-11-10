@@ -95,7 +95,7 @@ jobs:
           bun-version-file: package.json
       - name: Install dependencies
         run: bun install --frozen-lockfile
-      - name: Build runner image
-        run: docker build -t lilac-computer:local packages/computer-use-runner
+      - name: Build runner and gateway images
+        run: bun run docker:build:computer-use
       - name: Test Docker lifecycle
         run: bun run test:computer-use:docker

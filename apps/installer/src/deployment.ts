@@ -648,13 +648,14 @@ export async function writeInstallation(
       }),
     async () => {
       const restored = [];
-      for (const file of committed.toReversed()) {
+      // After a successful install the backups are leftovers, so their removal failures are cleanup
+      // errors rather than a request to restore them.
+      for (const file of installed ? committed : []) {
+        if (file.backup) unusedBackups.add(file.backup);
+      }
+      for (const file of installed ? [] : committed.toReversed()) {
         const result = await Result.tryPromise({
           try: async () => {
-            if (installed) {
-              if (file.backup) await rm(file.backup, { force: true });
-              return;
-            }
             if (file.backup) {
               await rename(file.backup, file.filename);
               return;
