@@ -1406,38 +1406,70 @@ describe("attachment finalization", () => {
     expect(replyWithFiles.length).toBe(0);
   });
 
+  const MIB = 1024 * 1024;
+  const sizedAttachment = (index: number, mib: number): SurfaceAttachment => ({
+    ...makeAttachment(index),
+    bytes: new Uint8Array(mib * MIB),
+  });
+  const finishWithAttachments = async (tier: number | undefined, sizesMib: readonly number[]) => {
+    const { client, operations } = createFakeDiscordClient({ guildPremiumTier: tier });
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      outputPreviewModeFinalStyle: "plain",
+      outputPreviewModeFinalText: "reply-chain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "files" });
+    for (const [index, mib] of sizesMib.entries()) {
+      await out.push({ type: "attachment.add", attachment: sizedAttachment(index, mib) });
+    }
+    const result = resultValue(await out.finish());
+    const finalOps = operations.filter((op) =>
+      result.created.some((ref) => ref.messageId === op.messageId),
+    );
+    return {
+      uploads: finalOps.filter((op) => hasFiles(op.options)).map((op) => filesCount(op.options)),
+      contents: finalOps.flatMap((op) => contentFromOptions(op.options) ?? []),
+    };
+  };
+
   it.each([
-    [undefined, [2, 1]],
-    [2, [3]],
+    ["a DM", undefined],
+    ["a tier 2 guild", 2],
+    ["a tier 3 guild", 3],
+  ] as const)("keeps each upload request within the request byte budget in %s", async (_, tier) => {
+    const { uploads } = await finishWithAttachments(tier, [12, 12, 12]);
+    expect(uploads).toEqual([2, 1]);
+  });
+
+  it.each([
+    ["a tier 2 guild", 2, [40, 12]],
+    ["a tier 3 guild", 3, [90, 12]],
   ] as const)(
-    "batches attachment uploads by the guild byte limit (tier %p)",
-    async (tier, expected) => {
-      const { client, operations } = createFakeDiscordClient({ guildPremiumTier: tier });
-      const out = new DiscordOutputStream({
-        client,
-        sessionRef: { platform: "discord", channelId: "chan" },
-        useSmartSplitting: false,
-        outputMode: "preview",
-        outputPreviewModeFinalStyle: "plain",
-        outputPreviewModeFinalText: "reply-chain",
-        reasoningDisplayMode: "none",
-        workingIndicators: ["Working"],
-      });
+    "sends a file over the request budget alone when %s allows its size",
+    async (_, tier, sizesMib) => {
+      const { uploads, contents } = await finishWithAttachments(tier, sizesMib);
+      expect(uploads).toEqual([1, 1]);
+      expect(contents.some((content) => content.includes("Skipped attachment"))).toBe(false);
+    },
+  );
 
-      await out.push({ type: "text.delta", delta: "files" });
-      for (let i = 0; i < 3; i++) {
-        await out.push({
-          type: "attachment.add",
-          attachment: { ...makeAttachment(i), bytes: new Uint8Array(4 * 1024 * 1024) },
-        });
-      }
-      const result = resultValue(await out.finish());
-
-      const uploads = operations.filter(
-        (op) =>
-          hasFiles(op.options) && result.created.some((ref) => ref.messageId === op.messageId),
+  it.each([
+    ["a DM", undefined, 21, "20 MiB"],
+    ["a tier 2 guild", 2, 51, "50 MiB"],
+  ] as const)(
+    "skips a file over the per-file limit in %s with a notice",
+    async (_, tier, mib, limit) => {
+      const { uploads, contents } = await finishWithAttachments(tier, [mib, 1]);
+      expect(uploads).toEqual([1]);
+      expect(contents).toContain(
+        `Skipped attachment \`image-0.png\` (${mib} MiB): over the ${limit} Discord upload limit for this channel.`,
       );
-      expect(uploads.map((op) => filesCount(op.options))).toEqual([...expected]);
     },
   );
 
