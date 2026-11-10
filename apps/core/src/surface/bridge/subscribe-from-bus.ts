@@ -1626,6 +1626,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
                         },
                       }),
                     relayStop,
+                    clearIngressAcknowledgement,
                   ]);
                   return { status: "return", value: undefined } as const;
                 }

@@ -3278,12 +3278,9 @@ describe("bridgeBusToAdapter", () => {
 
     expect(adapter.streams[0]?.aborted).toBe("superseded");
     expect(adapter.streams[0]?.finished).toBe(false);
-    expect(getGithubAck(staleRequestId)).toEqual({
-      target: { kind: "issue", issueNumber: 12 },
-      reactionId: 43,
-    });
+    // A superseded request that still owns its acknowledgement releases it like any other final.
+    expect(getGithubAck(staleRequestId)).toBeUndefined();
 
-    clearGithubAck(staleRequestId);
     await bridge.stop();
   });
 });
