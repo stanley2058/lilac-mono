@@ -1,4 +1,4 @@
-import { captureError } from "../../../shared/error-capture";
+import { captureError } from "../shared/error-capture";
 import { createHash } from "node:crypto";
 
 import { modelMessageSchema, type ModelMessage } from "ai";
@@ -25,11 +25,11 @@ import {
   type CoreNamedClaudeSessionBinding,
   type TranscriptSnapshot,
   type TranscriptStore,
-} from "../../../transcript/transcript-store";
-import { hashCanonicalStoredMessagesV2 } from "../../../transcript/transcript-persistence-codec";
-import { projectStoredMessagesV1 } from "../../../transcript/stored-message-materialization";
+} from "../transcript/transcript-store";
+import { hashCanonicalStoredMessagesV2 } from "../transcript/transcript-persistence-codec";
+import { projectStoredMessagesV1 } from "../transcript/stored-message-materialization";
 import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
-import type { BridgeLogContext } from "../bridge-log";
+import type { BridgeLogContext } from "../surface/bridge/bridge-log";
 
 const TEXT_REPLAY_TOOL_INPUT_CHARS = 20_000;
 const TEXT_REPLAY_TOOL_RESULT_CHARS = 40_000;

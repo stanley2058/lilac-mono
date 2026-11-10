@@ -1,4 +1,4 @@
-import { captureError } from "../../../shared/error-capture";
+import { captureError } from "../shared/error-capture";
 import { Result, type Result as ResultType } from "better-result";
 import { createDownload, type Experimental_DownloadFunction as DownloadFunction } from "ai";
 import {

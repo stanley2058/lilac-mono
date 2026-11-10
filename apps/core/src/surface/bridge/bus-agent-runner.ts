@@ -233,7 +233,7 @@ import {
   LineageToolAuthority,
   resolveCorePrimaryLoadedCatalogIds,
 } from "./bus-agent-runner/lineage-tool-authority";
-import { type AnthropicFallbackBlobStore } from "./bus-agent-runner/anthropic-fallback-media";
+import { type AnthropicFallbackBlobStore } from "../../agent/anthropic-fallback-media";
 import { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
 import {
   nativeToolActivityDetail,
@@ -306,8 +306,8 @@ import type {
   CustomCommandExecutionError,
   CustomCommandManager,
 } from "../../custom-commands/manager";
-import { type CoreNamedClaudeRuntime } from "./bus-agent-runner/core-named-continuation";
-import { type CorePrimaryClaudeRuntime } from "./bus-agent-runner/core-primary-continuation";
+import { type CoreNamedClaudeRuntime } from "../../agent/core-named-continuation";
+import { type CorePrimaryClaudeRuntime } from "../../agent/core-primary-continuation";
 
 export { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
 export {
@@ -315,7 +315,7 @@ export {
   toOpenAIPromptCacheKey,
   withReasoningDisplayDefaultForAnthropicModels,
   withReasoningSummaryDefaultForOpenAIModels,
-} from "./bus-agent-runner/provider-options";
+} from "../../agent/provider-options";
 export {
   measureMeaningfulTextUnits,
   shouldRunAutoInjectedThreadSearch,

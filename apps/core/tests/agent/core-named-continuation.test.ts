@@ -17,13 +17,13 @@ import {
   createCoreNamedClaudeRuntime as createCoreNamedClaudeRuntimeResult,
   hashCoreNamedExecutionScope,
   prepareCoreNamedHistoryView,
-} from "../../../src/surface/bridge/bus-agent-runner/core-named-continuation";
+} from "../../src/agent/core-named-continuation";
 import {
   type CoreClaudeBindingReadError,
   SqliteTranscriptStore,
   TranscriptStoreSqliteDriverFailure,
-} from "../../../src/transcript/transcript-store";
-import { projectStoredMessagesV1 } from "../../../src/transcript/stored-message-materialization";
+} from "../../src/transcript/transcript-store";
+import { projectStoredMessagesV1 } from "../../src/transcript/stored-message-materialization";
 
 const directories: string[] = [];
 

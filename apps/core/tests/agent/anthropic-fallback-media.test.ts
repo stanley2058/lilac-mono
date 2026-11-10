@@ -10,11 +10,11 @@ import {
   type BlobStore,
 } from "@stanley2058/lilac-blob-storage";
 
-import { buildExperimentalDownloadForAnthropicFallback } from "../../../src/surface/bridge/bus-agent-runner/anthropic-fallback-media";
+import { buildExperimentalDownloadForAnthropicFallback } from "../../src/agent/anthropic-fallback-media";
 import {
   anthropicFallbackCacheCodecCases,
   decodeAnthropicFallbackCacheRecord,
-} from "../../../src/surface/bridge/bus-agent-runner/anthropic-fallback-cache-codec";
+} from "../../src/agent/anthropic-fallback-cache-codec";
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1_000;
 

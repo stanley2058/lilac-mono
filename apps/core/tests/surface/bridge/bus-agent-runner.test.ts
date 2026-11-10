@@ -161,7 +161,7 @@ import {
   CustomCommandManager,
   type CustomCommandExecutionError,
 } from "../../../src/custom-commands/manager";
-import { createCorePrimaryClaudeRuntime as createCorePrimaryClaudeRuntimeResult } from "../../../src/surface/bridge/bus-agent-runner/core-primary-continuation";
+import { createCorePrimaryClaudeRuntime as createCorePrimaryClaudeRuntimeResult } from "../../../src/agent/core-primary-continuation";
 import { resolveCorePrimaryLoadedCatalogIds } from "../../../src/surface/bridge/bus-agent-runner/lineage-tool-authority";
 
 function createCorePrimaryClaudeRuntime(
@@ -252,7 +252,7 @@ import {
   buildExperimentalDownloadForAnthropicFallback,
   shouldForceUrlDownloadForAnthropicFallback,
   withStableAnthropicUpstreamOrder,
-} from "../../../src/surface/bridge/bus-agent-runner/anthropic-fallback-media";
+} from "../../../src/agent/anthropic-fallback-media";
 import {
   subscribeForTest,
   testDeliveriesRemainOpenOnPolicyStop,

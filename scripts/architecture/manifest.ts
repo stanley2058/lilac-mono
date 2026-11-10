@@ -394,7 +394,7 @@ export const BLOB_STORAGE_ARCHITECTURE_POLICY = {
   materializationModules: [
     {
       workspace: "apps/core",
-      module: "src/surface/bridge/bus-agent-runner/anthropic-fallback-media",
+      module: "src/agent/anthropic-fallback-media",
     },
     {
       workspace: "apps/core",
@@ -1441,10 +1441,7 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         ["src/transcript/stored-message-materialization.ts", "decodeResourceReadCallForStorage"],
         ["src/transcript/stored-message-materialization.ts", "materializeStoredMessage"],
         ["src/transcript/transcript-store.ts", "parseNormalizedCanonicalMessages"],
-        [
-          "src/surface/bridge/bus-agent-runner/anthropic-fallback-cache-codec.ts",
-          "decodeAnthropicFallbackCacheRecord",
-        ],
+        ["src/agent/anthropic-fallback-cache-codec.ts", "decodeAnthropicFallbackCacheRecord"],
       ].map(([module, exportName]) => ({
         identity: { module: module!, exportName: exportName! },
         category: "persistence" as const,
@@ -1580,7 +1577,7 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
       },
       ...[
         [
-          "src/surface/bridge/bus-agent-runner/core-named-continuation.ts",
+          "src/agent/core-named-continuation.ts",
           "decodeStoredContinuationModelMessages",
           "persistence",
         ],
@@ -3023,12 +3020,12 @@ const CORE_LEGACY_WORKFLOW_BLOB_MIGRATION_PERSISTED_CONSUMER = {
 
 const CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC = {
   identity: {
-    module: "src/surface/bridge/bus-agent-runner/anthropic-fallback-cache-codec.ts",
+    module: "src/agent/anthropic-fallback-cache-codec.ts",
     exportName: "decodeAnthropicFallbackCacheRecord",
   },
   inputParameter: 0,
   fixtureCatalog: {
-    module: "src/surface/bridge/bus-agent-runner/anthropic-fallback-cache-codec.ts",
+    module: "src/agent/anthropic-fallback-cache-codec.ts",
     exportName: "anthropicFallbackCacheCodecCases",
   },
   provenance: ["current"],
@@ -3037,7 +3034,7 @@ const CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC = {
 
 const CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER = {
   identity: {
-    module: "src/surface/bridge/bus-agent-runner/anthropic-fallback-media.ts",
+    module: "src/agent/anthropic-fallback-media.ts",
     exportName: "readAnthropicFallbackCacheIndex",
   },
   codecs: [CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC.identity],
@@ -5524,7 +5521,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "41735f0c6556a1cbdcb6df455ff62612cdf043c323e188991c81ad3752ba76cb";
+  "6b193533f56307f119a96e7c82ae81f1f3e2df4680c3be614cedc876c0687288";
 
 export const architectureManifest = {
   version: 1,
