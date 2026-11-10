@@ -5,6 +5,7 @@ import {
   cacheScopeKey,
   MemoryNativeCache,
   mergeCachePatches,
+  type CacheCommitOutcome,
   type CachePatch,
   type CacheScope,
   type CachedSlot,
@@ -229,7 +230,7 @@ type QueuedWrite = {
   scope: CacheScope;
   threadId: string;
   patch: CachePatch;
-  settled: PromiseWithResolvers<void>;
+  settled: PromiseWithResolvers<CacheCommitOutcome>;
 };
 function draftIsEmpty(draft: WebDraft): boolean {
   return !draft.text.trim() && !draft.skillIds.length && !draft.commandId && !draft.savedText;
@@ -243,7 +244,7 @@ export class WebNativeCache implements NativeCache {
   /** One IndexedDB write runs per thread; patches that arrive meanwhile merge into the next one. */
   private readonly threadWrites = new Map<
     string,
-    { running: Promise<void>; queued?: QueuedWrite }
+    { running: Promise<CacheCommitOutcome>; queued?: QueuedWrite }
   >();
   private draftTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly draftWriteDelayMs: number;
@@ -423,7 +424,11 @@ export class WebNativeCache implements NativeCache {
       await this.memory.remove(value.scope, value.threadId);
     }
   }
-  async commit(scope: CacheScope, threadId: string, patch: CachePatch): Promise<void> {
+  async commit(
+    scope: CacheScope,
+    threadId: string,
+    patch: CachePatch,
+  ): Promise<CacheCommitOutcome> {
     await this.memory.commit(scope, threadId, patch);
     const key = projectionThreadKey(scope, threadId);
     const writes = this.threadWrites.get(key);
@@ -432,7 +437,12 @@ export class WebNativeCache implements NativeCache {
       writes.queued.patch = mergeCachePatches(writes.queued.patch, patch);
       return writes.queued.settled.promise;
     }
-    writes.queued = { scope, threadId, patch, settled: Promise.withResolvers<void>() };
+    writes.queued = {
+      scope,
+      threadId,
+      patch,
+      settled: Promise.withResolvers<CacheCommitOutcome>(),
+    };
     return writes.queued.settled.promise;
   }
   private startWrite(
@@ -440,13 +450,14 @@ export class WebNativeCache implements NativeCache {
     scope: CacheScope,
     threadId: string,
     patch: CachePatch,
-  ): Promise<void> {
+  ): Promise<CacheCommitOutcome> {
     // Failed writes disable the cache inside writeThread, so this chain only resolves.
-    const running = this.writeThread(scope, threadId, patch).then(() => {
+    const running = this.writeThread(scope, threadId, patch).then((outcome) => {
       const next = this.threadWrites.get(key)?.queued;
       this.threadWrites.delete(key);
-      if (!next) return;
-      void this.startWrite(key, next.scope, next.threadId, next.patch).then(next.settled.resolve);
+      if (next)
+        void this.startWrite(key, next.scope, next.threadId, next.patch).then(next.settled.resolve);
+      return outcome;
     });
     this.threadWrites.set(key, { running });
     return running;
@@ -460,7 +471,11 @@ export class WebNativeCache implements NativeCache {
       queued.settled.resolve();
     }
   }
-  private async writeThread(scope: CacheScope, threadId: string, patch: CachePatch): Promise<void> {
+  private async writeThread(
+    scope: CacheScope,
+    threadId: string,
+    patch: CachePatch,
+  ): Promise<CacheCommitOutcome> {
     const key = projectionThreadKey(scope, threadId);
     const scopeKey = cacheProjectionKey(scope);
     const rows: SlotRow[] = patch.put.map((data) => ({
@@ -478,7 +493,7 @@ export class WebNativeCache implements NativeCache {
       const previous = decodeThreadUsage(await idbRequest(threads.get(key)));
       if (!previous && !patch.replace) {
         await assertCommitted(done);
-        return 0;
+        return "missing" as const;
       }
       let total = patch.replace ? 0 : (previous?.bytes ?? 0);
       if (patch.replace) await deleteIndex(slots, "thread", key);
@@ -520,6 +535,9 @@ export class WebNativeCache implements NativeCache {
       await assertCommitted(done);
       return total;
     });
+    // Without IndexedDB the memory copy is the only one, and it drops patches it has no base for.
+    const unknown = bytes === undefined && !patch.replace && !this.residentThreads.has(key);
+    if (bytes === "missing" || unknown) return "missing";
     const previousBytes = patch.replace ? 0 : (this.residentThreads.get(key)?.bytes ?? 0);
     this.touch(
       scope,

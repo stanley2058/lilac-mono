@@ -16,6 +16,7 @@ import {
   mergeCachePatches,
   type CachePatch,
   type CacheScope,
+  type CacheCommitOutcome,
   type NativeCache,
   NoNativeCache,
 } from "./cache.ts";
@@ -188,7 +189,8 @@ export class NativeClient {
         while (this.pendingCachePatches.has(threadId)) {
           const pending = this.pendingCachePatches.get(threadId)!;
           this.pendingCachePatches.delete(threadId);
-          await this.persist(threadId, pending);
+          if ((await this.persist(threadId, pending)) === "missing")
+            this.queueFullCheckpoint(threadId, store);
         }
         this.cacheWrites.delete(threadId);
       });
@@ -259,12 +261,24 @@ export class NativeClient {
   private async persist(
     threadId: string,
     patch: Parameters<NativeCache["commit"]>[2],
-  ): Promise<void> {
+  ): Promise<CacheCommitOutcome> {
     const captured = await Result.tryPromise({
       try: () => this.cache.commit(this.options.scope, threadId, patch),
       catch: captureFailure,
     });
-    captured.match({ ok: () => {}, err: (error) => this.emit({ kind: "error", error }) });
+    return captured.match({
+      ok: (outcome) => outcome,
+      err: (error) => this.emit({ kind: "error", error }),
+    });
+  }
+  /** Replaces whatever is pending with the store's full state, which already includes those patches. */
+  private queueFullCheckpoint(threadId: string, store: NativeThreadStore): void {
+    const checkpoint = store.checkpoint;
+    if (!checkpoint || this.stopped || this.stores.get(threadId) !== store) return;
+    const put = store.slotIds
+      .map((slotId) => store.getVersioned(slotId))
+      .filter((slot) => slot !== undefined);
+    this.pendingCachePatches.set(threadId, { checkpoint, replace: true, put, remove: [] });
   }
   async loadCached(threadId: string): Promise<void> {
     if (this.threadEpochs.has(threadId)) return;

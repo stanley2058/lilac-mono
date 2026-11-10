@@ -364,10 +364,10 @@ test("an evicted store restores only after its queued checkpoint commits", async
   const saving = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   class DelayedCache extends MemoryNativeCache {
-    override async commit(...args: Parameters<MemoryNativeCache["commit"]>): Promise<void> {
+    override async commit(...args: Parameters<MemoryNativeCache["commit"]>) {
       saving.resolve();
       await release.promise;
-      await super.commit(...args);
+      return super.commit(...args);
     }
   }
   const cache = new DelayedCache();
@@ -972,4 +972,32 @@ test("cache writes coalesce synchronous replay updates at the latest checkpoint"
   await state.client.loadCached("thread");
   expect(commit).toHaveBeenCalledTimes(1);
   expect((await state.cache.read(scope, "thread"))?.checkpoint.projectionRevision).toBe(3);
+});
+
+test("an incremental patch after cache eviction persists the store's full checkpoint", async () => {
+  const state = harness();
+  const store = state.client.thread("thread");
+  store.replay(bootstrap.selectedThread!);
+  await state.client.loadCached("thread");
+  // The cache drops the thread to stay under its limits while the store keeps showing it.
+  await state.cache.remove(scope, "thread");
+  store.update({
+    checkpoint: { ...checkpoint, projectionRevision: 2, cursor: "second" },
+    changes: [
+      {
+        kind: "append-text",
+        turnId: "turn",
+        position: 0,
+        messageId: "message",
+        partIndex: 0,
+        text: " two",
+      },
+    ],
+  });
+  await state.client.loadCached("thread");
+  const cached = await state.cache.read(scope, "thread");
+  expect(cached?.checkpoint.projectionRevision).toBe(2);
+  expect(cached?.slots.map(({ slot }) => slot)).toEqual(
+    store.slotIds.map((slotId) => store.get(slotId)!),
+  );
 });

@@ -21,10 +21,16 @@ export type CachePatch = {
   remove: string[];
 };
 
+/**
+ * `missing` means the cache held no checkpoint for an incremental patch, such as after eviction, and
+ * dropped it. The caller commits the thread's full state as a replace so it caches again.
+ */
+export type CacheCommitOutcome = "missing" | void;
+
 /** Implementations commit slots and checkpoint in a single transaction. */
 export interface NativeCache {
   read(scope: CacheScope, threadId: string): Promise<ThreadCheckpoint | undefined>;
-  commit(scope: CacheScope, threadId: string, patch: CachePatch): Promise<void>;
+  commit(scope: CacheScope, threadId: string, patch: CachePatch): Promise<CacheCommitOutcome>;
   remove(scope: CacheScope, threadId: string): Promise<void>;
   purge(scope: CacheScope): Promise<void>;
 }
@@ -66,13 +72,17 @@ export class MemoryNativeCache implements NativeCache {
     };
   }
 
-  async commit(scope: CacheScope, threadId: string, patch: CachePatch): Promise<void> {
+  async commit(
+    scope: CacheScope,
+    threadId: string,
+    patch: CachePatch,
+  ): Promise<CacheCommitOutcome> {
     const key = cacheProjectionKey(scope);
     const threads =
       this.scopes.get(key) ??
       new Map<string, { checkpoint: ReplayCheckpoint; slots: Map<string, CachedSlot> }>();
     const previous = threads.get(threadId);
-    if (!previous && !patch.replace) return;
+    if (!previous && !patch.replace) return "missing";
     const slots = patch.replace
       ? new Map<string, CachedSlot>()
       : (previous?.slots ?? new Map<string, CachedSlot>());
