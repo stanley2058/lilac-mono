@@ -148,13 +148,13 @@ export class NativeLiveFileService {
       const location = yield* Result.await(this.editorPath(actorId, threadId, inputPath));
       const read = await this.dependencies.filesystem.readFileBytes({
         path: location.resolved,
-        maxBytes: 2_097_152,
+        maxBytes: 262_144,
       });
       if (!read.success)
         return Result.err(
           nativeFailure(
             "invalid",
-            "Cannot edit this file. It must be readable and no larger than 2 MiB.",
+            "Cannot edit this file. It must be readable and no larger than 256 KiB.",
           ),
         );
       const text = yield* Result.try({
@@ -172,8 +172,8 @@ export class NativeLiveFileService {
     input: { threadId: string; path: string; text: string; expectedRevision: string },
   ) {
     return Result.gen(async function* () {
-      if (Buffer.byteLength(input.text) > 2_097_152 || input.text.includes("\0"))
-        return Result.err(nativeFailure("invalid", "Only text files up to 2 MiB can be saved"));
+      if (Buffer.byteLength(input.text) > 262_144 || input.text.includes("\0"))
+        return Result.err(nativeFailure("invalid", "Only text files up to 256 KiB can be saved"));
       const location = yield* Result.await(this.editorPath(actorId, input.threadId, input.path));
       const written = yield* Result.await(
         this.exclusive(location.canonical, () =>

@@ -303,3 +303,38 @@ describe("conversation thread materializer coalescer", () => {
     await expect(materializer.flush()).rejects.toBe(panic);
   });
 });
+
+it("retries materialization failures with increasing backoff and cancels retries on stop", async () => {
+  const tasks = new Map<number, { task: () => void; delay: number }>();
+  let id = 0;
+  let calls = 0;
+  const materializer = createThreadMaterializer({
+    schedule(task, delay) {
+      const key = ++id;
+      tasks.set(key, { task, delay });
+      return () => {
+        tasks.delete(key);
+      };
+    },
+    listChannelIds: async () => [],
+    async repairChannel() {
+      calls++;
+      throw new ThreadMaterializerOperationFailed({
+        operation: "repair-channel",
+        message: "offline",
+      });
+    },
+  });
+  materializer.markDirty({ channelId: "a", kind: "topology" });
+  await materializer.flush();
+  expect(calls).toBe(1);
+  const retry = [...tasks.values()][0]!;
+  expect(retry.delay).toBe(1000);
+  tasks.clear();
+  retry.task();
+  await materializer.flush();
+  expect(calls).toBe(2);
+  expect([...tasks.values()][0]?.delay).toBe(2000);
+  await materializer.stop();
+  expect(tasks.size).toBe(0);
+});

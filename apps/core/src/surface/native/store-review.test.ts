@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { replayReplySchema, turnPageSchema } from "@stanley2058/lilac-client-protocol";
+import { NativeThreadStore } from "../../../../../packages/client/src/thread-store";
 import type { NativeInput, ReadyTurnSlot, TurnPage } from "@stanley2058/lilac-client-protocol";
 import { NativeStore } from "./store";
 
@@ -51,6 +53,72 @@ function fixture() {
 }
 
 describe("native store adversarial regressions", () => {
+  for (const oversized of [false, true]) {
+    test(
+      oversized
+        ? "oversized structured parts page and reconstruct without cursor loops"
+        : "129 tiny parts produce schema-valid replay and hydrate every part",
+      () => {
+        const { store, thread, submit } = fixture();
+        const receipt = submit("paging");
+        const parts = oversized
+          ? [
+              {
+                type: "data-activity" as const,
+                id: "tool",
+                data: {
+                  kind: "tool" as const,
+                  label: "tool",
+                  state: "complete" as const,
+                  detail: "\u0001".repeat(65_536),
+                  output: "漢".repeat(65_536),
+                },
+              },
+            ]
+          : Array.from({ length: 129 }, () => ({ type: "text" as const, text: "x" }));
+        store
+          .appendMessage(thread.id, 0, receipt.turnId!, {
+            id: "assistant",
+            role: "assistant",
+            parts,
+          })
+          .unwrap();
+        const reply = store.sync("owner", thread.id).unwrap();
+        expect(replayReplySchema.safeParse(reply).success).toBe(true);
+        const client = new NativeThreadStore();
+        client.replay(reply);
+        const visited = new Set<string>();
+        for (let n = 0; n < 100; n++) {
+          const slot = client.get(receipt.turnId!);
+          if (slot?.kind !== "ready") throw new Error("missing turn");
+          if (!slot.partsCursor) {
+            expect(slot.messages.find((message) => message.id === "assistant")?.parts).toEqual(
+              parts,
+            );
+            store.close();
+            return;
+          }
+          const cursor = slot.partsCursor;
+          expect(visited.has(cursor)).toBe(false);
+          if (visited.has(cursor)) throw new Error("cursor did not advance");
+          visited.add(cursor);
+          const page = store
+            .turnPage("owner", {
+              threadId: thread.id,
+              turnId: receipt.turnId!,
+              historyGeneration: 0,
+              projectionRevision: reply.checkpoint.projectionRevision,
+              cursor,
+            })
+            .unwrap();
+          expect(turnPageSchema.safeParse(page).success).toBe(true);
+          expect(client.turnPage(receipt.turnId!, cursor, page)).toBe("applied");
+        }
+        throw new Error("paging exceeded bound");
+      },
+    );
+  }
+
   test("canceling a started follow-up drops the queue inherited from its previous run", () => {
     const { store, thread, submit, start } = fixture();
     const first = submit("first");

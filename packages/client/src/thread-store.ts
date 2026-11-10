@@ -1,3 +1,5 @@
+import { displayPartSchema } from "@stanley2058/lilac-client-protocol";
+import { Result } from "better-result";
 import type {
   DisplayMessage,
   Hydration,
@@ -14,6 +16,25 @@ export type StoreChange = { slotIds: readonly string[]; structure: boolean; patc
 export type ApplyOutcome = "applied" | "ignored" | "resync";
 type Listener = (change: StoreChange) => void;
 
+export function decodeDisplayPartFragment(json: string) {
+  const value: unknown = Result.try({
+    try: () => JSON.parse(json),
+    catch: () => "invalid fragment",
+  }).match({ ok: (parsed) => parsed, err: () => undefined });
+  const decoded = displayPartSchema.safeParse(value);
+  return decoded.success ? decoded.data : undefined;
+}
+
+function messagePosition(
+  headers: DisplayMessage[],
+  id: string,
+  messages: DisplayMessage[],
+): number {
+  return (
+    (headers.find((message) => message.id === id) ?? messages.find((message) => message.id === id))
+      ?.metadata?.position ?? 0
+  );
+}
 function end(slot: TurnSlot): number {
   return slot.kind === "ready" ? slot.position + 1 : slot.endPosition;
 }
@@ -39,6 +60,7 @@ function validSlots(slots: readonly TurnSlot[]): boolean {
 
 export class NativeThreadStore {
   private readonly slots = new Map<string, CachedSlot>();
+  private readonly fragments = new Map<string, string>();
   private readonly turns = new Map<string, string>();
   private ordered: string[] = [];
   private readonly listeners = new Set<Listener>();
@@ -109,6 +131,7 @@ export class NativeThreadStore {
   }
   clear(): void {
     const ids = this.ordered;
+    this.fragments.clear();
     this.slots.clear();
     this.turns.clear();
     this.ordered = [];
@@ -153,6 +176,7 @@ export class NativeThreadStore {
     if (this.current && !this.floor && !older(this.current, reply.checkpoint)) return "ignored";
     if (!validSlots(reply.slots)) return this.requireResync(reply.checkpoint);
     const oldIds = this.ordered;
+    this.fragments.clear();
     this.slots.clear();
     this.turns.clear();
     const put = reply.slots.map((slot) => ({
@@ -269,6 +293,7 @@ export class NativeThreadStore {
     )
       return "ignored";
     let messages = target.slot.messages;
+    let resumeCursor: string | undefined;
     const indexes = new Map(messages.map((message, index) => [message.id, index]));
     for (const message of page.messages) {
       const existingIndex = indexes.get(message.id);
@@ -289,7 +314,31 @@ export class NativeThreadStore {
       indexes.set(message.id, messages.length);
       messages = [...messages, message];
     }
-    for (const chunk of page.chunks ?? []) {
+    for (const received of page.chunks ?? []) {
+      let chunk = received;
+      if (received.fragment) {
+        const fragment = received.fragment;
+        const key = JSON.stringify([
+          page.historyGeneration,
+          page.projectionRevision,
+          page.turnId,
+          received.messageId,
+          received.partIndex,
+        ]);
+        const previous = fragment.offset === 0 ? "" : (this.fragments.get(key) ?? "");
+        if (previous.length !== fragment.offset) return "ignored";
+        const json = previous + fragment.json;
+        if (json.length < fragment.total) {
+          this.fragments.set(key, json);
+          resumeCursor = `p_${messagePosition(page.messages, received.messageId, messages)}_${received.partIndex}_0`;
+          continue;
+        }
+        const decoded = decodeDisplayPartFragment(json);
+        if (!decoded) return "ignored";
+        this.fragments.delete(key);
+        resumeCursor = undefined;
+        chunk = { ...received, part: decoded };
+      }
       const index = indexes.get(chunk.messageId);
       if (index === undefined) return "ignored";
       const message = messages[index];
@@ -319,7 +368,11 @@ export class NativeThreadStore {
       patch: {
         checkpoint: this.current,
         replace: false,
-        put: [value],
+        put: [
+          resumeCursor && value.slot.kind === "ready"
+            ? { ...value, slot: { ...value.slot, partsCursor: resumeCursor } }
+            : value,
+        ],
         remove: [],
       },
     });

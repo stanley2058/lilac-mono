@@ -91,3 +91,23 @@ export class NoNativeCache implements NativeCache {
   async remove(): Promise<void> {}
   async purge(): Promise<void> {}
 }
+
+export function mergeCachePatches(previous: CachePatch | undefined, next: CachePatch): CachePatch {
+  if (!previous || next.replace) return next;
+  const put = new Map(previous.put.map((slot) => [slot.slot.slotId, slot]));
+  const remove = new Set(previous.remove);
+  for (const id of next.remove) {
+    put.delete(id);
+    remove.add(id);
+  }
+  for (const slot of next.put) {
+    remove.delete(slot.slot.slotId);
+    put.set(slot.slot.slotId, slot);
+  }
+  return {
+    checkpoint: next.checkpoint,
+    replace: previous.replace,
+    put: [...put.values()],
+    remove: [...remove],
+  };
+}

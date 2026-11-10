@@ -323,6 +323,18 @@ test("workspace editing reads whole UTF-8 files, checks revisions, and preserves
   ).toBe(true);
   expect((await service.document("owner", thread.id, secret)).isErr()).toBe(true);
   expect((await service.document("owner", thread.id, "binary.bin")).isErr()).toBe(true);
+  await writeFile(join(root, "too-large.txt"), "x".repeat(262_145));
+  expect((await service.document("owner", thread.id, "too-large.txt")).isErr()).toBe(true);
+  expect(
+    (
+      await service.saveDocument("owner", {
+        threadId: thread.id,
+        path: file,
+        expectedRevision: saved.revision,
+        text: "\u0001".repeat(262_145),
+      })
+    ).isErr(),
+  ).toBe(true);
   await rm(file);
   expect(
     (

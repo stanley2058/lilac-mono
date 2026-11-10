@@ -1,3 +1,7 @@
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 import { Result } from "better-result";
 import type { BlobRefV1 } from "@stanley2058/lilac-blob-storage";
@@ -423,4 +427,38 @@ describe("discord search store", () => {
 
     store.close();
   });
+});
+
+it("rebuilds a newly created external-content FTS index over retained messages", () => {
+  const root = mkdtempSync(join(tmpdir(), "lilac-fts-"));
+  const path = join(root, "search.db");
+  const store = new DiscordSearchStore(path);
+  store.upsertMessages([
+    {
+      ref: { platform: "discord", channelId: "123", messageId: "m" },
+      session: { platform: "discord", channelId: "123" },
+      userId: "u",
+      text: "retainedneedle",
+      ts: 1,
+      raw: {},
+    },
+  ]);
+  store.close();
+  const db = new Database(path);
+  db.run(
+    "DROP TRIGGER discord_search_messages_ai; DROP TRIGGER discord_search_messages_ad; DROP TRIGGER discord_search_messages_au; DROP TABLE discord_search_messages_fts",
+  );
+  db.close();
+  const reopened = new DiscordSearchStore(path);
+  const probe = new Database(path);
+  expect(
+    probe
+      .query<{ count: number }, []>(
+        "SELECT count(*) AS count FROM discord_search_messages_fts WHERE discord_search_messages_fts MATCH 'retainedneedle'",
+      )
+      .get()?.count,
+  ).toBe(1);
+  probe.close();
+  reopened.close();
+  rmSync(root, { recursive: true });
 });

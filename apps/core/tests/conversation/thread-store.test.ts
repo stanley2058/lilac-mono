@@ -3960,3 +3960,28 @@ describe("conversation thread store", () => {
     threadStore.close();
   });
 });
+
+it("keeps unchanged membership rows while refreshing edited message content", async () => {
+  const dbPath = await createDbPath();
+  const search = new DiscordSearchStore(dbPath);
+  const threads = new ConversationThreadStore(dbPath);
+  search.upsertMessages([
+    msg({ channelId: "c1", messageId: "m1", userId: "u", text: "before", ts: 1 }),
+  ]);
+  threads.refreshInferredThreads();
+  const db = new Database(dbPath);
+  db.run(
+    "CREATE TABLE membership_writes(count INTEGER); INSERT INTO membership_writes VALUES(0); CREATE TRIGGER count_membership_insert AFTER INSERT ON conversation_thread_messages BEGIN UPDATE membership_writes SET count=count+1; END; CREATE TRIGGER count_membership_delete AFTER DELETE ON conversation_thread_messages BEGIN UPDATE membership_writes SET count=count+1; END;",
+  );
+  search.upsertMessages([
+    msg({ channelId: "c1", messageId: "m1", userId: "u", text: "after", ts: 1 }),
+  ]);
+  threads.refreshInferredThreads();
+  expect(db.query<{ count: number }, []>("SELECT count FROM membership_writes").get()?.count).toBe(
+    0,
+  );
+  expect(threads.listMessages("discord:channel:c1:m1")[0]?.text).toBe("after");
+  db.close();
+  threads.close();
+  search.close();
+});

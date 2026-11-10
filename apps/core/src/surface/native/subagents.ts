@@ -433,17 +433,11 @@ export class NativeSubagents {
         .getRun(input.agentId)
         .mapError(() => nativeFailure("sqlite", "Subagent is unavailable"));
       const target = run?.completionTarget;
-      if (
-        !run ||
-        target?.kind !== "live_parent" ||
-        target.parentSessionId !== `native:${input.threadId}`
-      )
+      if (!run || target?.kind !== "live_parent")
         return Result.err(nativeFailure("not-found", "Subagent not found"));
-      const validRequests = yield* this.options.native.listCanonicalRequestIds(input.threadId);
-      if (!validRequests.includes(target.parentRequestId))
+      const parent = yield* this.root(run);
+      if (parent?.threadId !== input.threadId || !parent.turnId)
         return Result.err(nativeFailure("not-found", "Subagent not found"));
-      const parent = yield* this.options.native.getInputByRequestId(target.parentRequestId);
-      if (!parent?.turnId) return Result.err(nativeFailure("not-found", "Subagent not found"));
       const requestId = yield* this.childRequestId(run, target.childRequestId);
       const agent = (yield* this.summary(run, parent.turnId, requestId))!;
       const live = this.options

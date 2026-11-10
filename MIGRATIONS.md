@@ -740,3 +740,26 @@ change, and commit it. `bun run build:model-catalog` remains an alias for that c
 
 The SQLite catalog cache keeps schema version 1 and its existing daily refresh policy. Existing
 caches and deployments need no data rewrite. Deployments can roll back without migrating the cache.
+
+## Native client cache projection and receipt correlation
+
+Cache scopes already include projection version 1 alongside the installation, principal and protocol
+version. Cache keys retain that separation. This change preserves the version 1 cache shape, including
+its existing opaque parts cursor. No native database or cache data conversion is required. Future
+projection changes must select a new projection version before reusing cached display records.
+
+Input receipts and input events now include an optional `commandId`. Updated clients accept receipts
+without it from older servers. When present, the client matches it to a pending command in the same
+thread and settles an uncertain send without resubmitting it. Command IDs and admission identities
+retain their existing meaning. Deploy the updated protocol package with Core and the shared client.
+
+Turn pages can include an optional `fragment` on a chunk for a part larger than the page byte budget.
+Its `offset` and `total` count UTF-16 code units in the serialized part, and `json` carries the fragment.
+The chunk's `part` is an empty text placeholder until reconstruction finishes. Existing cursor forms
+remain accepted; fragment cursors add a fourth offset segment. Updated clients reassemble and validate
+the full part before display. Cache checkpoints retain the beginning of an incomplete part so reloads
+can replay its fragments. Deploy Core and clients together before opening oversized structured parts.
+Older clients continue to use ordinary, unfragmented pages.
+
+The file editor now accepts UTF-8 documents up to 256 KiB. This leaves room for JSON escaping and RPC
+metadata inside the 2 MiB HTTP and WebSocket limits. Larger files remain readable through resource tools.

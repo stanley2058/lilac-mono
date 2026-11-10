@@ -266,6 +266,9 @@ describe("native surface adapter", () => {
     expect((await f.scoped.listMsg(f.ref)).unwrap()).toEqual([]);
     (await output.push({ type: "text.delta", delta: "\r\n\r\ntail" })).unwrap();
     expect((await f.scoped.listMsg(f.ref)).unwrap()[0]?.text).toBe("first\n\n");
+    const checkpoint = f.store.sync("owner", f.source.id).unwrap().checkpoint;
+    (await output.push({ type: "text.delta", delta: " more" })).unwrap();
+    expect(f.store.sync("owner", f.source.id).unwrap().checkpoint).toEqual(checkpoint);
     (
       await output.push({
         type: "reasoning.status",
@@ -273,7 +276,7 @@ describe("native surface adapter", () => {
       })
     ).unwrap();
     const finished = (await output.finish()).unwrap();
-    expect((await f.scoped.readMsg(finished.last)).unwrap()?.text).toBe("first\n\ntail");
+    expect((await f.scoped.readMsg(finished.last)).unwrap()?.text).toBe("first\n\ntail more");
     expect(JSON.stringify(f.store.sync("owner", f.source.id).unwrap())).not.toContain(
       "private reasoning",
     );

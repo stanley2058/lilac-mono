@@ -72,6 +72,7 @@ export function createThreadMaterializer(params: {
   const debounceMs = params.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   const schedule = params.schedule ?? defaultScheduler;
   const dirtyChannels = new Map<string, DirtyChannel>();
+  const retries = new Map<string, { repair: DirtyChannel; attempts: number; cancel: () => void }>();
   const listingTasks = new Set<Promise<void>>();
   let accepting = true;
   let cancelScheduledDrain: (() => void) | null = null;
@@ -102,13 +103,33 @@ export function createThreadMaterializer(params: {
         ),
       );
       const finishRepair = repaired.match<() => void>({
-        ok: () => () => undefined,
-        err: (error) => () =>
-          reportError(error, {
-            operation: "repair-channel",
-            channelId,
-            kind: repair.kind,
-          }),
+        ok: () => () => {
+          retries.get(channelId)?.cancel();
+          retries.delete(channelId);
+        },
+        err: (error) => () => {
+          reportError(error, { operation: "repair-channel", channelId, kind: repair.kind });
+          if (!accepting) return;
+          const previous = retries.get(channelId);
+          previous?.cancel();
+          const attempts = (previous?.attempts ?? 0) + 1;
+          const pending = dirtyChannels.get(channelId);
+          dirtyChannels.delete(channelId);
+          const combined: DirtyChannel = {
+            kind:
+              repair.kind === "topology" || pending?.kind === "topology" ? "topology" : "content",
+            messageIds: new Set([...repair.messageIds, ...(pending?.messageIds ?? [])]),
+          };
+          const cancel = schedule(
+            () => {
+              if (!accepting) return;
+              dirtyChannels.set(channelId, combined);
+              void startDrain();
+            },
+            Math.min(30_000, 1000 * 2 ** Math.min(attempts - 1, 5)),
+          );
+          retries.set(channelId, { repair: combined, attempts, cancel });
+        },
       });
       finishRepair();
     }
@@ -147,7 +168,9 @@ export function createThreadMaterializer(params: {
     const channelId = input.channelId.trim();
     if (!channelId) return;
 
-    const current = dirtyChannels.get(channelId);
+    const retry = retries.get(channelId);
+    const current = dirtyChannels.get(channelId) ?? retry?.repair;
+    retry?.cancel();
     const kind = current?.kind === "topology" || input.kind === "topology" ? "topology" : "content";
     const messageIds = new Set(kind === "content" ? current?.messageIds : []);
     if (kind === "content" && input.kind === "content") {
@@ -201,6 +224,8 @@ export function createThreadMaterializer(params: {
     stop() {
       if (stopPromise) return stopPromise;
       accepting = false;
+      for (const retry of retries.values()) retry.cancel();
+      retries.clear();
       stopPromise = flush();
       return stopPromise;
     },

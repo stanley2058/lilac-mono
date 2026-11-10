@@ -102,6 +102,7 @@ function commandKey(actorId: string, commandId: string): string {
 
 function inputReceipt(input: NativeInputRecord): NativeInputReceipt {
   return {
+    commandId: input.commandId,
     inputId: input.id,
     messageId: input.messageId,
     turnId: input.turnId,
@@ -260,6 +261,18 @@ export class NativeStore {
         CREATE TABLE IF NOT EXISTS native_push_subscriptions (endpoint TEXT PRIMARY KEY,user_id TEXT NOT NULL,p256dh TEXT NOT NULL,auth TEXT NOT NULL,completion INTEGER NOT NULL,failure INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS native_model_favorites (user_id TEXT NOT NULL,model_id TEXT NOT NULL,PRIMARY KEY(user_id,model_id));
         PRAGMA user_version = 7;`);
+      this.db.run(`
+        CREATE TEMP TABLE IF NOT EXISTS native_pending_questions (turn_id TEXT NOT NULL,thread_id TEXT NOT NULL,respondent_id TEXT NOT NULL,generation INTEGER NOT NULL,PRIMARY KEY(thread_id,respondent_id,generation,turn_id));
+        DELETE FROM native_pending_questions;
+        INSERT INTO native_pending_questions SELECT DISTINCT r.id,r.thread_id,json_extract(p.value,'$.data.respondentId'),json_extract(p.value,'$.data.historyGeneration') FROM native_records r,json_each(r.data_json,'$.value.messages') m,json_each(m.value,'$.parts') p WHERE r.kind='turn' AND instr(r.data_json,'"data-question"')>0 AND json_extract(p.value,'$.type')='data-question' AND json_extract(p.value,'$.data.view.state')='pending';
+        CREATE TEMP TRIGGER IF NOT EXISTS native_questions_insert AFTER INSERT ON main.native_records WHEN new.kind='turn' BEGIN
+          INSERT OR IGNORE INTO native_pending_questions SELECT DISTINCT r.id,r.thread_id,json_extract(p.value,'$.data.respondentId'),json_extract(p.value,'$.data.historyGeneration') FROM native_records r,json_each(r.data_json,'$.value.messages') m,json_each(m.value,'$.parts') p WHERE r.kind='turn' AND r.id=new.id AND instr(r.data_json,'"data-question"')>0 AND json_extract(p.value,'$.type')='data-question' AND json_extract(p.value,'$.data.view.state')='pending'; END;
+        CREATE TEMP TRIGGER IF NOT EXISTS native_questions_update AFTER UPDATE ON main.native_records WHEN new.kind='turn' BEGIN
+          DELETE FROM native_pending_questions WHERE turn_id=old.id;
+          INSERT OR IGNORE INTO native_pending_questions SELECT DISTINCT r.id,r.thread_id,json_extract(p.value,'$.data.respondentId'),json_extract(p.value,'$.data.historyGeneration') FROM native_records r,json_each(r.data_json,'$.value.messages') m,json_each(m.value,'$.parts') p WHERE r.kind='turn' AND r.id=new.id AND instr(r.data_json,'"data-question"')>0 AND json_extract(p.value,'$.type')='data-question' AND json_extract(p.value,'$.data.view.state')='pending'; END;
+        CREATE TEMP TRIGGER IF NOT EXISTS native_questions_delete AFTER DELETE ON main.native_records WHEN old.kind='turn' BEGIN
+          DELETE FROM native_pending_questions WHERE turn_id=old.id; END;
+      `);
       return Result.ok(undefined);
     });
   }
@@ -772,10 +785,9 @@ export class NativeStore {
 
   /** A question in the current history still waits for this user's answer. */
   private awaitsAnswer(userId: string, thread: NativeThreadRecord): boolean {
-    // instr skips JSON parsing for turns that never asked a question.
     return !!this.db
       .query<{ found: number }, [string, string, number]>(
-        "SELECT 1 AS found FROM native_records r WHERE r.kind='turn' AND r.thread_id=? AND instr(r.data_json,'\"data-question\"')>0 AND EXISTS(SELECT 1 FROM json_each(r.data_json,'$.value.messages') m, json_each(m.value,'$.parts') p WHERE json_extract(p.value,'$.type')='data-question' AND json_extract(p.value,'$.data.view.state')='pending' AND json_extract(p.value,'$.data.respondentId')=? AND json_extract(p.value,'$.data.historyGeneration')=?) LIMIT 1",
+        "SELECT 1 AS found FROM native_pending_questions WHERE thread_id=? AND respondent_id=? AND generation=? LIMIT 1",
       )
       .get(thread.id, userId, thread.historyGeneration);
   }
@@ -2406,16 +2418,36 @@ export class NativeStore {
         if (thread.historyGeneration !== input.historyGeneration)
           return Result.err(nativeFailure("stale", "History changed before preview"));
         const positions = [...new Set(input.positions)];
-        const records = yield* this.readRows(
-          `SELECT * FROM native_records INDEXED BY native_records_thread_position WHERE kind='turn' AND thread_id=? AND position IN (${positions.map(() => "?").join(",")}) ORDER BY position`,
-          [input.threadId, ...positions],
-        );
+        if (positions.length === 0) return Result.ok([]);
+        const rows = this.db
+          .query<
+            { position: number; user_text: string | null; reply_text: string | null },
+            (string | number)[]
+          >(`
+          SELECT r.position,
+            (SELECT substr(group_concat(substr(json_extract(p.value,'$.text'),1,8192),' '),1,8192)
+              FROM json_each((SELECT m.value FROM json_each(r.data_json,'$.value.messages') m WHERE json_extract(m.value,'$.role')='user' ORDER BY CAST(m.key AS INTEGER) LIMIT 1),'$.parts') p
+              WHERE json_extract(p.value,'$.type')='text') AS user_text,
+            (SELECT substr(group_concat(substr(json_extract(p.value,'$.text'),1,8192),' '),1,8192)
+              FROM json_each((SELECT m.value FROM json_each(r.data_json,'$.value.messages') m WHERE json_extract(m.value,'$.role')='assistant'
+                AND EXISTS(SELECT 1 FROM json_each(m.value,'$.parts') p WHERE json_extract(p.value,'$.type')='text' AND trim(json_extract(p.value,'$.text'))!='')
+                ORDER BY COALESCE(json_extract(m.value,'$.metadata.phase')='final',0) DESC, CAST(m.key AS INTEGER) DESC LIMIT 1),'$.parts') p
+              WHERE json_extract(p.value,'$.type')='text') AS reply_text
+          FROM native_records r INDEXED BY native_records_thread_position WHERE r.kind='turn' AND r.thread_id=? AND r.position IN (${positions.map(() => "?").join(",")}) ORDER BY r.position
+        `)
+          .all(input.threadId, ...positions);
         return Result.ok(
-          records.flatMap((record) =>
-            record.kind === "turn"
-              ? [{ position: record.value.position, ...turnPreviewText(record.value.messages) }]
-              : [],
-          ),
+          rows.map((row) => ({
+            position: row.position,
+            ...turnPreviewText([
+              { id: "user", role: "user", parts: [{ type: "text", text: row.user_text ?? "" }] },
+              {
+                id: "reply",
+                role: "assistant",
+                parts: [{ type: "text", text: row.reply_text ?? "" }],
+              },
+            ]),
+          })),
         );
       }, this),
     );
@@ -3701,7 +3733,11 @@ export class NativeStore {
       ...message,
       metadata: { ...message.metadata, position },
     }));
-    if (encoder.encode(JSON.stringify(indexed)).byteLength < WINDOW_BYTES && indexed.length <= 128)
+    if (
+      encoder.encode(JSON.stringify(indexed)).byteLength < WINDOW_BYTES &&
+      indexed.length <= 128 &&
+      indexed.every((message) => message.parts.length <= 128)
+    )
       return { ...slot, messages: indexed };
     const selected: DisplayMessage[] = [];
     let bytes = 0;
@@ -3714,7 +3750,7 @@ export class NativeStore {
         const part = message.parts[p];
         if (!part) continue;
         const size = encoder.encode(JSON.stringify(part)).byteLength;
-        if (bytes + partBytes + size > WINDOW_BYTES - 4096) break;
+        if (parts.length >= 128 || bytes + partBytes + size > WINDOW_BYTES - 4096) break;
         parts.push(part);
         partBytes += size;
       }
@@ -3728,6 +3764,7 @@ export class NativeStore {
     const first = indexed[0];
     if (
       first &&
+      first.parts.length <= 128 &&
       selected[0]?.id !== first.id &&
       bytes + encoder.encode(JSON.stringify(first)).byteLength < WINDOW_BYTES
     )
@@ -3781,8 +3818,11 @@ export class NativeStore {
       const segments = input.cursor.split("_");
       let messageIndex = Number(segments[1]);
       let partIndex = Number(segments[2]);
+      let fragmentOffset = Number(segments[3] ?? 0);
       if (
-        segments.length !== 3 ||
+        (segments.length !== 3 && segments.length !== 4) ||
+        !Number.isSafeInteger(fragmentOffset) ||
+        fragmentOffset < 0 ||
         segments[0] !== "p" ||
         !Number.isSafeInteger(messageIndex) ||
         !Number.isSafeInteger(partIndex) ||
@@ -3810,7 +3850,24 @@ export class NativeStore {
         while (partIndex < message.parts.length) {
           const part = message.parts[partIndex];
           if (!part) break;
-          const chunk = { messageId: message.id, partIndex, part };
+          const serialized = JSON.stringify(part);
+          const oversized = encoder.encode(serialized).byteLength > WINDOW_BYTES - 8192;
+          if (fragmentOffset > serialized.length || (!oversized && fragmentOffset !== 0))
+            return Result.err(nativeFailure("invalid", "Turn fragment cursor is invalid"));
+          // JSON escaping can expand a UTF-16 code unit to six bytes.
+          const fragmentEnd = Math.min(serialized.length, fragmentOffset + 16_384);
+          const chunk = oversized
+            ? {
+                messageId: message.id,
+                partIndex,
+                part: { type: "text" as const, text: "" },
+                fragment: {
+                  offset: fragmentOffset,
+                  total: serialized.length,
+                  json: serialized.slice(fragmentOffset, fragmentEnd),
+                },
+              }
+            : { messageId: message.id, partIndex, part };
           const size = encoder.encode(JSON.stringify(chunk)).byteLength;
           if (bytes + size > WINDOW_BYTES || chunks.length >= 64)
             return Result.ok({
@@ -3819,10 +3876,15 @@ export class NativeStore {
               projectionRevision: thread.revision,
               messages,
               chunks,
-              nextCursor: `p_${messageIndex}_${partIndex}`,
+              nextCursor: `p_${messageIndex}_${partIndex}_${fragmentOffset}`,
             });
           chunks.push(chunk);
           bytes += size;
+          if (oversized && fragmentEnd < serialized.length) {
+            fragmentOffset = fragmentEnd;
+            continue;
+          }
+          fragmentOffset = 0;
           partIndex++;
         }
         messageIndex++;

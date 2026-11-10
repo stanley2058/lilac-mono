@@ -61,6 +61,7 @@ function harness(
       signal?: AbortSignal,
     ) => AsyncGenerator<ThreadEvent>;
     delayedSubmit?: Promise<void>;
+    rootReceipt?: import("@stanley2058/lilac-client-protocol").NativeInputReceipt;
     prepareConnection?: (request: { fresh: boolean }) => Promise<void>;
     getCatalog?: (signal?: AbortSignal) => Promise<void>;
     unresponsiveClose?: boolean;
@@ -90,6 +91,7 @@ function harness(
       yield* options.streamWatch(input, signal);
       return;
     }
+    if (options.rootReceipt) yield { kind: "input" as const, receipt: options.rootReceipt };
     yield { kind: "replay" as const, reply: { kind: "unchanged" as const, checkpoint } };
     await new Promise<void>((resolve) => {
       if (signal?.aborted) return resolve();
@@ -908,4 +910,66 @@ test("a jump to another turn replaces a pending jump into the same range", async
   const store = test.client.thread("thread");
   expect(store.get("slot_100")?.kind).toBe("ready");
   expect(store.get("slot_12")).toBeUndefined();
+});
+
+test("an input event settles an uncertain command without submitting it again", async () => {
+  const state = harness({
+    rootReceipt: {
+      commandId: input.commandId,
+      inputId: "accepted",
+      messageId: "message",
+      state: "admitted",
+    },
+  });
+  expect(await state.client.submit(input)).toEqual({
+    kind: "uncertain",
+    commandId: input.commandId,
+  });
+  const received = Promise.withResolvers<void>();
+  state.client.subscribe((event) => {
+    if (event.kind === "input") received.resolve();
+  });
+  await state.client.start("thread");
+  await received.promise;
+  expect(await state.client.retry(input.commandId)).toMatchObject({
+    kind: "accepted",
+    receipt: { inputId: "accepted" },
+  });
+  expect(state.sentInputs).toEqual([]);
+});
+
+test("cache writes coalesce synchronous replay updates at the latest checkpoint", async () => {
+  const state = harness();
+  const commit = spyOn(state.cache, "commit");
+  const store = state.client.thread("thread");
+  store.replay(bootstrap.selectedThread!);
+  store.update({
+    checkpoint: { ...checkpoint, projectionRevision: 2, cursor: "second" },
+    changes: [
+      {
+        kind: "append-text",
+        turnId: "turn",
+        position: 0,
+        messageId: "message",
+        partIndex: 0,
+        text: " two",
+      },
+    ],
+  });
+  store.update({
+    checkpoint: { ...checkpoint, projectionRevision: 3, cursor: "third" },
+    changes: [
+      {
+        kind: "append-text",
+        turnId: "turn",
+        position: 0,
+        messageId: "message",
+        partIndex: 0,
+        text: " three",
+      },
+    ],
+  });
+  await state.client.loadCached("thread");
+  expect(commit).toHaveBeenCalledTimes(1);
+  expect((await state.cache.read(scope, "thread"))?.checkpoint.projectionRevision).toBe(3);
 });
