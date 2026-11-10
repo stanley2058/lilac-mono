@@ -25,7 +25,7 @@ export type AppProps = {
   sessionControl?: ReactNode;
   accountProfile?: ReactNode;
   draftCache?: Pick<WebNativeCache, "readDraft" | "saveDraft" | "listLocalDrafts" | "deleteDraft"> &
-    Partial<Pick<WebNativeCache, "flushDrafts">>;
+    Partial<Pick<WebNativeCache, "flushDrafts" | "listDraftedThreads">>;
 };
 export type Attachment = {
   key: string;

@@ -10,7 +10,7 @@ import {
 } from "@tanstack/react-query";
 import type { NativeClient } from "@stanley2058/lilac-client";
 
-import type { CacheScope } from "@stanley2058/lilac-client";
+import { cacheScopeKey, type CacheScope } from "@stanley2058/lilac-client";
 import type { AppProps } from "./types";
 import type { Draft } from "./components/Chat";
 
@@ -27,6 +27,16 @@ export function composerDraftOptions(
     },
     staleTime: "static",
     // Live attachment keys must survive sidebar unmounts and thread switches.
+    gcTime: Infinity,
+  });
+}
+
+/** Conversations with a saved reply draft. Rows prefer a live composer draft once one is loaded. */
+export function draftedThreadsOptions(scope: CacheScope, cache: AppProps["draftCache"]) {
+  return queryOptions({
+    queryKey: ["drafted-threads", cacheScopeKey(scope)],
+    queryFn: async () => (await cache?.listDraftedThreads?.(scope)) ?? new Set<string>(),
+    staleTime: "static",
     gcTime: Infinity,
   });
 }

@@ -519,3 +519,19 @@ test("merged patches match applying both in order", () => {
   const reset = { ...next, replace: true };
   expect(mergeCachePatches(first, reset)).toBe(reset);
 });
+
+test("the sidebar reads every conversation with an unsent reply in one transaction", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory);
+  await first.saveDraft(scope, "thread-a", { text: "Reply", skillIds: [] });
+  await first.saveDraft(scope, "thread-b", { text: "", skillIds: ["skill"] });
+  await first.saveDraft(scope, "draft:local", { text: "New conversation", skillIds: [] });
+  await first.saveDraft({ ...scope, principalId: "other" }, "thread-c", { text: "x", skillIds: [] });
+  first.close();
+  const second = cache(factory, { draftWriteDelayMs: 60_000 });
+  void second.saveDraft(scope, "thread-b", { text: "", skillIds: [] });
+  const transactions = spyOn(IDBDatabase.prototype, "transaction");
+  expect([...(await second.listDraftedThreads(scope))]).toEqual(["thread-a"]);
+  expect(transactions).toHaveBeenCalledTimes(1);
+  transactions.mockRestore();
+});

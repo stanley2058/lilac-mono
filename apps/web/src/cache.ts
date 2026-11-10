@@ -162,8 +162,8 @@ function threadKey(scope: CacheScope, threadId: string): string {
 function slotKey(key: string, slotId: string): string {
   return JSON.stringify([key, slotId]);
 }
-const draftKeySchema = z.tuple([z.string(), z.string().startsWith("draft:")]);
-function localDraftId(key: string, scopeKey: string): string | undefined {
+const draftKeySchema = z.tuple([z.string(), z.string()]);
+function draftThreadId(key: string, scopeKey: string): string | undefined {
   const decoded = Result.try({ try: () => JSON.parse(key), catch: () => undefined });
   const value = decoded.match({ ok: (value) => value, err: () => undefined });
   const parsed = draftKeySchema.safeParse(value);
@@ -750,7 +750,8 @@ export class WebNativeCache implements NativeCache {
     if (value !== undefined && !draftIsEmpty(value)) this.drafts.set(key, value);
     return value ? structuredClone(value) : { text: "", skillIds: [] };
   }
-  async listLocalDrafts(scope: CacheScope): Promise<{ threadId: string; draft: WebDraft }[]> {
+  /** Unsent drafts in the scope by thread, from IndexedDB with newer in-memory edits applied. */
+  private async scopeDrafts(scope: CacheScope): Promise<Map<string, WebDraft>> {
     const epoch = this.epoch;
     const scopeKey = cacheScopeKey(scope);
     const rows = await this.attempt(async (db) => {
@@ -765,23 +766,36 @@ export class WebNativeCache implements NativeCache {
         .filter((row) => row.scopeKey === scopeKey)
         .sort((a, b) => b.updatedAt - a.updatedAt);
     });
-    if (epoch !== this.epoch) return [];
     const drafts = new Map<string, WebDraft>();
+    if (epoch !== this.epoch) return drafts;
     for (const row of rows ?? []) {
-      const threadId = localDraftId(row.key, scopeKey);
+      const threadId = draftThreadId(row.key, scopeKey);
       if (threadId) drafts.set(threadId, decodeDraft(row));
     }
     for (const [key, draft] of this.drafts) {
-      const threadId = localDraftId(key, scopeKey);
+      const threadId = draftThreadId(key, scopeKey);
       if (threadId) drafts.set(threadId, draft);
     }
     for (const [key, pending] of this.pendingDrafts) {
-      const threadId = localDraftId(key, scopeKey);
+      const threadId = draftThreadId(key, scopeKey);
       if (threadId) drafts.set(threadId, pending.value);
     }
-    return [...drafts]
-      .filter(([, draft]) => draft.text.trim() || draft.skillIds.length || draft.commandId)
+    for (const [threadId, draft] of drafts)
+      if (!draft.text.trim() && !draft.skillIds.length && !draft.commandId) drafts.delete(threadId);
+    return drafts;
+  }
+  async listLocalDrafts(scope: CacheScope): Promise<{ threadId: string; draft: WebDraft }[]> {
+    return [...(await this.scopeDrafts(scope))]
+      .filter(([threadId]) => threadId.startsWith("draft:"))
       .map(([threadId, draft]) => ({ threadId, draft: structuredClone(draft) }));
+  }
+  /** Conversations with an unsent reply, read in one transaction for the whole sidebar. */
+  async listDraftedThreads(scope: CacheScope): Promise<Set<string>> {
+    return new Set(
+      [...(await this.scopeDrafts(scope)).keys()].filter(
+        (threadId) => !threadId.startsWith("draft:"),
+      ),
+    );
   }
   async deleteDraft(scope: CacheScope, threadId: string): Promise<void> {
     this.epoch++;
