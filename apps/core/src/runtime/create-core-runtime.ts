@@ -133,6 +133,7 @@ import {
 } from "../surface/authenticated-request";
 import type { AuthenticatedSurfaceOrigin } from "../surface/types";
 import {
+  AgentRunJournalMigrationFailure,
   SqliteAgentRunJournal,
   type AgentRunJournalSqliteFailure,
   type AgentRunRecoveryHead,
@@ -851,16 +852,34 @@ export async function createCoreRuntime(
       }),
     catch: captureRuntimeError,
   });
-  journalCreation.match({
+  const journalMigrationFailure = journalCreation.match({
     ok: (journal) => {
       agentRunJournal = journal;
+      return null;
     },
     err: (captured) => {
+      if (captured.kind === "error" && captured.error instanceof AgentRunJournalMigrationFailure) {
+        return captured.error;
+      }
       logger.warn("Agent run journal disabled for this boot", {
         error: safeRuntimeErrorText(captured, "Agent run journal creation failed"),
       });
+      return null;
     },
   });
+  // Running without the journal would restart and prune the runs its unmigrated checkpoints hold.
+  if (journalMigrationFailure) {
+    return finishCoreRuntimeCreateFailure({
+      kind: "result",
+      result: Result.err(
+        new CoreRuntimeCreateFailed({
+          operation: "request-delivery",
+          cause: journalMigrationFailure,
+          message: journalMigrationFailure.message,
+        }),
+      ),
+    });
+  }
   const jobServiceCreation = Result.try({
     try: () => {
       const store = new SqliteJobStore({ dbPath: path.join(env.dataDir, "background-jobs.db") });

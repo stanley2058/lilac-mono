@@ -196,6 +196,15 @@ export class AgentRunJournalSqliteFailure extends TaggedError("AgentRunJournalSq
   readonly message: string;
 }> {}
 
+/** The schema 1 journal stayed intact after its upgrade rolled back; startup must not reset it. */
+export class AgentRunJournalMigrationFailure extends TaggedError(
+  "AgentRunJournalMigrationFailure",
+)<{
+  readonly fromVersion: number;
+  readonly toVersion: number;
+  readonly message: string;
+}> {}
+
 export class AgentRunJournalCodecFailure extends TaggedError("AgentRunJournalCodecFailure")<{
   readonly runId: string;
   readonly field: string;
@@ -441,21 +450,31 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     this.#now = input.now ?? Date.now;
     this.#database.run("PRAGMA foreign_keys = ON");
     this.#database.run("PRAGMA journal_mode = WAL");
-    Result.try({
-      try: () => {
-        this.#createTables();
-        this.#migrateSchema();
-      },
+    const created = Result.try({
+      try: () => this.#createTables(),
       catch: () =>
         new AgentRunJournalSqliteFailure({
           operation: "initialize",
           code: "SQLITE_SCHEMA",
           message: "Agent run journal schema initialization failed",
         }),
-    }).match({
-      ok: () => undefined,
-      err: () => this.#resetAllTables(),
     });
+    if (created.isErr()) this.#resetAllTables();
+    // A failed upgrade rolls back to the intact schema 1 journal; resetting here would drop
+    // checkpoints the next start can still migrate and recover.
+    const migrated = Result.try({
+      try: () => this.#migrateSchema(),
+      catch: () =>
+        new AgentRunJournalMigrationFailure({
+          fromVersion: MIGRATABLE_JOURNAL_SCHEMA_VERSION,
+          toVersion: JOURNAL_SCHEMA_VERSION,
+          message: "Agent run journal schema migration failed",
+        }),
+    });
+    if (migrated.isErr()) {
+      this.#database.close();
+      throw migrated.error;
+    }
   }
 
   close(): void {

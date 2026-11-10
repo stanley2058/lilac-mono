@@ -10,6 +10,7 @@ import SuperJSON from "superjson";
 import {
   AgentRunJournalCodecFailure,
   AgentRunJournalConflict,
+  AgentRunJournalMigrationFailure,
   SqliteAgentRunJournal,
   createAgentRunCheckpoint,
   type AgentRunCheckpointV1,
@@ -71,6 +72,62 @@ function insertAccepted(dbPath: string, accepted: CoreAcceptedRequestWork): void
     "INSERT INTO request_delivery_records (request_delivery_id, request_id, state) VALUES (?, ?, 'accepted')",
     [accepted.requestDeliveryId, accepted.requestId],
   );
+  database.close();
+}
+
+function seedSchemaOneJournal(
+  dbPath: string,
+  accepted: ReturnType<typeof work>,
+  predecessor: AgentRunCheckpointV1,
+  latest: AgentRunCheckpointV1,
+): void {
+  const database = new Database(dbPath, { strict: true });
+  database.run(`
+    CREATE TABLE agent_run_wal_metadata (
+      singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+      schema_version INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE agent_run_wal_heads (
+      request_delivery_id TEXT PRIMARY KEY NOT NULL,
+      request_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('active', 'terminal')),
+      latest_sequence INTEGER NOT NULL,
+      checkpoint_sequence INTEGER,
+      checkpoint_json TEXT,
+      terminal_outcome_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE agent_run_wal_events (
+      request_delivery_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      event_kind TEXT NOT NULL CHECK (event_kind IN ('opened', 'checkpoint', 'terminal')),
+      payload_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (request_delivery_id, sequence)
+    ) STRICT;
+    INSERT INTO agent_run_wal_metadata (singleton, schema_version) VALUES (1, 1);
+  `);
+  const runId = accepted.requestDeliveryId;
+  database.run(`INSERT INTO agent_run_wal_heads VALUES (?, ?, ?, 'active', 3, 3, ?, NULL, 1, 1)`, [
+    runId,
+    accepted.requestId,
+    accepted.sessionId,
+    SuperJSON.stringify(latest),
+  ]);
+  for (const [sequence, kind, payload] of [
+    [1, "opened", SuperJSON.stringify({ version: 1 })],
+    [2, "checkpoint", SuperJSON.stringify(predecessor)],
+    [3, "checkpoint", SuperJSON.stringify(latest)],
+  ] as const) {
+    database.run(`INSERT INTO agent_run_wal_events VALUES (?, ?, ?, ?, 1)`, [
+      runId,
+      sequence,
+      kind,
+      payload,
+    ]);
+  }
   database.close();
 }
 
@@ -484,52 +541,7 @@ describe("SqliteAgentRunJournal", () => {
         { role: "assistant", content: "older build" },
       ],
     });
-    const database = new Database(dbPath, { strict: true });
-    database.run(`
-      CREATE TABLE agent_run_wal_metadata (
-        singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
-        schema_version INTEGER NOT NULL
-      ) STRICT;
-      CREATE TABLE agent_run_wal_heads (
-        request_delivery_id TEXT PRIMARY KEY NOT NULL,
-        request_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        state TEXT NOT NULL CHECK (state IN ('active', 'terminal')),
-        latest_sequence INTEGER NOT NULL,
-        checkpoint_sequence INTEGER,
-        checkpoint_json TEXT,
-        terminal_outcome_json TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      ) STRICT;
-      CREATE TABLE agent_run_wal_events (
-        request_delivery_id TEXT NOT NULL,
-        sequence INTEGER NOT NULL,
-        event_kind TEXT NOT NULL CHECK (event_kind IN ('opened', 'checkpoint', 'terminal')),
-        payload_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (request_delivery_id, sequence)
-      ) STRICT;
-      INSERT INTO agent_run_wal_metadata (singleton, schema_version) VALUES (1, 1);
-    `);
-    const runId = accepted.requestDeliveryId;
-    database.run(
-      `INSERT INTO agent_run_wal_heads VALUES (?, ?, ?, 'active', 3, 3, ?, NULL, 1, 1)`,
-      [runId, accepted.requestId, accepted.sessionId, SuperJSON.stringify(latest)],
-    );
-    for (const [sequence, kind, payload] of [
-      [1, "opened", SuperJSON.stringify({ version: 1 })],
-      [2, "checkpoint", SuperJSON.stringify(predecessor)],
-      [3, "checkpoint", SuperJSON.stringify(latest)],
-    ] as const) {
-      database.run(`INSERT INTO agent_run_wal_events VALUES (?, ?, ?, ?, 1)`, [
-        runId,
-        sequence,
-        kind,
-        payload,
-      ]);
-    }
-    database.close();
+    seedSchemaOneJournal(dbPath, accepted, predecessor, latest);
 
     const journal = new SqliteAgentRunJournal({ dbPath });
     const unwrap = <T, E>(result: ResultType<T, E>): T =>
@@ -563,6 +575,48 @@ describe("SqliteAgentRunJournal", () => {
         .get()?.delta,
     ).toBe(1);
     inspect.close();
+  });
+
+  it("fails to open and keeps the schema 1 journal when its migration fails", async () => {
+    const { dbPath } = await fixture();
+    const accepted = work();
+    insertAccepted(dbPath, accepted);
+    const predecessor = createAgentRunCheckpoint({ messages: [{ role: "user", content: "old" }] });
+    const latest = createAgentRunCheckpoint({
+      messages: [
+        { role: "user", content: "old" },
+        { role: "assistant", content: "older build" },
+      ],
+    });
+    seedSchemaOneJournal(dbPath, accepted, predecessor, latest);
+    const blocker = new Database(dbPath, { strict: true });
+    blocker.run(`
+      CREATE TRIGGER fail_migration BEFORE UPDATE OF checkpoint_json ON agent_run_wal_heads
+      BEGIN SELECT RAISE(ABORT, 'migration failed'); END
+    `);
+    blocker.close();
+
+    expect(() => new SqliteAgentRunJournal({ dbPath })).toThrow(AgentRunJournalMigrationFailure);
+
+    const inspect = new Database(dbPath, { strict: true });
+    expect(
+      inspect
+        .query<{ schema_version: number }, []>("SELECT schema_version FROM agent_run_wal_metadata")
+        .get()?.schema_version,
+    ).toBe(1);
+    inspect.run("DROP TRIGGER fail_migration");
+    inspect.close();
+    const journal = new SqliteAgentRunJournal({ dbPath });
+    const recovery = journal.loadRecoveryHeads().match({
+      ok: (value) => value,
+      err: (error) => {
+        throw error;
+      },
+    });
+    expect(recovery.resets).toEqual([]);
+    expect(recovery.heads[0]?.checkpoint).toEqual(latest);
+    expect(recovery.heads[0]?.previousCheckpoint).toEqual(predecessor);
+    journal.close();
   });
 
   it("rolls back the checkpoint event when the head update fails", async () => {
