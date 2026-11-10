@@ -8,6 +8,70 @@ import { z } from "zod";
 import { materializeClaudeCodeRunResult } from "../claude-code-run";
 
 describe("materializeClaudeCodeRunResult", () => {
+  it("bounds disposal when query settlement never resolves", async () => {
+    const provider = createClaudeCode();
+    const started = Promise.withResolvers<void>();
+    let expire = () => {};
+    const schedule = globalThis.setTimeout;
+    const timerSpy = spyOn(globalThis, "setTimeout").mockImplementation(
+      Object.assign((...args: Parameters<typeof setTimeout>) => {
+        if (args[1] === 10000) expire = () => args[0]();
+        return schedule(...args);
+      }, schedule),
+    );
+    try {
+      const run = (
+        await materializeClaudeCodeRunResult({
+          modelId: "sonnet",
+          cwd: process.cwd(),
+          tools: {},
+          execute: async () => {
+            throw new Error("unused");
+          },
+          createModel: (id, settings) => provider(id, settings),
+          controller: {
+            interrupt: async () => {},
+            getContextUsage: async () => null,
+            settle: () => {
+              started.resolve();
+              return new Promise(() => {});
+            },
+          },
+        })
+      ).unwrap();
+      const disposed = run.disposeResult();
+      await started.promise;
+      expire();
+      expect((await disposed).status).toBe("error");
+    } finally {
+      timerSpy.mockRestore();
+    }
+  });
+
+  it("retains a failed query settlement for disposal", async () => {
+    const provider = createClaudeCode();
+    const run = (
+      await materializeClaudeCodeRunResult({
+        modelId: "sonnet",
+        cwd: process.cwd(),
+        tools: {},
+        execute: async () => {
+          throw new Error("unused");
+        },
+        createModel: (id, settings) => provider(id, settings),
+        controller: {
+          interrupt: async () => {},
+          getContextUsage: async () => null,
+          settle: async () => {
+            throw new Error("settlement failed");
+          },
+        },
+      })
+    ).unwrap();
+    expect((await run.settleExecutionResult!()).status).toBe("error");
+    expect((await run.disposeResult()).status).toBe("error");
+  });
+
   it("returns invalid native-session configuration as an owned Result error", async () => {
     const materialized = await materializeClaudeCodeRunResult({
       modelId: "sonnet",
