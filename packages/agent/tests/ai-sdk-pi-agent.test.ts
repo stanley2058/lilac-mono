@@ -758,6 +758,24 @@ describe("AiSdkPiAgent recovery checkpoints", () => {
     expect(model.doStreamCalls).toHaveLength(2);
   });
 
+  it("lists queued follow-ups until a turn takes them", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        textStream("first", "initial answer"),
+        textStream("second", "first follow-up answer"),
+        textStream("third", "second follow-up answer"),
+      ],
+    });
+    const agent = new AiSdkPiAgent({ system: "test", model });
+    const firstId = agent.followUp("first follow-up");
+    const secondId = agent.followUp("second follow-up");
+
+    expect(agent.getQueuedFollowUpIds()).toEqual([firstId, secondId]);
+    await agent.prompt("start");
+
+    expect(agent.getQueuedFollowUpIds()).toEqual([]);
+  });
+
   it("hands canonical input IDs off once the checkpoint handler accepts them", async () => {
     const checkpointAttempts: string[][] = [];
     const model = new MockLanguageModelV4({

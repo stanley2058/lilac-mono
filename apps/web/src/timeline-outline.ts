@@ -67,6 +67,41 @@ export function mergeOutlinePages(pages: readonly ThreadOutline[]): {
   return { positions, windows };
 }
 
+/**
+ * Replaces the newest loaded page with a fresh read of it. New turns move the fresh page's start
+ * forward, so the turns it no longer covers stay from the old page and older pages stay as loaded.
+ */
+export function spliceNewestOutlinePage(
+  pages: readonly ThreadOutline[],
+  fresh: ThreadOutline,
+): ThreadOutline[] {
+  const [old, ...older] = pages;
+  const boundary = fresh.earlierBefore;
+  if (!old || boundary === undefined) return [fresh];
+  if (boundary <= (old.earlierBefore ?? 0)) return [fresh, ...older];
+  const kept: ThreadOutline = {
+    ...old,
+    positions: old.positions.filter((position) => position < boundary),
+    ...(old.windows
+      ? {
+          windows: old.windows
+            .filter((window) => window.firstPosition < boundary)
+            .map((window) =>
+              window.endPosition > boundary ? { ...window, endPosition: boundary } : window,
+            ),
+        }
+      : {}),
+  };
+  const merged = mergeOutlinePages([fresh, kept]);
+  const newest: ThreadOutline = {
+    historyGeneration: fresh.historyGeneration,
+    positions: merged.positions,
+    ...(merged.windows ? { windows: merged.windows } : {}),
+    ...(old.earlierBefore === undefined ? {} : { earlierBefore: old.earlierBefore }),
+  };
+  return [newest, ...older];
+}
+
 export function railItems(outline: {
   positions: readonly number[];
   windows?: readonly ContextWindowOutline[];

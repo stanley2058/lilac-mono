@@ -252,3 +252,47 @@ describe("installer private data files", () => {
     },
   );
 });
+
+it.skipIf(process.getuid?.() !== 0)(
+  "repairs descendants after a previous repair changed only the root owner",
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "installer-owner-retry-"));
+    try {
+      await mkdir(path.join(directory, "workspace"));
+      await writeFile(path.join(directory, "workspace", "keep.txt"), "retained");
+      await filesystem.chown(directory, 1000, 1000);
+      expect((await stat(path.join(directory, "workspace", "keep.txt"))).uid).toBe(0);
+      expect((await runProgram(directory, { action: "write", files: [] })).code).toBe(0);
+      expect((await stat(path.join(directory, "workspace", "keep.txt"))).uid).toBe(1000);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(![0, 1000].includes(process.getuid?.() ?? -1))(
+  "leaves live data unchanged when staging a later data file fails",
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "installer-data-atomic-"));
+    try {
+      await writeFile(path.join(directory, "core-config.yaml"), "original config");
+      await writeFile(path.join(directory, "blocked"), "operator file");
+      const result = await runProgram(directory, {
+        action: "write",
+        files: [
+          { relativePath: "core-config.yaml", content: "replacement config" },
+          { relativePath: "blocked/secret", content: "replacement secret" },
+        ],
+      });
+      expect(result.code).toBe(1);
+      expect(await readFile(path.join(directory, "core-config.yaml"), "utf8")).toBe(
+        "original config",
+      );
+      expect((await filesystem.readdir(directory)).filter((name) => name.endsWith(".tmp"))).toEqual(
+        [],
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

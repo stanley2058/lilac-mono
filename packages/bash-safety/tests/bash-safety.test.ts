@@ -71,7 +71,7 @@ describe("analyzeBashCommand", () => {
       reason: expect.stringContaining("dynamic target"),
       hint: expect.stringContaining("literal child paths"),
     });
-    expect(analyzeBashCommand("cd .. && rm -rf build", { cwd })).not.toBeNull();
+    expect(analyzeBashCommand("cd .. && rm -rf build", { cwd })).toBeNull();
   });
 
   it("returns stable codes and safe hints without changing recursive-delete decisions", () => {
@@ -391,5 +391,146 @@ describe("analyzeBashCommand", () => {
     });
 
     expect(result?.reason).toBe("access to a configured protected path");
+  });
+});
+
+describe("audit deletion guard regressions", () => {
+  const cwd = "/workspace/project";
+  for (const command of ["cd ~", "cd", "pushd /elsewhere"]) {
+    it(`keeps recursive deletion guarded after ${command}`, () => {
+      expect(analyzeBashCommand(`${command}; rm -r child`, { cwd })).not.toBeNull();
+    });
+  }
+  it("resolves deletion of the original cwd after cd", () => {
+    expect(analyzeBashCommand("cd child; rm -r ..", { cwd })).not.toBeNull();
+  });
+  for (const target of [
+    ".",
+    "./",
+    "./src",
+    "/workspace/project/file",
+    ":(literal).",
+    "../file",
+    "src/*",
+    "-- .",
+    "HEAD -- src/file.ts",
+  ]) {
+    it(`blocks git checkout ${target}`, () => {
+      expect(analyzeBashCommand(`git checkout ${target}`, { cwd })).not.toBeNull();
+    });
+  }
+  for (const action of ["-exec", "-execdir", "-ok", "-okdir"]) {
+    for (const ending of ["\\;", "+"]) {
+      it(`guards find ${action} rm with ${ending}`, () => {
+        expect(analyzeBashCommand(`find . ${action} rm {} ${ending}`, { cwd })).not.toBeNull();
+      });
+    }
+  }
+  it("keeps fail-open behavior for unrecognized commands", () => {
+    expect(analyzeBashCommand("custom-cleanup --unknown", { cwd })).toBeNull();
+    expect(analyzeBashCommand("git checkout feature", { cwd })).toBeNull();
+    expect(analyzeBashCommand("git checkout feature/topic", { cwd })).toBeNull();
+  });
+});
+
+describe("fail-open deletion verdict matrix", () => {
+  it.each([
+    "rm -rf build",
+    "cd sub && rm -rf build",
+    "pushd sub && rm -rf build",
+    "cd ~/proj && rm -rf build",
+    "cd ~/proj/apps/web && rm -rf node_modules",
+    "cd $TMPDIR && rm -rf out",
+    "cd /tmp/x && rm -rf out",
+    'cd "$WORKDIR" && rm -rf build',
+    "cd - && rm -rf build",
+    "cd .. && rm -rf proj/build",
+    "find . -name '*.log' -delete",
+    "find build -delete",
+    "find . -name '*.log' -exec rm {} +",
+    "find build -type f -exec rm -f {} \\;",
+    "find /tmp/x -delete",
+    "git checkout main",
+    "git checkout -b feat/x",
+    "git checkout feature/foo",
+  ])("allows %s", (command) => {
+    const previousHome = process.env.HOME;
+    process.env.HOME = "/home/stanley";
+    try {
+      expect(analyzeBashCommand(command, { cwd: "/home/stanley/proj" })).toBeNull();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+  it.each([
+    "cd ~ && rm -rf *",
+    'cd "$X" && rm -rf *',
+    "cd - && rm -rf .",
+    "pushd / && rm -rf usr",
+    "cd .. && rm -rf proj",
+    "rm -rf ~",
+    "rm -rf ../proj",
+    "find ~ -type f -exec rm {} \\;",
+    "find ~ -name '*.tmp' -delete",
+    "find .. -name x -delete",
+    "find / -delete",
+    "git checkout .",
+    "git checkout -- .",
+    "git restore .",
+  ])("blocks %s", (command) => {
+    const previousHome = process.env.HOME;
+    process.env.HOME = "/home/stanley";
+    try {
+      expect(analyzeBashCommand(command, { cwd: "/home/stanley/proj" })).not.toBeNull();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+});
+
+describe("resolved deletion scopes", () => {
+  const cwd = "/workspace/project";
+  it.each([
+    "cd $HOME/project && rm -rf build",
+    "cd ${HOME}/project && rm -rf build",
+    "popd && rm -rf build",
+    "find . -type f -execdir rm {} +",
+    "find build -exec rm {} +",
+    "find build -execdir rm {} +",
+    "find /tmp/x -exec rm {} +",
+  ])("allows %s", (command) => {
+    const previousHome = process.env.HOME;
+    process.env.HOME = "/workspace";
+    try {
+      expect(analyzeBashCommand(command, { cwd })).toBeNull();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+  it.each(["*", ".", "./", "..", "./*", "../*"])("guards %s after popd", (target) => {
+    expect(analyzeBashCommand(`popd && rm -rf ${target}`, { cwd })).not.toBeNull();
+  });
+  it.each(["-delete", "-exec rm {} +", "-execdir rm {} +"])(
+    "guards unsafe find roots with %s",
+    (action) => {
+      for (const root of [".", "..", "/", "/workspace/elsewhere"]) {
+        expect(analyzeBashCommand(`find ${root} ${action}`, { cwd })).not.toBeNull();
+      }
+    },
+  );
+  it("guards additional literal rm targets in a safe find tree", () => {
+    expect(analyzeBashCommand("find build -type f -exec rm -rf {} / +", { cwd })).not.toBeNull();
+  });
+  it("honors disabled TMPDIR trust", () => {
+    expect(
+      analyzeBashCommand("find $TMPDIR -delete", { cwd, allowTmpdirVar: false }),
+    ).not.toBeNull();
+    expect(
+      analyzeBashCommand("cd $TMPDIR && rm -rf *", { cwd, allowTmpdirVar: false }),
+    ).not.toBeNull();
+    expect(analyzeBashCommand("find $TMPDIR -delete", { cwd, allowTmpdirVar: true })).toBeNull();
   });
 });

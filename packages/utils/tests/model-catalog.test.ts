@@ -13,7 +13,7 @@ import {
   registryModelCatalog,
   type ModelsDevRegistry,
 } from "../model-catalog-schema";
-import bundledSnapshot from "../model-catalog-snapshot.generated";
+import bundledSnapshot from "../model-catalog-snapshot.json.txt" with { type: "text" };
 
 const registry: ModelsDevRegistry = {
   anthropic: {
@@ -333,7 +333,7 @@ test("an unusable store path falls back to an in-memory catalog", async () => {
 
 test("the bundled snapshot seeds a store that projects like the registry", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lilac-catalog-snapshot-"));
-  const snapshot = decodeModelsDevRegistry(bundledSnapshot)!;
+  const snapshot = decodeModelsDevRegistry(JSON.parse(bundledSnapshot))!;
   const catalog = new ModelCatalogCache({ cachePath: path.join(dir, "catalog.sqlite") }).current();
   const config = parseCoreConfigV3ToUniversal({
     configVersion: 3,
@@ -399,4 +399,25 @@ test("catalog lists text models and marks families from an earlier generation as
     "gpt-5-codex-spark": true,
     "gpt-red-latest": true,
   });
+});
+
+test("a projection reads provider model metadata once", () => {
+  const config = parseCoreConfigV3ToUniversal({
+    configVersion: 3,
+    models: { catalog: { providers: { anthropic: "enabled", "claude-code": "enabled" } } },
+  });
+  const catalog = registryModelCatalog(registry);
+  const reads = new Map<string, number>();
+  projectModelCatalog(config, {
+    ...catalog,
+    model: () => {
+      throw new Error("per-model read");
+    },
+    models: (provider) => {
+      reads.set(provider, (reads.get(provider) ?? 0) + 1);
+      return catalog.models(provider);
+    },
+  });
+  expect(reads.get("anthropic")).toBe(1);
+  expect([...reads.values()].every((count) => count === 1)).toBe(true);
 });

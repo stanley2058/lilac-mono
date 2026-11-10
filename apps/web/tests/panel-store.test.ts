@@ -428,3 +428,20 @@ test("Files opens once as a panel tab and survives reload", () => {
       .tabs.get("thread")?.activeId,
   ).toBe("files");
 });
+
+test("saved layouts keep the 100 most recently changed conversations", () => {
+  const storage = memoryStorage();
+  const store = createPanelStore(scope, storage);
+  for (let index = 0; index < 120; index++) {
+    store.getState().resize(`thread-${index}`, 300 + index);
+    store.getState().openFiles(`thread-${index}`);
+  }
+  // Touching an old conversation makes it recent again.
+  store.getState().resize("thread-0", 290);
+  const loaded = createPanelStore(scope, storage).getState();
+  expect(loaded.threads.size).toBe(100);
+  expect(loaded.tabs.size).toBe(100);
+  expect(loaded.threads.get("thread-0")).toEqual({ open: true, width: 290 });
+  expect(loaded.threads.has("thread-20")).toBe(false);
+  expect(loaded.threads.get("thread-119")?.width).toBe(419);
+});

@@ -3571,3 +3571,92 @@ describe("Discord projection parity", () => {
     });
   }
 });
+
+it("limits restricted message edits and deletes to the bot's messages", async () => {
+  const channelId = "123456789012345678";
+  const messages: SurfaceMessage[] = ["human", "bot"].map((userId, index) => ({
+    ref: { platform: "discord", channelId, messageId: `11111111111111111${index}` },
+    session: { platform: "discord", channelId },
+    userId,
+    text: "hello",
+    ts: 1,
+  }));
+  const adapter = new FakeAdapter([], { [channelId]: messages });
+  const tool = new Surface({
+    adapter,
+    config: testConfig({
+      surface: { discord: { botName: "lilac", allowedChannelIds: [channelId] } },
+    }),
+  });
+  for (const callable of ["surface.messages.edit", "surface.messages.delete"]) {
+    const input = {
+      client: "discord",
+      sessionId: channelId,
+      messageId: "111111111111111110",
+      ...(callable.endsWith("edit") ? { text: "changed" } : {}),
+    };
+    expect(
+      (await tool.callResult(callable, input, { context: { safetyMode: "restricted" } })).isErr(),
+    ).toBe(true);
+    expect(
+      await tool.callResult(
+        callable,
+        { ...input, messageId: "111111111111111111" },
+        { context: { safetyMode: "restricted" } },
+      ),
+    ).toMatchObject({ status: "ok" });
+    expect(
+      (await tool.callResult(callable, input, { context: { safetyMode: "trusted" } })).isOk(),
+    ).toBe(true);
+  }
+});
+
+it("allows restricted GitHub changes only to marked agent comments", async () => {
+  let marked = false;
+  const changed: string[] = [];
+  const githubAdapter = createGithubTestAdapter({
+    getIssue: async () => ({ title: "issue", body: null }),
+    listIssueComments: async () => [],
+    createIssueComment: async () => ({ id: 1 }),
+    getIssueComment: async () => ({
+      id: 345,
+      body: marked ? `${GITHUB_AGENT_COMMENT_MARKER}\nhello` : "human",
+      user: { id: 123, login: "bot" },
+    }),
+    editIssueComment: async () => {
+      changed.push("edit");
+    },
+    deleteIssueComment: async () => {
+      changed.push("delete");
+    },
+    createIssueReaction: async () => ({ id: 0 }),
+    createIssueCommentReaction: async () => ({ id: 0 }),
+    listIssueReactions: async () => [],
+    listIssueCommentReactions: async () => [],
+    deleteIssueReactionById: async () => undefined,
+    deleteIssueCommentReactionById: async () => undefined,
+    getGithubAppSlugOrNull: async () => null,
+  });
+  const tool = new Surface({
+    adapter: new FakeAdapter([], {}),
+    githubAdapter,
+    config: testConfig({}),
+  });
+  for (const callable of ["surface.messages.edit", "surface.messages.delete"]) {
+    const input = {
+      client: "github",
+      sessionId: "owner/repo#1",
+      messageId: "345",
+      ...(callable.endsWith("edit") ? { text: "changed" } : {}),
+    };
+    marked = false;
+    expect(
+      (await tool.callResult(callable, input, { context: { safetyMode: "restricted" } })).isErr(),
+    ).toBe(true);
+    marked = true;
+    expect(
+      (await tool.callResult(callable, input, { context: { safetyMode: "restricted" } })).isOk(),
+    ).toBe(true);
+  }
+  expect(changed).toEqual(["edit", "delete"]);
+});

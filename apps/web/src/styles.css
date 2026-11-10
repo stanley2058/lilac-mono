@@ -22,6 +22,8 @@
     font-size: 16px;
     background: var(--ui-background);
     color: var(--ui-foreground);
+    /* Inherited by every scroll container, so scrollbars follow the theme instead of the OS. */
+    scrollbar-color: color-mix(in srgb, var(--ui-muted-foreground) 45%, transparent) transparent;
   }
   * {
     box-sizing: border-box;
@@ -356,6 +358,15 @@
   .markdown li {
     margin: calc(var(--ui-space-unit) * 1) 0;
   }
+  /* The checkbox takes the bullet's place. */
+  .markdown li.task-list-item {
+    list-style: none;
+  }
+  .markdown li.task-list-item > input[type="checkbox"] {
+    margin-inline: calc(var(--ui-space-unit) * -5) calc(var(--ui-space-unit) * 1);
+    vertical-align: middle;
+    accent-color: var(--ui-primary);
+  }
   .markdown blockquote {
     margin: calc(var(--ui-space-unit) * 3) 0;
     padding-inline-start: calc(var(--ui-space-unit) * 4);
@@ -519,7 +530,7 @@
     color: var(--ui-muted-foreground);
     font-size: var(--ui-text-xs);
   }
-  @media (max-width: 760px) {
+  @media (width < 47.5rem) {
     :root {
       --ui-sidebar-width: 15rem;
     }
@@ -561,9 +572,6 @@
     width: calc(var(--ui-space-unit) * 4);
     height: calc(var(--ui-space-unit) * 4);
     flex-shrink: 0;
-  }
-
-  @media (max-width: 760px) {
   }
 }
 

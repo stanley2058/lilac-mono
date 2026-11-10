@@ -1019,7 +1019,7 @@ describe("unified workflow integration", () => {
       expect(resumedDeliveries).toBe(1);
 
       runner.activate();
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(runnerPanic).toBeNull();
       expect(modelCalls).toBe(1);
       expect(recoveredWorkflowStore.requestClaims).toEqual([
@@ -1053,7 +1053,7 @@ describe("unified workflow integration", () => {
       expect(workflowStoreValue(workflowStore.getRun(runId))).toMatchObject({
         state: "succeeded",
       });
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
 
       expect(recoveredPrompts).toHaveLength(1);
       expect(recoveredPrompts[0]).toContain("durable workflow child checkpoint");

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
-import type { CachePatch, CacheScope } from "@stanley2058/lilac-client";
+import { IDBDatabase, IDBFactory, IDBIndex, IDBObjectStore, IDBTransaction } from "fake-indexeddb";
+import { NativeClient, type CachePatch, type CacheScope } from "@stanley2058/lilac-client";
 import type { BootstrapReply } from "@stanley2058/lilac-client-protocol";
-import { WebNativeCache } from "../src/cache";
+import { mergeCachePatches, WebNativeCache } from "../src/cache";
 
 const scope: CacheScope = {
   installationId: "install",
@@ -16,9 +16,9 @@ afterEach(() => {
 });
 function cache(
   factory: IDBFactory | null = new IDBFactory(),
-  options: { maxThreads?: number; maxBytes?: number } = {},
+  options: { maxThreads?: number; maxBytes?: number; draftWriteDelayMs?: number } = {},
 ) {
-  const instance = new WebNativeCache({ indexedDB: factory, ...options });
+  const instance = new WebNativeCache({ indexedDB: factory, draftWriteDelayMs: 0, ...options });
   caches.push(instance);
   return instance;
 }
@@ -91,16 +91,86 @@ describe("WebNativeCache", () => {
     puts.mockRestore();
   });
 
+  test("streamed patches that arrive during a write share the next transaction", async () => {
+    const factory = new IDBFactory();
+    const first = cache(factory);
+    await first.commit(scope, "thread", patch());
+    const transactions = spyOn(IDBDatabase.prototype, "transaction");
+    const writes = [2, 3, 4, 5].map((revision) =>
+      first.commit(scope, "thread", patch(revision, `delta ${revision}`)),
+    );
+    await Promise.all(writes);
+    // The first delta writes at once; the other three wait and land together.
+    expect(transactions).toHaveBeenCalledTimes(2);
+    transactions.mockRestore();
+    first.close();
+    const reopened = await cache(factory).read(scope, "thread");
+    expect(reopened?.checkpoint.projectionRevision).toBe(5);
+    expect(reopened?.slots[0]?.slot).toMatchObject({
+      messages: [{ parts: [{ text: "delta 5" }] }],
+    });
+  });
+
+  test("removing a thread drops its writes that have not started", async () => {
+    const factory = new IDBFactory();
+    const first = cache(factory);
+    await first.commit(scope, "thread", patch());
+    const running = first.commit(scope, "thread", patch(2));
+    const queued = first.commit(scope, "thread", patch(3));
+    await first.remove(scope, "thread");
+    await Promise.all([running, queued]);
+    first.close();
+    expect(await cache(factory).read(scope, "thread")).toBeUndefined();
+  });
+
   test("LRU eviction never stores an incomplete incremental checkpoint", async () => {
     const factory = new IDBFactory();
     const first = cache(factory, { maxThreads: 1 });
     await first.commit(scope, "one", patch());
     await first.commit(scope, "two", patch());
-    await first.commit(scope, "one", patch(2));
+    expect(await first.commit(scope, "one", patch(2))).toBe("missing");
     first.close();
     const second = cache(factory, { maxThreads: 1 });
     expect(await second.read(scope, "one")).toBeUndefined();
     expect(await second.read(scope, "two")).toBeDefined();
+  });
+
+  test("a thread evicted from IndexedDB caches again on its next update", async () => {
+    const factory = new IDBFactory();
+    const first = cache(factory, { maxThreads: 1 });
+    const client = new NativeClient({
+      scope,
+      cache: first,
+      openSocket: () => new WebSocket("ws://unused.invalid"),
+      bootstrap: async () => bootstrap,
+    });
+    const one = client.thread("one");
+    one.replay({ kind: "window", checkpoint: patch().checkpoint, slots: [patch().put[0]!.slot] });
+    await client.loadCached("one");
+    const two = client.thread("two");
+    two.replay({ kind: "window", checkpoint: patch().checkpoint, slots: [patch().put[0]!.slot] });
+    await client.loadCached("two");
+    one.update({
+      checkpoint: patch(2).checkpoint,
+      changes: [
+        {
+          kind: "append-text",
+          turnId: "turn",
+          position: 1,
+          messageId: "msg",
+          partIndex: 0,
+          text: " again",
+        },
+      ],
+    });
+    await client.loadCached("one");
+    await client.dispose();
+    first.close();
+    const reopened = await cache(factory, { maxThreads: 1 }).read(scope, "one");
+    expect(reopened?.checkpoint.projectionRevision).toBe(2);
+    expect(reopened?.slots[0]?.slot).toMatchObject({
+      messages: [{ parts: [{ text: "hello again" }] }],
+    });
   });
 
   test("unsupported IndexedDB uses isolated memory cache", async () => {
@@ -338,7 +408,7 @@ test("local draft discovery ignores malformed keys and forged scope indexes", as
 test("draft writes avoid reading all draft bodies until the storage cap requires eviction", async () => {
   const factory = new IDBFactory();
   const first = cache(factory, { maxThreads: 2 });
-  const getAll = spyOn(IDBObjectStore.prototype, "getAll");
+  const getAll = spyOn(IDBIndex.prototype, "getAll");
   await first.saveDraft(scope, "draft:first", { text: "First", skillIds: [] });
   await first.saveDraft(scope, "draft:second", { text: "Second", skillIds: [] });
   await first.saveDraft(scope, "draft:first", { text: "First edited", skillIds: [] });
@@ -365,4 +435,281 @@ test("revoking a parent removes persisted child streams across cache instances a
   expect(await second.read(scope, "thread")).toBeUndefined();
   expect(await second.read(scope, child)).toBeUndefined();
   expect(await second.read(otherScope, child)).toBeDefined();
+});
+
+async function draftRowKeys(factory: IDBFactory): Promise<string[]> {
+  const raw = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = factory.open("lilac-native-v1", 1);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
+    const request = raw.transaction("drafts", "readonly").objectStore("drafts").getAllKeys();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  raw.close();
+  return keys.map((key) => JSON.parse(String(key))[1] as string).sort();
+}
+
+test("clearing a draft deletes its row so empty drafts never evict real ones", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory, { maxThreads: 2 });
+  await first.saveDraft(scope, "kept", { text: "Keep me", skillIds: [] });
+  await first.saveDraft(scope, "question", { text: "Typed answer", skillIds: [] });
+  await first.saveDraft(scope, "question", { text: "", skillIds: [] });
+  await first.saveDraft(scope, "cleared", { text: "  ", skillIds: [] });
+  await first.saveDraft(scope, "newer", { text: "Newer", skillIds: [] });
+  first.close();
+  expect(await draftRowKeys(factory)).toEqual(["kept", "newer"]);
+  const reopened = cache(factory, { maxThreads: 2 });
+  expect((await reopened.readDraft(scope, "kept")).text).toBe("Keep me");
+  expect((await reopened.readDraft(scope, "question")).text).toBe("");
+});
+
+test("draft eviction counts each principal separately", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory, { maxThreads: 2 });
+  const other = { ...scope, principalId: "other" };
+  await first.saveDraft(scope, "draft:mine-1", { text: "Mine 1", skillIds: [] });
+  await first.saveDraft(scope, "draft:mine-2", { text: "Mine 2", skillIds: [] });
+  await first.saveDraft(other, "draft:theirs-1", { text: "Theirs 1", skillIds: [] });
+  await first.saveDraft(other, "draft:theirs-2", { text: "Theirs 2", skillIds: [] });
+  first.close();
+  const reopened = cache(factory, { maxThreads: 2 });
+  expect((await reopened.listLocalDrafts(scope)).map((entry) => entry.threadId).sort()).toEqual([
+    "draft:mine-1",
+    "draft:mine-2",
+  ]);
+});
+
+test("in-memory drafts are capped per principal when IndexedDB is unavailable", async () => {
+  const first = cache(null, { maxThreads: 1 });
+  const other = { ...scope, principalId: "other" };
+  await first.saveDraft(scope, "draft:mine", { text: "Mine", skillIds: [] });
+  await first.saveDraft(other, "draft:theirs", { text: "Theirs", skillIds: [] });
+  expect((await first.readDraft(scope, "draft:mine")).text).toBe("Mine");
+});
+
+test("typing writes one draft row after the pause, and reads see every keystroke before it", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory, { draftWriteDelayMs: 60_000 });
+  const put = spyOn(IDBObjectStore.prototype, "put");
+  const saved: Promise<void>[] = [];
+  for (const text of ["H", "He", "Hel", "Hello"])
+    saved.push(first.saveDraft(scope, "thread", { text, skillIds: [] }));
+  expect((await first.readDraft(scope, "thread")).text).toBe("Hello");
+  expect(put).not.toHaveBeenCalled();
+  await first.flushDrafts();
+  await Promise.all(saved);
+  expect(
+    put.mock.calls.filter(([row]) => (row as { text?: string }).text !== undefined),
+  ).toHaveLength(1);
+  put.mockRestore();
+  first.close();
+  expect((await cache(factory).readDraft(scope, "thread")).text).toBe("Hello");
+});
+
+test("clearing a draft before its write lands leaves no row behind", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory, { draftWriteDelayMs: 60_000 });
+  void first.saveDraft(scope, "draft:local", { text: "Unsent", skillIds: [] });
+  expect((await first.listLocalDrafts(scope)).map((entry) => entry.threadId)).toEqual([
+    "draft:local",
+  ]);
+  void first.saveDraft(scope, "draft:local", { text: "", skillIds: [] });
+  expect(await first.listLocalDrafts(scope)).toEqual([]);
+  await first.flushDrafts();
+  expect(await draftRowKeys(factory)).toEqual([]);
+});
+
+test("merged patches match applying both in order", () => {
+  const slot = (slotId: string, revision: number) => ({
+    revision,
+    slot: { kind: "deferred" as const, slotId, position: revision, endPosition: revision + 1 },
+  });
+  const checkpoint = (projectionRevision: number) => ({
+    protocolVersion: 1 as const,
+    historyGeneration: 0,
+    projectionRevision,
+    cursor: `cursor_${projectionRevision}`,
+  });
+  const first = { checkpoint: checkpoint(1), replace: false, put: [slot("a", 1)], remove: ["b"] };
+  const next = {
+    checkpoint: checkpoint(2),
+    replace: false,
+    put: [slot("b", 2)],
+    remove: ["a", "c"],
+  };
+  expect(mergeCachePatches(first, next)).toEqual({
+    checkpoint: checkpoint(2),
+    replace: false,
+    put: [slot("b", 2)],
+    remove: ["a", "c"],
+  });
+  const replaced = { ...first, replace: true };
+  expect(mergeCachePatches(replaced, next)).toEqual({
+    checkpoint: checkpoint(2),
+    replace: true,
+    put: [slot("b", 2)],
+    remove: [],
+  });
+  const reset = { ...next, replace: true };
+  expect(mergeCachePatches(first, reset)).toBe(reset);
+});
+
+test("the sidebar reads every conversation with an unsent reply in one transaction", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory);
+  await first.saveDraft(scope, "thread-a", { text: "Reply", skillIds: [] });
+  await first.saveDraft(scope, "thread-b", { text: "", skillIds: ["skill"] });
+  await first.saveDraft(scope, "draft:local", { text: "New conversation", skillIds: [] });
+  await first.saveDraft({ ...scope, principalId: "other" }, "thread-c", {
+    text: "x",
+    skillIds: [],
+  });
+  first.close();
+  const second = cache(factory, { draftWriteDelayMs: 60_000 });
+  void second.saveDraft(scope, "thread-b", { text: "", skillIds: [] });
+  const transactions = spyOn(IDBDatabase.prototype, "transaction");
+  expect([...(await second.listDraftedThreads(scope))]).toEqual(["thread-a"]);
+  expect(transactions).toHaveBeenCalledTimes(1);
+  transactions.mockRestore();
+});
+
+/** Stands in for the page the cache listens to while `run` settles. */
+async function withPage(
+  run: (page: { hide: () => void; leave: () => void }) => Promise<void>,
+): Promise<void> {
+  const document = Object.assign(new EventTarget(), { visibilityState: "visible" });
+  const window = new EventTarget();
+  Object.defineProperty(globalThis, "document", { value: document, configurable: true });
+  Object.defineProperty(globalThis, "window", { value: window, configurable: true });
+  try {
+    await run({
+      hide: () => {
+        document.visibilityState = "hidden";
+        document.dispatchEvent(new Event("visibilitychange"));
+      },
+      leave: () => window.dispatchEvent(new Event("pagehide")),
+    });
+  } finally {
+    Reflect.deleteProperty(globalThis, "document");
+    Reflect.deleteProperty(globalThis, "window");
+  }
+}
+
+for (const event of ["hide", "leave"] as const)
+  test(`drafts typed just before the page ${event === "hide" ? "hides" : "unloads"} are saved`, async () => {
+    const factory = new IDBFactory();
+    await withPage(async (page) => {
+      const first = cache(factory, { draftWriteDelayMs: 60_000 });
+      const stored = first.saveDraft(scope, "cleared", { text: "Old", skillIds: [] });
+      await first.flushDrafts();
+      await stored;
+      void first.saveDraft(scope, "thread", { text: "Typed before leaving", skillIds: [] });
+      void first.saveDraft(scope, "cleared", { text: "", skillIds: [] });
+      const commit = spyOn(IDBTransaction.prototype, "commit");
+      page[event]();
+      // A frozen or unloaded page runs no more script, so the handler must commit the writes itself.
+      expect(commit).toHaveBeenCalledTimes(1);
+      commit.mockRestore();
+      first.close();
+    });
+    expect((await cache(factory).readDraft(scope, "thread")).text).toBe("Typed before leaving");
+    expect(await draftRowKeys(factory)).toEqual(["thread"]);
+  });
+
+function oversizedPatch(parts: number): CachePatch {
+  const value = patch();
+  const slot = value.put[0]!.slot;
+  if (slot.kind !== "ready") throw new Error("expected a ready slot");
+  slot.messages[0]!.parts = Array.from({ length: parts }, (_, index) => ({
+    type: "text" as const,
+    text: `part ${index}`,
+  }));
+  return value;
+}
+
+test("a stored slot past the wire part cap still reads back from the cache", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory);
+  await first.commit(scope, "thread", oversizedPatch(129));
+  first.close();
+  const value = await cache(factory).read(scope, "thread");
+  const slot = value?.slots[0]?.slot;
+  expect(slot?.kind === "ready" ? slot.messages[0]?.parts.length : undefined).toBe(129);
+});
+
+test("replacing an oversized stored slot subtracts its bytes from the thread total", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory);
+  await first.commit(scope, "thread", oversizedPatch(129));
+  await first.commit(scope, "thread", patch(2, "short"));
+  first.close();
+  const raw = await openRaw(factory);
+  const [thread, slots] = await Promise.all(
+    (["threads", "slots"] as const).map(
+      (store) =>
+        new Promise<{ bytes: number }[]>((resolve, reject) => {
+          const request = raw.transaction(store, "readonly").objectStore(store).getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        }),
+    ),
+  );
+  raw.close();
+  expect(thread?.[0]?.bytes).toBe(slots?.reduce((sum, row) => sum + row.bytes, 0));
+});
+
+describe("projection version changes", () => {
+  function openRaw(factory: IDBFactory): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      const request = factory.open("lilac-native-v1", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  test("keep drafts and discard replay rows written before the bump", async () => {
+    const factory = new IDBFactory();
+    const seed = cache(factory);
+    await seed.saveDraft(scope, "seed", { text: "seed", skillIds: [] });
+    seed.close();
+    // Rows as an older bundle wrote them, under the projection version 1 scope key.
+    const v1Scope = JSON.stringify(["install", "owner", 1, 1]);
+    const db = await openRaw(factory);
+    const tx = db.transaction(["threads", "slots", "drafts"], "readwrite");
+    const drafts = tx.objectStore("drafts");
+    for (const [threadId, text] of [
+      ["thread", "unsent reply"],
+      ["draft:new", "new conversation"],
+    ]) {
+      drafts.put({
+        key: JSON.stringify([v1Scope, threadId]),
+        scopeKey: v1Scope,
+        text,
+        skillIds: [],
+        updatedAt: Date.now(),
+      });
+    }
+    const threadKey = JSON.stringify([v1Scope, "old"]);
+    tx.objectStore("threads").put({
+      key: threadKey,
+      scopeKey: v1Scope,
+      threadId: "old",
+      checkpoint: patch().checkpoint,
+      updatedAt: 1,
+      bytes: 10,
+    });
+    await new Promise((resolve) => (tx.oncomplete = resolve));
+    db.close();
+
+    const reopened = cache(factory);
+    expect((await reopened.readDraft(scope, "thread")).text).toBe("unsent reply");
+    expect((await reopened.listLocalDrafts(scope)).map((entry) => entry.draft.text)).toEqual([
+      "new conversation",
+    ]);
+    expect(await reopened.read(scope, "old")).toBeUndefined();
+  });
 });

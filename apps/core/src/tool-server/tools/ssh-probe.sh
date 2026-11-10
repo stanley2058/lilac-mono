@@ -17,11 +17,7 @@ fi
 export GIT_TERMINAL_PROMPT=0
 export GIT_OPTIONAL_LOCKS=0
 
-# Placeholder replaced by the server before sending.
-CWD=$(cat <<'__LILAC_CWD__'
-__LILAC_CWD_VALUE__
-__LILAC_CWD__
-)
+CWD=""
 
 EXPECTED_TOOLS=(
   bash

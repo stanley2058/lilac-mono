@@ -628,6 +628,42 @@ describe("SqliteTranscriptStore", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
+  it("lists discovery records for one surface channel", async () => {
+    const store = new SqliteTranscriptStore(":memory:");
+    for (const [requestId, channelId] of [
+      ["in-channel", "chan-a"],
+      ["other-channel", "chan-b"],
+    ] as const) {
+      store.saveRequestTranscript({
+        requestId,
+        sessionId: channelId,
+        requestClient: "discord",
+        messages: [{ role: "assistant", content: requestId }],
+        finalText: requestId,
+      });
+      const ref = { platform: "discord", channelId, messageId: `${requestId}-out` } as const;
+      store.linkSurfaceMessagesToRequest({ requestId, created: [ref], last: ref });
+    }
+    const thread = { platform: "discord", channelId: "thread", messageId: "followup" } as const;
+    store.linkSurfaceMessagesToRequest({
+      requestId: "in-channel",
+      created: [thread],
+      last: thread,
+    });
+
+    const records = store.listDiscoveryRecordsInSurfaceChannel({
+      platform: "discord",
+      channelId: "chan-a",
+    });
+
+    expect(records.map((record) => record.requestId)).toEqual(["in-channel"]);
+    expect(records[0]?.surfaceRefs.map((ref) => ref.channelId)).toEqual(["chan-a", "thread"]);
+    expect(
+      store.listDiscoveryRecordsInSurfaceChannel({ platform: "github", channelId: "chan-a" }),
+    ).toEqual([]);
+    store.close();
+  });
+
   it("returns latest transcript by session", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
     const dbPath = path.join(dir, "transcripts.db");
@@ -1157,6 +1193,33 @@ describe("SqliteTranscriptStore", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
+  it("overwrites an unretained transcript without decoding the stored row", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcript-overwrite-"));
+    const dbPath = path.join(dir, "transcripts.db");
+    const store = new SqliteTranscriptStore(dbPath);
+    const save = (content: string) =>
+      store.saveRequestTranscript({
+        requestId: "overwrite",
+        sessionId: "session",
+        requestClient: "discord",
+        messages: [{ role: "user", content }],
+      });
+    resultValue(save("first"));
+    const mutation = new Database(dbPath);
+    mutation.run("UPDATE request_transcripts SET messages_json = '{' WHERE request_id = ?", [
+      "overwrite",
+    ]);
+    mutation.close();
+
+    resultValue(save("second"));
+    expect(resultValue(store.getRequestTranscript({ requestId: "overwrite" }))?.messages).toEqual([
+      { role: "user", content: "second" },
+    ]);
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
   it("preserves direct persistence diagnostic Panic identity", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcript-diagnostic-panic-"));
     const dbPath = path.join(dir, "transcripts.db");
@@ -1282,10 +1345,8 @@ describe("SqliteTranscriptStore", () => {
       messages: [{ role: "assistant", content: "after provider" }],
       finalText: "after provider",
     });
-    expect(providerSave.status).toBe("error");
-    if (providerSave.status === "error") {
-      expect(providerSave.error).toMatchObject({ _tag: "MalformedSerialization" });
-    }
+    // No lineage retains this request, so the save overwrites without decoding the old row.
+    expect(providerSave.status).toBe("ok");
 
     expect(
       raw
@@ -1296,7 +1357,7 @@ describe("SqliteTranscriptStore", () => {
     ).toEqual([
       { request_id: "corrupt-owner", final_text: "before corruption" },
       { request_id: "lineage-owner", final_text: "before lineage" },
-      { request_id: "provider-owner", final_text: "before provider" },
+      { request_id: "provider-owner", final_text: "after provider" },
     ]);
     expect(
       raw
@@ -1315,7 +1376,6 @@ describe("SqliteTranscriptStore", () => {
       { record_id: "lineage-owner", field: "manifest_json" },
       { record_id: "lineage-owner", field: "manifest_json" },
       { record_id: "corrupt-owner", field: "messages_json" },
-      { record_id: "provider-owner", field: "provider_state_json" },
     ]);
 
     raw.close();
@@ -1364,15 +1424,23 @@ describe("SqliteTranscriptStore", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("classifies retention SQLite failures and rolls back the saved transcript", async () => {
+  it("keeps the saved transcript when retention pruning fails", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-retention-save-rollback-"));
     const dbPath = path.join(dir, "transcripts.db");
-    const store = new SqliteTranscriptStore(dbPath, undefined, undefined, {
-      retention: {
-        maxAgeMs: { kind: "unlimited" },
-        maxRequests: { kind: "bounded", value: 1 },
+    const lifecycle: Array<{ event: string; detail: unknown }> = [];
+    const store = new SqliteTranscriptStore(
+      dbPath,
+      (_level, event, detail) => {
+        lifecycle.push({ event, detail });
       },
-    });
+      undefined,
+      {
+        retention: {
+          maxAgeMs: { kind: "unlimited" },
+          maxRequests: { kind: "bounded", value: 1 },
+        },
+      },
+    );
     resultValue(
       store.saveRequestTranscript({
         requestId: "retained-before-failure",
@@ -1399,24 +1467,29 @@ describe("SqliteTranscriptStore", () => {
       messages: [{ role: "user", content: "second" }],
     });
 
-    expect(saved.status).toBe("error");
-    if (saved.status === "error") {
-      expect(saved.error).toBeInstanceOf(TranscriptStoreSqliteDriverFailure);
-      if (TranscriptStoreSqliteDriverFailure.is(saved.error)) {
-        expect(saved.error.operation).toBe("save-request-transcript");
-      }
-    }
+    expect(saved.status).toBe("ok");
     expect(raw.query("SELECT * FROM retention_save_probe").all()).toEqual([]);
     expect(
-      raw.query<{ request_id: string }, []>("SELECT request_id FROM request_transcripts").all(),
-    ).toEqual([{ request_id: "retained-before-failure" }]);
+      raw
+        .query<{ request_id: string }, []>(
+          "SELECT request_id FROM request_transcripts ORDER BY request_id",
+        )
+        .all(),
+    ).toEqual([
+      { request_id: "retained-before-failure" },
+      { request_id: "rolled-back-after-failure" },
+    ]);
+    expect(lifecycle).toContainEqual({
+      event: "transcript retention prune failed",
+      detail: expect.objectContaining({ operation: "prune-retention" }),
+    });
 
     raw.close();
     store.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("preserves retention Panic identity and rolls back the saved transcript", async () => {
+  it("preserves retention Panic identity after the saved transcript commits", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-retention-save-panic-"));
     const dbPath = path.join(dir, "transcripts.db");
     const retentionPanic = new Panic({ message: "retention policy invariant failed" });
@@ -1435,7 +1508,9 @@ describe("SqliteTranscriptStore", () => {
       }),
     ).toThrow(retentionPanic);
     const raw = new Database(dbPath);
-    expect(raw.query("SELECT * FROM request_transcripts").all()).toEqual([]);
+    expect(raw.query("SELECT request_id FROM request_transcripts").all()).toEqual([
+      { request_id: "rolled-back-after-panic" },
+    ]);
 
     raw.close();
     store.close();
@@ -1801,6 +1876,7 @@ describe("SqliteTranscriptStore", () => {
     original.close();
     const legacy = new Database(dbPath);
     legacy.run("DROP TRIGGER delete_transcript_surface_aliases");
+    legacy.run("DROP INDEX IF EXISTS idx_surface_message_to_request_deleted");
     legacy.run("ALTER TABLE surface_message_to_request DROP COLUMN deleted_ts");
     legacy.run("ALTER TABLE core_resources DROP COLUMN image_preview_json");
     legacy.run("DROP TABLE core_native_transcript_refs");
@@ -2716,7 +2792,7 @@ describe("SqliteTranscriptStore", () => {
     db.close();
 
     expect(() => new SqliteTranscriptStore(dbPath)).toThrow(
-      "Core transcript schema 1 requires offline blob migration. Run: bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
+      "Core transcript schema 1 requires offline blob migration. Run: check out commit f2c90667 (see MIGRATIONS.md), then bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
     );
 
     const migrated = new Database(dbPath);
@@ -2769,7 +2845,7 @@ describe("SqliteTranscriptStore", () => {
     db.close();
 
     expect(() => new SqliteTranscriptStore(dbPath)).toThrow(
-      "Core transcript schema 1 requires offline blob migration. Run: bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
+      "Core transcript schema 1 requires offline blob migration. Run: check out commit f2c90667 (see MIGRATIONS.md), then bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
     );
 
     const rolledBack = new Database(dbPath);
@@ -3007,6 +3083,7 @@ describe("SqliteTranscriptStore", () => {
     store.close();
     const schema7 = new Database(dbPath);
     schema7.run("DROP TRIGGER delete_transcript_surface_aliases");
+    schema7.run("DROP INDEX IF EXISTS idx_surface_message_to_request_deleted");
     schema7.run("ALTER TABLE surface_message_to_request DROP COLUMN deleted_ts");
     schema7.run("DROP TABLE core_agent_run_checkpoint_blobs");
     schema7.run("DROP TABLE core_transcript_blob_refs");

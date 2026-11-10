@@ -4,6 +4,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./tool-server/client-protocol": "./src/tool-server/client-protocol.ts",
+    "./tool-server/host": "./src/tool-server/host.ts",
     "./tool-server/client-arguments": "./src/tool-server/client-arguments.ts"
   },
   "type": "module",

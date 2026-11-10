@@ -235,6 +235,11 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   ): ReturnType<AgentExecutor<TOOLS>["followUp"]> {
     return this.executor.followUp(...args);
   }
+  getQueuedFollowUpIds(
+    ...args: Parameters<AgentExecutor<TOOLS>["getQueuedFollowUpIds"]>
+  ): ReturnType<AgentExecutor<TOOLS>["getQueuedFollowUpIds"]> {
+    return this.executor.getQueuedFollowUpIds(...args);
+  }
   interruptQueuedSteering(
     ...args: Parameters<AgentExecutor<TOOLS>["interruptQueuedSteering"]>
   ): ReturnType<AgentExecutor<TOOLS>["interruptQueuedSteering"]> {

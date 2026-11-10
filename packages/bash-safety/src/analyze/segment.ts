@@ -156,7 +156,7 @@ function deriveCwdContext(options: Pick<SegmentAnalyzeOptions, "cwd" | "effectiv
 } {
   const cwdUnknown = options.effectiveCwd === null;
   const cwdForRm = cwdUnknown ? undefined : (options.effectiveCwd ?? options.cwd);
-  const originalCwd = cwdUnknown ? undefined : options.cwd;
+  const originalCwd = options.cwd;
   return { cwdUnknown, cwdForRm, originalCwd };
 }
 
@@ -358,6 +358,8 @@ export function analyzeSegment(
 
   if (isFind) {
     const findResult = analyzeFind(stripped, {
+      cwd: commandEffectiveCwd ?? (commandEffectiveCwd === null ? null : options.cwd),
+      allowTmpdirVar,
       analyzeCommand: (command, cwdUnknown) =>
         analyzeSegment(
           command.map((token) => token.replaceAll("{}", DYNAMIC_EXPANSION_MARKER)),

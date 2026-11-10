@@ -2,7 +2,9 @@ import { describe, expect, it, jest } from "bun:test";
 import {
   ActivityType,
   ApplicationCommandOptionType,
+  Client,
   Collection,
+  DMChannel,
   type GuildMember,
   MessageType,
   type Message,
@@ -262,6 +264,20 @@ describe("classifyDiscordSurfaceError", () => {
     const classified = classifyDiscordSurfaceError("send-message", cause);
     expect(classified).toBeInstanceOf(ErrorType);
     expect(classified).toMatchObject({ platform: "discord", operation: "send-message" });
+  });
+
+  it("keeps the Discord error message", () => {
+    const cause = Object.assign(new Error("Invalid Form Body\nembeds[0].description"), {
+      code: 50_035,
+      status: 400,
+    });
+    expect(classifyDiscordSurfaceError("send-message", cause)).toMatchObject({
+      _tag: "SurfaceInvalidInput",
+      message: "Invalid Form Body\nembeds[0].description",
+    });
+    expect(classifyDiscordSurfaceError("send-message", { status: 503 })).toMatchObject({
+      message: "Discord operation failed",
+    });
   });
 
   it("classifies adapter availability and leaves unknown defects unclassified", () => {
@@ -594,6 +610,35 @@ describe("DiscordAdapter.sendMsg content validation", () => {
       operation: "send-message",
       field: "content.accentColor",
     });
+  });
+
+  it("rejects action-card text past the embed description limit", async () => {
+    const sends: unknown[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          send: async (payload: unknown) => {
+            sends.push(payload);
+            return { id: "sent-1" };
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.sendMsg(
+      { platform: "discord", channelId: "c1" },
+      {
+        text: "x".repeat(4097),
+        actions: [{ actionId: "choose", label: "1", style: "primary" as const }],
+      },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected oversized embed failure");
+    expect(result.error).toBeInstanceOf(SurfaceInvalidInput);
+    expect(result.error).toMatchObject({ operation: "send-message", field: "content.text" });
+    expect(sends).toEqual([]);
   });
 
   it("notifies action-card replies only when explicitly requested", async () => {
@@ -1885,6 +1930,231 @@ it("preserves idle presence when the configured status message changes", async (
   }
 });
 
+describe("DiscordAdapter.deleteMsg", () => {
+  it("deletes by id without reading the message first", async () => {
+    const calls: string[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => {
+              calls.push("fetch");
+              throw new Error("unexpected message read");
+            },
+            delete: async (messageId: string) => {
+              calls.push(`delete:${messageId}`);
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.deleteMsg({
+      platform: "discord",
+      channelId: "c1",
+      messageId: "m1",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(calls).toEqual(["delete:m1"]);
+  });
+
+  it("classifies a missing message", async () => {
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            delete: async () => {
+              throw Object.assign(new Error("Unknown Message"), { code: 10_008, status: 404 });
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.deleteMsg({
+      platform: "discord",
+      channelId: "c1",
+      messageId: "m1",
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected delete failure");
+    expect(result.error).toBeInstanceOf(SurfaceMessageNotFound);
+  });
+});
+
+describe("DiscordAdapter reactions", () => {
+  it("adds a reaction by id without reading the message first", async () => {
+    const calls: string[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => {
+              calls.push("fetch");
+              throw new Error("unexpected message read");
+            },
+            react: async (messageId: string, emoji: string) => {
+              calls.push(`react:${messageId}:${emoji}`);
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.addReaction(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      "👀",
+    );
+
+    expect(result.status).toBe("ok");
+    expect(calls).toEqual(["react:m1:👀"]);
+  });
+
+  it("classifies a missing message when adding a reaction", async () => {
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            react: async () => {
+              throw Object.assign(new Error("Unknown Message"), { code: 10_008, status: 404 });
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.addReaction(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      "👀",
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected reaction failure");
+    expect(result.error).toBeInstanceOf(SurfaceMessageNotFound);
+  });
+
+  it("removes a reaction through a cache-backed message read", async () => {
+    const fetchCalls: unknown[] = [];
+    const removed: string[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async (input: unknown) => {
+              fetchCalls.push(input);
+              return {
+                reactions: {
+                  resolve: (emoji: string) =>
+                    emoji === "👀" ? { remove: async () => void removed.push(emoji) } : null,
+                },
+              };
+            },
+          },
+        }),
+      },
+    };
+    const ref = { platform: "discord", channelId: "c1", messageId: "m1" } as const;
+
+    const present = await adapter.removeReaction(ref, "👀");
+    const absent = await adapter.removeReaction(ref, "✅");
+
+    expect(present.status).toBe("ok");
+    expect(absent.status).toBe("ok");
+    expect(fetchCalls).toEqual([
+      { message: "m1" },
+      { message: "m1" },
+      { message: "m1", force: true },
+    ]);
+    expect(removed).toEqual(["👀"]);
+  });
+
+  it("removes a reaction it added before the gateway updated the cached message", async () => {
+    const client = new Client({ intents: [] });
+    // discord.js keeps these constructors private; the test needs a real cached message.
+    const DMChannelConstructor = DMChannel as unknown as new (
+      client: Client,
+      data: { id: string; type: number },
+    ) => DMChannel;
+    const channel = new DMChannelConstructor(client, { id: "100000000000000001", type: 1 });
+    const messageCache = channel.messages as unknown as { _add(data: unknown): unknown };
+    const author = {
+      id: "100000000000000003",
+      username: "user",
+      discriminator: "0",
+      avatar: null,
+    };
+    const messageData = (reactions: unknown[]) => ({
+      id: "100000000000000002",
+      channel_id: channel.id,
+      type: 0,
+      content: "hello",
+      author,
+      timestamp: new Date(0).toISOString(),
+      edited_timestamp: null,
+      embeds: [],
+      attachments: [],
+      mentions: [],
+      mention_roles: [],
+      pinned: false,
+      tts: false,
+      reactions,
+    });
+    const userCache = client.users as unknown as { _add(data: unknown): typeof client.user };
+    client.user = userCache._add({
+      id: "100000000000000004",
+      username: "bot",
+      discriminator: "0",
+      avatar: null,
+      bot: true,
+    });
+    messageCache._add(messageData([]));
+    let reacted = false;
+    const deletes: string[] = [];
+    client.rest.put = async () => {
+      reacted = true;
+    };
+    client.rest.get = async () =>
+      messageData(
+        reacted
+          ? [
+              {
+                emoji: { id: null, name: "👀" },
+                count: 1,
+                count_details: { normal: 1, burst: 0 },
+                me: true,
+                me_burst: false,
+              },
+            ]
+          : [],
+      );
+    client.rest.delete = async (route: string) => {
+      deletes.push(route);
+    };
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: { fetch: async () => channel },
+    };
+    const ref = {
+      platform: "discord",
+      channelId: channel.id,
+      messageId: "100000000000000002",
+    } as const;
+
+    expect((await adapter.addReaction(ref, "👀")).status).toBe("ok");
+    expect((await adapter.removeReaction(ref, "👀")).status).toBe("ok");
+
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]).toContain("/reactions/");
+  });
+});
+
 describe("DiscordAdapter.editMsg", () => {
   it("replaces only the embed description for single-embed bot messages", async () => {
     const editCalls: Array<Record<string, unknown>> = [];
@@ -1927,7 +2197,7 @@ describe("DiscordAdapter.editMsg", () => {
     );
 
     expect(editCalls).toHaveLength(1);
-    expect(fetchCalls).toEqual([{ message: "m1", cache: false, force: true }]);
+    expect(fetchCalls).toEqual([{ message: "m1" }]);
     expect(editCalls[0]?.content).toBeUndefined();
 
     const embeds = editCalls[0]?.embeds as Array<{ toJSON(): Record<string, unknown> }> | undefined;
@@ -1975,6 +2245,33 @@ describe("DiscordAdapter.editMsg", () => {
     expect(editCalls).toHaveLength(1);
     expect(editCalls[0]?.attachments).toEqual([]);
     expect(editCalls[0]?.files).toEqual([]);
+  });
+
+  it("rejects embed text past the description limit", async () => {
+    const editCalls: unknown[] = [];
+    const message = {
+      author: { id: "bot" },
+      embeds: [{ toJSON: () => ({ description: "old-description" }) }],
+      edit: async (options: unknown) => {
+        editCalls.push(options);
+      },
+    } as unknown as Message;
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      user: { id: "bot" },
+      channels: { fetch: async () => ({ messages: { fetch: async () => message } }) },
+    };
+
+    const result = await adapter.editMsg(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      { text: "x".repeat(4097) },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected oversized embed failure");
+    expect(result.error).toBeInstanceOf(SurfaceInvalidInput);
+    expect(result.error).toMatchObject({ operation: "edit-message", field: "content.text" });
+    expect(editCalls).toEqual([]);
   });
 
   it("fails for non-bot-authored messages", async () => {

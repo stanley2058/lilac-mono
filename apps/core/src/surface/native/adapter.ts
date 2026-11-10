@@ -1075,7 +1075,9 @@ class NativeOutputStream implements SurfaceOutputStream {
         const normalized = this.text.replace(/\r\n/g, "\n");
         const boundary = normalized.lastIndexOf("\n\n");
         if (boundary < 0) return Result.ok("visible");
-        this.publishedText = normalized.slice(0, boundary + 2);
+        const prefix = normalized.slice(0, boundary + 2);
+        if (prefix === this.publishedText) return Result.ok("visible");
+        this.publishedText = prefix;
         return this.flush().map(() => "visible" as const);
       }
       case "text.set": {

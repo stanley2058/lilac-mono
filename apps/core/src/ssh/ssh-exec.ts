@@ -1,3 +1,7 @@
+import crypto from "node:crypto";
+import os from "node:os";
+import path from "node:path";
+import { normalizeRemoteCwd } from "./ssh-cwd";
 import fs from "node:fs/promises";
 
 import { BufferedFileSink } from "@stanley2058/lilac-coding-tools/buffered-file-sink";
@@ -15,6 +19,9 @@ import { preserveToolPanic } from "../tools/tool-result-adapters";
 
 const DEFAULT_CONNECT_TIMEOUT_SECS = 10;
 const DEFAULT_SSH_STDIN_MODE: SshBashStdinMode = "error";
+let sshControlDirectory: Promise<string> | undefined;
+const deployedRunners = new Set<string>();
+const runnerDeploymentGates = new Map<string, Promise<void>>();
 const logger = createLogger({ module: "ssh-exec" });
 
 export type SshBashStdinMode = "error" | "eof";
@@ -39,6 +46,7 @@ export type SshExecResult = {
   aborted: boolean;
   capped: { stdout: boolean; stderr: boolean };
   overflowPaths: { stdout?: string; stderr?: string };
+  errors?: { stdoutRead?: string; stderrRead?: string; exitRead?: string };
 };
 
 export class SshExecutionCancelledError extends TaggedError("SshExecutionCancelledError")<{
@@ -76,6 +84,7 @@ export class SshRequestSerializationError extends TaggedError("SshRequestSeriali
 }> {}
 
 export class SshStreamReadError extends TaggedError("SshStreamReadError")<{
+  readonly detail?: string;
   readonly operation: "acquire_reader" | "read_chunk" | "read_body" | "report_activity";
   readonly cause: unknown;
   readonly message: string;
@@ -229,6 +238,7 @@ function acquireStreamReader(
     fallback: "Opaque SSH stream reader acquisition failure",
     mapError: (cause) =>
       new SshStreamReadError({
+        detail: `${cause.name}: ${cause.message}`,
         operation: "acquire_reader",
         cause,
         message: "Failed to acquire the SSH output stream reader",
@@ -244,6 +254,7 @@ function readStreamChunk(
     fallback: "Opaque SSH stream read failure",
     mapError: (cause) =>
       new SshStreamReadError({
+        detail: `${cause.name}: ${cause.message}`,
         operation: "read_chunk",
         cause,
         message: "Failed to read SSH output",
@@ -272,6 +283,7 @@ function reportStreamActivity(onActivity: () => void): ResultType<void, SshStrea
     fallback: "Opaque SSH output activity callback failure",
     mapError: (cause) =>
       new SshStreamReadError({
+        detail: `${cause.name}: ${cause.message}`,
         operation: "report_activity",
         cause,
         message: "SSH output activity callback failed",
@@ -287,6 +299,7 @@ function readResponseBody(
     fallback: "Opaque SSH output body read failure",
     mapError: (cause) =>
       new SshStreamReadError({
+        detail: `${cause.name}: ${cause.message}`,
         operation: "read_body",
         cause,
         message: "Failed to read the SSH output body",
@@ -755,52 +768,37 @@ function inferTransportError(
   return undefined;
 }
 
-function buildRemoteScript(params: { cmd: string; cwd?: string; stdinMode?: SshBashStdinMode }) {
-  const stdinMode = params.stdinMode ?? DEFAULT_SSH_STDIN_MODE;
-  const cwd = params.cwd ?? "";
-  const runCommandSnippet =
-    stdinMode === "error"
-      ? 'bash --noprofile --norc "$TMP_CMD" </dev/null'
-      : 'bash --noprofile --norc "$TMP_CMD"';
+export function buildRemoteScript(params: {
+  cmd: string;
+  cwd?: string;
+  stdinMode?: SshBashStdinMode;
+}) {
+  const fields = [params.cwd ?? "", params.cmd, params.stdinMode ?? DEFAULT_SSH_STDIN_MODE];
+  const payload = Buffer.from(
+    JSON.stringify(fields.map((field) => Buffer.from(field).toString("base64"))),
+  ).toString("base64");
   return `#!/usr/bin/env bash
 set -euo pipefail
-
-CWD=$(cat <<'__LILAC_CWD__'
-${cwd}
-__LILAC_CWD__
-)
-
-TMP_CMD=""
-cleanup() {
-  if [ -n "$TMP_CMD" ]; then
-    rm -f "$TMP_CMD" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup EXIT
-
-if command -v mktemp >/dev/null 2>&1; then
-  TMP_CMD=$(mktemp -t lilac-ssh-cmd.XXXXXX)
+IFS='"' read -r _ CWD64 _ CMD64 _ MODE64 _ <<< "$(printf '%s' '${payload}' | base64 -d)"
+CWD=$(printf '%s' "$CWD64" | base64 -d)
+MODE=$(printf '%s' "$MODE64" | base64 -d)
+TMP_CMD=$(mktemp)
+trap 'rm -f "$TMP_CMD"' EXIT
+printf '%s' "$CMD64" | base64 -d >"$TMP_CMD"
+if [ "$CWD" = "~" ]; then
+  CWD="$HOME"
+elif [[ "$CWD" == "~/"* ]]; then
+  CWD="$HOME/\${CWD:2}"
+fi
+if [ -n "$CWD" ] && ! cd -- "$CWD"; then
+  echo "Remote cwd does not exist or is not a directory" >&2
+  exit 1
+fi
+if [ "$MODE" = "error" ]; then
+  bash --noprofile --norc "$TMP_CMD" </dev/null
 else
-  TMP_CMD="/tmp/lilac-ssh-cmd.$$"
+  bash --noprofile --norc "$TMP_CMD"
 fi
-
-cat >"$TMP_CMD" <<'__LILAC_CMD__'
-${params.cmd}
-__LILAC_CMD__
-
-if [ -n "$CWD" ]; then
-  if [ "$CWD" = "~" ]; then
-    CWD="$HOME"
-  elif [[ "$CWD" == "~/"* ]]; then
-    CWD="$HOME/\${CWD:2}"
-  fi
-  cd "$CWD"
-fi
-
-# Run under a clean bash to avoid remote environment surprises (rc/profile).
-${runCommandSnippet}
-
-exit 0
 `;
 }
 
@@ -903,6 +901,7 @@ export async function sshExecBash(params: {
     transportError?: { type: "hostkey" | "auth" | "connect" | "unknown"; message: string };
   }
 > {
+  if (params.cwd !== undefined) normalizeRemoteCwd(params.cwd);
   await requireConfiguredSshHost(params.host);
 
   if (params.signal?.aborted) {
@@ -974,7 +973,15 @@ export async function sshExecBash(params: {
 
   const startedAt = Date.now();
   const outcome = await (async () => {
+    sshControlDirectory ??= fs.mkdtemp(path.join(os.tmpdir(), "lilac-ssh-"));
+    const controlDirectory = await sshControlDirectory;
     const sshArgs = [
+      "-o",
+      "ControlMaster=auto",
+      "-o",
+      "ControlPersist=60",
+      "-o",
+      `ControlPath=${controlDirectory}/%C`,
       "-T",
       "-o",
       "BatchMode=yes",
@@ -1059,10 +1066,79 @@ export async function sshExecBash(params: {
           stderr: stderrResult.overflowFilePath,
         },
         transportError,
+        errors: {
+          stdoutRead: stdoutCapture.match({
+            ok: () => undefined,
+            err: (error) =>
+              error._tag === "SshStreamReadError" ? (error.detail ?? error.message) : error.message,
+          }),
+          stderrRead: stderrCapture.match({
+            ok: () => undefined,
+            err: (error) =>
+              error._tag === "SshStreamReadError" ? (error.detail ?? error.message) : error.message,
+          }),
+          exitRead: exitResult.match({ ok: () => undefined, err: () => "exit status read failed" }),
+        },
       },
     } as const;
   })().finally(stopWatchingExecution);
   return outcome.value;
+}
+
+function sshJsonExecutionFailure(
+  res: SshExecResult & {
+    transportError?: { type: "hostkey" | "auth" | "connect" | "unknown"; message: string };
+  },
+  timeoutMs: number,
+): SshJsonExecutionError | undefined {
+  if (res.aborted) {
+    return new SshExecutionCancelledError({ message: "aborted" });
+  }
+  if (res.timedOut) {
+    return new SshExecutionTimedOutError({
+      timeoutMs: timeoutMs,
+      message: `timeout:${timeoutMs}`,
+    });
+  }
+  if (res.capped.stdout || res.capped.stderr) {
+    return new SshExecutionOutputCappedError({
+      message: "remote output capped (response too large)",
+    });
+  }
+  if (res.transportError) {
+    return new SshExecutionTransportError({
+      transportType: res.transportError.type,
+      message: res.transportError.message,
+    });
+  }
+  if (res.exitCode !== 0) {
+    const detail = res.stderr.trim().length > 0 ? `: ${res.stderr.trim()}` : "";
+    return new SshSubprocessExitError({
+      exitCode: res.exitCode,
+      stderr: res.stderr,
+      message: `remote script exited with code ${res.exitCode}${detail}`,
+    });
+  }
+
+  return undefined;
+}
+
+async function waitForRunnerDeployment(
+  pending: Promise<void>,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<"ready" | "aborted" | "timeout"> {
+  if (signal?.aborted) return "aborted";
+  if (timeoutMs <= 0) return "timeout";
+  const settled = Promise.withResolvers<"ready" | "aborted" | "timeout">();
+  const onAbort = () => settled.resolve("aborted");
+  const timeout = setTimeout(() => settled.resolve("timeout"), timeoutMs);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  void pending.then(() => settled.resolve("ready"));
+  return await settled.promise.finally(() => {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", onAbort);
+  });
 }
 
 export async function sshExecScriptJson<T, TDecodeError>(params: {
@@ -1087,128 +1163,117 @@ export async function sshExecScriptJson<T, TDecodeError>(params: {
   if (serializationFailure) return serializationFailure;
   const inputJson = serializedInput.match({ ok: (value) => value, err: () => "" });
 
-  const script = `#!/usr/bin/env bash
-set -euo pipefail
-
-REMOTE_CWD=$(cat <<'__LILAC_REMOTE_CWD__'
-${params.cwd}
-__LILAC_REMOTE_CWD__
-)
-
-if [ -n "$REMOTE_CWD" ]; then
-  if [ "$REMOTE_CWD" = "~" ]; then
-    REMOTE_CWD="$HOME"
-  elif [[ "$REMOTE_CWD" == "~/"* ]]; then
-    REMOTE_CWD="$HOME/\${REMOTE_CWD:2}"
-  fi
-
-  if [ ! -d "$REMOTE_CWD" ]; then
-    echo '{"ok":false,"error":"Remote cwd does not exist or is not a directory"}'
-    exit 0
-  fi
-
-  if ! cd "$REMOTE_CWD"; then
-    echo '{"ok":false,"error":"Remote cwd is not accessible"}'
-    exit 0
-  fi
+  const deadline = Date.now() + params.timeoutMs;
+  const runnerHash = crypto.createHash("sha256").update(params.js).digest("hex");
+  const runnerKey = `${params.host}:${runnerHash}`;
+  while (!deployedRunners.has(runnerKey)) {
+    const pending = runnerDeploymentGates.get(runnerKey);
+    if (!pending) break;
+    const waited = await waitForRunnerDeployment(pending, params.signal, deadline - Date.now());
+    if (waited === "aborted")
+      return Result.err(new SshExecutionCancelledError({ message: "aborted" }));
+    if (waited === "timeout")
+      return Result.err(
+        new SshExecutionTimedOutError({
+          timeoutMs: params.timeoutMs,
+          message: `timeout:${params.timeoutMs}`,
+        }),
+      );
+  }
+  const deployment = deployedRunners.has(runnerKey) ? undefined : Promise.withResolvers<void>();
+  if (deployment) runnerDeploymentGates.set(runnerKey, deployment.promise);
+  return await (async () => {
+    if (!deployedRunners.has(runnerKey)) {
+      const probe = await captureSshPromise({
+        run: () =>
+          sshExecBash({
+            host: params.host,
+            cmd: `printf '%s  %s\\n' '${runnerHash}' "\${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners/${runnerHash}.js" | sha256sum -c --status 2>/dev/null`,
+            timeoutMs: Math.max(1, deadline - Date.now()),
+            signal: params.signal,
+            maxOutputChars: 1000,
+            onActivity: params.onActivity,
+          }),
+        fallback: "SSH runner cache probe failed",
+        mapError: (cause) =>
+          new SshExecutionAdapterError({ cause, message: "SSH runner cache probe failed" }),
+      });
+      const probeOutcome = probe.match<
+        { value: Awaited<ReturnType<typeof sshExecBash>> } | { error: SshExecutionAdapterError }
+      >({ ok: (value) => ({ value }), err: (error) => ({ error }) });
+      if ("error" in probeOutcome) return Result.err(probeOutcome.error);
+      const failure = sshJsonExecutionFailure(probeOutcome.value, params.timeoutMs);
+      if (failure && !(failure._tag === "SshSubprocessExitError" && failure.exitCode === 1))
+        return Result.err(failure);
+      if (!failure) deployedRunners.add(runnerKey);
+    }
+    const source = Buffer.from(params.js).toString("base64");
+    const install = deployedRunners.has(runnerKey)
+      ? ""
+      : `
+mkdir -p "$RUNNER_DIR"
+if ! test -f "$TMP_JS" || ! printf '%s  %s\\n' '${runnerHash}' "$TMP_JS" | sha256sum -c --status 2>/dev/null; then
+  UPLOAD=$(mktemp "$RUNNER_DIR/upload.XXXXXX")
+  trap 'rm -f "$UPLOAD"' EXIT
+  printf '%s' '${source}' | base64 -d >"$UPLOAD"
+  mv -f "$UPLOAD" "$TMP_JS"
 fi
-
-TMP_JS=""
-cleanup() {
-  if [ -n "$TMP_JS" ]; then
-    rm -f "$TMP_JS" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup EXIT
-
-if command -v mktemp >/dev/null 2>&1; then
-  TMP_JS=$(mktemp -t lilac-remote-tool.XXXXXX)
-else
-  TMP_JS="/tmp/lilac-remote-tool.$$"
-fi
-
-cat >"$TMP_JS" <<'__LILAC_JS__'
-${params.js}
-__LILAC_JS__
-
+`;
+    if (Date.now() >= deadline)
+      return Result.err(
+        new SshExecutionTimedOutError({
+          timeoutMs: params.timeoutMs,
+          message: `timeout:${params.timeoutMs}`,
+        }),
+      );
+    const encodedInput = Buffer.from(inputJson).toString("base64");
+    const script = `set -euo pipefail
+umask 077
+RUNNER_DIR="\${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners"
+TMP_JS="$RUNNER_DIR/${runnerHash}.js"
+${install}
 if command -v bun >/dev/null 2>&1; then
-  cat <<'__LILAC_INPUT__' | bun "$TMP_JS"
-${inputJson}
-__LILAC_INPUT__
-  exit 0
+  printf '%s' '${encodedInput}' | base64 -d | bun "$TMP_JS"
+elif command -v node >/dev/null 2>&1; then
+  printf '%s' '${encodedInput}' | base64 -d | node "$TMP_JS"
+else
+  echo '{"ok":false,"error":"Remote host has neither bun nor node in PATH"}'
 fi
-
-if command -v node >/dev/null 2>&1; then
-  cat <<'__LILAC_INPUT__' | node "$TMP_JS"
-${inputJson}
-__LILAC_INPUT__
-  exit 0
-fi
-
-echo '{"ok":false,"error":"Remote host has neither bun nor node in PATH"}'
-exit 0
 `;
 
-  const executed = await captureSshPromise({
-    run: () =>
-      sshExecBash({
-        host: params.host,
-        cmd: script,
-        cwd: undefined,
-        timeoutMs: params.timeoutMs,
-        signal: params.signal,
-        maxOutputChars: params.maxOutputChars,
-        onActivity: params.onActivity,
-      }),
-    fallback: "Opaque SSH execution adapter failure",
-    mapError: (cause) =>
-      new SshExecutionAdapterError({ cause, message: "SSH execution adapter failed" }),
+    const executed = await captureSshPromise({
+      run: () =>
+        sshExecBash({
+          host: params.host,
+          cmd: script,
+          cwd: params.cwd,
+          timeoutMs: Math.max(1, deadline - Date.now()),
+          signal: params.signal,
+          maxOutputChars: params.maxOutputChars,
+          onActivity: params.onActivity,
+        }),
+      fallback: "Opaque SSH execution adapter failure",
+      mapError: (cause) =>
+        new SshExecutionAdapterError({ cause, message: "SSH execution adapter failed" }),
+    });
+    const executionOutcome = executed.match<
+      { value: Awaited<ReturnType<typeof sshExecBash>> } | { error: SshExecutionAdapterError }
+    >({ ok: (value) => ({ value }), err: (error) => ({ error }) });
+    if ("error" in executionOutcome) return Result.err(executionOutcome.error);
+    const res = executionOutcome.value;
+
+    const failure = sshJsonExecutionFailure(res, params.timeoutMs);
+    if (failure) {
+      if (failure._tag === "SshSubprocessExitError") deployedRunners.delete(runnerKey);
+      return Result.err(failure);
+    }
+
+    deployedRunners.add(runnerKey);
+    return params.decodeResponse(res.stdout.trim());
+  })().finally(() => {
+    if (!deployment) return;
+    if (runnerDeploymentGates.get(runnerKey) === deployment.promise)
+      runnerDeploymentGates.delete(runnerKey);
+    deployment.resolve();
   });
-  const executionFailure = executed.match({ ok: () => null, err: (error) => Result.err(error) });
-  if (executionFailure) return executionFailure;
-  const res = executed.match({
-    ok: (value) => () => value,
-    err: (error) => () => {
-      throw error;
-    },
-  })();
-
-  if (res.aborted) {
-    return Result.err(new SshExecutionCancelledError({ message: "aborted" }));
-  }
-  if (res.timedOut) {
-    return Result.err(
-      new SshExecutionTimedOutError({
-        timeoutMs: params.timeoutMs,
-        message: `timeout:${params.timeoutMs}`,
-      }),
-    );
-  }
-  if (res.capped.stdout || res.capped.stderr) {
-    return Result.err(
-      new SshExecutionOutputCappedError({
-        message: "remote output capped (response too large)",
-      }),
-    );
-  }
-  if (res.transportError) {
-    return Result.err(
-      new SshExecutionTransportError({
-        transportType: res.transportError.type,
-        message: res.transportError.message,
-      }),
-    );
-  }
-  if (res.exitCode !== 0) {
-    const detail = res.stderr.trim().length > 0 ? `: ${res.stderr.trim()}` : "";
-    return Result.err(
-      new SshSubprocessExitError({
-        exitCode: res.exitCode,
-        stderr: res.stderr,
-        message: `remote script exited with code ${res.exitCode}${detail}`,
-      }),
-    );
-  }
-
-  return params.decodeResponse(res.stdout.trim());
 }

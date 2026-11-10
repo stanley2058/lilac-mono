@@ -62,6 +62,7 @@ export function ExternalSidebar({
         itemKey={(thread) => thread.id}
         label="Other conversations"
         className="thread-list flex-1"
+        roving={{ primary: ".thread-card-select", selected: "[aria-current]" }}
         estimate={64}
         scrollFade
         hasMore={!!list.hasNextPage && !list.error}

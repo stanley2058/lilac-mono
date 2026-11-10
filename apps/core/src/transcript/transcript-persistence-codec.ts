@@ -435,6 +435,31 @@ type DecodedSchemaVersion = {
   readonly provenance: "current" | "migrated";
 };
 
+const transcriptRowSchema = z.object({
+  request_id: z.string().min(1),
+  session_id: z.string().min(1),
+  request_client: adapterPlatformSchema,
+  created_ts: nonNegativeIntegerSchema,
+  updated_ts: nonNegativeIntegerSchema,
+  model_label: z.string().nullable(),
+  final_text: z.string().nullable(),
+  messages_json: z.string(),
+  context_meta_json: z.string().nullable(),
+  provider_state_json: z.string().nullable(),
+  stable_named_request_client: adapterPlatformSchema.nullable(),
+  transcript_digest: z.string().nullable(),
+  loaded_catalog_ids_json: z.string().nullable(),
+});
+const coreSurfaceProjectionRowSchema = z.object({
+  request_client: adapterPlatformSchema,
+  surface_id: z.string().min(1),
+  session_id: z.string().min(1),
+  message_id: z.string().min(1),
+  projection_format_version: z.literal(CORE_SURFACE_PROJECTION_FORMAT_VERSION),
+  canonical_messages_json: z.string(),
+  source_facts_json: z.string(),
+  created_ts: nonNegativeIntegerSchema,
+});
 const transcriptMigrationVersionRowSchema = z.strictObject({
   version: nonNegativeIntegerSchema,
 });
@@ -697,6 +722,12 @@ function decodeSchemaVersion(
   );
 }
 
+type SerializedValue = {
+  readonly value: unknown;
+  /** Plain JSON text decodes to JSON values; a SuperJSON envelope may restore other values. */
+  readonly jsonClean: boolean;
+};
+
 function decodeSerialized(input: {
   readonly raw: string;
   readonly table: string;
@@ -704,18 +735,30 @@ function decodeSerialized(input: {
   readonly version: number;
   readonly recordId: string;
 }): ResultType<unknown, MalformedSerialization | Panic> {
+  return decodeSerializedValue(input).map((decoded) => decoded.value);
+}
+
+function decodeSerializedValue(input: {
+  readonly raw: string;
+  readonly table: string;
+  readonly field: string;
+  readonly version: number;
+  readonly recordId: string;
+}): ResultType<SerializedValue, MalformedSerialization | Panic> {
   const decoded = Result.try({
-    try: () => {
+    try: (): SerializedValue => {
       const json: unknown = globalThis.JSON.parse(input.raw);
       const isSuperJsonEnvelope =
         isRecord(json) &&
         "json" in json &&
         Object.keys(json).every((key) => key === "json" || key === "meta");
-      return isSuperJsonEnvelope ? SuperJSON.parse<unknown>(input.raw) : json;
+      return isSuperJsonEnvelope
+        ? { value: SuperJSON.parse<unknown>(input.raw), jsonClean: false }
+        : { value: json, jsonClean: true };
     },
     catch: (cause) => cause,
   });
-  const finish = decoded.match<() => ResultType<unknown, MalformedSerialization | Panic>>({
+  const finish = decoded.match<() => ResultType<SerializedValue, MalformedSerialization | Panic>>({
     ok: (value) => () => Result.ok(value),
     err: (error) => () => {
       if (Panic.is(error)) return Result.err(error);
@@ -1022,12 +1065,21 @@ export function hashCanonicalStoredMessagesV2(
       }),
     );
   }
+  return Result.ok(hashNormalizedStoredMessagesV2(normalized));
+}
+
+/** Hashes messages that a schema pass over JSON values already validated. */
+function hashNormalizedStoredMessagesV2(normalized: readonly StoredMessageV1[]): {
+  readonly version: 2;
+  readonly hash: string;
+  readonly serialized: string;
+} {
   const projection = {
     version: CORE_TRANSCRIPT_DIGEST_VERSION,
     messages: normalized.map(projectStoredMessageIdentity),
   };
   const serialized = canonicalJsonStringify(projection);
-  return Result.ok({
+  return {
     version: CORE_TRANSCRIPT_DIGEST_VERSION,
     hash: createHash("sha256")
       .update(CORE_TRANSCRIPT_DIGEST_DOMAIN_V2)
@@ -1035,7 +1087,7 @@ export function hashCanonicalStoredMessagesV2(
       .update(serialized)
       .digest("hex"),
     serialized,
-  });
+  };
 }
 
 export function decodeStoredBlobRefV1(value: unknown): BlobRefV1 | null {
@@ -1088,7 +1140,7 @@ function decodeCoreOwnedBlobValue(input: {
 }
 
 function decodeNormalizedMessagesValue(
-  value: unknown,
+  serialized: SerializedValue,
   input: {
     readonly table: string;
     readonly field: string;
@@ -1096,7 +1148,13 @@ function decodeNormalizedMessagesValue(
     readonly recordId: string;
   },
 ): ResultType<DecodedModelMessage[], CorruptPersistedFields> {
-  const messages = normalizeStoredMessagesV1(value);
+  if (serialized.jsonClean) {
+    // Validated JSON values are already canonical, so one schema pass is enough.
+    const decoded = storedMessagesV1Schema.safeParse(serialized.value);
+    if (decoded.success) return Result.ok(decoded.data);
+    return Result.err(corrupt({ ...input, issueCode: "invalid-transcript-messages" }));
+  }
+  const messages = normalizeStoredMessagesV1(serialized.value);
   if (messages === null) {
     return Result.err(corrupt({ ...input, issueCode: "invalid-transcript-messages" }));
   }
@@ -1139,7 +1197,7 @@ export function decodeTranscriptMessages(input: {
           }),
         );
       }
-      const serialized = yield* decodeSerialized({
+      const serialized = yield* decodeSerializedValue({
         raw: input.raw,
         table: TRANSCRIPT_TABLE,
         field: "messages_json",
@@ -1659,23 +1717,7 @@ export function decodeTranscriptRow(
   return adaptTranscriptPersistenceDecodeResult(
     Result.gen(function* () {
       const version = yield* decodeSchemaVersion(input.schemaVersion, TRANSCRIPT_TABLE, recordId);
-      const rowSchema = z
-        .object({
-          request_id: z.string().min(1),
-          session_id: z.string().min(1),
-          request_client: adapterPlatformSchema,
-          created_ts: nonNegativeIntegerSchema,
-          updated_ts: nonNegativeIntegerSchema,
-          model_label: z.string().nullable(),
-          final_text: z.string().nullable(),
-          messages_json: z.string(),
-          context_meta_json: z.string().nullable(),
-          provider_state_json: z.string().nullable(),
-          stable_named_request_client: adapterPlatformSchema.nullable(),
-          transcript_digest: z.string().nullable(),
-          loaded_catalog_ids_json: z.string().nullable(),
-        })
-        .safeParse(input.row);
+      const rowSchema = transcriptRowSchema.safeParse(input.row);
       if (!rowSchema.success) {
         return Result.err(
           corrupt({
@@ -1728,15 +1770,7 @@ export function decodeTranscriptRow(
         }
         loadedCatalogIds = { value: decoded.data, provenance: version.provenance };
       }
-      const computed = yield* hashCanonicalStoredMessagesV2(messages.value).mapError(() =>
-        corrupt({
-          table: TRANSCRIPT_TABLE,
-          field: "messages_json",
-          version: version.version,
-          issueCode: "invalid-transcript-row",
-          recordId,
-        }),
-      );
+      const computed = hashNormalizedStoredMessagesV2(messages.value);
       if (rowSchema.data.transcript_digest !== null) {
         const digest = sha256HexSchema.safeParse(rowSchema.data.transcript_digest);
         if (!digest.success || digest.data !== computed.hash) {
@@ -1806,18 +1840,7 @@ export function decodeCoreSurfaceProjectionRow(input: {
         });
       const recordId = `${input.row.request_client}:${input.row.surface_id}:${input.row.session_id}:${input.row.message_id}`;
       const version = yield* decodeSchemaVersion(input.schemaVersion, PROJECTION_TABLE, recordId);
-      const row = z
-        .object({
-          request_client: adapterPlatformSchema,
-          surface_id: z.string().min(1),
-          session_id: z.string().min(1),
-          message_id: z.string().min(1),
-          projection_format_version: z.literal(CORE_SURFACE_PROJECTION_FORMAT_VERSION),
-          canonical_messages_json: z.string(),
-          source_facts_json: z.string(),
-          created_ts: nonNegativeIntegerSchema,
-        })
-        .safeParse(input.row);
+      const row = coreSurfaceProjectionRowSchema.safeParse(input.row);
       if (!row.success) {
         return Result.err(
           corrupt({
@@ -1829,7 +1852,7 @@ export function decodeCoreSurfaceProjectionRow(input: {
           }),
         );
       }
-      const canonicalSerialized = yield* decodeSerialized({
+      const canonicalSerialized = yield* decodeSerializedValue({
         raw: row.data.canonical_messages_json,
         table: PROJECTION_TABLE,
         field: "canonical_messages_json",
@@ -1911,14 +1934,14 @@ export function decodeCoreLineageManifestRow(input: {
           }),
         );
       }
-      const serialized = yield* decodeSerialized({
+      const serialized = yield* decodeSerializedValue({
         raw: input.row.manifest_json,
         table: LINEAGE_TABLE,
         field: "manifest_json",
         version: version.version,
         recordId,
       });
-      const parsed = coreLineageManifestV2Schema.safeParse(serialized);
+      const parsed = coreLineageManifestV2Schema.safeParse(serialized.value);
       if (!parsed.success) {
         return Result.err(
           corrupt({
@@ -1932,12 +1955,15 @@ export function decodeCoreLineageManifestRow(input: {
       }
       const segments: CoreStoredLineageSegmentV2[] = [];
       for (const segment of parsed.data.segments) {
-        const canonicalMessages = yield* decodeNormalizedMessagesValue(segment.canonicalMessages, {
-          table: LINEAGE_TABLE,
-          field: "manifest_json",
-          version: version.version,
-          recordId,
-        });
+        const canonicalMessages = yield* decodeNormalizedMessagesValue(
+          { value: segment.canonicalMessages, jsonClean: serialized.jsonClean },
+          {
+            table: LINEAGE_TABLE,
+            field: "manifest_json",
+            version: version.version,
+            recordId,
+          },
+        );
         segments.push({ ...segment, canonicalMessages });
       }
       const decodedManifest: CoreStoredLineageManifestV2 = { ...parsed.data, segments };

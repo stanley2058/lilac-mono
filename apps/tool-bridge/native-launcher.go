@@ -307,11 +307,16 @@ func workerExecutablePath() (string, error) {
 }
 
 func doWorkerRequest(socketPath, method, path string, body []byte) (workerResponse, error) {
-	connection, err := net.Dial("unix", socketPath)
+	connection, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
 		return workerResponse{}, err
 	}
 	defer connection.Close()
+	if path == "/health" {
+		if err := connection.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			return workerResponse{}, err
+		}
+	}
 	request, err := http.NewRequest(method, "http://localhost"+path, bytes.NewReader(body))
 	if err != nil {
 		return workerResponse{}, err

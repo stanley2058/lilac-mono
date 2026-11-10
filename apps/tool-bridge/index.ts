@@ -3,7 +3,7 @@ import {
   createCoreToolPluginManager,
   createProcessHandlers,
   createToolServer,
-} from "@stanley2058/lilac-core";
+} from "@stanley2058/lilac-core/tool-server/host";
 
 const logger = createLogger({
   module: "tool-bridge",

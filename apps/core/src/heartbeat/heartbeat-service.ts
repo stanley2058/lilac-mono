@@ -26,12 +26,9 @@ import {
   isHeartbeatSessionId,
   resolveHeartbeatModelOverride,
 } from "./common";
+import { consumerId } from "../shared/event-bus-consumer";
 import { adaptEventPublishResultToHost } from "../shared/event-bus-result";
 import { computeNextCronAtMs } from "../workflow/cron";
-
-function consumerId(prefix: string): string {
-  return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
-}
 
 type TimerHandle = ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>;
 

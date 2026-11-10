@@ -1,14 +1,18 @@
 import { parseReferenceHref, parseCitationHref } from "@stanley2058/lilac-client-protocol";
-import { markdownToAstProcessor, type MdRootContent, type unistLib } from "@platejs/markdown";
-import type { PlateEditor } from "platejs/react";
-import { KEYS, NodeApi, TextApi, type Descendant, type TText } from "platejs";
+import type { RootContent } from "mdast";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
+import type { ComposerNode } from "./composer-markdown";
 
-type ComposerMarkdownNode = unistLib.Node & {
+type ComposerMarkdownNode = {
+  type: string;
+  position?: { start: { offset?: number }; end: { offset?: number } };
   children?: ComposerMarkdownNode[];
   url?: string;
   value?: string;
 };
+const literalSyntax = unified().use(remarkParse).use(remarkGfm);
 
 export function editableComposerLinks(resourceUrls?: ReadonlySet<string>) {
   return (tree: ComposerMarkdownNode, file: { toString(): string }) => {
@@ -36,20 +40,29 @@ export function editableComposerLinks(resourceUrls?: ReadonlySet<string>) {
   };
 }
 
-export function protectComposerSyntax(editor: PlateEditor, value: Descendant[]) {
-  const source = value.map((node) => NodeApi.string(node)).join("\n");
+/**
+ * Text that reads as a link, image, table, or definition would be escaped when written as Markdown. Each
+ * one is swapped for a marker before writing, and the returned function puts the source back.
+ */
+export function protectComposerSyntax(value: ComposerNode[]) {
+  const source = value.map(composerNodeString).join("\n");
   let marker = "\uE000";
   while (source.includes(marker)) marker += "\uE000";
   const literals: { text: string; table: boolean }[] = [];
 
   function protect(text: string) {
     if (!/[[<:@|]|www\./.test(text)) return text;
-    const tree = markdownToAstProcessor(editor, text, { remarkPlugins: [remarkGfm] });
+    const tree = literalSyntax.parse(text);
     let end = 0;
     let result = "";
-    function visit(nodes: MdRootContent[]) {
+    function visit(nodes: RootContent[]) {
       for (const node of nodes) {
-        if (node.type === "link" || node.type === "table" || node.type === "definition") {
+        if (
+          node.type === "link" ||
+          node.type === "image" ||
+          node.type === "table" ||
+          node.type === "definition"
+        ) {
           const start = node.position?.start.offset;
           const next = node.position?.end.offset;
           if (start === undefined || next === undefined) continue;
@@ -65,19 +78,17 @@ export function protectComposerSyntax(editor: PlateEditor, value: Descendant[]) 
     return result + text.slice(end);
   }
 
-  function visit(nodes: Descendant[]) {
+  function visit(nodes: ComposerNode[]) {
     for (const node of nodes) {
-      if (TextApi.isText(node)) {
-        const text: TText & { code?: boolean } = node;
-        if (text.code) continue;
-        text.text = protect(text.text);
+      if ("text" in node) {
+        if (node.code) continue;
+        node.text = protect(node.text);
         continue;
       }
-      if (node.type === KEYS.a || node.type === KEYS.codeBlock) continue;
+      if (node.type === "a" || node.type === "code_block") continue;
       visit(node.children);
     }
   }
-  // Plate splits newlines before serialization. Protect literal links and tables from escaping.
   visit(value);
   const pattern = new RegExp(`${marker}(\\d+)${marker}`, "g");
   return (markdown: string) =>
@@ -89,4 +100,8 @@ export function protectComposerSyntax(editor: PlateEditor, value: Descendant[]) 
       const continuation = prefix.replace(/[^\s>]/g, " ");
       return literal.text.replaceAll("\n", `\n${continuation}`);
     });
+}
+
+function composerNodeString(node: ComposerNode): string {
+  return "text" in node ? node.text : node.children.map(composerNodeString).join("");
 }

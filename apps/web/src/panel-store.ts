@@ -143,6 +143,17 @@ type PanelStore = PanelLayouts & {
   moveThread: (from: string, to: string) => void;
 };
 
+/** Layouts and tabs kept per principal; the conversations changed longest ago drop first. */
+const PANEL_LAYOUT_LIMIT = 100;
+
+/** Moves the key to the end, so a map's order runs from least to most recently changed. */
+function withRecent<T>(map: ReadonlyMap<string, T>, key: string, value: T): Map<string, T> {
+  const next = new Map(map);
+  next.delete(key);
+  next.set(key, value);
+  return next;
+}
+
 function decodePanelLayouts(value: unknown): PanelLayouts | undefined {
   const decoded = storedPanelsSchema.safeParse(value);
   if (!decoded.success) return undefined;
@@ -183,8 +194,8 @@ export function createPanelStore(
           key,
           JSON.stringify({
             sidebar: layouts.sidebar,
-            threads: [...layouts.threads],
-            tabs: [...layouts.tabs],
+            threads: [...layouts.threads].slice(-PANEL_LAYOUT_LIMIT),
+            tabs: [...layouts.tabs].slice(-PANEL_LAYOUT_LIMIT),
           }),
         ),
       catch: () => "Storage unavailable",
@@ -196,9 +207,7 @@ export function createPanelStore(
       const current = get().threads.get(threadId) ?? defaultRightPanel;
       const next = { ...current, ...change };
       if (next.open === current.open && next.width === current.width) return;
-      const threads = new Map(get().threads);
-      threads.set(threadId, next);
-      set({ threads });
+      set({ threads: withRecent(get().threads, threadId, next) });
       save(get());
     }
     function updateSidebar(change: Partial<PanelLayout>) {
@@ -206,9 +215,7 @@ export function createPanelStore(
       save(get());
     }
     function updateTabs(threadId: string, value: PanelTabs) {
-      const tabs = new Map(get().tabs);
-      tabs.set(threadId, value);
-      set({ tabs });
+      set({ tabs: withRecent(get().tabs, threadId, value) });
       save(get());
     }
     function openTool(threadId: string, type: "agents" | "files") {

@@ -58,6 +58,7 @@ export function WorkflowSidebar({
         itemKey={(run) => run.id}
         label="Workflows"
         className="thread-list flex-1"
+        roving={{ selected: "[aria-current]" }}
         estimate={48}
         scrollFade
         hasMore={runs.hasMore}

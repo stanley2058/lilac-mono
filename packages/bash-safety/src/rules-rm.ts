@@ -152,7 +152,7 @@ function classifyTarget(target: string, ctx: RmContext): TargetClassification {
 
   const anchoredCwd = ctx.anchoredCwd;
   if (anchoredCwd) {
-    if (isCwdSelfTarget(target, anchoredCwd)) {
+    if (isCwdSelfTarget(target, anchoredCwd, ctx.resolvedCwd)) {
       return { kind: "cwd_self_target" };
     }
   }
@@ -161,12 +161,27 @@ function classifyTarget(target: string, ctx: RmContext): TargetClassification {
     return { kind: "temp_target" };
   }
 
+  if (!ctx.resolvedCwd && !target.startsWith("/")) {
+    return ["*", ".", "./", "..", "./*", "../*"].includes(target)
+      ? { kind: "cwd_self_target" }
+      : { kind: "unknown" };
+  }
+
+  if (
+    ctx.resolvedCwd &&
+    (!anchoredCwd || !isTargetWithinCwd(target, anchoredCwd, ctx.resolvedCwd)) &&
+    !target.includes("..") &&
+    isTempTarget(resolve(ctx.resolvedCwd, target), ctx.trustTmpdirVar)
+  ) {
+    return { kind: "temp_target" };
+  }
+
   if (anchoredCwd) {
     if (isCwdHomeForRmPolicy(anchoredCwd, ctx.homeDir)) {
       return { kind: "root_or_home_target" };
     }
 
-    if (isTargetWithinCwd(target, anchoredCwd, ctx.resolvedCwd ?? anchoredCwd)) {
+    if (ctx.resolvedCwd && isTargetWithinCwd(target, anchoredCwd, ctx.resolvedCwd)) {
       return { kind: "within_anchored_cwd" };
     }
   }
@@ -233,7 +248,7 @@ function isDangerousRootOrHomeTarget(path: string): boolean {
   return false;
 }
 
-function isTempTarget(path: string, allowTmpdirVar: boolean): boolean {
+export function isTempTarget(path: string, allowTmpdirVar: boolean): boolean {
   const normalized = path.trim();
 
   if (normalized.includes("..")) {
@@ -276,17 +291,19 @@ function isCwdHomeForRmPolicy(cwd: string, homeDir: string): boolean {
   return normalizedCwd === normalizedHome;
 }
 
-function isCwdSelfTarget(target: string, cwd: string): boolean {
+function isCwdSelfTarget(target: string, cwd: string, effectiveCwd: string | null): boolean {
   if (target === "." || target === "./") {
     return true;
   }
 
-  const resolvedPaths = resolveRmPaths(cwd, target);
+  if (!effectiveCwd) return false;
+  const resolvedTarget = resolve(effectiveCwd, target);
+  const resolvedPaths = resolveRmPaths(cwd, resolvedTarget);
   const compare = resolvedPaths.match<() => boolean>({
     ok: (paths) => () => paths.target === paths.cwd,
     err: () => () => {
       // Missing paths cannot be canonicalized, so preserve the lexical fallback.
-      const resolved = resolve(cwd, target);
+      const resolved = resolvedTarget;
       const normalizedCwd = normalize(cwd);
       return resolved === normalizedCwd;
     },

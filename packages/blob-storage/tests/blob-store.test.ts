@@ -793,3 +793,34 @@ describe("staged blob recovery", () => {
     expect(success(await store.maintain({ now: stagingExpiresAt })).inspected).toBe(0);
   });
 });
+
+test("open reports a deletion during technical metadata lookup as absent", async () => {
+  const backend = new MemoryBlobBackend();
+  success(await backend.initialize());
+  const store = new SupervisedBlobStore(backend);
+  const ref = await upload(store, new Uint8Array([1, 2, 3]));
+  const original = backend.readMetadata.bind(backend);
+  backend.readMetadata = async (key) => {
+    success(await store.delete(ref));
+    return original(key);
+  };
+  expect(failure(await store.open(ref))).toBeInstanceOf(BlobObjectAbsent);
+  success(await store.close({ deadlineAtMs: Date.now() + 1_000 }));
+});
+
+test("deleted pending uploads leave the active-upload index", async () => {
+  const backend = new ControlledMemoryBackend();
+  success(await backend.initialize());
+  const store = new SupervisedBlobStore(backend);
+  const pending = controlledStream();
+  const started = success(
+    await store.startUpload({ source: pending.stream, retention: { kind: "durable" } }),
+  );
+  success(await store.delete(started.handle));
+  backend.reservationReads = 0;
+  expect(failure(await store.resolve(started.handle, { timeoutMs: 0 }))).toBeInstanceOf(
+    BlobObjectAbsent,
+  );
+  expect(backend.reservationReads).toBeGreaterThan(0);
+  success(await store.close({ deadlineAtMs: Date.now() + 1_000 }));
+});

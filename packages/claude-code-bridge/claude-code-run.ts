@@ -528,6 +528,34 @@ async function waitForProcessExitProofResult(
   return proof;
 }
 
+async function settleQueryWithDeadline(
+  settle: () => Promise<void>,
+): Promise<ResultType<void, ClaudeCodeRunExternalFailure>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<ResultType<void, ClaudeCodeRunExternalFailure>>((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve(
+          Result.err(
+            new ClaudeCodeRunExternalFailure({
+              operation: "Claude query settlement",
+              cause: new Error("Claude query settlement exceeded 10000ms"),
+              message: "Claude query settlement exceeded 10000ms",
+            }),
+          ),
+        ),
+      PROCESS_EXIT_PROOF_TIMEOUT_MS,
+    );
+    timer.unref();
+  });
+  const result = await Promise.race([
+    captureExternalOperation("Claude query settlement", settle),
+    deadline,
+  ]);
+  clearTimeout(timer);
+  return result;
+}
+
 async function settleQueryAndProcess(input: {
   readonly settleQuery: () => Promise<void>;
   readonly process: TrackedClaudeProcess | undefined;
@@ -540,7 +568,7 @@ async function settleQueryAndProcess(input: {
     message: "Claude query has no tracked subprocess exit proof",
   });
   const [settled, exited] = await Promise.allSettled([
-    captureExternalOperation("Claude query settlement", input.settleQuery),
+    settleQueryWithDeadline(input.settleQuery),
     input.process?.waitForExit() ?? Promise.resolve(Result.err(missingProcess)),
   ]);
   for (const outcome of [settled, exited]) {
@@ -744,7 +772,10 @@ export async function materializeClaudeCodeRunResult(options: {
   const pendingObservabilityCallbacks = new Set<Promise<void>>();
   const injectors = new Set<MessageInjector>();
   const queryControllers = new Set<TrackedQueryController>();
-  const settledQueryControllers = new Set<TrackedQueryController>();
+  const querySettlements = new Map<
+    TrackedQueryController,
+    Promise<ResultType<void, ClaudeCodeRunCleanupFailed>>
+  >();
   const trackedProcesses: TrackedClaudeProcess[] = [];
   const unclaimedProcesses: TrackedClaudeProcess[] = [];
   let injector: MessageInjector | null = null;
@@ -753,9 +784,7 @@ export async function materializeClaudeCodeRunResult(options: {
     const injectedController = controller;
     queryControllers.add({
       settleResult: async () => {
-        const settled = await captureExternalOperation("Claude query settlement", () =>
-          injectedController.settle(),
-        );
+        const settled = await settleQueryWithDeadline(() => injectedController.settle());
         return settled.match<ResultType<void, ClaudeCodeRunCleanupFailed>>({
           ok: () => Result.ok(),
           err: (error) =>
@@ -985,22 +1014,25 @@ export async function materializeClaudeCodeRunResult(options: {
     const errors: ClaudeCodeRunExternalFailure[] = [];
     for (;;) {
       const batch = [...queryControllers].filter(
-        (queryController) => !settledQueryControllers.has(queryController),
+        (queryController) => !querySettlements.has(queryController),
       );
       if (batch.length === 0) break;
-      batch.forEach((queryController) => settledQueryControllers.add(queryController));
-      const settlements = await Promise.allSettled(
-        batch.map((queryController) => queryController.settleResult()),
+      batch.forEach((queryController) =>
+        querySettlements.set(queryController, queryController.settleResult()),
       );
-      for (const settlement of settlements) {
-        const panic = deferredCleanupPanic(settlement);
-        if (panic) throw panic;
-        if (settlement.status === "fulfilled") {
-          settlement.value.match({
-            ok: () => undefined,
-            err: (error) => errors.push(...error.failures),
-          });
-        }
+      await Promise.allSettled(
+        batch.map((queryController) => querySettlements.get(queryController)!),
+      );
+    }
+    const settlements = await Promise.allSettled(querySettlements.values());
+    for (const settlement of settlements) {
+      const panic = deferredCleanupPanic(settlement);
+      if (panic) throw panic;
+      if (settlement.status === "fulfilled") {
+        settlement.value.match({
+          ok: () => undefined,
+          err: (error) => errors.push(...error.failures),
+        });
       }
     }
     return errors.length === 0
@@ -1177,7 +1209,7 @@ export async function materializeClaudeCodeRunResult(options: {
         ? Result.ok()
         : Result.err(
             new ClaudeCodeRunCleanupFailed({
-              failures: errors,
+              failures: [...new Set(errors)],
               message: "Claude run disposal could not prove clean settlement",
             }),
           );

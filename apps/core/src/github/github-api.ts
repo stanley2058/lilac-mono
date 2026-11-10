@@ -16,6 +16,7 @@ import {
   getGithubViewerLoginOrNull as getGithubViewerLoginByTokenOrNull,
   getPreferredGithubAuthOrNull,
   getPreferredGithubAuthResult,
+  getGithubAppAuthOrNull,
   type GithubAuthFailed,
 } from "./github-auth";
 import { githubWebBaseUrl } from "./github-ids";
@@ -42,6 +43,7 @@ const githubIssueCommentSchema = z.object({
     .optional(),
 });
 const githubIssueSchema = z.object({
+  comments: z.number().int().nonnegative().optional(),
   title: z.string(),
   body: z.string().nullable(),
   html_url: z.string().optional(),
@@ -409,6 +411,7 @@ export async function deleteIssueComment(input: {
 }
 
 export async function getIssue(input: { owner: string; repo: string; number: number }): Promise<{
+  comments?: number;
   title: string;
   body: string | null;
   html_url?: string;
@@ -638,4 +641,23 @@ async function captureGithubAppResponse(
     async () => githubAppSchema.safeParse(await response.json()),
     (cause) => new Error("GitHub App response unavailable", { cause }),
   );
+}
+
+export async function hasGithubCollaboratorPermission(input: {
+  owner: string;
+  repo: string;
+  login: string;
+}): Promise<boolean> {
+  const auth = await getGithubAppAuthOrNull({ dataDir: env.dataDir });
+  if (!auth) return false;
+  const permission = await githubFetchJsonResult({
+    apiBaseUrl: auth.apiBaseUrl,
+    token: auth.token,
+    path: `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/collaborators/${encodeURIComponent(input.login)}/permission`,
+    schema: z.object({ permission: z.string() }),
+  });
+  return permission.match({
+    ok: (value) => ["admin", "maintain", "write"].includes(value.permission),
+    err: () => false,
+  });
 }

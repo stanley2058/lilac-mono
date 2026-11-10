@@ -56,7 +56,7 @@ type ReferenceContract = {
   readonly messageId: string;
   readonly missingMessageId: string;
   readonly expectedListSessionsError: SurfaceOperationError["_tag"];
-  readonly expectedProviderOperation: "push-output" | "send-message";
+  readonly expectedProviderOperation: "finish-output" | "send-message";
   createSessionRef(): SessionRef;
   createMessageRef(messageId?: string): MsgRef;
   readonly foreignSessionRef: SessionRef;
@@ -192,6 +192,11 @@ function createDiscordClient(
         if (messageId === "missing") throw { code: 10_008 };
         return messages.get(messageId) ?? createMessage({}, messageId);
       },
+      delete: async (messageId: string) => {
+        if (messageId === "missing") throw { code: 10_008 };
+        log.deletes.push(messageId);
+        messages.delete(messageId);
+      },
     },
   };
 
@@ -228,7 +233,7 @@ const DISCORD_REFERENCE: ReferenceContract = {
   messageId: "origin",
   missingMessageId: "missing",
   expectedListSessionsError: "SurfaceUnavailable",
-  expectedProviderOperation: "push-output",
+  expectedProviderOperation: "finish-output",
   createSessionRef: () => BUILTIN_SURFACE_PROTOCOLS.discord.refs.createSessionRef("channel-1"),
   createMessageRef: (messageId = "origin") =>
     BUILTIN_SURFACE_PROTOCOLS.discord.refs.createMessageRef(

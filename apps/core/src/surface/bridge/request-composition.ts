@@ -1,3 +1,4 @@
+import { createFreshOnlyLineage } from "../../shared/core-primary-lineage";
 import { captureError } from "../../shared/error-capture";
 import { isDeepStrictEqual } from "node:util";
 
@@ -128,19 +129,6 @@ const ACTIVE_REQUEST_READ_SCOPE = Symbol("active-request-read-scope");
 type StoredLineageSegmentInputV2 = Omit<CoreLineageSegmentInputV2, "canonicalMessages"> & {
   readonly canonicalMessages: readonly StoredMessageV1[];
 };
-
-function createFreshOnlyLineage(reason: string, currentCanonicalStart = 0): CorePrimaryLineageV2 {
-  const created = createCorePrimaryLineageFreshOnlyV2(reason, currentCanonicalStart);
-  return created.match<CorePrimaryLineageV2>({
-    ok: (value) => value,
-    err: () => ({
-      state: "fresh-only",
-      lineageVersion: 2,
-      currentCanonicalStart: 0,
-      reason: "lineage-fallback-construction-failed",
-    }),
-  });
-}
 
 type ProjectionCapableStore = TranscriptStore &
   Required<

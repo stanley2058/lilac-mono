@@ -1,10 +1,10 @@
 import { CopySessionIdContextMenuItem } from "./CopySessionIdMenuItem";
 import { CopyReferenceItem } from "./ConversationReference";
-import { memo, useState } from "react";
+import { memo, useCallback, useState } from "react";
 import { useLocation } from "@tanstack/react-router";
 import { useStore } from "zustand";
 import { useQuery } from "@tanstack/react-query";
-import { composerDraftOptions } from "../queries";
+import { composerDraftOptions, draftedThreadsOptions } from "../queries";
 import type { Draft } from "./Chat";
 import {
   X,
@@ -82,11 +82,18 @@ export const SidebarThread = memo(function SidebarThread({
   const settle = () => onSettle?.(id, section ?? "active");
   const pin = () => onPin?.(id, section ?? "active");
   const { drafts, scope, draftCache } = useWorkspace();
-  const { data: hasReplyDraft } = useQuery({
+  // Only an open or edited conversation has its draft loaded; the rest share one saved-draft list.
+  const { data: liveReplyDraft } = useQuery({
     ...composerDraftOptions(scope, id, draftCache),
-    enabled: !!thread,
+    enabled: false,
     select: hasUnsentDraft,
   });
+  const { data: savedReplyDraft } = useQuery({
+    ...draftedThreadsOptions(scope, draftCache),
+    enabled: !!thread,
+    select: useCallback((ids: ReadonlySet<string>) => ids.has(id), [id]),
+  });
+  const hasReplyDraft = liveReplyDraft ?? savedReplyDraft ?? false;
   const draft = useStore(drafts, (state) =>
     thread ? undefined : state.summaries.find((item) => item.id === id),
   );

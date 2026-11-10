@@ -1,4 +1,5 @@
 import { CoreClaudeAttemptLifecycle } from "./claude-attempt-lifecycle";
+import { migrateTranscriptSchema } from "./transcript-migrations";
 import { captureError } from "../shared/error-capture.js";
 import { Database } from "bun:sqlite";
 import { isDeepStrictEqual } from "node:util";
@@ -96,7 +97,7 @@ import {
 } from "./transcript-persistence-codec";
 
 const logger = createLogger({ module: "transcript-store" });
-const TRANSCRIPT_SCHEMA_VERSION = TRANSCRIPT_PERSISTENCE_SCHEMA_VERSION;
+export const TRANSCRIPT_SCHEMA_VERSION = TRANSCRIPT_PERSISTENCE_SCHEMA_VERSION;
 const MAX_DEFERRED_TRANSCRIPT_EVENTS = 128;
 const TRANSCRIPT_OWNED_BLOB_RESERVATION_MS = 5 * 60 * 1_000;
 const CORE_OWNED_BLOB_DELETION_CLAIM_LEASE_MS = 30 * 60 * 1_000;
@@ -139,17 +140,17 @@ type TranscriptStoreRowOutputMap = {
   readonly "primary-attempt": DecodedCorePrimaryClaudeAttemptRow;
 };
 
-function decodeTranscriptRow(input: {
+export function decodeTranscriptRow(input: {
   readonly row: PersistedTranscriptRow;
   readonly schemaVersion: number;
 }): ResultType<DecodedPersistedValue<DecodedTranscriptRow>, PersistedDataError>;
-function decodeTranscriptRow<TKind extends TranscriptStorePersistedRowKind>(input: {
+export function decodeTranscriptRow<TKind extends TranscriptStorePersistedRowKind>(input: {
   readonly storeKind: TKind;
   readonly row: object | null;
   readonly schemaVersion: number;
   readonly recordId: string;
 }): ResultType<DecodedPersistedValue<TranscriptStoreRowOutputMap[TKind]>, PersistedDataError>;
-function decodeTranscriptRow(
+export function decodeTranscriptRow(
   input:
     | { readonly row: PersistedTranscriptRow; readonly schemaVersion: number }
     | {
@@ -252,7 +253,7 @@ function collectStoredResourceIds(
   return Result.ok([...resourceIds]);
 }
 
-function collectStoredBlobReferences(
+export function collectStoredBlobReferences(
   messages: readonly StoredMessageV1[],
 ): ResultType<readonly CoreOwnedBlobReference[], CoreOwnedBlobIntegrityError> {
   const references = new Map<string, CoreOwnedBlobReference>();
@@ -394,7 +395,7 @@ type CoreNamedClaudeAttemptRow = {
   updated_ts: number;
 };
 
-type CorePrimaryClaudeBindingRow = {
+export type CorePrimaryClaudeBindingRow = {
   request_client: string;
   session_id: string;
   provider_id: string;
@@ -1002,6 +1003,12 @@ export type RecentAgentWriteSnapshot = {
   finalText?: string;
 };
 
+export type TranscriptDiscoverySnapshot = {
+  requestId: string;
+  updatedTs: number;
+  fingerprint: string;
+};
+
 export type TranscriptDiscoveryRecord = {
   requestId: string;
   sessionId: string;
@@ -1121,6 +1128,19 @@ export type TranscriptStore = {
     messageId: string;
   }): ResultType<TranscriptSnapshot | null, TranscriptStoreReadError>;
 
+  /**
+   * Reads only the final text of the transcript linked to a surface message. Returns null when no
+   * transcript for that request client and session is linked; `finalText` is null when the
+   * transcript has none.
+   */
+  getSurfaceMessageFinalText?(input: {
+    platform: AdapterPlatform;
+    channelId: string;
+    messageId: string;
+    requestClient: AdapterPlatform;
+    sessionId: string;
+  }): ResultType<{ readonly finalText: string | null } | null, TranscriptStoreReadError>;
+
   unlinkSurfaceMessage?(input: {
     platform: AdapterPlatform;
     channelId: string;
@@ -1231,7 +1251,9 @@ export type TranscriptStore = {
     client?: AdapterPlatform;
   }): RecentAgentWriteSnapshot[];
 
-  listDiscoveryRecords?(): TranscriptDiscoveryRecord[];
+  listDiscoveryRecords?(requestIds?: readonly string[]): TranscriptDiscoveryRecord[];
+  getDiscoverySnapshot?(): TranscriptDiscoverySnapshot[];
+  getDiscoveryVersion?(): string;
 
   close(): void;
 };
@@ -1374,646 +1396,13 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
   }
 
   private migrate() {
-    this.db.run("PRAGMA foreign_keys = ON");
-    const migrate = this.db.transaction(() => {
-      this.db.run(`
-      CREATE TABLE IF NOT EXISTS request_transcripts (
-        request_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        request_client TEXT NOT NULL,
-        created_ts INTEGER NOT NULL,
-        updated_ts INTEGER NOT NULL,
-        model_label TEXT,
-        final_text TEXT,
-        messages_json TEXT NOT NULL,
-        context_meta_json TEXT,
-        provider_state_json TEXT,
-        stable_named_request_client TEXT,
-        transcript_digest TEXT,
-        loaded_catalog_ids_json TEXT
-      );
-    `);
-
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS transcript_schema_migrations (
-          version INTEGER PRIMARY KEY,
-          applied_ts INTEGER NOT NULL
-        )
-      `);
-      const versionRow = decodeTranscriptRow({
-        storeKind: "migration-version",
-        row: this.db
-          .query<DecodedTranscriptMigrationVersionRow, []>(
-            "SELECT COALESCE(MAX(version), 0) AS version FROM transcript_schema_migrations",
-          )
-          .get(),
-        schemaVersion: TRANSCRIPT_SCHEMA_VERSION,
-        recordId: "schema-version",
-      });
-      const finishVersion = versionRow.match<
-        () => ResultType<DecodedPersistedValue<DecodedTranscriptMigrationVersionRow>, Panic>
-      >({
-        ok: (value) => () => Result.ok(value),
-        err: (error) => () => {
-          this.reportPersistenceError(error);
-          return Result.err(
-            new Panic({
-              message: "Invalid transcript schema migration row",
-              cause: error,
-            }),
-          );
-        },
-      });
-      const version = adaptToolResultToHost(finishVersion()).value.version;
-      if (version > TRANSCRIPT_SCHEMA_VERSION) {
-        throw new Error(`Unsupported transcript schema version ${version}`);
-      }
-      if (version !== 0 && version < 6) {
-        throw new Error(
-          `Core transcript schema ${version} requires offline blob migration. Run: bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data`,
-        );
-      }
-
-      const transcriptColumns = this.db
-        .query<{ name: string }, []>("PRAGMA table_info(request_transcripts)")
-        .all();
-      for (const column of [
-        ["context_meta_json", "TEXT"],
-        ["provider_state_json", "TEXT"],
-        ["stable_named_request_client", "TEXT"],
-        ["transcript_digest", "TEXT"],
-        ["loaded_catalog_ids_json", "TEXT"],
-      ] as const) {
-        if (!transcriptColumns.some((entry) => entry.name === column[0])) {
-          this.db.run(`ALTER TABLE request_transcripts ADD COLUMN ${column[0]} ${column[1]}`);
-        }
-      }
-
-      this.db.run(`
-      CREATE INDEX IF NOT EXISTS idx_request_transcripts_session
-      ON request_transcripts(session_id, updated_ts);
-    `);
-
-      this.db.run(`
-      CREATE INDEX IF NOT EXISTS idx_request_transcripts_client_session
-      ON request_transcripts(request_client, session_id);
-    `);
-
-      this.db.run(`
-      CREATE TABLE IF NOT EXISTS surface_message_to_request (
-        platform TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
-        message_id TEXT NOT NULL,
-        request_id TEXT NOT NULL,
-        created_ts INTEGER NOT NULL,
-        PRIMARY KEY (platform, channel_id, message_id)
-      );
-    `);
-
-      this.db.run(`
-      CREATE INDEX IF NOT EXISTS idx_surface_message_to_request_request
-      ON surface_message_to_request(request_id);
-    `);
-
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS core_named_claude_bindings (
-          request_client TEXT NOT NULL,
-          session_id TEXT NOT NULL,
-          provider_id TEXT NOT NULL,
-          binding_protocol_version INTEGER NOT NULL CHECK (binding_protocol_version = 1),
-          provider_family TEXT NOT NULL CHECK (provider_family = 'claude-code'),
-          terminal_request_id TEXT NOT NULL REFERENCES request_transcripts(request_id) ON DELETE CASCADE,
-          canonical_hash_version INTEGER NOT NULL CHECK (canonical_hash_version = 2),
-          canonical_head_hash TEXT NOT NULL,
-          canonical_message_count INTEGER NOT NULL CHECK (canonical_message_count >= 0),
-          execution_scope_hash_version INTEGER NOT NULL CHECK (execution_scope_hash_version = 1),
-          execution_scope_hash TEXT NOT NULL,
-          claude_session_id TEXT NOT NULL,
-          native_cwd TEXT NOT NULL,
-          native_last_modified REAL NOT NULL CHECK (native_last_modified >= 0),
-          native_context_tokens INTEGER NOT NULL CHECK (native_context_tokens >= 0),
-          native_context_max_tokens INTEGER NOT NULL CHECK (native_context_max_tokens > 0),
-          last_model_specifier TEXT NOT NULL,
-          last_reasoning TEXT NOT NULL,
-          revision INTEGER NOT NULL CHECK (revision > 0),
-          updated_ts INTEGER NOT NULL,
-          PRIMARY KEY (request_client, session_id, provider_id)
-        )
-      `);
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS core_named_claude_attempts (
-          product TEXT NOT NULL CHECK (product = 'core-named'),
-          request_client TEXT NOT NULL,
-          session_id TEXT NOT NULL,
-          provider_id TEXT NOT NULL,
-          source_terminal_request_id TEXT REFERENCES request_transcripts(request_id) ON DELETE SET NULL,
-          source_canonical_head_hash TEXT,
-          source_canonical_message_count INTEGER CHECK (source_canonical_message_count >= 0),
-          execution_scope_hash_version INTEGER NOT NULL CHECK (execution_scope_hash_version = 1),
-          execution_scope_hash TEXT NOT NULL,
-          request_id TEXT NOT NULL,
-          attempt_index INTEGER NOT NULL CHECK (attempt_index >= 0),
-          candidate_session_id TEXT NOT NULL,
-          source_session_id TEXT,
-          expected_binding_revision INTEGER CHECK (expected_binding_revision > 0),
-          state TEXT NOT NULL CHECK (state IN ('active', 'succeeded', 'failed', 'cancelled', 'uncertain')),
-          terminal_request_id TEXT REFERENCES request_transcripts(request_id) ON DELETE CASCADE,
-          terminal_canonical_head_hash TEXT,
-          terminal_canonical_message_count INTEGER CHECK (terminal_canonical_message_count >= 0),
-          native_cwd TEXT,
-          native_last_modified REAL CHECK (native_last_modified >= 0),
-          native_context_tokens INTEGER CHECK (native_context_tokens >= 0),
-          native_context_max_tokens INTEGER CHECK (native_context_max_tokens > 0),
-          last_model_specifier TEXT,
-          last_reasoning TEXT,
-          created_ts INTEGER NOT NULL,
-          updated_ts INTEGER NOT NULL,
-          PRIMARY KEY (request_client, session_id, provider_id, request_id, attempt_index)
-        )
-      `);
-      this.db.run(`
-        CREATE INDEX IF NOT EXISTS idx_core_named_claude_attempts_owner
-        ON core_named_claude_attempts(request_client, session_id, provider_id, updated_ts)
-      `);
-
-      if (version < 1) {
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [1, Date.now()],
-        );
-      }
-
-      if (version < 2) {
-        this.db.run(`
-          CREATE TABLE core_owned_blobs (
-            owner_id TEXT PRIMARY KEY CHECK (length(owner_id) > 0),
-            blob_ref_json TEXT NOT NULL,
-            media_type TEXT NOT NULL CHECK (length(media_type) > 0),
-            filename TEXT NOT NULL CHECK (length(filename) > 0),
-            byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
-            created_ts INTEGER NOT NULL
-          )
-        `);
-        this.db.run(`
-          CREATE TABLE core_surface_projections (
-            request_client TEXT NOT NULL,
-            surface_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            projection_format_version INTEGER NOT NULL
-              CHECK (projection_format_version = 1),
-            canonical_messages_json TEXT NOT NULL,
-            source_facts_json TEXT NOT NULL,
-            created_ts INTEGER NOT NULL,
-            PRIMARY KEY (
-              request_client, surface_id, session_id, message_id, projection_format_version
-            )
-          )
-        `);
-        this.db.run(`
-          CREATE TABLE core_surface_projection_blobs (
-            request_client TEXT NOT NULL,
-            surface_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            projection_format_version INTEGER NOT NULL,
-            position INTEGER NOT NULL CHECK (position >= 0),
-            blob_owner_id TEXT NOT NULL REFERENCES core_owned_blobs(owner_id) ON DELETE RESTRICT,
-            PRIMARY KEY (
-              request_client, surface_id, session_id, message_id,
-              projection_format_version, position
-            ),
-            FOREIGN KEY (
-              request_client, surface_id, session_id, message_id, projection_format_version
-            ) REFERENCES core_surface_projections (
-              request_client, surface_id, session_id, message_id, projection_format_version
-            ) ON DELETE CASCADE
-          )
-        `);
-        this.db.run(`
-          CREATE TABLE core_primary_lineage_manifests (
-            request_id TEXT PRIMARY KEY
-              REFERENCES request_transcripts(request_id) ON DELETE CASCADE,
-            lineage_version INTEGER NOT NULL CHECK (lineage_version = 2),
-            manifest_json TEXT NOT NULL,
-            created_ts INTEGER NOT NULL
-          )
-        `);
-        this.db.run(`
-          CREATE TABLE core_lineage_projection_refs (
-            request_id TEXT NOT NULL
-              REFERENCES core_primary_lineage_manifests(request_id) ON DELETE CASCADE,
-            segment_index INTEGER NOT NULL CHECK (segment_index >= 0),
-            atom_index INTEGER NOT NULL CHECK (atom_index >= 0),
-            request_client TEXT NOT NULL,
-            surface_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            projection_format_version INTEGER NOT NULL,
-            PRIMARY KEY (request_id, segment_index, atom_index),
-            FOREIGN KEY (
-              request_client, surface_id, session_id, message_id, projection_format_version
-            ) REFERENCES core_surface_projections (
-              request_client, surface_id, session_id, message_id, projection_format_version
-            ) ON DELETE RESTRICT
-          )
-        `);
-        this.db.run(`
-          CREATE TABLE core_lineage_request_refs (
-            request_id TEXT NOT NULL
-              REFERENCES core_primary_lineage_manifests(request_id) ON DELETE CASCADE,
-            segment_index INTEGER NOT NULL CHECK (segment_index >= 0),
-            atom_index INTEGER NOT NULL CHECK (atom_index >= 0),
-            reference_kind TEXT NOT NULL CHECK (reference_kind IN ('request', 'checkpoint')),
-            referenced_request_id TEXT NOT NULL
-              REFERENCES request_transcripts(request_id) ON DELETE RESTRICT,
-            transcript_digest TEXT NOT NULL,
-            PRIMARY KEY (request_id, segment_index, atom_index)
-          )
-        `);
-        this.db.run(`
-          CREATE INDEX idx_core_lineage_request_refs_referenced
-          ON core_lineage_request_refs(referenced_request_id)
-        `);
-
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [2, Date.now()],
-        );
-      }
-      if (version < 3) {
-        this.db.run(`
-          CREATE TABLE core_lineage_request_alias_refs (
-            request_id TEXT NOT NULL
-              REFERENCES core_primary_lineage_manifests(request_id) ON DELETE CASCADE,
-            segment_index INTEGER NOT NULL CHECK (segment_index >= 0),
-            alias_index INTEGER NOT NULL CHECK (alias_index >= 0),
-            referenced_request_id TEXT NOT NULL
-              REFERENCES request_transcripts(request_id) ON DELETE RESTRICT,
-            request_client TEXT NOT NULL,
-            surface_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            projection_format_version INTEGER NOT NULL,
-            PRIMARY KEY (request_id, segment_index, alias_index),
-            FOREIGN KEY (
-              request_client, surface_id, session_id, message_id, projection_format_version
-            ) REFERENCES core_surface_projections (
-              request_client, surface_id, session_id, message_id, projection_format_version
-            ) ON DELETE RESTRICT
-          )
-        `);
-        this.db.run(`
-          CREATE INDEX idx_core_lineage_request_alias_refs_projection
-          ON core_lineage_request_alias_refs(
-            request_client, surface_id, session_id, message_id, projection_format_version
-          )
-        `);
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [3, Date.now()],
-        );
-      }
-      if (version < 4) {
-        this.db.run(`
-          CREATE TABLE core_primary_claude_bindings (
-            request_client TEXT NOT NULL CHECK (request_client = 'discord'),
-            session_id TEXT NOT NULL,
-            provider_id TEXT NOT NULL,
-            binding_protocol_version INTEGER NOT NULL CHECK (binding_protocol_version = 1),
-            provider_family TEXT NOT NULL CHECK (provider_family = 'claude-code'),
-            lineage_version INTEGER NOT NULL CHECK (lineage_version = 2),
-            atom_count INTEGER NOT NULL CHECK (atom_count > 0),
-            prefix_digest TEXT NOT NULL,
-            canonical_message_count INTEGER NOT NULL CHECK (canonical_message_count > 0),
-            execution_scope_hash_version INTEGER NOT NULL CHECK (execution_scope_hash_version = 1),
-            execution_scope_hash TEXT NOT NULL,
-            claude_session_id TEXT NOT NULL,
-            native_cwd TEXT NOT NULL,
-            native_last_modified REAL NOT NULL CHECK (native_last_modified >= 0),
-            native_context_tokens INTEGER NOT NULL CHECK (native_context_tokens >= 0),
-            native_context_max_tokens INTEGER NOT NULL CHECK (native_context_max_tokens > 0),
-            last_model_specifier TEXT NOT NULL,
-            last_reasoning TEXT NOT NULL,
-            revision INTEGER NOT NULL CHECK (revision > 0),
-            updated_ts INTEGER NOT NULL,
-            PRIMARY KEY (request_client, session_id, provider_id)
-          )
-        `);
-        this.db.run(`
-          CREATE TABLE core_primary_claude_attempts (
-            product TEXT NOT NULL CHECK (product = 'core-primary'),
-            request_client TEXT NOT NULL CHECK (request_client = 'discord'),
-            session_id TEXT NOT NULL,
-            provider_id TEXT NOT NULL,
-            source_lineage_version INTEGER CHECK (source_lineage_version = 2),
-            source_atom_count INTEGER CHECK (source_atom_count > 0),
-            source_prefix_digest TEXT,
-            source_canonical_message_count INTEGER CHECK (source_canonical_message_count > 0),
-            execution_scope_hash_version INTEGER NOT NULL CHECK (execution_scope_hash_version = 1),
-            execution_scope_hash TEXT NOT NULL,
-            request_id TEXT NOT NULL,
-            attempt_index INTEGER NOT NULL CHECK (attempt_index >= 0),
-            candidate_session_id TEXT NOT NULL,
-            source_session_id TEXT,
-            expected_binding_revision INTEGER CHECK (expected_binding_revision > 0),
-            state TEXT NOT NULL CHECK (state IN ('active', 'succeeded', 'failed', 'cancelled', 'uncertain')),
-            terminal_request_id TEXT REFERENCES request_transcripts(request_id) ON DELETE CASCADE,
-            terminal_lineage_version INTEGER CHECK (terminal_lineage_version = 2),
-            terminal_atom_count INTEGER CHECK (terminal_atom_count > 0),
-            terminal_prefix_digest TEXT,
-            terminal_canonical_message_count INTEGER CHECK (terminal_canonical_message_count > 0),
-            native_cwd TEXT,
-            native_last_modified REAL CHECK (native_last_modified >= 0),
-            native_context_tokens INTEGER CHECK (native_context_tokens >= 0),
-            native_context_max_tokens INTEGER CHECK (native_context_max_tokens > 0),
-            last_model_specifier TEXT,
-            last_reasoning TEXT,
-            created_ts INTEGER NOT NULL,
-            updated_ts INTEGER NOT NULL,
-            PRIMARY KEY (request_client, session_id, provider_id, request_id, attempt_index)
-          )
-        `);
-        this.db.run(`
-          CREATE INDEX idx_core_primary_claude_attempts_owner
-          ON core_primary_claude_attempts(request_client, session_id, provider_id, updated_ts)
-        `);
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [4, Date.now()],
-        );
-      }
-      if (version < 5) {
-        this.db.run(
-          `ALTER TABLE core_primary_claude_bindings
-           ADD COLUMN terminal_request_id TEXT
-             REFERENCES request_transcripts(request_id) ON DELETE CASCADE`,
-        );
-        const bindings = this.db
-          .query<CorePrimaryClaudeBindingRow, []>(
-            "SELECT * FROM core_primary_claude_bindings ORDER BY rowid",
-          )
-          .all();
-        for (const binding of bindings) {
-          const terminalRequestId = this.findCorePrimaryTerminalRequestId(binding);
-          if (terminalRequestId === null) continue;
-          this.db.run(
-            `UPDATE core_primary_claude_bindings SET terminal_request_id = ?
-             WHERE request_client = ? AND session_id = ? AND provider_id = ?
-               AND revision = ? AND terminal_request_id IS NULL`,
-            [
-              terminalRequestId,
-              binding.request_client,
-              binding.session_id,
-              binding.provider_id,
-              binding.revision,
-            ],
-          );
-        }
-        this.db.run("DELETE FROM core_primary_claude_bindings WHERE terminal_request_id IS NULL");
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [5, Date.now()],
-        );
-      }
-      this.db.run(`
-        CREATE INDEX IF NOT EXISTS idx_core_lineage_projection_refs_projection
-        ON core_lineage_projection_refs(
-          request_client, surface_id, session_id, message_id, projection_format_version
-        )
-      `);
-      this.db.run(`
-        CREATE INDEX IF NOT EXISTS idx_core_surface_projection_blobs_blob
-        ON core_surface_projection_blobs(blob_owner_id)
-      `);
-      if (version < 6) {
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [6, Date.now()],
-        );
-      }
-      if (version < 7) {
-        this.db.run(`
-          CREATE TABLE core_resources (
-            resource_id TEXT PRIMARY KEY
-              CHECK (
-                length(resource_id) = 35
-                AND substr(resource_id, 1, 3) = 'r1_'
-                AND substr(resource_id, 4) NOT GLOB '*[^0-9a-f]*'
-              ),
-            record_version INTEGER NOT NULL CHECK (record_version = 1),
-            origin_key TEXT NOT NULL UNIQUE CHECK (length(origin_key) > 0),
-            origin_json TEXT NOT NULL,
-            filename TEXT,
-            declared_media_type TEXT,
-            detected_media_type TEXT,
-            reported_byte_length INTEGER CHECK (reported_byte_length >= 0),
-            created_ts INTEGER NOT NULL,
-            cache_blob_ref_json TEXT,
-            cache_cached_ts INTEGER,
-            CHECK (
-              (cache_blob_ref_json IS NULL AND cache_cached_ts IS NULL)
-              OR (cache_blob_ref_json IS NOT NULL AND cache_cached_ts IS NOT NULL)
-            )
-          )
-        `);
-        this.db.run(`
-          CREATE TABLE core_transcript_resource_refs (
-            request_id TEXT NOT NULL
-              REFERENCES request_transcripts(request_id) ON DELETE CASCADE,
-            resource_id TEXT NOT NULL
-              REFERENCES core_resources(resource_id) ON DELETE RESTRICT,
-            PRIMARY KEY (request_id, resource_id)
-          )
-        `);
-        this.db.run(`
-          CREATE INDEX idx_core_transcript_resource_refs_resource
-          ON core_transcript_resource_refs(resource_id)
-        `);
-        this.db.run(`
-          CREATE TABLE core_surface_projection_resource_refs (
-            request_client TEXT NOT NULL,
-            surface_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            projection_format_version INTEGER NOT NULL,
-            resource_id TEXT NOT NULL
-              REFERENCES core_resources(resource_id) ON DELETE RESTRICT,
-            PRIMARY KEY (
-              request_client, surface_id, session_id, message_id,
-              projection_format_version, resource_id
-            ),
-            FOREIGN KEY (
-              request_client, surface_id, session_id, message_id, projection_format_version
-            ) REFERENCES core_surface_projections (
-              request_client, surface_id, session_id, message_id, projection_format_version
-            ) ON DELETE CASCADE
-          )
-        `);
-        this.db.run(`
-          CREATE INDEX idx_core_surface_projection_resource_refs_resource
-          ON core_surface_projection_resource_refs(resource_id)
-        `);
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [7, Date.now()],
-        );
-      }
-      if (version < 8) {
-        this.db.run(`
-          ALTER TABLE core_owned_blobs
-          ADD COLUMN deletion_claim_ts INTEGER CHECK (deletion_claim_ts >= 0)
-        `);
-        this.db.run(`
-          CREATE TABLE core_transcript_blob_refs (
-            request_id TEXT NOT NULL
-              REFERENCES request_transcripts(request_id) ON DELETE CASCADE,
-            position INTEGER NOT NULL CHECK (position >= 0),
-            blob_owner_id TEXT NOT NULL
-              REFERENCES core_owned_blobs(owner_id) ON DELETE RESTRICT,
-            PRIMARY KEY (request_id, position),
-            UNIQUE (request_id, blob_owner_id)
-          )
-        `);
-        this.db.run(`
-          CREATE INDEX idx_core_transcript_blob_refs_blob
-          ON core_transcript_blob_refs(blob_owner_id)
-        `);
-        const transcripts = this.db
-          .query<{ request_id: string; messages_json: string }, []>(
-            "SELECT request_id, messages_json FROM request_transcripts ORDER BY rowid",
-          )
-          .all();
-        for (const transcript of transcripts) {
-          const messages = adaptToolResultToHost(
-            decodePersistedTranscriptMessages({
-              raw: transcript.messages_json,
-              schemaVersion: 7,
-              recordId: transcript.request_id,
-            }),
-          ).value;
-          const references = adaptToolResultToHost(collectStoredBlobReferences(messages));
-          for (const reference of references) {
-            adaptToolResultToHost(this.ensureTranscriptOwnedBlob(reference));
-          }
-          this.replaceTranscriptBlobReferences(transcript.request_id, references);
-        }
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [8, Date.now()],
-        );
-      }
-      if (version < 9) {
-        this.db.run(`
-          CREATE TABLE core_agent_run_checkpoint_blobs (
-            request_delivery_id TEXT NOT NULL CHECK (length(request_delivery_id) > 0),
-            blob_owner_id TEXT NOT NULL
-              REFERENCES core_owned_blobs(owner_id) ON DELETE RESTRICT,
-            PRIMARY KEY (request_delivery_id, blob_owner_id)
-          )
-        `);
-        this.db.run(`
-          CREATE INDEX idx_core_agent_run_checkpoint_blobs_blob
-          ON core_agent_run_checkpoint_blobs(blob_owner_id)
-        `);
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [9, Date.now()],
-        );
-      }
-      if (version < 10) {
-        this.db.run("DROP TABLE IF EXISTS session_loaded_tools");
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [10, Date.now()],
-        );
-      }
-      if (version < 11) {
-        this.db.run("ALTER TABLE surface_message_to_request ADD COLUMN deleted_ts INTEGER");
-        this.db.run(`
-          CREATE TRIGGER delete_transcript_surface_aliases
-          AFTER DELETE ON request_transcripts
-          BEGIN
-            DELETE FROM surface_message_to_request WHERE request_id = OLD.request_id;
-          END
-        `);
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [11, Date.now()],
-        );
-      }
-      if (version < 12) {
-        this.db.run(`CREATE TABLE core_native_resource_refs (
-          upload_id TEXT PRIMARY KEY CHECK (length(upload_id) > 0),
-          thread_id TEXT NOT NULL CHECK (length(thread_id) > 0),
-          resource_id TEXT NOT NULL REFERENCES core_resources(resource_id) ON DELETE RESTRICT
-        )`);
-        this.db.run(
-          "CREATE INDEX idx_core_native_resource_refs_resource ON core_native_resource_refs(resource_id)",
-        );
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [12, Date.now()],
-        );
-      }
-      if (version < 13) {
-        this.db.run(`CREATE TABLE core_native_transcript_refs (
-          session_id TEXT NOT NULL CHECK (length(session_id) > 0),
-          request_id TEXT PRIMARY KEY REFERENCES request_transcripts(request_id) ON DELETE CASCADE
-        )`);
-        this.db.run(
-          "CREATE INDEX idx_core_native_transcript_refs_session ON core_native_transcript_refs(session_id)",
-        );
-        this.db.run(`INSERT INTO core_native_transcript_refs (session_id, request_id)
-          SELECT session_id, request_id FROM request_transcripts WHERE request_client = 'native'`);
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [13, Date.now()],
-        );
-      }
-      if (version < 14) {
-        this.db.run("ALTER TABLE core_resources ADD COLUMN image_preview_json TEXT");
-        this.db.run(
-          "INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)",
-          [14, Date.now()],
-        );
-      }
-      const foreignKeyFailures = this.db
-        .query<DecodedTranscriptForeignKeyFailureRow, []>("PRAGMA foreign_key_check")
-        .all()
-        .map((row, index) => {
-          const decoded = decodeTranscriptRow({
-            storeKind: "foreign-key-failure",
-            row,
-            schemaVersion: TRANSCRIPT_SCHEMA_VERSION,
-            recordId: `foreign-key:${index}`,
-          });
-          const finishForeignKeyFailure = decoded.match<
-            () => ResultType<DecodedTranscriptForeignKeyFailureRow, Panic>
-          >({
-            ok: (value) => () => Result.ok(value.value),
-            err: (error) => () => {
-              this.reportPersistenceError(error);
-              return Result.err(
-                new Panic({
-                  message: "Invalid transcript foreign-key check row",
-                  cause: error,
-                }),
-              );
-            },
-          });
-          return adaptToolResultToHost(finishForeignKeyFailure());
-        });
-      if (foreignKeyFailures.length > 0) {
-        if (foreignKeyFailures.some((failure) => failure.parent === "core_owned_blobs")) {
-          throw new CoreOwnedBlobIntegrityError(
-            "Transcript schema validation found a missing Core-owned blob",
-          );
-        }
-        throw new Error("Transcript schema migration failed foreign-key validation");
-      }
+    migrateTranscriptSchema(this.db, {
+      reportPersistenceError: (error) => this.reportPersistenceError(error),
+      findCorePrimaryTerminalRequestId: (binding) => this.findCorePrimaryTerminalRequestId(binding),
+      ensureTranscriptOwnedBlob: (reference) => this.ensureTranscriptOwnedBlob(reference),
+      replaceTranscriptBlobReferences: (requestId, references) =>
+        this.replaceTranscriptBlobReferences(requestId, references),
     });
-    migrate.immediate();
   }
 
   saveRequestTranscript(input: {
@@ -2195,18 +1584,9 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
             });
             if (lineageDecision.kind === "error") return Result.err(lineageDecision.error);
           }
-          return Result.ok(this.pruneRetention(now));
+          return Result.ok([]);
         };
 
-        const existing = this.db
-          .query<TranscriptRow, [string]>(
-            `SELECT request_id, session_id, request_client, created_ts, updated_ts, model_label,
-                    final_text, messages_json, context_meta_json, provider_state_json,
-                    stable_named_request_client, transcript_digest, loaded_catalog_ids_json
-           FROM request_transcripts WHERE request_id = ?`,
-          )
-          .get(input.requestId);
-        if (!existing) return persist();
         const digestRetained = this.db
           .query("SELECT 1 FROM core_lineage_request_refs WHERE referenced_request_id = ? LIMIT 1")
           .get(input.requestId);
@@ -2218,6 +1598,17 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
           .get(input.requestId);
         const digestIsRetained = digestRetained !== null;
         const requestMetadataIsRetained = requestMetadataRetained !== null;
+        // Only a lineage-retained transcript needs the stored row for comparison.
+        if (!digestIsRetained && !requestMetadataIsRetained) return persist();
+        const existing = this.db
+          .query<TranscriptRow, [string]>(
+            `SELECT request_id, session_id, request_client, created_ts, updated_ts, model_label,
+                    final_text, messages_json, context_meta_json, provider_state_json,
+                    stable_named_request_client, transcript_digest, loaded_catalog_ids_json
+           FROM request_transcripts WHERE request_id = ?`,
+          )
+          .get(input.requestId);
+        if (!existing) return persist();
         const existingTranscriptDecision = decodeTranscriptRow({
           row: existing,
           schemaVersion: TRANSCRIPT_SCHEMA_VERSION,
@@ -2266,10 +1657,33 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
       err: (error) => () => Result.err(error),
       ok: (events) => () => {
         this.emitDeferredTranscriptEvents(events);
+        this.pruneRetentionAfterSave(now).match({
+          ok: (pruned) => this.emitDeferredTranscriptEvents(pruned),
+          err: (error) =>
+            this.emitLifecycleDiagnostic("warn", "transcript retention prune failed", {
+              operation: error.operation,
+              code: error.code,
+            }),
+        });
         return Result.ok(undefined);
       },
     });
     return finish();
+  }
+
+  /** Prunes in its own transaction so retention work never holds or fails a transcript save. */
+  private pruneRetentionAfterSave(
+    now: number,
+  ): ResultType<readonly DeferredTranscriptEvent[], TranscriptStoreSqliteDriverFailure> {
+    return runBunSqliteTransaction<
+      readonly DeferredTranscriptEvent[],
+      never,
+      TranscriptStoreSqliteDriverFailure
+    >(
+      this.db,
+      () => Result.ok(this.pruneRetention(now)),
+      (cause) => classifyTranscriptSqliteDriverFailure("prune-retention", cause),
+    );
   }
 
   registerOrGet(inputValue: {
@@ -4335,6 +3749,37 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
     return this.finalizeTranscriptRead(read);
   }
 
+  getSurfaceMessageFinalText(input: {
+    platform: AdapterPlatform;
+    channelId: string;
+    messageId: string;
+    requestClient: AdapterPlatform;
+    sessionId: string;
+  }): ResultType<{ readonly finalText: string | null } | null, TranscriptStoreReadError> {
+    return this.readFromSqlite("get-surface-message-final-text", () => {
+      const row = this.db
+        .query<
+          { final_text: string | null },
+          [AdapterPlatform, string, string, AdapterPlatform, string]
+        >(
+          `SELECT t.final_text
+           FROM surface_message_to_request m
+           JOIN request_transcripts t ON t.request_id = m.request_id
+           WHERE m.platform = ? AND m.channel_id = ? AND m.message_id = ?
+             AND t.request_client = ? AND t.session_id = ?`,
+        )
+        .get(
+          input.platform,
+          input.channelId,
+          input.messageId,
+          input.requestClient,
+          input.sessionId,
+        );
+      if (!row) return null;
+      return { finalText: typeof row.final_text === "string" ? row.final_text : null };
+    });
+  }
+
   getLatestTranscriptBySession(input: {
     sessionId: string;
   }): ResultType<TranscriptSnapshot | null, TranscriptStoreReadError> {
@@ -5348,10 +4793,64 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
     return out;
   }
 
-  listDiscoveryRecords(): TranscriptDiscoveryRecord[] {
-    const rows = this.db
-      .query<PersistedDiscoveryRecordRow, []>(
-        `
+  getDiscoveryVersion(): string {
+    const local = this.db.query<{ changes: number }, []>("SELECT total_changes() AS changes").get();
+    const external = this.db.query<{ data_version: number }, []>("PRAGMA data_version").get();
+    return `${local?.changes ?? 0}:${external?.data_version ?? 0}`;
+  }
+
+  getDiscoverySnapshot(): TranscriptDiscoverySnapshot[] {
+    return this.db
+      .query<TranscriptDiscoverySnapshot, []>(`
+      SELECT rt.request_id AS requestId, rt.updated_ts AS updatedTs,
+        json_array(rt.session_id, rt.request_client, (
+          SELECT json_group_array(json_array(sm.platform, sm.channel_id, sm.message_id, sm.created_ts))
+          FROM surface_message_to_request sm
+          WHERE sm.request_id = rt.request_id AND sm.deleted_ts IS NULL
+        )) AS fingerprint
+      FROM request_transcripts rt
+    `)
+      .all();
+  }
+
+  listDiscoveryRecords(requestIds?: readonly string[]): TranscriptDiscoveryRecord[] {
+    if (requestIds?.length === 0) return [];
+    if (!requestIds) return this.readDiscoveryRecords([{ where: "", params: [] }]);
+    const batches: Array<{ readonly where: string; readonly params: readonly string[] }> = [];
+    for (let offset = 0; offset < requestIds.length; offset += 200) {
+      const batch = requestIds.slice(offset, offset + 200);
+      batches.push({
+        where: `WHERE rt.request_id IN (${batch.map(() => "?").join(",")})`,
+        params: batch,
+      });
+    }
+    return this.readDiscoveryRecords(batches);
+  }
+
+  /** Lists records for requests with a live output message in one surface channel. */
+  listDiscoveryRecordsInSurfaceChannel(input: {
+    readonly platform: AdapterPlatform;
+    readonly channelId: string;
+  }): TranscriptDiscoveryRecord[] {
+    return this.readDiscoveryRecords([
+      {
+        where: `WHERE rt.request_id IN (
+          SELECT request_id FROM surface_message_to_request
+          WHERE platform = ? AND channel_id = ? AND deleted_ts IS NULL
+        )`,
+        params: [input.platform, input.channelId],
+      },
+    ]);
+  }
+
+  private readDiscoveryRecords(
+    queries: ReadonlyArray<{ readonly where: string; readonly params: readonly string[] }>,
+  ): TranscriptDiscoveryRecord[] {
+    const rows: PersistedDiscoveryRecordRow[] = [];
+    for (const query of queries) {
+      const selected = this.db
+        .query<PersistedDiscoveryRecordRow, string[]>(
+          `
         SELECT
           rt.request_id,
           rt.session_id,
@@ -5365,10 +4864,13 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
         FROM request_transcripts rt
         LEFT JOIN surface_message_to_request sm
           ON sm.request_id = rt.request_id AND sm.deleted_ts IS NULL
+        ${query.where}
         ORDER BY rt.updated_ts DESC, rt.created_ts DESC, sm.created_ts ASC, sm.rowid ASC
         `,
-      )
-      .all();
+        )
+        .all(...query.params);
+      for (const row of selected) rows.push(row);
+    }
 
     const byRequestId = new Map<string, TranscriptDiscoveryRecord>();
     for (const row of rows) {

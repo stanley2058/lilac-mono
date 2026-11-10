@@ -198,7 +198,7 @@ export function FloatingChatMenu({
         >
           <DropdownMenuItem onClick={onNewThread}>
             <MessageCirclePlus />
-            New thread
+            New conversation
           </DropdownMenuItem>
           <DropdownMenuItem onClick={onToggleSidebar}>
             <PanelLeft />

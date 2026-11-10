@@ -1,3 +1,4 @@
+import { isMarkedGithubAgentComment } from "../../github/github-comment-marker";
 import type { DiscordSearchService } from "../../surface/store/discord-search-store";
 import { captureError } from "../../shared/error-capture";
 import { z } from "zod";
@@ -17,6 +18,7 @@ import { defineServerTool, type ServerTool, type ServerToolCallOptions } from ".
 import { isAdapterPlatform } from "../../shared/is-adapter-platform";
 import {
   hasCacheBurstProvider,
+  SurfacePermissionDenied,
   type SurfaceAdapter,
   type SurfaceOperationError,
   type SurfaceOperationResult,
@@ -1854,6 +1856,29 @@ export class Surface implements ServerTool {
       const input = yield* withDefaultSessionId(decodedInput, ctx);
       const sessionId = yield* mustPresentString(input.sessionId, "sessionId");
       const target = yield* Result.await(resolveSessionTarget({ resolved, sessionId }));
+      if (ctx?.safetyMode === "restricted") {
+        const message = yield* surfaceOperationResult(
+          await target.resolved.adapter.readMsg(
+            createSurfaceMessageRef(target.sessionRef, input.messageId),
+          ),
+        );
+        const self = await target.resolved.adapter.getSelf();
+        if (
+          !message ||
+          !(target.resolved.platform === "github"
+            ? isMarkedGithubAgentComment(message.text)
+            : message.userId === self.userId)
+        )
+          return surfaceOperationResult(
+            Result.err(
+              new SurfacePermissionDenied({
+                platform: target.resolved.platform,
+                operation: "edit-message",
+                message: "Restricted requests can only change bot-authored messages",
+              }),
+            ),
+          );
+      }
       yield* surfaceOperationResult(
         await target.resolved.adapter.editMsg(
           createSurfaceMessageRef(target.sessionRef, input.messageId),
@@ -1881,6 +1906,29 @@ export class Surface implements ServerTool {
       const input = yield* withDefaultSessionId(decodedInput, ctx);
       const sessionId = yield* mustPresentString(input.sessionId, "sessionId");
       const target = yield* Result.await(resolveSessionTarget({ resolved, sessionId }));
+      if (ctx?.safetyMode === "restricted") {
+        const message = yield* surfaceOperationResult(
+          await target.resolved.adapter.readMsg(
+            createSurfaceMessageRef(target.sessionRef, input.messageId),
+          ),
+        );
+        const self = await target.resolved.adapter.getSelf();
+        if (
+          !message ||
+          !(target.resolved.platform === "github"
+            ? isMarkedGithubAgentComment(message.text)
+            : message.userId === self.userId)
+        )
+          return surfaceOperationResult(
+            Result.err(
+              new SurfacePermissionDenied({
+                platform: target.resolved.platform,
+                operation: "delete-message",
+                message: "Restricted requests can only change bot-authored messages",
+              }),
+            ),
+          );
+      }
       yield* surfaceOperationResult(
         await target.resolved.adapter.deleteMsg(
           createSurfaceMessageRef(target.sessionRef, input.messageId),

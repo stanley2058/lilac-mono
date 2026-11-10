@@ -16,7 +16,7 @@ export type OtherView = "workflows" | "others" | "archived";
 const views = [
   { id: "conversations", label: "Conversations", icon: MessagesSquare, ownerOnly: false },
   { id: "workflows", label: "Workflows", icon: Workflow, ownerOnly: false },
-  { id: "others", label: "Other surfaces", icon: Globe, ownerOnly: true },
+  { id: "others", label: "Other conversations", icon: Globe, ownerOnly: true },
   { id: "archived", label: "Archived", icon: Archive, ownerOnly: false },
 ] as const;
 

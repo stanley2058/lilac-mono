@@ -82,10 +82,13 @@ describe("installation write preparation", () => {
       const root = await mkdtemp(path.join(tmpdir(), "installer-cleanup-failure-"));
       const removeFile = filesystem.rm;
       const attempts: string[] = [];
+      let failed = false;
       const remove = spyOn(filesystem, "rm").mockImplementation(async (filename, options) => {
         attempts.push(String(filename));
-        if (attempts.length === 1)
+        if (String(filename).endsWith(".tmp") && !failed) {
+          failed = true;
           throw Object.assign(new Error("fixture private filesystem detail"), { code: "EACCES" });
+        }
         return removeFile(filename, options);
       });
       const writeData: DataFileWriter = async () => {
@@ -97,7 +100,7 @@ describe("installation write preparation", () => {
       try {
         const result = await writeInstallation(settings(root), writeData);
         expect(result.isErr()).toBe(true);
-        expect(attempts).toHaveLength(3);
+        expect(attempts.filter((name) => name.endsWith(".tmp"))).toHaveLength(3);
         expect(
           result.match({ ok: () => "unexpected success", err: (error) => error.message }),
         ).toBe(
@@ -108,7 +111,7 @@ describe("installation write preparation", () => {
         const remaining = (await readdir(root, { recursive: true })).filter((name) =>
           name.endsWith(".tmp"),
         );
-        expect(remaining).toHaveLength(dataSucceeds ? 0 : 1);
+        expect(remaining).toHaveLength(0);
       } finally {
         remove.mockRestore();
         await rm(root, { recursive: true, force: true });
@@ -154,13 +157,17 @@ describe("installation write preparation", () => {
       let dataWrites = 0;
       const writeData: DataFileWriter = async () => {
         dataWrites++;
-        expect(await readFile(path.join(root, "compose.yaml"), "utf8")).toBe(previousCompose);
-        expect(await readFile(path.join(root, "secrets.env"), "utf8")).toBe(previousSecrets);
-        expect(await readFile(path.join(root, "bin", "lilac"), "utf8")).toBe(previousExecutable);
+        expect(await readFile(path.join(root, "compose.yaml"), "utf8")).toBe(options.compose);
+        expect(await readFile(path.join(root, "secrets.env"), "utf8")).toBe(
+          "PROVIDER_KEY=replacement-fixture-key\n",
+        );
+        expect((await stat(path.join(root, "bin", "lilac"))).size).toBe(
+          (await stat(process.execPath)).size,
+        );
         const temporary = (await readdir(root, { recursive: true })).filter((name) =>
           name.endsWith(".tmp"),
         );
-        expect(temporary).toHaveLength(3);
+        expect(temporary).toHaveLength(0);
         for (const name of temporary) {
           const details = await stat(path.join(root, name));
           if (name.startsWith("bin/")) {
@@ -227,4 +234,34 @@ describe("terminal companion installation", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+});
+
+it("restores published host files if a later rename fails before data writes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "installer-rename-rollback-"));
+  const renameFile = filesystem.rename;
+  let dataWrites = 0;
+  let replacements = 0;
+  await Bun.write(path.join(root, "secrets.env"), "original secrets");
+  await Bun.write(path.join(root, "compose.yaml"), "original compose");
+  const rename = spyOn(filesystem, "rename").mockImplementation(async (source, target) => {
+    if (String(source).endsWith(".tmp") && ++replacements === 2)
+      throw new Error("fixture rename failure");
+    return renameFile(source, target);
+  });
+  try {
+    const result = await writeInstallation(settings(root), async () => {
+      dataWrites++;
+      return Result.ok(undefined);
+    });
+    expect(result.isErr()).toBe(true);
+    expect(dataWrites).toBe(0);
+    expect(await readFile(path.join(root, "secrets.env"), "utf8")).toBe("original secrets");
+    expect(await readFile(path.join(root, "compose.yaml"), "utf8")).toBe("original compose");
+    expect(
+      (await readdir(root, { recursive: true })).filter((name) => /\.(tmp|bak)$/.test(name)),
+    ).toEqual([]);
+  } finally {
+    rename.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
 });

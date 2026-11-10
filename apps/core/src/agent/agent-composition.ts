@@ -6,7 +6,7 @@ import {
   isAnthropicModelSpec,
   withStableAnthropicUpstreamOrder,
   type AnthropicFallbackBlobStore,
-} from "../surface/bridge/bus-agent-runner/anthropic-fallback-media";
+} from "./anthropic-fallback-media";
 import type { InferOk, InferErr } from "better-result";
 import type { ModelMessage, ToolSet } from "ai";
 import type {
@@ -43,11 +43,11 @@ import type { TranscriptStore, TranscriptSnapshot } from "../transcript/transcri
 import {
   prepareCoreNamedHistoryView,
   shouldReplayCoreNamedHistory,
-} from "../surface/bridge/bus-agent-runner/core-named-continuation";
+} from "./core-named-continuation";
 import {
   prepareCorePrimaryHistoryView,
   shouldReplayCorePrimaryHistory,
-} from "../surface/bridge/bus-agent-runner/core-primary-continuation";
+} from "./core-primary-continuation";
 import {
   applyCompleteLevel1Tools,
   resolveCoreClaudeCompactionSummaryModel,
@@ -62,7 +62,7 @@ import {
   withReasoningSummaryDefaultForOpenAIModels,
   withProviderOptionsOnLastUserMessage,
   ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
-} from "../surface/bridge/bus-agent-runner/provider-options";
+} from "./provider-options";
 
 const openAIResponsesTransport = createResponsesTransport();
 

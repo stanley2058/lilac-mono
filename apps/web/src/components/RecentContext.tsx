@@ -1,14 +1,31 @@
 import { createContext, useContext, useEffect, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { ListStart } from "lucide-react";
+import type { NativeClient } from "@stanley2058/lilac-client";
 import type { NativeRpcOutputs, NativeThread } from "@stanley2058/lilac-client-protocol";
 import { useWorkspace } from "../workspace-context";
 import { useNativeOnline } from "../queries";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
-type Context = NativeRpcOutputs["threads"]["context"];
+type Context = Omit<NativeRpcOutputs["threads"]["context"], "evaluatedAt">;
 const RecentContext = createContext<Context | undefined>(undefined);
 export const useRecentContext = () => useContext(RecentContext);
+
+function recentContextOptions(client: NativeClient, threadId: string | undefined) {
+  return queryOptions({
+    queryKey: ["recent-context", threadId],
+    queryFn: ({ signal }) => client.rpc!.threads.context({ threadId: threadId! }, { signal }),
+  });
+}
+
+// Each poll answers with a new evaluation time. Leaving it out keeps the shared value stable, so
+// timeline rows rerender only when the context itself changes.
+function withoutEvaluation({
+  evaluatedAt: _evaluatedAt,
+  ...context
+}: NativeRpcOutputs["threads"]["context"]): Context {
+  return context;
+}
 
 export function RecentContextProvider({
   thread,
@@ -20,13 +37,13 @@ export function RecentContextProvider({
   const { client } = useWorkspace();
   const online = useNativeOnline(client);
   const query = useQuery({
-    queryKey: ["recent-context", thread?.id],
+    ...recentContextOptions(client, thread?.id),
     enabled: online && thread?.kind === "dm",
-    queryFn: ({ signal }) => client.rpc!.threads.context({ threadId: thread!.id }, { signal }),
     refetchInterval: ({ state }) => {
       if (thread?.activeRunId) return 1000;
       return state.data?.expiresAt ? Math.max(1, state.data.expiresAt - Date.now()) : false;
     },
+    select: withoutEvaluation,
   });
   const { refetch } = query;
   useEffect(() => {
@@ -41,6 +58,36 @@ export function RecentContextProvider({
     refetch,
   ]);
   return <RecentContext value={query.data}>{children}</RecentContext>;
+}
+
+/**
+ * A context read from before the turn settled cannot know whether the turn opened a window. A fast
+ * reply can settle before the next poll, so the old "no window" answer must not mark a new context.
+ */
+export function contextCoversTurn(
+  evaluatedAt: number | undefined,
+  turn: { startedAt?: number; settledAt?: number },
+): boolean {
+  if (evaluatedAt === undefined) return false;
+  const changedAt = turn.settledAt ?? turn.startedAt;
+  return changedAt === undefined || evaluatedAt >= changedAt;
+}
+
+/** Shows the divider only once a context read covers the latest turn. */
+export function NextContextStartAfter({
+  threadId,
+  turn,
+}: {
+  threadId: string;
+  turn: { startedAt?: number; settledAt?: number };
+}) {
+  const { client } = useWorkspace();
+  const evaluatedAt = useQuery({
+    ...recentContextOptions(client, threadId),
+    enabled: false,
+    select: (context) => context.evaluatedAt,
+  }).data;
+  return contextCoversTurn(evaluatedAt, turn) ? <NextContextStart /> : null;
 }
 
 export function ContextMessage({

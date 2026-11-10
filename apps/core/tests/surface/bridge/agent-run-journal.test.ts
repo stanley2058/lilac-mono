@@ -3,11 +3,14 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
+import type { Result as ResultType } from "better-result";
 import SuperJSON from "superjson";
 
 import {
   AgentRunJournalCodecFailure,
   AgentRunJournalConflict,
+  AgentRunJournalMigrationFailure,
   SqliteAgentRunJournal,
   createAgentRunCheckpoint,
   type AgentRunCheckpointV1,
@@ -69,6 +72,62 @@ function insertAccepted(dbPath: string, accepted: CoreAcceptedRequestWork): void
     "INSERT INTO request_delivery_records (request_delivery_id, request_id, state) VALUES (?, ?, 'accepted')",
     [accepted.requestDeliveryId, accepted.requestId],
   );
+  database.close();
+}
+
+function seedSchemaOneJournal(
+  dbPath: string,
+  accepted: ReturnType<typeof work>,
+  predecessor: AgentRunCheckpointV1,
+  latest: AgentRunCheckpointV1,
+): void {
+  const database = new Database(dbPath, { strict: true });
+  database.run(`
+    CREATE TABLE agent_run_wal_metadata (
+      singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+      schema_version INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE agent_run_wal_heads (
+      request_delivery_id TEXT PRIMARY KEY NOT NULL,
+      request_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('active', 'terminal')),
+      latest_sequence INTEGER NOT NULL,
+      checkpoint_sequence INTEGER,
+      checkpoint_json TEXT,
+      terminal_outcome_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE agent_run_wal_events (
+      request_delivery_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      event_kind TEXT NOT NULL CHECK (event_kind IN ('opened', 'checkpoint', 'terminal')),
+      payload_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (request_delivery_id, sequence)
+    ) STRICT;
+    INSERT INTO agent_run_wal_metadata (singleton, schema_version) VALUES (1, 1);
+  `);
+  const runId = accepted.requestDeliveryId;
+  database.run(`INSERT INTO agent_run_wal_heads VALUES (?, ?, ?, 'active', 3, 3, ?, NULL, 1, 1)`, [
+    runId,
+    accepted.requestId,
+    accepted.sessionId,
+    SuperJSON.stringify(latest),
+  ]);
+  for (const [sequence, kind, payload] of [
+    [1, "opened", SuperJSON.stringify({ version: 1 })],
+    [2, "checkpoint", SuperJSON.stringify(predecessor)],
+    [3, "checkpoint", SuperJSON.stringify(latest)],
+  ] as const) {
+    database.run(`INSERT INTO agent_run_wal_events VALUES (?, ?, ?, ?, 1)`, [
+      runId,
+      sequence,
+      kind,
+      payload,
+    ]);
+  }
   database.close();
 }
 
@@ -326,6 +385,240 @@ describe("SqliteAgentRunJournal", () => {
     journal.close();
   });
 
+  it("keeps the handle for an unchanged checkpoint, also after reopening", async () => {
+    const { dbPath } = await fixture();
+    const accepted = work();
+    insertAccepted(dbPath, accepted);
+    const unwrap = <T, E>(result: ResultType<T, E>): T =>
+      result.match({
+        ok: (value) => value,
+        err: (error) => {
+          throw error;
+        },
+      });
+    const first = createAgentRunCheckpoint({ messages: [{ role: "user", content: "same" }] });
+    const second = createAgentRunCheckpoint({ messages: [{ role: "user", content: "changed" }] });
+    const journal = new SqliteAgentRunJournal({ dbPath });
+    const opened = unwrap(journal.openRun(accepted));
+    const written = unwrap(journal.writeCheckpoint(opened, first));
+    expect(unwrap(journal.writeCheckpoint(written, first))).toEqual(written);
+    journal.close();
+
+    const reopened = new SqliteAgentRunJournal({ dbPath });
+    expect(unwrap(reopened.writeCheckpoint(written, first))).toEqual(written);
+    const advanced = unwrap(reopened.writeCheckpoint(written, second));
+    expect(advanced.sequence).toBe(written.sequence + 1);
+    expect(unwrap(reopened.writeCheckpoint(advanced, second))).toEqual(advanced);
+    reopened.close();
+  });
+
+  it("appends deltas that rebuild the latest checkpoint and its predecessor", async () => {
+    const { dbPath } = await fixture();
+    const accepted = work();
+    insertAccepted(dbPath, accepted);
+    const unwrap = <T, E>(result: ResultType<T, E>): T =>
+      result.match({
+        ok: (value) => value,
+        err: (error) => {
+          throw error;
+        },
+      });
+    const journal = new SqliteAgentRunJournal({ dbPath });
+    let handle = unwrap(journal.openRun(accepted));
+    const history: StoredMessageV1[] = [{ role: "user", content: "start" }];
+    const checkpoints: AgentRunCheckpointV1[] = [];
+    for (let step = 0; step < 4; step += 1) {
+      history.push({ role: "assistant", content: `step ${step} ${"x".repeat(2_000)}` });
+      const checkpoint = createAgentRunCheckpoint({
+        messages: [...history],
+        loadedCatalogIds: [`catalog-${step}`],
+      });
+      checkpoints.push(checkpoint);
+      handle = unwrap(journal.writeCheckpoint(handle, checkpoint));
+    }
+    journal.close();
+
+    const database = new Database(dbPath, { strict: true });
+    const events = database
+      .query<{ delta: number; size: number }, []>(
+        `SELECT delta, length(payload_json) AS size FROM agent_run_wal_events
+         WHERE event_kind = 'checkpoint' ORDER BY sequence`,
+      )
+      .all();
+    database.close();
+    expect(events.map(({ delta }) => delta)).toEqual([0, 1, 1, 1]);
+    expect(Math.max(...events.slice(1).map(({ size }) => size))).toBeLessThan(3_000);
+
+    const reopened = new SqliteAgentRunJournal({ dbPath });
+    const recovery = unwrap(reopened.loadRecoveryHeads());
+    expect(recovery.resets).toEqual([]);
+    expect(recovery.heads[0]?.checkpoint).toEqual(checkpoints[3]!);
+    expect(recovery.heads[0]?.previousCheckpoint).toEqual(checkpoints[2]!);
+
+    const rewritten = createAgentRunCheckpoint({
+      messages: [{ role: "user", content: "compacted" }],
+    });
+    handle = unwrap(reopened.writeCheckpoint(handle, rewritten));
+    const after = unwrap(reopened.loadRecoveryHeads());
+    expect(after.heads[0]?.checkpoint).toEqual(rewritten);
+    expect(after.heads[0]?.previousCheckpoint).toEqual(checkpoints[3]!);
+    reopened.close();
+  });
+
+  it("folds a long delta chain into a snapshot and drops the chain behind the predecessor", async () => {
+    const { dbPath } = await fixture();
+    const accepted = work();
+    insertAccepted(dbPath, accepted);
+    const unwrap = <T, E>(result: ResultType<T, E>): T =>
+      result.match({
+        ok: (value) => value,
+        err: (error) => {
+          throw error;
+        },
+      });
+    const journal = new SqliteAgentRunJournal({ dbPath });
+    let handle = unwrap(journal.openRun(accepted));
+    const history: StoredMessageV1[] = [];
+    let last: AgentRunCheckpointV1 | undefined;
+    let previous: AgentRunCheckpointV1 | undefined;
+    for (let step = 0; step < 67; step += 1) {
+      history.push({ role: "user", content: `step ${step}` });
+      previous = last;
+      last = createAgentRunCheckpoint({ messages: [...history] });
+      handle = unwrap(journal.writeCheckpoint(handle, last));
+    }
+    const database = new Database(dbPath, { strict: true });
+    const deltas = database
+      .query<{ delta: number }, []>(
+        "SELECT delta FROM agent_run_wal_events WHERE event_kind = 'checkpoint' ORDER BY sequence",
+      )
+      .all()
+      .map(({ delta }) => delta);
+    database.close();
+    expect(deltas).toEqual([0, 1]);
+    const recovery = unwrap(journal.loadRecoveryHeads());
+    expect(recovery.heads[0]?.checkpoint).toEqual(last!);
+    expect(recovery.heads[0]?.previousCheckpoint).toEqual(previous!);
+    journal.close();
+  });
+
+  it("promotes a predecessor that the latest delta builds on", async () => {
+    const { dbPath } = await fixture();
+    const accepted = work();
+    insertAccepted(dbPath, accepted);
+    const unwrap = <T, E>(result: ResultType<T, E>): T =>
+      result.match({
+        ok: (value) => value,
+        err: (error) => {
+          throw error;
+        },
+      });
+    const journal = new SqliteAgentRunJournal({ dbPath });
+    const opened = unwrap(journal.openRun(accepted));
+    const base: StoredMessageV1 = { role: "user", content: "base" };
+    const predecessor = createAgentRunCheckpoint({ messages: [base] });
+    const latest = createAgentRunCheckpoint({
+      messages: [base, { role: "assistant", content: "next" }],
+    });
+    const first = unwrap(journal.writeCheckpoint(opened, predecessor));
+    const second = unwrap(journal.writeCheckpoint(first, latest));
+    const promoted = unwrap(journal.promotePreviousCheckpoint(second, predecessor));
+    const recovery = unwrap(journal.loadRecoveryHeads());
+    expect(recovery.heads[0]?.handle).toEqual(promoted);
+    expect(recovery.heads[0]?.checkpoint).toEqual(predecessor);
+    expect(recovery.heads[0]?.previousCheckpoint).toBeUndefined();
+    journal.close();
+  });
+
+  it("migrates schema 1 checkpoints in place and keeps them recoverable", async () => {
+    const { dbPath } = await fixture();
+    const accepted = work();
+    insertAccepted(dbPath, accepted);
+    const predecessor = createAgentRunCheckpoint({ messages: [{ role: "user", content: "old" }] });
+    const latest = createAgentRunCheckpoint({
+      messages: [
+        { role: "user", content: "old" },
+        { role: "assistant", content: "older build" },
+      ],
+    });
+    seedSchemaOneJournal(dbPath, accepted, predecessor, latest);
+
+    const journal = new SqliteAgentRunJournal({ dbPath });
+    const unwrap = <T, E>(result: ResultType<T, E>): T =>
+      result.match({
+        ok: (value) => value,
+        err: (error) => {
+          throw error;
+        },
+      });
+    const recovery = unwrap(journal.loadRecoveryHeads());
+    expect(recovery.resets).toEqual([]);
+    expect(recovery.heads[0]?.checkpoint).toEqual(latest);
+    expect(recovery.heads[0]?.previousCheckpoint).toEqual(predecessor);
+    const next = createAgentRunCheckpoint({
+      messages: [...latest.messages, { role: "user", content: "after upgrade" }],
+    });
+    const advanced = unwrap(journal.writeCheckpoint(recovery.heads[0]!.handle, next));
+    expect(advanced.sequence).toBe(4);
+    expect(unwrap(journal.loadRecoveryHeads()).heads[0]?.checkpoint).toEqual(next);
+    journal.close();
+
+    const inspect = new Database(dbPath, { strict: true });
+    expect(
+      inspect
+        .query<{ schema_version: number }, []>("SELECT schema_version FROM agent_run_wal_metadata")
+        .get()?.schema_version,
+    ).toBe(2);
+    expect(
+      inspect
+        .query<{ delta: number }, []>("SELECT delta FROM agent_run_wal_events WHERE sequence = 4")
+        .get()?.delta,
+    ).toBe(1);
+    inspect.close();
+  });
+
+  it("fails to open and keeps the schema 1 journal when its migration fails", async () => {
+    const { dbPath } = await fixture();
+    const accepted = work();
+    insertAccepted(dbPath, accepted);
+    const predecessor = createAgentRunCheckpoint({ messages: [{ role: "user", content: "old" }] });
+    const latest = createAgentRunCheckpoint({
+      messages: [
+        { role: "user", content: "old" },
+        { role: "assistant", content: "older build" },
+      ],
+    });
+    seedSchemaOneJournal(dbPath, accepted, predecessor, latest);
+    const blocker = new Database(dbPath, { strict: true });
+    blocker.run(`
+      CREATE TRIGGER fail_migration BEFORE UPDATE OF checkpoint_json ON agent_run_wal_heads
+      BEGIN SELECT RAISE(ABORT, 'migration failed'); END
+    `);
+    blocker.close();
+
+    expect(() => new SqliteAgentRunJournal({ dbPath })).toThrow(AgentRunJournalMigrationFailure);
+
+    const inspect = new Database(dbPath, { strict: true });
+    expect(
+      inspect
+        .query<{ schema_version: number }, []>("SELECT schema_version FROM agent_run_wal_metadata")
+        .get()?.schema_version,
+    ).toBe(1);
+    inspect.run("DROP TRIGGER fail_migration");
+    inspect.close();
+    const journal = new SqliteAgentRunJournal({ dbPath });
+    const recovery = journal.loadRecoveryHeads().match({
+      ok: (value) => value,
+      err: (error) => {
+        throw error;
+      },
+    });
+    expect(recovery.resets).toEqual([]);
+    expect(recovery.heads[0]?.checkpoint).toEqual(latest);
+    expect(recovery.heads[0]?.previousCheckpoint).toEqual(predecessor);
+    journal.close();
+  });
+
   it("rolls back the checkpoint event when the head update fails", async () => {
     const { dbPath } = await fixture();
     const accepted = work();
@@ -440,7 +733,7 @@ describe("SqliteAgentRunJournal", () => {
     journal.close();
   });
 
-  it("validates closed checkpoint and terminal schemas before writing", async () => {
+  it("validates terminal schemas before writing and checkpoints when recovering", async () => {
     const { dbPath } = await fixture();
     const accepted = work();
     insertAccepted(dbPath, accepted);
@@ -451,13 +744,6 @@ describe("SqliteAgentRunJournal", () => {
         throw error;
       },
     });
-    const checkpoint = {
-      ...createAgentRunCheckpoint({ messages: [] }),
-      unexpected: true,
-    } as unknown as AgentRunCheckpointV1;
-    expect(
-      journal.writeCheckpoint(opened, checkpoint).match({ ok: () => null, err: (error) => error }),
-    ).toBeInstanceOf(AgentRunJournalCodecFailure);
     expect(
       journal
         .markTerminal(opened, {
@@ -479,6 +765,22 @@ describe("SqliteAgentRunJournal", () => {
         .get()?.latest_sequence,
     ).toBe(1);
     database.close();
+
+    const checkpoint = {
+      ...createAgentRunCheckpoint({ messages: [] }),
+      unexpected: true,
+    } as unknown as AgentRunCheckpointV1;
+    expect(journal.writeCheckpoint(opened, checkpoint).isOk()).toBe(true);
+    const recovery = journal.loadRecoveryHeads().match({
+      ok: (value) => value,
+      err: (error) => {
+        throw error;
+      },
+    });
+    expect(recovery.heads).toEqual([]);
+    expect(recovery.resets).toEqual([
+      expect.objectContaining({ scope: "run", runId: accepted.requestDeliveryId }),
+    ]);
     journal.close();
   });
 

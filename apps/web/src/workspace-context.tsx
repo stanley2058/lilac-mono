@@ -12,10 +12,15 @@ import { createDraftStore } from "./draft-store";
 import { createKeybindings } from "./keybindings";
 import { createPreferences } from "./preferences";
 import { releaseDraftAttachments } from "./draft-thread";
+import {
+  createThreadMetadataStore,
+  followClientThreads,
+  type ThreadMetadataStore,
+} from "./thread-metadata-store";
 
 type WorkspaceServices = Pick<
   AppProps,
-  "client" | "scope" | "upload" | "resourceUrl" | "draftCache" | "accountProfile"
+  "client" | "scope" | "upload" | "resourceUrl" | "draftCache" | "accountProfile" | "authProvider"
 > & {
   fileEditors: ReturnType<typeof createFileEditors>;
   keybindings: ReturnType<typeof createKeybindings>;
@@ -25,6 +30,7 @@ type WorkspaceServices = Pick<
   notifications: ReturnType<typeof createNotificationPreferences>;
   backgroundPush: ReturnType<typeof createBackgroundPush>;
   presence: ReturnType<typeof createThreadPresence>;
+  threadMetadata: ThreadMetadataStore;
   preferences: ReturnType<typeof createPreferences>;
 };
 const WorkspaceContext = createContext<WorkspaceServices | undefined>(undefined);
@@ -36,7 +42,10 @@ export function useWorkspace() {
 }
 
 export function WorkspaceProvider({ children, ...props }: AppProps & { children: ReactNode }) {
-  const { client, scope, upload, resourceUrl, draftCache, accountProfile } = props;
+  // Stores are rebuilt per installation and principal, not per scope object, which the compiler
+  // cannot express.
+  "use no memo";
+  const { client, scope, upload, resourceUrl, draftCache, accountProfile, authProvider } = props;
   useEffect(() => watchConnectionLifecycle(client), [client]);
   const keybindings = useMemo(
     () => createKeybindings(scope),
@@ -54,6 +63,11 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
   const panels = useMemo(() => createPanelStore(scope), [scope.installationId, scope.principalId]);
   const pool = useMemo(() => new UploadPool(client, upload), [client, upload]);
   const drafts = useMemo(() => createDraftStore(), [client]);
+  const threadMetadata = useMemo(
+    () => createThreadMetadataStore(props.initial.threads.items),
+    [client],
+  );
+  useEffect(() => followClientThreads(threadMetadata, client), [threadMetadata, client]);
   const preferences = useMemo(
     () => createPreferences(scope),
     [scope.installationId, scope.principalId],
@@ -89,8 +103,10 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
       resourceUrl,
       draftCache,
       accountProfile,
+      authProvider,
       pool,
       drafts,
+      threadMetadata,
       notifications,
       backgroundPush,
       presence,
@@ -107,8 +123,10 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
       resourceUrl,
       draftCache,
       accountProfile,
+      authProvider,
       pool,
       drafts,
+      threadMetadata,
       notifications,
       backgroundPush,
       presence,

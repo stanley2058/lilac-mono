@@ -1,8 +1,10 @@
+import { decodeWorkflowCallInput, type DecodedWorkflowCallInput } from "./workflow-call-input";
+import { Semaphore } from "./workflow-semaphore";
 import { captureError } from "../shared/error-capture";
 import path from "node:path";
 
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
-import { z } from "zod";
+
 import type { BlobStore } from "@stanley2058/lilac-blob-storage";
 import {
   type DecodedLilacMessageForTopic,
@@ -38,7 +40,6 @@ import {
   WORKFLOW_RUNTIME_VERSION,
 } from "./workflow-definition";
 import {
-  jsonValueSchema,
   type JsonValue,
   type WorkflowOperation,
   type WorkflowArtifactReference,
@@ -66,13 +67,7 @@ import {
   workflowRequestPolicyIdentityProjection,
   type WorkflowRequestPolicy,
 } from "./workflow-request-authority";
-import {
-  resolveWorkflowAgentOperationInputResult,
-  workflowPipelineOptionsSchema,
-  workflowWaitForReplyOptionsSchema,
-  type ResolvedWorkflowAgentInput,
-  type WorkflowAgentOperationInputInvalid,
-} from "./workflow-operation-policy";
+import { type ResolvedWorkflowAgentInput } from "./workflow-operation-policy";
 import { formatWorkflowErrorForLog } from "./workflow-error-log";
 import { workflowConsumerId } from "./workflow-consumer-id";
 import { adaptEventPublishResultToHost } from "../shared/event-bus-result";
@@ -80,76 +75,6 @@ import { adaptEventPublishResultToHost } from "../shared/event-bus-result";
 const WORKFLOW_LEASE_STALE_MS = 60_000;
 const WORKFLOW_LEASE_HEARTBEAT_MS = 20_000;
 const WORKFLOW_REQUEST_LEASE_STALE_MS = 30_000;
-
-type DecodedWorkflowCallInput =
-  | { readonly kind: "agent"; readonly input: ResolvedWorkflowAgentInput }
-  | { readonly kind: "phase"; readonly input: z.output<typeof phaseInputSchema> }
-  | { readonly kind: "parallel"; readonly input: z.output<typeof parallelInputSchema> }
-  | { readonly kind: "pipeline"; readonly input: z.output<typeof pipelineInputSchema> }
-  | {
-      readonly kind: "waitForReply";
-      readonly input: z.output<typeof workflowWaitForReplyOptionsSchema>;
-    }
-  | { readonly kind: "sleep"; readonly input: z.output<typeof sleepInputSchema> };
-
-class WorkflowCallInputInvalid extends TaggedError("WorkflowCallInputInvalid")<{
-  readonly kind: WorkflowSandboxCall["kind"];
-  readonly message: string;
-}> {}
-
-function decodeWorkflowCallInput(input: {
-  readonly call: WorkflowSandboxCall;
-  readonly canonicalWorkspaceRoot: string;
-}): ResultType<
-  DecodedWorkflowCallInput,
-  WorkflowAgentOperationInputInvalid | WorkflowCallInputInvalid
-> {
-  if (input.call.kind === "agent") {
-    return resolveWorkflowAgentOperationInputResult({
-      value: input.call.input,
-      canonicalWorkspaceRoot: input.canonicalWorkspaceRoot,
-    }).map((value) => ({ kind: "agent", input: value }));
-  }
-  const invalid = (message: string) =>
-    Result.err(
-      new WorkflowCallInputInvalid({
-        kind: input.call.kind,
-        message,
-      }),
-    );
-  switch (input.call.kind) {
-    case "phase": {
-      const decoded = phaseInputSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-    case "parallel": {
-      const decoded = parallelInputSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-    case "pipeline": {
-      const decoded = pipelineInputSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-    case "waitForReply": {
-      const decoded = workflowWaitForReplyOptionsSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-    case "sleep": {
-      const decoded = sleepInputSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-  }
-}
 
 async function cancelWorkflowSandboxForEngineHost(sandbox: WorkflowSandboxRun): Promise<void> {
   const cancelled: ResultType<void, WorkflowSandboxTerminationFailed> = await sandbox.cancel();
@@ -164,16 +89,6 @@ async function loadWorkflowValueArtifact(input: {
   const loaded = await readWorkflowValueArtifact(input);
   return adaptWorkflowArtifactResultToException(loaded);
 }
-
-const phaseInputSchema = z.strictObject({ name: z.string().min(1).max(200) });
-const parallelInputSchema = z.strictObject({
-  count: z.number().int().nonnegative(),
-});
-const pipelineInputSchema = z.strictObject({
-  items: z.array(jsonValueSchema).max(10_000),
-  options: workflowPipelineOptionsSchema,
-});
-const sleepInputSchema = z.union([z.number().nonnegative(), z.string().min(1).max(100)]);
 
 type AgentRequestResult = {
   state: "resolved" | "failed" | "cancelled" | "timed_out";
@@ -486,22 +401,6 @@ function failedAgentRequest(detail: string): AgentRequestResult {
   return { state: "failed", output: "", detail, usage: null };
 }
 
-class Semaphore {
-  private active = 0;
-  private readonly waiters: Array<() => void> = [];
-
-  constructor(private readonly limit: number) {}
-
-  async use<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.active >= this.limit) await new Promise<void>((resolve) => this.waiters.push(resolve));
-    this.active += 1;
-    return await fn().finally(() => {
-      this.active -= 1;
-      this.waiters.shift()?.();
-    });
-  }
-}
-
 function isTerminalOperation(state: WorkflowOperationState): boolean {
   return ["succeeded", "failed", "cancelled", "timed_out"].includes(state);
 }
@@ -528,6 +427,9 @@ export class WorkflowEngine {
   private readonly active = new Map<string, ActiveRun>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopping = false;
+  private readonly waiters = new Set<() => void>();
+  private leaseTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly ownedClaims = new Map<string, AbortController>();
   private wakeSubscription: WorkflowEventSubscription | null = null;
   private tickPromise: Promise<void> | null = null;
 
@@ -604,6 +506,14 @@ export class WorkflowEngine {
         detail: "Replaying durable workflow wait after restart",
       });
     }
+    this.leaseTimer = setInterval(() => {
+      for (const [runId, controller] of this.ownedClaims) {
+        if (this.input.store.refreshRunClaim(runId, this.workerId, this.now())) continue;
+        controller.abort("workflow lease lost");
+        this.ownedClaims.delete(runId);
+      }
+    }, this.input.runClaimHeartbeatMs ?? WORKFLOW_LEASE_HEARTBEAT_MS);
+    this.leaseTimer.unref?.();
     await this.requestTick();
     this.timer = setInterval(() => {
       void runWorkflowTimerTick(() => this.requestTick()).then((tick) => {
@@ -638,6 +548,7 @@ export class WorkflowEngine {
             }),
           );
         }
+        for (const notify of this.waiters) notify();
         await this.requestTick();
         return Result.ok(undefined);
       },
@@ -647,6 +558,9 @@ export class WorkflowEngine {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    this.leaseTimer = null;
+    for (const controller of this.ownedClaims.values()) controller.abort("shutdown");
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     const failures: unknown[] = [];
@@ -689,6 +603,24 @@ export class WorkflowEngine {
     }
   }
 
+  private waitForWake(signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        this.waiters.delete(finish);
+        unsubscribe();
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const unsubscribe = this.input.store.subscribeChanges(finish);
+      const timer = setTimeout(finish, 5_000);
+      timer.unref?.();
+      this.waiters.add(finish);
+      signal.addEventListener("abort", finish, { once: true });
+      if (signal.aborted) finish();
+    });
+  }
+
   private now(): number {
     return this.input.now?.() ?? Date.now();
   }
@@ -700,8 +632,38 @@ export class WorkflowEngine {
     return this.tickPromise;
   }
 
+  private async drainCancellations(): Promise<void> {
+    for (const intent of this.input.store.pendingCancellations()) {
+      const published = await this.input.bus.publish(
+        lilacEventTypes.CmdRequestMessage,
+        {
+          requestDeliveryId: intent.deliveryId,
+          queue: "interrupt",
+          messages: [],
+          raw: { cancel: true, cancelQueued: true },
+        },
+        {
+          headers: {
+            request_id: intent.requestId,
+            session_id: intent.sessionId,
+            request_client: "unknown",
+          },
+        },
+      );
+      published.match({
+        ok: () => this.input.store.completeCancellation(intent.deliveryId),
+        err: (error) =>
+          this.logger.error(
+            "Workflow cancellation publication failed",
+            formatTaggedErrorForLog(error),
+          ),
+      });
+    }
+  }
+
   private async tick(): Promise<void> {
     if (this.stopping) return;
+    await this.drainCancellations();
     const cancellations: Promise<void>[] = [];
     for (const [runId, active] of this.active) {
       const runResult = this.input.store.getRun(runId);
@@ -785,6 +747,7 @@ export class WorkflowEngine {
     });
     if (!claimed) return;
     const controller = new AbortController();
+    this.ownedClaims.set(claimed.runId, controller);
     const sandboxResult = await this.createSandbox(claimed, controller.signal);
     const sandboxOutcome = sandboxResult.match<
       | { readonly kind: "ok"; readonly sandbox: WorkflowSandboxRun }
@@ -794,6 +757,7 @@ export class WorkflowEngine {
       err: (error) => ({ kind: "error", error }),
     });
     if (sandboxOutcome.kind === "error") {
+      this.ownedClaims.delete(claimed.runId);
       signalWorkflowExecutionFailureToHost(
         await this.finishRun(claimed, "failed", null, sandboxOutcome.error.message),
       );
@@ -815,6 +779,7 @@ export class WorkflowEngine {
       })
       .finally(() => {
         this.active.delete(claimed.runId);
+        this.ownedClaims.delete(claimed.runId);
       });
     this.active.set(claimed.runId, {
       controller,
@@ -1127,13 +1092,6 @@ export class WorkflowEngine {
     }
 
     if (decodedCall.kind === "agent") {
-      if (this.input.store.countOperations(runId, "agent") >= revision.resources.agents.maxTotal) {
-        return Result.err(
-          workflowExecutionFailure(
-            `Workflow agent total exceeds ${revision.resources.agents.maxTotal}`,
-          ),
-        );
-      }
       const options = decodedCall.input.options;
       if (this.input.validateAgentSelection) {
         const validated = await captureWorkflowExternal(() =>
@@ -1190,7 +1148,20 @@ export class WorkflowEngine {
       updatedAt: this.now(),
       terminalAt: null,
     };
+    if (decodedCall.kind === "waitForReply" || decodedCall.kind === "sleep") {
+      return await this.waitDurably(run, revision, operation, decodedCall, signal);
+    }
     if (!this.input.store.createOperation(operation, this.workerId)) {
+      if (
+        decodedCall.kind === "agent" &&
+        this.input.store.aggregateUsage(runId).agentCount >= revision.resources.agents.maxTotal
+      ) {
+        return Result.err(
+          workflowExecutionFailure(
+            `Workflow agent total exceeds ${revision.resources.agents.maxTotal}`,
+          ),
+        );
+      }
       return Result.err(workflowExecutionFailure(`Failed to journal workflow operation ${id}`));
     }
     const published = await captureWorkflowExternal(() =>
@@ -1198,9 +1169,6 @@ export class WorkflowEngine {
     );
     const publicationError = published.match({ ok: () => null, err: (error) => error });
     if (publicationError) return Result.err(publicationError);
-    if (decodedCall.kind === "waitForReply" || decodedCall.kind === "sleep") {
-      return await this.waitDurably(run, revision, operation, decodedCall, signal);
-    }
     if (decodedCall.kind === "agent") {
       return await semaphore.use(() =>
         this.dispatchAgentSafely(run, revision, operation, decodedCall.input, signal, false),
@@ -1315,7 +1283,7 @@ export class WorkflowEngine {
           resolvedAt: null,
         };
       }
-      if (!this.input.store.createWait(wait, this.workerId)) {
+      if (!this.input.store.createOperationAndWait(operation, wait, this.workerId)) {
         const concurrentlyCreatedResult = this.input.store.getWait(
           run.runId,
           operation.operationId,
@@ -1454,7 +1422,7 @@ export class WorkflowEngine {
           ),
         );
       }
-      await Bun.sleep(this.input.pollMs ?? 250);
+      await this.waitForWake(signal);
     }
     return Result.err(workflowExecutionFailure("Workflow wait interrupted"));
   }
@@ -2040,6 +2008,7 @@ export class WorkflowEngine {
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let idleCancellationTimer: ReturnType<typeof setTimeout> | null = null;
     let receiptTimer: ReturnType<typeof setTimeout> | null = null;
+    let receiptUnsubscribe: (() => void) | null = null;
     let readingReceipt = false;
     let settle: (value: AgentRequestResult) => void = () => {};
     const result = new Promise<AgentRequestResult>((resolve) => (settle = resolve));
@@ -2049,6 +2018,8 @@ export class WorkflowEngine {
       if (idleTimer) clearTimeout(idleTimer);
       if (idleCancellationTimer) clearTimeout(idleCancellationTimer);
       if (receiptTimer) clearTimeout(receiptTimer);
+      receiptUnsubscribe?.();
+      receiptUnsubscribe = null;
       settle(value);
     };
     const readExactReceipt = (): ResultType<
@@ -2140,14 +2111,26 @@ export class WorkflowEngine {
       });
       if (outcome.status === "return") return outcome.value;
     };
-    const waitForReceiptPoll = (): Promise<void> =>
-      new Promise((resolve) => {
-        receiptTimer = setTimeout(resolve, this.input.receiptPollMs ?? 25);
+    let receiptDirty = false;
+    let wakeReceiptPoll: (() => void) | null = null;
+    const waitForReceiptPoll = (): Promise<void> => {
+      if (receiptDirty) return Promise.resolve();
+      return new Promise((resolve) => {
+        const finish = () => {
+          if (receiptTimer) clearTimeout(receiptTimer);
+          receiptTimer = null;
+          wakeReceiptPoll = null;
+          resolve();
+        };
+        wakeReceiptPoll = finish;
+        receiptTimer = setTimeout(finish, this.input.receiptPollMs ?? 5_000);
         receiptTimer.unref?.();
       });
+    };
     const pollReceipts = async (): Promise<AgentRequestResult> => {
       while (!settled && !this.stopping) {
         await waitForReceiptPoll();
+        receiptDirty = false;
         await pollReceipt();
       }
       return await new Promise<AgentRequestResult>(() => {});
@@ -2400,6 +2383,10 @@ export class WorkflowEngine {
     {
       const attempt = await Result.tryPromise({
         try: async () => {
+          receiptUnsubscribe = this.input.store.subscribeChanges(() => {
+            receiptDirty = true;
+            wakeReceiptPoll?.();
+          });
           armIdle();
           await pollReceipt();
           const receiptPollingDefect = pollReceipts();
@@ -2597,6 +2584,9 @@ export class WorkflowEngine {
       });
       const cleanupAttempt = await Result.tryPromise({
         try: async () => {
+          receiptUnsubscribe?.();
+          receiptUnsubscribe = null;
+          if (receiptTimer) clearTimeout(receiptTimer);
           input.signal.removeEventListener("abort", abort);
           if (abortStarted) [abortOutcome] = await Promise.allSettled([abortCancellation]);
           cleanupFailures = (
@@ -2794,31 +2784,7 @@ export class WorkflowEngine {
           workflowExecutionFailure("Workflow terminal transition lost its fenced lease"),
         );
       }
-      if (finalState === "failed") {
-        for (const operation of activeOperations) {
-          if (!operation.requestId) continue;
-          const cancelled = await this.input.bus.publish(
-            lilacEventTypes.CmdRequestMessage,
-            {
-              requestDeliveryId: crypto.randomUUID(),
-              queue: "interrupt",
-              messages: [],
-              raw: { cancel: true, cancelQueued: true },
-            },
-            {
-              headers: {
-                request_id: operation.requestId,
-                session_id:
-                  current.completionTarget.kind === "live_parent"
-                    ? current.completionTarget.childSessionId
-                    : `workflow:${current.runId}:${operation.operationId}`,
-                request_client: "unknown",
-              },
-            },
-          );
-          yield* cancelled.mapError((error) => workflowExecutionFailure(error.message));
-        }
-      }
+      if (finalState === "failed") await this.drainCancellations();
       const updated = yield* this.input.store
         .getRun(current.runId)
         .mapError((error) => workflowExecutionFailure(error.message));
@@ -2889,26 +2855,7 @@ export class WorkflowEngine {
     revision: WorkflowRevision,
     operationIdValue: string,
   ): Promise<void> {
-    const operations = this.input.store.listOperations(run.runId, { limit: 1_000 });
-    const readEntries = operations.match({
-      ok: (value) => () => value,
-      err: (error) => () => signalDurableWorkflowReadErrorToHost(error),
-    });
-    const entries = readEntries();
-    const aggregate = entries.reduce(
-      (usage, operation) => ({
-        inputTokens: usage.inputTokens + (operation.usage?.inputTokens ?? 0),
-        outputTokens: usage.outputTokens + (operation.usage?.outputTokens ?? 0),
-        totalTokens: usage.totalTokens + (operation.usage?.totalTokens ?? 0),
-        agentCount: usage.agentCount + (operation.kind === "agent" ? 1 : 0),
-        activeAgents:
-          usage.activeAgents +
-          (operation.kind === "agent" && ["dispatched", "running"].includes(operation.state)
-            ? 1
-            : 0),
-      }),
-      { inputTokens: 0, outputTokens: 0, totalTokens: 0, agentCount: 0, activeAgents: 0 },
-    );
+    const aggregate = this.input.store.aggregateUsage(run.runId);
     adaptEventPublishResultToHost(
       await this.input.bus.publish(lilacEventTypes.EvtWorkflowUsageChanged, {
         runId: run.runId,

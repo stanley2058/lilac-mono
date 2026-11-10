@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import type { MCPClientConfig } from "@ai-sdk/mcp";
 import { McpRegistry } from "../../src/mcp/registry";
 import type { McpRecoveryEvent } from "../../src/mcp/registry-types";
@@ -155,6 +155,7 @@ describe("MCP recovery and run ownership", () => {
 
   it("retains tools and reports exhaustion after three recovery attempts", async () => {
     let creates = 0;
+    let online = false;
     const exhausted = Promise.withResolvers<McpRecoveryEvent>();
     const first = new FakeMcpClient({ first: { tools: [mcpToolDefinition("read")] } });
     const registry = new McpRegistry({
@@ -167,8 +168,10 @@ describe("MCP recovery and run ownership", () => {
         readConfig: async () => configSnapshot(mcpConfig([httpDefinition("remote")])),
         scheduleRetry: immediateRetry,
         createClient: async () => {
-          if (++creates > 1) throw new Error("offline");
-          return first;
+          if (++creates > 1 && !online) throw new Error("offline");
+          return online
+            ? new FakeMcpClient({ first: { tools: [mcpToolDefinition("read")] } })
+            : first;
         },
       },
     });
@@ -186,6 +189,16 @@ describe("MCP recovery and run ownership", () => {
       "recovery exhausted after 3 attempts",
     );
     expect(creates).toBe(4);
+    online = true;
+    const now = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(now + 120_000);
+    try {
+      await handle.execute!({}, options);
+      expect(creates).toBe(5);
+      expect(registry.list()[0]?.status).toBe("available");
+    } finally {
+      clock.mockRestore();
+    }
     await registry.shutdown();
   });
 });

@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { ServerToolResult } from "@stanley2058/lilac-plugin-runtime";
 import { Panic } from "better-result";
 
-import { Onboarding } from "../../src/tool-server/tools/onboarding";
+import { Onboarding, installGithubTarGzBinary } from "../../src/tool-server/tools/onboarding";
 
 function onboardingWith(
   overrides: Partial<ConstructorParameters<typeof Onboarding>[0]> = {},
@@ -34,6 +34,68 @@ describe("onboarding default skills", () => {
   afterEach(async () => {
     if (dataDir) await fs.rm(dataDir, { recursive: true, force: true });
     dataDir = undefined;
+  });
+
+  it("configures, reads, and clears GitHub App credentials", async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-github-app-"));
+    const tool = onboardingWith();
+    expect(
+      value(await tool.call("onboarding.github_app", { dataDir, mode: "status" })),
+    ).toMatchObject({ configured: false });
+    expect(
+      value(
+        await tool.call("onboarding.github_app", {
+          dataDir,
+          mode: "configure",
+          appId: 123,
+          installationId: 456,
+          privateKeyPem: "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----",
+          host: "https://github.example.test/",
+        }),
+      ),
+    ).toMatchObject({
+      configured: true,
+      appId: 123,
+      installationId: 456,
+      host: "github.example.test",
+    });
+    expect(
+      value(await tool.call("onboarding.github_app", { dataDir, mode: "status" })),
+    ).toMatchObject({ configured: true, appId: 123 });
+    expect(
+      value(await tool.call("onboarding.github_app", { dataDir, mode: "clear" })),
+    ).toMatchObject({ cleared: true });
+    expect(
+      value(await tool.call("onboarding.github_app", { dataDir, mode: "status" })),
+    ).toMatchObject({ configured: false });
+  });
+
+  it("reads GnuPG status and clears only the isolated key home", async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-gnupg-"));
+    const bin = path.join(dataDir, "bin");
+    await fs.mkdir(bin);
+    const gpg = path.join(bin, "gpg");
+    await fs.writeFile(gpg, "#!/bin/sh\nprintf 'fpr:::::::::FIXTUREFINGERPRINT:\\n'\n", {
+      mode: 0o755,
+    });
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${bin}:${oldPath ?? ""}`;
+    try {
+      const tool = onboardingWith();
+      expect(value(await tool.call("onboarding.gnupg", { dataDir, mode: "status" }))).toMatchObject(
+        { hasSecretKey: true, fingerprint: "FIXTUREFINGERPRINT" },
+      );
+      expect(
+        value(await tool.call("onboarding.gnupg", { dataDir, mode: "generate" })),
+      ).toMatchObject({ generated: false, status: "already_present" });
+      expect(value(await tool.call("onboarding.gnupg", { dataDir, mode: "clear" }))).toMatchObject({
+        cleared: true,
+      });
+      expect(await fs.readdir(path.join(dataDir, "secret/gnupg"))).toEqual([]);
+      expect(await fs.readFile(gpg, "utf8")).toContain("FIXTUREFINGERPRINT");
+    } finally {
+      process.env.PATH = oldPath;
+    }
   });
 
   it("seeds only setup-dependent skill templates without network access", async () => {
@@ -233,4 +295,47 @@ describe("onboarding default skills", () => {
     });
     expect(fetchCalls).toBe(0);
   });
+});
+
+it("cleans downloaded assets when a release checksum fails", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-checksum-"));
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+    Object.assign(
+      async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/releases/latest"))
+          return Response.json({
+            tag_name: "v1",
+            assets: [
+              { name: "binary.tar.gz", browser_download_url: "https://example.test/binary" },
+              { name: "checksums.txt", browser_download_url: "https://example.test/checksums" },
+            ],
+          });
+        return new Response(
+          url.endsWith("checksums") ? `${"0".repeat(64)}  binary.tar.gz` : "bad archive",
+        );
+      },
+      { preconnect: fetch.preconnect },
+    ),
+  );
+  try {
+    const result = await installGithubTarGzBinary({
+      repo: "owner/repo",
+      destPath: path.join(root, "bin"),
+      tmpDir: root,
+      tarAssetName: () => "binary.tar.gz",
+      checksumAssetName: () => "checksums.txt",
+      findExtractedPath: async () => null,
+      overwrite: true,
+      network: true,
+    });
+    expect(result.isErr()).toBe(true);
+    expect(result.match({ ok: () => "unexpected", err: (error) => error.message })).toContain(
+      "Checksum mismatch",
+    );
+    expect(await fs.readdir(root)).toEqual([]);
+  } finally {
+    fetchSpy.mockRestore();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

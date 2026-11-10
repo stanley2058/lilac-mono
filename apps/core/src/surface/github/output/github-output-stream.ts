@@ -80,23 +80,26 @@ export class GithubOutputStream implements SurfaceOutputStream {
   async finish(): Promise<SurfaceOperationResult<SurfaceOutputResult>> {
     const replyPrefix = await this.replyPrefix();
 
-    const body = markGithubAgentComment(`${replyPrefix}${this.text}`);
-    const res = await this.api.createComment(body);
-    return res.match<() => SurfaceOperationResult<SurfaceOutputResult>>({
-      err: (error) => () => Result.err(error),
-      ok: (value) => () => {
-        const ref: MsgRef = {
-          platform: "github",
-          channelId: this.sessionRef.channelId,
-          messageId: String(value.id),
-        };
-        this.created.push(ref);
-        return Result.ok({
-          created: this.created,
-          last: ref,
-        });
-      },
-    })();
+    const text = `${replyPrefix}${this.text}`.trim();
+    const capacity = 65_536 - markGithubAgentComment("").length - 1;
+    for (let offset = 0; offset < text.length || offset === 0; ) {
+      let end = Math.min(text.length, offset + capacity);
+      const lastCodeUnit = text.charCodeAt(end - 1);
+      if (end < text.length && lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end--;
+      const chunk = text.slice(offset, end);
+      const res = await this.api.createComment(`${markGithubAgentComment("")}\n${chunk}`);
+      const failure = res.match({ ok: () => null, err: (error) => error });
+      if (failure) return Result.err(failure);
+      const id = res.match({ ok: (value) => value.id, err: () => 0 });
+      this.created.push({
+        platform: "github",
+        channelId: this.sessionRef.channelId,
+        messageId: String(id),
+      });
+      if (end === text.length) break;
+      offset = end;
+    }
+    return Result.ok({ created: this.created, last: this.created[this.created.length - 1]! });
   }
 
   async abort(_reason?: string): Promise<SurfaceOperationResult<void>> {

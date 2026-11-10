@@ -1,4 +1,4 @@
-import type { MdRoot, MdRootContent } from "@platejs/markdown";
+import type { Root as MdRoot, RootContent as MdRootContent } from "mdast";
 
 type Table = Extract<MdRootContent, { type: "table" }>;
 

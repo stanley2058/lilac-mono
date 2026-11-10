@@ -65,7 +65,7 @@ export {
 const getPageModeSchema = z.enum(["auto", "fetch", "browser", "extract", "provider-only"]);
 
 const getPageSchema = z.object({
-  url: z.string().describe("URL to fetch"),
+  url: z.url({ protocol: /^https?$/ }).describe("HTTP or HTTPS URL to fetch"),
   mode: getPageModeSchema
     .optional()
     .describe(

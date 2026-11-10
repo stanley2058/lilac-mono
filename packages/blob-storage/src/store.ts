@@ -680,6 +680,16 @@ export class SupervisedBlobStore implements BlobStore {
           );
         }
         const technicalMetadata = await this.#backend.readMetadata(reservation.contentKey);
+        const current = await this.#readReservation(decoded.data.objectId);
+        const absent = current.map((value) => value === null || value.state === "deleted");
+        const isAbsent = absent.match({ ok: (value) => value, err: () => false });
+        if (isAbsent)
+          return Result.err(
+            new BlobObjectAbsent({
+              objectId: decoded.data.objectId,
+              message: `Blob ${decoded.data.objectId} is absent`,
+            }),
+          );
         const verifiedMetadata = technicalMetadata.andThen((serialized) =>
           serialized === `${JSON.stringify(decoded.data)}\n`
             ? Result.ok(undefined)
@@ -695,6 +705,14 @@ export class SupervisedBlobStore implements BlobStore {
           yield* verifiedMetadata;
           const stream = yield* Result.await(this.#backend.openContent(reservation.contentKey));
           if (stream === null) {
+            const current = yield* Result.await(this.#readReservation(decoded.data.objectId));
+            if (current === null || current.state === "deleted")
+              return Result.err(
+                new BlobObjectAbsent({
+                  objectId: decoded.data.objectId,
+                  message: `Blob ${decoded.data.objectId} is absent`,
+                }),
+              );
             return Result.err(
               new BlobIntegrityFailure({
                 objectId: decoded.data.objectId,
@@ -772,6 +790,7 @@ export class SupervisedBlobStore implements BlobStore {
                   ),
                 );
               }
+              this.#active.delete(reservation.objectId);
               return this.#cleanupDeletedReservation(fenced);
             },
             err: async (failure) => {
@@ -1006,6 +1025,7 @@ export class SupervisedBlobStore implements BlobStore {
           ),
         );
       }
+      this.#active.delete(objectId);
       yield* Result.await(
         this.#cleanupDeletedReservation(deleted).then((result) =>
           result.mapError((error) => {

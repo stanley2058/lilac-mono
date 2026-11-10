@@ -76,14 +76,18 @@ type RetainedRun = {
   platform: ExternalPlatform;
   channelId: string;
 };
-type ExternalTranscripts = Pick<
-  SqliteTranscriptStore,
-  | "listDiscoveryRecords"
-  | "getRequestTranscript"
-  | "getCorePrimaryLineageManifest"
-  | "getCoreSurfaceProjection"
-  | "getLatestCoreSurfaceSegment"
->;
+type ExternalTranscripts = Partial<
+  Pick<SqliteTranscriptStore, "getDiscoveryVersion" | "getDiscoverySnapshot">
+> &
+  Pick<
+    SqliteTranscriptStore,
+    | "listDiscoveryRecords"
+    | "listDiscoveryRecordsInSurfaceChannel"
+    | "getRequestTranscript"
+    | "getCorePrimaryLineageManifest"
+    | "getCoreSurfaceProjection"
+    | "getLatestCoreSurfaceSegment"
+  >;
 
 export function externalThreadId(platform: ExternalPlatform, sessionId: string): string {
   return `${platform}_${Buffer.from(sessionId).toString("base64url")}`;
@@ -109,9 +113,25 @@ function owner(getUser: UserLookup, userId: string): ResultType<void, NativeStor
       : Result.err(nativeFailure("forbidden", "Only the owner can read external threads")),
   );
 }
-function retainedRuns(transcripts: ExternalTranscripts): RetainedRun[] {
-  return transcripts
-    .listDiscoveryRecords()
+function retainedRuns(
+  transcripts: Pick<ExternalTranscripts, "listDiscoveryRecords">,
+): RetainedRun[] {
+  return toRetainedRuns(transcripts.listDiscoveryRecords());
+}
+
+/** Reads only the runs whose output landed in one external channel. */
+function retainedRunsInChannel(
+  transcripts: Pick<ExternalTranscripts, "listDiscoveryRecordsInSurfaceChannel">,
+  platform: ConversationReference["surface"],
+  channelId: string,
+): RetainedRun[] {
+  return toRetainedRuns(
+    transcripts.listDiscoveryRecordsInSurfaceChannel({ platform, channelId }),
+  ).filter((run) => run.platform === platform && run.channelId === channelId);
+}
+
+function toRetainedRuns(records: readonly TranscriptDiscoveryRecord[]): RetainedRun[] {
+  return records
     .flatMap((record) => {
       if (record.requestClient !== "discord" && record.requestClient !== "github") return [];
       const ref = record.surfaceRefs.find((ref) => ref.platform === record.requestClient);
@@ -502,6 +522,29 @@ export class NativeExternalThreads {
     },
   ) {}
 
+  private discoveryVersion: string | undefined;
+  private discoveryRuns: RetainedRun[] = [];
+  private groupVersion = "";
+  private readonly lineageGroups = new Map<string, string>();
+
+  private retainedRuns(): RetainedRun[] {
+    const version = this.params.transcripts.getDiscoveryVersion?.();
+    if (version !== undefined && version === this.discoveryVersion) return this.discoveryRuns;
+    const snapshot = this.params.transcripts.getDiscoverySnapshot?.();
+    if (!snapshot) return retainedRuns(this.params.transcripts);
+    const records: TranscriptDiscoveryRecord[] = [];
+    for (let offset = 0; offset < snapshot.length; offset += 200)
+      records.push(
+        ...this.params.transcripts.listDiscoveryRecords(
+          snapshot.slice(offset, offset + 200).map((record) => record.requestId),
+        ),
+      );
+    const runs = retainedRuns({ listDiscoveryRecords: () => records });
+    this.discoveryVersion = version;
+    this.discoveryRuns = runs;
+    return runs;
+  }
+
   private async sessions(): Promise<SurfaceSession[]> {
     const adapter = this.params.adapters.resolve("discord")?.adapter;
     if (!adapter) return [];
@@ -538,7 +581,7 @@ export class NativeExternalThreads {
       yield* owner(this.params.getUser, userId);
       const sessions = await this.sessions();
       const byId = new Map<string, ExternalThreadDisplay>();
-      for (const run of retainedRuns(this.params.transcripts)) {
+      for (const run of this.retainedRuns()) {
         const item = this.display(run, sessions);
         if (item.id.length <= 128 && !byId.has(item.id)) byId.set(item.id, item);
       }
@@ -572,9 +615,7 @@ export class NativeExternalThreads {
       if (outputMatch) return this.outputFile(outputMatch[1]!, outputMatch[2]!);
       const match = /^xf_([a-f0-9]{64})_(\d+)_(\d+)$/.exec(resourceId);
       if (!match) return Result.err(nativeFailure("not-found", "File is unavailable"));
-      const run = retainedRuns(this.params.transcripts).find(
-        (run) => runId(run.record.requestId) === match[1],
-      );
+      const run = this.retainedRuns().find((run) => runId(run.record.requestId) === match[1]);
       if (!run) return Result.err(nativeFailure("not-found", "File is unavailable"));
       const snapshot = yield* this.params.transcripts
         .getRequestTranscript({ requestId: run.record.requestId })
@@ -605,9 +646,7 @@ export class NativeExternalThreads {
     objectId: string,
   ): ResultType<ExternalFile, NativeStoreError> {
     return Result.gen(function* () {
-      const run = retainedRuns(this.params.transcripts).find(
-        (run) => runId(run.record.requestId) === requestHash,
-      );
+      const run = this.retainedRuns().find((run) => runId(run.record.requestId) === requestHash);
       if (!run || !this.params.outputs)
         return Result.err(nativeFailure("not-found", "File is unavailable"));
       const outputs = yield* this.params.outputs(run.record.requestId);
@@ -638,12 +677,11 @@ export class NativeExternalThreads {
       if (!target.messageId) return Result.ok({});
       const position = this.params.history?.getMessagePosition(target.sessionId, target.messageId);
       if (position) return Result.ok({ conversationThreadId: position.threadId });
-      const run = retainedRuns(this.params.transcripts).find(
-        (run) =>
-          run.platform === target.surface &&
-          run.channelId === target.sessionId &&
-          run.record.surfaceRefs.some((ref) => ref.messageId === target.messageId),
-      );
+      const run = retainedRunsInChannel(
+        this.params.transcripts,
+        target.surface,
+        target.sessionId,
+      ).find((run) => run.record.surfaceRefs.some((ref) => ref.messageId === target.messageId));
       const origin =
         run && this.params.history ? cachedPosition(this.params.history, run.record) : null;
       return Result.ok(origin ? { conversationThreadId: origin.threadId } : {});
@@ -653,9 +691,11 @@ export class NativeExternalThreads {
   async describeReference(userId: string, target: ConversationReference) {
     return Result.gen(async function* () {
       const resolved = yield* this.resolveReference(userId, target);
-      const run = retainedRuns(this.params.transcripts).find(
-        (run) => run.platform === target.surface && run.channelId === target.sessionId,
-      );
+      const run = retainedRunsInChannel(
+        this.params.transcripts,
+        target.surface,
+        target.sessionId,
+      )[0];
       if (!run) return Result.err(nativeFailure("not-found", "Conversation is unavailable"));
       const display = this.display(run, await this.sessions());
       const sourceUrl =
@@ -723,9 +763,7 @@ export class NativeExternalThreads {
     return Result.gen(async function* () {
       yield* owner(this.params.getUser, userId);
       const ref = yield* parseExternalThreadId(input.threadId);
-      const runs = retainedRuns(this.params.transcripts).filter(
-        (run) => run.platform === ref.platform && run.channelId === ref.sessionId,
-      );
+      const runs = retainedRunsInChannel(this.params.transcripts, ref.platform, ref.sessionId);
       const newest = runs[0];
       if (!newest) return Result.err(nativeFailure("not-found", "Conversation is unavailable"));
       const cursor = input.cursor ? /^([a-f0-9]{64})_(\d+)$/.exec(input.cursor) : null;
@@ -739,7 +777,20 @@ export class NativeExternalThreads {
       const linkedDiscordIds =
         ref.platform === "discord" ? await this.linkedDiscordIds(userId) : [];
       const messages: DisplayMessage[] = [];
-      const groups = new Map<string, string>();
+      const groupVersion =
+        this.discoveryVersion +
+        JSON.stringify(
+          runs.map((run) => [
+            run.record.requestId,
+            run.record.updatedTs,
+            this.params.history ? cachedPosition(this.params.history, run.record) : null,
+          ]),
+        );
+      if (this.discoveryVersion === undefined || this.groupVersion !== groupVersion) {
+        this.lineageGroups.clear();
+        this.groupVersion = groupVersion;
+      }
+      const groups = this.lineageGroups;
       const records = new Map(runs.map((run) => [run.record.requestId, run.record]));
       let nextCursor: string | undefined;
       let nextAfter: string | undefined;

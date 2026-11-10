@@ -84,7 +84,12 @@ async function opReadBytes(
     maxBytes: input.maxBytes ?? 10_000_000,
   });
   if (!result.success) {
-    return { ok: false, resolvedPath: result.resolvedPath, error: result.error.message };
+    return {
+      ok: false,
+      resolvedPath: result.resolvedPath,
+      error: result.error.message,
+      errorCode: result.error.code,
+    };
   }
   return {
     ok: true,

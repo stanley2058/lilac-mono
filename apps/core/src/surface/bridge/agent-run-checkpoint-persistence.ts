@@ -92,9 +92,10 @@ async function projectCheckpointMessages(input: {
     previous !== undefined &&
     previous.providerMessages.length === previous.storedMessages.length &&
     previous.providerMessages.length <= input.messages.length &&
-    previous.providerMessages.every((message, index) =>
-      isDeepStrictEqual(message, input.messages[index]),
-    );
+    previous.providerMessages.every((message, index) => {
+      const next = input.messages[index];
+      return message === next || isDeepStrictEqual(message, next);
+    });
   const reusableMessages = canReusePrevious ? previous.storedMessages : [];
   const messagesToProject = canReusePrevious
     ? input.messages.slice(previous.providerMessages.length)

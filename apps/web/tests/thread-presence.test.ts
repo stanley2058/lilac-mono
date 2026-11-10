@@ -97,3 +97,20 @@ test("each tab has its own presence identity and unavailable reports are best ef
   await Promise.resolve();
   expect(f.reports.at(-1)?.threadId).toBeUndefined();
 });
+
+test("repeating the current view sends nothing until a report fails", async () => {
+  using f = fixture();
+  f.presence.view("thread-one");
+  const count = f.reports.length;
+  // Window focus, blur and visibility changes all repeat the view while the same thread is open.
+  f.presence.view("thread-one");
+  f.presence.view("thread-one");
+  expect(f.reports).toHaveLength(count);
+  f.reject();
+  await f.presence.view("thread-two");
+  await f.presence.view("thread-two");
+  expect(f.reports.map((report) => report.threadId).slice(count)).toEqual([
+    "thread-two",
+    "thread-two",
+  ]);
+});

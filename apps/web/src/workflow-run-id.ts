@@ -1,4 +1,4 @@
-import type { MdRoot, MdRootContent } from "@platejs/markdown";
+import type { Root as MdRoot, RootContent as MdRootContent } from "mdast";
 
 // Generated ids are hex. Excluding underscores also keeps Markdown from escaping an id when saved.
 const WORKFLOW_RUN_ID = String.raw`wfrun:[A-Za-z0-9-]{1,122}`;

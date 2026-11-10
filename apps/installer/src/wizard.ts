@@ -64,13 +64,14 @@ function redactConfig(value: JSONValue, secretValues: string[]): JSONValue {
   return value;
 }
 
-async function configureExisting(prompt: Prompt, draft: SetupDraft): Promise<void> {
+export async function configureExisting(prompt: Prompt, draft: SetupDraft): Promise<void> {
   for (;;) {
     const section = await prompt.select(
       "Update configuration",
       [
         { value: "providers", label: "Models and providers" },
         { value: "discord", label: "Discord" },
+        { value: "native", label: "Web access" },
         { value: "optional", label: "Optional integrations" },
         { value: "review", label: "Review changes" },
       ],
@@ -79,6 +80,7 @@ async function configureExisting(prompt: Prompt, draft: SetupDraft): Promise<voi
     if (section === "review") return;
     if (section === "providers") await configureProviders(prompt, draft);
     if (section === "discord") await configureDiscord(prompt, draft);
+    if (section === "native") await configureNative(prompt, draft);
     if (section === "optional") await configureOptional(prompt, draft);
   }
 }

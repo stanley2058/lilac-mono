@@ -63,6 +63,10 @@ export function Settings({
   const [saving, setSaving] = useState<Partial<Record<ConfigKind, boolean>>>({});
   const tabRef = useRef(tab);
   tabRef.current = tab;
+  const popup = useRef<HTMLDivElement>(null);
+  // Tabs activate on focus, so opening on the first section would replace a `?settings=` deep link.
+  const focusSelectedSection = () =>
+    popup.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? true;
   const saveRequests = useRef({ core: 0, mcp: 0 });
   const savingKinds = useRef(new Set<ConfigKind>());
   const editor = tab === "core" || tab === "mcp" ? editors[tab] : undefined;
@@ -137,7 +141,11 @@ export function Settings({
         if (!open) onClose();
       }}
     >
-      <DialogContent className="settings-dialog flex w-[min(64rem,_calc(100vw_-_calc(var(--ui-space-unit)*8)))] max-w-none sm:max-w-none h-[min(48rem,_calc(100dvh_-_calc(var(--ui-space-unit)*8)))] p-6 overflow-hidden">
+      <DialogContent
+        ref={popup}
+        initialFocus={focusSelectedSection}
+        className="settings-dialog flex w-[min(64rem,_calc(100vw_-_calc(var(--ui-space-unit)*8)))] max-w-none sm:max-w-none h-[min(48rem,_calc(100dvh_-_calc(var(--ui-space-unit)*8)))] p-6 overflow-hidden"
+      >
         <DialogTitle className="sr-only absolute w-px h-px overflow-hidden [clip:rect(0,_0,_0,_0)] whitespace-nowrap">
           Settings
         </DialogTitle>
@@ -354,7 +362,7 @@ export function Settings({
 }
 
 export function People() {
-  const { client } = useWorkspace();
+  const { client, authProvider } = useWorkspace();
   const online = useNativeOnline(client);
   const queries = useQueryClient();
   const userQuery = useInfiniteQuery({
@@ -391,37 +399,39 @@ export function People() {
         message={change.error?.message ?? userQuery.error?.message}
         onDismiss={change.error ? () => change.reset() : undefined}
       />
-      <div className="inline-form flex gap-2 mb-4 items-center">
-        <Input
-          aria-label="Existing Clerk user ID"
-          placeholder="Clerk user ID"
-          value={providerId}
-          onChange={(event) => setProviderId(event.target.value)}
-        />
-        <Select
-          items={[
-            { value: "restricted", label: "Restricted" },
-            { value: "full", label: "Full access" },
-          ]}
-          value={mode}
-          onValueChange={(value) => setMode(value === "full" ? "full" : "restricted")}
-        >
-          <SelectTrigger aria-label="Tool access for added user">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="restricted">Restricted</SelectItem>
-            <SelectItem value="full">Full access</SelectItem>
-          </SelectContent>
-        </Select>
-        <IconButton
-          label="Add existing user"
-          disabled={!online || mutating || !providerId.trim()}
-          onClick={() => change.mutate({ providerUserId: providerId.trim(), toolMode: mode })}
-        >
-          <UserPlus />
-        </IconButton>
-      </div>
+      {authProvider === "clerk" ? (
+        <div className="inline-form flex gap-2 mb-4 items-center">
+          <Input
+            aria-label="Existing Clerk user ID"
+            placeholder="Clerk user ID"
+            value={providerId}
+            onChange={(event) => setProviderId(event.target.value)}
+          />
+          <Select
+            items={[
+              { value: "restricted", label: "Restricted" },
+              { value: "full", label: "Full access" },
+            ]}
+            value={mode}
+            onValueChange={(value) => setMode(value === "full" ? "full" : "restricted")}
+          >
+            <SelectTrigger aria-label="Tool access for added user">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="restricted">Restricted</SelectItem>
+              <SelectItem value="full">Full access</SelectItem>
+            </SelectContent>
+          </Select>
+          <IconButton
+            label="Add existing user"
+            disabled={!online || mutating || !providerId.trim()}
+            onClick={() => change.mutate({ providerUserId: providerId.trim(), toolMode: mode })}
+          >
+            <UserPlus />
+          </IconButton>
+        </div>
+      ) : null}
       <VirtualList
         items={users}
         itemKey={(user) => user.id}

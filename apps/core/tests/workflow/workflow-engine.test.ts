@@ -1,5 +1,5 @@
 import { normalizeWorkflowResourcePolicy, workflowStoreValue } from "./workflow-store-test-helpers";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -1447,7 +1447,8 @@ describe("WorkflowEngine", () => {
       blobStore,
       dataDir: dirname(dbPath),
       subscriptionId: "live-terminal-receipt",
-      pollMs: 5,
+      pollMs: 1000000,
+      receiptPollMs: 1000000,
       loadSnapshot: async () => agentWorkflowSource(),
       compileSource: compileTestWorkflow,
     });
@@ -2708,7 +2709,7 @@ describe("WorkflowEngine", () => {
       store,
       subscriptionId: "test-engine-waits",
       now: () => now,
-      pollMs: 5,
+      pollMs: 1000000,
     });
     const engine = new WorkflowEngine({
       bus,
@@ -2717,7 +2718,7 @@ describe("WorkflowEngine", () => {
       dataDir: dirname(dbPath),
       subscriptionId: "test-engine-waits",
       now: () => now,
-      pollMs: 5,
+      pollMs: 1000000,
       loadSnapshot: async () =>
         workflowSource(
           "args, waitForReply, sleep",
@@ -2885,4 +2886,165 @@ describe("WorkflowEngine", () => {
       rmSync(dbPath, { force: true });
     }
   });
+});
+
+it("renews ownership while sandbox source loading blocks the launch tick", async () => {
+  const store = new DurableWorkflowStore(":memory:");
+  const bus = createLilacBus(new LiveCapturingRawBus());
+  createApprovedRun(store);
+  const loading = Promise.withResolvers<void>();
+  const source = Promise.withResolvers<string>();
+  let now = 100;
+  const engine = new WorkflowEngine({
+    bus,
+    store,
+    blobStore,
+    dataDir: tmpdir(),
+    subscriptionId: "blocked-launch-heartbeat",
+    now: () => now,
+    runClaimHeartbeatMs: 5,
+    pollMs: 1000000,
+    loadSnapshot: () => {
+      loading.resolve();
+      return source.promise;
+    },
+    compileSource: compileTestWorkflow,
+    dispatchAgentRequest: async () => ({
+      state: "resolved",
+      output: "done",
+      detail: null,
+      usage: null,
+    }),
+  });
+  const started = engine.start();
+  try {
+    await loading.promise;
+    now = 70_000;
+    await waitFor(() => workflowStoreValue(store.getRun("run-1"))?.claimedAt === now);
+    expect(
+      store.tryClaimRun({ runId: "run-1", claimerId: "other-worker", now, staleAfterMs: 60_000 }),
+    ).toBeNull();
+    source.resolve(agentWorkflowSource());
+    await started;
+    await waitFor(() => workflowStoreValue(store.getRun("run-1"))?.state === "succeeded");
+  } finally {
+    source.resolve(agentWorkflowSource());
+    await started;
+    await engine.stop();
+    await bus.close();
+    store.close();
+  }
+});
+
+it("retains a receipt notification between a null read and the next poll wait", async () => {
+  const store = new DurableWorkflowStore(":memory:");
+  const raw = new CapturingRawBus();
+  const bus = createLilacBus(raw);
+  createApprovedRun(store);
+  const read = store.getWorkflowRequestTerminalReceipt.bind(store);
+  const subscribe = store.subscribeChanges.bind(store);
+  let notify: (() => void) | null = null;
+  let inject = false;
+  let injected = false;
+  const subscription = spyOn(store, "subscribeChanges").mockImplementation((listener) => {
+    notify = listener;
+    return subscribe(listener);
+  });
+  const intercept = spyOn(store, "getWorkflowRequestTerminalReceipt").mockImplementation(
+    (requestId) => {
+      const receipt = read(requestId);
+      if (!inject) return receipt;
+      inject = false;
+      const policy = workflowStoreValue(store.getWorkflowRequestDispatchPolicy(requestId));
+      if (!policy) throw new Error("Missing dispatch policy");
+      expect(
+        store.claimWorkflowRequest({
+          requestId,
+          dispatchEpoch: policy.dispatchEpoch,
+          ownerId: "gap-runner",
+          now: 10,
+        }),
+      ).toBe(true);
+      queueMicrotask(() => {
+        injected = store.recordWorkflowRequestTerminal({
+          requestId,
+          runId: policy.runId,
+          operationId: policy.operationId,
+          dispatchEpoch: policy.dispatchEpoch,
+          ownerId: "gap-runner",
+          state: "resolved",
+          output: "gap result",
+          now: 11,
+        });
+      });
+      return receipt;
+    },
+  );
+  const engine = new WorkflowEngine({
+    bus,
+    store,
+    blobStore,
+    dataDir: tmpdir(),
+    subscriptionId: "receipt-gap",
+    pollMs: 1000000,
+    receiptPollMs: 1000000,
+    loadSnapshot: async () => agentWorkflowSource(),
+    compileSource: compileTestWorkflow,
+  });
+  try {
+    await engine.start();
+    await waitFor(() =>
+      raw.messages.some((message) => message.type === lilacEventTypes.CmdRequestMessage),
+    );
+    if (!notify) throw new Error("Missing receipt subscription");
+    inject = true;
+    // An unrelated store change starts a poll. The terminal commits after its null read.
+    (notify as () => void)();
+    await waitFor(() => workflowStoreValue(store.getRun("run-1"))?.state === "succeeded");
+    expect(injected).toBe(true);
+    expect(workflowStoreValue(store.getRun("run-1"))?.result).toBe("gap result");
+  } finally {
+    intercept.mockRestore();
+    subscription.mockRestore();
+    await engine.stop();
+    await bus.close();
+    store.close();
+  }
+});
+
+it("reports the agent total when the SQL budget guard rejects a call", async () => {
+  const store = new DurableWorkflowStore(":memory:");
+  const bus = createLilacBus(new CapturingRawBus());
+  createApprovedRun(store);
+  const engine = new WorkflowEngine({
+    bus,
+    store,
+    blobStore,
+    dataDir: tmpdir(),
+    subscriptionId: "agent-total-message",
+    loadSnapshot: async () =>
+      workflowSource(
+        "agent",
+        'for (let i = 0; i < 5; i++) await agent("inspect", { profile: "explore" });',
+      ),
+    compileSource: compileTestWorkflow,
+    dispatchAgentRequest: async () => ({
+      state: "resolved",
+      output: "done",
+      detail: null,
+      usage: null,
+    }),
+  });
+  try {
+    await engine.start();
+    await waitFor(() => workflowStoreValue(store.getRun("run-1"))?.state === "failed");
+    expect(workflowStoreValue(store.getRun("run-1"))?.terminalDetail).toContain(
+      "Workflow agent total exceeds 4",
+    );
+    expect(store.aggregateUsage("run-1").agentCount).toBe(4);
+  } finally {
+    await engine.stop();
+    await bus.close();
+    store.close();
+  }
 });

@@ -1,6 +1,9 @@
+import { DEFAULT_FS_DENY_PATHS } from "./deny-paths";
+import { RemoteMediaTooLarge } from "./remote-media-download";
 import { tool } from "ai";
 import { z } from "zod/v4";
 import {
+  createStreamingTextWindow,
   EDIT_ERROR_CODES,
   FileSystem,
   READ_ERROR_CODES,
@@ -78,7 +81,6 @@ const warningZod = z.object({
   actualLength: z.number(),
 });
 
-const REMOTE_DENY_PATHS = ["~/.ssh", "~/.aws", "~/.gnupg"] as const;
 const FFF_CACHE_DIR = path.join(env.dataDir, ".cache", "fff");
 const RESOURCE_URI_PREFIX = "resource://";
 const REDACTED_RESOURCE_LOG_PATH = "resource://[redacted]";
@@ -121,7 +123,7 @@ function selectResultValue<T, E extends Error>(result: ResultType<T, E>): T {
 }
 
 function resolveRemoteDenyPaths(dangerouslyAllow?: boolean): readonly string[] {
-  return dangerouslyAllow === true ? [] : REMOTE_DENY_PATHS;
+  return dangerouslyAllow === true ? [] : DEFAULT_FS_DENY_PATHS;
 }
 
 export const readFileInputZod = sharedReadFileInputSchema;
@@ -896,209 +898,7 @@ function createResourceTextWindow(params: {
   readonly maxOutputBytes: number;
   readonly format?: "raw" | "numbered";
 }) {
-  const start = params.start ?? { type: "line" as const, line: 1 };
-  const requestedStartLine = start.type === "line" ? Math.max(1, Math.floor(start.line)) : 1;
-  const requestedStartColumn =
-    start.type === "line" ? Math.max(0, Math.floor(start.column ?? 0)) : 0;
-  const requestedStartOffset =
-    start.type === "offset" ? Math.max(0, Math.floor(start.offset)) : undefined;
-  const requestedMaxLines = Number.isFinite(params.maxLines)
-    ? Math.max(1, Math.floor(params.maxLines!))
-    : 2_000;
-  const requestedMaxCharacters = Number.isFinite(params.maxCharacters)
-    ? Math.max(1, Math.floor(params.maxCharacters!))
-    : 10_000;
-  const storedLineLimit = requestedMaxCharacters + 2;
-  const storedCharacterLimit = requestedMaxCharacters + 1;
-  const windowLines: string[] = [];
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let lineNumber = 1;
-  let selectedLineCount = 0;
-  let storedCharacters = 0;
-  let currentLine = "";
-  let currentLineCharacters = 0;
-  let firstSelectedLineCharacters = 0;
-  let sourceOffset = 0;
-  let offsetStartLine: number | undefined;
-  let offsetStartColumn: number | undefined;
-  let normalizedStartOffset: number | undefined;
-  let selectedNextLineOffset: number | undefined;
-
-  const resolveOffsetStart = () => {
-    if (
-      requestedStartOffset === undefined ||
-      offsetStartLine !== undefined ||
-      sourceOffset < requestedStartOffset
-    ) {
-      return;
-    }
-    offsetStartLine = lineNumber;
-    offsetStartColumn = currentLineCharacters;
-    normalizedStartOffset = sourceOffset;
-  };
-
-  const isCurrentLineSelected = () => {
-    if (start.type === "line") {
-      return (
-        lineNumber >= requestedStartLine && lineNumber < requestedStartLine + requestedMaxLines
-      );
-    }
-    return (
-      offsetStartLine !== undefined &&
-      lineNumber >= offsetStartLine &&
-      lineNumber < offsetStartLine + requestedMaxLines
-    );
-  };
-
-  const finishLine = (hasNewline: boolean) => {
-    resolveOffsetStart();
-    if (isCurrentLineSelected()) {
-      if (selectedLineCount === 0) firstSelectedLineCharacters = currentLineCharacters;
-      if (windowLines.length < storedLineLimit) windowLines.push(currentLine);
-      selectedLineCount += 1;
-      if (hasNewline) selectedNextLineOffset = sourceOffset + 1;
-    }
-    currentLine = "";
-    currentLineCharacters = 0;
-  };
-
-  const consumeText = (text: string) => {
-    for (const character of text) {
-      if (character === "\n") {
-        finishLine(true);
-        sourceOffset += 1;
-        lineNumber += 1;
-        continue;
-      }
-
-      resolveOffsetStart();
-      currentLineCharacters += 1;
-      if (
-        isCurrentLineSelected() &&
-        (start.type === "offset" ||
-          lineNumber !== requestedStartLine ||
-          currentLineCharacters > requestedStartColumn) &&
-        storedCharacters < storedCharacterLimit
-      ) {
-        currentLine += character;
-        storedCharacters += 1;
-      }
-      sourceOffset += 1;
-    }
-  };
-
-  return {
-    consume(chunk: Uint8Array) {
-      consumeText(decoder.decode(chunk, { stream: true }));
-    },
-    finish(): ReadFileOutput {
-      consumeText(decoder.decode());
-      if (requestedStartOffset !== undefined && offsetStartLine === undefined) {
-        offsetStartLine = lineNumber;
-        offsetStartColumn = currentLineCharacters;
-        normalizedStartOffset = sourceOffset;
-      }
-      finishLine(false);
-
-      const totalLines = lineNumber;
-      const normalizedStartLine =
-        start.type === "line"
-          ? Math.min(requestedStartLine, totalLines + 1)
-          : (offsetStartLine ?? totalLines);
-      const normalizedStartColumn =
-        start.type === "line"
-          ? Math.min(requestedStartColumn, firstSelectedLineCharacters)
-          : (offsetStartColumn ?? 0);
-      const windowEndLine = normalizedStartLine + selectedLineCount - 1;
-      let output =
-        params.format === "numbered"
-          ? windowLines
-              .map(
-                (line, index) =>
-                  `${String(normalizedStartLine + index).padStart(Math.max(1, String(Math.max(windowEndLine, normalizedStartLine)).length), " ")}| ${line}`,
-              )
-              .join("\n")
-          : windowLines.join("\n");
-      const includesOffsetBoundaryNewline =
-        start.type === "offset" &&
-        selectedLineCount >= requestedMaxLines &&
-        selectedNextLineOffset !== undefined;
-      if (includesOffsetBoundaryNewline) output += "\n";
-
-      let outputCharacters = Array.from(output);
-      let effectiveFormat: "raw" | "numbered" = params.format ?? "raw";
-      if (
-        (outputCharacters.length > requestedMaxCharacters ||
-          Buffer.byteLength(output, "utf8") > params.maxOutputBytes) &&
-        effectiveFormat !== "raw"
-      ) {
-        effectiveFormat = "raw";
-        output = windowLines.join("\n") + (includesOffsetBoundaryNewline ? "\n" : "");
-        outputCharacters = Array.from(output);
-      }
-
-      const truncatedByChars = outputCharacters.length > requestedMaxCharacters;
-      const boundedCharacters: string[] = [];
-      let outputBytes = 0;
-      for (const character of outputCharacters.slice(0, requestedMaxCharacters)) {
-        const characterBytes = Buffer.byteLength(character, "utf8");
-        if (outputBytes + characterBytes > params.maxOutputBytes) break;
-        boundedCharacters.push(character);
-        outputBytes += characterBytes;
-      }
-      output = boundedCharacters.join("");
-      const truncatedByBytes =
-        boundedCharacters.length < Math.min(outputCharacters.length, requestedMaxCharacters);
-      const truncated = truncatedByChars || truncatedByBytes;
-      const completeLines = truncated ? output.split("\n").length - 1 : selectedLineCount;
-      const endLine = truncated ? normalizedStartLine + completeLines - 1 : windowEndLine;
-      const hasMoreLines = truncated || endLine < totalLines;
-      let nextStart: ReadFileStart | undefined;
-      if (hasMoreLines) {
-        if (start.type === "offset") {
-          nextStart = {
-            type: "offset",
-            offset: truncated
-              ? (normalizedStartOffset ?? sourceOffset) + Array.from(output).length
-              : (selectedNextLineOffset ?? normalizedStartOffset ?? sourceOffset),
-          };
-        } else if (truncated) {
-          nextStart = {
-            type: "line",
-            line: normalizedStartLine + completeLines,
-            column:
-              completeLines === 0
-                ? normalizedStartColumn + Array.from(output).length
-                : Array.from(output.slice(output.lastIndexOf("\n") + 1)).length,
-          };
-        } else {
-          nextStart = {
-            type: "line",
-            line:
-              selectedLineCount > 0 ? normalizedStartLine + selectedLineCount : normalizedStartLine,
-            ...(selectedLineCount === 0 && normalizedStartColumn > 0
-              ? { column: normalizedStartColumn }
-              : {}),
-          };
-        }
-      }
-
-      const base = {
-        success: true as const,
-        resolvedPath: params.uri,
-        fileHash: params.fileHash,
-        startLine: normalizedStartLine,
-        endLine,
-        totalLines,
-        hasMoreLines,
-        truncatedByChars,
-        ...(nextStart ? { nextStart } : {}),
-      };
-      return effectiveFormat === "numbered"
-        ? { ...base, format: "numbered", numberedContent: output }
-        : { ...base, format: "raw", content: output };
-    },
-  };
+  return createStreamingTextWindow({ ...params, resolvedPath: params.uri });
 }
 
 async function writeResourceChunk(
@@ -1175,7 +975,6 @@ export function fsTool(
     };
     loadInstructions?: boolean;
     denyPaths?: readonly string[];
-    enforceDenylist?: boolean;
   },
 ) {
   const logger = createLogger({
@@ -1226,9 +1025,7 @@ export function fsTool(
   const denyPaths = [
     path.join(env.dataDir, "secret"),
     path.join(env.dataDir, "tool-results"),
-    "~/.ssh",
-    "~/.aws",
-    "~/.gnupg",
+    ...DEFAULT_FS_DENY_PATHS,
     ...(opts?.denyPaths ?? []),
   ];
   const fileSystem = new FileSystem(cwd, {
@@ -1263,6 +1060,12 @@ export function fsTool(
       fileHash: string;
     }
   >();
+  const binaryCacheAbortCleanup = new Map<string, () => void>();
+  function clearBinaryCache(toolCallId: string): void {
+    binaryCacheByToolCallId.delete(toolCallId);
+    binaryCacheAbortCleanup.get(toolCallId)?.();
+    binaryCacheAbortCleanup.delete(toolCallId);
+  }
   const instructionClaims = createReadFileInstructionClaims();
 
   async function finalizeAttachmentRead(params: {
@@ -1543,7 +1346,7 @@ export function fsTool(
     filename: string,
     error: Error,
   ): ReadFileFailureOutput {
-    const message = /too large|media limit|maximum \d+ bytes|exceeded.*bytes/i.test(error.message)
+    const message = RemoteMediaTooLarge.is(error)
       ? buildInlineMediaLimitMessage({
           filename,
           mimeType: inferMimeTypeFromFilename(filename),
@@ -1768,321 +1571,342 @@ export function fsTool(
       inputSchema: readFileSchema,
       outputSchema: readFileOutputSchema,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: ReadFileInput, options) => {
-        if (opts?.enforceDenylist) dangerouslyAllow = false;
-        if (
-          input.path.startsWith(RESOURCE_URI_PREFIX) &&
-          !isCoreToolResultResourceUri(input.path)
-        ) {
+        clearBinaryCache(options.toolCallId);
+        const onAbort = () => clearBinaryCache(options.toolCallId);
+        options.abortSignal?.addEventListener("abort", onAbort, { once: true });
+        binaryCacheAbortCleanup.set(options.toolCallId, () =>
+          options.abortSignal?.removeEventListener("abort", onAbort),
+        );
+        return await (async () => {
+          if (
+            input.path.startsWith(RESOURCE_URI_PREFIX) &&
+            !isCoreToolResultResourceUri(input.path)
+          ) {
+            logger.info("fs.readFile", {
+              path: REDACTED_RESOURCE_LOG_PATH,
+              cwd: opCwd,
+              target: "resource",
+              start: input.start,
+              maxLines: input.maxLines,
+              maxCharacters: input.maxCharacters,
+              format: input.format ?? "raw",
+              dangerouslyAllow: dangerouslyAllow === true,
+            });
+            return await executeResourceRead(input, options);
+          }
+          if (isCoreToolResultResourceUri(input.path)) {
+            const artifact =
+              transientResourceAccess && toolResultArtifactStore
+                ? await adaptToolResultArtifactReadToUnavailablePolicy(
+                    toolResultArtifactStore,
+                    await transientResourceAccess.readWindow(input.path, {
+                      start: input.start ?? { type: "offset", offset: 0 },
+                      maxCharacters: Math.max(1, input.maxCharacters ?? 10_000),
+                      maxLines: Math.max(1, input.maxLines ?? 2_000),
+                      maxOutputBytes,
+                    }),
+                  )
+                : { ok: false as const };
+            if (!artifact.ok) {
+              return {
+                success: false as const,
+                resolvedPath: input.path,
+                error: {
+                  code: "UNKNOWN" as const,
+                  message: TOOL_RESULT_UNAVAILABLE_MESSAGE,
+                },
+              };
+            }
+
+            return {
+              success: true as const,
+              kind: "artifact" as const,
+              resolvedPath: input.path,
+              content: artifact.content,
+              startOffset: artifact.startOffset,
+              endOffset: artifact.endOffset,
+              totalCharacters: artifact.totalCharacters,
+              ...(artifact.nextStart ? { nextStart: artifact.nextStart } : {}),
+              hasMore: artifact.hasMore,
+            };
+          }
+
+          const remoteMediaUrl = parseRemoteMediaUrl(input.path);
+          if (remoteMediaUrl) {
+            return await executeLoggedRemoteMediaRead(remoteMediaUrl, input, options);
+          }
+
+          if (opts?.artifactOnly) {
+            return {
+              success: false as const,
+              resolvedPath: input.path,
+              error: {
+                code: "PERMISSION" as const,
+                message: "Restricted sessions can use read only with resource:// references.",
+              },
+            };
+          }
+
+          const cwdTarget = parseSshCwdTarget(opCwd);
+          const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
+
           logger.info("fs.readFile", {
-            path: REDACTED_RESOURCE_LOG_PATH,
+            path: input.path,
             cwd: opCwd,
-            target: "resource",
+            target: cwdTarget.kind,
             start: input.start,
             maxLines: input.maxLines,
             maxCharacters: input.maxCharacters,
             format: input.format ?? "raw",
             dangerouslyAllow: dangerouslyAllow === true,
           });
-          return await executeResourceRead(input, options);
-        }
-        if (isCoreToolResultResourceUri(input.path)) {
-          const artifact =
-            transientResourceAccess && toolResultArtifactStore
-              ? await adaptToolResultArtifactReadToUnavailablePolicy(
-                  toolResultArtifactStore,
-                  await transientResourceAccess.readWindow(input.path, {
-                    start: input.start ?? { type: "offset", offset: 0 },
-                    maxCharacters: Math.max(1, input.maxCharacters ?? 10_000),
-                    maxLines: Math.max(1, input.maxLines ?? 2_000),
-                    maxOutputBytes,
-                  }),
-                )
-              : { ok: false as const };
-          if (!artifact.ok) {
-            return {
-              success: false as const,
-              resolvedPath: input.path,
-              error: {
-                code: "UNKNOWN" as const,
-                message: TOOL_RESULT_UNAVAILABLE_MESSAGE,
-              },
-            };
-          }
 
-          return {
-            success: true as const,
-            kind: "artifact" as const,
-            resolvedPath: input.path,
-            content: artifact.content,
-            startOffset: artifact.startOffset,
-            endOffset: artifact.endOffset,
-            totalCharacters: artifact.totalCharacters,
-            ...(artifact.nextStart ? { nextStart: artifact.nextStart } : {}),
-            hasMore: artifact.hasMore,
-          };
-        }
+          const ext = path.extname(input.path).toLowerCase();
+          const wantsAttachment = directMediaExtensionSupported(ext);
+          const rejectsAttachment =
+            readFileDirectMediaSupported && attachmentExts.has(ext) && !wantsAttachment;
 
-        const remoteMediaUrl = parseRemoteMediaUrl(input.path);
-        if (remoteMediaUrl) {
-          return await executeLoggedRemoteMediaRead(remoteMediaUrl, input, options);
-        }
+          const res: ReadFileOutput = await (async (): Promise<ReadFileOutput> => {
+            if (rejectsAttachment) {
+              const filename = path.basename(input.path);
+              const mimeType = inferMimeTypeFromFilename(filename);
+              return {
+                success: false,
+                resolvedPath: input.path,
+                error: {
+                  code: "UNKNOWN",
+                  message: `Cannot attach '${filename}' (${mimeType}) because this model does not accept this file type as direct input.`,
+                },
+              };
+            }
+            if (wantsAttachment) {
+              if (cwdTarget.kind === "ssh") {
+                const bytesRes = await remoteReadFileBytes({
+                  host: cwdTarget.host,
+                  cwd: cwdTarget.cwd,
+                  filePath: input.path,
+                  denyPaths: remoteDenyPaths,
+                  maxBytes: maxInlineMediaBytesPerPart,
+                  signal: options.abortSignal,
+                });
+                const bytesError = bytesRes.match({ ok: () => null, err: (error) => error });
+                if (bytesError) {
+                  return {
+                    success: false,
+                    resolvedPath: toRemoteDebugPath(cwdTarget.host, input.path),
+                    error: { code: "UNKNOWN", message: bytesError.message },
+                  };
+                }
+                const bytesOutput = selectResultValue(bytesRes);
+                if (!bytesOutput.ok) {
+                  const filename = path.basename(input.path);
+                  const mimeType = inferMimeTypeFromFilename(filename);
+                  const message =
+                    bytesOutput.errorCode === "MEDIA_TOO_LARGE"
+                      ? buildInlineMediaLimitMessage({
+                          filename,
+                          mimeType,
+                          maxBytes: maxInlineMediaBytesPerPart,
+                          detail: bytesOutput.error,
+                        })
+                      : bytesOutput.error;
+                  return {
+                    success: false as const,
+                    resolvedPath: toRemoteDebugPath(cwdTarget.host, input.path),
+                    error: {
+                      code: "UNKNOWN" as const,
+                      message,
+                    },
+                  };
+                }
 
-        if (opts?.artifactOnly) {
-          return {
-            success: false as const,
-            resolvedPath: input.path,
-            error: {
-              code: "PERMISSION" as const,
-              message: "Restricted sessions can use read only with resource:// references.",
-            },
-          };
-        }
-
-        const cwdTarget = parseSshCwdTarget(opCwd);
-        const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
-
-        logger.info("fs.readFile", {
-          path: input.path,
-          cwd: opCwd,
-          target: cwdTarget.kind,
-          start: input.start,
-          maxLines: input.maxLines,
-          maxCharacters: input.maxCharacters,
-          format: input.format ?? "raw",
-          dangerouslyAllow: dangerouslyAllow === true,
-        });
-
-        const ext = path.extname(input.path).toLowerCase();
-        const wantsAttachment = directMediaExtensionSupported(ext);
-        const rejectsAttachment =
-          readFileDirectMediaSupported && attachmentExts.has(ext) && !wantsAttachment;
-
-        const res: ReadFileOutput = await (async (): Promise<ReadFileOutput> => {
-          if (rejectsAttachment) {
-            const filename = path.basename(input.path);
-            const mimeType = inferMimeTypeFromFilename(filename);
-            return {
-              success: false,
-              resolvedPath: input.path,
-              error: {
-                code: "UNKNOWN",
-                message: `Cannot attach '${filename}' (${mimeType}) because this model does not accept this file type as direct input.`,
-              },
-            };
-          }
-          if (wantsAttachment) {
-            if (cwdTarget.kind === "ssh") {
-              const bytesRes = await remoteReadFileBytes({
-                host: cwdTarget.host,
-                cwd: cwdTarget.cwd,
-                filePath: input.path,
-                denyPaths: remoteDenyPaths,
-                maxBytes: maxInlineMediaBytesPerPart,
-                signal: options.abortSignal,
-              });
-              const bytesError = bytesRes.match({ ok: () => null, err: (error) => error });
-              if (bytesError) {
-                return {
-                  success: false,
-                  resolvedPath: toRemoteDebugPath(cwdTarget.host, input.path),
-                  error: { code: "UNKNOWN", message: bytesError.message },
-                };
-              }
-              const bytesOutput = selectResultValue(bytesRes);
-              if (!bytesOutput.ok) {
-                const filename = path.basename(input.path);
-                const mimeType = inferMimeTypeFromFilename(filename);
-                const message = /too large|media limit|maximum \d+ bytes/i.test(bytesOutput.error)
-                  ? buildInlineMediaLimitMessage({
-                      filename,
-                      mimeType,
-                      maxBytes: maxInlineMediaBytesPerPart,
-                      detail: bytesOutput.error,
-                    })
-                  : bytesOutput.error;
-                return {
-                  success: false as const,
-                  resolvedPath: toRemoteDebugPath(cwdTarget.host, input.path),
-                  error: {
-                    code: "UNKNOWN" as const,
-                    message,
-                  },
-                };
+                const bytes = Buffer.from(bytesOutput.base64, "base64");
+                const remoteResolvedPath = toRemoteDebugPath(
+                  cwdTarget.host,
+                  bytesOutput.resolvedPath,
+                );
+                recordRemoteFileAccess({
+                  host: cwdTarget.host,
+                  remoteCwd: cwdTarget.cwd,
+                  inputPath: input.path,
+                  resolvedPath: bytesOutput.resolvedPath,
+                  fileHash: bytesOutput.fileHash,
+                });
+                const filename = path.basename(bytesOutput.resolvedPath);
+                return await finalizeAttachmentRead({
+                  source: "file",
+                  resolvedPath: remoteResolvedPath,
+                  filename,
+                  bytes,
+                  fileHash: bytesOutput.fileHash,
+                  reportedBytes: bytesOutput.bytesLength,
+                  toolCallId: options.toolCallId,
+                });
               }
 
-              const bytes = Buffer.from(bytesOutput.base64, "base64");
-              const remoteResolvedPath = toRemoteDebugPath(
-                cwdTarget.host,
-                bytesOutput.resolvedPath,
+              const bytesRes = await fileSystem.readFileBytes(
+                {
+                  path: input.path,
+                  dangerouslyAllow,
+                  maxBytes: maxInlineMediaBytesPerPart,
+                },
+                opCwd,
               );
-              recordRemoteFileAccess({
-                host: cwdTarget.host,
-                remoteCwd: cwdTarget.cwd,
-                inputPath: input.path,
-                resolvedPath: bytesOutput.resolvedPath,
-                fileHash: bytesOutput.fileHash,
-              });
-              const filename = path.basename(bytesOutput.resolvedPath);
-              return await finalizeAttachmentRead({
+              if (!bytesRes.success) {
+                if (bytesRes.error.code === "MEDIA_TOO_LARGE") {
+                  const filename = path.basename(bytesRes.resolvedPath);
+                  const mimeType = inferMimeTypeFromFilename(filename);
+                  return {
+                    ...bytesRes,
+                    error: {
+                      ...bytesRes.error,
+                      code: "UNKNOWN" as const,
+                      message: buildInlineMediaLimitMessage({
+                        filename,
+                        mimeType,
+                        maxBytes: maxInlineMediaBytesPerPart,
+                        detail: bytesRes.error.message,
+                      }),
+                    },
+                  };
+                }
+                return { ...bytesRes, error: { ...bytesRes.error, code: bytesRes.error.code } };
+              }
+
+              const resolvedPath = bytesRes.resolvedPath;
+              const filename = path.basename(resolvedPath);
+              const attachment = await finalizeAttachmentRead({
                 source: "file",
-                resolvedPath: remoteResolvedPath,
+                resolvedPath,
                 filename,
-                bytes,
-                fileHash: bytesOutput.fileHash,
-                reportedBytes: bytesOutput.bytesLength,
+                bytes: bytesRes.bytes,
+                fileHash: bytesRes.fileHash,
+                reportedBytes: bytesRes.bytesLength,
                 toolCallId: options.toolCallId,
               });
-            }
+              if (!attachment.success) return attachment;
 
-            const bytesRes = await fileSystem.readFileBytes(
+              const instructions = await loadReadFileInstructions({
+                resolvedPath,
+                requestedPath: input.path,
+                cwd: opCwd ?? toolRootAbs,
+                messages: options.messages,
+                denyPaths,
+                claimedInstructionPaths: instructionClaims.forMessages(options.messages),
+              });
+
+              return {
+                ...attachment,
+                ...(instructions
+                  ? {
+                      loadedInstructions: instructions.loaded,
+                      instructionsText: instructions.text,
+                    }
+                  : {}),
+              };
+            }
+            if (cwdTarget.kind === "ssh") {
+              const remoteRes = await remoteReadTextFile({
+                host: cwdTarget.host,
+                cwd: cwdTarget.cwd,
+                input: {
+                  ...input,
+                  start: input.start,
+                  maxBytes: maxOutputBytes,
+                },
+                denyPaths: remoteDenyPaths,
+                signal: options.abortSignal,
+              });
+              const remoteError = remoteRes.match({ ok: () => null, err: (error) => error });
+              if (remoteError) {
+                return {
+                  success: false,
+                  resolvedPath: input.path,
+                  error: { code: "UNKNOWN", message: remoteError.message },
+                };
+              }
+              const remoteOutput = selectResultValue(remoteRes);
+              if (remoteOutput.success) {
+                recordRemoteFileAccess({
+                  host: cwdTarget.host,
+                  remoteCwd: cwdTarget.cwd,
+                  inputPath: input.path,
+                  resolvedPath: remoteOutput.resolvedPath,
+                  fileHash: remoteOutput.fileHash,
+                });
+              }
+              return remoteOutput;
+            }
+            return await fileSystem.readFile(
               {
-                path: input.path,
+                ...input,
+                start: input.start,
+                maxBytes: maxOutputBytes,
                 dangerouslyAllow,
-                maxBytes: maxInlineMediaBytesPerPart,
               },
               opCwd,
             );
-            if (!bytesRes.success) {
-              if (/too large|media limit|maximum \d+ bytes/i.test(bytesRes.error.message)) {
-                const filename = path.basename(bytesRes.resolvedPath);
-                const mimeType = inferMimeTypeFromFilename(filename);
-                return {
-                  ...bytesRes,
-                  error: {
-                    ...bytesRes.error,
-                    message: buildInlineMediaLimitMessage({
-                      filename,
-                      mimeType,
-                      maxBytes: maxInlineMediaBytesPerPart,
-                      detail: bytesRes.error.message,
-                    }),
-                  },
-                };
+          })();
+
+          const resQualified = (() => {
+            if (cwdTarget.kind !== "ssh") return res;
+            if (res.success && "kind" in res) {
+              switch (res.kind) {
+                case "artifact":
+                case "attachment":
+                  return res;
               }
-              return bytesRes;
             }
+            return {
+              ...res,
+              resolvedPath: toRemoteDebugPath(cwdTarget.host, res.resolvedPath),
+            };
+          })();
 
-            const resolvedPath = bytesRes.resolvedPath;
-            const filename = path.basename(resolvedPath);
-            const attachment = await finalizeAttachmentRead({
-              source: "file",
-              resolvedPath,
-              filename,
-              bytes: bytesRes.bytes,
-              fileHash: bytesRes.fileHash,
-              reportedBytes: bytesRes.bytesLength,
-              toolCallId: options.toolCallId,
-            });
-            if (!attachment.success) return attachment;
-
+          const withInstructions = await (async () => {
+            if (!resQualified.success) return resQualified;
+            if ("kind" in resQualified) {
+              switch (resQualified.kind) {
+                case "artifact":
+                case "attachment":
+                  return resQualified;
+              }
+            }
+            if (cwdTarget.kind === "ssh") {
+              // Skip instruction auto-loading for remote reads for now.
+              return resQualified;
+            }
+            if (opts?.loadInstructions === false) return resQualified;
             const instructions = await loadReadFileInstructions({
-              resolvedPath,
+              resolvedPath: resQualified.resolvedPath,
               requestedPath: input.path,
               cwd: opCwd ?? toolRootAbs,
               messages: options.messages,
               denyPaths,
               claimedInstructionPaths: instructionClaims.forMessages(options.messages),
             });
-
+            if (!instructions) return resQualified;
             return {
-              ...attachment,
-              ...(instructions
-                ? {
-                    loadedInstructions: instructions.loaded,
-                    instructionsText: instructions.text,
-                  }
-                : {}),
+              ...resQualified,
+              loadedInstructions: instructions.loaded,
+              instructionsText: instructions.text,
             };
-          }
-          if (cwdTarget.kind === "ssh") {
-            const remoteRes = await remoteReadTextFile({
-              host: cwdTarget.host,
-              cwd: cwdTarget.cwd,
-              input: {
-                ...input,
-                start: input.start,
-                maxBytes: maxOutputBytes,
-              },
-              denyPaths: remoteDenyPaths,
-              signal: options.abortSignal,
-            });
-            const remoteError = remoteRes.match({ ok: () => null, err: (error) => error });
-            if (remoteError) {
-              return {
-                success: false,
-                resolvedPath: input.path,
-                error: { code: "UNKNOWN", message: remoteError.message },
-              };
-            }
-            const remoteOutput = selectResultValue(remoteRes);
-            if (remoteOutput.success) {
-              recordRemoteFileAccess({
-                host: cwdTarget.host,
-                remoteCwd: cwdTarget.cwd,
-                inputPath: input.path,
-                resolvedPath: remoteOutput.resolvedPath,
-                fileHash: remoteOutput.fileHash,
-              });
-            }
-            return remoteOutput;
-          }
-          return await fileSystem.readFile(
-            {
-              ...input,
-              start: input.start,
-              maxBytes: maxOutputBytes,
-              dangerouslyAllow,
-            },
-            opCwd,
-          );
-        })();
+          })();
 
-        const resQualified = (() => {
-          if (cwdTarget.kind !== "ssh") return res;
-          if (res.success && "kind" in res) {
-            switch (res.kind) {
-              case "artifact":
-              case "attachment":
-                return res;
-            }
-          }
-          return {
-            ...res,
-            resolvedPath: toRemoteDebugPath(cwdTarget.host, res.resolvedPath),
-          };
-        })();
-
-        const withInstructions = await (async () => {
-          if (!resQualified.success) return resQualified;
-          if ("kind" in resQualified) {
-            switch (resQualified.kind) {
-              case "artifact":
-              case "attachment":
-                return resQualified;
-            }
-          }
-          if (cwdTarget.kind === "ssh") {
-            // Skip instruction auto-loading for remote reads for now.
-            return resQualified;
-          }
-          if (opts?.loadInstructions === false) return resQualified;
-          const instructions = await loadReadFileInstructions({
-            resolvedPath: resQualified.resolvedPath,
-            requestedPath: input.path,
-            cwd: opCwd ?? toolRootAbs,
-            messages: options.messages,
-            denyPaths,
-            claimedInstructionPaths: instructionClaims.forMessages(options.messages),
-          });
-          if (!instructions) return resQualified;
-          return {
-            ...resQualified,
-            loadedInstructions: instructions.loaded,
-            instructionsText: instructions.text,
-          };
-        })();
-
-        return withInstructions;
+          if (
+            options.abortSignal?.aborted ||
+            !(
+              withInstructions.success &&
+              "kind" in withInstructions &&
+              withInstructions.kind === "attachment"
+            )
+          )
+            clearBinaryCache(options.toolCallId);
+          return withInstructions;
+        })().finally(() => {
+          if (options.abortSignal?.aborted || !binaryCacheByToolCallId.has(options.toolCallId))
+            clearBinaryCache(options.toolCallId);
+        });
       },
       toModelOutput: async ({ toolCallId, output }) => {
         if (!output.success) return { type: "error-json", value: output };
@@ -2097,7 +1921,7 @@ export function fsTool(
         }
 
         const cached = binaryCacheByToolCallId.get(toolCallId);
-        binaryCacheByToolCallId.delete(toolCallId);
+        clearBinaryCache(toolCallId);
 
         const bytes = cached?.bytes;
         const filename = cached?.filename ?? output.filename;
@@ -2123,14 +1947,15 @@ export function fsTool(
             maxBytes: maxInlineMediaBytesPerPart,
           });
           if (!bytesRes.success) {
-            const message = /too large|media limit|maximum \d+ bytes/i.test(bytesRes.error.message)
-              ? buildInlineMediaLimitMessage({
-                  filename,
-                  mimeType,
-                  maxBytes: maxInlineMediaBytesPerPart,
-                  detail: bytesRes.error.message,
-                })
-              : bytesRes.error.message;
+            const message =
+              bytesRes.error.code === "MEDIA_TOO_LARGE"
+                ? buildInlineMediaLimitMessage({
+                    filename,
+                    mimeType,
+                    maxBytes: maxInlineMediaBytesPerPart,
+                    detail: bytesRes.error.message,
+                  })
+                : bytesRes.error.message;
             return {
               type: "error-text",
               value: `Failed to read attachment bytes: ${message}`,
@@ -2185,7 +2010,6 @@ export function fsTool(
       inputSchema: globInputZod,
       outputSchema: globOutputZod,
       execute: async ({ cwd: opCwd, dangerouslyAllow, ...input }: GlobInput, options) => {
-        if (opts?.enforceDenylist) dangerouslyAllow = false;
         const mode = input.mode ?? "default";
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
@@ -2266,7 +2090,6 @@ export function fsTool(
               { cwd: opCwd, dangerouslyAllow, ...input }: FuzzySearchInput,
               options,
             ) => {
-              if (opts?.enforceDenylist) dangerouslyAllow = false;
               const cwdTarget = parseSshCwdTarget(opCwd);
 
               logger.info("fs.fuzzySearch", {
@@ -2335,7 +2158,6 @@ export function fsTool(
       inputSchema: grepInputSchema,
       outputSchema: grepOutputSchema,
       execute: async ({ dangerouslyAllow, ...input }: GrepInput, options): Promise<GrepOutput> => {
-        if (opts?.enforceDenylist) dangerouslyAllow = false;
         const mode = input.mode ?? "default";
         const targetPath = input.path;
         if (
@@ -2523,7 +2345,6 @@ export function fsTool(
         { cwd: opCwd, dangerouslyAllow, ...input }: EditFileInput,
         options: { abortSignal?: AbortSignal },
       ) => {
-        if (opts?.enforceDenylist) dangerouslyAllow = false;
         const cwdTarget = parseSshCwdTarget(opCwd);
         const remoteDenyPaths = resolveRemoteDenyPaths(dangerouslyAllow);
         const isLegacy = isLegacyEditFileInput(input);

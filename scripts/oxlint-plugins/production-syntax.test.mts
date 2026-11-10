@@ -461,7 +461,9 @@ describe("unified blob-storage seam syntax", () => {
     expect(findings(legacyImport, "apps/core/src/runtime/main.ts").map(({ kind }) => kind)).toEqual(
       ["legacy-blob-decoder-import"],
     );
-    expect(findings(legacyImport, "apps/core/scripts/migrate-blob-storage.ts")).toEqual([]);
+    expect(
+      findings(legacyImport, "apps/core/scripts/migrate-blob-storage.ts").map(({ kind }) => kind),
+    ).toEqual(["legacy-blob-decoder-import"]);
   });
 });
 

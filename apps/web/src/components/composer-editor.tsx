@@ -86,19 +86,11 @@ import {
   type CompletionRange,
 } from "./composer-tiptap";
 export {
-  createComposerEditor,
-  replaceComposerDocument,
-  composerMarkdown,
-  composerPrefix,
-  composerPlainText,
-  insertComposerCompletion,
-  insertComposerAttachment,
-  composerSubmissionMarkdown,
+  composerSubmission,
   remapComposerAttachments,
   resolveComposerAttachments,
   restoreMessageAttachments,
-  captureComposerPaste,
-} from "./composer-document";
+} from "./composer-markdown";
 const emptyAttachments: readonly Attachment[] = [];
 const emptySkills: readonly ComposerSkill[] = [];
 type OpenCitation = { key: string; anchor?: CitationAnchor; fresh?: { before: boolean } };
@@ -343,6 +335,8 @@ export type ComposerEditorProps = {
   formattingTarget?: HTMLElement | null;
 };
 const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) {
+  // TipTap builds the editor once, and its callbacks read the latest props through a ref.
+  "use no memo";
   const [openCitation, setOpenCitation] = useState<OpenCitation>();
   const current = useRef(props);
   current.current = props;

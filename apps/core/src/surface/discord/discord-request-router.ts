@@ -1,5 +1,7 @@
 import type { JobWakeDelivery } from "../../jobs/job-service";
+import { createFreshOnlyLineage } from "../../shared/core-primary-lineage";
 import { captureError } from "../../shared/error-capture";
+import { consumerId } from "../../shared/event-bus-consumer";
 import {
   createLogger,
   extractAiErrorLogDetails,
@@ -11,7 +13,6 @@ import {
 } from "@stanley2058/lilac-utils";
 import {
   buildCoreLineageManifestV2,
-  createCorePrimaryLineageFreshOnlyV2,
   lilacEventTypes,
   type DeliveryDisposition,
   type EventDeliveryDoneError,
@@ -19,7 +20,6 @@ import {
   type EventDeliveryStopFailed,
   type EvtAdapterMessageCreatedData,
   type LilacBus,
-  type CorePrimaryLineageV2,
 } from "@stanley2058/lilac-event-bus";
 import type { BlobStore } from "@stanley2058/lilac-blob-storage";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
@@ -60,7 +60,6 @@ import {
   stripLeadingContinueDirective,
   stripLeadingInterruptDirective,
   shouldRunDirectReplyMentionGate,
-  consumerId,
   randomRequestId,
   bufferedPromptRequestIdForActiveRequest,
   parseDiscordMsgRefFromAdapterEvent,
@@ -130,22 +129,6 @@ function continueResult<T, E, ROk, RErr>(
     err: (error) => () => branches.err(error),
   });
   return continuation();
-}
-
-function createFreshOnlyLineage(
-  reason: string,
-  currentCanonicalStart: number,
-): CorePrimaryLineageV2 {
-  const created = createCorePrimaryLineageFreshOnlyV2(reason, currentCanonicalStart);
-  return created.match({
-    ok: (value) => value,
-    err: () => ({
-      state: "fresh-only",
-      lineageVersion: 2,
-      currentCanonicalStart: 0,
-      reason: "lineage-fallback-construction-failed",
-    }),
-  });
 }
 
 export type DiscordRequestCompositionFailurePolicy = {
@@ -975,6 +958,9 @@ export async function startDiscordRequestRouter(
     return undefined;
   };
   const buffers = new Map<string, DebounceBuffer>();
+  // Bumped when a direct trigger replaces the pending batch, so a flush already waiting on the
+  // gate does not publish a second request for the same context.
+  const debounceEpochs = new Map<string, number>();
   const pendingMentionReplyBatchBySession = new Map<string, PendingMentionReplyBatch>();
   const debounceDefect = Promise.withResolvers<ResultType<void, EventDeliveryDoneError>>();
   const evaluateRouterGate = (input: RouterGateInput): Promise<RouterGateDecision> => {
@@ -1822,6 +1808,11 @@ export async function startDiscordRequestRouter(
     },
   });
   if (adapterStartFailure) return adapterStartFailure;
+
+  function supersedeDebounceBuffer(sessionId: string) {
+    debounceEpochs.set(sessionId, (debounceEpochs.get(sessionId) ?? 0) + 1);
+    clearDebounceBuffer(sessionId);
+  }
 
   function clearDebounceBuffer(sessionId: string) {
     const b = buffers.get(sessionId);
@@ -2683,7 +2674,7 @@ export async function startDiscordRequestRouter(
 
     // No active request.
     if (continueCount !== undefined && !mentionsBot && !replyToBot && !hasReplyTarget) {
-      clearDebounceBuffer(sessionId);
+      supersedeDebounceBuffer(sessionId);
 
       return publishActiveChannelPrompt({
         adapter,
@@ -2711,7 +2702,7 @@ export async function startDiscordRequestRouter(
     if (mentionsBot || replyToBot) {
       // Mention/reply is a bypass trigger.
       // Discard any pending buffer to avoid a second gated request for the same context.
-      clearDebounceBuffer(sessionId);
+      supersedeDebounceBuffer(sessionId);
 
       const triggerType: "mention" | "reply" = replyToBot ? "reply" : "mention";
       const requestId = formatDiscordMessageRequestId({
@@ -2822,6 +2813,8 @@ export async function startDiscordRequestRouter(
     const b = buffers.get(sessionId);
     if (!b) return;
     clearDebounceBuffer(sessionId);
+    const epoch = debounceEpochs.get(sessionId);
+    const superseded = () => debounceEpochs.get(sessionId) !== epoch;
 
     // Gate is only for active channels with no running request.
     const gateEnabled = resolveSessionGateEnabled(cfg, b.sessionId, b.parentChannelId, b.guildId);
@@ -2855,6 +2848,21 @@ export async function startDiscordRequestRouter(
           return { forward: false, reason: "error" };
         },
       })();
+    }
+
+    if (superseded()) {
+      logger.info(
+        "router.route.decision",
+        formatBridgeLogContext({
+          sessionId,
+          mode: "active",
+          gateEnabled,
+          decision: "skip",
+          reason: "active_batch_superseded",
+          messageCount: b.messages.length,
+        }),
+      );
+      return;
     }
 
     if (!decision.forward) {
@@ -2908,42 +2916,69 @@ export async function startDiscordRequestRouter(
     const modelOverride =
       overrideCarrier?.model ?? b.messages[b.messages.length - 1]?.sessionModelOverride;
     const self = await adapter.getSelf();
+    if (superseded()) return;
     const newestBufferedMessage = b.messages[b.messages.length - 1];
+
+    // Claim the session before publication awaits composition and admission. A mention that
+    // arrives meanwhile then joins this request instead of publishing a second one.
+    const requestId = randomRequestId();
+    const previousActive = activeBySession.get(sessionId);
+    activeBySession.set(sessionId, { requestId, activeOutputMessageIds: new Set() });
 
     // Gate-forwarded prompt: do NOT reply-to a message.
     // Use newest message as the context anchor.
-    await publishActiveChannelPrompt({
-      adapter,
-      bus,
-      cfg,
-      requestId: randomRequestId(),
-      sessionId,
-      sessionConfigId: b.sessionConfigId,
-      parentChannelId: b.parentChannelId,
-      // Use newest message as the context anchor (not a reply trigger).
-      triggerMsgRef: newestBufferedMessage?.msgRef,
-      ingressMessages: b.messages.flatMap((message) =>
-        message.ingressMessage ? [message.ingressMessage] : [],
-      ),
-      currentMessageIds: b.messages.map((message) => message.msgRef.messageId),
-      triggerType: undefined,
-      sessionMode: "active",
-      modelOverride,
-      botMentionNames: resolveBotMentionNames({
+    const published: ResultType<void, BusRequestRouterRoutingError> =
+      await publishActiveChannelPrompt({
+        adapter,
+        bus,
         cfg,
-        botUserId:
-          overrideCarrier?.botUserId ?? b.messages[b.messages.length - 1]?.botUserId ?? self.userId,
-      }),
-      transformTriggerUserText: overrideCarrier
-        ? (text: string) =>
-            stripLeadingModelOverrideDirective({
-              text,
-              botNames: resolveBotMentionNames({ cfg, botUserId: overrideCarrier?.botUserId }),
-            })
-        : undefined,
-      transformUserTextForMessageId: overrideCarrier?.messageId,
-      markActive: true,
+        requestId,
+        sessionId,
+        sessionConfigId: b.sessionConfigId,
+        parentChannelId: b.parentChannelId,
+        // Use newest message as the context anchor (not a reply trigger).
+        triggerMsgRef: newestBufferedMessage?.msgRef,
+        ingressMessages: b.messages.flatMap((message) =>
+          message.ingressMessage ? [message.ingressMessage] : [],
+        ),
+        currentMessageIds: b.messages.map((message) => message.msgRef.messageId),
+        triggerType: undefined,
+        sessionMode: "active",
+        modelOverride,
+        botMentionNames: resolveBotMentionNames({
+          cfg,
+          botUserId:
+            overrideCarrier?.botUserId ??
+            b.messages[b.messages.length - 1]?.botUserId ??
+            self.userId,
+        }),
+        transformTriggerUserText: overrideCarrier
+          ? (text: string) =>
+              stripLeadingModelOverrideDirective({
+                text,
+                botNames: resolveBotMentionNames({ cfg, botUserId: overrideCarrier?.botUserId }),
+              })
+          : undefined,
+        transformUserTextForMessageId: overrideCarrier?.messageId,
+        markActive: false,
+      });
+    published.match({
+      ok: () => undefined,
+      err: () => releaseDebounceClaim(sessionId, requestId, previousActive),
     });
+  }
+
+  function releaseDebounceClaim(
+    sessionId: string,
+    requestId: string,
+    previousActive: ActiveSessionState | undefined,
+  ) {
+    if (activeBySession.get(sessionId)?.requestId !== requestId) return;
+    if (previousActive) {
+      activeBySession.set(sessionId, previousActive);
+      return;
+    }
+    activeBySession.delete(sessionId);
   }
 
   async function handleMentionMode(input: {

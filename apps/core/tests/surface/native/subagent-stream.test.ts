@@ -226,6 +226,9 @@ test("workflow cancellation settles an observed child even before model output a
     });
     expect(nestedPublisher).toBeDefined();
     expect(
+      await f.client.subagents.read({ threadId: f.thread.id, agentId: nested.run.runId }),
+    ).toHaveProperty("agent");
+    expect(
       await f.client.streams.sync({
         target: { kind: "subagent", threadId: f.thread.id, agentId: nested.run.runId },
       }),

@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { Panic, Result } from "better-result";
 import {
   BlobReadCancelled,
+  BlobDeleteFailed,
+  BlobAdapterFailure,
   createMemoryBlobStore,
   materializeBlobRead,
   type BlobRead,
@@ -79,6 +81,95 @@ describe("blob-backed tool result artifact store", () => {
       close: (input) => store.close(input),
     };
   }
+
+  it("forgets unlinked metadata when blob deletion fails", async () => {
+    const blobs = await memoryStore();
+    const artifacts = createBlobBackedToolResultArtifactStore(baseDir, blobs);
+    await artifacts.init();
+    expect((await artifacts.create(params("first", 5))).isOk()).toBe(true);
+    const remove = spyOn(blobs, "delete").mockResolvedValue(
+      Result.err(
+        new BlobDeleteFailed({
+          objectId: "test",
+          failure: new BlobAdapterFailure({
+            adapter: "memory",
+            kind: "io",
+            operation: "delete",
+            message: "delete failed",
+          }),
+          message: "delete failed",
+        }),
+      ),
+    );
+    try {
+      expect((await artifacts.create(params("next", 5))).isErr()).toBe(true);
+      const calls = remove.mock.calls.length;
+      expect((await artifacts.create(params("last", 5))).isOk()).toBe(true);
+      expect(remove.mock.calls.length).toBe(calls);
+    } finally {
+      remove.mockRestore();
+    }
+  });
+
+  it("reschedules automatic maintenance after failure", async () => {
+    const blobs = await memoryStore();
+    const timer = spyOn(globalThis, "setTimeout");
+    const artifacts = createBlobBackedToolResultArtifactStore(baseDir, blobs);
+    await artifacts.init();
+    await artifacts.create(params("first"));
+    await artifacts.create({ ...params("later"), ttlMs: 60_000 });
+    const callback = timer.mock.calls.at(-1)![0];
+    const remove = spyOn(blobs, "delete").mockResolvedValue(
+      Result.err(
+        new BlobDeleteFailed({
+          objectId: "test",
+          failure: new BlobAdapterFailure({
+            adapter: "memory",
+            kind: "io",
+            operation: "delete",
+            message: "delete failed",
+          }),
+          message: "delete failed",
+        }),
+      ),
+    );
+    try {
+      setSystemTime(Date.now() + 2_000);
+      const calls = timer.mock.calls.length;
+      if (typeof callback !== "function") throw new Error("missing maintenance callback");
+      callback();
+      await artifacts.maintain(Date.now());
+      expect(timer.mock.calls.length).toBeGreaterThan(calls);
+    } finally {
+      remove.mockRestore();
+      timer.mockRestore();
+    }
+  });
+
+  it("indexes quota metadata and maintains expiry without opening artifact content", async () => {
+    const blobs = await memoryStore();
+    const open = spyOn(blobs, "open");
+    const timer = spyOn(globalThis, "setTimeout");
+    const artifacts = createBlobBackedToolResultArtifactStore(baseDir, blobs);
+    try {
+      expect((await artifacts.init()).isOk()).toBe(true);
+      expect((await artifacts.create(params("first"))).isOk()).toBe(true);
+      expect(timer.mock.calls.some((call) => typeof call[1] === "number" && call[1] >= 1_000)).toBe(
+        true,
+      );
+      await writeFile(path.join(baseDir, "unrelated.meta"), "invalid metadata");
+      expect((await artifacts.create(params("second"))).isOk()).toBe(true);
+      const maintained = await artifacts.maintain(Date.now() + 2_000);
+      expect(maintained).toMatchObject({
+        status: "ok",
+        value: { removedExpired: 2, removedInvalid: 1 },
+      });
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+      timer.mockRestore();
+    }
+  });
 
   it("stores only encrypted blob content and preserves exact domain expiry", async () => {
     setSystemTime(new Date("2026-01-01T00:00:00Z"));

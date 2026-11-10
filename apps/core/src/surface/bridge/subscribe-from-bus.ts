@@ -24,7 +24,6 @@ import type {
   SurfaceOperationError,
   SurfaceOperationResult,
   StartOutputOpts,
-  SurfaceToolStatusUpdate,
   TypingIndicatorSubscription,
 } from "../adapter";
 import type { MsgRef, SessionRef } from "../types";
@@ -36,15 +35,20 @@ import type {
   SurfaceRefInvalid,
 } from "../runtime-descriptor";
 import { requireSurfaceRelayPolicyRefs } from "../produced-ref-guard";
-import { mergeSubagentToolStatus } from "../subagent-tool-status";
 
 import { parseRequestControlFromRaw } from "./bus-agent-runner/raw";
-import { isPossibleNoReplyPrefix, resolveReplyDeliveryFromFinalText } from "./reply-directive";
+import { resolveReplyDeliveryFromFinalText } from "./reply-directive";
 
 import type { TranscriptStore } from "../../transcript/transcript-store";
+import { consumerId } from "../../shared/event-bus-consumer";
 import { adaptEventPublishResultToHost } from "../../shared/event-bus-result";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import { formatBridgeTaggedErrorForLog } from "./bridge-log";
+import {
+  createRelayStreamState,
+  reduceRelayStreamEvent,
+  withoutStreamPhaseBoundary,
+} from "./relay-output-reducer";
 import {
   finishDiscordMessageLatencyTrace,
   recordRequestLatencyStage,
@@ -408,10 +412,6 @@ async function stopResultSubscription(subscription: ResultSubscription): Promise
   adaptBusToAdapterSubscriptionStop(await subscription.stop());
 }
 
-function getConsumerId(prefix: string): string {
-  return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
-}
-
 function scheduleTimeout(callback: () => void, delayMs: number): () => void {
   const timeout = setTimeout(callback, delayMs);
   return () => clearTimeout(timeout);
@@ -420,23 +420,6 @@ function scheduleTimeout(callback: () => void, delayMs: number): () => void {
 function parseRouterSessionMode(raw: string | undefined): "mention" | "active" | undefined {
   if (raw === "mention" || raw === "active") return raw;
   return undefined;
-}
-
-const MAX_REASONING_DETAIL_CHARS = 4_000;
-
-function clampReasoningDetail(text: string): string {
-  const normalized = text.trim();
-  if (normalized.length <= MAX_REASONING_DETAIL_CHARS) return normalized;
-  return `${normalized.slice(0, MAX_REASONING_DETAIL_CHARS - 1)}…`;
-}
-
-function appendReasoningDetail(base: string, delta: string): string {
-  const baseTrimmedEnd = base.replace(/\s+$/u, "");
-  const deltaTrimmedStart = delta.replace(/^\s+/u, "");
-  const needsSpacer =
-    /[\p{L}\p{N}.!?]$/u.test(baseTrimmedEnd) && /^[\p{L}\p{N}]/u.test(deltaTrimmedStart);
-  const merged = needsSpacer ? `${baseTrimmedEnd} ${deltaTrimmedStart}` : `${base}${delta}`;
-  return clampReasoningDetail(merged);
 }
 
 type ActiveRelay = {
@@ -455,21 +438,33 @@ type ActiveRelay = {
   }): Promise<void>;
 };
 
-function mergeContinuationText(existing: string, continuation: string): string {
+export function mergeContinuationText(existing: string, continuation: string): string {
   if (existing.length === 0) return continuation;
   if (continuation.length === 0) return existing;
   if (continuation.startsWith(existing)) return continuation;
 
-  const maxOverlap = Math.min(existing.length, continuation.length);
-  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
-    const existingSuffix = existing.slice(existing.length - overlap);
-    const continuationPrefix = continuation.slice(0, overlap);
-    if (existingSuffix === continuationPrefix) {
-      return `${existing}${continuation.slice(overlap)}`;
-    }
-  }
+  const overlap = longestSuffixPrefixOverlap(existing, continuation);
+  return `${existing}${continuation.slice(overlap)}`;
+}
 
-  return `${existing}${continuation}`;
+/** Length of the longest suffix of `text` that is a prefix of `pattern`, in linear time (KMP). */
+function longestSuffixPrefixOverlap(text: string, pattern: string): number {
+  const maxOverlap = Math.min(text.length, pattern.length);
+  const prefix = pattern.slice(0, maxOverlap);
+  const failure = new Int32Array(prefix.length);
+  for (let index = 1, matched = 0; index < prefix.length; index += 1) {
+    while (matched > 0 && prefix[index] !== prefix[matched]) matched = failure[matched - 1] ?? 0;
+    if (prefix[index] === prefix[matched]) matched += 1;
+    failure[index] = matched;
+  }
+  let matched = 0;
+  for (let index = text.length - maxOverlap; index < text.length; index += 1) {
+    while (matched > 0 && (matched === prefix.length || text[index] !== prefix[matched])) {
+      matched = failure[matched - 1] ?? 0;
+    }
+    if (text[index] === prefix[matched]) matched += 1;
+  }
+  return matched;
 }
 
 export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(params: {
@@ -531,7 +526,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     {
       mode: "fanout",
       subscriptionId: `${subscriptionId}:cmd_request`,
-      consumerId: getConsumerId(`${subscriptionId}:cmd_request`),
+      consumerId: consumerId(`${subscriptionId}:cmd_request`),
       batch: { maxWaitMs: 1000 },
     },
     async (msg): Promise<ResultType<void, CmdRequestDeliveryError>> => {
@@ -622,7 +617,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     {
       mode: "fanout",
       subscriptionId: `${subscriptionId}:cmd_surface`,
-      consumerId: getConsumerId(`${subscriptionId}:cmd_surface`),
+      consumerId: consumerId(`${subscriptionId}:cmd_surface`),
       batch: { maxWaitMs: 1000 },
     },
     async (msg): Promise<ResultType<void, CmdSurfaceDeliveryError>> => {
@@ -732,7 +727,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     {
       mode: "fanout",
       subscriptionId,
-      consumerId: getConsumerId(subscriptionId),
+      consumerId: consumerId(subscriptionId),
       batch: { maxWaitMs: 1000 },
     },
     async (msg): Promise<ResultType<void, EvtRequestDeliveryError>> => {
@@ -1046,47 +1041,8 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     };
     const recoveredOutputRef = resolveRecoveredOutputRef();
 
-    let totalTextChars = 0;
-    let streamTextPrefixChars = 0;
-    let streamPhaseBoundaryPrefixChars = 0;
-    let streamPhaseBoundaryOffsetChars = 0;
-    let streamPhaseBoundaryPrefix: string | undefined;
-    let awaitingFinalPhaseBoundaryPrefix = false;
-    let visibleTextAcc = "";
-    let textPhase: "commentary" | "final_answer" | undefined;
-    let commentaryText = "";
-    let finalAnswerText = "";
-    let phaseSegmentsValid = true;
-    let reasoningStartedAtMs: number | undefined;
-    let reasoningFrozenAtMs: number | undefined;
-    let reasoningDetailText = "";
-    let pendingNoReplyPrefix = "";
-    let bufferNoReplyPrefix = true;
+    let relayStream = createRelayStreamState();
     let streamShouldFinish = false;
-    const withoutStreamPhaseBoundary = (text: string, textOffsetChars = 0): string => {
-      if (streamPhaseBoundaryPrefixChars === 0) return text;
-      const boundaryStart = Math.min(
-        Math.max(0, streamPhaseBoundaryOffsetChars - textOffsetChars),
-        text.length,
-      );
-      const possibleBoundaryPrefix = text.slice(
-        boundaryStart,
-        boundaryStart + streamPhaseBoundaryPrefixChars,
-      );
-      const matchesKnownBoundary =
-        streamPhaseBoundaryPrefix !== undefined &&
-        possibleBoundaryPrefix === streamPhaseBoundaryPrefix;
-      if (
-        possibleBoundaryPrefix.length !== streamPhaseBoundaryPrefixChars ||
-        !matchesKnownBoundary
-      ) {
-        return text;
-      }
-      return `${text.slice(0, boundaryStart)}${text.slice(
-        boundaryStart + streamPhaseBoundaryPrefixChars,
-      )}`;
-    };
-    const toolStatusById = new Map<string, SurfaceToolStatusUpdate>();
     const createdOutputRefs: MsgRef[] = [];
     const createdOutputRefKeys = new Set<string>();
     let activeOutputRefs: MsgRef[] = [];
@@ -1230,16 +1186,22 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
 
       const nextReplyTo = lane.resolveReplyToAfterAbort?.() ?? lane.replyTo;
       currentReplyTo = nextReplyTo;
-      streamTextPrefixChars = Math.max(0, totalTextChars - pendingNoReplyPrefix.length);
-      streamPhaseBoundaryPrefixChars = 0;
-      streamPhaseBoundaryOffsetChars = 0;
-      streamPhaseBoundaryPrefix = undefined;
-      awaitingFinalPhaseBoundaryPrefix = false;
-      textPhase = undefined;
-      commentaryText = "";
-      finalAnswerText = "";
-      phaseSegmentsValid = true;
-      visibleTextAcc = "";
+      relayStream = {
+        ...relayStream,
+        streamTextPrefixChars: Math.max(
+          0,
+          relayStream.totalTextChars - relayStream.pendingNoReplyPrefix.length,
+        ),
+        streamPhaseBoundaryPrefixChars: 0,
+        streamPhaseBoundaryOffsetChars: 0,
+        streamPhaseBoundaryPrefix: undefined,
+        awaitingFinalPhaseBoundaryPrefix: false,
+        textPhase: undefined,
+        commentaryText: "",
+        finalAnswerText: "",
+        phaseSegmentsValid: true,
+        visibleTextAcc: "",
+      };
       streamShouldFinish = false;
       out = adaptSurfaceOperationToRelay(
         "start-output",
@@ -1248,22 +1210,22 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
       finalTextMode = out.getFinalTextMode?.() ?? "continuation";
 
       if (!lane.replayStatus) return;
-      if (typeof reasoningStartedAtMs === "number") {
+      if (typeof relayStream.reasoningStartedAtMs === "number") {
         recordOutputPartDisposition(
           adaptSurfaceOperationToRelay(
             "push-output",
             await out.push({
               type: "reasoning.status",
               update: {
-                startedAtMs: reasoningStartedAtMs,
-                frozenAtMs: reasoningFrozenAtMs,
-                detailText: reasoningDetailText,
+                startedAtMs: relayStream.reasoningStartedAtMs,
+                frozenAtMs: relayStream.reasoningFrozenAtMs,
+                detailText: relayStream.reasoningDetailText,
               },
             }),
           ),
         );
       }
-      for (const update of toolStatusById.values()) {
+      for (const update of relayStream.toolStatusById.values()) {
         recordOutputPartDisposition(
           adaptSurfaceOperationToRelay(
             "push-output",
@@ -1579,166 +1541,14 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
             let part: SurfaceOutputPart | null = null;
 
             switch (outMsg.type) {
-              case lilacEventTypes.EvtAgentOutputActivity: {
-                break;
-              }
-
-              case lilacEventTypes.EvtAgentOutputDeltaReasoning: {
-                const startedAtMs = reasoningStartedAtMs ?? outMsg.ts;
-                reasoningStartedAtMs = startedAtMs;
-
-                const seq = outMsg.data.seq;
-                if (typeof seq === "number" && Number.isFinite(seq)) {
-                  reasoningDetailText = clampReasoningDetail(outMsg.data.delta);
-                } else {
-                  reasoningDetailText = appendReasoningDetail(
-                    reasoningDetailText,
-                    outMsg.data.delta,
-                  );
-                }
-
-                part = {
-                  type: "reasoning.status",
-                  update: {
-                    startedAtMs,
-                    frozenAtMs: reasoningFrozenAtMs,
-                    detailText: reasoningDetailText,
-                  },
-                };
-                break;
-              }
-
-              case lilacEventTypes.EvtAgentOutputDeltaText: {
-                const incomingPhase = outMsg.data.phase;
-                const visibleDelta = outMsg.data.delta;
-                let phasedDelta = outMsg.data.delta;
-                if (incomingPhase === "commentary" && textPhase === "final_answer") {
-                  phaseSegmentsValid = false;
-                }
-                if (incomingPhase === "final_answer" && textPhase === "commentary") {
-                  streamPhaseBoundaryPrefixChars = 0;
-                  streamPhaseBoundaryOffsetChars = 0;
-                  streamPhaseBoundaryPrefix = undefined;
-                  awaitingFinalPhaseBoundaryPrefix = true;
-                }
-                const boundaryPrefixChars = Math.max(
-                  0,
-                  Math.min(outMsg.data.phaseBoundaryPrefixChars ?? 0, outMsg.data.delta.length),
-                );
-                if (
-                  incomingPhase === "final_answer" &&
-                  awaitingFinalPhaseBoundaryPrefix &&
-                  boundaryPrefixChars > 0
-                ) {
-                  streamPhaseBoundaryOffsetChars = Math.max(
-                    0,
-                    totalTextChars - streamTextPrefixChars,
-                  );
-                  streamPhaseBoundaryPrefixChars = boundaryPrefixChars;
-                  streamPhaseBoundaryPrefix = outMsg.data.delta.slice(0, boundaryPrefixChars);
-                  phasedDelta = outMsg.data.delta.slice(boundaryPrefixChars);
-                  awaitingFinalPhaseBoundaryPrefix = false;
-                } else if (
-                  incomingPhase === "final_answer" &&
-                  awaitingFinalPhaseBoundaryPrefix &&
-                  /\S/u.test(outMsg.data.delta)
-                ) {
-                  awaitingFinalPhaseBoundaryPrefix = false;
-                }
-                if (incomingPhase === "commentary") commentaryText += phasedDelta;
-                if (incomingPhase === "final_answer") finalAnswerText += phasedDelta;
-                textPhase = incomingPhase ?? textPhase;
-                totalTextChars += outMsg.data.delta.length;
-
-                if (
-                  typeof reasoningStartedAtMs === "number" &&
-                  typeof reasoningFrozenAtMs !== "number"
-                ) {
-                  reasoningFrozenAtMs = outMsg.ts;
-                }
-
-                if (!bufferNoReplyPrefix) {
-                  part = { type: "text.delta", delta: visibleDelta, phase: incomingPhase };
-                  visibleTextAcc += visibleDelta;
-                  break;
-                }
-
-                pendingNoReplyPrefix += visibleDelta;
-                if (isPossibleNoReplyPrefix(pendingNoReplyPrefix)) {
-                  break;
-                }
-
-                bufferNoReplyPrefix = false;
-                part = {
-                  type: "text.delta",
-                  delta: pendingNoReplyPrefix,
-                  phase: incomingPhase,
-                };
-                visibleTextAcc += pendingNoReplyPrefix;
-                pendingNoReplyPrefix = "";
-                break;
-              }
-
-              case lilacEventTypes.EvtAgentOutputTextReset: {
-                const clampedStreamPrefixChars = Math.max(
-                  0,
-                  Math.min(streamTextPrefixChars, outMsg.data.text.length),
-                );
-                const laneText = outMsg.data.text.slice(clampedStreamPrefixChars);
-                totalTextChars = outMsg.data.text.length;
-                visibleTextAcc = laneText;
-                pendingNoReplyPrefix = "";
-                bufferNoReplyPrefix = true;
-                textPhase = outMsg.data.phase;
-                if (outMsg.data.phase === "commentary") {
-                  commentaryText = laneText;
-                  finalAnswerText = "";
-                  phaseSegmentsValid = true;
-                } else if (outMsg.data.phase === "final_answer") {
-                  phaseSegmentsValid =
-                    phaseSegmentsValid &&
-                    (commentaryText.length === 0 || laneText.startsWith(commentaryText));
-                  finalAnswerText = laneText.startsWith(commentaryText)
-                    ? withoutStreamPhaseBoundary(
-                        laneText.slice(commentaryText.length),
-                        commentaryText.length,
-                      )
-                    : laneText;
-                } else {
-                  commentaryText = "";
-                  finalAnswerText = "";
-                  phaseSegmentsValid = true;
-                }
-                if (outMsg.data.phase !== "final_answer") {
-                  streamPhaseBoundaryPrefixChars = 0;
-                  streamPhaseBoundaryOffsetChars = 0;
-                  streamPhaseBoundaryPrefix = undefined;
-                }
-                awaitingFinalPhaseBoundaryPrefix = false;
-                part = { type: "text.set", text: laneText, phase: outMsg.data.phase };
-                break;
-              }
-
+              case lilacEventTypes.EvtAgentOutputActivity:
+              case lilacEventTypes.EvtAgentOutputDeltaReasoning:
+              case lilacEventTypes.EvtAgentOutputDeltaText:
+              case lilacEventTypes.EvtAgentOutputTextReset:
               case lilacEventTypes.EvtAgentOutputToolCall: {
-                const incoming = {
-                  toolCallId: outMsg.data.toolCallId,
-                  display: outMsg.data.display,
-                  status: outMsg.data.status,
-                  ok: outMsg.data.ok,
-                  error: outMsg.data.error,
-                } satisfies SurfaceToolStatusUpdate;
-                const update = mergeSubagentToolStatus(
-                  toolStatusById.get(incoming.toolCallId),
-                  incoming,
-                );
-
-                toolStatusById.delete(update.toolCallId);
-                toolStatusById.set(update.toolCallId, update);
-
-                part = {
-                  type: "tool.status",
-                  update,
-                };
+                const reduced = reduceRelayStreamEvent(relayStream, outMsg);
+                relayStream = reduced.state;
+                part = reduced.part;
                 break;
               }
 
@@ -1816,6 +1626,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
                         },
                       }),
                     relayStop,
+                    clearIngressAcknowledgement,
                   ]);
                   return { status: "return", value: undefined } as const;
                 }
@@ -1823,13 +1634,13 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
                 const statsLineRaw = outMsg.data.statsForNerdsLine;
                 const statsLine = typeof statsLineRaw === "string" ? statsLineRaw.trim() : "";
 
-                const previousVisibleText = visibleTextAcc;
+                const previousVisibleText = relayStream.visibleTextAcc;
                 const finalText = outMsg.data.finalText;
                 const clampedStreamPrefixChars = Math.max(
                   0,
-                  Math.min(streamTextPrefixChars, finalText.length),
+                  Math.min(relayStream.streamTextPrefixChars, finalText.length),
                 );
-                const isContinuationOnlyFinal = finalText.length < totalTextChars;
+                const isContinuationOnlyFinal = finalText.length < relayStream.totalTextChars;
                 const hasPriorLanePrefix = clampedStreamPrefixChars > 0;
                 const shouldUseFullLaneFinal = finalTextMode === "full" && !hasPriorLanePrefix;
                 let streamFinalText = finalText;
@@ -1838,9 +1649,10 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
                 }
 
                 const hasTrackedPhasedText =
-                  commentaryText.trim().length > 0 && finalAnswerText.trim().length > 0;
+                  relayStream.commentaryText.trim().length > 0 &&
+                  relayStream.finalAnswerText.trim().length > 0;
                 if (!hasTrackedPhasedText) {
-                  streamFinalText = withoutStreamPhaseBoundary(streamFinalText);
+                  streamFinalText = withoutStreamPhaseBoundary(relayStream, streamFinalText);
                 }
 
                 // On recovery resumes, the agent may emit only the continuation suffix
@@ -1887,50 +1699,55 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
                   }
                 }
 
-                totalTextChars = Math.max(
-                  totalTextChars,
-                  finalText.length,
-                  clampedStreamPrefixChars + streamFinalText.length,
+                relayStream = {
+                  ...relayStream,
+                  totalTextChars: Math.max(
+                    relayStream.totalTextChars,
+                    finalText.length,
+                    clampedStreamPrefixChars + streamFinalText.length,
+                  ),
+                  visibleTextAcc: streamFinalText,
+                  pendingNoReplyPrefix: "",
+                  bufferNoReplyPrefix: false,
+                  reasoningFrozenAtMs:
+                    typeof relayStream.reasoningStartedAtMs === "number" &&
+                    typeof relayStream.reasoningFrozenAtMs !== "number"
+                      ? outMsg.ts
+                      : relayStream.reasoningFrozenAtMs,
+                };
+                const preservesCommentaryPrefix = streamFinalText.startsWith(
+                  relayStream.commentaryText,
                 );
-                visibleTextAcc = streamFinalText;
-                pendingNoReplyPrefix = "";
-                bufferNoReplyPrefix = false;
-                if (
-                  typeof reasoningStartedAtMs === "number" &&
-                  typeof reasoningFrozenAtMs !== "number"
-                ) {
-                  reasoningFrozenAtMs = outMsg.ts;
-                }
-                const preservesCommentaryPrefix = streamFinalText.startsWith(commentaryText);
                 const authoritativeFinalAnswer = preservesCommentaryPrefix
                   ? withoutStreamPhaseBoundary(
-                      streamFinalText.slice(commentaryText.length),
-                      commentaryText.length,
+                      relayStream,
+                      streamFinalText.slice(relayStream.commentaryText.length),
+                      relayStream.commentaryText.length,
                     )
                   : "";
                 const preservesKnownPhaseBoundary =
                   preservesCommentaryPrefix &&
-                  streamPhaseBoundaryPrefixChars > 0 &&
-                  streamPhaseBoundaryPrefix !== undefined &&
+                  relayStream.streamPhaseBoundaryPrefixChars > 0 &&
+                  relayStream.streamPhaseBoundaryPrefix !== undefined &&
                   streamFinalText.slice(
-                    commentaryText.length,
-                    commentaryText.length + streamPhaseBoundaryPrefixChars,
-                  ) === streamPhaseBoundaryPrefix;
+                    relayStream.commentaryText.length,
+                    relayStream.commentaryText.length + relayStream.streamPhaseBoundaryPrefixChars,
+                  ) === relayStream.streamPhaseBoundaryPrefix;
                 const preservesFinalAnswerSplit =
-                  authoritativeFinalAnswer.startsWith(finalAnswerText) ||
+                  authoritativeFinalAnswer.startsWith(relayStream.finalAnswerText) ||
                   preservesKnownPhaseBoundary;
                 const finalSegments =
-                  phaseSegmentsValid &&
-                  commentaryText.trim().length > 0 &&
-                  finalAnswerText.trim().length > 0 &&
+                  relayStream.phaseSegmentsValid &&
+                  relayStream.commentaryText.trim().length > 0 &&
+                  relayStream.finalAnswerText.trim().length > 0 &&
                   preservesFinalAnswerSplit &&
                   authoritativeFinalAnswer.trim().length > 0
-                    ? [commentaryText, authoritativeFinalAnswer]
+                    ? [relayStream.commentaryText, authoritativeFinalAnswer]
                     : undefined;
                 const pushedFinal = await pushOutputPart({
                   type: "text.set",
                   text: streamFinalText,
-                  phase: textPhase,
+                  phase: relayStream.textPhase,
                   ...(finalSegments === undefined ? {} : { finalSegments }),
                 });
                 const pushedFinalError = pushedFinal.match({

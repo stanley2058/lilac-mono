@@ -261,7 +261,12 @@ const legacyEditFileInputSchema = z.object({
     .min(1)
     .describe("Exact text to find and replace. Must uniquely match by default."),
   newText: z.string().describe("Replacement text."),
-  matching: z.enum(["exact", "regex"]).optional().describe("Matching mode. Default: exact."),
+  matching: z
+    .enum(["exact", "regex"])
+    .optional()
+    .describe(
+      "Matching mode. Default: exact. Regex uses JavaScript gm flags and String.replace replacement semantics ($1, $<name>, $&, $$, $`, and $' tokens).",
+    ),
   replaceAll: z
     .boolean()
     .optional()

@@ -18,7 +18,7 @@ export async function publishConfigSchemas(dataDir: string): Promise<void> {
     if ((await current.exists()) && (await current.text()) === content) continue;
 
     const temporary = path.join(directory, `.${name}.${randomUUID()}.tmp`);
-    await using cleanup = {
+    await using _cleanup = {
       [Symbol.asyncDispose]: () => fs.rm(temporary, { force: true }),
     };
     await fs.writeFile(temporary, content, { flag: "wx", mode: 0o644 });

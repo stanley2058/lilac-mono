@@ -193,6 +193,7 @@ export const nativeInputStateSchema = z.enum([
   "failed",
 ]);
 export const nativeInputReceiptSchema = z.strictObject({
+  commandId: identitySchema.optional(),
   inputId: identitySchema,
   messageId: identitySchema,
   turnId: identitySchema.optional(),

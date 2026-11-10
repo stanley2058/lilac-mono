@@ -1,5 +1,6 @@
 import type { CommandNode, ScriptNode, StatementNode, WordNode } from "just-bash";
 import { isAbsolute, resolve } from "node:path";
+import { homedir } from "node:os";
 
 import type { AnalyzeOptions, AnalyzeResult, BashSafetyViolation } from "../types";
 import { MAX_RECURSION_DEPTH, SHELL_WRAPPERS } from "../types";
@@ -470,7 +471,7 @@ function analyzeSimpleCommand(
     if (violation) return { ...violation, segment };
   }
 
-  updateEffectiveCwd(tokens, state);
+  updateEffectiveCwd(tokens, state, context.options);
   return null;
 }
 
@@ -629,6 +630,12 @@ function analyzeWordPart(
         stdinSource,
       );
       if (result) return { blocked: result };
+      if (part.operation === null && (part.parameter === "HOME" || part.parameter === "TMPDIR")) {
+        return {
+          blocked: null,
+          value: { text: "${" + part.parameter + "}" + PARAMETER_EXPANSION_MARKER, dynamic: true },
+        };
+      }
       return dynamicWord(
         part.operation !== null ? NONTRIVIAL_DYNAMIC_EXPANSION_MARKER : PARAMETER_EXPANSION_MARKER,
       );
@@ -1086,7 +1093,11 @@ function analyzeArithExpr(
   }
 }
 
-function updateEffectiveCwd(tokens: readonly string[], state: CwdState): void {
+function updateEffectiveCwd(
+  tokens: readonly string[],
+  state: CwdState,
+  options: AnalyzeOptions,
+): void {
   const wrapperInfo = stripWrappersWithInfo([...tokens]);
   if (wrapperInfo.commandLookupOnly) return;
   const rawUnwrapped = wrapperInfo.tokens;
@@ -1095,28 +1106,35 @@ function updateEffectiveCwd(tokens: readonly string[], state: CwdState): void {
   if (normalizeCommandToken(unwrapped[0] ?? "") === "builtin") headIndex = 1;
   const head = normalizeCommandToken(unwrapped[headIndex] ?? "");
   if (head !== "cd" && head !== "pushd" && head !== "popd") return;
-  if (head !== "cd" || (wrapperInfo.envAssignments.get("CDPATH") ?? "") !== "") {
+  if (head === "popd" || (wrapperInfo.envAssignments.get("CDPATH") ?? "") !== "") {
     state.cwd = null;
     return;
   }
 
   let targetIndex = headIndex + 1;
   if (unwrapped[targetIndex] === "--") targetIndex++;
-  const target = unwrapped[targetIndex];
-  const rawTarget = rawUnwrapped[targetIndex];
+  let target = unwrapped[targetIndex];
+  const home = process.env.HOME ?? homedir();
+  if (!target && !rawUnwrapped[targetIndex] && head === "cd") target = home;
+  if (target === "~" || target?.startsWith("~/")) target = home + target.slice(1);
+  target = target?.replace(/^\$(?:HOME|\{HOME\})(?=\/|$)/, home);
+  if ((options.allowTmpdirVar ?? true) && !wrapperInfo.envAssignments.has("TMPDIR")) {
+    target = target?.replace(/^\$(?:TMPDIR|\{TMPDIR\})(?=\/|$)/, "/tmp");
+  }
   if (
     !target ||
-    !rawTarget ||
-    rawTarget.includes(DYNAMIC_EXPANSION_MARKER) ||
+    (rawUnwrapped[targetIndex]?.includes(DYNAMIC_EXPANSION_MARKER) &&
+      !/^\$(?:HOME|\{HOME\}|TMPDIR|\{TMPDIR\})(?=\/|$)/.test(unwrapped[targetIndex] ?? "")) ||
+    target.includes("$") ||
     target.startsWith("-") ||
     target.startsWith("~") ||
-    state.cwd == null
+    (!isAbsolute(target) && state.cwd == null)
   ) {
     state.cwd = null;
     return;
   }
 
-  state.cwd = isAbsolute(target) ? resolve(target) : resolve(state.cwd, target);
+  state.cwd = isAbsolute(target) ? resolve(target) : resolve(state.cwd ?? "/", target);
 }
 
 function resolveChildCwd(

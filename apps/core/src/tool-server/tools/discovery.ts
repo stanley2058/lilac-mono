@@ -1,3 +1,4 @@
+import { Result } from "better-result";
 import { z } from "zod";
 import type { NativeSearchService } from "../../surface/native/search";
 import { nativeSearchToolAsync, isNativeSearchContext } from "../../surface/native/search-tools";
@@ -110,14 +111,33 @@ export class Discovery implements ServerTool {
           inputSchema: discoverySearchInputSchema,
           primaryPositional: "query",
           run: async (input, opts) => {
+            const restricted = opts?.context?.safetyMode === "restricted";
+            if (restricted && !opts?.context?.sessionId) {
+              return Result.err(
+                serverToolFailure({
+                  kind: "denied",
+                  code: "discovery_session_required",
+                  message: "Restricted discovery requires a calling session",
+                  retryable: false,
+                }),
+              );
+            }
+            const searchInput = restricted
+              ? {
+                  ...input,
+                  sources: ["conversation" as const],
+                  sessionId: opts!.context!.sessionId,
+                  platform: undefined,
+                }
+              : input;
             if (isNativeSearchContext(opts?.context))
               return nativeSearchToolAsync(
                 this.params.nativeSearch,
                 opts?.context,
                 (service, userId) =>
-                  service.discoveryWithExternal(userId, input, this.params.discovery),
+                  service.discoveryWithExternal(userId, searchInput, this.params.discovery),
               );
-            return (await this.params.discovery.searchResult(input)).mapError((error) => {
+            return (await this.params.discovery.searchResult(searchInput)).mapError((error) => {
               switch (error._tag) {
                 case "DiscoverySearchInputError":
                   return serverToolFailure({

@@ -23,7 +23,7 @@ matter when upgrading an older installation.
    Verify native deployment settings and subagent authority after adopting v3.
 
 Rollback uses the matching pre-upgrade databases and blob storage together. Current workflow schema
-27, transcript schema 14, and native schema 7 are not readable by older builds. Strict record codecs
+28, transcript schema 14, and native schema 7 are not readable by older builds. Strict record codecs
 can also change within a schema version; a matching version number alone does not establish downgrade
 compatibility. Keep producers stopped while restoring. Never remove migration markers to force an
 older binary to open current data.
@@ -38,7 +38,6 @@ Bootstrap responses publish the policy, and deployment changes trigger the exist
 Deploy Core, web, and TUI together because older strict wire decoders reject the new fields.
 Before downgrading, remove `transport` from the stored deployment settings or restore a pre-upgrade
 backup. The native database schema version is unchanged.
-
 
 For v3, follow the [ordered upgrade procedure](docs/core-config-migrations.md#upgrade-procedure).
 V1/v2 remain readable. Their legacy profile model choices are ignored; delegated models are selected
@@ -287,7 +286,9 @@ adapter-neutral references. Tool-result encryption and domain retention metadata
 domains.
 
 This transition is offline and fail-closed. Runtime startup does not read or rewrite legacy blob state.
-Before starting the new runtime, stop Core, back up its data, and run:
+The legacy migration tools were removed after commit `f2c90667`, the last commit containing them.
+Older deployments must first check out `f2c90667`, stop Core, back up its data, and run the command
+below from that checkout. Complete the migration before upgrading to the current release:
 
 ```sh
 bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data
@@ -301,7 +302,7 @@ Use `--dry-run` for a read-only preflight. The normal command preflights and the
 invocation. It accepts only supported legacy schemas, verifies every copied object's SHA-256 and byte
 length, rewrites each database only after its required objects exist, and removes replaced legacy byte
 columns and files. The offline command emits transcript schema 6 and workflow schema 26; current Core
-then applies transcript schemas 7 through 14 and workflow schema 27 during startup. Databases below
+then applies transcript schemas 7 through 14 and workflow schemas 27 through 28 during startup. Databases below
 those blob baselines, including partially migrated legacy databases, stop startup with the migration command.
 
 The migration copies durable transcript, projection, lineage, and workflow artifact content. It discards
@@ -372,6 +373,21 @@ A process interrupted immediately after a delayed backend decision write can lea
 file after deletion. It cannot resurrect readable content or a durable blob reference. Completed calls
 clean that file; removing every such interrupted marker would require a separate backend storage change.
 
+### Workflow schema 28: cancellation intent and atomic waits
+
+Core upgrades workflow schema 27 to 28 online. It adds the run-claim index on
+`(state, claimed_at, run_id)` and a wait-deadline index. Due waits use separate due-time
+and deadline scans. Existing run and wait records retain their values.
+
+Cancelled operations retain an interrupt intent in `workflow_cancellation_outbox` in the
+same transaction as cancellation. The engine retries publication with the stored delivery
+identity and removes the intent after successful publication. Operations and their waits
+now commit together, so recovery cannot observe a newly journaled wait operation without
+its wait. Existing incomplete pairs are repaired during replay.
+
+Back up the workflow database before upgrading. Older builds reject schema 28. Drain
+workflows and cancellation intents before restoring the pre-upgrade database for rollback.
+
 ### Redis managed event delivery v2
 
 Durable event-bus subscriptions use new transport-owned physical consumer-group names and create missing
@@ -413,6 +429,27 @@ Claude continuation bindings are reverified against retained canonical transcrip
 Unverifiable bindings are retired and continuation starts fresh. Existing transcripts do not acquire
 guessed bindings. Corrupt historical rows can block migration rather than receive invented digests.
 
+Startup creates three retention indexes when missing: `idx_request_transcripts_updated`,
+`idx_request_transcripts_checkpoint_candidates`, and `idx_surface_message_to_request_deleted`. They
+leave schema 14 unchanged, and older builds ignore them. The first start on a large database spends
+time building them. Retention pruning now runs in its own transaction after each save, so a pruning
+failure logs `transcript retention prune failed` and keeps the saved transcript. To restore an exact
+pre-upgrade schema, drop the three indexes; an older binary does not need that.
+
+### Native turn transcripts
+
+A native primary run now saves only its own turn: its input message, any steering, generated context,
+and the response. Earlier rows held the run's whole context, so a thread's storage grew with the square
+of its turn count. Core rebuilds a native thread's context by joining the rows of its canonical turns,
+which native retention already keeps. A compaction checkpoint, and a run that compacted before failing,
+still save the full compacted context, and the rebuild starts there. Schema 14 is unchanged.
+
+Existing rows need no migration. A row that does not start with its own turn's input message is read as
+full context, as before, so a thread can mix old and new rows. Rollback is not seamless: an older
+build reads a new row as the run's whole context, so it sees only the latest turn of a thread that
+gained new rows. Restore the pre-upgrade transcript and native databases together to keep that
+history across a rollback.
+
 ### Accepted work and agent-run checkpoints
 
 Core adds `agent_run_wal_metadata`, `agent_run_wal_events`, and `agent_run_wal_heads` to
@@ -434,8 +471,7 @@ from accepted work.
 
 The former runtime graceful-restart snapshot subsystem is removed. Runtime startup does not open,
 import, migrate, or delete `graceful-restart.db`; existing files remain inert. The offline unified blob
-migration retains its frozen decoder only to classify supported historical snapshots during that explicit
-operator command.
+migration at `f2c90667` retains its frozen decoder only for that operator command.
 
 Before the first upgrade, stop and drain Core and back up `request-delivery.db` when avoiding duplicate
 effects matters. No graceful snapshot is imported. Work accepted by an older build may restart from its
@@ -469,6 +505,25 @@ Existing checkpoints without `mcpImages` decode unchanged. No database schema mi
 migration runs. Older Core builds reject checkpoints containing the new field and can discard that run's
 journal progress, then recover its original accepted work. Drain active runs before downgrading to avoid
 that loss of progress and repeated work.
+
+### Agent-run checkpoint deltas (journal schema 2)
+
+Agent-run journal schema 2 writes each checkpoint as either a full snapshot or a delta. A delta keeps a
+prefix of the preceding checkpoint's messages, appends the new ones, and repeats the small run
+metadata. The `agent_run_wal_events` table gains a `delta` flag. `agent_run_wal_heads.checkpoint_json`
+is no longer written; recovery rebuilds the latest checkpoint and its predecessor from the retained
+snapshot and deltas. Core writes a fresh snapshot when a run's messages no longer share a prefix or
+after 64 deltas, and keeps only the chains needed for the latest checkpoint and its predecessor.
+Checkpoint writes no longer decode their own payload; recovery still validates every payload and
+resets a run whose checkpoints do not decode.
+
+Startup upgrades schema 1 in place. It adds the `delta` column, clears the duplicated head payloads,
+and keeps every schema 1 checkpoint as a snapshot, so active runs recover their progress across the
+upgrade. No accepted request records change.
+
+Older builds treat schema 2 as an incompatible journal and recreate the journal tables. Their active
+runs then restart from the original accepted messages. Drain active runs before downgrading to avoid
+that loss of progress and the repeated work.
 
 ### Older workflow databases
 
@@ -556,6 +611,13 @@ messages without their generated marking. A rollback leaves the new database and
 job still running at that point is not reported or stopped by the older build. Older web clients show
 a wake's native turn as an empty row, and an older build cannot parse an in-flight Discord wake's
 request ID, so drain work before rolling back.
+
+### Periodic job retention
+
+Core now removes ended jobs and their output files every hour while job wakes are active,
+using the existing retention period. Previously this ran only during restart reconciliation.
+The job schema is unchanged. Export retained output before it reaches the retention limit;
+deleted output cannot be recovered by downgrading.
 
 ## MCP and computer-use integration
 
@@ -647,3 +709,88 @@ Native-origin runs retain their original principal. Restricted or unverified req
 fallback, and other users' private DMs remain inaccessible. Heartbeat posts are notifications and do not
 admit another agent turn in their destination. This is a deliberate authority-policy change, not a change
 to human login or thread-sharing permissions. Deploy Core; web clients need no protocol upgrade.
+
+## Tool-result artifact maintenance
+
+Blob-backed tool-result artifacts now keep a process-local metadata index and schedule cleanup at the
+next expiry. Startup still discards the previous process's encrypted artifacts because the encryption
+key is ephemeral. No metadata format or blob-reference version changes. Maintenance checks metadata
+and expiry without reading every artifact's content. Artifact reads still authenticate their content.
+Deploy the tool-results package with Core. Rollback requires no data conversion.
+
+### GitHub webhook delivery identity and bounded media failures
+
+GitHub webhook prompts and synchronize interrupts now derive `requestDeliveryId` from
+`X-GitHub-Delivery` and the operation name. Replays use the same durable admission identity.
+Previously admitted requests keep their existing IDs. No stored records need rewriting.
+Requests without that header keep generated IDs. A webhook HTTP acknowledgement now precedes
+GitHub API work. Handler failures are logged and remain eligible for redelivery.
+
+Byte reads use an internal `MEDIA_TOO_LARGE` tag. Remote byte-read failures may include an
+internal `errorCode` with that value, so Core can present size guidance without matching error text.
+Model-facing read error codes are unchanged; oversized media returns `UNKNOWN`.
+Upgrade Core and the published remote filesystem runner together. Existing remote failures
+without `errorCode` remain readable and keep their original error text.
+
+SSH multiplexing uses private temporary control sockets with a 60-second idle lifetime.
+Bundled remote runners are cached under `${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners`
+by SHA-256 content hash. No database migration is required. Those runner files can be removed
+when no tool calls are active; a failed execution invalidates Core's deployment cache so the next call repairs the runner.
+
+## Redis subscription owner leases and reaping
+
+Managed Redis subscriptions now register an owner key per process and subscription incarnation under
+`<stream>:subscription-owner:*`, plus an index at `<stream>:subscription-owners:v1`. Owners renew every
+10 seconds with a 60-second TTL. An expired ephemeral owner cannot renew or resume its subscription.
+Durable subscriptions register their owner again after expiry. A Redis script checks expiry and destroys abandoned ephemeral groups
+atomically. Managed-delivery state is cleared afterwards, outside the script. Durable groups remain;
+only consumers with no pending entries are deleted. Pending deliveries keep their existing recovery
+policy. Reaping runs while a subscription to that stream is active.
+
+Deploy the new Core normally. Groups left by older builds have no owner registration and require
+manual inspection and cleanup. Older builds ignore these additive keys. Stop new subscribers before
+rolling back; expired registrations can be removed after their groups have been checked.
+
+## Bundled model catalog data asset
+
+The bundled models.dev fallback is now committed JSON, decoded through the existing typed catalog
+schema when a catalog cache is seeded. Docker builds use these committed bytes and no longer fetch
+models.dev. Refresh the snapshot explicitly with `bun run codegen:model-catalog`, review the JSON
+change, and commit it. `bun run build:model-catalog` remains an alias for that command.
+
+The SQLite catalog cache keeps schema version 1 and its existing daily refresh policy. Existing
+caches and deployments need no data rewrite. Deployments can roll back without migrating the cache.
+
+## Native client cache projection and receipt correlation
+
+Cache keys now use projection version 2 alongside the installation, principal and protocol version.
+The shared client selects the effective key version, preserving the version 1 scope input shape used
+by existing callers. Version 1 cache keys are no longer read, so blank placeholders cached by older
+bundles are discarded. No native database or cache data conversion is required.
+
+Input receipts and input events now include an optional `commandId`. Updated clients accept receipts
+without it from older servers. When present, the client matches it to a pending command in the same
+thread and settles an uncertain send without resubmitting it. Command IDs and admission identities
+retain their existing meaning. Deploy the updated protocol package with Core and the shared client.
+
+Turn pages can include an optional `fragment` on a chunk for a part larger than the page byte budget.
+Its `offset` and `total` count UTF-16 code units in the serialized part, and `json` carries the fragment.
+The chunk's `part` is an empty text placeholder until reconstruction finishes. Existing cursor forms
+remain accepted; fragment cursors add a fourth offset segment when the offset is nonzero. Updated
+clients reassemble and validate the full part before display. Cache checkpoints retain the beginning of an incomplete part so reloads
+can replay its fragments. Deploy Core and clients together before opening oversized structured parts.
+Core sends fragments to every client. Older bundles cannot reconstruct them and may display and cache
+blank placeholders, so deploy the updated clients with Core. Incomplete parts resume from the
+three-segment start cursor. Part-boundary cursors also use three segments, which older Core builds
+accept after rollback. Four-segment cursors remain accepted by updated Core, including a zero offset.
+Rollback clients and Core together. Cached threads and slots move to version 2 projection keys, so
+older bundles' replay rows are discarded. Drafts, bootstrap snapshots and catalogs keep the unchanged
+version 1 scope key, so unsent drafts survive the upgrade.
+
+Replay changes containing messages over the 128-part wire limit now force a bounded replay window.
+The window exposes remaining parts through its parts cursor. Canonical stored turns remain complete.
+Change rows written by older Core may hold unbounded messages that fail to decode; a sync over such a
+row also falls back to the bounded window, so no database rewrite is required.
+
+The file editor now accepts UTF-8 documents up to 256 KiB. This leaves room for JSON escaping and RPC
+metadata inside the 2 MiB HTTP and WebSocket limits. Larger files remain readable through resource tools.

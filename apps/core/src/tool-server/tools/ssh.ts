@@ -1,6 +1,7 @@
+import { sshExecBash } from "../../ssh/ssh-exec";
 import { z } from "zod";
 import path from "node:path";
-import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
+import { Result, TaggedError, type Result as ResultType } from "better-result";
 import {
   serverToolFailure,
   type ServerToolFailure,
@@ -9,30 +10,8 @@ import {
 import { defineServerTool, type ServerTool, type ServerToolCallOptions } from "../types";
 
 import { readConfiguredSshHosts, requireConfiguredSshHostResult } from "../../ssh/ssh-config";
-import { preserveToolPanic } from "../../tools/tool-result-adapters";
-
-function captureSshFailure(cause: unknown): { readonly cause: Error | Panic } {
-  if (Panic.is(cause)) return { cause };
-  if (cause instanceof Error) return { cause };
-  return { cause: new Error("SSH operation failed", { cause }) };
-}
-
-function settleCapturedError<T, E>(
-  result: ResultType<T, { readonly cause: Error | Panic }>,
-  resolve: (cause: Error | Panic) => E,
-): ResultType<T, E> {
-  return result.mapError(({ cause }) => resolve(cause));
-}
-
-async function settleCapturedPromise<T, E>(
-  result: Promise<ResultType<T, { readonly cause: Error | Panic }>>,
-  resolve: (cause: Error | Panic) => E,
-): Promise<ResultType<T, E>> {
-  return settleCapturedError(await result, resolve);
-}
 
 const DEFAULT_SSH_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-const DEFAULT_CONNECT_TIMEOUT_SECS = 10;
 const MAX_OUTPUT_CHARS = 200_000;
 
 function sshFailure(kind: ServerToolFailure["kind"], message: string): ServerToolFailure {
@@ -159,96 +138,6 @@ async function loadProbeScript(): Promise<string> {
   return cachedProbeScript;
 }
 
-function truncateText(text: string, maxChars: number) {
-  if (text.length <= maxChars) return { text, truncated: false as const };
-  return { text: text.slice(0, maxChars), truncated: true as const };
-}
-
-async function readStreamText(stream: unknown): Promise<string> {
-  if (!stream || typeof stream === "number") return "";
-  const body: BodyInit = stream instanceof ReadableStream ? stream : String(stream);
-  return await new Response(body).text();
-}
-
-function preserveSshSettledPanics(results: readonly PromiseSettledResult<unknown>[]): void {
-  for (const result of results) {
-    if (result.status === "rejected" && Panic.is(result.reason)) {
-      preserveToolPanic(result.reason);
-    }
-  }
-}
-
-function inferTransportError(
-  stderr: string,
-): { type: "hostkey" | "auth" | "connect" | "unknown"; message: string } | undefined {
-  const s = stderr.toLowerCase();
-  if (s.includes("host key verification failed")) {
-    return { type: "hostkey", message: "Host key verification failed" };
-  }
-  if (s.includes("permission denied")) {
-    return { type: "auth", message: "Permission denied" };
-  }
-  if (
-    s.includes("connection refused") ||
-    s.includes("timed out") ||
-    s.includes("could not resolve hostname")
-  ) {
-    return { type: "connect", message: "Failed to connect" };
-  }
-  return undefined;
-}
-
-function buildRemoteScript(input: RunInput) {
-  const cwd = input.cwd ?? "";
-  return `#!/usr/bin/env bash
-set -euo pipefail
-
-CWD=$(cat <<'__LILAC_CWD__'
-${cwd}
-__LILAC_CWD__
-)
-
-TMP_CMD=""
-cleanup() {
-  if [ -n "$TMP_CMD" ]; then
-    rm -f "$TMP_CMD" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup EXIT
-
-if command -v mktemp >/dev/null 2>&1; then
-  TMP_CMD=$(mktemp -t lilac-ssh-cmd.XXXXXX)
-else
-  TMP_CMD="/tmp/lilac-ssh-cmd.$$"
-fi
-
-cat >"$TMP_CMD" <<'__LILAC_CMD__'
-${input.cmd}
-__LILAC_CMD__
-
-if [ -n "$CWD" ]; then
-  if [ "$CWD" = "~" ]; then
-    CWD="$HOME"
-  elif [[ "$CWD" == "~/"* ]]; then
-    CWD="$HOME/\${CWD:2}"
-  fi
-  cd "$CWD"
-fi
-
-# Run under a clean bash to avoid remote environment surprises (rc/profile).
-bash --noprofile --norc "$TMP_CMD"
-
-# Explicitly exit so bash -s doesn't wait for more stdin.
-exit 0
-`;
-}
-
-async function buildProbeScript(input: ProbeInput): Promise<string> {
-  const base = await loadProbeScript();
-  const cwd = input.cwd ?? "";
-  return base.replace("__LILAC_CWD_VALUE__", cwd);
-}
-
 export class SSH implements ServerTool {
   id = "ssh";
   private readonly tool: ServerTool;
@@ -335,147 +224,36 @@ export class SSH implements ServerTool {
       return Result.err(sshFailure("cancelled", "SSH command was cancelled"));
     }
 
-    const effectiveTimeoutMs = input.timeoutMs ?? DEFAULT_SSH_TIMEOUT_MS;
-    const controller = new AbortController();
-    let timedOut = false;
-
-    const onAbort = () => controller.abort();
-    if (signal) {
-      if (signal.aborted) controller.abort();
-      else signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, effectiveTimeoutMs);
-
-    const startedAt = Date.now();
-    const outcome = await (async () => {
-      const sshArgs = [
-        "-T",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=yes",
-        "-o",
-        "ClearAllForwardings=yes",
-        "-o",
-        "ForwardAgent=no",
-        "-o",
-        `ConnectTimeout=${DEFAULT_CONNECT_TIMEOUT_SECS}`,
-        "-o",
-        "LogLevel=ERROR",
-        input.host,
-        "bash",
-        "--noprofile",
-        "--norc",
-        "-s",
-      ];
-
-      const script = buildRemoteScript(input);
-
-      // Important: provide stdin as a finite blob so the remote `bash -s`
-      // reliably receives EOF and exits. In some environments, streaming
-      // stdin can leave the channel open and hang after producing output.
-      const spawned = settleCapturedError(
-        Result.try({
-          try: () =>
-            Bun.spawn(["ssh", ...sshArgs], {
-              stdout: "pipe",
-              stderr: "pipe",
-              stdin: new Blob([script]),
-              signal: controller.signal,
-              killSignal: "SIGTERM",
-              env: {
-                ...process.env,
-              },
-            }),
-          catch: captureSshFailure,
-        }),
-        (cause) => {
-          if (Panic.is(cause)) return preserveToolPanic(cause);
-          return sshFailure(controller.signal.aborted ? "cancelled" : "unavailable", cause.message);
-        },
-      );
-      const spawnOutcome = spawned.match<
-        | { readonly child: Bun.Subprocess<Blob, "pipe", "pipe"> }
-        | { readonly failure: ServerToolFailure }
-      >({
-        ok: (child) => ({ child }),
-        err: (failure) => ({ failure }),
-      });
-      if ("failure" in spawnOutcome)
-        return { status: "return", value: Result.err(spawnOutcome.failure) } as const;
-      const child = spawnOutcome.child;
-
-      const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-        readStreamText(child.stdout),
-        readStreamText(child.stderr),
-        child.exited,
-      ]);
-      preserveSshSettledPanics([stdoutResult, stderrResult, exitResult]);
-
-      const stdout = stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
-      const stderr = stderrResult.status === "fulfilled" ? stderrResult.value : "";
-      const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
-
-      const durationMs = Date.now() - startedAt;
-
-      const outTrunc = truncateText(stdout, MAX_OUTPUT_CHARS);
-      const errTrunc = truncateText(stderr, MAX_OUTPUT_CHARS);
-
-      const transportError = exitCode === 255 ? inferTransportError(stderr) : undefined;
-      const processReadFailed =
-        stdoutResult.status === "rejected" ||
-        stderrResult.status === "rejected" ||
-        exitResult.status === "rejected";
-
-      const report = {
-        ok: exitCode === 0 && !timedOut && !processReadFailed,
-        exitCode,
-        durationMs,
-        timedOut,
-        target: {
-          host: input.host,
-          cwd: input.cwd,
-          strictHostKeyChecking: true,
-          batchMode: true,
-        },
-        stdout: outTrunc.text,
-        stderr: errTrunc.text,
-        truncated: {
-          stdout: outTrunc.truncated,
-          stderr: errTrunc.truncated,
-        },
-        transportError,
-        errors: {
-          stdoutRead: stdoutResult.status === "rejected" ? "stdout read failed" : undefined,
-          stderrRead: stderrResult.status === "rejected" ? "stderr read failed" : undefined,
-          exitRead: exitResult.status === "rejected" ? "exit status read failed" : undefined,
-          stdinWrite: undefined,
-        },
-      };
-      if (timedOut) {
-        return {
-          status: "return",
-          value: Result.err(
-            sshFailure("timeout", `SSH command timed out after ${effectiveTimeoutMs}ms`),
-          ),
-        } as const;
-      }
-      if (signal?.aborted) {
-        return {
-          status: "return",
-          value: Result.err(sshFailure("cancelled", "SSH command was cancelled")),
-        } as const;
-      }
-      return { status: "return", value: Result.ok(report) } as const;
-    })().finally(() => {
-      clearTimeout(timeout);
-      if (signal) signal.removeEventListener("abort", onAbort);
+    const result = await sshExecBash({
+      host: input.host,
+      cmd: input.cmd,
+      cwd: input.cwd,
+      timeoutMs: input.timeoutMs ?? DEFAULT_SSH_TIMEOUT_MS,
+      signal,
+      maxOutputChars: MAX_OUTPUT_CHARS,
     });
-    return outcome.value;
+    if (result.timedOut) return Result.err(sshFailure("timeout", "SSH command timed out"));
+    if (result.aborted) return Result.err(sshFailure("cancelled", "SSH command was cancelled"));
+    return Result.ok({
+      ok:
+        result.exitCode === 0 &&
+        !result.errors?.stdoutRead &&
+        !result.errors?.stderrRead &&
+        !result.errors?.exitRead,
+      exitCode: result.exitCode,
+      durationMs: result.durationMs,
+      timedOut: result.timedOut,
+      target: { host: input.host, cwd: input.cwd, strictHostKeyChecking: true, batchMode: true },
+      stdout: result.stdout,
+      stderr: result.stderr,
+      truncated: result.capped,
+      transportError: result.transportError,
+      errors: {
+        stdoutRead: result.errors?.stdoutRead ? "stdout read failed" : undefined,
+        stderrRead: result.errors?.stderrRead ? "stderr read failed" : undefined,
+        exitRead: result.errors?.exitRead,
+      },
+    });
   }
 
   private async callProbe(
@@ -483,192 +261,37 @@ export class SSH implements ServerTool {
     signal: AbortSignal | undefined,
   ): Promise<ServerToolResult> {
     const required = await requireSshHost(input.host);
-    const requirementFailure = required.match({
-      ok: () => undefined,
-      err: (failure) => failure,
+    const failure = required.match({ ok: () => undefined, err: (error) => error });
+    if (failure) return Result.err(failure);
+    const script = (await loadProbeScript()).replace(
+      'CWD=""',
+      `CWD=$(printf '%s' '${Buffer.from(input.cwd ?? "").toString("base64")}' | base64 -d)`,
+    );
+    const result = await sshExecBash({
+      host: input.host,
+      cmd: script,
+      timeoutMs: input.timeoutMs ?? DEFAULT_SSH_TIMEOUT_MS,
+      signal,
+      maxOutputChars: MAX_OUTPUT_CHARS,
     });
-    if (requirementFailure) return Result.err(requirementFailure);
-    if (signal?.aborted) {
-      return Result.err(sshFailure("cancelled", "SSH probe was cancelled"));
-    }
-
-    const effectiveTimeoutMs = input.timeoutMs ?? DEFAULT_SSH_TIMEOUT_MS;
-    const controller = new AbortController();
-    let timedOut = false;
-
-    const onAbort = () => controller.abort();
-    if (signal) {
-      if (signal.aborted) controller.abort();
-      else signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, effectiveTimeoutMs);
-
-    const startedAt = Date.now();
-    const outcome = await (async () => {
-      const sshArgs = [
-        "-T",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=yes",
-        "-o",
-        "ClearAllForwardings=yes",
-        "-o",
-        "ForwardAgent=no",
-        "-o",
-        `ConnectTimeout=${DEFAULT_CONNECT_TIMEOUT_SECS}`,
-        "-o",
-        "LogLevel=ERROR",
-        input.host,
-        "bash",
-        "--noprofile",
-        "--norc",
-        "-s",
-      ];
-
-      const scriptResult = await settleCapturedPromise(
-        Result.tryPromise({
-          try: () => buildProbeScript(input),
-          catch: captureSshFailure,
-        }),
-        (cause) => {
-          if (Panic.is(cause)) return preserveToolPanic(cause);
-          return sshFailure("unavailable", cause.message);
-        },
-      );
-      const scriptOutcome = scriptResult.match<
-        { readonly script: string } | { readonly failure: ServerToolFailure }
-      >({
-        ok: (script) => ({ script }),
-        err: (failure) => ({ failure }),
-      });
-      if ("failure" in scriptOutcome)
-        return { status: "return", value: Result.err(scriptOutcome.failure) } as const;
-
-      const spawned = settleCapturedError(
-        Result.try({
-          try: () =>
-            Bun.spawn(["ssh", ...sshArgs], {
-              stdout: "pipe",
-              stderr: "pipe",
-              stdin: new Blob([scriptOutcome.script]),
-              signal: controller.signal,
-              killSignal: "SIGTERM",
-              env: {
-                ...process.env,
-              },
-            }),
-          catch: captureSshFailure,
-        }),
-        (cause) => {
-          if (Panic.is(cause)) return preserveToolPanic(cause);
-          return sshFailure(controller.signal.aborted ? "cancelled" : "unavailable", cause.message);
-        },
-      );
-      const spawnOutcome = spawned.match<
-        | { readonly child: Bun.Subprocess<Blob, "pipe", "pipe"> }
-        | { readonly failure: ServerToolFailure }
-      >({
-        ok: (child) => ({ child }),
-        err: (failure) => ({ failure }),
-      });
-      if ("failure" in spawnOutcome)
-        return { status: "return", value: Result.err(spawnOutcome.failure) } as const;
-      const child = spawnOutcome.child;
-
-      const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled([
-        readStreamText(child.stdout),
-        readStreamText(child.stderr),
-        child.exited,
-      ]);
-      preserveSshSettledPanics([stdoutResult, stderrResult, exitResult]);
-
-      const stdout = stdoutResult.status === "fulfilled" ? stdoutResult.value : "";
-      const stderr = stderrResult.status === "fulfilled" ? stderrResult.value : "";
-      const exitCode = exitResult.status === "fulfilled" ? exitResult.value : -1;
-
-      const durationMs = Date.now() - startedAt;
-
-      const outTrunc = truncateText(stdout, MAX_OUTPUT_CHARS);
-      const errTrunc = truncateText(stderr, MAX_OUTPUT_CHARS);
-
-      const transportError = exitCode === 255 ? inferTransportError(stderr) : undefined;
-      const processReadFailed =
-        stdoutResult.status === "rejected" ||
-        stderrResult.status === "rejected" ||
-        exitResult.status === "rejected";
-
-      let probe: SshProbeOutput | undefined;
-      let parseError: string | undefined;
-
-      if (exitCode === 0 && !timedOut && stdoutResult.status === "fulfilled") {
-        const decodedProbe = decodeSshProbeOutput(stdout.trim());
-        decodedProbe.match({
-          ok: (value) => {
-            probe = value;
-          },
-          err: (error) => {
-            parseError = error.message;
-          },
-        });
-      }
-
-      const report = {
-        ok: exitCode === 0 && !timedOut && !processReadFailed,
-        exitCode,
-        durationMs,
-        timedOut,
-        target: {
-          host: input.host,
-          cwd: input.cwd,
-          strictHostKeyChecking: true,
-          batchMode: true,
-        },
-        probe,
-        parseError,
-        stdout: probe ? undefined : outTrunc.text,
-        stderr: errTrunc.text,
-        truncated: {
-          stdout: outTrunc.truncated,
-          stderr: errTrunc.truncated,
-        },
-        transportError,
-        errors: {
-          stdoutRead: stdoutResult.status === "rejected" ? String(stdoutResult.reason) : undefined,
-          stderrRead: stderrResult.status === "rejected" ? String(stderrResult.reason) : undefined,
-          exitRead: exitResult.status === "rejected" ? String(exitResult.reason) : undefined,
-          stdinWrite: undefined,
-        },
-      };
-      if (timedOut) {
-        return {
-          status: "return",
-          value: Result.err(
-            sshFailure("timeout", `SSH probe timed out after ${effectiveTimeoutMs}ms`),
-          ),
-        } as const;
-      }
-      if (signal?.aborted) {
-        return {
-          status: "return",
-          value: Result.err(sshFailure("cancelled", "SSH probe was cancelled")),
-        } as const;
-      }
-      if (parseError) {
-        return {
-          status: "return",
-          value: Result.err(sshFailure("unavailable", parseError)),
-        } as const;
-      }
-      return { status: "return", value: Result.ok(report) } as const;
-    })().finally(() => {
-      clearTimeout(timeout);
-      if (signal) signal.removeEventListener("abort", onAbort);
-    });
-    return outcome.value;
+    if (result.timedOut) return Result.err(sshFailure("timeout", "SSH probe timed out"));
+    if (result.aborted) return Result.err(sshFailure("cancelled", "SSH probe was cancelled"));
+    if (result.errors?.stdoutRead || result.errors?.stderrRead || result.errors?.exitRead)
+      return Result.ok({ ok: false, errors: result.errors, parseError: undefined });
+    if (result.exitCode !== 0)
+      return Result.err(sshFailure("unavailable", result.stderr || "SSH probe failed"));
+    return decodeSshProbeOutput(result.stdout.trim())
+      .mapError((error) => sshFailure("unavailable", error.message))
+      .map((probe) => ({
+        ok: true,
+        probe: { ...probe, cwd: { ...probe.cwd, attempted: input.cwd ?? "" } },
+        exitCode: result.exitCode,
+        durationMs: result.durationMs,
+        timedOut: false,
+        target: { host: input.host, cwd: input.cwd, strictHostKeyChecking: true, batchMode: true },
+        stderr: result.stderr,
+        truncated: result.capped,
+        errors: {},
+      }));
   }
 }

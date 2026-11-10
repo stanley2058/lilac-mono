@@ -186,12 +186,25 @@ function useRevealTarget(runs: readonly WorkflowRunSummary[]) {
 export const workflowTrackListClass = "flex-1 [scrollbar-gutter:stable]";
 export const workflowTrackRowClass = "pr-2 pb-3 outline-none";
 
+/** The horizontally scrolling row of tracks. Phones snap to one track at a time. */
+export function WorkflowBoardTracks({ children }: { children: ReactNode }) {
+  return (
+    <div
+      className="flex min-h-0 flex-1 scroll-px-6 gap-2 overflow-x-auto px-6 pt-2 pb-3 max-workspace:snap-x max-workspace:snap-mandatory max-workspace:scroll-px-3 max-workspace:px-3"
+      data-ui="workflow-board"
+    >
+      {children}
+    </div>
+  );
+}
+
 export function WorkflowTrackFrame({
   ref,
   id,
   label,
   count,
   more = false,
+  collapsed = false,
   children,
 }: {
   ref?: Ref<HTMLElement>;
@@ -199,15 +212,31 @@ export function WorkflowTrackFrame({
   label: string;
   count: number;
   more?: boolean;
-  children: ReactNode;
+  /** An empty track shrinks to its label so the tracks with runs stay in view. */
+  collapsed?: boolean;
+  children?: ReactNode;
 }) {
+  if (collapsed)
+    return (
+      <section
+        ref={ref}
+        data-ui="workflow-track"
+        data-section={id}
+        data-collapsed
+        aria-label={label}
+        className="flex w-8 shrink-0 snap-start flex-col items-center gap-2 pt-0.5 text-muted-foreground"
+      >
+        <span className="text-xs tabular-nums">{count}</span>
+        <h2 className="m-0 text-sm font-medium [writing-mode:vertical-rl]">{label}</h2>
+      </section>
+    );
   return (
     <section
       ref={ref}
       data-ui="workflow-track"
       data-section={id}
       aria-label={label}
-      className="flex min-h-0 w-84 max-w-[85vw] shrink-0 flex-col"
+      className="flex min-h-0 w-84 max-w-[85vw] shrink-0 snap-start flex-col"
     >
       <h2 className="m-0 flex items-center gap-2 px-1 pb-2 text-sm font-medium">
         <span>{label}</span>
@@ -250,6 +279,7 @@ function BoardTrack({
       label={section.label}
       count={section.runs.length}
       more={more}
+      collapsed={loaded && !section.runs.length && !loadable}
     >
       {loaded ? (
         <VirtualList
@@ -302,10 +332,7 @@ export function WorkflowBoard({ query, onOpen }: { query: string; onOpen: OpenTh
           {query ? "No matching workflows" : "No workflows yet"}
         </p>
       ) : (
-        <div
-          className="flex min-h-0 flex-1 scroll-px-6 gap-2 overflow-x-auto px-6 pt-2 pb-3 max-workspace:scroll-px-3 max-workspace:px-3"
-          data-ui="workflow-board"
-        >
+        <WorkflowBoardTracks>
           {runs.sections.map((section) => (
             <BoardTrack
               key={section.id}
@@ -318,7 +345,7 @@ export function WorkflowBoard({ query, onOpen }: { query: string; onOpen: OpenTh
               onOpen={onOpen}
             />
           ))}
-        </div>
+        </WorkflowBoardTracks>
       )}
       <BoardDialog sections={runs.sections} onOpenThread={onOpen} />
     </div>

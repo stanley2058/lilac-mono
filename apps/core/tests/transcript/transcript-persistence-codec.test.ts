@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -6,6 +6,8 @@ import path from "node:path";
 import SuperJSON from "superjson";
 import type { ModelMessage } from "ai";
 import { Panic } from "better-result";
+import { storedMessagesV1Schema } from "@stanley2058/lilac-event-bus";
+import { z } from "zod";
 
 import {
   coreLineageManifestRowCodecCases,
@@ -336,7 +338,7 @@ describe("transcript persistence codecs", () => {
       const dbPath = path.join(dir, "transcripts.db");
       createTranscriptSchemaMigrationFixture(dbPath, startVersion);
       expect(() => new SqliteTranscriptStore(dbPath)).toThrow(
-        "bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
+        "check out commit f2c90667 (see MIGRATIONS.md), then bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
       );
       const inspection = new Database(dbPath, { strict: true });
       try {
@@ -351,6 +353,31 @@ describe("transcript persistence codecs", () => {
       }
     });
   }
+
+  it("validates plain JSON transcript messages once per row read", () => {
+    const current = transcriptRowCodecCases.current.input;
+    const safeParse = spyOn(storedMessagesV1Schema, "safeParse");
+    try {
+      const decoded = decodeTranscriptRow(current);
+      expect(decoded.status).toBe("ok");
+      expect(safeParse).toHaveBeenCalledTimes(1);
+    } finally {
+      safeParse.mockRestore();
+    }
+  });
+
+  it("decodes transcript and projection rows without building object schemas", () => {
+    const transcript = transcriptRowCodecCases.current.input;
+    const projection = coreSurfaceProjectionRowCodecCases.current.input;
+    const object = spyOn(z, "object");
+    try {
+      expect(decodeTranscriptRow(transcript).status).toBe("ok");
+      expect(decodeCoreSurfaceProjectionRow(projection).status).toBe("ok");
+      expect(object).not.toHaveBeenCalled();
+    } finally {
+      object.mockRestore();
+    }
+  });
 
   it("decodes literal plain JSON and SuperJSON message bytes", () => {
     const messages = [{ role: "assistant", content: "literal" }] satisfies ModelMessage[];

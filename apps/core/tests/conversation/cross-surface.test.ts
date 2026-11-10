@@ -269,6 +269,43 @@ test("a source commit only reloads messages for changed threads", async () => {
   }
 });
 
+test("a refresh reads content only for threads that changed since the last check", async () => {
+  const quiet = createNative();
+  const renamed = createNative("bob");
+  await service.runSummarization({ now: Date.now() });
+  const quietSummary = index.getSummary(quiet.ref).unwrap();
+  const renamedSummary = index.getSummary(renamed.ref).unwrap();
+  const readContent = spyOn(nativeSource, "readNativeConversationContentRevision");
+  const contentReads = () => readContent.mock.calls.map((call) => call[1]);
+  try {
+    native
+      .updateThread("bob", { threadId: renamed.id, commandId: "rename", title: "renamed" })
+      .unwrap();
+    native.shareThread("owner", { threadId: renamed.id, userId: "alice", grant: "read" }).unwrap();
+    index.refreshNativeThreads();
+    expect(contentReads()).toEqual([renamed.id]);
+    expect(index.getSummary(renamed.ref).unwrap()).toEqual(renamedSummary);
+    readContent.mockClear();
+    native
+      .postMessage("bob", renamed.id, {
+        id: "edit",
+        role: "assistant",
+        parts: [{ type: "text", text: "new deployment information" }],
+      })
+      .unwrap();
+    index.refreshNativeThreads();
+    expect(contentReads()).toEqual([renamed.id]);
+    expect(index.getSummary(renamed.ref).unwrap()).toBeNull();
+    expect(index.getSummary(quiet.ref).unwrap()).toEqual(quietSummary);
+    readContent.mockClear();
+    const added = createNative();
+    index.refreshNativeThreads();
+    expect(contentReads()).toEqual([added.id]);
+  } finally {
+    readContent.mockRestore();
+  }
+});
+
 test("a source attached after store creation is materialized on its first refresh", () => {
   const item = createNative();
   const late = new ConversationThreadStore(path.join(dir, "late-search.db"));
