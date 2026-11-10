@@ -24,16 +24,16 @@ import {
   prepareCorePrimaryHistoryView,
   selectCorePrimaryClaudePrefix,
   shouldReplayCorePrimaryHistory,
-} from "../../../src/surface/bridge/bus-agent-runner/core-primary-continuation";
+} from "../../src/agent/core-primary-continuation";
 import {
   CORE_SURFACE_PROJECTION_FORMAT_VERSION,
   type CoreClaudeBindingReadError,
   SqliteTranscriptStore,
   TranscriptStoreSqliteDriverFailure,
   type CorePrimaryClaudeSessionBinding,
-} from "../../../src/transcript/transcript-store";
-import { projectStoredMessagesV1 } from "../../../src/transcript/stored-message-materialization";
-import { hashCanonicalStoredMessagesV2 } from "../../../src/transcript/transcript-persistence-codec";
+} from "../../src/transcript/transcript-store";
+import { projectStoredMessagesV1 } from "../../src/transcript/stored-message-materialization";
+import { hashCanonicalStoredMessagesV2 } from "../../src/transcript/transcript-persistence-codec";
 
 const directories: string[] = [];
 

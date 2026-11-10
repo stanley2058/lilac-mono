@@ -6,7 +6,7 @@ import type {
 } from "@stanley2058/lilac-blob-storage";
 import { Result, type Result as ResultType } from "better-result";
 
-import { SqliteRequestDeliveryStore } from "./sqlite-store";
+import { SqliteRequestDeliveryStore, type AcceptedRecoveryRow } from "./sqlite-store";
 import {
   REQUEST_DELIVERY_RESOLVE_TIMEOUT_MS,
   RequestDeliveryAdmissionRejected,
@@ -38,10 +38,16 @@ export type PreparedPublicationRecoverySummary = {
   readonly failures: readonly Error[];
 };
 
+export type AcceptedRequestRecoveryFailure = {
+  readonly requestDeliveryId: string;
+  readonly error: Error;
+};
+
+/** Failed records stay accepted, so the next recovery pass retries them. */
 export type AcceptedRequestRecoverySummary = {
   readonly resumed: number;
   readonly terminalized: number;
-  readonly failures: readonly Error[];
+  readonly failures: readonly AcceptedRequestRecoveryFailure[];
 };
 
 export type RequestDeliveryActivity = {
@@ -527,7 +533,7 @@ export class RequestDeliveryCoordinator<
   ): Promise<ResultType<AcceptedRequestRecoverySummary, RequestDeliveryStoreError>> {
     let resumed = 0;
     let terminalized = 0;
-    const failures: Error[] = [];
+    const failures: AcceptedRequestRecoveryFailure[] = [];
     const limit = Math.max(1, Math.min(1_000, input?.limit ?? 100));
     let after: { readonly acceptedAt: number; readonly requestDeliveryId: string } | undefined;
     for (;;) {
@@ -537,16 +543,28 @@ export class RequestDeliveryCoordinator<
       });
       const page = selected.match<
         | {
-            readonly kind: "records";
-            readonly records: readonly AcceptedRequestDelivery<TWork>[];
+            readonly kind: "rows";
+            readonly rows: readonly AcceptedRecoveryRow<TWork>[];
           }
         | { readonly kind: "error"; readonly error: RequestDeliveryStoreError }
       >({
-        ok: (records) => ({ kind: "records", records }),
+        ok: (rows) => ({ kind: "rows", rows }),
         err: (error) => ({ kind: "error", error }),
       });
       if (page.kind === "error") return Result.err(page.error);
-      for (const record of page.records) {
+      for (const row of page.rows) {
+        const decoded = row.record.match<
+          | { readonly kind: "record"; readonly record: AcceptedRequestDelivery<TWork> }
+          | { readonly kind: "error"; readonly error: Error }
+        >({
+          ok: (record) => ({ kind: "record", record }),
+          err: (error) => ({ kind: "error", error }),
+        });
+        if (decoded.kind === "error") {
+          failures.push({ requestDeliveryId: row.requestDeliveryId, error: decoded.error });
+          continue;
+        }
+        const { record } = decoded;
         const terminalRecovery = input?.terminalRecovery?.(record);
         if (terminalRecovery) {
           if (input?.prepareTerminalRecovery) {
@@ -556,7 +574,7 @@ export class RequestDeliveryCoordinator<
               err: (error) => error,
             });
             if (prepareError) {
-              failures.push(prepareError);
+              failures.push({ requestDeliveryId: record.requestDeliveryId, error: prepareError });
               continue;
             }
           }
@@ -572,8 +590,11 @@ export class RequestDeliveryCoordinator<
             ok: () => null,
             err: (error) => error,
           });
-          if (terminalError) failures.push(terminalError);
-          else terminalized += 1;
+          if (terminalError) {
+            failures.push({ requestDeliveryId: record.requestDeliveryId, error: terminalError });
+          } else {
+            terminalized += 1;
+          }
           continue;
         }
         this.#activity?.requestStarted(record.requestDeliveryId);
@@ -584,13 +605,13 @@ export class RequestDeliveryCoordinator<
         });
         if (resumeError) {
           this.#activity?.requestSettled(record.requestDeliveryId);
-          failures.push(resumeError);
+          failures.push({ requestDeliveryId: record.requestDeliveryId, error: resumeError });
           continue;
         }
         resumed += 1;
       }
-      const last = page.records.at(-1);
-      if (!last || page.records.length < limit) break;
+      const last = page.rows.at(-1);
+      if (!last || page.rows.length < limit) break;
       after = {
         acceptedAt: last.acceptedAt,
         requestDeliveryId: last.requestDeliveryId,

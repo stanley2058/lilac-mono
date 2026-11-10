@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   withOpenAIPromptCacheKey,
   withOpenAIServerCompaction,
-} from "../../../src/surface/bridge/bus-agent-runner/provider-options";
+} from "../../src/agent/provider-options";
 
 describe("OpenAI provider option projections", () => {
   it("preserves existing options while adding the prompt cache key", () => {

@@ -5,12 +5,7 @@ import type { JobService } from "../../jobs/job-service";
 import type { QuestionService } from "../../question/question-service";
 import { QuestionContinuation } from "../../question/question-continuation";
 import { createRunWaitTracker } from "./bus-agent-runner/run-wait";
-import { autoInjectPlannerContext, decisionAutoInjectContext } from "./bus-agent-runner/text-units";
-import {
-  buildGeneratedMessage,
-  generatedMessageMetadata,
-  isGeneratedMessage,
-} from "@stanley2058/lilac-agent";
+import { buildGeneratedMessage, generatedMessageMetadata } from "@stanley2058/lilac-agent";
 import { customCommandUserContent } from "./bus-agent-runner/generated-command-content";
 import { expandConversationReferencesForModel } from "./conversation-references";
 import type { NativeOutputFrontier } from "@stanley2058/lilac-event-bus";
@@ -30,18 +25,16 @@ import { createCoreClaudeComposition } from "../../agent/claude-composition";
 /* oxlint-disable eslint/no-control-regex */
 
 import { captureError } from "../../shared/error-capture";
+import { consumerId } from "../../shared/event-bus-consumer";
 
 import {
   type CallWarning,
   type FinishReason,
   type LanguageModelUsage,
   type ModelMessage,
-  type ToolContent,
   type ToolSet,
-  type UserContent,
 } from "ai";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
-import { boundToolResultMediaForModelView } from "@stanley2058/lilac-tool-results/tool-result-media";
 import type {
   ConfiguredModelChainEntry,
   CoreConfig,
@@ -57,11 +50,8 @@ import {
   CUSTOM_COMMAND_TOOL_NAME,
   deriveSubagentIdleTimeoutMs,
   env,
-  extractAiErrorLogDetails,
   getCoreConfig,
-  isPanic,
   isRecord,
-  opaqueErrorMessage,
   ModelCapability,
   openAIMessagePhase,
   createLogger,
@@ -75,27 +65,16 @@ import {
   withModelPlanReasoning,
 } from "@stanley2058/lilac-utils";
 import {
-  corePrimaryLineageV2Schema,
-  createCorePrimaryLineageFreshOnlyV2,
-  decodeCorePrimaryLineageV2,
   EventDeliveryStopped,
-  extendCoreLineagePrefixDigestV2,
   lilacEventTypes,
   type AdapterPlatform,
-  type CoreLineageManifestV2,
-  type CorePrimaryLineageV2,
   type DecodedLilacMessageForTopic,
-  type DeliveryDisposition,
   type LilacBus,
   type RequestLifecycleState,
-  type RequestOrigin,
-  type RequestQueueMode,
-  type RequestRunPolicy,
   type StoredMessageV1,
 } from "@stanley2058/lilac-event-bus";
 import {
   advanceHistoryProviderState,
-  AgentIdleTimeoutError,
   AiSdkPiAgent,
   attachAutoCompaction,
   buildSafeRecoveryCheckpoint,
@@ -168,26 +147,7 @@ import {
   type TranscriptSnapshot,
   type TranscriptStore,
 } from "../../transcript/transcript-store";
-import {
-  createConversationThreadAutoInjectUsageAccumulator,
-  type ConversationThreadAutoInjectUsageAccumulator,
-  type ConversationThreadSearchResult,
-  type ConversationThreadToolService,
-} from "../../conversation/thread-service";
-import {
-  rankAutoInjectedThreadSearchResults,
-  type RankedAutoInjectThread,
-} from "../../conversation/thread-auto-inject-ranking";
-import { collectDecisionAutoInjectImages } from "../../conversation/thread-auto-inject-images";
-import {
-  createDecisionAutoInjectEvaluator,
-  decideDecisionAutoInject,
-  selectDecisionAutoInjectModel,
-  DecisionAutoInjectEvaluationFailed,
-  type DecisionAutoInjectAnswers,
-  type DecisionAutoInjectEvaluator,
-  type DecisionAutoInjectUnavailable,
-} from "../../conversation/thread-auto-inject-decision";
+import { type ConversationThreadToolService } from "../../conversation/thread-service";
 import {
   createStoredMessageIdentityProjectionV1,
   materializeStoredMessagesV1,
@@ -196,10 +156,7 @@ import {
   type StoredMessageIdentityProjectionV1,
 } from "../../transcript/stored-message-materialization";
 import type { ResourceAccess } from "../../resource";
-import {
-  defaultStoredBlobFilename,
-  hashCanonicalStoredMessagesV2,
-} from "../../transcript/transcript-persistence-codec";
+import { defaultStoredBlobFilename } from "../../transcript/transcript-persistence-codec";
 import type {
   CoreAcceptedRequestWork,
   CorePreparedRequestEnvelope,
@@ -208,18 +165,7 @@ import type {
   RequestDeliveryTerminalOutcome,
 } from "./request-delivery";
 import type { AcceptedRequestDelivery } from "./request-delivery/types";
-import {
-  AgentRunJournalConflict,
-  type AgentRunCheckpointV1,
-  type AgentRunJournal,
-  type AgentRunJournalHandle,
-  type AgentRunRecoveryHead,
-} from "./agent-run-journal";
-import {
-  AgentRunCheckpointOwnershipRollbackFailed,
-  AgentRunCheckpointPreparationFailed,
-  persistBlobBackedAgentRunCheckpoint,
-} from "./agent-run-checkpoint-persistence";
+import { type AgentRunJournal, type AgentRunRecoveryHead } from "./agent-run-journal";
 import { isPossibleNoReplyPrefix, resolveReplyDeliveryFromFinalText } from "./reply-directive";
 import { formatBridgeLogContext, formatBridgeTaggedErrorForLog } from "./bridge-log";
 import { recordRequestLatencyStage } from "./request-latency-trace";
@@ -232,8 +178,7 @@ import {
   LineageToolAuthority,
   resolveCorePrimaryLoadedCatalogIds,
 } from "./bus-agent-runner/lineage-tool-authority";
-import { type AnthropicFallbackBlobStore } from "./bus-agent-runner/anthropic-fallback-media";
-import { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
+import { type AnthropicFallbackBlobStore } from "../../agent/anthropic-fallback-media";
 import {
   nativeToolActivityDetail,
   nativeToolOnlyWaits,
@@ -241,16 +186,10 @@ import {
   nativeToolActivityResult,
   type NativeToolActivityResult,
 } from "./bus-agent-runner/native-activity-result";
-import {
-  debugJsonStringify,
-  safeStringify,
-  sanitizeFilenameToken,
-} from "./bus-agent-runner/formatting";
+import { debugJsonStringify, sanitizeFilenameToken } from "./bus-agent-runner/formatting";
 
 import {
   parseCustomCommandFromRaw,
-  parseBufferedForActiveRequestIdFromRaw,
-  getParticipantUserIdsFromRaw,
   isJobWakeRequestRaw,
   parseRequestControlFromRaw,
   parseRequestModelOverrideFromRaw,
@@ -266,15 +205,11 @@ import {
   type AgentRunnerRaw,
   type ParsedSubagentMeta,
 } from "./bus-agent-runner/raw";
+import { createRunCheckpointWriter } from "./bus-agent-runner/run-checkpoint-writer";
 import {
   type AgentOutputPublishFailed,
   createAgentOutputPublisher,
 } from "./bus-agent-runner/output-publisher";
-import {
-  latestUserInput,
-  measureMeaningfulTextUnits,
-  shouldRunAutoInjectedThreadSearch,
-} from "./bus-agent-runner/text-units";
 import { createTransientModelRetryController } from "./bus-agent-runner/transient-retry";
 import {
   type materializeClaudeCodeRunResult,
@@ -299,13 +234,127 @@ import { buildAgentRunSystemPrompt } from "./bus-agent-runner/system-prompt";
 import { resolveSessionSafetyMode, type SessionSafetyMode } from "../session-policy";
 import type { AuthenticatedSurfaceOrigin, MsgRef, SurfacePrincipal } from "../types";
 import type { SurfaceProtocolResolver } from "../runtime-descriptor";
-import type { NativeOutputPublisher, NativeOutputPublication } from "../native/output";
+import type { NativeOutputPublisher } from "../native/output";
 import type {
   CustomCommandExecutionError,
   CustomCommandManager,
 } from "../../custom-commands/manager";
-import { type CoreNamedClaudeRuntime } from "./bus-agent-runner/core-named-continuation";
-import { type CorePrimaryClaudeRuntime } from "./bus-agent-runner/core-primary-continuation";
+import { type CoreNamedClaudeRuntime } from "../../agent/core-named-continuation";
+import { type CorePrimaryClaudeRuntime } from "../../agent/core-primary-continuation";
+import {
+  type ReasoningChunkState,
+  consumeAssistantTextDelta,
+  consumeReasoningChunkEvent,
+  createAssistantTextPartBoundaryState,
+  markAssistantTextPartEnded,
+  markAssistantTextPartStarted,
+  removeSilentAssistantTurnMessages,
+} from "./bus-agent-runner/agent-event-projector";
+import {
+  BusAgentRunnerAuthenticationProjectionInvalid,
+  type BusAgentRunnerDeliveryError,
+  type BusAgentRunnerErrorProjection,
+  BusAgentRunnerIntakeFailed,
+  BusAgentRunnerOperationFailed,
+  BusAgentRunnerQueueAttemptRouteInvalid,
+  BusAgentRunnerRecoveryStopped,
+  BusAgentRunnerRequestHeadersInvalid,
+  type BusAgentRunnerTerminalCleanup,
+  type BusAgentRunnerTerminalCleanupOperation,
+  PreAgentRunCancelledError,
+  ShutdownDrainingAbort,
+  busAgentRunnerDeliveryDisposition,
+  captureBusAgentRunnerOperation,
+  projectBusAgentRunnerError,
+  rethrowBusAgentRunnerPanic,
+  signalBusAgentRunnerHostFailure,
+  startBusAgentRunnerTerminalCleanup,
+} from "./bus-agent-runner/errors";
+import {
+  applyToolOutputCompactionView,
+  maybeMarkOldToolOutputsCompacted,
+  scrubLargeBinaryForModelView,
+} from "./bus-agent-runner/tool-output-policy";
+import { maybeBuildAutoInjectedThreadSearchMessages } from "./bus-agent-runner/auto-inject-thread-search";
+import {
+  appendAutoInjectedThreadSearchLineage,
+  corePrimaryLineageHasCompactionCheckpoint,
+  degradeCorePrimaryLineageForMutation,
+  mapCorePrimaryCompactionCurrentCanonicalStart,
+  persistedCompleteLineage,
+  requireStoredMessageHash,
+  resolveCorePrimaryTranscriptProviderState,
+  validateCorePrimaryLineageAtRunnerIntake,
+} from "./bus-agent-runner/lineage";
+import {
+  type Enqueued,
+  type QueueLifecycleAttempt,
+  type SessionQueue,
+  collectBufferedPromptEntriesForActiveRequest,
+  groupQueueCancellationEntries,
+  isCancelControlEntry,
+  mergeQueuedControlsForRecovery,
+  mergeQueuedForSameRequest,
+  removeQueuedEntriesByReference,
+  settlesBefore,
+  shouldCancelRunPolicyRequest,
+} from "./bus-agent-runner/session-queue";
+import { applyToRunningAgent, type RunningAgentControlTarget } from "./bus-agent-runner/controls";
+export { mergeToSingleUserMessage } from "./bus-agent-runner/controls";
+export {
+  type AgentRunnerRetainedRequestDelivery,
+  shouldCancelIdleOnlyGlobalRequest,
+  shouldCancelRunPolicyRequest,
+} from "./bus-agent-runner/session-queue";
+export {
+  appendAutoInjectedThreadSearchLineage,
+  corePrimaryLineageHasCompactionCheckpoint,
+  degradeCorePrimaryLineageForMutation,
+  mapCorePrimaryCompactionCurrentCanonicalStart,
+  resolveCorePrimaryTranscriptProviderState,
+  validateCorePrimaryLineageAtRunnerIntake,
+} from "./bus-agent-runner/lineage";
+export {
+  AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH,
+  type AutoInjectedThreadSearchPayload,
+  buildAutoInjectedThreadSearchMessages,
+  maybeBuildAutoInjectedThreadSearchMessages,
+} from "./bus-agent-runner/auto-inject-thread-search";
+export {
+  applyToolOutputCompactionView,
+  maybeMarkOldToolOutputsCompacted,
+  scrubLargeBinaryForModelView,
+} from "./bus-agent-runner/tool-output-policy";
+export {
+  BusAgentRunnerAuthenticationProjectionInvalid,
+  type BusAgentRunnerDeliveryError,
+  BusAgentRunnerIntakeFailed,
+  BusAgentRunnerOperationFailed,
+  BusAgentRunnerQueueAttemptRouteInvalid,
+  BusAgentRunnerRecoveryStopped,
+  BusAgentRunnerRequestHeadersInvalid,
+  type BusAgentRunnerTerminalCleanup,
+  type BusAgentRunnerTerminalCleanupBatch,
+  type BusAgentRunnerTerminalCleanupOperation,
+  busAgentRunnerDeliveryDisposition,
+  captureBusAgentRunnerOperation,
+  projectBusAgentRunnerError,
+  rethrowBusAgentRunnerCleanupDefect,
+  rethrowBusAgentRunnerPanic,
+  signalBusAgentRunnerHostFailure,
+  startBusAgentRunnerTerminalCleanup,
+} from "./bus-agent-runner/errors";
+export {
+  type AssistantTextPartBoundaryState,
+  type ReasoningChunkState,
+  consumeAssistantTextDelta,
+  consumeReasoningChunkEvent,
+  createAssistantTextPartBoundaryState,
+  markAssistantTextPartEnded,
+  markAssistantTextPartStarted,
+  removeSilentAssistantTurnMessages,
+  withBlankLineBetweenTextParts,
+} from "./bus-agent-runner/agent-event-projector";
 
 export { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
 export {
@@ -313,7 +362,7 @@ export {
   toOpenAIPromptCacheKey,
   withReasoningDisplayDefaultForAnthropicModels,
   withReasoningSummaryDefaultForOpenAIModels,
-} from "./bus-agent-runner/provider-options";
+} from "../../agent/provider-options";
 export {
   measureMeaningfulTextUnits,
   shouldRunAutoInjectedThreadSearch,
@@ -369,99 +418,6 @@ export { shouldUsePersistentCoreClaudeRuntime } from "../../agent/claude-composi
 
 export { resolveStoredResourceProviderTarget } from "../../agent/agent-composition";
 
-function consumerId(prefix: string): string {
-  return `${prefix}:${process.pid}:${Math.random().toString(16).slice(2)}`;
-}
-
-export function rethrowBusAgentRunnerPanic(
-  cause: unknown,
-  beforeRethrow?: (panic: Panic) => void,
-): void {
-  if (!isPanic(cause)) return;
-  beforeRethrow?.(cause);
-  throw cause;
-}
-
-export class BusAgentRunnerRequestHeadersInvalid extends TaggedError(
-  "BusAgentRunnerRequestHeadersInvalid",
-)<{
-  readonly missing: readonly ("request_id" | "session_id")[];
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerQueueAttemptRouteInvalid extends TaggedError(
-  "BusAgentRunnerQueueAttemptRouteInvalid",
-)<{
-  readonly eventId: string;
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerRecoveryStopped extends TaggedError("BusAgentRunnerRecoveryStopped")<{
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerIntakeFailed extends TaggedError("BusAgentRunnerIntakeFailed")<{
-  readonly cause: unknown;
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerAuthenticationProjectionInvalid extends TaggedError(
-  "BusAgentRunnerAuthenticationProjectionInvalid",
-)<{
-  readonly cause:
-    | AuthenticatedRequestProjectionInvalid
-    | RequestMessageCacheAdmissionError
-    | RequestIdentitySourceMissing
-    | RequestIdentityAliasTargetOccupied
-    | AuthenticatedRequestProjectionInvalid;
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerOperationFailed extends TaggedError("BusAgentRunnerOperationFailed")<{
-  readonly operation: string;
-  readonly cause: unknown;
-  readonly failureKind: "idle-timeout" | "pre-agent-cancelled" | "shutdown-draining" | "other";
-  readonly displayMessage: string;
-  readonly details?: ReturnType<typeof extractAiErrorLogDetails>;
-  readonly message: string;
-}> {}
-
-export async function captureBusAgentRunnerOperation<T>(
-  operation: string,
-  run: () => T | Promise<T>,
-  beforePanicRethrow?: (panic: Panic) => void,
-): Promise<ResultType<Awaited<T>, BusAgentRunnerOperationFailed>> {
-  {
-    const attempt = await Result.tryPromise({
-      try: async () => {
-        return Result.ok(await run());
-      },
-      catch: captureError,
-    });
-
-    if (attempt.isErr()) {
-      const cause = attempt.error.cause;
-      rethrowBusAgentRunnerPanic(cause, beforePanicRethrow);
-      const projection = projectBusAgentRunnerError(cause, `${operation} failed`);
-      let failureKind: BusAgentRunnerOperationFailed["failureKind"] = "other";
-      if (cause instanceof AgentIdleTimeoutError) failureKind = "idle-timeout";
-      if (cause instanceof PreAgentRunCancelledError) failureKind = "pre-agent-cancelled";
-      if (cause instanceof ShutdownDrainingAbort) failureKind = "shutdown-draining";
-      return Result.err(
-        new BusAgentRunnerOperationFailed({
-          operation,
-          cause,
-          failureKind,
-          displayMessage: formatUnknownErrorForDisplay(cause),
-          details: projection.details,
-          message: projection.message,
-        }),
-      );
-    }
-    return attempt.value;
-  }
-}
-
 export function toIdleRetryDecision(
   backoff: ResultType<RetryBackoffAttempt | null, RetryBackoffAborted | RetryBackoffDelayFailed>,
 ):
@@ -488,12 +444,6 @@ export function toIdleRetryDecision(
       }
     },
   });
-}
-
-export function signalBusAgentRunnerHostFailure(
-  failure: Error | BusAgentRunnerOperationFailed,
-): never {
-  throw failure instanceof BusAgentRunnerOperationFailed ? failure.cause : failure;
 }
 
 export function settleStoredMessageIdentityRemember(
@@ -552,104 +502,7 @@ function adaptModelResolutionToBusRunnerHost<T>(result: ResultType<T, ModelResol
   })();
 }
 
-type BusAgentRunnerErrorProjection = {
-  readonly message: string;
-  readonly details?: ReturnType<typeof extractAiErrorLogDetails>;
-};
-
-export function projectBusAgentRunnerError(
-  cause: unknown,
-  fallback = "Agent runner operation failed",
-): BusAgentRunnerErrorProjection {
-  const projectedCause =
-    isRecord(cause) && cause["loaded"] === false && "error" in cause ? cause["error"] : cause;
-  const message = opaqueErrorMessage(projectedCause, fallback);
-  {
-    const attempt = Result.try({
-      try: () => {
-        const details = extractAiErrorLogDetails(projectedCause);
-        return details ? { message, details } : { message };
-      },
-      catch: captureError,
-    });
-
-    if (attempt.isErr()) {
-      return { message };
-    }
-    return attempt.value;
-  }
-}
-
-export type BusAgentRunnerDeliveryError =
-  | BusAgentRunnerRequestHeadersInvalid
-  | BusAgentRunnerQueueAttemptRouteInvalid
-  | BusAgentRunnerRecoveryStopped
-  | BusAgentRunnerAuthenticationProjectionInvalid
-  | BusAgentRunnerIntakeFailed;
-
-export function busAgentRunnerDeliveryDisposition(
-  error: BusAgentRunnerDeliveryError,
-): DeliveryDisposition {
-  switch (error._tag) {
-    case "BusAgentRunnerRequestHeadersInvalid":
-    case "BusAgentRunnerQueueAttemptRouteInvalid":
-    case "BusAgentRunnerAuthenticationProjectionInvalid":
-      return "dead-letter";
-    case "BusAgentRunnerRecoveryStopped":
-      return "stop";
-    case "BusAgentRunnerIntakeFailed":
-      return "park-pending";
-  }
-}
-
 export { resolveCoreClaudeCompactionSummaryModel } from "../../agent/claude-composition";
-
-export async function rethrowBusAgentRunnerCleanupDefect(
-  cleanup: () => void | Promise<void>,
-): Promise<void> {
-  await cleanup();
-}
-
-export type BusAgentRunnerTerminalCleanup = {
-  readonly label:
-    | "workflow-claim-timer-clear"
-    | "control-capability-expire"
-    | "workflow-request-expire"
-    | "run-idle-watchdog-stop"
-    | "questions-cancel"
-    | "agent-unsubscribe"
-    | "compaction-unsubscribe"
-    | "output-publisher-drain"
-    | "core-named-retire"
-    | "core-primary-retire"
-    | "claude-dispose"
-    | "level1-toolset-release"
-    | "live-close";
-  readonly run: () => void | Promise<void>;
-};
-
-export type BusAgentRunnerTerminalCleanupOperation = {
-  readonly label: BusAgentRunnerTerminalCleanup["label"];
-  readonly operation: Promise<void>;
-};
-
-export type BusAgentRunnerTerminalCleanupBatch = {
-  readonly operations: readonly BusAgentRunnerTerminalCleanupOperation[];
-  readonly completion: Promise<void>;
-};
-
-export function startBusAgentRunnerTerminalCleanup(
-  cleanups: readonly BusAgentRunnerTerminalCleanup[],
-): BusAgentRunnerTerminalCleanupBatch {
-  const operations = cleanups.map((cleanup) => {
-    const operation = rethrowBusAgentRunnerCleanupDefect(cleanup.run);
-    return { label: cleanup.label, operation };
-  });
-  const completion = Promise.allSettled(operations.map(({ operation }) => operation)).then(
-    () => undefined,
-  );
-  return { operations, completion };
-}
 
 function buildResumePrompt(partialText: string): ModelMessage {
   const base =
@@ -663,275 +516,6 @@ function buildResumePrompt(partialText: string): ModelMessage {
     role: "user",
     content,
   };
-}
-
-// OpenCode-style tool output pruning:
-// - Keep full tool call/result structure for forkability.
-// - Compact *old* tool results (replace output with a placeholder) only in the
-//   model-facing view, right before sending.
-// - Track compacted toolCallIds in-memory per session for stability (cache hits).
-const TOOL_OUTPUT_PLACEHOLDER = "[Old tool result content cleared]";
-const TOOL_OUTPUT_CHARS_PER_TOKEN = 4;
-const TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS = new Set(["skill", "subagent_result"]);
-
-export function withBlankLineBetweenTextParts(params: {
-  accumulatedText: string;
-  delta: string;
-  partChanged: boolean;
-}): string {
-  if (!params.partChanged) return params.delta;
-  if (params.accumulatedText.length === 0) return params.delta;
-  if (params.delta.length === 0) return params.delta;
-  if (/^\s/u.test(params.delta)) return params.delta;
-  if (/\n\s*\n\s*$/u.test(params.accumulatedText)) return params.delta;
-  if (/\n\s*$/u.test(params.accumulatedText)) return `\n${params.delta}`;
-  return `\n\n${params.delta}`;
-}
-
-export type AssistantTextPartBoundaryState = {
-  lastTextPartId: string | null;
-  pendingRecoveryTextBoundary: boolean;
-  pendingTextPartStartIds: Set<string>;
-};
-
-export function createAssistantTextPartBoundaryState(
-  partialText: string | undefined,
-): AssistantTextPartBoundaryState {
-  return {
-    lastTextPartId: null,
-    pendingRecoveryTextBoundary: Boolean(partialText?.trim()),
-    pendingTextPartStartIds: new Set<string>(),
-  };
-}
-
-export function markAssistantTextPartStarted(
-  state: AssistantTextPartBoundaryState,
-  partId: string,
-): void {
-  state.pendingTextPartStartIds.add(partId);
-}
-
-export function markAssistantTextPartEnded(
-  state: AssistantTextPartBoundaryState,
-  partId: string,
-): void {
-  state.pendingTextPartStartIds.delete(partId);
-}
-
-export function consumeAssistantTextDelta(params: {
-  state: AssistantTextPartBoundaryState;
-  finalText: string;
-  recoveryPartialText?: string;
-  partId: string;
-  delta: string;
-}): string {
-  const startedNewTextBlock = params.state.pendingTextPartStartIds.has(params.partId);
-  const hasPartBoundary =
-    startedNewTextBlock ||
-    (params.state.lastTextPartId !== null && params.partId !== params.state.lastTextPartId);
-  const accumulatedTextForBoundary =
-    params.finalText.length > 0 ? params.finalText : (params.recoveryPartialText ?? "");
-  const nextDelta = withBlankLineBetweenTextParts({
-    accumulatedText: accumulatedTextForBoundary,
-    delta: params.delta,
-    partChanged: hasPartBoundary || params.state.pendingRecoveryTextBoundary,
-  });
-  if (nextDelta.length > 0) {
-    const boundaryResolvedByThisDelta = /\S/u.test(params.delta);
-    if (boundaryResolvedByThisDelta) {
-      params.state.pendingRecoveryTextBoundary = false;
-      params.state.pendingTextPartStartIds.delete(params.partId);
-    }
-  }
-  params.state.lastTextPartId = params.partId;
-  return nextDelta;
-}
-
-export function removeSilentAssistantTurnMessages(input: {
-  messages: readonly ModelMessage[];
-  startIndex: number;
-  messageCount: number;
-}): ModelMessage[] {
-  const endIndex = input.startIndex + input.messageCount;
-  const messages: ModelMessage[] = [];
-
-  for (let index = 0; index < input.messages.length; index += 1) {
-    const message = input.messages[index]!;
-    if (index < input.startIndex || index >= endIndex || message.role !== "assistant") {
-      messages.push(message);
-      continue;
-    }
-
-    const text = (() => {
-      if (typeof message.content === "string") return message.content;
-      const textParts = message.content.filter((part) => part.type === "text");
-      const finalAnswerParts = textParts.filter(
-        (part) => openAIMessagePhase(part.providerOptions) === "final_answer",
-      );
-      return (finalAnswerParts.length > 0 ? finalAnswerParts : textParts)
-        .map((part) => part.text)
-        .join("\n\n");
-    })();
-    if (resolveReplyDeliveryFromFinalText(text) !== "skip") {
-      messages.push(message);
-      continue;
-    }
-    if (typeof message.content === "string") continue;
-
-    const content = message.content.filter((part) => part.type !== "text");
-    if (content.every((part) => part.type === "reasoning")) continue;
-    messages.push({ ...message, content });
-  }
-
-  return messages;
-}
-
-export type ReasoningChunkState = {
-  chunks: Map<string, string>;
-  seq: number;
-};
-
-export function consumeReasoningChunkEvent(
-  state: ReasoningChunkState,
-  event:
-    | { type: "start"; chunkId: string }
-    | { type: "delta"; chunkId: string; delta: string }
-    | { type: "end"; chunkId: string },
-): {
-  publishStart: boolean;
-  snapshot: { delta: string; seq: number } | null;
-} {
-  if (event.type === "end") {
-    state.chunks.delete(event.chunkId);
-    return { publishStart: false, snapshot: null };
-  }
-
-  if (event.type === "start") {
-    if (!state.chunks.has(event.chunkId)) {
-      state.chunks.set(event.chunkId, "");
-    }
-    return { publishStart: true, snapshot: null };
-  }
-
-  const publishStart = !state.chunks.has(event.chunkId);
-  const chunk = `${state.chunks.get(event.chunkId) ?? ""}${event.delta}`;
-  state.chunks.set(event.chunkId, chunk);
-  if (event.delta.length === 0) {
-    return { publishStart, snapshot: null };
-  }
-
-  state.seq += 1;
-  return {
-    publishStart,
-    snapshot: { delta: chunk, seq: state.seq },
-  };
-}
-
-function estimateTokensFromValue(value: unknown): number {
-  // Best-effort token estimate (OpenCode uses chars/4).
-  const chars = safeStringify(value).length;
-  return Math.max(0, Math.round(chars / TOOL_OUTPUT_CHARS_PER_TOKEN));
-}
-
-export function maybeMarkOldToolOutputsCompacted(params: {
-  messages: readonly ModelMessage[];
-  compactedToolCallIds: Set<string>;
-  protectTokens: number;
-  minimumTokens: number;
-}): number {
-  let turns = 0;
-  let total = 0;
-  let pruned = 0;
-  const toCompact = new Set<string>();
-
-  // Walk backwards; skip the last turn (turn = user message).
-  // This mirrors OpenCode's "turns < 2" behavior.
-  outer: for (let msgIndex = params.messages.length - 1; msgIndex >= 0; msgIndex--) {
-    const msg = params.messages[msgIndex]!;
-    if (msg.role === "user" && !isGeneratedMessage(msg)) turns++;
-    if (turns < 2) continue;
-
-    if (msg.role !== "tool") continue;
-    if (!Array.isArray(msg.content)) continue;
-
-    for (let partIndex = msg.content.length - 1; partIndex >= 0; partIndex--) {
-      const part = msg.content[partIndex];
-      if (part?.type !== "tool-result") continue;
-
-      const toolName = part.toolName;
-      if (toolName && TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS.has(toolName)) continue;
-      const toolCallId = part.toolCallId;
-      if (!toolCallId) continue;
-
-      // Once we reach already-compacted results, stop. Older ones should already be compacted.
-      if (params.compactedToolCallIds.has(toolCallId)) break outer;
-
-      const output = part.output;
-      const estimate = estimateTokensFromValue(output);
-      total += estimate;
-
-      if (total > params.protectTokens) {
-        pruned += estimate;
-        toCompact.add(toolCallId);
-      }
-    }
-  }
-
-  if (pruned <= params.minimumTokens) return 0;
-
-  let changed = false;
-  for (const id of toCompact) {
-    if (params.compactedToolCallIds.has(id)) continue;
-    params.compactedToolCallIds.add(id);
-    changed = true;
-  }
-  return changed ? pruned : 0;
-}
-
-export function applyToolOutputCompactionView(params: {
-  messages: readonly ModelMessage[];
-  compactedToolCallIds: ReadonlySet<string>;
-}): ModelMessage[] {
-  let changed = false;
-
-  const out = params.messages.map((m) => {
-    if (m.role !== "tool") return m;
-    if (!Array.isArray(m.content)) return m;
-
-    let nextContent: ToolContent | null = null;
-
-    for (let i = 0; i < m.content.length; i++) {
-      const part = m.content[i];
-      if (part?.type !== "tool-result") continue;
-
-      const toolCallId = part.toolCallId;
-      if (!toolCallId) continue;
-      if (!params.compactedToolCallIds.has(toolCallId)) continue;
-
-      nextContent ??= m.content.map((p) => ({ ...p }));
-
-      const nextPart = nextContent?.[i];
-      if (nextPart?.type !== "tool-result") continue;
-
-      nextPart["output"] = { type: "text", value: TOOL_OUTPUT_PLACEHOLDER };
-      changed = true;
-    }
-
-    if (!nextContent) return m;
-    return {
-      ...m,
-      content: nextContent,
-    } satisfies ModelMessage;
-  });
-
-  return changed ? out : [...params.messages];
-}
-
-export function scrubLargeBinaryForModelView(
-  messages: readonly ModelMessage[],
-  limits: { maxBytesPerPart: number; maxBytesTotal: number },
-): ModelMessage[] {
-  return boundToolResultMediaForModelView(messages, limits);
 }
 
 function getSubagentOkFromResult(event: { readonly result: unknown }): boolean | null {
@@ -972,13 +556,6 @@ function buildCustomCommandToolCallId(requestId: string, name: string): string {
   return buildSyntheticToolCallId({
     prefix: CUSTOM_COMMAND_TOOL_NAME,
     seed: `${requestId}:${name}`,
-  });
-}
-
-function buildAutoInjectedThreadSearchToolCallId(requestId: string): string {
-  return buildSyntheticToolCallId({
-    prefix: "conversation_thread_search",
-    seed: `${requestId}:auto-inject`,
   });
 }
 
@@ -1056,639 +633,6 @@ export function customCommandExecutionErrorText(error: CustomCommandExecutionErr
     case "CustomCommandExecuteRejectedError":
     case "CustomCommandResultInvalidError":
       return error.message;
-  }
-}
-
-const AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME = "conversation_thread_search";
-export const AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH = 320;
-const AUTO_INJECTED_THREAD_BRIEF_FULL_THRESHOLD = Math.floor(
-  AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH * 1.1,
-);
-
-export type AutoInjectedThreadSearchPayload = {
-  entries: Array<{
-    surface: "discord" | "native";
-    threadId: string;
-    /** The `conversation.thread.read` offset where the recalled subject starts. */
-    offset?: number;
-    title: string;
-    brief?: string;
-    timeRange?: string;
-  }>;
-};
-
-type AutoInjectedThreadSearchEntry = AutoInjectedThreadSearchPayload["entries"][number] & {
-  entryId?: string;
-};
-
-type AutoInjectedThreadRankingDiagnostic = {
-  threadId: string;
-  rawScore: number;
-  confidence: number;
-  searchIndex: number;
-  rank: number;
-  breakdown: RankedAutoInjectThread["breakdown"];
-};
-
-type AutoInjectedThreadSearchAppendedEvent = {
-  toolCallId: string;
-  mode: "hybrid" | "semantic" | "lexical";
-  limit: number;
-  minScore: number;
-  searches: readonly (readonly string[])[];
-  participantFilterUserCount: number;
-  entries: readonly AutoInjectedThreadSearchEntry[];
-  ranking: readonly (AutoInjectedThreadRankingDiagnostic & {
-    selection: RankedAutoInjectThread["selection"];
-  })[];
-  highestRejectedByConfidence: AutoInjectedThreadRankingDiagnostic | null;
-  expansionMinConfidence: number;
-  corpusDocumentCount: number;
-};
-
-type DecisionAutoInjectedThreadSearchEvent = {
-  mode: "off" | "shadow" | "enforce";
-  outcome: "search" | "skip" | "failed" | "length-skip";
-  model?: string;
-  probabilities?: Pick<DecisionAutoInjectAnswers, "mayHelp" | "clearlyUnneeded">;
-  elapsedMs: number;
-};
-
-type AutoInjectToolStatusUpdate = {
-  toolCallId: string;
-  status: "start" | "end";
-  display: string;
-  ok?: boolean;
-  error?: string;
-  /** Shown only in native activity details; Discord tool status keeps the label alone. */
-  output?: string;
-};
-
-export function buildAutoInjectedThreadSearchMessages(params: {
-  toolCallId: string;
-  entries: readonly AutoInjectedThreadSearchEntry[];
-  note?: string;
-}): ModelMessage[] {
-  const payload: AutoInjectedThreadSearchPayload = {
-    entries: params.entries.map((entry) => ({
-      threadId: entry.threadId,
-      surface: entry.surface,
-      ...(entry.offset ? { offset: entry.offset } : {}),
-      title: entry.title,
-      ...(entry.brief ? { brief: entry.brief } : {}),
-      ...(entry.timeRange ? { timeRange: entry.timeRange } : {}),
-    })),
-  };
-
-  return [
-    buildGeneratedMessage({
-      kind: "conversation_recall",
-      id: params.toolCallId,
-      // Entry ids, so another subject of the same thread can still be recalled later.
-      threadIds: params.entries.map((entry) => entry.entryId ?? entry.threadId),
-      content: JSON.stringify({
-        note: params.note ?? "auto-injected after long user input",
-        ...payload,
-      }),
-    }),
-  ];
-}
-
-function formatAutoInjectedThreadSearchOutput(
-  entries: readonly AutoInjectedThreadSearchEntry[],
-): string {
-  if (entries.length === 0) return "No related threads injected.";
-  const lines = entries.map((entry) =>
-    entry.timeRange ? `- ${entry.title} (${entry.timeRange})` : `- ${entry.title}`,
-  );
-  const noun = entries.length === 1 ? "thread" : "threads";
-  return [`Injected ${entries.length} related ${noun}:`, ...lines].join("\n");
-}
-
-function formatAutoInjectedThreadBrief(brief: string): string | undefined {
-  const trimmed = brief.trim();
-  if (trimmed.length === 0) return undefined;
-  if (trimmed.length <= AUTO_INJECTED_THREAD_BRIEF_FULL_THRESHOLD) return trimmed;
-
-  return `${trimmed.slice(0, AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH).trimEnd()} ...(${trimmed.length - AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH} remaining)`;
-}
-
-function formatAutoInjectedThreadSearchResult(
-  result: ConversationThreadSearchResult["results"][number],
-): AutoInjectedThreadSearchEntry {
-  const timeRange = result.timeRange ? formatInjectedThreadTimeRange(result.timeRange) : undefined;
-  const brief = formatAutoInjectedThreadBrief(result.brief);
-  return {
-    threadId: result.threadId,
-    entryId: result.entryId ?? result.threadId,
-    surface: result.surface,
-    ...(result.offset ? { offset: result.offset } : {}),
-    title: result.title,
-    ...(brief ? { brief } : {}),
-    ...(timeRange ? { timeRange } : {}),
-  };
-}
-
-/** A thread's first entry id is its thread id, which is what older transcripts recorded. */
-function collectAutoInjectedEntryIds(messages: readonly ModelMessage[]): Set<string> {
-  const entryIds = new Set<string>();
-
-  for (const message of messages) {
-    const generated = generatedMessageMetadata(message);
-    if (generated?.kind === "conversation_recall" && Array.isArray(generated.threadIds)) {
-      for (const id of generated.threadIds) {
-        if (typeof id === "string") entryIds.add(id);
-      }
-      continue;
-    }
-    const content: unknown = message.content;
-    if (message.role !== "tool" || !Array.isArray(content)) continue;
-
-    for (const part of content) {
-      if (!isRecord(part)) continue;
-      if (part.type !== "tool-result" || part.toolName !== AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME) {
-        continue;
-      }
-
-      const output = part.output;
-      const payload = isRecord(output) && output.type === "json" ? output.value : output;
-      const entries = isRecord(payload) ? payload.entries : undefined;
-      if (!Array.isArray(entries)) continue;
-
-      for (const entry of entries) {
-        if (!isRecord(entry)) continue;
-        const threadId = entry.threadId;
-        if (typeof threadId === "string" && threadId.length > 0) entryIds.add(threadId);
-      }
-    }
-  }
-
-  return entryIds;
-}
-
-function padLocalDatePart(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function formatLocalThreadTime(value: string): string | null {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return null;
-
-  const year = date.getFullYear();
-  const month = padLocalDatePart(date.getMonth() + 1);
-  const day = padLocalDatePart(date.getDate());
-  const hour = padLocalDatePart(date.getHours());
-  const minute = padLocalDatePart(date.getMinutes());
-  return `${year}/${month}/${day} ${hour}:${minute}`;
-}
-
-function formatInjectedThreadTimeRange(input: { start: string; end: string }): string | undefined {
-  const start = formatLocalThreadTime(input.start);
-  const end = formatLocalThreadTime(input.end);
-  if (!start || !end) return undefined;
-  return `${start} - ${end}`;
-}
-
-async function publishAutoInjectToolStatusBestEffort(
-  params: {
-    publishToolStatus: (update: AutoInjectToolStatusUpdate) => Promise<void>;
-    onError: (message: string, error: BusAgentRunnerErrorProjection) => void;
-  },
-  update: AutoInjectToolStatusUpdate,
-): Promise<void> {
-  const attempt = await Result.tryPromise({
-    try: async () => {
-      await params.publishToolStatus(update);
-    },
-    catch: captureError,
-  });
-
-  if (attempt.isErr()) {
-    params.onError(
-      "auto-injected thread search status publish failed; continuing",
-      projectBusAgentRunnerError(attempt.error.cause),
-    );
-  }
-}
-
-function notifyAutoInjectObserverBestEffort(
-  onError: (message: string, error: BusAgentRunnerErrorProjection) => void,
-  notify: () => void,
-): void {
-  const attempt = Result.try({ try: notify, catch: captureError });
-
-  if (attempt.isErr()) {
-    onError(
-      "auto-injected thread search append log failed; continuing",
-      projectBusAgentRunnerError(attempt.error.cause),
-    );
-  }
-}
-
-type AutoInjectedThreadSearchParams = {
-  surface?: "discord" | "native";
-  cfg: CoreConfig;
-  conversationThreads?: ConversationThreadToolService;
-  requestId: string;
-  /** Session of the request; for native requests this is also the current conversation thread id. */
-  sessionId?: string;
-  raw?: AgentRunnerRaw;
-  previousMessages?: readonly ModelMessage[];
-  userMessages: readonly ModelMessage[];
-  publishToolStatus: (update: AutoInjectToolStatusUpdate) => Promise<void>;
-  onInjected?: (event: AutoInjectedThreadSearchAppendedEvent) => void;
-  onDecisionEvaluated?: (event: DecisionAutoInjectedThreadSearchEvent) => void;
-  onError: (message: string, error: BusAgentRunnerErrorProjection) => void;
-  autoInjectUsage?: ConversationThreadAutoInjectUsageAccumulator;
-  loadDecisionUserMessages?: () => Promise<readonly ModelMessage[]>;
-  /** Overrides the configured decision evaluator; used by tests. */
-  createDecisionEvaluator?: (
-    model: string,
-  ) => ResultType<DecisionAutoInjectEvaluator, DecisionAutoInjectUnavailable>;
-};
-
-type DecisionEvaluatorResolution =
-  | { kind: "ready"; model: string; evaluator: DecisionAutoInjectEvaluator }
-  | { kind: "unavailable"; message: string };
-
-type DecisionEvaluationOutcome =
-  | { kind: "answered"; answers: DecisionAutoInjectAnswers }
-  | { kind: "failed"; message: string };
-
-function createEnvDecisionAutoInjectEvaluator(
-  model: string,
-): ResultType<DecisionAutoInjectEvaluator, DecisionAutoInjectUnavailable> {
-  const settings = model.startsWith("openai/") ? env.providers.openai : env.providers.typesafe;
-  return createDecisionAutoInjectEvaluator({
-    apiKey: settings.apiKey,
-    baseUrl: settings.baseUrl,
-    model,
-  });
-}
-
-function resolveDecisionAutoInjectEvaluator(
-  params: AutoInjectedThreadSearchParams,
-  hasImages: boolean,
-): DecisionEvaluatorResolution {
-  const model = selectDecisionAutoInjectModel(
-    params.cfg.conversation.thread.autoInject.gate?.model ?? [],
-    hasImages,
-  );
-  const create = params.createDecisionEvaluator ?? createEnvDecisionAutoInjectEvaluator;
-  return create(model).match<DecisionEvaluatorResolution>({
-    ok: (evaluator) => ({ kind: "ready", model, evaluator }),
-    err: (error) => ({ kind: "unavailable", message: error.message }),
-  });
-}
-
-async function prepareDecisionAutoInjectImages(
-  params: AutoInjectedThreadSearchParams,
-): Promise<ResultType<string[], DecisionAutoInjectEvaluationFailed>> {
-  const latest = latestUserInput(params.userMessages);
-  const supportsImages = (params.cfg.conversation.thread.autoInject.gate?.model ?? []).some(
-    (model) => model.startsWith("openai/"),
-  );
-  if (!supportsImages || (!latest.hasAttachment && !params.loadDecisionUserMessages))
-    return Result.ok([]);
-  const prepared = await Result.tryPromise({
-    try: async () =>
-      latestUserInput(
-        await (params.loadDecisionUserMessages?.() ?? Promise.resolve(params.userMessages)),
-      ).content,
-    catch: (cause) =>
-      new DecisionAutoInjectEvaluationFailed({
-        message: opaqueErrorMessage(cause, "Decision image materialization failed"),
-      }),
-  });
-  return Result.gen(async function* () {
-    const content = yield* prepared;
-    const images = yield* Result.await(
-      collectDecisionAutoInjectImages({
-        content,
-        maxBytesPerPart: params.cfg.tools.media.maxInlineBytesPerPart,
-        maxBytesTotal: params.cfg.tools.media.maxInlineBytesTotal,
-      }),
-    );
-    return Result.ok(images);
-  });
-}
-
-async function shouldSkipAutoInjectByDecision(
-  params: AutoInjectedThreadSearchParams,
-  autoInjectUsage: ConversationThreadAutoInjectUsageAccumulator,
-): Promise<boolean> {
-  const gate = params.cfg.conversation.thread.autoInject.gate;
-  if (!gate || gate.mode === "off") return false;
-  const startedAt = performance.now();
-  const notify = (event: Omit<DecisionAutoInjectedThreadSearchEvent, "mode" | "elapsedMs">) =>
-    notifyAutoInjectObserverBestEffort(params.onError, () =>
-      params.onDecisionEvaluated?.({
-        ...event,
-        mode: gate.mode,
-        elapsedMs: performance.now() - startedAt,
-      }),
-    );
-  const prepared = (await prepareDecisionAutoInjectImages(params)).match<
-    { kind: "prepared"; images: string[] } | { kind: "failed"; message: string }
-  >({
-    ok: (images) => ({ kind: "prepared", images }),
-    err: (error) => ({ kind: "failed", message: error.message }),
-  });
-  if (prepared.kind === "failed") {
-    notify({ outcome: "failed" });
-    params.onError(
-      "Decision image preparation failed; continuing to planner",
-      projectBusAgentRunnerError(new Error(prepared.message)),
-    );
-    return false;
-  }
-  const latest = latestUserInput(params.userMessages);
-  if (latest.hasAttachment && !latest.authoredText.trim() && prepared.images.length === 0) {
-    notify({ outcome: "search" });
-    return false;
-  }
-  const resolution = resolveDecisionAutoInjectEvaluator(params, prepared.images.length > 0);
-  if (resolution.kind === "unavailable") {
-    notify({ outcome: "failed" });
-    params.onError(
-      "Decision gate unavailable; continuing to planner",
-      projectBusAgentRunnerError(new Error(resolution.message)),
-    );
-    return false;
-  }
-  const evaluator = resolution.evaluator;
-  const evaluated = await evaluator.evaluate({
-    message: decisionAutoInjectContext(
-      latestUserInput(params.userMessages).authoredText,
-      params.previousMessages ?? [],
-    ),
-    images: evaluator.supportsImages ? prepared.images : undefined,
-  });
-  autoInjectUsage.recordTiming("decision", performance.now() - startedAt);
-  const outcome = evaluated.match<DecisionEvaluationOutcome>({
-    ok: (answers) => ({ kind: "answered", answers }),
-    err: (error) => ({ kind: "failed", message: error.message }),
-  });
-  if (outcome.kind === "failed") {
-    notify({ outcome: "failed", model: evaluator.model });
-    params.onError(
-      "Decision gate evaluation failed; continuing to planner",
-      projectBusAgentRunnerError(new Error(outcome.message)),
-    );
-    return false;
-  }
-  const { answers } = outcome;
-  autoInjectUsage.recordDecisionUsage({ model: evaluator.model, ...answers.usage });
-  const decision = decideDecisionAutoInject(answers, gate.skipMinProbability);
-  notify({
-    outcome: decision,
-    model: evaluator.model,
-    probabilities: { mayHelp: answers.mayHelp, clearlyUnneeded: answers.clearlyUnneeded },
-  });
-  return gate.mode === "enforce" && decision === "skip";
-}
-
-export async function maybeBuildAutoInjectedThreadSearchMessages(
-  params: AutoInjectedThreadSearchParams,
-): Promise<ModelMessage[]> {
-  const autoInject = params.cfg.conversation.thread.autoInject;
-  if (!autoInject.enabled) return [];
-  if (!params.conversationThreads) return [];
-  const conversationThreads = params.conversationThreads;
-  const autoInjectUsage =
-    params.autoInjectUsage ??
-    createConversationThreadAutoInjectUsageAccumulator({ requestId: params.requestId });
-  const latestInput = latestUserInput(params.userMessages);
-  const text = autoInjectPlannerContext(latestInput.text, params.previousMessages ?? []);
-  const previouslyInjectedEntryIds = collectAutoInjectedEntryIds(params.previousMessages ?? []);
-  const minTextUnits =
-    previouslyInjectedEntryIds.size > 0 ? autoInject.followUpMinTextUnits : autoInject.minTextUnits;
-  if (
-    !latestInput.hasAttachment &&
-    !shouldRunAutoInjectedThreadSearch({
-      text: latestInput.authoredText,
-      minTextUnits,
-    })
-  ) {
-    notifyAutoInjectObserverBestEffort(params.onError, () =>
-      params.onDecisionEvaluated?.({
-        mode: autoInject.gate?.mode ?? "off",
-        outcome: "length-skip",
-        elapsedMs: 0,
-      }),
-    );
-    autoInjectUsage.finish({ status: "abstained" });
-    return [];
-  }
-  if (await shouldSkipAutoInjectByDecision(params, autoInjectUsage)) {
-    autoInjectUsage.finish({ status: "abstained" });
-    return [];
-  }
-
-  const participantIds =
-    autoInject.filterCurrentParticipants && params.surface !== "native"
-      ? getParticipantUserIdsFromRaw(params.raw)
-      : [];
-
-  let usageStatus: "completed" | "abstained" | "partial" | "failed" = "failed";
-  let usageSearchCount = 0;
-  let usageQueryCount = 0;
-
-  const toolCallId = buildAutoInjectedThreadSearchToolCallId(params.requestId);
-  const display = `${AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME} auto-injected metadata`;
-  const publishToolStatusBestEffort = async (update: AutoInjectToolStatusUpdate) =>
-    await publishAutoInjectToolStatusBestEffort(params, update);
-
-  await publishToolStatusBestEffort({ toolCallId, status: "start", display });
-
-  {
-    const attempt = await Result.tryPromise({
-      try: async () => {
-        const planningStartedAt = performance.now();
-        const plan = await conversationThreads.planAutoInjectSearch({
-          text,
-          content:
-            typeof latestInput.content === "string"
-              ? text
-              : [
-                  ...(text ? [{ type: "text" as const, text }] : []),
-                  ...latestInput.content.filter((part) => part.type !== "text"),
-                ],
-          autoInjectUsage,
-        });
-        autoInjectUsage.recordTiming("planning", performance.now() - planningStartedAt);
-        usageSearchCount = plan.searches.length;
-        usageQueryCount = plan.searches.reduce(
-          (sum, searchPlan) => sum + searchPlan.queries.length,
-          0,
-        );
-        if (plan.searches.length === 0) {
-          usageStatus = "abstained";
-          await publishToolStatusBestEffort({
-            toolCallId,
-            status: "end",
-            display,
-            ok: true,
-            output: formatAutoInjectedThreadSearchOutput([]),
-          });
-          return [];
-        }
-        const searchRecallLimit = Math.min(50, Math.max(autoInject.limit * 5, 10));
-        const searchStartedAt = performance.now();
-        const settledSearches = await Promise.allSettled(
-          plan.searches.map((searchPlan) =>
-            conversationThreads.search({
-              query: searchPlan.queries,
-              queryAboutness: searchPlan.aboutness,
-              limit: searchRecallLimit,
-              minScore: autoInject.minScore,
-              mode: autoInject.mode,
-              verbose: true,
-              autoInjectUsage,
-              ...(participantIds.length > 0
-                ? { participantIdsAny: participantIds, participantSurface: params.surface }
-                : {}),
-            }),
-          ),
-        );
-        autoInjectUsage.recordTiming("search", performance.now() - searchStartedAt);
-        let fulfilledSearches = 0;
-        const successfulSearches: Array<{
-          searchIndex: number;
-          result: ConversationThreadSearchResult;
-        }> = [];
-        settledSearches.forEach((result, searchIndex) => {
-          if (result.status === "fulfilled") {
-            fulfilledSearches += 1;
-            successfulSearches.push({ searchIndex, result: result.value });
-            return;
-          }
-
-          params.onError(
-            "auto-injected thread search failed; continuing with partial metadata",
-            projectBusAgentRunnerError(result.reason, `Search ${searchIndex} failed`),
-          );
-        });
-        if (fulfilledSearches === 0) {
-          const failure = projectBusAgentRunnerError(
-            new Error("all auto-injected thread searches failed"),
-          );
-          await publishToolStatusBestEffort({
-            toolCallId,
-            status: "end",
-            display,
-            ok: false,
-            error: failure.message,
-          });
-          params.onError(
-            "auto-injected thread search failed; continuing without metadata",
-            failure,
-          );
-          return [];
-        }
-        usageStatus = fulfilledSearches === plan.searches.length ? "completed" : "partial";
-        const corpusStartedAt = performance.now();
-        const corpusDocuments =
-          (await conversationThreads.getAutoInjectRankingCorpusDocuments?.()) ?? [];
-        autoInjectUsage.recordTiming("corpus", performance.now() - corpusStartedAt);
-        const rankingStartedAt = performance.now();
-        const rankingResult = rankAutoInjectedThreadSearchResults({
-          plan,
-          searches: successfulSearches,
-          corpusDocuments,
-          excludedEntryIds: previouslyInjectedEntryIds,
-          limit: autoInject.limit,
-          expansionMinConfidence: autoInject.expansionMinConfidence,
-        });
-        autoInjectUsage.recordTiming("ranking", performance.now() - rankingStartedAt);
-        const rankedEntries = rankingResult.selected;
-        const entries = rankedEntries.map((candidate) =>
-          formatAutoInjectedThreadSearchResult(candidate.result),
-        );
-
-        await publishToolStatusBestEffort({
-          toolCallId,
-          status: "end",
-          display,
-          ok: true,
-          output: formatAutoInjectedThreadSearchOutput(entries),
-        });
-
-        if (entries.length === 0) return [];
-        {
-          const attempt = Result.try({
-            try: () => {
-              params.onInjected?.({
-                toolCallId,
-                mode: autoInject.mode,
-                limit: autoInject.limit,
-                minScore: autoInject.minScore,
-                searches: plan.searches.map((searchPlan) => searchPlan.queries),
-                participantFilterUserCount: participantIds.length,
-                entries,
-                ranking: rankedEntries.map((entry) => ({
-                  threadId: entry.result.threadId,
-                  rawScore: entry.rawScore,
-                  confidence: entry.confidence,
-                  selection: entry.selection,
-                  searchIndex: entry.searchIndex,
-                  rank: entry.rank,
-                  breakdown: entry.breakdown,
-                })),
-                highestRejectedByConfidence: rankingResult.highestRejectedByConfidence
-                  ? {
-                      threadId: rankingResult.highestRejectedByConfidence.result.threadId,
-                      rawScore: rankingResult.highestRejectedByConfidence.rawScore,
-                      confidence: rankingResult.highestRejectedByConfidence.confidence,
-                      searchIndex: rankingResult.highestRejectedByConfidence.searchIndex,
-                      rank: rankingResult.highestRejectedByConfidence.rank,
-                      breakdown: rankingResult.highestRejectedByConfidence.breakdown,
-                    }
-                  : null,
-                expansionMinConfidence: autoInject.expansionMinConfidence,
-                corpusDocumentCount: corpusDocuments.length,
-              });
-            },
-            catch: captureError,
-          });
-
-          if (attempt.isErr()) {
-            const error = attempt.error.cause;
-            params.onError(
-              "auto-injected thread search append log failed; continuing",
-              projectBusAgentRunnerError(error),
-            );
-          }
-        }
-        return buildAutoInjectedThreadSearchMessages({ toolCallId, entries });
-      },
-      catch: captureError,
-    });
-
-    if (attempt.isErr()) {
-      const error = attempt.error.cause;
-      const projected = projectBusAgentRunnerError(error);
-      await publishToolStatusBestEffort({
-        toolCallId,
-        status: "end",
-        display,
-        ok: false,
-        error: projected.message,
-      });
-      params.onError("auto-injected thread search failed; continuing without metadata", projected);
-      autoInjectUsage.finish({
-        status: "failed",
-        searchCount: usageSearchCount,
-        queryCount: usageQueryCount,
-      });
-      return [];
-    }
-    autoInjectUsage.finish({
-      status: usageStatus,
-      searchCount: usageSearchCount,
-      queryCount: usageQueryCount,
-    });
-    return attempt.value;
   }
 }
 
@@ -1933,66 +877,6 @@ export function persistHeartbeatSurfaceHandoffs(params: {
   }
 }
 
-type Enqueued = {
-  nativeHistoryProviderState?: HistoryProviderState;
-  queueEntryId: string;
-  requestDeliveryId?: string;
-  requestId: string;
-  sessionId: string;
-  requestClient: AdapterPlatform;
-  queue: RequestQueueMode;
-  runPolicy: RequestRunPolicy;
-  origin?: RequestOrigin;
-  messages: ModelMessage[];
-  storedMessages: StoredMessageV1[];
-  corePrimaryLineage?: CorePrimaryLineageV2;
-  modelOverride?: string;
-  raw?: AgentRunnerRaw;
-  authenticatedOrigin?: AuthenticatedSurfaceOrigin;
-  currentTurnUserId?: string;
-  currentTurnMessageRef?: MsgRef;
-  verifiedIngress?: boolean;
-  identityOwner?: RequestMessageCacheOwner;
-  restoredSafetyMode?: SessionSafetyMode;
-  nativeResolvedModelRequest?: DurableResolvedModelRequest;
-  recovery?: {
-    checkpointMessages: ModelMessage[];
-    partialText: string;
-    nativeOutputFrontier?: NativeOutputFrontier;
-  };
-  storedRecoveryCheckpoint?: StoredMessageV1[];
-  recoveryMcpImages?: McpImageCheckpointReference[];
-  previousRecoveryCheckpoint?: AgentRunCheckpointV1;
-  loadedCatalogIds?: readonly string[];
-  questionResultIds?: readonly string[];
-  acceptedCorePrimaryLineage?: CorePrimaryLineageV2;
-  acceptedCurrentTurnUserId?: string;
-  retainedRequestDeliveries?: readonly AgentRunnerRetainedRequestDelivery[];
-  journalHandle?: AgentRunJournalHandle;
-};
-
-type QueueCancellationGroup = {
-  readonly requestId: string;
-  readonly requestClient: AdapterPlatform;
-  readonly entries: readonly Enqueued[];
-};
-
-type QueueLifecycleAttempt = {
-  readonly eventId: string;
-  readonly controlRequestId: string;
-  readonly controlRequestClient: AdapterPlatform;
-  readonly sessionId: string;
-  readonly kind: "queued-cancellation" | "buffered-absorption";
-  readonly detail: string;
-  pendingGroups: QueueCancellationGroup[];
-  controlApplied: boolean;
-};
-
-export type AgentRunnerRetainedRequestDelivery = {
-  readonly requestDeliveryId: string;
-  readonly outcome: RequestDeliveryTerminalOutcome;
-};
-
 export type NativeRunnerRequest = {
   readonly requestId: string;
   readonly requestDeliveryId: string;
@@ -2027,342 +911,13 @@ export type BusAgentRunnerRequestDelivery = Pick<
   "handleDelivery" | "replaceAcceptedWork" | "terminalize"
 >;
 
-function createFreshOnlyLineage(reason: string, currentCanonicalStart = 0): CorePrimaryLineageV2 {
-  const created = createCorePrimaryLineageFreshOnlyV2(reason, currentCanonicalStart);
-  const selectLineage = created.match<() => CorePrimaryLineageV2>({
-    ok: (lineage) => () => lineage,
-    err: () => () => ({
-      state: "fresh-only",
-      lineageVersion: 2,
-      currentCanonicalStart: 0,
-      reason: "lineage-fallback-construction-failed",
-    }),
-  });
-  return selectLineage();
-}
-
-export function validateCorePrimaryLineageAtRunnerIntake(input: {
-  requestClient: AdapterPlatform;
-  sessionId?: string;
-  runProfile: AgentRunProfile;
-  messages: readonly ModelMessage[];
-  corePrimaryLineage: unknown;
-  transcriptStore?: TranscriptStore;
-}): CorePrimaryLineageV2 | undefined {
-  if (input.requestClient !== "discord" || input.runProfile !== "primary") return undefined;
-  const fallbackCurrentCanonicalStart = Math.max(
-    0,
-    input.messages.findLastIndex(
-      (message) => message.role === "user" && !isGeneratedMessage(message),
-    ),
-  );
-  if (input.corePrimaryLineage === undefined) {
-    return createFreshOnlyLineage("missing-manifest", fallbackCurrentCanonicalStart);
-  }
-  const decoded = decodeCorePrimaryLineageV2(input.corePrimaryLineage, input.messages);
-  const continueDecoded = decoded.match<() => CorePrimaryLineageV2>({
-    err: () => () =>
-      createFreshOnlyLineage("malformed-or-unaligned-manifest", fallbackCurrentCanonicalStart),
-    ok: (lineage) => () => {
-      if (lineage.state !== "complete") return lineage;
-      if (!input.sessionId) {
-        return createFreshOnlyLineage("missing-lineage-scope", lineage.currentCanonicalStart);
-      }
-      if (!input.transcriptStore?.validateCorePrimaryLineageReferences) {
-        return createFreshOnlyLineage("lineage-store-unavailable", lineage.currentCanonicalStart);
-      }
-      const invalidReason = input.transcriptStore.validateCorePrimaryLineageReferences({
-        manifest: lineage,
-        requestClient: input.requestClient,
-        sessionId: input.sessionId,
-        surfaceId: `discord:${input.sessionId}`,
-      });
-      const continueValidation = invalidReason.match<() => CorePrimaryLineageV2>({
-        err: () => () =>
-          createFreshOnlyLineage("lineage-store-unavailable", lineage.currentCanonicalStart),
-        ok: (storedInvalidReason) => () =>
-          storedInvalidReason
-            ? createFreshOnlyLineage(storedInvalidReason, lineage.currentCanonicalStart)
-            : lineage,
-      });
-      return continueValidation();
-    },
-  });
-  return continueDecoded();
-}
-
-export function degradeCorePrimaryLineageForMutation(
-  reason: string,
-  currentCanonicalStart = 0,
-): CorePrimaryLineageV2 {
-  return createFreshOnlyLineage(reason, currentCanonicalStart);
-}
-
-export function corePrimaryLineageHasCompactionCheckpoint(
-  lineage: CorePrimaryLineageV2 | undefined,
-): boolean {
-  return (
-    lineage?.state === "complete" &&
-    lineage.segments.some((segment) => segment.atoms.some((atom) => atom.kind === "checkpoint"))
-  );
-}
-
-const AUTO_INJECTED_THREAD_SEARCH_LINEAGE_SOURCE = "conversation-thread-auto-inject";
-
-export function appendAutoInjectedThreadSearchLineage(input: {
-  lineage: unknown;
-  canonicalMessages: readonly ModelMessage[];
-  injectedMessages: readonly ModelMessage[];
-}): CorePrimaryLineageV2 {
-  const parsedShape = corePrimaryLineageV2Schema.safeParse(input.lineage);
-  const fallbackCurrentCanonicalStart = parsedShape.success
-    ? parsedShape.data.currentCanonicalStart
-    : Math.max(
-        0,
-        input.canonicalMessages.findLastIndex(
-          (message) => message.role === "user" && !isGeneratedMessage(message),
-        ),
-      );
-  const failClosed = () =>
-    degradeCorePrimaryLineageForMutation(
-      "synthetic-thread-search-insertion",
-      fallbackCurrentCanonicalStart,
-    );
-
-  const decoded = decodeCorePrimaryLineageV2(input.lineage, input.canonicalMessages);
-  const continueDecoded = decoded.match<() => CorePrimaryLineageV2>({
-    err: () => failClosed,
-    ok: (lineage) => () => {
-      if (lineage.state !== "complete" || input.injectedMessages.length === 0) {
-        return failClosed();
-      }
-      const previous = lineage.segments.at(-1);
-      if (!previous || previous.canonicalEnd !== input.canonicalMessages.length) {
-        return failClosed();
-      }
-
-      const preparedInjected = projectStoredMessagesV1(input.injectedMessages).andThen((messages) =>
-        hashCanonicalStoredMessagesV2(messages).map((digest) => ({
-          messages,
-          messageDigest: digest.hash,
-        })),
-      );
-      const prepared = preparedInjected.match({
-        ok: (value) => value,
-        err: () => null,
-      });
-      if (!prepared) return failClosed();
-      const atom = {
-        kind: "synthetic" as const,
-        source: AUTO_INJECTED_THREAD_SEARCH_LINEAGE_SOURCE,
-        messageDigest: prepared.messageDigest,
-      };
-      const cumulativeAtomCount = previous.cumulativeAtomCount + 1;
-      const extended = extendCoreLineagePrefixDigestV2(
-        previous.cumulativePrefixDigest,
-        cumulativeAtomCount,
-        atom,
-      );
-      const continueExtended = extended.match<() => CorePrimaryLineageV2>({
-        err: () => failClosed,
-        ok: (cumulativePrefixDigest) => () => {
-          const candidate = {
-            ...lineage,
-            segments: [
-              ...lineage.segments,
-              {
-                atoms: [atom],
-                canonicalMessages: prepared.messages,
-                canonicalStart: previous.canonicalEnd,
-                canonicalEnd: previous.canonicalEnd + input.injectedMessages.length,
-                cumulativeAtomCount,
-                cumulativePrefixDigest,
-              },
-            ],
-          };
-          const parsed = decodeCorePrimaryLineageV2(candidate, [
-            ...input.canonicalMessages,
-            ...prepared.messages,
-          ]);
-          const continueParsed = parsed.match<() => CorePrimaryLineageV2>({
-            ok: (value) => () => (value.state === "complete" ? value : failClosed()),
-            err: () => failClosed,
-          });
-          return continueParsed();
-        },
-      });
-      return continueExtended();
-    },
-  });
-  return continueDecoded();
-}
-
-export function mapCorePrimaryCompactionCurrentCanonicalStart(input: {
-  previousCurrentCanonicalStart: number;
-  replacement: {
-    originalSuffixStart: number;
-    replacementSuffixStart: number;
-    replacementMessageCount: number;
-  };
-}): number {
-  const retainedOffset =
-    input.previousCurrentCanonicalStart - input.replacement.originalSuffixStart;
-  if (retainedOffset < 0) return 0;
-  return Math.min(
-    input.replacement.replacementMessageCount,
-    input.replacement.replacementSuffixStart + retainedOffset,
-  );
-}
-
-function persistedCompleteLineage(lineage: CorePrimaryLineageV2 | undefined): {
-  corePrimaryLineage?: CoreLineageManifestV2;
-} {
-  return lineage?.state === "complete" ? { corePrimaryLineage: lineage } : {};
-}
-
-function requireStoredMessageHash(messages: readonly StoredMessageV1[]): string {
-  return hashCanonicalStoredMessagesV2(messages).match({
-    ok: (digest) => () => digest.hash,
-    err: (error) => () => signalBusAgentRunnerHostFailure(error),
-  })();
-}
-
-export function resolveCorePrimaryTranscriptProviderState(input: {
-  targetFamily: HistoryProviderState["lastFamily"];
-  lineage?: CorePrimaryLineageV2;
-  transcriptStore?: TranscriptStore;
-}): HistoryProviderState {
-  const lineage = input.lineage;
-  let containsCrossFamilyTurns = lineage?.state !== "complete";
-  if (lineage?.state === "complete") {
-    for (const segment of lineage.segments) {
-      const atom = segment.atoms[0];
-      if (!atom) {
-        containsCrossFamilyTurns = true;
-        continue;
-      }
-      if (atom.kind === "request") {
-        const transcript = input.transcriptStore?.getRequestTranscript?.({
-          requestId: atom.requestId,
-        });
-        const state = transcript?.match({
-          ok: (value) => value?.providerState,
-          err: () => undefined,
-        });
-        if (
-          !state ||
-          state.lastFamily !== atom.providerFamily ||
-          state.containsCrossFamilyTurns !== atom.containsCrossFamilyTurns ||
-          state.lastFamily !== input.targetFamily ||
-          state.containsCrossFamilyTurns
-        ) {
-          containsCrossFamilyTurns = true;
-        }
-        continue;
-      }
-      if (atom.kind === "checkpoint") {
-        const transcript = input.transcriptStore?.getRequestTranscript?.({
-          requestId: atom.requestId,
-        });
-        const state = transcript?.match({
-          ok: (value) => value?.providerState,
-          err: () => undefined,
-        });
-        if (!state || state.lastFamily !== input.targetFamily || state.containsCrossFamilyTurns) {
-          containsCrossFamilyTurns = true;
-        }
-        continue;
-      }
-      if (
-        segment.canonicalMessages.some(
-          (message) => message.role === "assistant" || message.role === "tool",
-        )
-      ) {
-        containsCrossFamilyTurns = true;
-      }
-    }
-  }
-  return {
-    lastFamily: input.targetFamily,
-    containsCrossFamilyTurns,
-  };
-}
-
-class ShutdownDrainingAbort extends Error {
-  constructor() {
-    super("server shutting down");
-    this.name = "ShutdownDrainingAbort";
-  }
-}
-
-class PreAgentRunCancelledError extends Error {
-  constructor() {
-    super("cancelled before agent start");
-    this.name = "PreAgentRunCancelledError";
-  }
-}
-
 const AGENT_TIMEOUT_ABORT_GRACE_MS = 5_000;
 const TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS = 4_000;
+const SHUTDOWN_ABORT_GRACE_MS = 500;
+const COMPACTED_TOOL_CALL_SESSION_LIMIT = 1_000;
 const LIVE_PARENT_RECONCILE_MS = 1_000;
 const SUBAGENT_RESULT_MATERIALIZATION_ATTEMPTS = 3;
 export const WORKFLOW_REQUEST_CLAIM_HEARTBEAT_MS = 10_000;
-
-function isCancelControlEntry(entry: Enqueued): boolean {
-  return parseRequestControlFromRaw(entry.raw).cancel;
-}
-
-function collectBufferedPromptEntriesForActiveRequest(input: {
-  queue: readonly Enqueued[];
-  activeRequestId: string;
-}): Enqueued[] {
-  const out: Enqueued[] = [];
-
-  for (const next of input.queue) {
-    if (next.queue !== "prompt") continue;
-    if (parseBufferedForActiveRequestIdFromRaw(next.raw) !== input.activeRequestId) continue;
-    out.push(next);
-  }
-
-  return out;
-}
-
-function removeQueuedEntriesByReference(queue: Enqueued[], removed: readonly Enqueued[]): number {
-  if (removed.length === 0) return 0;
-  const targets = new Set(removed);
-  const before = queue.length;
-
-  for (let i = 0; i < queue.length; ) {
-    if (!targets.has(queue[i]!)) {
-      i += 1;
-      continue;
-    }
-
-    queue.splice(i, 1);
-  }
-
-  return before - queue.length;
-}
-
-function groupQueueCancellationEntries(entries: readonly Enqueued[]): QueueCancellationGroup[] {
-  const groups = new Map<string, QueueCancellationGroup>();
-  for (const entry of entries) {
-    const existing = groups.get(entry.requestId);
-    if (existing) {
-      groups.set(entry.requestId, {
-        ...existing,
-        entries: [...existing.entries, entry],
-      });
-      continue;
-    }
-    groups.set(entry.requestId, {
-      requestId: entry.requestId,
-      requestClient: entry.requestClient,
-      entries: [entry],
-    });
-  }
-  return [...groups.values()];
-}
 
 export function buildPersistedHeartbeatMessages(finalText: string): StoredMessageV1[] {
   return [{ role: "assistant", content: finalText }];
@@ -2377,37 +932,6 @@ function toolCallIdsFromMessages(messages: readonly ModelMessage[]): Set<string>
     }
   }
   return ids;
-}
-
-export function shouldCancelIdleOnlyGlobalRequest(params: {
-  runPolicy: RequestRunPolicy;
-  sessionId: string;
-  states: ReadonlyMap<string, SessionQueue>;
-}): boolean {
-  if (params.runPolicy !== "idle_only_global") return false;
-
-  for (const [queuedSessionId, state] of params.states) {
-    if (!state.running) continue;
-    if (queuedSessionId === params.sessionId) return true;
-    if (!isHeartbeatSessionId(queuedSessionId)) return true;
-  }
-
-  return false;
-}
-
-export function shouldCancelRunPolicyRequest(params: {
-  runPolicy: RequestRunPolicy;
-  sessionId: string;
-  states: ReadonlyMap<string, SessionQueue>;
-}): boolean {
-  if (params.runPolicy === "idle_only_global") {
-    return shouldCancelIdleOnlyGlobalRequest(params);
-  }
-
-  if (params.runPolicy !== "idle_only_session") return false;
-
-  const state = params.states.get(params.sessionId);
-  return Boolean(state?.running);
 }
 
 export class AgentRunModelSelectionInvalid extends TaggedError("AgentRunModelSelectionInvalid")<{
@@ -2669,79 +1193,6 @@ export { applyCompleteLevel1Tools } from "../../agent/claude-composition";
 
 export { completeLevel1ToolMapping } from "../../agent/claude-composition";
 
-type SessionQueue = {
-  running: boolean;
-  agent: AiSdkPiAgent<ToolSet> | null;
-  queue: Enqueued[];
-  activeRequestId: string | null;
-  activeRun: {
-    mcpImages: McpImageCheckpointRegistry;
-    requestDeliveryId?: string;
-    requestId: string;
-    sessionId: string;
-    requestClient: AdapterPlatform;
-    runProfile: AgentRunProfile;
-    queue: RequestQueueMode;
-    runPolicy: RequestRunPolicy;
-    origin?: RequestOrigin;
-    messages: ModelMessage[];
-    storedMessages: StoredMessageV1[];
-    corePrimaryLineage?: CorePrimaryLineageV2;
-    toolAuthority: LineageToolAuthority;
-    questionContinuation: QuestionContinuation;
-    modelOverride?: string;
-    currentTurnUserId?: string;
-    currentTurnMessageRef?: MsgRef;
-    raw?: AgentRunnerRaw;
-    resolvedModelSpec: string | null;
-    resolvedReasoning: ModelReasoningEffort | undefined;
-    resolvedProviderFamily: HistoryProviderState["lastFamily"] | null;
-    partialText: string;
-    liveParent: ReturnType<WorkflowLiveParentBridge["registerParent"]> | undefined;
-    hasPendingJobEvents?: () => boolean;
-    stopAwaitJobs?: () => Promise<void>;
-    materializeStoredMessages:
-      | ((messages: readonly StoredMessageV1[]) => Promise<ModelMessage[]>)
-      | null;
-    rememberStoredMessages: (
-      providerMessages: readonly ModelMessage[],
-      storedMessages: readonly StoredMessageV1[],
-    ) => void;
-    notifyWaiters: () => void;
-    flushOutput: () => void;
-    setCurrentTurnContext: (userId: string | undefined, messageRef: MsgRef | undefined) => void;
-    cancel: () => void;
-    started: boolean;
-    startedAt: number;
-    activeTools: Map<string, { toolName: string; startedAt: number }>;
-    retainedRequestDeliveries: Map<string, RequestDeliveryTerminalOutcome>;
-    checkpointedRetainedRequestDeliveryIds: Set<string>;
-    retainedRequestDeliveryByInputId: Map<AgentInputQueueId, string>;
-    journalHandle: AgentRunJournalHandle | null;
-    nativeOutput: NativeOutputPublisher | undefined;
-    checkpointWriter: {
-      disabled: boolean;
-      pending: {
-        readonly messages: readonly ModelMessage[];
-        readonly canonicalInputIds: ReadonlySet<AgentInputQueueId>;
-        readonly identityProjection: StoredMessageIdentityProjectionV1;
-        readonly nativeOutputBarrier?: Promise<NativeOutputPublication>;
-        readonly nativeOutputFrontier?: NativeOutputFrontier;
-      } | null;
-      operation: Promise<void> | null;
-      closed: boolean;
-      abandoned: boolean;
-      retryInputIds: Set<AgentInputQueueId>;
-      inFlightInputIds: ReadonlySet<AgentInputQueueId> | null;
-      lastCommittedProviderMessages: readonly ModelMessage[];
-      lastCommittedStoredMessages: readonly StoredMessageV1[];
-      retainedPredecessorStoredMessages: readonly StoredMessageV1[];
-    };
-  } | null;
-  /** Track toolCallIds whose outputs are compacted in the model-facing view. */
-  compactedToolCallIds: Set<string>;
-};
-
 export function isActiveRuntimeModelCompatible(input: {
   readonly activeSpec: string;
   readonly activeReasoning: ModelReasoningEffort | undefined;
@@ -2995,8 +1446,13 @@ export async function startBusAgentRunner(params: {
   const workflowRunnerOwnerId = `agent-runner:${process.pid}:${crypto.randomUUID()}`;
 
   const bySession = new Map<string, SessionQueue>();
+  const compactedToolCallIdsBySession = new Map<string, Set<string>>();
+  const sessionControlOperations = new Map<string, Promise<void>>();
   const nativeBlockedSessions = new Set<string>();
-  const sessionDrainOperations = new Map<string, Promise<void>>();
+  // Only drains that dequeued work are tracked; a run's drain stays tracked until it settles.
+  const sessionDrainOperations = new Map<string, Set<Promise<void>>>();
+  const allSessionDrainOperations = (): Promise<void>[] =>
+    [...sessionDrainOperations.values()].flatMap((operations) => [...operations]);
   const cancelledByRequestId = new Set<string>();
   const reservedQueueEntries = new Set<Enqueued>();
   const queueLifecycleAttempts = new Map<string, QueueLifecycleAttempt>();
@@ -3005,12 +1461,10 @@ export async function startBusAgentRunner(params: {
   let draining = false;
   let terminalPanic: Panic | null = null;
   let terminalPanicReported = false;
-  let activeDrainOperation: Promise<void> | null = null;
   let terminalCleanupOperations: readonly BusAgentRunnerTerminalCleanupOperation[] = [];
   let terminalCleanupCompletion: Promise<void> | null = null;
   let runnerActivated = params.startPaused !== true;
   let runnerAdmissionStopped = false;
-  let activeAgentRunJournal = params.agentRunJournal ?? null;
   let resolveRunnerAdmission: ((outcome: "active" | "stopped") => void) | null = null;
   const runnerActivation = runnerActivated
     ? Promise.resolve("active" as const)
@@ -3036,557 +1490,23 @@ export async function startBusAgentRunner(params: {
     params.reportFatalPanic(panic);
   };
 
-  const logJournalReset = (input: {
-    readonly requestDeliveryId: string;
-    readonly requestId: string;
-    readonly sessionId: string;
-    readonly error: Error;
-  }): void => {
-    logger.warn("agent run journal reset", {
-      requestDeliveryId: input.requestDeliveryId,
-      requestId: input.requestId,
-      sessionId: input.sessionId,
-      errorTag: input.error.name,
-    });
-  };
-
-  const releaseRunCheckpointBlobs = (input: {
-    readonly requestDeliveryId: string;
-    readonly requestId: string;
-    readonly sessionId: string;
-  }): void => {
-    const releaseError = params.transcriptStore
-      ?.releaseAgentRunCheckpointBlobs?.({ requestDeliveryId: input.requestDeliveryId })
-      .match({ ok: () => null, err: (error) => error });
-    if (!releaseError) return;
-    logger.warn(
-      "agent run checkpoint blob reference cleanup deferred",
-      formatBridgeTaggedErrorForLog(releaseError, input),
-    );
-  };
-
-  const resetRunJournal = (input: {
-    readonly requestDeliveryId: string;
-    readonly requestId: string;
-    readonly sessionId: string;
-  }): boolean => {
-    const journal = activeAgentRunJournal;
-    if (!journal) return false;
-    const reset = journal.resetRun(input.requestDeliveryId);
-    const resetError = reset.match({ ok: () => null, err: (error) => error });
-    if (!resetError) {
-      releaseRunCheckpointBlobs(input);
-      return true;
-    }
-    logJournalReset({ ...input, error: resetError });
-    activeAgentRunJournal = null;
-    return false;
-  };
-
-  const openRunJournal = (input: {
-    readonly requestDeliveryId: string;
-    readonly requestId: string;
-    readonly sessionId: string;
-  }): AgentRunJournalHandle | null => {
-    const journal = activeAgentRunJournal;
-    if (!journal) return null;
-    const opened = journal.openRun(input);
-    const decision = opened.match<
-      | { readonly kind: "opened"; readonly handle: AgentRunJournalHandle }
-      | { readonly kind: "reset"; readonly error: Error }
-    >({
-      ok: (handle) => ({ kind: "opened", handle }),
-      err: (error) => ({ kind: "reset", error }),
-    });
-    if (decision.kind === "opened") return decision.handle;
-    logJournalReset({ ...input, error: decision.error });
-    if (!resetRunJournal(input)) return null;
-    return journal.openRun(input).match({
-      ok: (handle) => handle,
-      err: (error) => {
-        logJournalReset({ ...input, error });
-        activeAgentRunJournal = null;
-        return null;
-      },
-    });
-  };
-
-  const persistRunCheckpoint = async (
-    run: NonNullable<SessionQueue["activeRun"]>,
-    messages: readonly ModelMessage[],
-    canonicalInputIds: readonly AgentInputQueueId[],
-    identityProjection: StoredMessageIdentityProjectionV1,
-    nativeOutputFrontier?: NativeOutputFrontier,
-  ): Promise<"written" | "kept-previous"> => {
-    const journal = activeAgentRunJournal;
-    const requestDeliveryId = run.requestDeliveryId;
-    if (!journal || !requestDeliveryId || run.checkpointWriter.disabled) return "written";
-    const nextCheckpointedRetainedRequestDeliveryIds = new Set(
-      run.checkpointedRetainedRequestDeliveryIds,
-    );
-    for (const inputId of canonicalInputIds) {
-      const retainedRequestDeliveryId = run.retainedRequestDeliveryByInputId.get(inputId);
-      if (!retainedRequestDeliveryId) continue;
-      nextCheckpointedRetainedRequestDeliveryIds.add(retainedRequestDeliveryId);
-    }
-    const owner = {
-      requestDeliveryId,
-      requestId: run.requestId,
-      sessionId: run.sessionId,
-    };
-    const handle = run.journalHandle ?? openRunJournal(owner);
-    if (!handle) return activeAgentRunJournal ? "kept-previous" : "written";
-    const persisted = await persistBlobBackedAgentRunCheckpoint({
-      mcpImages: run.mcpImages,
-      nativeOutput: nativeOutputFrontier,
-      handle,
-      journal,
-      messages,
-      previousCheckpoint: {
-        providerMessages: run.checkpointWriter.lastCommittedProviderMessages,
-        storedMessages: run.checkpointWriter.lastCommittedStoredMessages,
-      },
-      retainedPredecessorMessages: run.checkpointWriter.retainedPredecessorStoredMessages,
-      identityProjection,
-      blobStore: params.blobStore,
-      transcriptStore: params.transcriptStore,
-      shouldAbandon: () => run.checkpointWriter.abandoned,
-      ...(run.corePrimaryLineage ? { corePrimaryLineage: run.corePrimaryLineage } : {}),
-      loadedCatalogIds: run.toolAuthority.snapshot(),
-      questionResultIds: run.questionContinuation.checkpoint(messages),
-      ...(run.currentTurnUserId ? { currentTurnUserId: run.currentTurnUserId } : {}),
-      retainedRequestDeliveries: [...run.retainedRequestDeliveries]
-        .filter(([retainedRequestDeliveryId]) =>
-          nextCheckpointedRetainedRequestDeliveryIds.has(retainedRequestDeliveryId),
-        )
-        .map(([retainedRequestDeliveryId, outcome]) => ({
-          requestDeliveryId: retainedRequestDeliveryId,
-          outcome,
-        })),
-    });
-    const decision = persisted.match<
-      | {
-          readonly kind: "written";
-          readonly handle: AgentRunJournalHandle;
-          readonly messages: readonly StoredMessageV1[];
-          readonly advanced: boolean;
-          readonly cleanupError?: Error;
-        }
-      | { readonly kind: "kept-previous"; readonly error: Error }
-    >({
-      ok: ({ handle: nextHandle, messages: storedMessages, advanced, cleanupError }) => ({
-        kind: "written",
-        handle: nextHandle,
-        messages: storedMessages,
-        advanced,
-        ...(cleanupError ? { cleanupError } : {}),
-      }),
-      err: (error) => ({ kind: "kept-previous", error }),
-    });
-    if (decision.kind === "kept-previous") {
-      logger.warn(
-        "agent run checkpoint kept previous",
-        formatBridgeTaggedErrorForLog(decision.error, {
-          requestDeliveryId,
-          requestId: run.requestId,
-          sessionId: run.sessionId,
-          ...(AgentRunCheckpointPreparationFailed.is(decision.error)
-            ? { stage: decision.error.stage }
-            : {}),
-        }),
-      );
-      const journalError = AgentRunCheckpointOwnershipRollbackFailed.is(decision.error)
-        ? decision.error.journalError
-        : decision.error;
-      if (AgentRunCheckpointOwnershipRollbackFailed.is(decision.error)) {
-        logger.warn(
-          "agent run checkpoint blob reference cleanup deferred",
-          formatBridgeTaggedErrorForLog(decision.error.cleanupError, {
-            requestDeliveryId,
-            requestId: run.requestId,
-            sessionId: run.sessionId,
-          }),
-        );
-      }
-      if (AgentRunJournalConflict.is(journalError)) {
-        run.journalHandle = openRunJournal(owner);
-        run.checkpointWriter.disabled = true;
-      }
-      return "kept-previous";
-    }
-    const priorCommittedCheckpointMessages = run.checkpointWriter.lastCommittedStoredMessages;
-    run.journalHandle = decision.handle;
-    if (decision.advanced) {
-      run.checkpointWriter.retainedPredecessorStoredMessages = priorCommittedCheckpointMessages;
-    }
-    run.checkpointWriter.lastCommittedProviderMessages = messages;
-    run.checkpointWriter.lastCommittedStoredMessages = decision.messages;
-    for (const inputId of canonicalInputIds) {
-      run.retainedRequestDeliveryByInputId.delete(inputId);
-    }
-    run.checkpointedRetainedRequestDeliveryIds = nextCheckpointedRetainedRequestDeliveryIds;
-    if (decision.cleanupError) {
-      logger.warn(
-        "agent run checkpoint blob reference cleanup deferred",
-        formatBridgeTaggedErrorForLog(decision.cleanupError, {
-          requestDeliveryId,
-          requestId: run.requestId,
-          sessionId: run.sessionId,
-        }),
-      );
-    }
-    return "written";
-  };
-
-  const enqueueRunCheckpoint = (
-    run: NonNullable<SessionQueue["activeRun"]>,
-    messages: readonly ModelMessage[],
-    canonicalInputIds: readonly AgentInputQueueId[],
-    identityProjection: StoredMessageIdentityProjectionV1,
-  ): void => {
-    if (
-      run.checkpointWriter.closed ||
-      run.checkpointWriter.disabled ||
-      !activeAgentRunJournal ||
-      !run.requestDeliveryId
-    ) {
-      return;
-    }
-    if (run.nativeOutput?.hasPendingText()) {
-      for (const inputId of canonicalInputIds) run.checkpointWriter.retryInputIds.add(inputId);
-      return;
-    }
-    const nativeCheckpoint = run.nativeOutput?.captureCheckpoint();
-    const nativeOutputBarrier = nativeCheckpoint?.barrier;
-    const pendingInputIds = new Set(run.checkpointWriter.pending?.canonicalInputIds ?? []);
-    for (const inputId of canonicalInputIds) pendingInputIds.add(inputId);
-    run.checkpointWriter.pending = {
-      messages,
-      canonicalInputIds: pendingInputIds,
-      identityProjection,
-      nativeOutputBarrier,
-      nativeOutputFrontier: nativeCheckpoint?.frontier,
-    };
-    startRunCheckpointWriter(run);
-  };
-
-  function startRunCheckpointWriter(run: NonNullable<SessionQueue["activeRun"]>): void {
-    if (run.checkpointWriter.operation || !run.checkpointWriter.pending) return;
-    const operation = deferRunCheckpointWriter(run);
-    run.checkpointWriter.operation = operation;
-  }
-
-  async function deferRunCheckpointWriter(
-    run: NonNullable<SessionQueue["activeRun"]>,
-  ): Promise<void> {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await superviseRunCheckpointWriter(run);
-  }
-
-  async function superviseRunCheckpointWriter(
-    run: NonNullable<SessionQueue["activeRun"]>,
-  ): Promise<void> {
-    const completed = await Result.tryPromise({
-      try: () => drainRunCheckpointWriter(run),
-      catch: captureError,
-    });
-    const failure = completed.match({
-      ok: () => null,
-      err: ({ cause }) => ({ cause }),
-    });
-    const inFlightInputIds = run.checkpointWriter.inFlightInputIds;
-    run.checkpointWriter.inFlightInputIds = null;
-    run.checkpointWriter.operation = null;
-    if (failure) {
-      for (const inputId of inFlightInputIds ?? []) {
-        run.checkpointWriter.retryInputIds.add(inputId);
-      }
-      if (Panic.is(failure.cause)) {
-        reportFatalPanic(failure.cause);
-      } else {
-        const error = projectBusAgentRunnerError(
-          failure.cause,
-          "Agent run checkpoint background write failed",
-        );
-        logger.error("agent run checkpoint background write failed", {
-          requestDeliveryId: run.requestDeliveryId,
-          requestId: run.requestId,
-          sessionId: run.sessionId,
-          errorMessage: error.message,
-        });
-      }
-    }
-    if (run.checkpointWriter.pending) startRunCheckpointWriter(run);
-  }
-
-  async function drainRunCheckpointWriter(
-    run: NonNullable<SessionQueue["activeRun"]>,
-  ): Promise<void> {
-    while (run.checkpointWriter.pending) {
-      const pending = run.checkpointWriter.pending;
-      run.checkpointWriter.pending = null;
-      const canonicalInputIds = new Set(run.checkpointWriter.retryInputIds);
-      for (const inputId of pending.canonicalInputIds) canonicalInputIds.add(inputId);
-      run.checkpointWriter.inFlightInputIds = canonicalInputIds;
-      const outputFailure = pending.nativeOutputBarrier
-        ? (await pending.nativeOutputBarrier).match({ ok: () => null, err: (error) => error })
-        : null;
-      if (outputFailure) {
-        for (const inputId of canonicalInputIds) run.checkpointWriter.retryInputIds.add(inputId);
-        run.checkpointWriter.inFlightInputIds = null;
-        logger.error(
-          "native output prevented run checkpoint",
-          formatBridgeTaggedErrorForLog(outputFailure, {
-            requestId: run.requestId,
-            sessionId: run.sessionId,
-          }),
-        );
-        continue;
-      }
-      const outcome = await persistRunCheckpoint(
-        run,
-        pending.messages,
-        [...canonicalInputIds],
-        pending.identityProjection,
-        pending.nativeOutputFrontier,
-      );
-      run.checkpointWriter.inFlightInputIds = null;
-      if (outcome === "kept-previous") {
-        for (const inputId of canonicalInputIds) run.checkpointWriter.retryInputIds.add(inputId);
-        continue;
-      }
-      for (const inputId of canonicalInputIds) run.checkpointWriter.retryInputIds.delete(inputId);
-    }
-  }
-
-  const flushRunCheckpointWriter = async (
-    run: NonNullable<SessionQueue["activeRun"]>,
-  ): Promise<void> => {
-    run.checkpointWriter.closed = true;
-    while (run.checkpointWriter.operation) {
-      await run.checkpointWriter.operation;
-    }
-  };
-
-  const stopRunCheckpointWriters = async (): Promise<void> => {
-    const operations = [...bySession.values()].flatMap((state) => {
-      const run = state.activeRun;
-      if (!run) return [];
-      run.checkpointWriter.closed = true;
-      run.checkpointWriter.abandoned = true;
-      run.checkpointWriter.pending = null;
-      return run.checkpointWriter.operation ? [run.checkpointWriter.operation] : [];
-    });
-    if (operations.length === 0) return;
-
-    let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
-    const completed = await Promise.race([
-      Promise.all(operations).then(() => true),
-      new Promise<false>((resolve) => {
-        deadlineTimer = setTimeout(() => resolve(false), TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS);
-        deadlineTimer.unref?.();
-      }),
-    ]).finally(() => {
-      if (deadlineTimer) clearTimeout(deadlineTimer);
-    });
-    if (completed) return;
-    logger.warn("agent run checkpoint writes exceeded shutdown wait", {
-      timeoutMs: TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS,
-      pendingCount: operations.length,
-    });
-  };
-
-  const restorePreviousRunCheckpoint = async (input: {
-    readonly entry: Enqueued;
-    readonly checkpoint: AgentRunCheckpointV1;
-  }): Promise<AgentRunJournalHandle | null> => {
-    const journal = activeAgentRunJournal;
-    const requestDeliveryId = input.entry.requestDeliveryId;
-    if (!journal || !requestDeliveryId || !journal.promotePreviousCheckpoint) return null;
-    const owner = {
-      requestDeliveryId,
-      requestId: input.entry.requestId,
-      sessionId: input.entry.sessionId,
-    };
-    const currentHandle = input.entry.journalHandle;
-    if (!currentHandle) return null;
-    const promoted = journal.promotePreviousCheckpoint(currentHandle, input.checkpoint);
-    const decision = promoted.match<
-      | {
-          readonly kind: "restored";
-          readonly handle: AgentRunJournalHandle;
-        }
-      | { readonly kind: "failed"; readonly error: Error }
-    >({
-      ok: (handle) => ({ kind: "restored", handle }),
-      err: (error) => ({ kind: "failed", error }),
-    });
-    if (decision.kind === "failed") {
-      logger.warn(
-        "agent run previous checkpoint restore failed",
-        formatBridgeTaggedErrorForLog(decision.error, owner),
-      );
-      return null;
-    }
-    const cleanupError = params.transcriptStore?.replaceAgentRunCheckpointBlobs
-      ?.call(params.transcriptStore, {
-        requestDeliveryId,
-        messages: input.checkpoint.messages,
-      })
-      .match({ ok: () => undefined, err: (error) => error });
-    if (cleanupError) {
-      logger.warn(
-        "agent run checkpoint blob reference cleanup deferred",
-        formatBridgeTaggedErrorForLog(cleanupError, owner),
-      );
-    }
-    return decision.handle;
-  };
-
-  const materializePreviousRunCheckpoint = async (input: {
-    readonly imageRegistry: McpImageCheckpointRegistry;
-    readonly entry: Enqueued;
-    readonly identityProjection: StoredMessageIdentityProjectionV1;
-  }): Promise<
-    | {
-        readonly kind: "restored";
-        readonly checkpoint: AgentRunCheckpointV1;
-        readonly messages: ModelMessage[];
-        readonly handle: AgentRunJournalHandle;
-      }
-    | { readonly kind: "unavailable" }
-  > => {
-    const checkpoint = input.entry.previousRecoveryCheckpoint;
-    if (!checkpoint) return { kind: "unavailable" };
-    const materialized = await materializeMcpImageCheckpoint({
-      imageRegistry: input.imageRegistry,
-      mcpImages: checkpoint.mcpImages,
-      messages: checkpoint.messages,
-      blobStore: params.blobStore,
-      identityProjection: input.identityProjection,
-    });
-    const decision = materialized.match<
-      | { readonly kind: "messages"; readonly messages: ModelMessage[] }
-      | { readonly kind: "unavailable"; readonly error: Error }
-    >({
-      ok: (messages) => ({ kind: "messages", messages }),
-      err: (error) => ({ kind: "unavailable", error }),
-    });
-    if (decision.kind === "unavailable") {
-      logger.warn(
-        "agent run previous checkpoint blob unavailable",
-        formatBridgeTaggedErrorForLog(decision.error, {
-          requestDeliveryId: input.entry.requestDeliveryId,
-          requestId: input.entry.requestId,
-          sessionId: input.entry.sessionId,
-        }),
-      );
-      return { kind: "unavailable" };
-    }
-    const handle = await restorePreviousRunCheckpoint({
-      entry: input.entry,
-      checkpoint,
-    });
-    return handle
-      ? { kind: "restored", checkpoint, messages: decision.messages, handle }
-      : { kind: "unavailable" };
-  };
-
-  const installPreviousRunCheckpoint = (input: {
-    readonly entry: Enqueued;
-    readonly recovery: NonNullable<Enqueued["recovery"]>;
-    readonly checkpoint: AgentRunCheckpointV1;
-    readonly messages: ModelMessage[];
-    readonly handle: AgentRunJournalHandle;
-  }): void => {
-    logger.warn("agent run checkpoint restore used previous checkpoint", {
-      requestDeliveryId: input.entry.requestDeliveryId,
-      requestId: input.entry.requestId,
-      sessionId: input.entry.sessionId,
-    });
-    input.recovery.checkpointMessages = input.messages;
-    input.recovery.nativeOutputFrontier = input.checkpoint.nativeOutput;
-    input.entry.questionResultIds = input.checkpoint.questionResultIds;
-    input.entry.storedRecoveryCheckpoint = [...input.checkpoint.messages];
-    input.entry.recoveryMcpImages = input.checkpoint.mcpImages;
-    input.entry.retainedRequestDeliveries = input.checkpoint.retainedRequestDeliveries;
-    input.entry.journalHandle = input.handle;
-    input.entry.corePrimaryLineage =
-      input.checkpoint.corePrimaryLineage ?? input.entry.acceptedCorePrimaryLineage;
-    if (input.checkpoint.loadedCatalogIds) {
-      input.entry.loadedCatalogIds = [...input.checkpoint.loadedCatalogIds];
-    } else {
-      delete input.entry.loadedCatalogIds;
-    }
-    input.entry.currentTurnUserId =
-      input.checkpoint.currentTurnUserId ?? input.entry.acceptedCurrentTurnUserId;
-    input.entry.currentTurnMessageRef = input.checkpoint.currentTurnUserId
-      ? undefined
-      : input.entry.authenticatedOrigin?.messageRef;
-    delete input.entry.previousRecoveryCheckpoint;
-  };
-
-  const fallBackRunCheckpointToAcceptedWork = (input: {
-    readonly entry: Enqueued;
-    readonly error: Error;
-  }): void => {
-    logger.warn(
-      "agent run checkpoint restore fell back to accepted work",
-      formatBridgeTaggedErrorForLog(input.error, {
-        requestDeliveryId: input.entry.requestDeliveryId,
-        requestId: input.entry.requestId,
-        sessionId: input.entry.sessionId,
-      }),
-    );
-    if (input.entry.requestDeliveryId) {
-      resetRunJournal({
-        requestDeliveryId: input.entry.requestDeliveryId,
-        requestId: input.entry.requestId,
-        sessionId: input.entry.sessionId,
-      });
-    }
-    delete input.entry.recovery;
-    delete input.entry.storedRecoveryCheckpoint;
-    delete input.entry.recoveryMcpImages;
-    delete input.entry.previousRecoveryCheckpoint;
-    delete input.entry.retainedRequestDeliveries;
-    delete input.entry.journalHandle;
-    delete input.entry.loadedCatalogIds;
-    input.entry.corePrimaryLineage = input.entry.acceptedCorePrimaryLineage;
-    input.entry.currentTurnUserId = input.entry.acceptedCurrentTurnUserId;
-    input.entry.currentTurnMessageRef = input.entry.authenticatedOrigin?.messageRef;
-  };
-
-  const markRunTerminal = (
-    run: NonNullable<SessionQueue["activeRun"]>,
-    outcome: RequestDeliveryTerminalOutcome,
-    finalReplayDeadline: number | undefined,
-  ): void => {
-    const journal = activeAgentRunJournal;
-    const requestDeliveryId = run.requestDeliveryId;
-    if (!journal || !requestDeliveryId) return;
-    const owner = {
-      requestDeliveryId,
-      requestId: run.requestId,
-      sessionId: run.sessionId,
-    };
-    const handle = run.journalHandle ?? openRunJournal(owner);
-    if (!handle) return;
-    const terminal = journal.markTerminal(handle, {
-      outcome,
-      ...(finalReplayDeadline === undefined ? {} : { finalReplayDeadline }),
-    });
-    terminal.match({
-      ok: (nextHandle) => {
-        run.journalHandle = nextHandle;
-      },
-      err: (error) => {
-        logJournalReset({ ...owner, error });
-        resetRunJournal(owner);
-        run.journalHandle = null;
-      },
-    });
-  };
+  const runCheckpointWriter = createRunCheckpointWriter({
+    params,
+    logger,
+    bySession,
+    reportFatalPanic,
+  });
+  const {
+    releaseRunCheckpointBlobs,
+    openRunJournal,
+    enqueueRunCheckpoint,
+    flushRunCheckpointWriter,
+    stopRunCheckpointWriters,
+    materializePreviousRunCheckpoint,
+    installPreviousRunCheckpoint,
+    fallBackRunCheckpointToAcceptedWork,
+    markRunTerminal,
+  } = runCheckpointWriter;
 
   async function resumeQueueLifecycleAttempt(
     attempt: QueueLifecycleAttempt,
@@ -3651,6 +1571,67 @@ export async function startBusAgentRunner(params: {
     if (state && !state.running) startSessionQueueDrain(attempt.sessionId, state);
   }
 
+  function createSessionQueue(sessionId: string): SessionQueue {
+    return {
+      running: false,
+      agent: null,
+      queue: [],
+      activeRequestId: null,
+      activeRun: null,
+      compactedToolCallIds: compactedToolCallIdsFor(sessionId),
+    };
+  }
+
+  /**
+   * Compaction choices outlive session eviction so pruning keeps batching by `minimumTokens`
+   * instead of re-pruning every run; the least recently used sessions are forgotten past the cap.
+   */
+  function compactedToolCallIdsFor(sessionId: string): Set<string> {
+    const existing = compactedToolCallIdsBySession.get(sessionId) ?? new Set<string>();
+    compactedToolCallIdsBySession.delete(sessionId);
+    compactedToolCallIdsBySession.set(sessionId, existing);
+    const oldest = compactedToolCallIdsBySession.keys().next().value;
+    if (compactedToolCallIdsBySession.size > COMPACTED_TOOL_CALL_SESSION_LIMIT && oldest) {
+      compactedToolCallIdsBySession.delete(oldest);
+    }
+    return existing;
+  }
+
+  /** Drops a session's in-memory state once it has no run, queued work, or pending control. */
+  function evictIdleSession(sessionId: string | undefined): void {
+    if (!sessionId || sessionControlOperations.has(sessionId)) return;
+    const state = bySession.get(sessionId);
+    if (!state || state.running || state.activeRun || state.agent || state.queue.length > 0) {
+      return;
+    }
+    bySession.delete(sessionId);
+  }
+
+  /** Runs control settlement for one session in arrival order, off the shared bus handler. */
+  function enqueueSessionControl(sessionId: string, operation: () => Promise<void>): void {
+    const settled = settleSessionControl(sessionControlOperations.get(sessionId), operation);
+    sessionControlOperations.set(sessionId, settled);
+    const forget = (): void => {
+      if (sessionControlOperations.get(sessionId) !== settled) return;
+      sessionControlOperations.delete(sessionId);
+      evictIdleSession(sessionId);
+    };
+    void ignoreDetachedFailure(settled).then(forget);
+  }
+
+  async function settleSessionControl(
+    previous: Promise<void> | undefined,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    // Start at once when nothing is pending so the control reaches the agent in the same tick.
+    if (previous) await ignoreDetachedFailure(previous);
+    const applied = await Result.tryPromise({ try: operation, catch: captureError });
+    applied.match({
+      ok: () => undefined,
+      err: ({ cause }) => superviseAgentRunnerBackgroundFailure(cause),
+    });
+  }
+
   function startSessionQueueDrain(
     sessionId: string,
     state: SessionQueue,
@@ -3664,10 +1645,23 @@ export async function startBusAgentRunner(params: {
       );
     };
     if (nativeBlockedSessions.has(sessionId)) return;
+    const dequeues = nextDequeueableEntry(state) !== undefined;
     const operation = superviseDrain();
-    sessionDrainOperations.set(sessionId, operation);
-    activeDrainOperation = operation;
     void ignoreDetachedFailure(operation);
+    if (!dequeues) {
+      evictIdleSession(sessionId);
+      return;
+    }
+    const operations = sessionDrainOperations.get(sessionId) ?? new Set<Promise<void>>();
+    operations.add(operation);
+    sessionDrainOperations.set(sessionId, operations);
+    const forget = (): void => {
+      operations.delete(operation);
+      if (operations.size === 0 && sessionDrainOperations.get(sessionId) === operations) {
+        sessionDrainOperations.delete(sessionId);
+      }
+    };
+    void ignoreDetachedFailure(operation).then(forget);
 
     async function superviseDrain(): Promise<void> {
       const drained = await Result.tryPromise({
@@ -3721,7 +1715,6 @@ export async function startBusAgentRunner(params: {
       );
     }
     if (!requestId || !sessionId) {
-      if (!pendingAttempt) abandonQueueLifecycleAttempt(msg.id);
       const missing: ("request_id" | "session_id")[] = [];
       if (!requestId) missing.push("request_id");
       if (!sessionId) missing.push("session_id");
@@ -3865,11 +1858,9 @@ export async function startBusAgentRunner(params: {
     });
     const requestProjection = selectRequestProjection();
     if (projectionFailure) {
-      if (!pendingAttempt) abandonQueueLifecycleAttempt(msg.id);
       return reconcileAcceptedProjectionFailure(projectionFailure);
     }
     if (!requestProjection) {
-      if (!pendingAttempt) abandonQueueLifecycleAttempt(msg.id);
       if (acceptedRecord) {
         return reconcileAcceptedProjectionFailure(
           new BusAgentRunnerIntakeFailed({
@@ -4050,16 +2041,7 @@ export async function startBusAgentRunner(params: {
 
             const requestControl = parseRequestControlFromRaw(entry.raw);
 
-            const state =
-              bySession.get(sessionId) ??
-              ({
-                running: false,
-                agent: null,
-                queue: [] as Enqueued[],
-                activeRequestId: null,
-                activeRun: null,
-                compactedToolCallIds: new Set<string>(),
-              } satisfies SessionQueue);
+            let state = bySession.get(sessionId) ?? createSessionQueue(sessionId);
             bySession.set(sessionId, state);
 
             const logQueueTransition = (input: {
@@ -4232,8 +2214,9 @@ export async function startBusAgentRunner(params: {
             }
 
             if (draining) {
+              // Accepted durable work stays non-terminal so the next start recovers it.
               logger.debug(
-                "dropping request message while draining",
+                "leaving request message for recovery while draining",
                 formatBridgeLogContext({
                   requestId,
                   sessionId,
@@ -4246,7 +2229,6 @@ export async function startBusAgentRunner(params: {
                 queueDepthAfter: state.queue.length,
                 reason: "draining",
               });
-              await terminalizeProjectedDelivery("abandoned", "runner-draining-drop");
               return;
             }
 
@@ -4268,6 +2250,132 @@ export async function startBusAgentRunner(params: {
                 reason,
               });
               await terminalizeProjectedDelivery("abandoned", "control-target-absent");
+            };
+
+            /** Queues a control for an idle session, or drops one that needs an active run. */
+            const routeToIdleSession = async (): Promise<void> => {
+              // Some messages only make sense when a run is already active.
+              if (requestControl.requiresActive && entry.queue !== "prompt") {
+                logger.debug(
+                  "dropping request message (requires active run)",
+                  formatBridgeLogContext({
+                    requestId,
+                    sessionId,
+                    queue: entry.queue,
+                  }),
+                );
+                logQueueTransition({
+                  action: "drop",
+                  queueDepthBefore: state.queue.length,
+                  queueDepthAfter: state.queue.length,
+                  reason: "requires_active_without_run",
+                });
+                await terminalizeProjectedDelivery("abandoned", "active-run-required");
+                return;
+              }
+
+              const queueDepthBefore = state.queue.length;
+              const owner = requestMessageCache.acquireOwner(requestId);
+              const selectOwner = owner.match<() => RequestMessageCacheOwner | null>({
+                err: (error) => () => {
+                  identityError = error;
+                  return null;
+                },
+                ok: (identityOwner) => () => identityOwner,
+              });
+              const identityOwner = selectOwner();
+              if (!identityOwner) return;
+              entry.identityOwner = identityOwner;
+              state.queue.push(entry);
+              logQueueTransition({
+                action: "enqueue",
+                queueDepthBefore,
+                queueDepthAfter: state.queue.length,
+                reason: "start_when_idle",
+              });
+              startSessionQueueDrain(sessionId, state, requestId);
+            };
+            /** Queues a prompt behind another request's run, or drops a control aimed at a stale run. */
+            const routeBehindOtherRequest = async (): Promise<void> => {
+              // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
+              // an unrelated active request.
+              if (requestControl.requiresActive || requestControl.cancel) {
+                logger.debug(
+                  "dropping request message (requires active request id)",
+                  formatBridgeLogContext({
+                    requestId,
+                    sessionId,
+                    activeRequestId: state.activeRequestId,
+                    queue: entry.queue,
+                  }),
+                );
+                logQueueTransition({
+                  action: "drop",
+                  queueDepthBefore: state.queue.length,
+                  queueDepthAfter: state.queue.length,
+                  reason: "requires_active_different_request_id",
+                });
+                await terminalizeProjectedDelivery("abandoned", "active-request-mismatch");
+                return;
+              }
+
+              // No parallel runs: queue prompt messages for later.
+              const queueDepthBefore = state.queue.length;
+              const owner = requestMessageCache.acquireOwner(requestId);
+              const selectOwner = owner.match<() => RequestMessageCacheOwner | null>({
+                err: (error) => () => {
+                  identityError = error;
+                  return null;
+                },
+                ok: (identityOwner) => () => identityOwner,
+              });
+              const identityOwner = selectOwner();
+              if (!identityOwner) return;
+              entry.identityOwner = identityOwner;
+              const enqueued = await enqueueWithLifecycle(entry, "queued behind active request");
+              const enqueueError = enqueued.match({
+                ok: () => null,
+                err: (error) => error,
+              });
+              if (enqueueError) {
+                intakeError = enqueueError;
+                return;
+              }
+
+              logQueuedBehindActiveRun(requestId);
+              logQueueTransition({
+                action: "enqueue",
+                queueDepthBefore,
+                queueDepthAfter: state.queue.length,
+                reason: "queued_behind_active",
+              });
+            };
+            // A control whose run ended while its messages loaded is routed as if it arrived after.
+            const routeAfterTargetEnded = async (): Promise<void> => {
+              // The ended run may have evicted this session's state while the control loaded.
+              state = bySession.get(sessionId) ?? createSessionQueue(sessionId);
+              bySession.set(sessionId, state);
+              if (state.running) return routeBehindOtherRequest();
+              return routeToIdleSession();
+            };
+            const dropControlForEndedRun = async (): Promise<void> => {
+              logQueueTransition({
+                action: "drop",
+                queueDepthBefore: state.queue.length,
+                queueDepthAfter: state.queue.length,
+                reason: "target_run_ended",
+              });
+              if (await terminalizeProjectedDelivery("abandoned", "control-target-absent")) return;
+              if (intakeError) signalBusAgentRunnerHostFailure(intakeError);
+            };
+            const controlTargetFor = (
+              runningAgent: AiSdkPiAgent<ToolSet>,
+            ): RunningAgentControlTarget => {
+              const targetRun = state.activeRun;
+              return {
+                isCurrent: () => state.activeRun === targetRun && state.agent === runningAgent,
+                dropEnded: dropControlForEndedRun,
+              };
             };
 
             if (requestControl.cancel && requestControl.cancelQueued) {
@@ -4360,6 +2468,8 @@ export async function startBusAgentRunner(params: {
                         "active-cancel-applied",
                         checkpoint,
                       ),
+                    (operation) => enqueueSessionControl(sessionId, operation),
+                    controlTargetFor(state.agent),
                   );
                 }
                 logQueueTransition({
@@ -4386,46 +2496,7 @@ export async function startBusAgentRunner(params: {
                 return;
               }
 
-              // Some messages only make sense when a run is already active.
-              if (requestControl.requiresActive && entry.queue !== "prompt") {
-                logger.debug(
-                  "dropping request message (requires active run)",
-                  formatBridgeLogContext({
-                    requestId,
-                    sessionId,
-                    queue: entry.queue,
-                  }),
-                );
-                logQueueTransition({
-                  action: "drop",
-                  queueDepthBefore: state.queue.length,
-                  queueDepthAfter: state.queue.length,
-                  reason: "requires_active_without_run",
-                });
-                await terminalizeProjectedDelivery("abandoned", "active-run-required");
-                return;
-              }
-
-              const queueDepthBefore = state.queue.length;
-              const owner = requestMessageCache.acquireOwner(requestId);
-              const selectOwner = owner.match<() => RequestMessageCacheOwner | null>({
-                err: (error) => () => {
-                  identityError = error;
-                  return null;
-                },
-                ok: (identityOwner) => () => identityOwner,
-              });
-              const identityOwner = selectOwner();
-              if (!identityOwner) return;
-              entry.identityOwner = identityOwner;
-              state.queue.push(entry);
-              logQueueTransition({
-                action: "enqueue",
-                queueDepthBefore,
-                queueDepthAfter: state.queue.length,
-                reason: "start_when_idle",
-              });
-              startSessionQueueDrain(sessionId, state, requestId);
+              await routeToIdleSession();
             } else {
               if (
                 state.activeRequestId === requestId &&
@@ -4643,6 +2714,8 @@ export async function startBusAgentRunner(params: {
                             "active-input-applied",
                             checkpoint,
                           ),
+                        (operation) => enqueueSessionControl(sessionId, operation),
+                        controlTargetFor(runningAgent),
                       ),
                   );
                   const applyError = applied.match({
@@ -4656,10 +2729,18 @@ export async function startBusAgentRunner(params: {
                     queueLifecycleAttempts.delete(msg.id);
                     signalBusAgentRunnerHostFailure(applyError);
                   }
+                  if (applied.match({ ok: (o) => o === "target-ended", err: () => false })) {
+                    for (const bufferedPrompt of bufferedPrompts) {
+                      reservedQueueEntries.delete(bufferedPrompt);
+                    }
+                    queueLifecycleAttempts.delete(msg.id);
+                    await routeAfterTargetEnded();
+                    return;
+                  }
                   attempt.controlApplied = true;
                   await resumeQueueLifecycleAttempt(attempt, state);
                 } else {
-                  await applyToRunningAgent(
+                  const applied = await applyToRunningAgent(
                     runningAgent,
                     mergedEntry,
                     cancelledByRequestId,
@@ -4670,7 +2751,13 @@ export async function startBusAgentRunner(params: {
                         "active-input-applied",
                         checkpoint,
                       ),
+                    (operation) => enqueueSessionControl(sessionId, operation),
+                    controlTargetFor(runningAgent),
                   );
+                  if (applied === "target-ended") {
+                    await routeAfterTargetEnded();
+                    return;
+                  }
                 }
 
                 logQueueTransition({
@@ -4683,58 +2770,7 @@ export async function startBusAgentRunner(params: {
                       : "same_request_id",
                 });
               } else {
-                // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
-                // an unrelated active request.
-                if (requestControl.requiresActive || requestControl.cancel) {
-                  logger.debug(
-                    "dropping request message (requires active request id)",
-                    formatBridgeLogContext({
-                      requestId,
-                      sessionId,
-                      activeRequestId: state.activeRequestId,
-                      queue: entry.queue,
-                    }),
-                  );
-                  logQueueTransition({
-                    action: "drop",
-                    queueDepthBefore: state.queue.length,
-                    queueDepthAfter: state.queue.length,
-                    reason: "requires_active_different_request_id",
-                  });
-                  await terminalizeProjectedDelivery("abandoned", "active-request-mismatch");
-                  return;
-                }
-
-                // No parallel runs: queue prompt messages for later.
-                const queueDepthBefore = state.queue.length;
-                const owner = requestMessageCache.acquireOwner(requestId);
-                const selectOwner = owner.match<() => RequestMessageCacheOwner | null>({
-                  err: (error) => () => {
-                    identityError = error;
-                    return null;
-                  },
-                  ok: (identityOwner) => () => identityOwner,
-                });
-                const identityOwner = selectOwner();
-                if (!identityOwner) return;
-                entry.identityOwner = identityOwner;
-                const enqueued = await enqueueWithLifecycle(entry, "queued behind active request");
-                const enqueueError = enqueued.match({
-                  ok: () => null,
-                  err: (error) => error,
-                });
-                if (enqueueError) {
-                  intakeError = enqueueError;
-                  return;
-                }
-
-                logQueuedBehindActiveRun(requestId);
-                logQueueTransition({
-                  action: "enqueue",
-                  queueDepthBefore,
-                  queueDepthAfter: state.queue.length,
-                  reason: "queued_behind_active",
-                });
+                await routeBehindOtherRequest();
               }
             }
           })();
@@ -4845,8 +2881,11 @@ export async function startBusAgentRunner(params: {
         },
         async (msg) => {
           switch (msg.type) {
-            case lilacEventTypes.CmdRequestMessage:
-              return await handleCmdRequestMessage(msg);
+            case lilacEventTypes.CmdRequestMessage: {
+              const handled = await handleCmdRequestMessage(msg);
+              evictIdleSession(msg.headers?.session_id);
+              return handled;
+            }
           }
         },
         busAgentRunnerDeliveryDisposition,
@@ -4899,25 +2938,26 @@ export async function startBusAgentRunner(params: {
     return subscriptionStart;
   };
 
-  let subscriptionStopped = false;
-  const stopSubscription = async () => {
-    if (subscriptionStopped) return;
-    subscriptionStopped = true;
-    await stopStartedSubscription?.();
+  let subscriptionStop: Promise<void> | null = null;
+  const stopSubscription = (): Promise<void> => {
+    subscriptionStop ??= (async () => {
+      await stopStartedSubscription?.();
+    })();
+    return subscriptionStop;
   };
 
+  /** Stops admission, lets active runs finish, then aborts the rest within the same deadline. */
   async function beginDrain(opts?: { deadlineMs?: number }) {
     draining = true;
-    await stopSubscription();
-
     const deadlineMs = Math.max(1, opts?.deadlineMs ?? 3_000);
-    const startedAt = Date.now();
-    const hasRunning = () => [...bySession.values()].some((state) => state.running);
-
-    while (hasRunning() && Date.now() - startedAt < deadlineMs) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    if (!hasRunning()) return;
+    const deadlineAtMs = Date.now() + deadlineMs;
+    const abortGraceMs = Math.min(SHUTDOWN_ABORT_GRACE_MS, Math.floor(deadlineMs / 4));
+    // Stopping the subscription waits for in-flight bus handlers, so it shares the drain deadline.
+    const subscriptionStopped = stopSubscription();
+    void ignoreDetachedFailure(subscriptionStopped);
+    const pending = () => [subscriptionStopped, ...allSessionDrainOperations()];
+    if (await settlesBefore(pending(), deadlineAtMs - abortGraceMs))
+      return await subscriptionStopped;
 
     for (const state of bySession.values()) {
       if (!state.running || !state.activeRun) continue;
@@ -4926,18 +2966,29 @@ export async function startBusAgentRunner(params: {
       state.activeRun.notifyWaiters();
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (await settlesBefore(pending(), deadlineAtMs)) await subscriptionStopped;
+  }
+
+  function nextDequeueableEntry(state: SessionQueue): Enqueued | undefined {
+    if (state.running || draining) return undefined;
+    const next = state.queue[0];
+    if (!next || reservedQueueEntries.has(next)) return undefined;
+    return next;
   }
 
   async function drainSessionQueue(sessionId: string, state: SessionQueue) {
     rethrowBusAgentRunnerPanic(terminalPanic);
-    if (state.running) return;
-
     const queueDepthBefore = state.queue.length;
-    const next = state.queue[0];
+    const next = nextDequeueableEntry(state);
     if (!next) return;
-    if (reservedQueueEntries.has(next)) return;
     state.queue.shift();
+    // Claim the session before the first await so a concurrent admission cannot start a second run.
+    state.running = true;
+    state.activeRequestId = next.requestId;
+    const releaseDequeuedSession = (): void => {
+      state.running = false;
+      state.activeRequestId = null;
+    };
     if (next.requestClient === "native") {
       const validated = validateNativeRequest({
         requestId: next.requestId,
@@ -4948,6 +2999,7 @@ export async function startBusAgentRunner(params: {
       const rejection = validated.match({ ok: () => null, err: (error) => error });
       if (rejection) {
         const rejected = await rejectNativeDelivery(next.requestDeliveryId ?? "", rejection);
+        releaseDequeuedSession();
         const failure = rejected.match({ ok: () => null, err: (error) => error });
         if (failure) return signalBusAgentRunnerHostFailure(failure);
         if (next.identityOwner) requestMessageCache.releaseOwner(next.identityOwner);
@@ -4981,8 +3033,10 @@ export async function startBusAgentRunner(params: {
         err: (error) => error,
       });
       if (materializationError) {
-        state.queue.unshift(next);
-        return signalBusAgentRunnerHostFailure(materializationError);
+        releaseDequeuedSession();
+        await failUnmaterializableEntry(next, materializationError);
+        startSessionQueueDrain(sessionId, state);
+        return;
       }
       next.messages = materialized.match({
         ok: (value) => value,
@@ -5024,6 +3078,13 @@ export async function startBusAgentRunner(params: {
           err: () => [],
         });
       }
+    }
+    if (draining) {
+      // beginDrain's abort pass cannot reach a run that has no activeRun yet; keep the work
+      // queued and accepted so the next start recovers it instead of starting the model now.
+      state.queue.unshift(next);
+      releaseDequeuedSession();
+      return;
     }
     if (next.recovery) {
       const mergedControls = mergeQueuedControlsForRecovery(
@@ -5068,6 +3129,7 @@ export async function startBusAgentRunner(params: {
       const rejection = validated.match({ ok: () => null, err: (error) => error });
       if (rejection) {
         const rejected = await rejectNativeDelivery(next.requestDeliveryId ?? "", rejection);
+        releaseDequeuedSession();
         const failure = rejected.match({ ok: () => null, err: (error) => error });
         if (failure) return signalBusAgentRunnerHostFailure(failure);
         if (next.identityOwner) requestMessageCache.releaseOwner(next.identityOwner);
@@ -5089,9 +3151,6 @@ export async function startBusAgentRunner(params: {
       activeRequestId: state.activeRequestId,
       draining,
     });
-
-    state.running = true;
-    state.activeRequestId = next.requestId;
 
     const runStartedAt = Date.now();
 
@@ -8205,6 +6264,10 @@ export async function startBusAgentRunner(params: {
             }
           }
 
+          // The drain abort pass may have run while setup awaited, before the agent could stop.
+          if (shutdownAbortRequestIds.delete(headers.request_id)) {
+            return signalBusAgentRunnerHostFailure(new ShutdownDrainingAbort());
+          }
           if (state.activeRun) state.activeRun.started = true;
           runIdleWatchdog?.start();
 
@@ -9271,7 +7334,7 @@ export async function startBusAgentRunner(params: {
         retainedDeliveriesTerminalized &&
         next.requestDeliveryId
       ) {
-        const removed = activeAgentRunJournal?.removeReconciled(next.requestDeliveryId);
+        const removed = runCheckpointWriter.journal()?.removeReconciled(next.requestDeliveryId);
         const removeError = removed?.match({ ok: () => null, err: (error) => error });
         if (removed && !removeError) {
           releaseRunCheckpointBlobs({
@@ -9388,6 +7451,75 @@ export async function startBusAgentRunner(params: {
     );
   }
 
+  /** Ends accepted work whose stored messages cannot be loaded so the session queue can continue. */
+  async function failUnmaterializableEntry(entry: Enqueued, cause: Error): Promise<void> {
+    const context = {
+      requestId: entry.requestId,
+      sessionId: entry.sessionId,
+      requestDeliveryId: entry.requestDeliveryId,
+    };
+    logger.error(
+      "accepted request messages could not be materialized",
+      formatBridgeTaggedErrorForLog(cause, context),
+    );
+    if (entry.identityOwner) requestMessageCache.releaseOwner(entry.identityOwner);
+    await publishLifecycle({
+      bus,
+      headers: {
+        request_id: entry.requestId,
+        session_id: entry.sessionId,
+        request_client: entry.requestClient,
+      },
+      state: "failed",
+      detail: "stored request messages could not be loaded",
+    });
+    const requestDeliveryId = entry.requestDeliveryId;
+    if (!requestDeliveryId || !params.requestDelivery) return;
+    const outcomes: Array<readonly [string, RequestDeliveryTerminalOutcome]> = [
+      [requestDeliveryId, { kind: "failed", code: "stored-message-materialization-failed" }],
+      ...(entry.retainedRequestDeliveries ?? []).map(
+        (retained) => [retained.requestDeliveryId, retained.outcome] as const,
+      ),
+    ];
+    let terminalized = true;
+    for (const [deliveryId, outcome] of outcomes) {
+      const result = await params.requestDelivery.terminalize({
+        requestDeliveryId: deliveryId,
+        outcome,
+        transportCommitRequired: true,
+      });
+      const failure = result.match({ ok: () => null, err: (error) => error });
+      if (!failure) continue;
+      terminalized = false;
+      logger.error(
+        "request delivery terminalization failed",
+        formatBridgeTaggedErrorForLog(failure, { ...context, requestDeliveryId: deliveryId }),
+      );
+    }
+    if (!terminalized) return;
+    const removed = runCheckpointWriter.journal()?.removeReconciled(requestDeliveryId);
+    if (removed?.isOk()) releaseRunCheckpointBlobs({ ...context, requestDeliveryId });
+    if (entry.requestClient === "native") {
+      const settled = await params.nativeExecution?.settled(
+        {
+          requestId: entry.requestId,
+          requestDeliveryId,
+          sessionId: entry.sessionId,
+          raw: entry.raw,
+        },
+        "failed",
+      );
+      const settlementError = settled?.match({ ok: () => null, err: (error) => error });
+      if (settlementError) {
+        logger.error(
+          "native request settlement failed",
+          formatBridgeTaggedErrorForLog(settlementError, context),
+        );
+      }
+    }
+    for (const [deliveryId] of outcomes) params.onRequestSettled?.(deliveryId);
+  }
+
   async function cancelNativeSession(sessionId: string): Promise<ResultType<void, Error>> {
     if (!sessionId.startsWith("native:"))
       return Result.err(new Error("Native cancellation requires a native session"));
@@ -9415,7 +7547,7 @@ export async function startBusAgentRunner(params: {
       state.activeRun.cancel();
       state.agent?.cancel();
     }
-    await sessionDrainOperations.get(sessionId);
+    await Promise.allSettled(sessionDrainOperations.get(sessionId) ?? []);
     nativeBlockedSessions.delete(sessionId);
     return Result.ok(undefined);
   }
@@ -9693,16 +7825,7 @@ export async function startBusAgentRunner(params: {
         : {}),
       ...(recoveryHead ? { journalHandle: recoveryHead.handle } : {}),
     };
-    const state =
-      bySession.get(work.sessionId) ??
-      ({
-        running: false,
-        agent: null,
-        queue: [] as Enqueued[],
-        activeRequestId: null,
-        activeRun: null,
-        compactedToolCallIds: new Set<string>(),
-      } satisfies SessionQueue);
+    const state = bySession.get(work.sessionId) ?? createSessionQueue(work.sessionId);
     state.queue.push(entry);
     bySession.set(work.sessionId, state);
     if (runnerActivated && !state.running) {
@@ -9759,29 +7882,30 @@ export async function startBusAgentRunner(params: {
         title: tool?.toolName ?? (responding ? "Responding…" : "Thinking…"),
       };
     },
-    getActiveDrainOperation: () => activeDrainOperation,
+    /** Resolves once no session drain or control is in flight; rejects with a drain's failure. */
+    async waitForIdle(): Promise<void> {
+      for (;;) {
+        const pending = [...allSessionDrainOperations(), ...sessionControlOperations.values()];
+        if (pending.length === 0) return;
+        await Promise.all(pending);
+      }
+    },
+    /** Number of sessions holding in-memory queue state; idle sessions are evicted. */
+    trackedSessionCount: () => bySession.size,
     getTerminalCleanupOperations: () => terminalCleanupOperations,
-    stop: async () => {
+    stop: async (opts?: { readonly deadlineAtMs?: number }) => {
+      const deadlineAtMs = opts?.deadlineAtMs ?? Date.now() + TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS;
       stopRunnerAdmission();
       await stopSubscription();
-      await stopRunCheckpointWriters();
-      if (terminalCleanupCompletion) {
-        let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
-        const completed = await Promise.race([
-          terminalCleanupCompletion.then(() => true),
-          new Promise<false>((resolve) => {
-            deadlineTimer = setTimeout(() => resolve(false), TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS);
-            deadlineTimer.unref?.();
-          }),
-        ]).finally(() => {
-          if (deadlineTimer) clearTimeout(deadlineTimer);
+      await stopRunCheckpointWriters(deadlineAtMs);
+      if (
+        terminalCleanupCompletion &&
+        !(await settlesBefore([terminalCleanupCompletion], deadlineAtMs))
+      ) {
+        logger.warn("terminal agent-runner cleanup exceeded shutdown wait", {
+          deadlineAtMs,
+          pendingLabels: terminalCleanupOperations.map(({ label }) => label),
         });
-        if (!completed) {
-          logger.warn("terminal agent-runner cleanup exceeded shutdown wait", {
-            timeoutMs: TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS,
-            pendingLabels: terminalCleanupOperations.map(({ label }) => label),
-          });
-        }
       }
       bySession.clear();
       queueLifecycleAttempts.clear();
@@ -9811,246 +7935,6 @@ async function publishLifecycle(params: {
     ok: () => () => undefined,
     err: (error) => () => signalBusAgentRunnerHostFailure(error),
   })();
-}
-
-function mergeQueuedControlsForRecovery(
-  first: Enqueued,
-  queue: Enqueued[],
-  reservedQueueEntries: ReadonlySet<Enqueued>,
-): {
-  readonly storedMessages: readonly StoredMessageV1[];
-  readonly reapplied: readonly Enqueued[];
-  readonly discarded: readonly Enqueued[];
-} {
-  const retainedRequestDeliveryIds = new Set(
-    first.retainedRequestDeliveries?.map(({ requestDeliveryId }) => requestDeliveryId),
-  );
-  const storedMessages: StoredMessageV1[] = [];
-  const reapplied: Enqueued[] = [];
-  const discarded: Enqueued[] = [];
-
-  for (let index = 0; index < queue.length; ) {
-    const entry = queue[index]!;
-    const control = parseRequestControlFromRaw(entry.raw);
-    const targetsRecoveredRun = entry.requestId === first.requestId || control.requiresActive;
-    const isActiveControl = entry.queue !== "prompt" && !control.cancel && targetsRecoveredRun;
-    if (!isActiveControl || reservedQueueEntries.has(entry)) {
-      index += 1;
-      continue;
-    }
-
-    const alreadyRetained =
-      entry.requestDeliveryId !== undefined &&
-      retainedRequestDeliveryIds.has(entry.requestDeliveryId);
-    if (!alreadyRetained) {
-      storedMessages.push(...entry.storedMessages);
-      reapplied.push(entry);
-      first.currentTurnUserId = entry.currentTurnUserId;
-      first.currentTurnMessageRef = entry.currentTurnMessageRef;
-    }
-    discarded.push(entry);
-    queue.splice(index, 1);
-  }
-
-  if (reapplied.length > 0) {
-    first.corePrimaryLineage = degradeCorePrimaryLineageForMutation(
-      "queued-request-coalesced",
-      first.corePrimaryLineage?.currentCanonicalStart,
-    );
-  }
-
-  return { storedMessages, reapplied, discarded };
-}
-
-function mergeQueuedForSameRequest(
-  first: Enqueued,
-  queue: Enqueued[],
-  reservedQueueEntries: ReadonlySet<Enqueued>,
-): {
-  readonly messages: ModelMessage[];
-  readonly storedMessages: StoredMessageV1[];
-  readonly discarded: readonly Enqueued[];
-} {
-  const merged: ModelMessage[] = [...first.messages];
-  const storedMessages: StoredMessageV1[] = [...first.storedMessages];
-  const discarded: Enqueued[] = [];
-
-  // Pull in any already-queued items for the same request id so they become
-  // additional user messages in the same initial run.
-  for (let i = 0; i < queue.length; ) {
-    const next = queue[i]!;
-    if (next.requestId !== first.requestId || reservedQueueEntries.has(next)) {
-      i += 1;
-      continue;
-    }
-
-    merged.push(...next.messages);
-    storedMessages.push(...next.storedMessages);
-    first.currentTurnUserId = next.currentTurnUserId;
-    first.currentTurnMessageRef = next.currentTurnMessageRef;
-    discarded.push(next);
-    queue.splice(i, 1);
-  }
-
-  if (discarded.length > 0) {
-    first.corePrimaryLineage = degradeCorePrimaryLineageForMutation(
-      "queued-request-coalesced",
-      first.corePrimaryLineage?.currentCanonicalStart,
-    );
-  }
-
-  return { messages: merged, storedMessages, discarded };
-}
-
-async function applyToRunningAgent(
-  agent: AiSdkPiAgent<ToolSet>,
-  entry: Enqueued,
-  cancelledByRequestId: Set<string>,
-  activeRun: SessionQueue["activeRun"],
-  retainAppliedControl: (
-    checkpoint:
-      | { readonly kind: "canonical" }
-      | { readonly kind: "queued"; readonly inputId: AgentInputQueueId }
-      | { readonly kind: "pending" },
-  ) => void,
-) {
-  activeRun?.flushOutput();
-  const liveParent = activeRun?.liveParent;
-  const notifyWaiters = activeRun?.notifyWaiters;
-  const cancel = parseRequestControlFromRaw(entry.raw).cancel;
-  const providerMessages =
-    !cancel && activeRun?.materializeStoredMessages
-      ? await activeRun.materializeStoredMessages(entry.storedMessages)
-      : entry.messages;
-  const merged = mergeToSingleUserMessage(providerMessages);
-  if (!cancel) {
-    activeRun?.rememberStoredMessages(
-      [merged],
-      [mergeToSingleStoredUserMessage(entry.storedMessages)],
-    );
-  }
-  const queueWhileIdle = (mode: "followUp" | "steer") => {
-    const inputId = mode === "steer" ? agent.steer(merged) : agent.followUp(merged);
-    retainAppliedControl({ kind: "queued", inputId });
-    notifyWaiters?.();
-  };
-
-  const promptWhileIdle = () => {
-    retainAppliedControl({ kind: "canonical" });
-    void observePrompt();
-    notifyWaiters?.();
-
-    async function observePrompt(): Promise<void> {
-      const prompted = await Result.tryPromise({
-        try: () => agent.prompt(merged),
-        catch: () => undefined,
-      });
-      if (prompted.match({ ok: () => false, err: () => true })) notifyWaiters?.();
-    }
-  };
-
-  if (!cancel) {
-    activeRun?.setCurrentTurnContext(entry.currentTurnUserId, entry.currentTurnMessageRef);
-  }
-  if (!cancel && activeRun?.runProfile === "primary" && activeRun.requestClient === "discord") {
-    activeRun.corePrimaryLineage = degradeCorePrimaryLineageForMutation(
-      entry.queue === "steer" || entry.queue === "interrupt"
-        ? "steering-transform"
-        : "follow-up-transform",
-      agent.state.messages.length,
-    );
-  }
-
-  const hasBufferedCompletions =
-    (liveParent?.snapshot().hasPendingCompletions ?? false) ||
-    (activeRun?.hasPendingJobEvents?.() ?? false);
-
-  if (!agent.state.isStreaming) {
-    switch (entry.queue) {
-      case "steer": {
-        if (hasBufferedCompletions) {
-          queueWhileIdle("steer");
-          return;
-        }
-        promptWhileIdle();
-        return;
-      }
-      case "followUp":
-      case "prompt": {
-        if (hasBufferedCompletions) {
-          queueWhileIdle("followUp");
-          return;
-        }
-        promptWhileIdle();
-        return;
-      }
-      case "interrupt": {
-        if (cancel) {
-          retainAppliedControl({ kind: "pending" });
-          cancelledByRequestId.add(entry.requestId);
-          await liveParent?.cancelAll("parent request aborted");
-          await activeRun?.stopAwaitJobs?.();
-          agent.cancel();
-          notifyWaiters?.();
-          return;
-        }
-        if (hasBufferedCompletions) {
-          queueWhileIdle("steer");
-          return;
-        }
-        retainAppliedControl({ kind: "canonical" });
-        await agent.interrupt(merged);
-        notifyWaiters?.();
-        return;
-      }
-      default: {
-        const _exhaustive: never = entry.queue;
-        return _exhaustive;
-      }
-    }
-  }
-
-  switch (entry.queue) {
-    case "steer": {
-      const steeringId = agent.steer(merged);
-      retainAppliedControl({ kind: "queued", inputId: steeringId });
-      notifyWaiters?.();
-      return;
-    }
-    case "followUp": {
-      const followUpId = agent.followUp(merged);
-      retainAppliedControl({ kind: "queued", inputId: followUpId });
-      notifyWaiters?.();
-      return;
-    }
-    case "interrupt": {
-      if (cancel) {
-        retainAppliedControl({ kind: "pending" });
-        cancelledByRequestId.add(entry.requestId);
-        await liveParent?.cancelAll("parent request aborted");
-        await activeRun?.stopAwaitJobs?.();
-        agent.cancel();
-        notifyWaiters?.();
-        return;
-      }
-      const steeringId = agent.steer(merged);
-      retainAppliedControl({ kind: "queued", inputId: steeringId });
-      await agent.interruptQueuedSteeringAsync();
-      notifyWaiters?.();
-      return;
-    }
-    case "prompt": {
-      // Cannot prompt while streaming; treat as followUp.
-      const followUpId = agent.followUp(merged);
-      retainAppliedControl({ kind: "queued", inputId: followUpId });
-      notifyWaiters?.();
-      return;
-    }
-    default: {
-      const _exhaustive: never = entry.queue;
-      return _exhaustive;
-    }
-  }
 }
 
 export function selectPersistedTranscriptMessages(input: {
@@ -10084,81 +7968,4 @@ export function resolveCompactionCheckpointMeta(input: {
     type: "compaction",
     formatVersion: COMPACTION_CHECKPOINT_FORMAT_VERSION,
   } as const;
-}
-
-export function mergeToSingleUserMessage(messages: ModelMessage[]): ModelMessage {
-  const userMessages = messages.filter((m) => m.role === "user");
-  if (userMessages.length === 0) {
-    return { role: "user", content: "" };
-  }
-
-  const hasMultipart = userMessages.some((m) => typeof m.content !== "string");
-
-  if (hasMultipart) {
-    const parts: UserContent = [];
-    for (let i = 0; i < userMessages.length; i++) {
-      const msg = userMessages[i]!;
-      if (i > 0) {
-        parts.push({ type: "text", text: "\n\n" });
-      }
-
-      if (typeof msg.content === "string") {
-        if (msg.content.length > 0) {
-          parts.push({ type: "text", text: msg.content });
-        }
-      } else {
-        parts.push(...msg.content);
-      }
-    }
-
-    return {
-      role: "user",
-      content: parts,
-    };
-  }
-
-  // Preserve existing behavior: merge batches into one user message separated by blank lines.
-  const parts: string[] = [];
-  for (const m of userMessages) {
-    if (typeof m.content === "string") {
-      parts.push(m.content);
-    }
-  }
-
-  return {
-    role: "user",
-    content: parts.join("\n\n").trim(),
-  };
-}
-
-function mergeToSingleStoredUserMessage(messages: readonly StoredMessageV1[]): StoredMessageV1 {
-  const userMessages = messages.filter(
-    (message): message is Extract<StoredMessageV1, { readonly role: "user" }> =>
-      message.role === "user",
-  );
-  if (userMessages.length === 0) return { role: "user", content: "" };
-  const hasMultipart = userMessages.some((message) => typeof message.content !== "string");
-  if (!hasMultipart) {
-    return {
-      role: "user",
-      content: userMessages
-        .flatMap((message) => (typeof message.content === "string" ? [message.content] : []))
-        .join("\n\n")
-        .trim(),
-    };
-  }
-
-  const content: Exclude<Extract<StoredMessageV1, { readonly role: "user" }>["content"], string> =
-    [];
-  for (let index = 0; index < userMessages.length; index += 1) {
-    const message = userMessages[index];
-    if (!message) continue;
-    if (index > 0) content.push({ type: "text", text: "\n\n" });
-    if (typeof message.content === "string") {
-      if (message.content.length > 0) content.push({ type: "text", text: message.content });
-      continue;
-    }
-    content.push(...message.content);
-  }
-  return { role: "user", content };
 }

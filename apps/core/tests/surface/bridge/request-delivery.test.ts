@@ -1,4 +1,8 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   BlobIntegrityFailure,
   BlobResolveTimeout,
@@ -324,7 +328,7 @@ describe("durable request delivery", () => {
         return Result.err(recoveryError);
       }),
     );
-    expect(summary.failures).toEqual([recoveryError]);
+    expect(summary.failures).toEqual([{ requestDeliveryId: id, error: recoveryError }]);
     expect(active.size).toBe(0);
     value(await delivery.recoverAccepted(async () => Result.ok(undefined)));
     expect(active.has(id)).toBe(true);
@@ -1386,6 +1390,64 @@ describe("durable request delivery", () => {
     expect(resumed.toSorted()).toEqual(acceptedIds);
     store.close();
     await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
+  });
+
+  test("reports an undecodable accepted record and still recovers the rest", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "request-delivery-bad-record-"));
+    const dbPath = path.join(directory, "deliveries.db");
+    const store = new SqliteRequestDeliveryStore<
+      CorePreparedRequestEnvelope,
+      CoreAcceptedRequestWork,
+      CoreRequestOutputMetadata
+    >({ dbPath, codecs: coreRequestDeliveryCodecs });
+    const blobs = await memoryBlobStore();
+    const delivery = coordinator({ store, blobStore: blobs, now: () => 2 });
+    const ids = Array.from({ length: 5 }, () => crypto.randomUUID()).toSorted();
+    for (const [index, requestDeliveryId] of ids.entries()) {
+      value(
+        store.prepare({
+          requestDeliveryId,
+          requestId: `accepted-${index}`,
+          envelope: envelope({ requestDeliveryId, requestId: `accepted-${index}` }),
+          inputHandles: [],
+          createdAt: 1,
+        }),
+      );
+      value(await delivery.handleDelivery(requestDeliveryId));
+    }
+    const corrupt = new Database(dbPath);
+    corrupt.run(
+      "UPDATE request_delivery_records SET accepted_work_json = '{' WHERE request_delivery_id = ?",
+      [ids[1]!],
+    );
+    corrupt.close();
+    const resumed: string[] = [];
+    try {
+      const summary = value(
+        await delivery.recoverAccepted(
+          async (record) => {
+            resumed.push(record.requestDeliveryId);
+            return Result.ok(undefined);
+          },
+          { limit: 2 },
+        ),
+      );
+      expect(summary.resumed).toBe(4);
+      expect(summary.failures.map(({ requestDeliveryId }) => requestDeliveryId)).toEqual([ids[1]!]);
+      expect(resumed).toEqual(ids.filter((id) => id !== ids[1]));
+      const inspect = new Database(dbPath, { readonly: true });
+      const row = inspect
+        .query<{ state: string }, [string]>(
+          "SELECT state FROM request_delivery_records WHERE request_delivery_id = ?",
+        )
+        .get(ids[1]!);
+      inspect.close();
+      expect(row?.state).toBe("accepted");
+    } finally {
+      store.close();
+      await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("atomically replaces an accepted alias identity for work, outputs, and recovery", async () => {

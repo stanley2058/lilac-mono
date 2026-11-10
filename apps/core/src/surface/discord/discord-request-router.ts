@@ -1,5 +1,7 @@
 import type { JobWakeDelivery } from "../../jobs/job-service";
+import { createFreshOnlyLineage } from "../../shared/core-primary-lineage";
 import { captureError } from "../../shared/error-capture";
+import { consumerId } from "../../shared/event-bus-consumer";
 import {
   createLogger,
   extractAiErrorLogDetails,
@@ -11,7 +13,6 @@ import {
 } from "@stanley2058/lilac-utils";
 import {
   buildCoreLineageManifestV2,
-  createCorePrimaryLineageFreshOnlyV2,
   lilacEventTypes,
   type DeliveryDisposition,
   type EventDeliveryDoneError,
@@ -19,7 +20,6 @@ import {
   type EventDeliveryStopFailed,
   type EvtAdapterMessageCreatedData,
   type LilacBus,
-  type CorePrimaryLineageV2,
 } from "@stanley2058/lilac-event-bus";
 import type { BlobStore } from "@stanley2058/lilac-blob-storage";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
@@ -60,7 +60,6 @@ import {
   stripLeadingContinueDirective,
   stripLeadingInterruptDirective,
   shouldRunDirectReplyMentionGate,
-  consumerId,
   randomRequestId,
   bufferedPromptRequestIdForActiveRequest,
   parseDiscordMsgRefFromAdapterEvent,
@@ -130,22 +129,6 @@ function continueResult<T, E, ROk, RErr>(
     err: (error) => () => branches.err(error),
   });
   return continuation();
-}
-
-function createFreshOnlyLineage(
-  reason: string,
-  currentCanonicalStart: number,
-): CorePrimaryLineageV2 {
-  const created = createCorePrimaryLineageFreshOnlyV2(reason, currentCanonicalStart);
-  return created.match({
-    ok: (value) => value,
-    err: () => ({
-      state: "fresh-only",
-      lineageVersion: 2,
-      currentCanonicalStart: 0,
-      reason: "lineage-fallback-construction-failed",
-    }),
-  });
 }
 
 export type DiscordRequestCompositionFailurePolicy = {

@@ -69,6 +69,12 @@ export type RequestDeliveryCodecs<TEnvelope, TWork, TOutputMetadata> = {
 
 export type RequestDeliveryOutputLifecycle<TMetadata> = RequestOutputLifecycle<TMetadata>;
 
+export type AcceptedRecoveryRow<TWork> = {
+  readonly requestDeliveryId: string;
+  readonly acceptedAt: number;
+  readonly record: ResultType<AcceptedRequestDelivery<TWork>, RequestDeliveryCodecFailure>;
+};
+
 function sqliteFailure(operation: string, cause: Error): RequestDeliverySqliteFailure | undefined {
   const classified = classifyBunSqliteError(cause);
   if (!classified) return undefined;
@@ -900,14 +906,15 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
     );
   }
 
+  /** Lists one page of accepted rows; each row decodes on its own so one bad row stays isolated. */
   listAcceptedForRecovery(input?: {
     readonly limit?: number;
     readonly after?: { readonly acceptedAt: number; readonly requestDeliveryId: string };
-  }): ResultType<readonly AcceptedRequestDelivery<TWork>[], RequestDeliveryStoreError> {
+  }): ResultType<readonly AcceptedRecoveryRow<TWork>[], RequestDeliveryStoreError> {
     return transaction(
       this.#database,
       "list-accepted",
-      (): ResultType<readonly AcceptedRequestDelivery<TWork>[], RequestDeliveryStoreError> => {
+      (): ResultType<readonly AcceptedRecoveryRow<TWork>[], RequestDeliveryStoreError> => {
         const limit = Math.max(1, Math.min(1_000, input?.limit ?? 100));
         const rows = input?.after
           ? this.#database
@@ -930,7 +937,13 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
                  ORDER BY accepted_at, request_delivery_id LIMIT ?`,
               )
               .all(limit);
-        return Result.all(rows.map((row) => this.#decodeAccepted(row)));
+        return Result.ok(
+          rows.map((row) => ({
+            requestDeliveryId: row.request_delivery_id,
+            acceptedAt: row.accepted_at ?? 0,
+            record: this.#decodeAccepted(row),
+          })),
+        );
       },
     );
   }

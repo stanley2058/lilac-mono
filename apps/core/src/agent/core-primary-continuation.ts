@@ -1,4 +1,4 @@
-import { captureError } from "../../../shared/error-capture";
+import { captureError } from "../shared/error-capture";
 import { isDeepStrictEqual } from "node:util";
 
 import type { ModelMessage } from "ai";
@@ -26,12 +26,12 @@ import {
   type CorePrimaryClaudeSessionBinding,
   type TranscriptSnapshot,
   type TranscriptStore,
-} from "../../../transcript/transcript-store";
+} from "../transcript/transcript-store";
 import {
   projectStoredMessagesV1,
   type StoredMessageProjectionError,
-} from "../../../transcript/stored-message-materialization";
-import type { BridgeLogContext } from "../bridge-log";
+} from "../transcript/stored-message-materialization";
+import type { BridgeLogContext } from "../surface/bridge/bridge-log";
 
 const TEXT_REPLAY_TOOL_INPUT_CHARS = 20_000;
 const TEXT_REPLAY_TOOL_RESULT_CHARS = 40_000;

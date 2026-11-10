@@ -486,6 +486,25 @@ migration runs. Older Core builds reject checkpoints containing the new field an
 journal progress, then recover its original accepted work. Drain active runs before downgrading to avoid
 that loss of progress and repeated work.
 
+### Agent-run checkpoint deltas (journal schema 2)
+
+Agent-run journal schema 2 writes each checkpoint as either a full snapshot or a delta. A delta keeps a
+prefix of the preceding checkpoint's messages, appends the new ones, and repeats the small run
+metadata. The `agent_run_wal_events` table gains a `delta` flag. `agent_run_wal_heads.checkpoint_json`
+is no longer written; recovery rebuilds the latest checkpoint and its predecessor from the retained
+snapshot and deltas. Core writes a fresh snapshot when a run's messages no longer share a prefix or
+after 64 deltas, and keeps only the chains needed for the latest checkpoint and its predecessor.
+Checkpoint writes no longer decode their own payload; recovery still validates every payload and
+resets a run whose checkpoints do not decode.
+
+Startup upgrades schema 1 in place. It adds the `delta` column, clears the duplicated head payloads,
+and keeps every schema 1 checkpoint as a snapshot, so active runs recover their progress across the
+upgrade. No accepted request records change.
+
+Older builds treat schema 2 as an incompatible journal and recreate the journal tables. Their active
+runs then restart from the original accepted messages. Drain active runs before downgrading to avoid
+that loss of progress and the repeated work.
+
 ### Older workflow databases
 
 Workflow source files survive the executable-state clean breaks. For installations predating the

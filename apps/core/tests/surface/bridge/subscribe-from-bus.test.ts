@@ -7,6 +7,7 @@ import {
   BusToAdapterEffectFailed,
   captureBusToAdapterEffect,
   logIngressAcknowledgementCleanupFailure,
+  mergeContinuationText,
 } from "../../../src/surface/bridge/subscribe-from-bus";
 import {
   SurfaceInvalidInput,
@@ -350,6 +351,23 @@ function relayFailure(error: SurfaceOperationError): BusToAdapterEffectFailed {
     return cause;
   }
 }
+
+describe("mergeContinuationText", () => {
+  it("drops only the longest replayed overlap", () => {
+    expect(mergeContinuationText("hello wor", "world")).toBe("hello world");
+    expect(mergeContinuationText("abab", "ababc")).toBe("ababc");
+    expect(mergeContinuationText("aaab", "abaa")).toBe("aaabaa");
+    expect(mergeContinuationText("first", "second")).toBe("firstsecond");
+    expect(mergeContinuationText("", "next")).toBe("next");
+    expect(mergeContinuationText("kept", "")).toBe("kept");
+  });
+
+  it("merges long repeated continuations at the longest overlap", () => {
+    const replayed = "a".repeat(200_000);
+    expect(mergeContinuationText(`${replayed}b`, replayed)).toBe(`${replayed}b${replayed}`);
+    expect(mergeContinuationText(replayed, `${replayed.slice(1)}c`)).toBe(`${replayed}c`);
+  });
+});
 
 describe("surface operation relay adaptation", () => {
   it.each([

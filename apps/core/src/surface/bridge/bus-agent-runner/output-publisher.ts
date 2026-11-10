@@ -12,6 +12,8 @@ import { captureRuntimeError } from "../../../runtime/error-format";
 
 export const AGENT_OUTPUT_FLUSH_INTERVAL_MS = 40;
 export const AGENT_OUTPUT_FLUSH_BYTES = 4 * 1024;
+/** Surface relays show at most this many characters of the current reasoning chunk. */
+export const REASONING_DETAIL_MAX_CHARS = 4_000;
 
 type TextData = LilacDataForType<typeof lilacEventTypes.EvtAgentOutputDeltaText>;
 type TextResetData = LilacDataForType<typeof lilacEventTypes.EvtAgentOutputTextReset>;

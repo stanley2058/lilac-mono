@@ -45,7 +45,7 @@ test("a single output publication failure reaches runtime supervision and preser
       skillIds: [],
     });
     await started.promise;
-    await fixture.runner.getActiveDrainOperation();
+    await fixture.runner.waitForIdle();
     expect(fixture.fatalErrors).toHaveLength(1);
     expect(fixture.fatalErrors[0]?.message).toBe("Native output publication failed");
     expect(fixture.store.getInput(receipt.inputId).unwrap().state).toBe("admitted");

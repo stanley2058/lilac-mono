@@ -35,12 +35,12 @@ import {
   hashCoreNamedExecutionScope,
   supportsCoreNamedContinuationStore,
   type CoreNamedClaudeRuntime,
-} from "../surface/bridge/bus-agent-runner/core-named-continuation";
+} from "./core-named-continuation";
 import {
   createCorePrimaryClaudeRuntime as createCorePrimaryClaudeRuntimeResult,
   supportsCorePrimaryContinuationStore,
   type CorePrimaryClaudeRuntime,
-} from "../surface/bridge/bus-agent-runner/core-primary-continuation";
+} from "./core-primary-continuation";
 
 type Level1ToolAuthorityTarget = Pick<AiSdkPiAgent<ToolSet>, "setTools" | "setActiveTools">;
 export function shouldUsePersistentCoreClaudeRuntime(input: {
