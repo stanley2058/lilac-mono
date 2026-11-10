@@ -5,6 +5,8 @@ import type { ComposerSubmission } from "./types";
 export type PendingInput = {
   commandId: string;
   text: string;
+  /** When the person sent it, so the optimistic turn groups and times like the confirmed one. */
+  createdAt: number;
   submission: ComposerSubmission;
   input?: NativeInput;
   error?: string;
@@ -50,4 +52,16 @@ export async function deliverPendingInput(
       update({ input: undefined, state: "rejected", error: outcome.error.message });
       return outcome;
   }
+}
+
+/** Returns a new map so React sees the change; `null` drops the thread's entries. */
+export function patchPendingInputs(
+  inputs: ReadonlyMap<string, PendingInput[]>,
+  threadId: string,
+  update: ((entries: PendingInput[]) => PendingInput[]) | null,
+): Map<string, PendingInput[]> {
+  const changed = new Map(inputs);
+  if (update) changed.set(threadId, update(changed.get(threadId) ?? []));
+  else changed.delete(threadId);
+  return changed;
 }

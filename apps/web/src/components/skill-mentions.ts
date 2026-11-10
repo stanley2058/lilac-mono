@@ -1,5 +1,5 @@
 import { createContext } from "react";
-import type { MdRoot, MdRootContent } from "@platejs/markdown";
+import type { Root as MdRoot, RootContent as MdRootContent } from "mdast";
 import type { SkillChoice } from "@stanley2058/lilac-client-protocol";
 
 export const SkillCatalogContext = createContext<readonly SkillChoice[]>([]);

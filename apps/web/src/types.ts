@@ -24,7 +24,10 @@ export type AppProps = {
   onLogout: () => Promise<void>;
   sessionControl?: ReactNode;
   accountProfile?: ReactNode;
-  draftCache?: Pick<WebNativeCache, "readDraft" | "saveDraft" | "listLocalDrafts" | "deleteDraft">;
+  /** Clerk deployments add people by their Clerk user ID; local sign-in has no such ID. */
+  authProvider?: "local" | "clerk";
+  draftCache?: Pick<WebNativeCache, "readDraft" | "saveDraft" | "listLocalDrafts" | "deleteDraft"> &
+    Partial<Pick<WebNativeCache, "flushDrafts" | "listDraftedThreads">>;
 };
 export type Attachment = {
   key: string;

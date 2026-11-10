@@ -1,7 +1,7 @@
-import type { MdRoot, MdRootContent, unistLib } from "@platejs/markdown";
+import type { Root as MdRoot, RootContent as MdRootContent } from "mdast";
 
 export function composerParagraphSpacing() {
-  return (tree: unistLib.Node & { children?: MdRootContent[] }) => {
+  return (tree: { children?: MdRootContent[]; position?: MdRoot["position"] }) => {
     if (!tree.children) return;
     const children: MdRootContent[] = [];
     const first = tree.children[0];

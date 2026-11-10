@@ -349,7 +349,7 @@
 
 /* Phones cannot spare a gutter, so text uses the full column. The avatar shares the work summary
    row when the reply has one and takes its own row otherwise. */
-@media (max-width: 47.5rem) {
+@media (width < 47.5rem) {
   .timeline .turn {
     padding-left: calc(var(--ui-space-unit) * 4);
   }

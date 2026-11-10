@@ -525,7 +525,13 @@ function Footer({ card }: { card: WorkflowCardData }) {
       {used || queued ? (
         <Tooltip>
           <TooltipTrigger
-            render={<span data-ui="workflow-agents" className="inline-flex items-center gap-1" />}
+            render={
+              <span
+                data-ui="workflow-agents"
+                tabIndex={0}
+                className="inline-flex items-center gap-1 rounded-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              />
+            }
           >
             <Bot aria-hidden="true" className="size-3.5" />
             {used} {used === 1 ? "agent" : "agents"}

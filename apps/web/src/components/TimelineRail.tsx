@@ -9,12 +9,26 @@ import {
   useSyncExternalStore,
   type KeyboardEvent,
   type MouseEvent,
+  type RefObject,
 } from "react";
-import { queryOptions, skipToken, useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { Result } from "better-result";
+import {
+  queryOptions,
+  skipToken,
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "cn";
 import type { NativeThreadStore } from "@stanley2058/lilac-client";
-import { turnPreviewText, type TurnPreview } from "@stanley2058/lilac-client-protocol";
+import {
+  turnPreviewText,
+  type ThreadOutline,
+  type TurnPreview,
+} from "@stanley2058/lilac-client-protocol";
 import {
   RAIL_MIN_ITEMS,
   mergeOutlinePages,
@@ -32,6 +46,7 @@ import {
   railTrackStart,
   railVisibleCount,
   slotIndexForPosition,
+  spliceNewestOutlinePage,
   windowTimeRange,
   type OutlineSource,
   type RailAnchor,
@@ -73,15 +88,19 @@ export function useRailOutline(
     // Turns can arrive while the rail is unmounted, and the revision check only sees later changes.
     refetchOnMount: "always",
   });
-  const { refetch, data } = query;
+  const { data } = query;
+  const queries = useQueryClient();
   // The last revision fetched while connected; one seen offline refetches once the connection returns.
   const online = !!source?.online;
   const fetched = useRef(online ? revision : undefined);
   useEffect(() => {
-    if (!online || fetched.current === revision) return;
+    if (!source?.online || generation === undefined || fetched.current === revision) return;
     fetched.current = revision;
-    void refetch({ cancelRefetch: false });
-  }, [online, revision, refetch]);
+    // Turns change only at the newest end, so earlier pages the reader loaded stay as they are.
+    const controller = new AbortController();
+    void refreshNewestOutlinePage(queries, source, threadId, generation, controller.signal);
+    return () => controller.abort();
+  }, [source, threadId, generation, revision, queries]);
   const items = useMemo(() => {
     const pages = data?.pages.filter((page) => page.historyGeneration === generation) ?? [];
     return railItems(mergeOutlinePages(pages));
@@ -93,6 +112,30 @@ export function useRailOutline(
     loadEarlier: query.fetchNextPage,
     loadingEarlier: query.isFetchingNextPage,
   };
+}
+
+async function refreshNewestOutlinePage(
+  queries: QueryClient,
+  source: OutlineSource,
+  threadId: string,
+  generation: number,
+  signal: AbortSignal,
+) {
+  const queryKey = ["thread-outline", threadId, generation];
+  const fresh = await Result.tryPromise({
+    try: () => source.page(undefined, signal),
+    catch: () => "The outline did not load",
+  });
+  fresh.match({
+    ok: (page) => {
+      if (signal.aborted) return;
+      queries.setQueryData<InfiniteData<ThreadOutline, number | undefined>>(queryKey, (current) =>
+        current ? { ...current, pages: spliceNewestOutlinePage(current.pages, page) } : current,
+      );
+    },
+    // The next turn change refreshes the rail again.
+    err: () => {},
+  });
 }
 
 function previewOptions(
@@ -320,7 +363,10 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
   const activate = (index: number | null) => {
     const next = index === null ? undefined : railAnchor(items[index]);
     // Moving within one tick keeps the same anchor, so it doesn't rerender the rail.
-    setActiveAnchor((value) => (value?.key === next?.key ? value : next));
+    setActiveAnchor((value) => {
+      const same = value?.key === next?.key;
+      return same ? value : next;
+    });
   };
   const preview = useRailPreviews(
     props.source,
@@ -508,7 +554,7 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
                       item.window.firstPosition <= contextStart &&
                       contextStart < item.window.endPosition
                     }
-                    strips={strips.current}
+                    strips={strips}
                   />
                 );
               })}
@@ -613,7 +659,7 @@ const RailStrip = memo(function RailStrip({
   top: number;
   distance: number | null;
   context: boolean;
-  strips: Map<string, HTMLSpanElement>;
+  strips: RefObject<Map<string, HTMLSpanElement>>;
 }) {
   return (
     // Width tiers are a scale on a fixed box and the in-view highlight is an opacity overlay, so
@@ -633,8 +679,8 @@ const RailStrip = memo(function RailStrip({
       )}
       style={{ top }}
       ref={(node) => {
-        if (node) strips.set(item.key, node);
-        else strips.delete(item.key);
+        if (node) strips.current.set(item.key, node);
+        else strips.current.delete(item.key);
       }}
     >
       <span

@@ -1,0 +1,4991 @@
+{
+  "markdown": [
+    {
+      "input": "",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          }
+        ]
+      },
+      "draft": "",
+      "submission": "",
+      "text": ""
+    },
+    {
+      "input": " ",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          }
+        ]
+      },
+      "draft": "",
+      "submission": "",
+      "text": ""
+    },
+    {
+      "input": "\n",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          }
+        ]
+      },
+      "draft": "",
+      "submission": "",
+      "text": ""
+    },
+    {
+      "input": "\n\n",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          }
+        ]
+      },
+      "draft": "",
+      "submission": "",
+      "text": ""
+    },
+    {
+      "input": "first\n\n\nlast",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "first"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "last"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "first\n\n\nlast",
+      "submission": "first\n\n\nlast",
+      "text": "first\n\n\n\n\n\nlast"
+    },
+    {
+      "input": "first\n\n\n\nfifth",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "first"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "fifth"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "first\n\n\n\nfifth",
+      "submission": "first\n\n\n\nfifth",
+      "text": "first\n\n\n\n\n\n\n\nfifth"
+    },
+    {
+      "input": "\nfirst",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "first"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "\nfirst",
+      "submission": "\nfirst",
+      "text": "\n\nfirst"
+    },
+    {
+      "input": "first\n",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "first"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          }
+        ]
+      },
+      "draft": "first\n",
+      "submission": "first\n",
+      "text": "first\n\n"
+    },
+    {
+      "input": "first\n\n",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "first"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          }
+        ]
+      },
+      "draft": "first\n\n",
+      "submission": "first\n\n",
+      "text": "first\n\n\n\n"
+    },
+    {
+      "input": "**first**\n_last_",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "first"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "italic"
+                  }
+                ],
+                "text": "last"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "**first**\n_last_",
+      "submission": "**first**\n_last_",
+      "text": "first\nlast"
+    },
+    {
+      "input": "first\n\nsecond\n\nthird",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "first"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "second"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "third"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "first\n\nsecond\n\nthird",
+      "submission": "first\n\nsecond\n\nthird",
+      "text": "first\n\n\n\nsecond\n\n\n\nthird"
+    },
+    {
+      "input": "sounds about right.\n\nbtw, cheaper than water (whatever that means)\nhttps://simonwillison.net/2026/Sep/22/opus-and-sol-and-luna/",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "sounds about right."
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "btw, cheaper than water (whatever that means)"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "https://simonwillison.net/2026/Sep/22/opus-and-sol-and-luna/"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "sounds about right.\n\nbtw, cheaper than water (whatever that means)\nhttps://simonwillison.net/2026/Sep/22/opus-and-sol-and-luna/",
+      "submission": "sounds about right.\n\nbtw, cheaper than water (whatever that means)\nhttps://simonwillison.net/2026/Sep/22/opus-and-sol-and-luna/",
+      "text": "sounds about right.\n\n\n\nbtw, cheaper than water (whatever that means)\nhttps://simonwillison.net/2026/Sep/22/opus-and-sol-and-luna/"
+    },
+    {
+      "input": "# Heading\n\n**bold** _italic_ ~~strike~~ `code`\n\n* one\n* two\n\n1. first\n2. second\n\n> quote\n\n[link](https://example.com)\n\n```ts\nconst x = 1;\n```",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "indent": 0,
+              "level": 1
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Heading"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "bold"
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "italic"
+                  }
+                ],
+                "text": "italic"
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "strike"
+                  }
+                ],
+                "text": "strike"
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "code"
+                  }
+                ],
+                "text": "code"
+              }
+            ]
+          },
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "one"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "two"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "orderedList",
+            "attrs": {
+              "start": 1,
+              "type": null
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "first"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "second"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "blockquote",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "paragraph",
+                "attrs": {
+                  "indent": 0
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "quote"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "[link](https://example.com)"
+              }
+            ]
+          },
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": "ts"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "const x = 1;"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "# Heading\n\n**bold** _italic_ ~~strike~~ `code`\n\n* one\n* two\n\n1. first\n2. second\n\n> quote\n\n[link](https://example.com)\n\n```ts\nconst x = 1;\n```",
+      "submission": "# Heading\n\n**bold** _italic_ ~~strike~~ `code`\n\n* one\n* two\n\n1. first\n2. second\n\n> quote\n\n[link](https://example.com)\n\n```ts\nconst x = 1;\n```",
+      "text": "Heading\n\nbold italic strike code\n\none\n\ntwo\n\nfirst\n\nsecond\n\nquote\n\n[link](https://example.com)\n\nconst x = 1;"
+    },
+    {
+      "input": "* one\n  * nested\n* two",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "one"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "bulletList",
+                    "attrs": {
+                      "composerListStyle": "disc"
+                    },
+                    "content": [
+                      {
+                        "type": "listItem",
+                        "attrs": {
+                          "checked": null
+                        },
+                        "content": [
+                          {
+                            "type": "paragraph",
+                            "attrs": {
+                              "indent": 0
+                            },
+                            "content": [
+                              {
+                                "type": "text",
+                                "text": "nested"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "two"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* one\n  * nested\n* two",
+      "submission": "* one\n  * nested\n* two",
+      "text": "one\n\nnested\n\ntwo"
+    },
+    {
+      "input": "* one\n  * two\n    * three\n      * four",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "one"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "bulletList",
+                    "attrs": {
+                      "composerListStyle": "disc"
+                    },
+                    "content": [
+                      {
+                        "type": "listItem",
+                        "attrs": {
+                          "checked": null
+                        },
+                        "content": [
+                          {
+                            "type": "paragraph",
+                            "attrs": {
+                              "indent": 0
+                            },
+                            "content": [
+                              {
+                                "type": "text",
+                                "text": "two"
+                              }
+                            ]
+                          },
+                          {
+                            "type": "bulletList",
+                            "attrs": {
+                              "composerListStyle": "disc"
+                            },
+                            "content": [
+                              {
+                                "type": "listItem",
+                                "attrs": {
+                                  "checked": null
+                                },
+                                "content": [
+                                  {
+                                    "type": "paragraph",
+                                    "attrs": {
+                                      "indent": 0
+                                    },
+                                    "content": [
+                                      {
+                                        "type": "text",
+                                        "text": "three"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "type": "bulletList",
+                                    "attrs": {
+                                      "composerListStyle": "disc"
+                                    },
+                                    "content": [
+                                      {
+                                        "type": "listItem",
+                                        "attrs": {
+                                          "checked": null
+                                        },
+                                        "content": [
+                                          {
+                                            "type": "paragraph",
+                                            "attrs": {
+                                              "indent": 0
+                                            },
+                                            "content": [
+                                              {
+                                                "type": "text",
+                                                "text": "four"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* one\n  * two\n    * three\n      * four",
+      "submission": "* one\n  * two\n    * three\n      * four",
+      "text": "one\n\ntwo\n\nthree\n\nfour"
+    },
+    {
+      "input": "#### Fourth\n\n##### Fifth\n\n###### Sixth",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "indent": 0,
+              "level": 4
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Fourth"
+              }
+            ]
+          },
+          {
+            "type": "heading",
+            "attrs": {
+              "indent": 0,
+              "level": 5
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Fifth"
+              }
+            ]
+          },
+          {
+            "type": "heading",
+            "attrs": {
+              "indent": 0,
+              "level": 6
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Sixth"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "#### Fourth\n\n##### Fifth\n\n###### Sixth",
+      "submission": "#### Fourth\n\n##### Fifth\n\n###### Sixth",
+      "text": "Fourth\n\nFifth\n\nSixth"
+    },
+    {
+      "input": "# Heading with **bold** and `code`",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "indent": 0,
+              "level": 1
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Heading with "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "bold"
+              },
+              {
+                "type": "text",
+                "text": " and "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "code"
+                  }
+                ],
+                "text": "code"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "# Heading with **bold** and `code`",
+      "submission": "# Heading with **bold** and `code`",
+      "text": "Heading with bold and code"
+    },
+    {
+      "input": "* [x] done\n* [ ] pending\n  * [x] nested",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "todo"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": true
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "done"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": false
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "pending"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "bulletList",
+                    "attrs": {
+                      "composerListStyle": "todo"
+                    },
+                    "content": [
+                      {
+                        "type": "listItem",
+                        "attrs": {
+                          "checked": true
+                        },
+                        "content": [
+                          {
+                            "type": "paragraph",
+                            "attrs": {
+                              "indent": 0
+                            },
+                            "content": [
+                              {
+                                "type": "text",
+                                "text": "nested"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* [x] done\n* [ ] pending\n  * [x] nested",
+      "submission": "* [x] done\n* [ ] pending\n  * [x] nested",
+      "text": "done\n\npending\n\nnested"
+    },
+    {
+      "input": "- [ ] a\n- [x] b",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "todo"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": false
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "a"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": true
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "b"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* [ ] a\n* [x] b",
+      "submission": "* [ ] a\n* [x] b",
+      "text": "a\n\nb"
+    },
+    {
+      "input": "before\n\n---\n\nafter",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "before"
+              }
+            ]
+          },
+          {
+            "type": "horizontalRule"
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "after"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "before\n\n***\n\nafter",
+      "submission": "before\n\n***\n\nafter",
+      "text": "before\n\n\n\nafter"
+    },
+    {
+      "input": "***\n\n___\n\n- - -",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "horizontalRule"
+          },
+          {
+            "type": "horizontalRule"
+          },
+          {
+            "type": "horizontalRule"
+          }
+        ]
+      },
+      "draft": "",
+      "submission": "",
+      "text": "\n\n\n\n"
+    },
+    {
+      "input": "3. third\n4. fourth",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "orderedList",
+            "attrs": {
+              "start": 3,
+              "type": null
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "third"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "fourth"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "3. third\n4. fourth",
+      "submission": "3. third\n4. fourth",
+      "text": "third\n\nfourth"
+    },
+    {
+      "input": "1. a\n   1. nested ordered\n2. b",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "orderedList",
+            "attrs": {
+              "start": 1,
+              "type": null
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "a"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "orderedList",
+                    "attrs": {
+                      "start": 1,
+                      "type": null
+                    },
+                    "content": [
+                      {
+                        "type": "listItem",
+                        "attrs": {
+                          "checked": null
+                        },
+                        "content": [
+                          {
+                            "type": "paragraph",
+                            "attrs": {
+                              "indent": 0
+                            },
+                            "content": [
+                              {
+                                "type": "text",
+                                "text": "nested ordered"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "b"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "1. a\n   1. nested ordered\n2. b",
+      "submission": "1. a\n   1. nested ordered\n2. b",
+      "text": "a\n\nnested ordered\n\nb"
+    },
+    {
+      "input": "1) paren\n2) list",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "orderedList",
+            "attrs": {
+              "start": 1,
+              "type": null
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "paren"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "list"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "1. paren\n2. list",
+      "submission": "1. paren\n2. list",
+      "text": "paren\n\nlist"
+    },
+    {
+      "input": "+ plus\n+ items",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "plus"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "items"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* plus\n* items",
+      "submission": "* plus\n* items",
+      "text": "plus\n\nitems"
+    },
+    {
+      "input": "- dash\n- items",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "dash"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "items"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* dash\n* items",
+      "submission": "* dash\n* items",
+      "text": "dash\n\nitems"
+    },
+    {
+      "input": "* a\n\n* b",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "a"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "b"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* a\n* b",
+      "submission": "* a\n* b",
+      "text": "a\n\nb"
+    },
+    {
+      "input": "* item\n\n  continuation paragraph",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "item"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 2
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "continuation paragraph"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* item\n\ncontinuation paragraph",
+      "submission": "* item\n\ncontinuation paragraph",
+      "text": "item\n\ncontinuation paragraph"
+    },
+    {
+      "input": "* item\n  ```\n  code\n  ```",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "item"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 2,
+              "language": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "code"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* item\n\n```\ncode\n```",
+      "submission": "* item\n\n```\ncode\n```",
+      "text": "item\n\ncode"
+    },
+    {
+      "input": "1. a\n\n   para in item\n2. b",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "orderedList",
+            "attrs": {
+              "start": 1,
+              "type": null
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "a"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 2
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "para in item"
+              }
+            ]
+          },
+          {
+            "type": "orderedList",
+            "attrs": {
+              "start": 2,
+              "type": null
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "b"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "1. a\n\npara in item\n\n2. b",
+      "submission": "1. a\n\npara in item\n\n2. b",
+      "text": "a\n\npara in item\n\nb"
+    },
+    {
+      "input": "* a\n1. b",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "a"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "orderedList",
+            "attrs": {
+              "start": 1,
+              "type": null
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "b"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* a\n\n1. b",
+      "submission": "* a\n\n1. b",
+      "text": "a\n\nb"
+    },
+    {
+      "input": "* one\n\n\n* two",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "one"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "two"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* one\n* two",
+      "submission": "* one\n* two",
+      "text": "one\n\ntwo"
+    },
+    {
+      "input": "> first\n> next\n>\n> paragraph",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "blockquote",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "paragraph",
+                "attrs": {
+                  "indent": 0
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "first"
+                  },
+                  {
+                    "type": "hardBreak"
+                  },
+                  {
+                    "type": "text",
+                    "text": "next"
+                  }
+                ]
+              },
+              {
+                "type": "paragraph",
+                "attrs": {
+                  "indent": 0
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "paragraph"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "> first\n> next\n>\n> paragraph",
+      "submission": "> first\n> next\n>\n> paragraph",
+      "text": "first\nnextparagraph"
+    },
+    {
+      "input": "> quote\n> * list in quote",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "blockquote",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "paragraph",
+                "attrs": {
+                  "indent": 0
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "quote"
+                  }
+                ]
+              },
+              {
+                "type": "bulletList",
+                "attrs": {
+                  "composerListStyle": "disc"
+                },
+                "content": [
+                  {
+                    "type": "listItem",
+                    "attrs": {
+                      "checked": null
+                    },
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "attrs": {
+                          "indent": 0
+                        },
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "list in quote"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "> quote\n>\n> * list in quote",
+      "submission": "> quote\n>\n> * list in quote",
+      "text": "quotelist in quote"
+    },
+    {
+      "input": "> > nested quote",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "blockquote",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "blockquote",
+                "attrs": {
+                  "indent": 0
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "nested quote"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "> > nested quote",
+      "submission": "> > nested quote",
+      "text": "nested quote"
+    },
+    {
+      "input": "a\n\n> q\n\nb",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "a"
+              }
+            ]
+          },
+          {
+            "type": "blockquote",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "paragraph",
+                "attrs": {
+                  "indent": 0
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "q"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "b"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "a\n\n> q\n\nb",
+      "submission": "a\n\n> q\n\nb",
+      "text": "a\n\nq\n\nb"
+    },
+    {
+      "input": "> ```\n> code in quote\n> ```",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "blockquote",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "codeBlock",
+                "attrs": {
+                  "indent": 0,
+                  "language": null
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "code in quote"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "> ```\n> code in quote\n> ```",
+      "submission": "> ```\n> code in quote\n> ```",
+      "text": "code in quote"
+    },
+    {
+      "input": "**注意：**粗體 ~~刪除：~~文字",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "注意："
+              },
+              {
+                "type": "text",
+                "text": "粗體 "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "strike"
+                  }
+                ],
+                "text": "刪除："
+              },
+              {
+                "type": "text",
+                "text": "文字"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "**注意：**粗體 ~~刪除：~~文字",
+      "submission": "**注意：**粗體 ~~刪除：~~文字",
+      "text": "注意：粗體 刪除：文字"
+    },
+    {
+      "input": "中文 *強調* 和 **粗體**",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "中文 "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "italic"
+                  }
+                ],
+                "text": "強調"
+              },
+              {
+                "type": "text",
+                "text": " 和 "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "粗體"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "中文 _強調_ 和 **粗體**",
+      "submission": "中文 _強調_ 和 **粗體**",
+      "text": "中文 強調 和 粗體"
+    },
+    {
+      "input": "https://example.com/a_b?q=one&next=two",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "https://example.com/a_b?q=one&next=two"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "https://example.com/a_b?q=one&next=two",
+      "submission": "https://example.com/a_b?q=one&next=two",
+      "text": "https://example.com/a_b?q=one&next=two"
+    },
+    {
+      "input": "[example.com](https://example.com)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "[example.com](https://example.com)"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "[example.com](https://example.com)",
+      "submission": "[example.com](https://example.com)",
+      "text": "[example.com](https://example.com)"
+    },
+    {
+      "input": "[example](https://example.com/a_(b) \"A title\")",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "[example](https://example.com/a_(b) \"A title\")"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "[example](https://example.com/a_(b) \"A title\")",
+      "submission": "[example](https://example.com/a_(b) \"A title\")",
+      "text": "[example](https://example.com/a_(b) \"A title\")"
+    },
+    {
+      "input": "Before [**label**](https://example.com) after",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Before [**label**](https://example.com) after"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Before [**label**](https://example.com) after",
+      "submission": "Before [**label**](https://example.com) after",
+      "text": "Before [**label**](https://example.com) after"
+    },
+    {
+      "input": "[https://example.com](https://example.com)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "[https://example.com](https://example.com)"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "[https://example.com](https://example.com)",
+      "submission": "[https://example.com](https://example.com)",
+      "text": "[https://example.com](https://example.com)"
+    },
+    {
+      "input": "[line\nbreak](https://example.com)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "[line"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "break](https://example.com)"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "[line\nbreak](https://example.com)",
+      "submission": "[line\nbreak](https://example.com)",
+      "text": "[line\nbreak](https://example.com)"
+    },
+    {
+      "input": "Before 0 [example](https://example.com) after",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Before 0 [example](https://example.com) after"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Before 0 [example](https://example.com) after",
+      "submission": "Before 0 [example](https://example.com) after",
+      "text": "Before 0 [example](https://example.com) after"
+    },
+    {
+      "input": "<https://example.com>",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "<https://example.com>"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "<https://example.com>",
+      "submission": "<https://example.com>",
+      "text": "<https://example.com>"
+    },
+    {
+      "input": "www.example.com and user@example.com",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "www.example.com and user@example.com"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "www.example.com and user@example.com",
+      "submission": "www.example.com and user@example.com",
+      "text": "www.example.com and user@example.com"
+    },
+    {
+      "input": "[ref][1]\n\n[1]: https://x.example",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          }
+        ]
+      },
+      "draft": "",
+      "submission": "",
+      "text": ""
+    },
+    {
+      "input": "[empty]()",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "[empty]()"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "[empty]()",
+      "submission": "[empty]()",
+      "text": "[empty]()"
+    },
+    {
+      "input": "[link with *emph*](http://a.example)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "[link with *emph*](http://a.example)"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "[link with *emph*](http://a.example)",
+      "submission": "[link with *emph*](http://a.example)",
+      "text": "[link with *emph*](http://a.example)"
+    },
+    {
+      "input": "![alt](https://x.example/y.png)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          }
+        ]
+      },
+      "draft": "",
+      "submission": "",
+      "text": ""
+    },
+    {
+      "input": "Text ![img](https://x.example/u.png) more",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Text "
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": " more"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Text \n\n&#x20;more",
+      "submission": "Text \n\n&#x20;more",
+      "text": "Text \n\n\n\n more"
+    },
+    {
+      "input": "Footnote[^1]\n\n[^1]: the note",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Footnote"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "the note"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Footnote\nthe note",
+      "submission": "Footnote\nthe note",
+      "text": "Footnote\n\nthe note"
+    },
+    {
+      "input": "<b>html</b> inline",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "<b>html</b> inline"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "\\<b>html\\</b> inline",
+      "submission": "\\<b>html\\</b> inline",
+      "text": "<b>html</b> inline"
+    },
+    {
+      "input": "<div>\nblock html\n</div>",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "<div>"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "block html"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "</div>"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "\\<div>\nblock html\n\\</div>",
+      "submission": "\\<div>\nblock html\n\\</div>",
+      "text": "<div>\nblock html\n</div>"
+    },
+    {
+      "input": "a<br />b",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "a"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "b"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "a\nb",
+      "submission": "a\nb",
+      "text": "a\nb"
+    },
+    {
+      "input": "\\*escaped\\* \\# not heading",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "*escaped* # not heading"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "\\*escaped\\* # not heading",
+      "submission": "\\*escaped\\* # not heading",
+      "text": "*escaped* # not heading"
+    },
+    {
+      "input": "1\\. not a list",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "1. not a list"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "1\\. not a list",
+      "submission": "1\\. not a list",
+      "text": "1. not a list"
+    },
+    {
+      "input": "&amp; &copy; &#35;",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "& © #"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "& © #",
+      "submission": "& © #",
+      "text": "& © #"
+    },
+    {
+      "input": "emoji 😀 and tab\tchar",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "emoji 😀 and tab\tchar"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "emoji 😀 and tab\tchar",
+      "submission": "emoji 😀 and tab\tchar",
+      "text": "emoji 😀 and tab\tchar"
+    },
+    {
+      "input": "line with trailing spaces   ",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "line with trailing spaces   "
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "line with trailing spaces   ",
+      "submission": "line with trailing spaces   ",
+      "text": "line with trailing spaces   "
+    },
+    {
+      "input": "  leading spaces",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "leading spaces"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "leading spaces",
+      "submission": "leading spaces",
+      "text": "leading spaces"
+    },
+    {
+      "input": "\ttab start",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "tab start"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "```\ntab start\n```",
+      "submission": "```\ntab start\n```",
+      "text": "tab start"
+    },
+    {
+      "input": "trailing backslash\\",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "trailing backslash\\"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "trailing backslash\\\\",
+      "submission": "trailing backslash\\\\",
+      "text": "trailing backslash\\"
+    },
+    {
+      "input": "a  \nb",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "a"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "b"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "a\nb",
+      "submission": "a\nb",
+      "text": "a\nb"
+    },
+    {
+      "input": "a\\\nb",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "a"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "b"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "a\nb",
+      "submission": "a\nb",
+      "text": "a\nb"
+    },
+    {
+      "input": "Title\n=====",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "indent": 0,
+              "level": 1
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Title"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "# Title",
+      "submission": "# Title",
+      "text": "Title"
+    },
+    {
+      "input": "Sub\n---",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "indent": 0,
+              "level": 2
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Sub"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "## Sub",
+      "submission": "## Sub",
+      "text": "Sub"
+    },
+    {
+      "input": "    indented code",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "indented code"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "```\nindented code\n```",
+      "submission": "```\nindented code\n```",
+      "text": "indented code"
+    },
+    {
+      "input": "```\nno lang\n```",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "no lang"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "```\nno lang\n```",
+      "submission": "```\nno lang\n```",
+      "text": "no lang"
+    },
+    {
+      "input": "~~~py\nx\n~~~",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": "py"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "x"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "```py\nx\n```",
+      "submission": "```py\nx\n```",
+      "text": "x"
+    },
+    {
+      "input": "````\n```\nnested fence\n```\n````",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "```\nnested fence\n```"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "````\n```\nnested fence\n```\n````",
+      "submission": "````\n```\nnested fence\n```\n````",
+      "text": "```nested fence```"
+    },
+    {
+      "input": "```\n$review\n```",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "$review"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "```\n$review\n```",
+      "submission": "```\n$review\n```",
+      "text": "$review"
+    },
+    {
+      "input": "*a* __b__ ***c*** _**d**_",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "italic"
+                  }
+                ],
+                "text": "a"
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "b"
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  },
+                  {
+                    "type": "italic"
+                  }
+                ],
+                "text": "c"
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  },
+                  {
+                    "type": "italic"
+                  }
+                ],
+                "text": "d"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "_a_ **b** _**c**_ _**d**_",
+      "submission": "_a_ **b** _**c**_ _**d**_",
+      "text": "a b c d"
+    },
+    {
+      "input": "**bold with `code` inside**",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "bold with "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  },
+                  {
+                    "type": "code"
+                  }
+                ],
+                "text": "code"
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": " inside"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "**bold with `code` inside**",
+      "submission": "**bold with `code` inside**",
+      "text": "bold with code inside"
+    },
+    {
+      "input": "`` code with ` backtick ``",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "code"
+                  }
+                ],
+                "text": "code with ` backtick"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "``code with ` backtick``",
+      "submission": "``code with ` backtick``",
+      "text": "code with ` backtick"
+    },
+    {
+      "input": "a ~~b~~ ~c~",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "a "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "strike"
+                  }
+                ],
+                "text": "b"
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "strike"
+                  }
+                ],
+                "text": "c"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "a ~~b~~ ~~c~~",
+      "submission": "a ~~b~~ ~~c~~",
+      "text": "a b c"
+    },
+    {
+      "input": "$x$ and $$y$$",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "$x$ and $$y$$"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "$x$ and $$y$$",
+      "submission": "$x$ and $$y$$",
+      "text": "$x$ and $$y$$"
+    },
+    {
+      "input": "@mention #tag",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "@mention #tag"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "@mention #tag",
+      "submission": "@mention #tag",
+      "text": "@mention #tag"
+    },
+    {
+      "input": "$my_skill",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "$my_skill"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "$my\\_skill",
+      "submission": "$my\\_skill",
+      "text": "$my_skill"
+    },
+    {
+      "input": "/skill:my_skill next",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "/skill:my_skill next"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "/skill:my\\_skill next",
+      "submission": "/skill:my\\_skill next",
+      "text": "/skill:my_skill next"
+    },
+    {
+      "input": "/my_command argument_with_underscores",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "/my_command argument_with_underscores"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "/my\\_command argument\\_with\\_underscores",
+      "submission": "/my\\_command argument\\_with\\_underscores",
+      "text": "/my_command argument_with_underscores"
+    },
+    {
+      "input": "/fixture-status ",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "/fixture-status "
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "/fixture-status ",
+      "submission": "/fixture-status ",
+      "text": "/fixture-status "
+    },
+    {
+      "input": "**Keep** $Rev later",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "Keep"
+              },
+              {
+                "type": "text",
+                "text": " $Rev later"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "**Keep** $Rev later",
+      "submission": "**Keep** $Rev later",
+      "text": "Keep $Rev later"
+    },
+    {
+      "input": "**Compare**  with the earlier image",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "Compare"
+              },
+              {
+                "type": "text",
+                "text": "  with the earlier image"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "**Compare**  with the earlier image",
+      "submission": "**Compare**  with the earlier image",
+      "text": "Compare  with the earlier image"
+    },
+    {
+      "input": "**Compare** [screen.png](attachment:image-one)  with the earlier image",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "Compare"
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "composer_attachment",
+                "attrs": {
+                  "attachmentKey": "image-one",
+                  "name": "screen.png"
+                }
+              },
+              {
+                "type": "text",
+                "text": "  with the earlier image"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "**Compare** [screen.png](attachment:image-one)  with the earlier image",
+      "submission": "**Compare** screen.png  with the earlier image",
+      "text": "Compare screen.png  with the earlier image"
+    },
+    {
+      "input": "Compare [my_\\[draft\\].txt](attachment:file) after",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Compare "
+              },
+              {
+                "type": "composer_attachment",
+                "attrs": {
+                  "attachmentKey": "file",
+                  "name": "my_[draft].txt"
+                }
+              },
+              {
+                "type": "text",
+                "text": " after"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Compare [my\\_\\[draft\\].txt](attachment:file) after",
+      "submission": "Compare my\\_\\[draft].txt after",
+      "text": "Compare my_[draft].txt after"
+    },
+    {
+      "input": "[x](attachment:a) [x](attachment:b)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "composer_attachment",
+                "attrs": {
+                  "attachmentKey": "a",
+                  "name": "x"
+                }
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "composer_attachment",
+                "attrs": {
+                  "attachmentKey": "b",
+                  "name": "x"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "[x](attachment:a) [x](attachment:b)",
+      "submission": "x x",
+      "text": "x x"
+    },
+    {
+      "input": "See [notes.txt](attachment:old-key) and `attachment:old-key`.\n\n```md\n[notes.txt](attachment:old-key)\n```",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "See "
+              },
+              {
+                "type": "composer_attachment",
+                "attrs": {
+                  "attachmentKey": "old-key",
+                  "name": "notes.txt"
+                }
+              },
+              {
+                "type": "text",
+                "text": " and "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "code"
+                  }
+                ],
+                "text": "attachment:old-key"
+              },
+              {
+                "type": "text",
+                "text": "."
+              }
+            ]
+          },
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": "md"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "[notes.txt](attachment:old-key)"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "See [notes.txt](attachment:old-key) and `attachment:old-key`.\n\n```md\n[notes.txt](attachment:old-key)\n```",
+      "submission": "See notes.txt and `attachment:old-key`.\n\n```md\n[notes.txt](attachment:old-key)\n```",
+      "text": "See notes.txt and attachment:old-key.\n\n[notes.txt](attachment:old-key)"
+    },
+    {
+      "input": "* [file.txt](attachment:in-list)\n* > not a quote",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "composer_attachment",
+                        "attrs": {
+                          "attachmentKey": "in-list",
+                          "name": "file.txt"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "not a quote"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* [file.txt](attachment:in-list)\n* not a quote",
+      "submission": "* file.txt\n* not a quote",
+      "text": "file.txt\n\nnot a quote"
+    },
+    {
+      "input": "> [file.txt](attachment:in-quote)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "blockquote",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "paragraph",
+                "attrs": {
+                  "indent": 0
+                },
+                "content": [
+                  {
+                    "type": "composer_attachment",
+                    "attrs": {
+                      "attachmentKey": "in-quote",
+                      "name": "file.txt"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "> [file.txt](attachment:in-quote)",
+      "submission": "> file.txt",
+      "text": "file.txt"
+    },
+    {
+      "input": "# [file.txt](attachment:in-heading)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "indent": 0,
+              "level": 1
+            },
+            "content": [
+              {
+                "type": "composer_attachment",
+                "attrs": {
+                  "attachmentKey": "in-heading",
+                  "name": "file.txt"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "# [file.txt](attachment:in-heading)",
+      "submission": "# file.txt",
+      "text": "file.txt"
+    },
+    {
+      "input": "[Discussion](/?ref=discord%3Achannel&range=first..last)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "composer_reference",
+                "attrs": {
+                  "url": "/?ref=discord%3Achannel&range=first..last"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "[#discord:channel](/?ref=discord%3Achannel\\&range=first..last)",
+      "submission": "[#discord:channel](/?ref=discord%3Achannel\\&range=first..last)",
+      "text": "/?ref=discord%3Achannel&range=first..last"
+    },
+    {
+      "input": "[#native:thread](/?ref=native%3Athread&message=message)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "composer_reference",
+                "attrs": {
+                  "url": "/?ref=native%3Athread&message=message"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "[#native:thread/message](/?ref=native%3Athread\\&message=message)",
+      "submission": "[#native:thread/message](/?ref=native%3Athread\\&message=message)",
+      "text": "/?ref=native%3Athread&message=message"
+    },
+    {
+      "input": "Before [#native:thread](/?ref=native%3Athread) after",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Before "
+              },
+              {
+                "type": "composer_reference",
+                "attrs": {
+                  "url": "/?ref=native%3Athread"
+                }
+              },
+              {
+                "type": "text",
+                "text": " after"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Before [#native:thread](/?ref=native%3Athread) after",
+      "submission": "Before [#native:thread](/?ref=native%3Athread) after",
+      "text": "Before /?ref=native%3Athread after"
+    },
+    {
+      "input": "Quote [Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)\n\n`[Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)`",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Quote "
+              },
+              {
+                "type": "composer_citation",
+                "attrs": {
+                  "url": "lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix="
+                }
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "code"
+                  }
+                ],
+                "text": "[Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Quote [Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)\n\n`[Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)`",
+      "submission": "Quote [Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)\n\n`[Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)`",
+      "text": "Quote A saved quote\n\n\n\n[Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)"
+    },
+    {
+      "input": "* [Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "composer_citation",
+                        "attrs": {
+                          "url": "lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix="
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* [Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)",
+      "submission": "* [Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)",
+      "text": "A saved quote"
+    },
+    {
+      "input": "Check wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa and tell me.",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Check "
+              },
+              {
+                "type": "composer_workflow_run",
+                "attrs": {
+                  "runId": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              },
+              {
+                "type": "text",
+                "text": " and tell me."
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Check wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa and tell me.",
+      "submission": "Check wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa and tell me.",
+      "text": "Check wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa and tell me."
+    },
+    {
+      "input": "Use `wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` here",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Use "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "code"
+                  }
+                ],
+                "text": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              {
+                "type": "text",
+                "text": " here"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Use `wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` here",
+      "submission": "Use `wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` here",
+      "text": "Use wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa here"
+    },
+    {
+      "input": "```\nwfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "```\nwfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```",
+      "submission": "```\nwfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```",
+      "text": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "input": "**wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa** and ~~wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa~~",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "composer_workflow_run",
+                "attrs": {
+                  "runId": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": " and "
+              },
+              {
+                "type": "composer_workflow_run",
+                "attrs": {
+                  "runId": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "marks": [
+                  {
+                    "type": "strike"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "**wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa** and ~~wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa~~",
+      "submission": "**wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa** and ~~wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa~~",
+      "text": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa and wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "input": "* wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "composer_workflow_run",
+                        "attrs": {
+                          "runId": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "submission": "* wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "text": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "input": "| Surface | Input | Output |\n| :--- | --- | ---: |\n| **Web** | Text and files | [Rich content](https://example.com) |\n| TUI | `a\\|b` | Plain text |",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "| Surface | Input | Output |"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "| :--- | --- | ---: |"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "| **Web** | Text and files | [Rich content](https://example.com) |"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "| TUI | `a\\|b` | Plain text |"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "| Surface | Input | Output |\n| :--- | --- | ---: |\n| **Web** | Text and files | [Rich content](https://example.com) |\n| TUI | `a\\|b` | Plain text |",
+      "submission": "| Surface | Input | Output |\n| :--- | --- | ---: |\n| **Web** | Text and files | [Rich content](https://example.com) |\n| TUI | `a\\|b` | Plain text |",
+      "text": "| Surface | Input | Output |\n| :--- | --- | ---: |\n| **Web** | Text and files | [Rich content](https://example.com) |\n| TUI | `a\\|b` | Plain text |"
+    },
+    {
+      "input": "Before\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nAfter",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Before"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "| A | B |"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "| --- | --- |"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "| 1 | 2 |"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "After"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Before\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nAfter",
+      "submission": "Before\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nAfter",
+      "text": "Before\n\n\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n\n\nAfter"
+    },
+    {
+      "input": "> | A | B |\n> | --- | --- |\n> | 1 | 2 |",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "blockquote",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "paragraph",
+                "attrs": {
+                  "indent": 0
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "| A | B |"
+                  },
+                  {
+                    "type": "hardBreak"
+                  },
+                  {
+                    "type": "text",
+                    "text": "| --- | --- |"
+                  },
+                  {
+                    "type": "hardBreak"
+                  },
+                  {
+                    "type": "text",
+                    "text": "| 1 | 2 |"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "> | A | B |\n> | --- | --- |\n> | 1 | 2 |",
+      "submission": "> | A | B |\n> | --- | --- |\n> | 1 | 2 |",
+      "text": "| A | B |\n| --- | --- |\n| 1 | 2 |"
+    },
+    {
+      "input": "| Name | Link |\n| --- | --- |\n| Earth | [Docs][ref] |\n\n[ref]: https://example.com \"Title\"",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "| Name | Link |"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "| --- | --- |"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "| Earth | [Docs][ref] |"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "[ref]: https://example.com \"Title\""
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "| Name | Link |\n| --- | --- |\n| Earth | [Docs][ref] |\n\n[ref]: https://example.com \"Title\"",
+      "submission": "| Name | Link |\n| --- | --- |\n| Earth | [Docs][ref] |\n\n[ref]: https://example.com \"Title\"",
+      "text": "| Name | Link |\n| --- | --- |\n| Earth | [Docs][ref] |\n\n\n\n[ref]: https://example.com \"Title\""
+    },
+    {
+      "input": "| a |\n|---|",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "| a |"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "|---|"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "| a |\n|---|",
+      "submission": "| a |\n|---|",
+      "text": "| a |\n|---|"
+    },
+    {
+      "input": "Text\n| a | b |\n|---|---|\n| 1 | 2 |",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Text"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "| a | b |"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "|---|---|"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "| 1 | 2 |"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "Text\n| a | b |\n|---|---|\n| 1 | 2 |",
+      "submission": "Text\n| a | b |\n|---|---|\n| 1 | 2 |",
+      "text": "Text\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+    },
+    {
+      "input": "* | a | b |\n  |---|---|\n  | 1 | 2 |",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bulletList",
+            "attrs": {
+              "composerListStyle": "disc"
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "attrs": {
+                  "checked": null
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "indent": 0
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "| a | b |"
+                      },
+                      {
+                        "type": "hardBreak"
+                      },
+                      {
+                        "type": "text",
+                        "text": "|---|---|"
+                      },
+                      {
+                        "type": "hardBreak"
+                      },
+                      {
+                        "type": "text",
+                        "text": "| 1 | 2 |"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "* | a | b |\n  |---|---|\n  | 1 | 2 |",
+      "submission": "* | a | b |\n  |---|---|\n  | 1 | 2 |",
+      "text": "| a | b |\n|---|---|\n| 1 | 2 |"
+    },
+    {
+      "input": "hello\n$sk",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "hello"
+              },
+              {
+                "type": "hardBreak"
+              },
+              {
+                "type": "text",
+                "text": "$sk"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "hello\n$sk",
+      "submission": "hello\n$sk",
+      "text": "hello\n$sk"
+    },
+    {
+      "input": "/tarot 3 single more",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "/tarot 3 single more"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "/tarot 3 single more",
+      "submission": "/tarot 3 single more",
+      "text": "/tarot 3 single more"
+    },
+    {
+      "input": "$review /skill:review $reviewer $review-next `$review` **x**$review $Better Result, $a+b\n\n```\n$review\n```",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "$review /skill:review $reviewer $review-next "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "code"
+                  }
+                ],
+                "text": "$review"
+              },
+              {
+                "type": "text",
+                "text": " "
+              },
+              {
+                "type": "text",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ],
+                "text": "x"
+              },
+              {
+                "type": "text",
+                "text": "$review $Better Result, $a+b"
+              }
+            ]
+          },
+          {
+            "type": "codeBlock",
+            "attrs": {
+              "indent": 0,
+              "language": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "$review"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "$review /skill:review $reviewer $review-next `$review` **x**$review $Better Result, $a+b\n\n```\n$review\n```",
+      "submission": "$review /skill:review $reviewer $review-next `$review` **x**$review $Better Result, $a+b\n\n```\n$review\n```",
+      "text": "$review /skill:review $reviewer $review-next $review x$review $Better Result, $a+b\n\n$review"
+    },
+    {
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "read": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "indent": 0
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              }
+            ]
+          }
+        ]
+      },
+      "draft": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "submission": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+  ],
+  "documents": [
+    {
+      "name": "typed emphasis characters",
+      "draft": "\\*not emph\\* \\_no\\_ \\*\\*no\\*\\*",
+      "submission": "\\*not emph\\* \\_no\\_ \\*\\*no\\*\\*",
+      "text": "*not emph* _no_ **no**",
+      "reread": "\\*not emph\\* \\_no\\_ \\*\\*no\\*\\*"
+    },
+    {
+      "name": "typed heading marker",
+      "draft": "\\# not heading",
+      "submission": "\\# not heading",
+      "text": "# not heading",
+      "reread": "\\# not heading"
+    },
+    {
+      "name": "typed list markers",
+      "draft": "1\\. not list\n\\- not list\n\\+ plus",
+      "submission": "1\\. not list\n\\- not list\n\\+ plus",
+      "text": "1. not list\n\n- not list\n\n+ plus",
+      "reread": "1\\. not list\n\\- not list\n\\+ plus"
+    },
+    {
+      "name": "typed quote marker",
+      "draft": "\\> not quote",
+      "submission": "\\> not quote",
+      "text": "> not quote",
+      "reread": "\\> not quote"
+    },
+    {
+      "name": "typed underscores",
+      "draft": "a\\_b\\_c snake\\_case \\_\\_init\\_\\_",
+      "submission": "a\\_b\\_c snake\\_case \\_\\_init\\_\\_",
+      "text": "a_b_c snake_case __init__",
+      "reread": "a\\_b\\_c snake\\_case \\_\\_init\\_\\_"
+    },
+    {
+      "name": "typed html",
+      "draft": "\\<tag> & \\</tag> \\&amp;",
+      "submission": "\\<tag> & \\</tag> \\&amp;",
+      "text": "<tag> & </tag> &amp;",
+      "reread": "\\<tag> & \\</tag> \\&amp;"
+    },
+    {
+      "name": "typed link syntax",
+      "draft": "[x](y) and [label](https://example.com)",
+      "submission": "[x](y) and [label](https://example.com)",
+      "text": "[x](y) and [label](https://example.com)",
+      "reread": "[x](y) and [label](https://example.com)"
+    },
+    {
+      "name": "typed backticks",
+      "draft": "\\`tick\\` and \\`\\`double\\`\\`",
+      "submission": "\\`tick\\` and \\`\\`double\\`\\`",
+      "text": "`tick` and ``double``",
+      "reread": "\\`tick\\` and \\`\\`double\\`\\`"
+    },
+    {
+      "name": "typed backslashes",
+      "draft": "C:\\path\\to and \\\\\\*",
+      "submission": "C:\\path\\to and \\\\\\*",
+      "text": "C:\\path\\to and \\*",
+      "reread": "C:\\path\\to and \\\\\\*"
+    },
+    {
+      "name": "typed tildes and pipes",
+      "draft": "\\~\\~not strike\\~\\~ |a|b|",
+      "submission": "\\~\\~not strike\\~\\~ |a|b|",
+      "text": "~~not strike~~ |a|b|",
+      "reread": "\\~\\~not strike\\~\\~ |a|b|"
+    },
+    {
+      "name": "typed thematic break",
+      "draft": "\\---\n\\*\\*\\*",
+      "submission": "\\---\n\\*\\*\\*",
+      "text": "---\n\n***",
+      "reread": "\\---\n\\*\\*\\*"
+    },
+    {
+      "name": "typed fence",
+      "draft": "\\`\\`\\`js",
+      "submission": "\\`\\`\\`js",
+      "text": "```js",
+      "reread": "\\`\\`\\`js"
+    },
+    {
+      "name": "leading and trailing spaces",
+      "draft": "&#x20; lead and trail  ",
+      "submission": "&#x20; lead and trail  ",
+      "text": "  lead and trail  ",
+      "reread": "&#x20; lead and trail  "
+    },
+    {
+      "name": "only spaces",
+      "draft": "&#x20;  ",
+      "submission": "&#x20;  ",
+      "text": "   ",
+      "reread": "&#x20;  "
+    },
+    {
+      "name": "bold and italic overlap",
+      "draft": "a **bol&#x64;_&#x62;oth_**_italic_ z",
+      "submission": "a **bol&#x64;_&#x62;oth_**_italic_ z",
+      "text": "a boldbothitalic z",
+      "reread": "a **bol&#x64;_&#x62;oth_**_italic_ z"
+    },
+    {
+      "name": "marks with outer spaces",
+      "draft": "&#x20;**spaced** next",
+      "submission": "&#x20;**spaced** next",
+      "text": " spaced next",
+      "reread": "&#x20;**spaced** next"
+    },
+    {
+      "name": "code with bold",
+      "draft": "**`x`** `y`",
+      "submission": "**`x`** `y`",
+      "text": "x y",
+      "reread": "**`x`** `y`"
+    },
+    {
+      "name": "strike and code",
+      "draft": "~~gone~~ ~~`c`~~",
+      "submission": "~~gone~~ ~~`c`~~",
+      "text": "gone c",
+      "reread": "~~gone~~ ~~`c`~~"
+    },
+    {
+      "name": "adjacent bold runs",
+      "draft": "**on&#x65;_&#x74;w&#x6F;_&#x74;hree**",
+      "submission": "**on&#x65;_&#x74;w&#x6F;_&#x74;hree**",
+      "text": "onetwothree",
+      "reread": "**on&#x65;_&#x74;w&#x6F;_&#x74;hree**"
+    },
+    {
+      "name": "hard break in paragraph",
+      "draft": "a\nb",
+      "submission": "a\nb",
+      "text": "a\nb",
+      "reread": "a\nb"
+    },
+    {
+      "name": "hard break at end",
+      "draft": "a\n<br />",
+      "submission": "a\n<br />",
+      "text": "a\n",
+      "reread": "a\n<br />"
+    },
+    {
+      "name": "hard break inside bold",
+      "draft": "**a**\n**b**",
+      "submission": "**a**\n**b**",
+      "text": "a\nb",
+      "reread": "**a**\n**b**"
+    },
+    {
+      "name": "empty paragraphs between",
+      "draft": "a\n\n\nb",
+      "submission": "a\n\n\nb",
+      "text": "a\n\n\n\n\n\nb",
+      "reread": "a\n\n\nb"
+    },
+    {
+      "name": "leading empty paragraph",
+      "draft": "\na",
+      "submission": "\na",
+      "text": "\n\na",
+      "reread": "\na"
+    },
+    {
+      "name": "trailing empty paragraphs",
+      "draft": "a\n\n",
+      "submission": "a\n\n",
+      "text": "a\n\n\n\n",
+      "reread": "a\n\n"
+    },
+    {
+      "name": "heading with break",
+      "draft": "a\nb\n-",
+      "submission": "a\nb\n-",
+      "text": "a\nb",
+      "reread": "a\nb\n-"
+    },
+    {
+      "name": "code block with fence inside",
+      "draft": "````\n```\ninner\n```\n````",
+      "submission": "````\n```\ninner\n```\n````",
+      "text": "```inner```",
+      "reread": "````\n```\ninner\n```\n````"
+    },
+    {
+      "name": "code block with language",
+      "draft": "```py\nprint(1)\n\nprint(2)\n```",
+      "submission": "```py\nprint(1)\n\nprint(2)\n```",
+      "text": "print(1)print(2)",
+      "reread": "```py\nprint(1)\n\nprint(2)\n```"
+    },
+    {
+      "name": "empty code block",
+      "draft": "",
+      "submission": "",
+      "text": "",
+      "reread": ""
+    },
+    {
+      "name": "nested bullet list",
+      "draft": "* a\n  * b\n* c",
+      "submission": "* a\n  * b\n* c",
+      "text": "a\n\nb\n\nc",
+      "reread": "* a\n  * b\n* c"
+    },
+    {
+      "name": "ordered list from three",
+      "draft": "3. c\n4. d",
+      "submission": "3. c\n4. d",
+      "text": "c\n\nd",
+      "reread": "3. c\n4. d"
+    },
+    {
+      "name": "task list",
+      "draft": "* done\n* todo",
+      "submission": "* done\n* todo",
+      "text": "done\n\ntodo",
+      "reread": "* done\n* todo"
+    },
+    {
+      "name": "list item with two paragraphs",
+      "draft": "* first\n* second",
+      "submission": "* first\n* second",
+      "text": "first\n\nsecond",
+      "reread": "* first\n* second"
+    },
+    {
+      "name": "list item with code block",
+      "draft": "* run\n\n```sh\nls\n```",
+      "submission": "* run\n\n```sh\nls\n```",
+      "text": "run\n\nls",
+      "reread": "* run\n\n```sh\nls\n```"
+    },
+    {
+      "name": "empty list item",
+      "draft": "",
+      "submission": "",
+      "text": "",
+      "reread": ""
+    },
+    {
+      "name": "ordered inside bullet",
+      "draft": "* a\n  1. one",
+      "submission": "* a\n  1. one",
+      "text": "a\n\none",
+      "reread": "* a\n  1. one"
+    },
+    {
+      "name": "blockquote with list and code",
+      "draft": "> q\n>\n> * i\n>\n> ```\n> c\n> ```",
+      "submission": "> q\n>\n> * i\n>\n> ```\n> c\n> ```",
+      "text": "qic",
+      "reread": "> q\n>\n> * i\n>\n> ```\n> c\n> ```"
+    },
+    {
+      "name": "empty blockquote",
+      "draft": "",
+      "submission": "",
+      "text": "",
+      "reread": ""
+    },
+    {
+      "name": "indented paragraph",
+      "draft": "indented",
+      "submission": "indented",
+      "text": "indented",
+      "reread": "indented"
+    },
+    {
+      "name": "horizontal rule between",
+      "draft": "a\n\n***\n\nb",
+      "submission": "a\n\n***\n\nb",
+      "text": "a\n\n\n\nb",
+      "reread": "a\n\n***\n\nb"
+    },
+    {
+      "name": "skill chip",
+      "draft": "use $my\\_skill now",
+      "submission": "use $my\\_skill now",
+      "text": "use $my_skill now",
+      "reread": "use $my\\_skill now"
+    },
+    {
+      "name": "workflow chip with mark",
+      "draft": "_wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_",
+      "submission": "_wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_",
+      "text": "wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reread": "_wfrun:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_"
+    },
+    {
+      "name": "attachment in list",
+      "draft": "* [a\\_\\[b\\].txt](attachment:k)",
+      "submission": "* a\\_\\[b].txt",
+      "text": "a_[b].txt",
+      "reread": "* [a\\_\\[b\\].txt](attachment:k)"
+    },
+    {
+      "name": "attachment between marks",
+      "draft": "**x**[f.png](attachment:k)**y**",
+      "submission": "**x**f.png**y**",
+      "text": "xf.pngy",
+      "reread": "**x**[f.png](attachment:k)**y**"
+    },
+    {
+      "name": "reference in quote",
+      "draft": "> [#native:thread](/?ref=native%3Athread)",
+      "submission": "> [#native:thread](/?ref=native%3Athread)",
+      "text": "/?ref=native%3Athread",
+      "reread": "> [#native:thread](/?ref=native%3Athread)"
+    },
+    {
+      "name": "citation in heading",
+      "draft": "# [Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)",
+      "submission": "# [Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)",
+      "text": "A saved quote",
+      "reread": "# [Assistant quote](lilac-citation://v1/quote?thread=thread&message=response&text=A+saved+quote&start=0&end=13&prefix=&suffix=)"
+    },
+    {
+      "name": "unicode and emoji",
+      "draft": "café 😀 中文  nbsp",
+      "submission": "café 😀 中文  nbsp",
+      "text": "café 😀 中文  nbsp",
+      "reread": "café 😀 中文  nbsp"
+    },
+    {
+      "name": "literal url text",
+      "draft": "see https://example.com/a_b and www.example.com",
+      "submission": "see https://example.com/a_b and www.example.com",
+      "text": "see https://example.com/a_b and www.example.com",
+      "reread": "see https://example.com/a_b and www.example.com"
+    }
+  ],
+  "resolve": [
+    {
+      "input": "First [same.png](attachment:first), then [same.png](attachment:second). `literal [same.png](attachment:first)`",
+      "output": "First [same.png](/api/resources/upload-one), then [same.png](/api/resources/upload-two). `literal [same.png](attachment:first)`"
+    },
+    {
+      "input": "[missing.txt](attachment:missing)",
+      "output": "missing.txt"
+    },
+    {
+      "input": "[safe.txt](attachment:known)",
+      "output": "[safe.txt](/api/resources/id%2Fwith%20space)"
+    },
+    {
+      "input": "Compare [image.png](attachment:upload-key)",
+      "output": "Compare [image.png](/api/resources/reserved-id)"
+    },
+    {
+      "input": "[#native:thread](/?ref=native%3Athread&message=message)",
+      "output": "[#native:thread/message](/?ref=native%3Athread\\&message=message)"
+    },
+    {
+      "input": "* [a.txt](attachment:first)\n\n> [b.txt](attachment:second) after  ",
+      "output": "* [a.txt](/api/resources/upload-one)\n\n> [b.txt](/api/resources/upload-two) after  "
+    }
+  ],
+  "remap": [
+    {
+      "input": "See [notes.txt](attachment:old-key) and `attachment:old-key`.\n\n```md\n[notes.txt](attachment:old-key)\n```",
+      "output": "See [notes.txt](attachment:new-key) and `attachment:old-key`.\n\n```md\n[notes.txt](attachment:old-key)\n```"
+    },
+    {
+      "input": "Compare [image.png](attachment:local-key)",
+      "output": "Compare [image.png](attachment:upload-key)"
+    },
+    {
+      "input": "[x](attachment:other) **bold** [y](attachment:old-key)",
+      "output": "[x](attachment:other) **bold** [y](attachment:new-key)"
+    }
+  ],
+  "restore": [
+    {
+      "input": "Before [notes.md](/api/resources/original) after [site](https://example.com).\n\n`/api/resources/original`",
+      "output": "Before [notes.md](attachment:new-key) after [site](https://example.com).\n\n`/api/resources/original`"
+    },
+    {
+      "input": "Before ![notes](/api/resources/original) after",
+      "output": "Before [notes.md](attachment:new-key) after"
+    },
+    {
+      "input": "",
+      "output": "[notes.md](attachment:new-key) "
+    },
+    {
+      "input": "Text only",
+      "output": "Text only [notes.md](attachment:new-key) "
+    },
+    {
+      "input": "Ends with space ",
+      "output": "Ends with space [notes.md](attachment:new-key) "
+    },
+    {
+      "input": "[#native:thread](/?ref=native%3Athread&message=message) and [notes.md](/api/resources/original)",
+      "output": "[#native:thread](/?ref=native%3Athread\\&message=message) and [notes.md](attachment:new-key)"
+    },
+    {
+      "input": "**注意：**粗體 ~~刪除：~~文字",
+      "output": "**注意：**粗體 ~~刪除：~~文字 [notes.md](attachment:new-key) "
+    },
+    {
+      "input": "![other](https://example.com/x.png) and ![notes](/api/resources/original)",
+      "output": "![other](https://example.com/x.png)\n&#x20;and [notes.md](attachment:new-key)"
+    },
+    {
+      "input": "# Heading\n\n* item",
+      "output": "# Heading\n\n* item [notes.md](attachment:new-key) "
+    }
+  ]
+}

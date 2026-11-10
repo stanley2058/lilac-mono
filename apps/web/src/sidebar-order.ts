@@ -1,3 +1,4 @@
+import { newerThread } from "./thread-metadata-store";
 import type {
   NativeRpcInputs,
   NativeThread,
@@ -46,11 +47,14 @@ export function dropAction(
 export function sidebarSnapshot(
   snapshots: { section: SidebarSection; items: NativeThread[]; updatedAt: number }[],
   fallback: NativeThread[] = [],
+  /** The newest metadata known for a conversation, which may be newer than its page. */
+  latest?: (id: string) => NativeThread | undefined,
 ): ThreadQueues {
   const queues: ThreadQueues = { pinned: [], active: [], settled: [] };
   const seen = new Set<string>();
   for (const snapshot of [...snapshots].sort((a, b) => b.updatedAt - a.updatedAt)) {
-    for (const source of snapshot.items) {
+    for (const item of snapshot.items) {
+      const source = newerThread(latest?.(item.id), item);
       if (source.archived || seen.has(source.id)) continue;
       seen.add(source.id);
       queues[snapshot.section].push({ id: source.id, source });

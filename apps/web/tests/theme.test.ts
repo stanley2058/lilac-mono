@@ -190,3 +190,33 @@ test("stored theme selections fall back to Lilac when missing or unknown", () =>
   });
   expect(decodeThemeSelection("not json")).toEqual({ light: "lilac", dark: "lilac" });
 });
+
+test("choosing a color scheme applies it and saves it for the next load", async () => {
+  const saved = new Map<string, string>();
+  const root = {
+    dataset: {} as Record<string, string>,
+    style: { colorScheme: "", setProperty() {} },
+  };
+  const globals = globalThis as Record<string, unknown>;
+  const previous = {
+    document: globals.document,
+    matchMedia: globals.matchMedia,
+    localStorage: globals.localStorage,
+  };
+  globals.document = { documentElement: root };
+  globals.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  globals.localStorage = {
+    getItem: (key: string) => saved.get(key) ?? null,
+    setItem: (key: string, value: string) => void saved.set(key, value),
+  };
+  const { chooseThemeMode, readTheme, setThemeMode } = await import("../src/theme/theme");
+  chooseThemeMode("light");
+  expect(root.dataset.theme).toBe("light");
+  expect(root.style.colorScheme).toBe("light");
+  expect(readTheme()).toBe("light");
+  // A preview shows a scheme without replacing the saved one.
+  setThemeMode("dark");
+  expect(root.dataset.theme).toBe("dark");
+  expect(readTheme()).toBe("light");
+  Object.assign(globals, previous);
+});

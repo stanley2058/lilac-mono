@@ -64,10 +64,13 @@
   }
 }
 
+/* Long paths lose their start, so the file name stays visible. */
 .file-panel-heading span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  direction: rtl;
+  text-align: left;
 }
 
 .file-source-toolbar .icon-button {

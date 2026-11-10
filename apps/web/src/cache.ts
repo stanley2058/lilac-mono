@@ -12,7 +12,11 @@ import {
 import {
   bootstrapReplySchema,
   replayCheckpointSchema,
-  turnSlotSchema,
+  deferredTurnSlotSchema,
+  displayMessageSchema,
+  displayPartSchema,
+  failedTurnSlotSchema,
+  readyTurnSlotSchema,
   revisionSchema,
   identitySchema,
   type BootstrapReply,
@@ -33,6 +37,14 @@ export type WebCacheOptions = {
   name?: string;
   maxThreads?: number;
   maxBytes?: number;
+  /** How long typing must pause before a draft is written to IndexedDB. */
+  draftWriteDelayMs?: number;
+};
+type PendingDraft = {
+  scope: CacheScope;
+  threadId: string;
+  value: WebDraft;
+  settled: PromiseWithResolvers<void>;
 };
 type ThreadRow = {
   key: string;
@@ -65,12 +77,20 @@ const threadRowSchema = z.strictObject({
   updatedAt: revisionSchema,
   bytes: revisionSchema,
 });
+// Patches append parts and messages to a stored slot, so it can outgrow the wire caps on both.
+const cachedTurnSlotSchema = z.discriminatedUnion("kind", [
+  readyTurnSlotSchema.extend({
+    messages: z.array(displayMessageSchema.extend({ parts: z.array(displayPartSchema) })),
+  }),
+  deferredTurnSlotSchema,
+  failedTurnSlotSchema,
+]);
 const slotRowSchema = z.strictObject({
   key: z.string(),
   threadKey: z.string(),
   scopeKey: z.string(),
   bytes: revisionSchema,
-  data: z.strictObject({ revision: revisionSchema, slot: turnSlotSchema }),
+  data: z.strictObject({ revision: revisionSchema, slot: cachedTurnSlotSchema }),
 });
 const bootstrapRowSchema = z.strictObject({
   key: z.string(),
@@ -154,7 +174,7 @@ function threadKey(scope: CacheScope, threadId: string): string {
 function slotKey(key: string, slotId: string): string {
   return JSON.stringify([key, slotId]);
 }
-const draftKeySchema = z.tuple([z.string(), z.string().startsWith("draft:")]);
+const draftKeySchema = z.tuple([z.string(), z.string()]);
 function localDraftId(key: string, scopeKey: string): string | undefined {
   const decoded = Result.try({ try: () => JSON.parse(key), catch: () => undefined });
   const value = decoded.match({ ok: (value) => value, err: () => undefined });
@@ -176,11 +196,60 @@ function trimMap<T>(map: Map<string, T>, limit: number): void {
     map.delete(key);
   }
 }
+function trimScope<T>(map: Map<string, T>, scopeKey: string, limit: number): void {
+  const prefix = JSON.stringify([scopeKey]).slice(0, -1);
+  const keys = [...map.keys()].filter((key) => key.startsWith(prefix));
+  for (const key of keys.slice(0, Math.max(0, keys.length - limit))) map.delete(key);
+}
+// Writes need only these fields; the non-strict schemas skip the slot and checkpoint they sit beside.
+const storedBytesSchema = z.object({ bytes: revisionSchema });
+const threadUsageSchema = z.object({
+  key: z.string(),
+  updatedAt: revisionSchema,
+  bytes: revisionSchema,
+});
+/** Reads a stored row's byte count without decoding the slot it describes. */
+function decodeStoredBytes(value: unknown): number | undefined {
+  const parsed = storedBytesSchema.safeParse(value);
+  return parsed.success ? parsed.data.bytes : undefined;
+}
+function decodeThreadUsage(value: unknown): z.infer<typeof threadUsageSchema> | undefined {
+  const parsed = threadUsageSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+/** Folds a later patch into one still waiting to be written, as if both were applied in order. */
+export function mergeCachePatches(first: CachePatch, next: CachePatch): CachePatch {
+  if (next.replace) return next;
+  const put = new Map(first.put.map((value) => [value.slot.slotId, value]));
+  for (const id of next.remove) put.delete(id);
+  for (const value of next.put) put.set(value.slot.slotId, value);
+  const remove = first.replace
+    ? []
+    : [...new Set([...first.remove, ...next.remove])].filter((id) => !put.has(id));
+  return { checkpoint: next.checkpoint, replace: first.replace, put: [...put.values()], remove };
+}
+type QueuedWrite = {
+  scope: CacheScope;
+  threadId: string;
+  patch: CachePatch;
+  settled: PromiseWithResolvers<void>;
+};
+function draftIsEmpty(draft: WebDraft): boolean {
+  return !draft.text.trim() && !draft.skillIds.length && !draft.commandId && !draft.savedText;
+}
 
 export class WebNativeCache implements NativeCache {
   private readonly memory = new MemoryNativeCache();
   private readonly snapshots = new Map<string, CachedBootstrap>();
   private readonly drafts = new Map<string, WebDraft>();
+  private readonly pendingDrafts = new Map<string, PendingDraft>();
+  /** One IndexedDB write runs per thread; patches that arrive meanwhile merge into the next one. */
+  private readonly threadWrites = new Map<
+    string,
+    { running: Promise<void>; queued?: QueuedWrite }
+  >();
+  private draftTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly draftWriteDelayMs: number;
   private readonly factory: IDBFactory | null | undefined;
   private readonly name: string;
   private readonly maxThreads: number;
@@ -199,6 +268,13 @@ export class WebNativeCache implements NativeCache {
     this.name = options.name ?? "lilac-native-v1";
     this.maxThreads = Math.max(1, options.maxThreads ?? 24);
     this.maxBytes = Math.max(1024, options.maxBytes ?? 64 * 1024 * 1024);
+    this.draftWriteDelayMs = Math.max(0, options.draftWriteDelayMs ?? 400);
+    if (typeof document === "undefined") return;
+    // A hidden tab may be discarded or closed without another chance to write.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") this.flushDraftsBeforeHide();
+    });
+    window.addEventListener("pagehide", () => this.flushDraftsBeforeHide());
   }
   get persistent(): boolean {
     return Boolean(this.factory) && !this.disabled;
@@ -293,6 +369,8 @@ export class WebNativeCache implements NativeCache {
       return cached;
     }
     const key = threadKey(scope, threadId);
+    for (let writes = this.threadWrites.get(key); writes; writes = this.threadWrites.get(key))
+      await writes.running;
     const loaded = await this.attempt(async (db) => {
       const tx = db.transaction(["threads", "slots"], "readwrite");
       const done = completed(tx);
@@ -351,6 +429,42 @@ export class WebNativeCache implements NativeCache {
   async commit(scope: CacheScope, threadId: string, patch: CachePatch): Promise<void> {
     await this.memory.commit(scope, threadId, patch);
     const key = threadKey(scope, threadId);
+    const writes = this.threadWrites.get(key);
+    if (!writes) return this.startWrite(key, scope, threadId, patch);
+    if (writes.queued) {
+      writes.queued.patch = mergeCachePatches(writes.queued.patch, patch);
+      return writes.queued.settled.promise;
+    }
+    writes.queued = { scope, threadId, patch, settled: Promise.withResolvers<void>() };
+    return writes.queued.settled.promise;
+  }
+  private startWrite(
+    key: string,
+    scope: CacheScope,
+    threadId: string,
+    patch: CachePatch,
+  ): Promise<void> {
+    // Failed writes disable the cache inside writeThread, so this chain only resolves.
+    const running = this.writeThread(scope, threadId, patch).then(() => {
+      const next = this.threadWrites.get(key)?.queued;
+      this.threadWrites.delete(key);
+      if (!next) return;
+      void this.startWrite(key, next.scope, next.threadId, next.patch).then(next.settled.resolve);
+    });
+    this.threadWrites.set(key, { running });
+    return running;
+  }
+  /** Drops writes that have not started for threads that are being removed. */
+  private cancelQueuedWrites(matches: (scope: CacheScope, threadId: string) => boolean): void {
+    for (const writes of this.threadWrites.values()) {
+      const queued = writes.queued;
+      if (!queued || !matches(queued.scope, queued.threadId)) continue;
+      writes.queued = undefined;
+      queued.settled.resolve();
+    }
+  }
+  private async writeThread(scope: CacheScope, threadId: string, patch: CachePatch): Promise<void> {
+    const key = threadKey(scope, threadId);
     const scopeKey = cacheScopeKey(scope);
     const rows: SlotRow[] = patch.put.map((data) => ({
       key: slotKey(key, data.slot.slotId),
@@ -364,7 +478,7 @@ export class WebNativeCache implements NativeCache {
       const done = completed(tx);
       const threads = tx.objectStore("threads");
       const slots = tx.objectStore("slots");
-      const previous = decodeThread(await idbRequest(threads.get(key)));
+      const previous = decodeThreadUsage(await idbRequest(threads.get(key)));
       if (!previous && !patch.replace) {
         await assertCommitted(done);
         return 0;
@@ -372,8 +486,10 @@ export class WebNativeCache implements NativeCache {
       let total = patch.replace ? 0 : (previous?.bytes ?? 0);
       if (patch.replace) await deleteIndex(slots, "thread", key);
       for (const id of new Set([...patch.remove, ...patch.put.map((value) => value.slot.slotId)])) {
-        const old = decodeSlot(await idbRequest(slots.get(slotKey(key, id))));
-        if (old) total -= old.bytes;
+        const old = patch.replace
+          ? undefined
+          : decodeStoredBytes(await idbRequest(slots.get(slotKey(key, id))));
+        if (old !== undefined) total -= old;
         slots.delete(slotKey(key, id));
       }
       for (const row of rows) {
@@ -391,7 +507,7 @@ export class WebNativeCache implements NativeCache {
       const all = await idbRequest(threads.getAll());
       const metadata = Array.isArray(all)
         ? all
-            .map(decodeThread)
+            .map(decodeThreadUsage)
             .filter((row) => row !== undefined)
             .sort((a, b) => a.updatedAt - b.updatedAt)
         : [];
@@ -419,7 +535,14 @@ export class WebNativeCache implements NativeCache {
     this.epoch++;
     await this.memory.remove(scope, threadId);
     const key = threadKey(scope, threadId);
+    this.pendingDrafts.get(key)?.settled.resolve();
+    this.pendingDrafts.delete(key);
     const scopeKey = cacheScopeKey(scope);
+    this.cancelQueuedWrites(
+      (queuedScope, queuedThread) =>
+        cacheScopeKey(queuedScope) === scopeKey &&
+        (queuedThread === threadId || queuedThread.startsWith(`subagent:${threadId}:`)),
+    );
     for (const [id, row] of this.residentThreads) {
       if (
         cacheScopeKey(row.scope) === scopeKey &&
@@ -451,6 +574,7 @@ export class WebNativeCache implements NativeCache {
     this.epoch++;
     await this.memory.purge(scope);
     const key = cacheScopeKey(scope);
+    this.cancelQueuedWrites((queuedScope) => cacheScopeKey(queuedScope) === key);
     this.snapshots.delete(key);
     for (const [id, value] of this.residentThreads) {
       if (cacheScopeKey(value.scope) === key) {
@@ -460,6 +584,11 @@ export class WebNativeCache implements NativeCache {
     }
     for (const id of this.drafts.keys()) {
       if (id.startsWith(JSON.stringify([key]).slice(0, -1))) this.drafts.delete(id);
+    }
+    for (const [id, pending] of this.pendingDrafts) {
+      if (cacheScopeKey(pending.scope) !== key) continue;
+      this.pendingDrafts.delete(id);
+      pending.settled.resolve();
     }
     await this.attempt(async (db) => {
       const tx = db.transaction(["threads", "slots", "snapshots", "drafts"], "readwrite");
@@ -544,7 +673,11 @@ export class WebNativeCache implements NativeCache {
     for (const value of values ?? []) this.snapshots.set(cacheScopeKey(value.scope), value);
     return [...this.snapshots.values()].sort((a, b) => b.savedAt - a.savedAt)[0];
   }
-  async saveDraft(scope: CacheScope, threadId: string, draft: WebDraft): Promise<void> {
+  /**
+   * Updates the draft in memory now and writes it to IndexedDB once typing pauses, the tab hides,
+   * or `flushDrafts` runs. The promise settles when that write finishes.
+   */
+  saveDraft(scope: CacheScope, threadId: string, draft: WebDraft): Promise<void> {
     const value: WebDraft = {
       text: draft.text.slice(0, 65_536),
       skillIds: [...new Set(draft.skillIds)].slice(0, 32),
@@ -555,24 +688,89 @@ export class WebNativeCache implements NativeCache {
     };
     const key = threadKey(scope, threadId);
     this.drafts.delete(key);
-    this.drafts.set(key, value);
-    trimMap(this.drafts, this.maxThreads);
+    if (!draftIsEmpty(value)) {
+      this.drafts.set(key, value);
+      trimScope(this.drafts, cacheScopeKey(scope), this.maxThreads);
+    }
+    const settled = this.pendingDrafts.get(key)?.settled ?? Promise.withResolvers<void>();
+    this.pendingDrafts.set(key, { scope, threadId, value, settled });
+    clearTimeout(this.draftTimer);
+    if (this.draftWriteDelayMs === 0) void this.flushDrafts();
+    else this.draftTimer = setTimeout(() => void this.flushDrafts(), this.draftWriteDelayMs);
+    return settled.promise;
+  }
+  /** Writes every draft still waiting for a pause in typing. */
+  async flushDrafts(): Promise<void> {
+    clearTimeout(this.draftTimer);
+    this.draftTimer = undefined;
+    const pending = [...this.pendingDrafts.values()];
+    this.pendingDrafts.clear();
+    await Promise.all(
+      pending.map(async ({ scope, threadId, value, settled }) => {
+        await this.writeDraft(scope, threadId, value);
+        settled.resolve();
+      }),
+    );
+  }
+  /**
+   * Writes every pending draft before the page is frozen or unloaded. The browser may run no more
+   * script after this handler, so the writes are queued and committed before it returns. The next
+   * ordinary draft write trims the scope back under its cap.
+   */
+  private flushDraftsBeforeHide(): void {
+    const db = this.database;
+    if (!db) {
+      void this.flushDrafts();
+      return;
+    }
+    clearTimeout(this.draftTimer);
+    this.draftTimer = undefined;
+    const pending = [...this.pendingDrafts.values()];
+    this.pendingDrafts.clear();
+    if (!pending.length) return;
+    const started = Result.try({
+      try: () => {
+        const tx = db.transaction("drafts", "readwrite");
+        const store = tx.objectStore("drafts");
+        for (const { scope, threadId, value } of pending) {
+          const key = threadKey(scope, threadId);
+          if (draftIsEmpty(value)) store.delete(key);
+          else store.put({ key, scopeKey: cacheScopeKey(scope), ...value, updatedAt: Date.now() });
+        }
+        tx.commit();
+        return tx;
+      },
+      catch: () => undefined,
+    });
+    const committed = started.match({ ok: completed, err: () => Promise.resolve(false) });
+    void this.attempt(() => assertCommitted(committed)).then(() => {
+      for (const draft of pending) draft.settled.resolve();
+    });
+  }
+  private async writeDraft(scope: CacheScope, threadId: string, value: WebDraft): Promise<void> {
+    const key = threadKey(scope, threadId);
+    const scopeKey = cacheScopeKey(scope);
+    // An empty draft reads back the same as a missing row, so it frees its slot under the cap.
+    if (draftIsEmpty(value)) {
+      await this.attempt(async (db) => {
+        const tx = db.transaction("drafts", "readwrite");
+        const done = completed(tx);
+        tx.objectStore("drafts").delete(key);
+        await assertCommitted(done);
+      });
+      return;
+    }
     await this.attempt(async (db) => {
       const tx = db.transaction("drafts", "readwrite");
       const done = completed(tx);
       const store = tx.objectStore("drafts");
-      store.put({
-        key,
-        scopeKey: cacheScopeKey(scope),
-        ...value,
-        updatedAt: Date.now(),
-      });
-      const count = await idbRequest(store.count());
+      store.put({ key, scopeKey, ...value, updatedAt: Date.now() });
+      const count = await idbRequest(store.index("scope").count(scopeKey));
       if (typeof count === "number" && count <= this.maxThreads) {
         await assertCommitted(done);
         return;
       }
-      const all = await idbRequest(store.getAll());
+      const all = await idbRequest(store.index("scope").getAll(scopeKey));
       const rows = Array.isArray(all)
         ? all
             .map(decodeDraftRow)
@@ -586,7 +784,7 @@ export class WebNativeCache implements NativeCache {
   async readDraft(scope: CacheScope, threadId: string): Promise<WebDraft> {
     const epoch = this.epoch;
     const key = threadKey(scope, threadId);
-    const known = this.drafts.get(key);
+    const known = this.pendingDrafts.get(key)?.value ?? this.drafts.get(key);
     if (known !== undefined) return structuredClone(known);
     const value = await this.attempt(async (db) => {
       const tx = db.transaction("drafts", "readonly");
@@ -596,10 +794,11 @@ export class WebNativeCache implements NativeCache {
       return decodeDraft(row);
     });
     if (epoch !== this.epoch) return { text: "", skillIds: [] };
-    if (value !== undefined) this.drafts.set(key, value);
+    if (value !== undefined && !draftIsEmpty(value)) this.drafts.set(key, value);
     return value ? structuredClone(value) : { text: "", skillIds: [] };
   }
-  async listLocalDrafts(scope: CacheScope): Promise<{ threadId: string; draft: WebDraft }[]> {
+  /** Unsent drafts in the scope by thread, from IndexedDB with newer in-memory edits applied. */
+  private async scopeDrafts(scope: CacheScope): Promise<Map<string, WebDraft>> {
     const epoch = this.epoch;
     const scopeKey = cacheScopeKey(scope);
     const rows = await this.attempt(async (db) => {
@@ -614,8 +813,8 @@ export class WebNativeCache implements NativeCache {
         .filter((row) => row.scopeKey === scopeKey)
         .sort((a, b) => b.updatedAt - a.updatedAt);
     });
-    if (epoch !== this.epoch) return [];
     const drafts = new Map<string, WebDraft>();
+    if (epoch !== this.epoch) return drafts;
     for (const row of rows ?? []) {
       const threadId = localDraftId(row.key, scopeKey);
       if (threadId) drafts.set(threadId, decodeDraft(row));
@@ -624,14 +823,33 @@ export class WebNativeCache implements NativeCache {
       const threadId = localDraftId(key, scopeKey);
       if (threadId) drafts.set(threadId, draft);
     }
-    return [...drafts]
-      .filter(([, draft]) => draft.text.trim() || draft.skillIds.length || draft.commandId)
+    for (const [key, pending] of this.pendingDrafts) {
+      const threadId = localDraftId(key, scopeKey);
+      if (threadId) drafts.set(threadId, pending.value);
+    }
+    for (const [threadId, draft] of drafts)
+      if (!draft.text.trim() && !draft.skillIds.length && !draft.commandId) drafts.delete(threadId);
+    return drafts;
+  }
+  async listLocalDrafts(scope: CacheScope): Promise<{ threadId: string; draft: WebDraft }[]> {
+    return [...(await this.scopeDrafts(scope))]
+      .filter(([threadId]) => threadId.startsWith("draft:"))
       .map(([threadId, draft]) => ({ threadId, draft: structuredClone(draft) }));
+  }
+  /** Conversations with an unsent reply, read in one transaction for the whole sidebar. */
+  async listDraftedThreads(scope: CacheScope): Promise<Set<string>> {
+    return new Set(
+      [...(await this.scopeDrafts(scope)).keys()].filter(
+        (threadId) => !threadId.startsWith("draft:"),
+      ),
+    );
   }
   async deleteDraft(scope: CacheScope, threadId: string): Promise<void> {
     this.epoch++;
     const key = threadKey(scope, threadId);
     this.drafts.delete(key);
+    this.pendingDrafts.get(key)?.settled.resolve();
+    this.pendingDrafts.delete(key);
     await this.attempt(async (db) => {
       const tx = db.transaction("drafts", "readwrite");
       const done = completed(tx);

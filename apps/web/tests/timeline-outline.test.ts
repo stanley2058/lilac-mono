@@ -15,6 +15,7 @@ import {
   railItems,
   railPreviewChunks,
   slotIndexForPosition,
+  spliceNewestOutlinePage,
   visiblePositions,
 } from "../src/timeline-outline";
 
@@ -49,6 +50,44 @@ describe("timeline outline", () => {
       ["w13", 14],
     ]);
     expect(railPreviewChunks(items, 0)).toEqual([{ key: "w7", positions: [7, 8, 9, 10, 11] }]);
+  });
+
+  test("a fresh newest page keeps the turns it moved past and the older pages", () => {
+    const newest: ThreadOutline = {
+      historyGeneration: 0,
+      positions: [10, 11, 12, 14],
+      windows: [window(10, 13, true), window(13, 15)],
+      earlierBefore: 10,
+    };
+    const older: ThreadOutline = {
+      historyGeneration: 0,
+      positions: [7, 8, 9],
+      windows: [window(5, 7), window(7, 10)],
+    };
+    // Two turns arrived; the newest page now starts at 12 and continues the window that began at 13.
+    const fresh: ThreadOutline = {
+      historyGeneration: 0,
+      positions: [12, 14, 15, 16],
+      windows: [window(12, 13, true), window(13, 17)],
+      earlierBefore: 12,
+    };
+    const pages = spliceNewestOutlinePage([newest, older], fresh);
+    expect(pages).toHaveLength(2);
+    expect(pages[1]).toBe(older);
+    expect(pages[0]?.earlierBefore).toBe(10);
+    expect(mergeOutlinePages(pages)).toEqual({
+      positions: [7, 8, 9, 10, 11, 12, 14, 15, 16],
+      windows: [window(5, 7), window(7, 13), window(13, 17)],
+    });
+    // A refresh that changed nothing but the last turn's state replaces the page in place.
+    expect(spliceNewestOutlinePage(pages, { ...fresh, earlierBefore: 10 })).toEqual([
+      { ...fresh, earlierBefore: 10 },
+      older,
+    ]);
+    // A page with no earlier history covers everything.
+    expect(spliceNewestOutlinePage(pages, { historyGeneration: 0, positions: [1] })).toEqual([
+      { historyGeneration: 0, positions: [1] },
+    ]);
   });
 
   test("keeps a hovered DM window when an older page renames it", () => {

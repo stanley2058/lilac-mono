@@ -14,6 +14,7 @@ import {
   Suspense,
   useMemo,
   useEffect,
+  useLayoutEffect,
   useContext,
   useCallback,
   useRef,
@@ -53,7 +54,9 @@ import type { ComposerEditorHandle } from "./composer-editor";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select";
 import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
 
-const ComposerEditor = lazy(() => import("./composer-editor"));
+// The compiler cannot memoize a component that contains `import()`.
+const loadComposerEditor = () => import("./composer-editor");
+const ComposerEditor = lazy(loadComposerEditor);
 // The formatting buttons stay open across conversations until the viewer closes them.
 const formattingStore = createStore(() => ({ open: false }));
 const toggleFormatting = () => formattingStore.setState(({ open }) => ({ open: !open }));
@@ -155,7 +158,9 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     setDragging(false);
   }
   const dropProps = useRef(props);
-  dropProps.current = props;
+  useLayoutEffect(() => {
+    dropProps.current = props;
+  });
   useEffect(() => {
     if (!props.windowDrop) return;
     return installWindowFileDrop(window, {
@@ -196,11 +201,13 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     [commandArguments, argumentText],
   );
   const guideOpen = !menuHidden && !!commandArguments && (!!argumentStep || !!argumentError);
+  const matched = !!match;
+  const typingArguments = argumentText !== undefined;
   const completions = useMemo(() => {
-    if (!match || menuHidden || argumentText !== undefined) return [];
+    if (!matched || menuHidden || typingArguments) return [];
     if (catalog) return completeCatalog(catalog, trigger, query, 100);
     return client && scope ? client.catalogs.complete(scope, trigger, query, 100) : [];
-  }, [client, scope, trigger, query, !!match, menuHidden, catalog, argumentText === undefined]);
+  }, [client, scope, trigger, query, matched, menuHidden, catalog, typingArguments]);
   const suggestions = guideOpen ? (argumentStep?.suggestions ?? []) : [];
   const menuSize = guideOpen ? suggestions.length : completions.length;
   // An optional argument can be skipped, so Enter sends until the user types or navigates.
@@ -394,7 +401,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           },
         });
         if (!files) return;
-        const { restoreMessageAttachments } = await import("./composer-editor");
+        const { restoreMessageAttachments } = await loadComposerEditor();
         if (
           controller.signal.aborted ||
           dropProps.current.documentKey !== documentKey ||
@@ -502,7 +509,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
       {props.windowDrop && dragging && !disabled
         ? createPortal(
             <div
-              className="composer-window-drop fixed inset-3 z-100 flex items-center justify-center flex-col gap-4 rounded-lg [background:color-mix(in_srgb,_var(--ui-background)_88%,_transparent)] [backdrop-filter:blur(calc(var(--ui-space-unit)*1))] text-foreground text-xl font-medium pointer-events-none [box-shadow:inset_0_0_0_calc(var(--ui-space-unit)*1)_color-mix(in_srgb,_var(--ui-primary)_65%,_transparent)]"
+              className="composer-window-drop fixed inset-3 z-100 flex items-center justify-center flex-col gap-4 rounded-lg [background:color-mix(in_srgb,_var(--ui-background)_88%,_transparent)] text-foreground text-xl font-medium pointer-events-none [box-shadow:inset_0_0_0_calc(var(--ui-space-unit)*1)_color-mix(in_srgb,_var(--ui-primary)_65%,_transparent)]"
               role="status"
             >
               <Upload aria-hidden="true" />

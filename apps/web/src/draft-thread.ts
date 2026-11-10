@@ -110,6 +110,7 @@ export function prepareDraftSend(
     entry: {
       commandId: crypto.randomUUID(),
       text: submission.text,
+      createdAt: Date.now(),
       submission,
       state: "preparing",
     },

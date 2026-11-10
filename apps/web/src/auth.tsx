@@ -2,6 +2,7 @@ import { Input } from "./components/ui/input";
 import { Button } from "./components/ui/button";
 import { useEffect, useState, type ComponentProps } from "react";
 import { localLogin } from "./http";
+import { ErrorNotice } from "./components/ui";
 
 export function LocalLogin({ onSignedIn }: { onSignedIn: () => void }) {
   const [error, setError] = useState("");
@@ -35,7 +36,7 @@ export function LocalLogin({ onSignedIn }: { onSignedIn: () => void }) {
         Password
         <Input name="password" type="password" autoComplete="current-password" required />
       </label>
-      {error ? <p role="alert">{error}</p> : null}
+      <ErrorNotice message={error || undefined} />
       <Button type="submit" disabled={busy}>
         {busy ? "Signing in…" : "Sign in"}
       </Button>
