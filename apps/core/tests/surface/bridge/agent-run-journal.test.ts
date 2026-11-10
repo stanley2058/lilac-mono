@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { Result as ResultType } from "better-result";
 import SuperJSON from "superjson";
 
 import {
@@ -326,6 +327,33 @@ describe("SqliteAgentRunJournal", () => {
     journal.close();
   });
 
+  it("keeps the handle for an unchanged checkpoint, also after reopening", async () => {
+    const { dbPath } = await fixture();
+    const accepted = work();
+    insertAccepted(dbPath, accepted);
+    const unwrap = <T, E>(result: ResultType<T, E>): T =>
+      result.match({
+        ok: (value) => value,
+        err: (error) => {
+          throw error;
+        },
+      });
+    const first = createAgentRunCheckpoint({ messages: [{ role: "user", content: "same" }] });
+    const second = createAgentRunCheckpoint({ messages: [{ role: "user", content: "changed" }] });
+    const journal = new SqliteAgentRunJournal({ dbPath });
+    const opened = unwrap(journal.openRun(accepted));
+    const written = unwrap(journal.writeCheckpoint(opened, first));
+    expect(unwrap(journal.writeCheckpoint(written, first))).toEqual(written);
+    journal.close();
+
+    const reopened = new SqliteAgentRunJournal({ dbPath });
+    expect(unwrap(reopened.writeCheckpoint(written, first))).toEqual(written);
+    const advanced = unwrap(reopened.writeCheckpoint(written, second));
+    expect(advanced.sequence).toBe(written.sequence + 1);
+    expect(unwrap(reopened.writeCheckpoint(advanced, second))).toEqual(advanced);
+    reopened.close();
+  });
+
   it("rolls back the checkpoint event when the head update fails", async () => {
     const { dbPath } = await fixture();
     const accepted = work();
@@ -440,7 +468,7 @@ describe("SqliteAgentRunJournal", () => {
     journal.close();
   });
 
-  it("validates closed checkpoint and terminal schemas before writing", async () => {
+  it("validates terminal schemas before writing and checkpoints when recovering", async () => {
     const { dbPath } = await fixture();
     const accepted = work();
     insertAccepted(dbPath, accepted);
@@ -451,13 +479,6 @@ describe("SqliteAgentRunJournal", () => {
         throw error;
       },
     });
-    const checkpoint = {
-      ...createAgentRunCheckpoint({ messages: [] }),
-      unexpected: true,
-    } as unknown as AgentRunCheckpointV1;
-    expect(
-      journal.writeCheckpoint(opened, checkpoint).match({ ok: () => null, err: (error) => error }),
-    ).toBeInstanceOf(AgentRunJournalCodecFailure);
     expect(
       journal
         .markTerminal(opened, {
@@ -479,6 +500,22 @@ describe("SqliteAgentRunJournal", () => {
         .get()?.latest_sequence,
     ).toBe(1);
     database.close();
+
+    const checkpoint = {
+      ...createAgentRunCheckpoint({ messages: [] }),
+      unexpected: true,
+    } as unknown as AgentRunCheckpointV1;
+    expect(journal.writeCheckpoint(opened, checkpoint).isOk()).toBe(true);
+    const recovery = journal.loadRecoveryHeads().match({
+      ok: (value) => value,
+      err: (error) => {
+        throw error;
+      },
+    });
+    expect(recovery.heads).toEqual([]);
+    expect(recovery.resets).toEqual([
+      expect.objectContaining({ scope: "run", runId: accepted.requestDeliveryId }),
+    ]);
     journal.close();
   });
 

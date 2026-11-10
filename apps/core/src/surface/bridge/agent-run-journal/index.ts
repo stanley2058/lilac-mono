@@ -68,6 +68,8 @@ const terminalPayloadSchema = z.strictObject({
   finalReplayDeadline: z.number().int().nonnegative().optional(),
 });
 
+type JournalHeadStateRow = Omit<JournalHeadRow, "checkpoint_json" | "terminal_outcome_json">;
+
 type JournalHeadRow = {
   request_delivery_id: string;
   request_id: string;
@@ -297,22 +299,22 @@ function expectedLatestEventKind(row: JournalHeadRow): "opened" | "checkpoint" |
   return "checkpoint";
 }
 
-function validatedOpenedPayload(runId: string): ResultType<string, AgentRunJournalCodecFailure> {
+function openedPayload(runId: string): ResultType<string, AgentRunJournalCodecFailure> {
   return serialize(runId, "opened", { version: 1 }).andThen((payload) =>
     decodeAgentRunOpenedPayload(payload, runId).map(() => payload),
   );
 }
 
-function validatedCheckpointPayload(
+// Checkpoints can hold a whole transcript, so the write skips the decode round trip;
+// recovery still validates the payload and resets the run when it does not decode.
+function checkpointPayload(
   runId: string,
   checkpoint: AgentRunCheckpointV1,
 ): ResultType<string, AgentRunJournalCodecFailure> {
-  return serialize(runId, "checkpoint", checkpoint).andThen((payload) =>
-    decodeAgentRunCheckpointPayload(payload, runId).map(() => payload),
-  );
+  return serialize(runId, "checkpoint", checkpoint);
 }
 
-function validatedTerminalPayload(
+function terminalPayload(
   runId: string,
   terminal: {
     readonly outcome: RequestDeliveryTerminalOutcome;
@@ -324,7 +326,11 @@ function validatedTerminalPayload(
   );
 }
 
-function handleFromRow(row: JournalHeadRow): AgentRunJournalHandle {
+function payloadHash(payload: string): string {
+  return new Bun.CryptoHasher("sha256").update(payload).digest("hex");
+}
+
+function handleFromRow(row: JournalHeadStateRow): AgentRunJournalHandle {
   return {
     runId: row.request_delivery_id,
     requestId: row.request_id,
@@ -336,6 +342,8 @@ function handleFromRow(row: JournalHeadRow): AgentRunJournalHandle {
 export class SqliteAgentRunJournal implements AgentRunJournal {
   readonly #database: Database;
   readonly #now: () => number;
+  // Hash of each run's latest checkpoint payload, so a write never reads the payload back.
+  readonly #checkpointHashes = new Map<string, string>();
 
   constructor(input: { readonly dbPath: string; readonly now?: () => number }) {
     this.#database = new Database(input.dbPath, { create: true, strict: true });
@@ -397,19 +405,36 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     `);
   }
 
-  #selectHead(runId: string): JournalHeadRow | null {
+  /** Reads a head's state without its payload columns, which can hold a whole transcript. */
+  #selectHead(runId: string): JournalHeadStateRow | null {
     return (
       this.#database
-        .query<JournalHeadRow, [string]>(
-          "SELECT * FROM agent_run_wal_heads WHERE request_delivery_id = ?",
+        .query<JournalHeadStateRow, [string]>(
+          `SELECT request_delivery_id, request_id, session_id, state, latest_sequence,
+                  checkpoint_sequence, created_at, updated_at
+           FROM agent_run_wal_heads WHERE request_delivery_id = ?`,
         )
         .get(runId) ?? null
     );
   }
 
+  /** Compares against the latest checkpoint by hash, falling back to SQLite after a restart. */
+  #isLatestCheckpoint(current: JournalHeadStateRow, payload: string, hash: string): boolean {
+    if (current.checkpoint_sequence === null) return false;
+    const known = this.#checkpointHashes.get(current.request_delivery_id);
+    if (known) return known === hash;
+    return (
+      this.#database
+        .query<{ same: number }, [string, string]>(
+          "SELECT checkpoint_json = ? AS same FROM agent_run_wal_heads WHERE request_delivery_id = ?",
+        )
+        .get(payload, current.request_delivery_id)?.same === 1
+    );
+  }
+
   openRun(work: AgentRunJournalOwner): ResultType<AgentRunJournalHandle, AgentRunJournalError> {
     const runId = work.requestDeliveryId;
-    return validatedOpenedPayload(runId).andThen((payload) =>
+    return openedPayload(runId).andThen((payload) =>
       transaction(
         this.#database,
         "open-run",
@@ -489,7 +514,7 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     handle: AgentRunJournalHandle,
     checkpoint: AgentRunCheckpointV1,
   ): ResultType<AgentRunJournalHandle, AgentRunJournalError> {
-    return validatedCheckpointPayload(handle.runId, checkpoint).andThen((payload) =>
+    return checkpointPayload(handle.runId, checkpoint).andThen((payload) =>
       transaction(
         this.#database,
         "write-checkpoint",
@@ -511,7 +536,8 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
               }),
             );
           }
-          if (current.checkpoint_json === payload) return Result.ok(handle);
+          const hash = payloadHash(payload);
+          if (this.#isLatestCheckpoint(current, payload, hash)) return Result.ok(handle);
           const sequence = handle.sequence + 1;
           const observedNow = this.#now();
           if (!nonnegativeSafeInteger(observedNow)) {
@@ -547,6 +573,7 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
              )`,
             [handle.runId, handle.runId],
           );
+          this.#checkpointHashes.set(handle.runId, hash);
           return Result.ok({ ...handle, sequence });
         },
       ),
@@ -557,7 +584,7 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     handle: AgentRunJournalHandle,
     checkpoint: AgentRunCheckpointV1,
   ): ResultType<AgentRunJournalHandle, AgentRunJournalError> {
-    return validatedCheckpointPayload(handle.runId, checkpoint).andThen((payload) =>
+    return checkpointPayload(handle.runId, checkpoint).andThen((payload) =>
       transaction(
         this.#database,
         "promote-previous-checkpoint",
@@ -625,6 +652,7 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
              WHERE request_delivery_id = ?`,
             [sequence, sequence, payload, now, handle.runId],
           );
+          this.#checkpointHashes.set(handle.runId, payloadHash(payload));
           return Result.ok({ ...handle, sequence });
         },
       ),
@@ -638,7 +666,7 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
       readonly finalReplayDeadline?: number;
     },
   ): ResultType<AgentRunJournalHandle, AgentRunJournalError> {
-    return validatedTerminalPayload(handle.runId, terminal).andThen((payload) =>
+    return terminalPayload(handle.runId, terminal).andThen((payload) =>
       transaction(
         this.#database,
         "mark-terminal",
@@ -964,11 +992,13 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
   }
 
   #deleteRun(runId: string): void {
+    this.#checkpointHashes.delete(runId);
     this.#database.run("DELETE FROM agent_run_wal_events WHERE request_delivery_id = ?", [runId]);
     this.#database.run("DELETE FROM agent_run_wal_heads WHERE request_delivery_id = ?", [runId]);
   }
 
   #resetAllTables(): void {
+    this.#checkpointHashes.clear();
     this.#database.run(`
       DROP TABLE IF EXISTS agent_run_wal_events;
       DROP TABLE IF EXISTS agent_run_wal_heads;
