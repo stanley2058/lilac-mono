@@ -46,47 +46,107 @@ const SENSITIVE_ASSIGNMENT_KEY_PARTS = [
   "CREDENTIALS",
 ] as const;
 
-class StreamingAnsiStripper {
+const ESCAPE = 0x1b;
+const BELL = 0x07;
+const C1_CSI = 0x9b;
+const C1_OSC = 0x9d;
+const C1_ST = 0x9c;
+
+function isStrippedControlCode(code: number): boolean {
+  if (code > 0x9f) return false;
+  if (code >= 0x7f) return true;
+  return code < 0x20 && code !== 0x09 && code !== 0x0a;
+}
+
+function findStrippedControl(input: string, from: number): number {
+  for (let index = from; index < input.length; index += 1) {
+    if (isStrippedControlCode(input.charCodeAt(index))) return index;
+  }
+  return -1;
+}
+
+type AnsiScan = { readonly input: string; output: string; copiedFrom: number };
+
+export class StreamingAnsiStripper {
   private state: AnsiState = "plain";
 
+  // Text is scanned in runs and copied by slice, because bash output is mostly plain text and
+  // a per-character loop made this stage a throughput bottleneck.
   write(input: string): string {
-    let output = "";
-    for (const character of input) {
-      const code = character.charCodeAt(0);
-      if (this.state === "plain") {
-        if (code === 0x1b) this.state = "escape";
-        else if (code === 0x9b) this.state = "csi";
-        else if (code === 0x9d) this.state = "osc";
-        else if (code === 0x09 || code === 0x0a || (code >= 0x20 && code < 0x7f) || code > 0x9f) {
-          output += character;
-        }
-      } else if (this.state === "escape") {
-        if (character === "[") this.state = "csi";
-        else if (character === "]") this.state = "osc";
-        else this.state = "plain";
-      } else if (this.state === "csi") {
-        if (code >= 0x40 && code <= 0x7e) this.state = "plain";
-      } else if (this.state === "osc") {
-        if (code === 0x07 || code === 0x9c) this.state = "plain";
-        else if (code === 0x1b) this.state = "osc-escape";
-      } else if (character === "\\" || code === 0x07) {
-        this.state = "plain";
-      } else if (code !== 0x1b) {
-        this.state = "osc";
-      }
+    const scan: AnsiScan = { input, output: "", copiedFrom: 0 };
+    let index = 0;
+    while (index < input.length) {
+      index =
+        this.state === "plain" ? this.copyPlainRun(scan, index) : this.skipSequence(scan, index);
     }
-    return output;
+    if (scan.copiedFrom === 0) return input;
+    return scan.output + input.slice(scan.copiedFrom);
+  }
+
+  private copyPlainRun(scan: AnsiScan, from: number): number {
+    const { input } = scan;
+    const control = findStrippedControl(input, from);
+    if (control < 0) return input.length;
+
+    scan.output += input.slice(scan.copiedFrom, control);
+    scan.copiedFrom = control + 1;
+    const code = input.charCodeAt(control);
+    if (code === ESCAPE) this.state = "escape";
+    if (code === C1_CSI) this.state = "csi";
+    if (code === C1_OSC) this.state = "osc";
+    return control + 1;
+  }
+
+  private skipSequence(scan: AnsiScan, index: number): number {
+    const { input } = scan;
+    const code = input.charCodeAt(index);
+    // The character after ESC is consumed whole, so an astral character does not leave half of
+    // its surrogate pair behind.
+    const next = this.state === "escape" ? index + codePointUnits(input, index) : index + 1;
+    this.state = nextSequenceState(this.state, code);
+    scan.copiedFrom = next;
+    return next;
   }
 }
 
-class StreamingLiteralRedactor {
+function codePointUnits(input: string, index: number): number {
+  return (input.codePointAt(index) ?? 0) > 0xffff ? 2 : 1;
+}
+
+function nextSequenceState(state: AnsiState, code: number): AnsiState {
+  switch (state) {
+    case "escape":
+      if (code === 0x5b) return "csi";
+      return code === 0x5d ? "osc" : "plain";
+    case "csi":
+      return code >= 0x40 && code <= 0x7e ? "plain" : "csi";
+    case "osc":
+      if (code === BELL || code === C1_ST) return "plain";
+      return code === ESCAPE ? "osc-escape" : "osc";
+    case "osc-escape":
+      if (code === 0x5c || code === BELL) return "plain";
+      return code === ESCAPE ? "osc-escape" : "osc";
+    case "plain":
+      return "plain";
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export class StreamingLiteralRedactor {
   private carry = "";
   private readonly secrets: readonly string[];
   private readonly maxSecretLength: number;
+  private readonly matcher: RegExp | null;
 
   constructor(secrets: readonly string[]) {
     this.secrets = normalizeLiteralSecrets(secrets);
     this.maxSecretLength = Math.max(0, ...this.secrets.map((value) => value.length));
+    // Alternatives keep the order of `secrets`, so the longest secret still wins at a position.
+    this.matcher =
+      this.secrets.length > 0 ? new RegExp(this.secrets.map(escapeRegExp).join("|"), "g") : null;
   }
 
   write(input: string): string {
@@ -98,14 +158,31 @@ class StreamingLiteralRedactor {
   }
 
   private process(input: string, final: boolean): string {
+    const { matcher } = this;
+    if (!matcher) return input;
+
+    // Only the last `maxSecretLength - 1` characters can be the start of a secret that the next
+    // chunk completes. Everything before them is matched in bulk.
+    const tailStart = final ? input.length : Math.max(0, input.length - this.maxSecretLength + 1);
     let output = "";
     let cursor = 0;
+    while (cursor < tailStart) {
+      matcher.lastIndex = cursor;
+      const match = matcher.exec(input);
+      if (!match || match.index >= tailStart) {
+        output += input.slice(cursor, tailStart);
+        cursor = tailStart;
+        break;
+      }
+      output += input.slice(cursor, match.index) + REDACTION_PLACEHOLDER;
+      cursor = match.index + match[0].length;
+    }
 
     while (cursor < input.length) {
       // Hold back only text that the next chunk could complete into a secret, so a quiet
       // long-running process still shows its latest output. This runs before matching
       // because a longer secret takes precedence over a shorter one at the same position.
-      if (!final && this.couldStartSecret(input, cursor)) break;
+      if (this.couldStartSecret(input, cursor)) break;
 
       const secret = this.secrets.find((value) => input.startsWith(value, cursor));
       if (secret) {
@@ -114,12 +191,12 @@ class StreamingLiteralRedactor {
         continue;
       }
 
-      const codePoint = String.fromCodePoint(input.codePointAt(cursor) ?? 0);
-      output += codePoint;
-      cursor += codePoint.length;
+      const units = codePointUnits(input, cursor);
+      output += input.slice(cursor, cursor + units);
+      cursor += units;
     }
 
-    this.carry = final ? "" : input.slice(cursor);
+    this.carry = input.slice(cursor);
     return output;
   }
 
@@ -133,67 +210,110 @@ class StreamingLiteralRedactor {
 }
 
 type AssignmentState = "plain" | "key" | "redacting";
+type AssignmentScan = { readonly input: string; output: string; copiedFrom: number };
 
-class StreamingSensitiveAssignmentRedactor {
+const EQUALS = 0x3d;
+// A key part that straddles two chunks has at most this many characters in the first one.
+const KEY_TAIL_CHARS = Math.max(...SENSITIVE_ASSIGNMENT_KEY_PARTS.map((part) => part.length)) - 1;
+
+// Matches /[A-Z0-9_]/iu. Unicode case folding makes that class also accept the long s and the
+// Kelvin sign.
+function isKeyCode(code: number): boolean {
+  if (code >= 0x61 && code <= 0x7a) return true;
+  if (code >= 0x41 && code <= 0x5a) return true;
+  if (code >= 0x30 && code <= 0x39) return true;
+  return code === 0x5f || code === 0x17f || code === 0x212a;
+}
+
+// Matches /\s/u.
+function isWhitespaceCode(code: number): boolean {
+  if (code === 0x20 || (code >= 0x09 && code <= 0x0d)) return true;
+  if (code < 0xa0) return false;
+  if (code === 0xa0 || code === 0x1680 || (code >= 0x2000 && code <= 0x200a)) return true;
+  if (code === 0x2028 || code === 0x2029 || code === 0x202f) return true;
+  return code === 0x205f || code === 0x3000 || code === 0xfeff;
+}
+
+export class StreamingSensitiveAssignmentRedactor {
   private state: AssignmentState = "plain";
-  private canStartKey = true;
   private keyTail = "";
   private sensitiveKey = false;
 
+  // No text is held back between chunks. A chunk is scanned in runs, and a chunk that needs
+  // no redaction is returned as is.
   write(input: string): string {
-    let output = "";
-
-    for (const character of input) {
-      const isKeyCharacter = /[A-Z0-9_]/iu.test(character);
-      const isWhitespace = /\s/u.test(character);
-
-      if (this.state === "redacting") {
-        if (isWhitespace) {
-          output += character;
-          this.state = "plain";
-          this.canStartKey = true;
-        }
-        continue;
-      }
-
-      if (this.state === "key") {
-        if (isKeyCharacter) {
-          output += character;
-          this.updateKey(character);
-          continue;
-        }
-
-        if (character === "=") {
-          output += this.sensitiveKey ? "=<redacted>" : "=";
-          this.state = this.sensitiveKey ? "redacting" : "plain";
-          this.canStartKey = !this.sensitiveKey;
-          continue;
-        }
-
-        output += character;
-        this.state = "plain";
-        this.canStartKey = !/[A-Z0-9_]/iu.test(character);
-        continue;
-      }
-
-      output += character;
-      if (this.canStartKey && isKeyCharacter) {
-        this.state = "key";
-        this.keyTail = "";
-        this.sensitiveKey = false;
-        this.updateKey(character);
-      }
-      this.canStartKey = !isKeyCharacter;
-    }
-
-    return output;
+    const scan: AssignmentScan = { input, output: "", copiedFrom: 0 };
+    let index = 0;
+    while (index < input.length) index = this.advance(scan, index);
+    if (scan.copiedFrom === 0) return input;
+    return scan.output + input.slice(scan.copiedFrom);
   }
 
-  private updateKey(character: string): void {
-    this.keyTail = (this.keyTail + character.toUpperCase()).slice(-11);
-    if (SENSITIVE_ASSIGNMENT_KEY_PARTS.some((part) => this.keyTail.includes(part))) {
-      this.sensitiveKey = true;
+  private advance(scan: AssignmentScan, index: number): number {
+    switch (this.state) {
+      case "plain":
+        return this.findKeyStart(scan.input, index);
+      case "key":
+        return this.readKey(scan, index);
+      case "redacting":
+        return this.dropValue(scan, index);
     }
+  }
+
+  private findKeyStart(input: string, from: number): number {
+    let index = from;
+    while (index < input.length && !isKeyCode(input.charCodeAt(index))) index += 1;
+    if (index === input.length) return index;
+
+    this.state = "key";
+    this.keyTail = "";
+    this.sensitiveKey = false;
+    return index;
+  }
+
+  private readKey(scan: AssignmentScan, from: number): number {
+    const { input } = scan;
+    let end = from;
+    while (end < input.length && isKeyCode(input.charCodeAt(end))) end += 1;
+    if (end === input.length) {
+      this.noteKeyRun(input.slice(from, end));
+      return end;
+    }
+
+    // Most identifiers are not assignments, so only a key that reaches "=" is classified.
+    if (input.charCodeAt(end) !== EQUALS) {
+      this.state = "plain";
+      return end + 1;
+    }
+
+    this.noteKeyRun(input.slice(from, end));
+    if (!this.sensitiveKey) {
+      this.state = "plain";
+      return end + 1;
+    }
+
+    scan.output += `${input.slice(scan.copiedFrom, end)}=${REDACTION_PLACEHOLDER}`;
+    scan.copiedFrom = end + 1;
+    this.state = "redacting";
+    return end + 1;
+  }
+
+  private dropValue(scan: AssignmentScan, from: number): number {
+    const { input } = scan;
+    let index = from;
+    while (index < input.length && !isWhitespaceCode(input.charCodeAt(index))) index += 1;
+    scan.copiedFrom = index;
+    if (index === input.length) return index;
+
+    this.state = "plain";
+    return index + 1;
+  }
+
+  private noteKeyRun(run: string): void {
+    if (this.sensitiveKey || run.length === 0) return;
+    const seen = this.keyTail + run.toUpperCase();
+    this.sensitiveKey = SENSITIVE_ASSIGNMENT_KEY_PARTS.some((part) => seen.includes(part));
+    this.keyTail = seen.slice(-KEY_TAIL_CHARS);
   }
 }
 

@@ -9,6 +9,7 @@ export function normalizeLiteralSecrets(literalSecrets: readonly string[]): read
 
 export function redactLiteralSecrets(text: string, literalSecrets: readonly string[]): string {
   const secrets = normalizeLiteralSecrets(literalSecrets);
+  if (secrets.length === 0) return text;
   let output = "";
   let cursor = 0;
 
