@@ -1,3 +1,17 @@
+import {
+  decodeWorkflowRevisionRow,
+  decodeWorkflowRunRow,
+  decodeWorkflowOperationRow,
+  decodeWorkflowWaitRow,
+  decodeWorkflowTriggerRow,
+  decodeWorkflowSurfaceBindingRow,
+  decodeWorkflowSurfaceActionRow,
+  decodeWorkflowRequestDispatchRow,
+  decodeWorkflowRequestTerminalReceiptRow,
+  decodeWorkflowActionOutboxRow,
+  decodeWorkflowArtifactRow,
+  type WorkflowRowDecoder,
+} from "./workflow-store-rows";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import path from "node:path";
 import { z } from "zod";
@@ -44,7 +58,6 @@ import {
   type WorkflowMigrationError,
 } from "./workflow-migrations";
 import {
-  decodeWorkflowPersistenceRow,
   type DecodedWorkflowActionOutboxEntry,
   type DecodedWorkflowRequestDispatch,
   type DecodedWorkflowRequestTerminalReceipt,
@@ -72,67 +85,6 @@ const liveParentDeliverySnapshotRowSchema = z.object({
 const materializationAttemptRowSchema = z.object({
   materialization_attempt_count: z.number(),
 });
-
-type WorkflowRowDecoder<T> = (input: {
-  readonly row: WorkflowPersistedRow;
-  readonly schemaVersion: number;
-}) => ResultType<{ readonly value: T }, PersistedDataError>;
-
-function decodeWorkflowRevisionRow(input: Parameters<WorkflowRowDecoder<WorkflowRevision>>[0]) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "revision" });
-}
-
-function decodeWorkflowRunRow(input: Parameters<WorkflowRowDecoder<WorkflowRun>>[0]) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "run" });
-}
-
-function decodeWorkflowOperationRow(input: Parameters<WorkflowRowDecoder<WorkflowOperation>>[0]) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "operation" });
-}
-
-function decodeWorkflowWaitRow(input: Parameters<WorkflowRowDecoder<WorkflowWait>>[0]) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "wait" });
-}
-
-function decodeWorkflowTriggerRow(input: Parameters<WorkflowRowDecoder<WorkflowTrigger>>[0]) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "trigger" });
-}
-
-function decodeWorkflowSurfaceBindingRow(
-  input: Parameters<WorkflowRowDecoder<WorkflowSurfaceBinding>>[0],
-) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "binding" });
-}
-
-function decodeWorkflowSurfaceActionRow(
-  input: Parameters<WorkflowRowDecoder<WorkflowSurfaceAction>>[0],
-) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "action" });
-}
-
-function decodeWorkflowRequestDispatchRow(
-  input: Parameters<WorkflowRowDecoder<DecodedWorkflowRequestDispatch>>[0],
-) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "dispatch" });
-}
-
-function decodeWorkflowRequestTerminalReceiptRow(
-  input: Parameters<WorkflowRowDecoder<DecodedWorkflowRequestTerminalReceipt>>[0],
-) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "receipt" });
-}
-
-function decodeWorkflowActionOutboxRow(
-  input: Parameters<WorkflowRowDecoder<DecodedWorkflowActionOutboxEntry>>[0],
-) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "outbox" });
-}
-
-function decodeWorkflowArtifactRow(
-  input: Parameters<WorkflowRowDecoder<WorkflowArtifactReference>>[0],
-) {
-  return decodeWorkflowPersistenceRow({ ...input, kind: "artifact" });
-}
 
 export class DurableWorkflowSqliteDriverFailure extends TaggedError(
   "DurableWorkflowSqliteDriverFailure",

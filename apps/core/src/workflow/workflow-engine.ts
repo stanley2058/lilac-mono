@@ -1,8 +1,10 @@
+import { decodeWorkflowCallInput, type DecodedWorkflowCallInput } from "./workflow-call-input";
+import { Semaphore } from "./workflow-semaphore";
 import { captureError } from "../shared/error-capture";
 import path from "node:path";
 
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
-import { z } from "zod";
+
 import type { BlobStore } from "@stanley2058/lilac-blob-storage";
 import {
   type DecodedLilacMessageForTopic,
@@ -38,7 +40,6 @@ import {
   WORKFLOW_RUNTIME_VERSION,
 } from "./workflow-definition";
 import {
-  jsonValueSchema,
   type JsonValue,
   type WorkflowOperation,
   type WorkflowArtifactReference,
@@ -66,13 +67,7 @@ import {
   workflowRequestPolicyIdentityProjection,
   type WorkflowRequestPolicy,
 } from "./workflow-request-authority";
-import {
-  resolveWorkflowAgentOperationInputResult,
-  workflowPipelineOptionsSchema,
-  workflowWaitForReplyOptionsSchema,
-  type ResolvedWorkflowAgentInput,
-  type WorkflowAgentOperationInputInvalid,
-} from "./workflow-operation-policy";
+import { type ResolvedWorkflowAgentInput } from "./workflow-operation-policy";
 import { formatWorkflowErrorForLog } from "./workflow-error-log";
 import { workflowConsumerId } from "./workflow-consumer-id";
 import { adaptEventPublishResultToHost } from "../shared/event-bus-result";
@@ -80,76 +75,6 @@ import { adaptEventPublishResultToHost } from "../shared/event-bus-result";
 const WORKFLOW_LEASE_STALE_MS = 60_000;
 const WORKFLOW_LEASE_HEARTBEAT_MS = 20_000;
 const WORKFLOW_REQUEST_LEASE_STALE_MS = 30_000;
-
-type DecodedWorkflowCallInput =
-  | { readonly kind: "agent"; readonly input: ResolvedWorkflowAgentInput }
-  | { readonly kind: "phase"; readonly input: z.output<typeof phaseInputSchema> }
-  | { readonly kind: "parallel"; readonly input: z.output<typeof parallelInputSchema> }
-  | { readonly kind: "pipeline"; readonly input: z.output<typeof pipelineInputSchema> }
-  | {
-      readonly kind: "waitForReply";
-      readonly input: z.output<typeof workflowWaitForReplyOptionsSchema>;
-    }
-  | { readonly kind: "sleep"; readonly input: z.output<typeof sleepInputSchema> };
-
-class WorkflowCallInputInvalid extends TaggedError("WorkflowCallInputInvalid")<{
-  readonly kind: WorkflowSandboxCall["kind"];
-  readonly message: string;
-}> {}
-
-function decodeWorkflowCallInput(input: {
-  readonly call: WorkflowSandboxCall;
-  readonly canonicalWorkspaceRoot: string;
-}): ResultType<
-  DecodedWorkflowCallInput,
-  WorkflowAgentOperationInputInvalid | WorkflowCallInputInvalid
-> {
-  if (input.call.kind === "agent") {
-    return resolveWorkflowAgentOperationInputResult({
-      value: input.call.input,
-      canonicalWorkspaceRoot: input.canonicalWorkspaceRoot,
-    }).map((value) => ({ kind: "agent", input: value }));
-  }
-  const invalid = (message: string) =>
-    Result.err(
-      new WorkflowCallInputInvalid({
-        kind: input.call.kind,
-        message,
-      }),
-    );
-  switch (input.call.kind) {
-    case "phase": {
-      const decoded = phaseInputSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-    case "parallel": {
-      const decoded = parallelInputSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-    case "pipeline": {
-      const decoded = pipelineInputSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-    case "waitForReply": {
-      const decoded = workflowWaitForReplyOptionsSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-    case "sleep": {
-      const decoded = sleepInputSchema.safeParse(input.call.input);
-      return decoded.success
-        ? Result.ok({ kind: input.call.kind, input: decoded.data })
-        : invalid(decoded.error.issues[0]?.message ?? "Workflow call input is invalid");
-    }
-  }
-}
 
 async function cancelWorkflowSandboxForEngineHost(sandbox: WorkflowSandboxRun): Promise<void> {
   const cancelled: ResultType<void, WorkflowSandboxTerminationFailed> = await sandbox.cancel();
@@ -164,16 +89,6 @@ async function loadWorkflowValueArtifact(input: {
   const loaded = await readWorkflowValueArtifact(input);
   return adaptWorkflowArtifactResultToException(loaded);
 }
-
-const phaseInputSchema = z.strictObject({ name: z.string().min(1).max(200) });
-const parallelInputSchema = z.strictObject({
-  count: z.number().int().nonnegative(),
-});
-const pipelineInputSchema = z.strictObject({
-  items: z.array(jsonValueSchema).max(10_000),
-  options: workflowPipelineOptionsSchema,
-});
-const sleepInputSchema = z.union([z.number().nonnegative(), z.string().min(1).max(100)]);
 
 type AgentRequestResult = {
   state: "resolved" | "failed" | "cancelled" | "timed_out";
@@ -484,22 +399,6 @@ async function stopWorkflowEventSubscription(
 
 function failedAgentRequest(detail: string): AgentRequestResult {
   return { state: "failed", output: "", detail, usage: null };
-}
-
-class Semaphore {
-  private active = 0;
-  private readonly waiters: Array<() => void> = [];
-
-  constructor(private readonly limit: number) {}
-
-  async use<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.active >= this.limit) await new Promise<void>((resolve) => this.waiters.push(resolve));
-    this.active += 1;
-    return await fn().finally(() => {
-      this.active -= 1;
-      this.waiters.shift()?.();
-    });
-  }
 }
 
 function isTerminalOperation(state: WorkflowOperationState): boolean {
