@@ -1,3 +1,4 @@
+import "./styles.css";
 import { CopySessionIdMenuItem } from "./components/CopySessionIdMenuItem";
 import { SkeletonRows } from "./components/ui/skeleton";
 import { DirectThreadCard, DirectThreadTitle } from "./components/DirectThreadCard";
@@ -5,10 +6,8 @@ import { currentPushDeviceId } from "./push-device";
 import { NativeComputerViewer } from "./components/ComputerViewer";
 import { FloatingChatMenu } from "./components/FloatingChatMenu";
 import { useWorkspaceViewport } from "./use-workspace-viewport";
-import { Kbd } from "./components/ui/kbd";
 import {
   useAppShortcuts,
-  useThreadShortcut,
   useShortcut,
   ThreadShortcutTargets,
   focusMainComposer,
@@ -75,18 +74,6 @@ import { isNarrowWorkspace, useNarrowWorkspace } from "./workspace-breakpoint";
 import { useModalSidebar } from "./modal-sidebar";
 import { Settings } from "./components/Settings";
 import { SidebarSearch } from "./components/SidebarSearch";
-import { SearchHighlight } from "./components/search-highlight";
-const Sharing = lazy(() =>
-  import("./components/Sharing").then((module) => ({ default: module.Sharing })),
-);
-// The compiler cannot memoize a component that contains `import()`.
-const loadComposerEditor = () => import("./components/composer-editor");
-const WorkflowBoard = lazy(() =>
-  import("./components/WorkflowBoard").then((module) => ({ default: module.WorkflowBoard })),
-);
-const External = lazy(() =>
-  import("./components/External").then((module) => ({ default: module.External })),
-);
 import { attempt, IconButton, Modal, VirtualList } from "./components/ui";
 import { MessageIdentityContext } from "./components/message-identity";
 import { WorkingIndicatorsContext } from "./components/WorkVerb";
@@ -125,7 +112,18 @@ import {
 } from "./components/ui/context-menu";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
-import "./styles.css";
+import { keyedSearchHits, SearchThreadButton } from "./components/SearchThreadButton";
+const Sharing = lazy(() =>
+  import("./components/Sharing").then((module) => ({ default: module.Sharing })),
+);
+// The compiler cannot memoize a component that contains `import()`.
+const loadComposerEditor = () => import("./components/composer-editor");
+const WorkflowBoard = lazy(() =>
+  import("./components/WorkflowBoard").then((module) => ({ default: module.WorkflowBoard })),
+);
+const External = lazy(() =>
+  import("./components/External").then((module) => ({ default: module.External })),
+);
 
 export type { AppProps } from "./types";
 const noSkills: readonly SkillChoice[] = [];
@@ -1506,51 +1504,3 @@ function sameWords(current: readonly string[], next: readonly string[]): readonl
 }
 
 // Search returns one hit per message, so a turn can match more than once.
-function keyedSearchHits<T extends { threadId: string; turnId?: string; excerpt: string }>(
-  hits: readonly T[],
-) {
-  const seen = new Map<string, number>();
-  return hits.map((hit) => {
-    const base = `${hit.threadId}:${hit.turnId ?? hit.excerpt}`;
-    const count = seen.get(base) ?? 0;
-    seen.set(base, count + 1);
-    return { ...hit, key: count ? `${base}:${count}` : base };
-  });
-}
-
-function SearchThreadButton({
-  id,
-  title,
-  excerpt,
-  query,
-  onSelect,
-}: {
-  id: string;
-  title: string;
-  excerpt: string;
-  query: string;
-  onSelect: () => void;
-}) {
-  const shortcut = useThreadShortcut(id);
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      className="search-result relative flex w-full gap-1 p-3 text-left rounded-sm h-auto flex-col items-start whitespace-normal"
-      aria-keyshortcuts={shortcut.aria}
-      onClick={onSelect}
-    >
-      <strong>
-        <SearchHighlight text={title} query={query} />
-      </strong>
-      <span>
-        <SearchHighlight text={excerpt} query={query} />
-      </span>
-      {shortcut.held && shortcut.label ? (
-        <Kbd className="absolute bottom-2 right-2 bg-popover px-2 text-popover-foreground shadow-sm">
-          {shortcut.label}
-        </Kbd>
-      ) : null}
-    </Button>
-  );
-}

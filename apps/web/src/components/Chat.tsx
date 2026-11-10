@@ -77,9 +77,7 @@ import { resolveAttachmentIds } from "../uploads";
 import { inputDeliveryOptions } from "../input-mode";
 import { deliverPendingInput, type PendingInput } from "../pending-input";
 import { pendingTurnSlot } from "../pending-message";
-export type { PendingInput } from "../pending-input";
 import { Button } from "./ui/button";
-import { Composer, type ComposerProps } from "./Composer";
 import { ConversationStatus } from "./ConversationStatus";
 import { Timeline, useLatestReadableTurn } from "./Timeline";
 import { QueuedMessage, QueuedMessages } from "./QueuedMessage";
@@ -87,32 +85,18 @@ import type { OutlineSource } from "../timeline-outline";
 import { attempt, Modal } from "./ui";
 import { toast } from "./ui/toast";
 import { isConnectionFailure } from "../connection-lifecycle";
-
 import { UploadProgressContext } from "../upload-context";
+import { type Draft, emptyDraft, summarizeDraft, emptySummary, DraftComposer } from "./chat-draft";
+export type { PendingInput } from "../pending-input";
+export type { Draft } from "./chat-draft";
 
 const queueLabels: Record<ComposerSubmission["mode"], string> = {
   steer: "Steering",
   followup: "Follow-up",
 };
-export type Draft = {
-  text: string;
-  skillIds: string[];
-  commandId?: string;
-  attachments: string[];
-  savedText?: string;
-};
 // The compiler cannot memoize a component that contains `import()`.
 const loadComposerEditor = () => import("./composer-editor");
-const emptyDraft: Draft = { text: "", skillIds: [], attachments: [] };
-/** What the conversation needs from a draft. Typing changes only the text, which the composer reads. */
-type DraftSummary = Omit<Draft, "text"> & { hasText: boolean };
-const summarizeDraft = ({ text, ...draft }: Draft): DraftSummary => ({
-  ...draft,
-  hasText: !!text.trim(),
-});
-const emptySummary = summarizeDraft(emptyDraft);
 const noPrompts: ReturnType<typeof questionPrompts> = [];
-const draftText = (draft: Draft) => draft.text;
 export type ChatProps = Pick<ChatCommon, "catalog" | "onError"> & {
   threadId: string;
   thread?: NativeThread;
@@ -1256,29 +1240,4 @@ export function Chat(props: ChatProps) {
       </div>
     </MessageIdentityContext>
   );
-}
-
-type DraftTextSource = {
-  local: boolean;
-  threadId: string;
-  options: ReturnType<typeof composerDraftOptions>;
-  initialData?: Draft;
-};
-
-/** Reads the draft text, so typing rerenders the composer instead of the whole conversation. */
-function DraftComposer({
-  source,
-  ...props
-}: Omit<ComposerProps, "text"> & { source: DraftTextSource }) {
-  const { drafts } = useWorkspace();
-  const localText = useStore(drafts, (state) =>
-    source.local ? (state.localDrafts.get(source.threadId)?.draft.text ?? "") : "",
-  );
-  const saved = useQuery({
-    ...source.options,
-    initialData: source.initialData,
-    enabled: !source.local,
-    select: draftText,
-  });
-  return <Composer {...props} text={source.local ? localText : (saved.data ?? "")} />;
 }
