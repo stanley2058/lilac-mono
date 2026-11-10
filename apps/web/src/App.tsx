@@ -76,6 +76,7 @@ import { isNarrowWorkspace, useNarrowWorkspace } from "./workspace-breakpoint";
 import { useModalSidebar } from "./modal-sidebar";
 import { Settings } from "./components/Settings";
 import { SidebarSearch } from "./components/SidebarSearch";
+import { SearchHighlight } from "./components/search-highlight";
 const Sharing = lazy(() =>
   import("./components/Sharing").then((module) => ({ default: module.Sharing })),
 );
@@ -1139,6 +1140,7 @@ function Workspace(props: AppProps) {
                                     id={hit.threadId}
                                     title={hit.title}
                                     excerpt={hit.excerpt}
+                                    query={searchQuery}
                                     onSelect={() => {
                                       if (hit.surface === "native") select(hit.threadId);
                                       else {
@@ -1524,11 +1526,13 @@ function SearchThreadButton({
   id,
   title,
   excerpt,
+  query,
   onSelect,
 }: {
   id: string;
   title: string;
   excerpt: string;
+  query: string;
   onSelect: () => void;
 }) {
   const shortcut = useThreadShortcut(id);
@@ -1540,8 +1544,12 @@ function SearchThreadButton({
       aria-keyshortcuts={shortcut.aria}
       onClick={onSelect}
     >
-      <strong>{title}</strong>
-      <span>{excerpt}</span>
+      <strong>
+        <SearchHighlight text={title} query={query} />
+      </strong>
+      <span>
+        <SearchHighlight text={excerpt} query={query} />
+      </span>
       {shortcut.held && shortcut.label ? (
         <Kbd className="absolute bottom-2 right-2 bg-popover px-2 text-popover-foreground shadow-sm">
           {shortcut.label}
