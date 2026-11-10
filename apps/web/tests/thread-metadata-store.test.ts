@@ -5,14 +5,14 @@ import { createThreadMetadataStore, followClientThreads } from "../src/thread-me
 import { sidebarSnapshot } from "../src/sidebar-order";
 
 function thread(revision: number, title: string, archived = false): NativeThread {
+  // Only the fields the store and the sidebar order compare matter here.
   return {
     id: "thread",
-    kind: "thread",
     title,
     archived,
     updatedAt: revision * 1000,
     revision,
-  } as NativeThread;
+  } as unknown as NativeThread;
 }
 
 test("a stale list page never replaces newer metadata", () => {

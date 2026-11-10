@@ -7,7 +7,7 @@ import type { CompilerBail } from "./support/react-compiler-bails";
  * so a hot component must compile or opt out with a `"use no memo"` directive that says why.
  */
 const knownBails = [
-  "src/DesignSystem.tsx: Cannot access refs during render",
+  "src/design-system/Layout.tsx: Cannot access refs during render",
   "src/components/AgentWorkDemo.tsx: Cannot access variable before it is declared",
   "src/components/ComputerViewer.tsx: This value cannot be modified",
   "src/components/ExternalMessages.tsx: Use of incompatible library",
