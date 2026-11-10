@@ -975,7 +975,8 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
     },
     inputs: {
       async submit(principal, input) {
-        return Result.gen(async function* () {
+        // Synchronous so the run state read here still holds when acceptInput picks the mode.
+        return Result.gen(function* () {
           const existing = yield* store.lookupInputReceipt(principal.userId, input);
           if (existing) return Result.ok(existing);
           yield* inputSelections(principal, input);
@@ -996,10 +997,11 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
           const reasoning =
             input.reasoning ??
             (input.modelId && input.modelId !== thread.modelId ? undefined : thread.reasoning);
-          if (input.mode !== "steer")
-            yield* modelChoice(principal, input.modelId ?? thread.modelId, reasoning);
+          // The store admits a steer without an active run as a prompt, which needs a pinned model.
+          const steering = input.mode === "steer" && !!thread.activeRunId;
+          if (!steering) yield* modelChoice(principal, input.modelId ?? thread.modelId, reasoning);
           const resolvedModelRequest =
-            input.mode === "steer" && !input.command
+            steering && !input.command
               ? undefined
               : yield* options.resolveModel(input.modelId ?? thread.modelId, reasoning);
           const receipt = yield* store.acceptInput(principal.userId, input, {

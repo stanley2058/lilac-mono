@@ -244,26 +244,6 @@
     outline: 2px solid var(--ui-primary);
   }
 
-  .queue .virtual-list {
-    height: 6rem;
-  }
-
-  .queue-entry > span:nth-child(2) {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .pending-input > span {
-    white-space: pre-wrap;
-    width: 100%;
-    max-height: 5rem;
-    overflow: auto;
-  }
-  .pending-input button {
-    color: var(--ui-primary);
-  }
   .resource {
     display: flex;
     align-items: center;

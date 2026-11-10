@@ -109,6 +109,27 @@ function inputReceipt(input: NativeInputRecord): NativeInputReceipt {
   };
 }
 
+/**
+ * A client picks the mode from its view of the run, which can be stale by the time the input
+ * arrives. The thread's actual run state decides instead of rejecting the input.
+ */
+function admittedInputMode(
+  input: Pick<NativeInput, "mode" | "command">,
+  activeRunId: string | undefined,
+  answeringActiveSync: boolean,
+): NativeInput["mode"] {
+  switch (true) {
+    case answeringActiveSync:
+      return "steer";
+    case !activeRunId:
+      return "prompt";
+    case input.mode === "prompt" || !!input.command:
+      return "followup";
+    default:
+      return input.mode;
+  }
+}
+
 function nativeTextParts(text: string): DisplayMessage["parts"] {
   const parts: DisplayMessage["parts"] = [];
   let offset = 0;
@@ -1909,8 +1930,11 @@ export class NativeStore {
                 return Result.err(nativeFailure("invalid", "Commands cannot answer a question"));
               const answeringActiveSync =
                 question?.mode === "sync" && thread.activeRunId === question.requestId;
-              const requestedMode = input.command && thread.activeRunId ? "followup" : input.mode;
-              const effectiveMode = answeringActiveSync ? "steer" : requestedMode;
+              const effectiveMode = admittedInputMode(
+                input,
+                thread.activeRunId,
+                answeringActiveSync,
+              );
               const pendingCount =
                 this.db
                   .query<{ count: number }, [string]>(
@@ -1920,12 +1944,6 @@ export class NativeStore {
               if (pendingCount >= 128)
                 return Result.err(
                   nativeFailure("conflict", "Thread already has 128 pending inputs"),
-                );
-              if (effectiveMode !== "prompt" && !thread.activeRunId)
-                return Result.err(nativeFailure("stale", "There is no active run for this input"));
-              if (effectiveMode === "prompt" && thread.activeRunId)
-                return Result.err(
-                  nativeFailure("conflict", "Choose steering or follow-up while a run is active"),
                 );
               const uploads = yield* Result.all(
                 input.attachmentIds.map((id) => this.getUpload(id)),

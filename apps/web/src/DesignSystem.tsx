@@ -152,6 +152,7 @@ import { Wordmark } from "./components/LilacMark";
 import { ConversationWelcome } from "./components/ConversationWelcome";
 import { MessageGroupingDemo } from "./components/MessageGroupingDemo";
 import { TimelineRailDemo } from "./components/TimelineRailDemo";
+import { QueuedMessage, QueuedMessages } from "./components/QueuedMessage";
 import { CodeFallback } from "./components/CodeEditor";
 import {
   SkeletonCode,
@@ -1057,6 +1058,70 @@ function Messages() {
             />
           ))}
         </div>
+        <Specimen title="Queued and unsent messages">
+          <QueuedMessages className="px-0 pb-0 max-workspace:px-0 max-workspace:pb-0">
+            <QueuedMessage
+              text="A second message sent before the first one starts"
+              state="sending"
+            />
+            <QueuedMessage
+              text="Use the staging database instead"
+              state="sending"
+              label="Steering"
+            />
+            <QueuedMessage text="Then write the release notes" state="sending" label="Follow-up" />
+            <QueuedMessage
+              text="Then write the release notes"
+              state="queued"
+              label="Follow-up"
+              removeLabel="Remove queued message"
+              onRemove={noop}
+            />
+            <QueuedMessage
+              text={
+                "Compare both proposals.\nKeep the summary short.\nList open questions.\nCite the spec section for each claim.\nFlag anything that changes the timeline.\nEnd with a recommendation."
+              }
+              state="queued"
+              label="Follow-up"
+              removeLabel="Remove queued message"
+              onRemove={noop}
+            />
+            <QueuedMessage
+              text="Summarize the failing tests"
+              state="failed"
+              error="Thread history is changing"
+              onRetry={noop}
+              onRemove={noop}
+            />
+            <QueuedMessage
+              text="Summarize the failing tests"
+              state="failed"
+              error="Send not confirmed. Retry safely when connected."
+              onRetry={noop}
+              onRemove={noop}
+            />
+            <QueuedMessage
+              text="Option B"
+              state="failed"
+              error="This question closed before your answer arrived."
+              retryLabel="Send as message"
+              onRetry={noop}
+              onRemove={noop}
+            />
+            <QueuedMessage
+              text="Plan the migration"
+              state="failed"
+              error="Conversation could not be created."
+              onRetry={noop}
+            />
+            <QueuedMessage
+              text="Summarize the failing tests"
+              state="failed"
+              error="You no longer have permission to send to this conversation."
+              onRemove={noop}
+            />
+          </QueuedMessages>
+        </Specimen>
         <Specimen title="Grouping and time gaps">
           <MessageGroupingDemo />
         </Specimen>

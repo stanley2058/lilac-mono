@@ -340,6 +340,24 @@ describe("native RPC service projection", () => {
     expect(state.kickCalls()).toBe(0);
   });
 
+  test("a steer that arrives after its run ended keeps a pinned model as a prompt", async () => {
+    using state = fixture();
+    const receipt = (
+      await state.services.inputs.submit(principal, {
+        threadId: state.thread.id,
+        commandId: "late-steer",
+        historyGeneration: 0,
+        text: "Use staging",
+        mode: "steer",
+        attachmentIds: [],
+        skillIds: [],
+      })
+    ).unwrap();
+    const input = state.store.getInput(receipt.inputId).unwrap();
+    expect(input.mode).toBe("prompt");
+    expect(input.resolvedModelRequest).toBeDefined();
+  });
+
   test("submit retries return the committed receipt before current catalog and model checks", async () => {
     using state = fixture();
     const input: NativeRpcInputs["inputs"]["submit"] = {

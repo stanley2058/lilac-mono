@@ -62,10 +62,12 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { X, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import type {
   NativeInput,
+  NativeInputReceipt,
   NativeQuestion,
+  QueuedInput,
   DisplayPart,
   NativeThread,
   ReadyTurnSlot,
@@ -79,15 +81,19 @@ export type { PendingInput } from "../pending-input";
 import { Button } from "./ui/button";
 import { Composer } from "./Composer";
 import { ConversationStatus } from "./ConversationStatus";
-import { Timeline, ThinkingIndicator, useLatestReadableTurn } from "./Timeline";
+import { Timeline, useLatestReadableTurn } from "./Timeline";
+import { QueuedMessage, QueuedMessages } from "./QueuedMessage";
 import type { OutlineSource } from "../timeline-outline";
-import { attempt, IconButton, Modal, VirtualList } from "./ui";
+import { attempt, Modal } from "./ui";
 import { toast } from "./ui/toast";
 import { isConnectionFailure } from "../connection-lifecycle";
 
 import { UploadProgressContext } from "../upload-context";
 
-const queueLabels = { prompt: "Prompt", steer: "Steering", followup: "Follow-up" };
+const queueLabels: Record<ComposerSubmission["mode"], string> = {
+  steer: "Steering",
+  followup: "Follow-up",
+};
 export type Draft = {
   text: string;
   skillIds: string[];
@@ -315,9 +321,11 @@ export function Chat(props: ChatProps) {
     ...queueOptions(client, threadId),
     enabled: online && !local && editable,
   });
-  const queue = editable
-    ? (queueQuery.data?.items ?? []).filter((entry) => entry.mode !== "prompt")
-    : [];
+  const queuedItems = editable ? (queueQuery.data?.items ?? []) : [];
+  const queue = queuedItems.filter((entry) => entry.mode !== "prompt");
+  // A steer or a prompt with a turn already shows in the timeline. The rest wait after the last
+  // turn, such as a prompt held behind an earlier input that is still uploading.
+  const queuedWithoutTurn = queuedItems.filter((entry) => entry.mode !== "steer" && !entry.turnId);
   const subscribe = useCallback(
     (listener: () => void) => pool.subscribe(threadId, listener),
     [pool, threadId],
@@ -577,20 +585,74 @@ export function Chat(props: ChatProps) {
   }
   async function deliver(entry: PendingInput, retryFailed = false) {
     let awaitingProjection = false;
+    let sent: NativeInput | undefined;
     const outcome = await deliverPendingInput(
       entry,
       () => prepareInput(entry, retryFailed),
       (input) => client.submit(input),
       (patch) => {
         awaitingProjection = patch?.state === "accepted";
+        if (patch?.input) sent = patch.input;
         setPending(entry.commandId, patch);
       },
       currentId.current !== threadId || canEdit.current,
     );
     if (outcome?.kind !== "accepted") return;
+    if (sent) showQueued(sent, outcome.receipt);
     if (!awaitingProjection)
       for (const attachment of entry.submission.attachments) pool.release(threadId, attachment.key);
     void refreshQueue();
+  }
+  /** Puts an accepted input without a turn in the queue right away, so it does not vanish until the refetch. */
+  function showQueued(input: NativeInput, receipt: NativeInputReceipt) {
+    if (receipt.turnId || receipt.state === "admitted") return;
+    // The server keeps a steer a steer during a run and admits other input during a run as a follow-up.
+    if (receipt.runId && input.mode === "steer") return;
+    const item: QueuedInput = {
+      ...receipt,
+      authorId: scope.principalId,
+      text: input.text.slice(0, 4096),
+      mode: receipt.runId ? "followup" : "prompt",
+      createdAt: Date.now(),
+    };
+    queries.setQueryData(queueOptions(client, threadId).queryKey, (current) =>
+      current?.items.some((entry) => entry.inputId === receipt.inputId)
+        ? current
+        : { items: [...(current?.items ?? []), item] },
+    );
+  }
+  function retryPending(entry: PendingInput) {
+    void deliver(
+      {
+        ...entry,
+        submission: {
+          ...entry.submission,
+          attachments: entry.submission.attachments.map(
+            (attachment) =>
+              uploads.find((candidate) => candidate.key === attachment.key) ?? attachment,
+          ),
+        },
+      },
+      true,
+    );
+  }
+  function discardPending(entry: PendingInput) {
+    for (const attachment of entry.submission.attachments) pool.release(threadId, attachment.key);
+    setPending(entry.commandId, null);
+  }
+  function removeQueued(inputId: string) {
+    const checkpoint = store.checkpoint;
+    if (!client.rpc || !checkpoint) return;
+    void attempt(
+      () =>
+        client.rpc!.runs.removeQueued({
+          threadId: threadId,
+          commandId: crypto.randomUUID(),
+          historyGeneration: checkpoint.historyGeneration,
+          inputId,
+        }),
+      setError,
+    ).then(refreshQueue);
   }
   function submit(
     submission: ComposerSubmission,
@@ -994,101 +1056,48 @@ export function Chat(props: ChatProps) {
     });
     return () => toast.close(id);
   }, [composerError, threadId, dismissComposerError, dropConnectionError]);
+  const failedCreation =
+    localThread?.creation && !localThread.sending ? localThread.creation.entry : undefined;
+  const trailing =
+    failedCreation || queuedWithoutTurn.length || visiblePendingEntries.length ? (
+      <QueuedMessages>
+        {failedCreation ? (
+          <QueuedMessage
+            text={failedCreation.text}
+            state="failed"
+            error="Conversation could not be created."
+            onRetry={() => props.onLocalSubmit(threadId, failedCreation.submission)}
+          />
+        ) : null}
+        {queuedWithoutTurn.map((entry) => (
+          <QueuedMessage
+            key={entry.inputId}
+            text={entry.text}
+            state="queued"
+            label={entry.mode === "followup" ? queueLabels.followup : undefined}
+            removeLabel="Remove queued message"
+            onRemove={() => removeQueued(entry.inputId)}
+          />
+        ))}
+        {visiblePendingEntries.map((entry) => {
+          const failed = entry.state === "rejected" || entry.state === "uncertain";
+          return (
+            <QueuedMessage
+              key={entry.commandId}
+              text={entry.text}
+              state={failed ? "failed" : "sending"}
+              label={entry.optimisticSlotIds ? undefined : queueLabels[entry.submission.mode]}
+              error={entry.error}
+              retryLabel={entry.questionClosed ? "Send as message" : undefined}
+              onRetry={failed && editable ? () => retryPending(entry) : undefined}
+              onRemove={failed ? () => discardPending(entry) : undefined}
+            />
+          );
+        })}
+      </QueuedMessages>
+    ) : undefined;
   const composer = (
     <div className="chat-bottom w-full max-w-[var(--ui-chat-width)] my-0 mx-auto pt-2 px-6 pb-6 max-workspace:px-3 max-workspace:pb-3">
-      {localThread?.creation && !pendingTurn ? (
-        <div className="pending-input flex flex-wrap gap-2 p-2 mb-2 rounded-sm bg-surface text-sm">
-          <span>{localThread.creation.entry.text}</span>
-          <small>
-            {localThread.sending ? <ThinkingIndicator /> : "Conversation could not be created."}
-          </small>
-          {!localThread.sending ? (
-            <Button
-              onClick={() => props.onLocalSubmit(threadId, localThread.creation!.entry.submission)}
-            >
-              Retry message
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-      {visiblePendingEntries.length ? (
-        <VirtualList
-          className="pending-inputs max-h-48 h-24"
-          items={visiblePendingEntries}
-          itemKey={(entry) => entry.commandId}
-          label="Pending messages"
-          estimate={88}
-          render={(entry) => (
-            <div
-              className="pending-input flex flex-wrap gap-2 p-2 mb-2 rounded-sm bg-surface text-sm"
-              key={entry.commandId}
-            >
-              <span>{entry.text}</span>
-              {entry.error ? <small>{entry.error}</small> : <ThinkingIndicator />}
-              {editable && entry.state !== "preparing" && entry.state !== "accepted" ? (
-                <Button
-                  type="button"
-                  onClick={() =>
-                    void deliver(
-                      {
-                        ...entry,
-                        submission: {
-                          ...entry.submission,
-                          attachments: entry.submission.attachments.map(
-                            (attachment) =>
-                              uploads.find((candidate) => candidate.key === attachment.key) ??
-                              attachment,
-                          ),
-                        },
-                      },
-                      true,
-                    )
-                  }
-                >
-                  {entry.questionClosed ? "Send as message" : "Retry message"}
-                </Button>
-              ) : null}
-            </div>
-          )}
-        />
-      ) : null}
-      {editable && queue.length ? (
-        <div className="queue bg-surface rounded-md mb-2 p-1">
-          <VirtualList
-            items={queue}
-            itemKey={(entry) => entry.inputId}
-            label="Queued messages"
-            estimate={48}
-            render={(entry) => (
-              <div className="queue-entry flex items-center gap-2 py-1 px-2 text-sm">
-                <span className="badge inline-flex items-center gap-1 bg-surface-hover text-muted-foreground rounded-sm py-1 px-2 text-xs whitespace-nowrap">
-                  {queueLabels[entry.mode]}
-                </span>
-                <span>{entry.text}</span>
-                <IconButton
-                  label="Remove queued message"
-                  onClick={() => {
-                    const checkpoint = store.checkpoint;
-                    if (!client.rpc || !checkpoint) return;
-                    void attempt(
-                      () =>
-                        client.rpc!.runs.removeQueued({
-                          threadId: threadId,
-                          commandId: crypto.randomUUID(),
-                          historyGeneration: checkpoint.historyGeneration,
-                          inputId: entry.inputId,
-                        }),
-                      setError,
-                    ).then(refreshQueue);
-                  }}
-                >
-                  <X />
-                </IconButton>
-              </div>
-            )}
-          />
-        </div>
-      ) : null}
       {draft.savedText ? (
         <Button
           type="button"
@@ -1183,6 +1192,7 @@ export function Chat(props: ChatProps) {
                 centerEmpty={local || (historyLoaded && !props.loadError)}
                 header={props.header}
                 footer={composer}
+                trailing={trailing}
                 onLatestVisibleChange={setLatestVisible}
                 client={client}
                 threadId={threadId}

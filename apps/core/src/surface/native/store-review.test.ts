@@ -303,4 +303,34 @@ describe("native store adversarial regressions", () => {
     });
     store.close();
   });
+
+  for (const mode of ["steer", "followup"] as const) {
+    test(`a ${mode} that arrives after its run ended starts a new turn as a prompt`, () => {
+      const { store, thread, submit, start } = fixture();
+      const first = submit("first");
+      start(first.inputId);
+      store.markInputCompleted(first.inputId).unwrap();
+      store.setActiveRun(thread.id, 0).unwrap();
+
+      const late = submit("late", mode);
+
+      expect(store.getInput(late.inputId).unwrap().mode).toBe("prompt");
+      expect(late.turnId).toBeDefined();
+      expect(late.turnId).not.toBe(first.turnId);
+      store.close();
+    });
+  }
+
+  test("a prompt that arrives during a run queues as a follow-up", () => {
+    const { store, thread, submit, start } = fixture();
+    start(submit("first").inputId);
+
+    const late = submit("late");
+
+    expect(store.getInput(late.inputId).unwrap().mode).toBe("followup");
+    expect(store.listQueuedInputs("owner", thread.id).unwrap()).toMatchObject([
+      { inputId: late.inputId, mode: "followup" },
+    ]);
+    store.close();
+  });
 });

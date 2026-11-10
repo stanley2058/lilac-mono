@@ -279,6 +279,8 @@ export function useSlotIds(store: NativeThreadStore) {
 export type TimelineProps = MessageServices & {
   header?: ReactNode;
   footer?: ReactNode;
+  /** Messages after the last turn that are not turns yet, such as queued or unsent input. */
+  trailing?: ReactNode;
   client: Pick<NativeClient, "thread" | "hydrate" | "loadTurnPage" | "subscribe">;
   threadId: string;
   onRewind: (turnId: string) => void;
@@ -368,7 +370,8 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
   const getItemKey = useCallback(
     (index: number) => {
       if (index === 0) return `${props.threadId}:header`;
-      if (index === ids.length + 1) return `${props.threadId}:footer`;
+      if (index === ids.length + 1) return `${props.threadId}:trailing`;
+      if (index === ids.length + 2) return `${props.threadId}:footer`;
       return identities.key(ids[index - 1]!);
     },
     [ids, props.threadId, identities],
@@ -376,13 +379,14 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
   const virtualRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement>>(undefined);
   const virtual = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     // Sticky chrome participates in measurements so the virtual and native scroll extents agree.
-    count: ids.length + 2,
+    count: ids.length + 3,
     scrollPaddingStart: insets.top,
     scrollPaddingEnd: insets.bottom,
     getScrollElement: () => parent.current,
     estimateSize: (index) => {
       if (index === 0) return headerRef.current?.offsetHeight ?? 32;
-      if (index === ids.length + 1) return footerRef.current?.offsetHeight ?? 0;
+      if (index === ids.length + 1) return 0;
+      if (index === ids.length + 2) return footerRef.current?.offsetHeight ?? 0;
       return 240;
     },
     getItemKey,
@@ -476,7 +480,7 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
   );
   const totalSize = virtual.getTotalSize();
   const headerSize = virtual.measurementsCache[0]?.size ?? 0;
-  const footerSize = virtual.measurementsCache[ids.length + 1]?.size ?? 0;
+  const footerSize = virtual.measurementsCache[ids.length + 2]?.size ?? 0;
   useLayoutEffect(() => {
     const viewport = parent.current;
     setAwayFromEnd(
@@ -486,6 +490,8 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
     );
   }, [virtual, totalSize, insets]);
   const rows = virtual.getVirtualItems().filter((row) => row.index > 0 && row.index <= ids.length);
+  // The row stays mounted while empty so it measures zero instead of keeping its last height.
+  const trailingRow = virtual.getVirtualItems().find((row) => row.index === ids.length + 1);
   const activatedArrivals = useRef<MessageArrivals>(undefined);
   useLayoutEffect(() => {
     if (activatedArrivals.current === arrivals || !tailHydrated || !store.checkpoint) return;
@@ -584,7 +590,8 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
       seek,
     });
   }, [jump, props.threadId]);
-  const centered = ids.length === 0 && !!props.centerEmpty;
+  const empty = ids.length === 0 && !props.trailing;
+  const centered = empty && !!props.centerEmpty;
   return (
     <MessageArrivalsContext value={arrivals}>
       <TimelineContext value={timeline}>
@@ -669,7 +676,18 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
                     />
                   </div>
                 ))}
-                {ids.length === 0
+                {trailingRow ? (
+                  <div
+                    key={trailingRow.key}
+                    data-index={trailingRow.index}
+                    ref={virtual.measureElement}
+                    className="virtual-row absolute top-0 left-0 w-full"
+                    style={{ transform: `translateY(${trailingRow.start - headerSize}px)` }}
+                  >
+                    {props.trailing}
+                  </div>
+                ) : null}
+                {empty
                   ? (props.emptyContent ?? (
                       <div className="empty-chat">
                         {props.emptyMessage ?? "Start a conversation."}
@@ -680,7 +698,7 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
               {props.footer ? (
                 <div
                   ref={measureFooter}
-                  data-index={ids.length + 1}
+                  data-index={ids.length + 2}
                   className="chat-sticky-footer sticky bottom-0 z-3"
                 >
                   {awayFromEnd && scroll.mode === "read" ? (
