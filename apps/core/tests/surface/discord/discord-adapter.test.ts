@@ -610,6 +610,35 @@ describe("DiscordAdapter.sendMsg content validation", () => {
     });
   });
 
+  it("rejects action-card text past the embed description limit", async () => {
+    const sends: unknown[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          send: async (payload: unknown) => {
+            sends.push(payload);
+            return { id: "sent-1" };
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.sendMsg(
+      { platform: "discord", channelId: "c1" },
+      {
+        text: "x".repeat(4097),
+        actions: [{ actionId: "choose", label: "1", style: "primary" as const }],
+      },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected oversized embed failure");
+    expect(result.error).toBeInstanceOf(SurfaceInvalidInput);
+    expect(result.error).toMatchObject({ operation: "send-message", field: "content.text" });
+    expect(sends).toEqual([]);
+  });
+
   it("notifies action-card replies only when explicitly requested", async () => {
     const sends: unknown[] = [];
     const adapter = createTestDiscordAdapter();
@@ -1989,6 +2018,33 @@ describe("DiscordAdapter.editMsg", () => {
     expect(editCalls).toHaveLength(1);
     expect(editCalls[0]?.attachments).toEqual([]);
     expect(editCalls[0]?.files).toEqual([]);
+  });
+
+  it("rejects embed text past the description limit", async () => {
+    const editCalls: unknown[] = [];
+    const message = {
+      author: { id: "bot" },
+      embeds: [{ toJSON: () => ({ description: "old-description" }) }],
+      edit: async (options: unknown) => {
+        editCalls.push(options);
+      },
+    } as unknown as Message;
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      user: { id: "bot" },
+      channels: { fetch: async () => ({ messages: { fetch: async () => message } }) },
+    };
+
+    const result = await adapter.editMsg(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      { text: "x".repeat(4097) },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected oversized embed failure");
+    expect(result.error).toBeInstanceOf(SurfaceInvalidInput);
+    expect(result.error).toMatchObject({ operation: "edit-message", field: "content.text" });
+    expect(editCalls).toEqual([]);
   });
 
   it("fails for non-bot-authored messages", async () => {

@@ -205,6 +205,22 @@ export function classifyDiscordSurfaceError(
   return null;
 }
 
+const DISCORD_EMBED_DESCRIPTION_MAX_CHARS = 4096;
+
+/** EmbedBuilder throws an untyped validation error past Discord's description limit. */
+function oversizedEmbedDescription(
+  operation: SurfaceOperation,
+  description: string,
+): SurfaceInvalidInput | null {
+  if (description.length <= DISCORD_EMBED_DESCRIPTION_MAX_CHARS) return null;
+  return new SurfaceInvalidInput({
+    platform: "discord",
+    operation,
+    field: "content.text",
+    message: `Discord embed text has ${description.length} characters; the limit is ${DISCORD_EMBED_DESCRIPTION_MAX_CHARS}`,
+  });
+}
+
 export function classifyDiscordSurfaceNotFound(
   error: unknown,
   message = "Discord resource not found",
@@ -1588,6 +1604,8 @@ export class DiscordAdapter implements SurfaceAdapter {
         );
       }
       const text = this.entityMapper?.rewriteOutgoingText(content.text ?? "") ?? content.text ?? "";
+      const oversized = oversizedEmbedDescription("send-message", text);
+      if (oversized) return Result.err(oversized);
       const embed = new EmbedBuilder().setDescription(text || "*<empty_string>*");
       if (content.accentColor !== undefined) embed.setColor(content.accentColor);
       const sent = await captureDiscordOperation("send-message", async () =>
@@ -1818,6 +1836,8 @@ export class DiscordAdapter implements SurfaceAdapter {
       );
     }
 
+    const oversized = oversizedEmbedDescription("edit-message", rewritten);
+    if (oversized) return Result.err(oversized);
     const embed = new EmbedBuilder(existingEmbed.toJSON());
     embed.setDescription(rewritten);
     if (content.accentColor !== undefined) embed.setColor(content.accentColor);
@@ -2892,6 +2912,8 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
     const raw = content.text ?? "";
     const rewritten = this.entityMapper?.rewriteOutgoingText(raw) ?? raw;
+    const oversized = oversizedEmbedDescription("edit-message", rewritten);
+    if (oversized) return Result.err(oversized);
     const embed = new EmbedBuilder().setDescription(rewritten);
     if (content.accentColor !== undefined) embed.setColor(content.accentColor);
     const updated = await captureDiscordOperation("edit-message", () =>
