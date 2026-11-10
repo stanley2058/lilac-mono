@@ -1,17 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import { serviceWorkerBuild } from "./service-worker-build.ts";
-import react, { reactCompilerPreset } from "@vitejs/plugin-react";
-import babel from "@rolldown/plugin-babel";
+import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  plugins: [
-    react(),
-    babel({ presets: [reactCompilerPreset()] }),
-    tailwindcss(),
-    serviceWorkerBuild(),
-  ],
+  plugins: [react({ compiler: true }), tailwindcss(), serviceWorkerBuild()],
   optimizeDeps: { include: ["monaco-yaml/yaml.worker.js"] },
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   server: {
