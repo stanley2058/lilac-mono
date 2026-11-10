@@ -970,6 +970,23 @@ export class ConversationThreadStore {
     this.db.close();
   }
 
+  /**
+   * Discord channels are rematerialized only on new activity, so an index reset would leave quiet
+   * channels out of memory. The flag survives restarts until every channel has been rebuilt.
+   */
+  isDiscordRebuildPending(): boolean {
+    const row = this.db
+      .query<{ pending: number }, []>(
+        "SELECT discord_rebuild_pending AS pending FROM conversation_index_v3",
+      )
+      .get();
+    return row?.pending === 1;
+  }
+
+  completeDiscordRebuild(): void {
+    this.db.run("UPDATE conversation_index_v3 SET discord_rebuild_pending = 0");
+  }
+
   isVectorSearchAvailable(): boolean {
     return this.vectorLoaded;
   }
@@ -1064,6 +1081,7 @@ export class ConversationThreadStore {
 
   private tableHasColumn(
     tableName:
+      | "conversation_index_v3"
       | "conversation_threads"
       | "conversation_thread_summaries"
       | "conversation_thread_facets",
@@ -1099,10 +1117,18 @@ export class ConversationThreadStore {
         "conversation_threads",
       ])
         this.db.run(`DROP TABLE IF EXISTS ${table}`);
-      this.db.run("CREATE TABLE conversation_index_v3 (version INTEGER NOT NULL)");
-      this.db.run("INSERT INTO conversation_index_v3 VALUES (3)");
+      this.db.run(
+        "CREATE TABLE conversation_index_v3 (version INTEGER NOT NULL, discord_rebuild_pending INTEGER NOT NULL)",
+      );
+      this.db.run("INSERT INTO conversation_index_v3 VALUES (3, 1)");
     });
     reset();
+    // A marker written before the rebuild flag existed belongs to an index that was never rebuilt.
+    if (!this.tableHasColumn("conversation_index_v3", "discord_rebuild_pending")) {
+      this.db.run(
+        "ALTER TABLE conversation_index_v3 ADD COLUMN discord_rebuild_pending INTEGER NOT NULL DEFAULT 1",
+      );
+    }
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS conversation_threads (

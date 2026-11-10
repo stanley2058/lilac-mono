@@ -903,6 +903,20 @@ const CORE_EVENT_BUS_LOG_FIELDS = [
   "phase",
 ] as const satisfies readonly (keyof EventDeliveryLogContext)[];
 
+/** Rebuilds every Discord channel once after the conversation index was reset. */
+function rebuildDiscordConversationThreads(
+  materializer: ConversationThreadMaterializer,
+  getStore: () => ConversationThreadStore | null,
+): void {
+  const store = getStore();
+  if (!store?.isDiscordRebuildPending()) return;
+  materializer.markAllDirty();
+  void Promise.allSettled([materializer.flush()]).then(([settled]) => {
+    // A failed or interrupted rebuild stays pending, so the next start repeats it.
+    if (settled?.status === "fulfilled" && getStore() === store) store.completeDiscordRebuild();
+  });
+}
+
 function redactEventDeliveryLogContext(context: EventDeliveryLogContext): EventDeliveryLogContext {
   const redacted: Record<string, string | number | boolean | undefined> = {};
   for (const field of CORE_EVENT_BUS_LOG_FIELDS) {
@@ -3335,6 +3349,10 @@ export async function createCoreRuntime(
             searchDbPath: discordSearchDbPath,
             surfaceDbPath: discordSurfaceDbPath,
           });
+          rebuildDiscordConversationThreads(
+            conversationThreadMaterializer,
+            () => conversationThreadStore,
+          );
           discordSearchService = new DiscordSearchService({
             adapter: surfaceAdapter,
             store: activeDiscordSearchStore,

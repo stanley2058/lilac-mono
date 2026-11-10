@@ -523,9 +523,12 @@ rebuilding the derived index for the older runtime; do not reuse cross-surface d
 A conversation thread can now hold several summary entries, one per distinct subject. Summary, facet,
 and embedding rows are keyed by thread and entry ordinal. The first open without the
 `conversation_index_v3` marker drops and recreates the derived thread, summary, facet, FTS, and
-embedding tables, as the `conversation_index_v2` cutover did. No summaries are copied. Recall is
-incomplete until the summarization worker has regenerated every quiet eligible thread and its
-embeddings; manual `conversation.thread.runSummarization` can trigger it. Retained Discord messages,
+embedding tables, as the `conversation_index_v2` cutover did. No summaries are copied. Core then
+rematerializes every Discord channel once in the background; the marker keeps that rebuild pending
+across restarts until it finishes. Native threads are projected from retained turns on the first
+refresh. Recall is incomplete until the summarization worker has regenerated every quiet eligible
+thread and its embeddings. The worker handles `conversation.thread.summarization.batchSize` threads
+every ten minutes; manual `conversation.thread.runSummarization` has no batch limit. Retained Discord messages,
 native records, and canonical transcripts are unchanged.
 
 Search and automatic recall return one result per entry. A result keeps its `threadId` and adds

@@ -908,3 +908,16 @@ test("a thread changed after its summary is reported stale", async () => {
   expect(index.getSummary(ref).unwrap()).not.toBeNull();
   expect(await derivedState()).toEqual({ summarized: false, stale: true });
 });
+
+test("an index reset keeps the Discord rebuild pending across restarts until it completes", () => {
+  const reopen = () => {
+    const store = new ConversationThreadStore(path.join(dir, "search.db"));
+    const pending = store.isDiscordRebuildPending();
+    store.close();
+    return pending;
+  };
+  expect(index.isDiscordRebuildPending()).toBe(true);
+  expect(reopen()).toBe(true);
+  index.completeDiscordRebuild();
+  expect(reopen()).toBe(false);
+});
