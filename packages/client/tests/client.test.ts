@@ -1001,3 +1001,38 @@ test("an incremental patch after cache eviction persists the store's full checkp
     store.slotIds.map((slotId) => store.get(slotId)!),
   );
 });
+
+test("a thread its own replace evicts is not rewritten on every update", async () => {
+  const state = harness();
+  const store = state.client.thread("thread");
+  store.replay(bootstrap.selectedThread!);
+  await state.client.loadCached("thread");
+  const commit = state.cache.commit.bind(state.cache);
+  let replaces = 0;
+  // A thread larger than the cache budget is evicted as soon as its full replace lands.
+  spyOn(state.cache, "commit").mockImplementation(async (cacheScope, threadId, patch) => {
+    const outcome = await commit(cacheScope, threadId, patch);
+    if (!patch.replace) return outcome;
+    replaces++;
+    await state.cache.remove(cacheScope, threadId);
+    return outcome;
+  });
+  await state.cache.remove(scope, "thread");
+  for (const revision of [2, 3, 4]) {
+    store.update({
+      checkpoint: { ...checkpoint, projectionRevision: revision, cursor: `rev${revision}` },
+      changes: [
+        {
+          kind: "append-text",
+          turnId: "turn",
+          position: 0,
+          messageId: "message",
+          partIndex: 0,
+          text: ` ${revision}`,
+        },
+      ],
+    });
+    await state.client.loadCached("thread");
+  }
+  expect(replaces).toBe(1);
+});

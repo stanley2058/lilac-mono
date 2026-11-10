@@ -105,6 +105,8 @@ export class NativeClient {
   >();
   private readonly pendingCachePatches = new Map<string, CachePatch>();
   private readonly cacheWrites = new Map<string, Promise<void>>();
+  /** Threads re-cached after eviction whose next incremental commit has not landed yet. */
+  private readonly recachingThreads = new Set<string>();
   private transport: NativeTransport;
   private httpFallback = false;
   private activeTransport: "websocket" | "http-sse" = "websocket";
@@ -189,8 +191,8 @@ export class NativeClient {
         while (this.pendingCachePatches.has(threadId)) {
           const pending = this.pendingCachePatches.get(threadId)!;
           this.pendingCachePatches.delete(threadId);
-          if ((await this.persist(threadId, pending)) === "missing")
-            this.queueFullCheckpoint(threadId, store);
+          const outcome = await this.persist(threadId, pending);
+          this.afterCacheCommit(threadId, store, pending, outcome);
         }
         this.cacheWrites.delete(threadId);
       });
@@ -270,6 +272,22 @@ export class NativeClient {
       ok: (outcome) => outcome,
       err: (error) => this.emit({ kind: "error", error }),
     });
+  }
+  private afterCacheCommit(
+    threadId: string,
+    store: NativeThreadStore,
+    patch: CachePatch,
+    outcome: CacheCommitOutcome,
+  ): void {
+    if (outcome !== "missing") {
+      if (!patch.replace) this.recachingThreads.delete(threadId);
+      return;
+    }
+    // A re-cached thread missing again was evicted by its own replace, as when it alone exceeds the
+    // cache budget. Stop rewriting it in full on every update for the rest of the session.
+    if (this.recachingThreads.has(threadId)) return;
+    this.recachingThreads.add(threadId);
+    this.queueFullCheckpoint(threadId, store);
   }
   /** Replaces whatever is pending with the store's full state, which already includes those patches. */
   private queueFullCheckpoint(threadId: string, store: NativeThreadStore): void {
