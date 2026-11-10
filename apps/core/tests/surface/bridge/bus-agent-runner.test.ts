@@ -2705,7 +2705,6 @@ describe("durable accepted runner recovery", () => {
       try {
         await publishRunnerRequest(request);
         await buildStarted.promise;
-        const drain = runner.getActiveDrainOperation();
         if (cancelDuringBuild) {
           await publishRunnerRequest({
             ...request,
@@ -2713,12 +2712,12 @@ describe("durable accepted runner recovery", () => {
             messages: [],
             raw: { cancel: true },
           });
-          await drain;
+          await runner.waitForIdle();
           expect(releases).toBe(0);
           finishBuild.resolve(undefined);
         }
         await released.promise;
-        await drain;
+        await runner.waitForIdle();
         expect(releases).toBe(1);
         expect(modelCalls).toBe(cancelDuringBuild ? 0 : 1);
       } finally {
@@ -2788,7 +2787,7 @@ describe("durable accepted runner recovery", () => {
               }),
             ),
           );
-          await runner.getActiveDrainOperation();
+          await runner.waitForIdle();
           expect(terminalized).toContain(requestDeliveryId);
           expect(settled).toContain(requestDeliveryId);
         }
@@ -2860,7 +2859,7 @@ describe("durable accepted runner recovery", () => {
           sessionId: `durable-admission-${failureKind}`,
           text: "must remain parked",
         });
-        expect(runner.getActiveDrainOperation()).toBeNull();
+        expect(runner.isSessionBusy(`durable-admission-${failureKind}`)).toBe(false);
         expect(modelCalls).toBe(0);
       } finally {
         testDeliveriesRemainOpenOnPolicyStop.delete(rawBus);
@@ -2947,7 +2946,7 @@ describe("durable accepted runner recovery", () => {
         text: "retry from accepted work",
       });
       await expect(lifecycle.terminal).resolves.toBe("resolved");
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect({ intakeAttempts, modelCalls }).toEqual({
         intakeAttempts: 1,
         modelCalls: 1,
@@ -3146,7 +3145,7 @@ describe("durable accepted runner recovery", () => {
 
       releaseFirst.resolve(undefined);
       await expect(lifecycle.terminal).resolves.toBe("resolved");
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(transcriptResultValue(store.load(controlDeliveryId)).state).toBe("terminal");
       expect(reconciledControlStates).toEqual(["terminal"]);
       expect((await TEST_BLOB_STORE.open(reference)).status).toBe("error");
@@ -3355,7 +3354,7 @@ describe("durable accepted runner recovery", () => {
 
       releaseFirst.resolve(undefined);
       await expect(lifecycle.terminal).resolves.toBe("resolved");
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(crashBoundaryCheckpoint).toBeDefined();
       expect(crashBoundaryCheckpoint?.retainedRequestDeliveries).toEqual([]);
       expect(
@@ -3559,7 +3558,7 @@ describe("durable accepted runner recovery", () => {
       uploadReleased = true;
       releaseUpload.resolve(undefined);
       await expect(lifecycle.terminal).resolves.toBe("resolved");
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(order.indexOf("surface-write")).toBeLessThan(order.indexOf("terminal"));
     } finally {
       uploadReleased = true;
@@ -3774,7 +3773,7 @@ describe("durable accepted runner recovery", () => {
       expect(runner.getActiveLevel1Work()).toHaveLength(1);
       releaseUpload.resolve(undefined);
       await expect(lifecycle.terminal).resolves.toBe("resolved");
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
 
       expect(terminalSurfaceAttempts).toBe(2);
       expect(terminalMarks).toBe(0);
@@ -3928,7 +3927,7 @@ describe("durable accepted runner recovery", () => {
       expect(order).toEqual(["surface-write", "terminal", "cleanup"]);
       expect(transcriptResultValue(store.load(requestDeliveryId)).state).toBe("accepted");
       releaseCleanup.resolve(undefined);
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(transcriptResultValue(store.load(requestDeliveryId)).state).toBe("terminal");
     } finally {
       releaseCleanup.resolve(undefined);
@@ -5601,6 +5600,221 @@ describe("session queue admission", () => {
       await bus.close();
     }
   });
+  it("finishes the active run during drain without starting queued work", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const modelCalls: string[] = [];
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "drain-queued",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({ capability: "drain-queued", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "drain-queued",
+            doStream: async ({ prompt }) => {
+              const first = JSON.stringify(prompt).includes("first request");
+              modelCalls.push(first ? "first" : "queued");
+              if (first) {
+                firstStarted.resolve(undefined);
+                await releaseFirst.promise;
+              }
+              return level1TextStep("done");
+            },
+          }),
+        }),
+    });
+    const sessionId = "drain-queued";
+    const firstLifecycle = await observeRequestLifecycle(bus, "github:drain-queued:first");
+    const queuedLifecycle = await observeRequestLifecycle(bus, "github:drain-queued:queued");
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestId: "github:drain-queued:first",
+        sessionId,
+        text: "first request",
+      });
+      await firstStarted.promise;
+      await publishRunnerRequest({
+        bus,
+        requestId: "github:drain-queued:queued",
+        sessionId,
+        text: "queued request",
+      });
+      await expect(queuedLifecycle.first).resolves.toBe("queued");
+      const drained = runner.beginDrain({ deadlineMs: 60_000 });
+      releaseFirst.resolve(undefined);
+      await drained;
+      await expect(firstLifecycle.terminal).resolves.toBe("resolved");
+      expect(modelCalls).toEqual(["first"]);
+      expect(queuedLifecycle.states).toEqual(["queued"]);
+      expect(runner.getActiveLevel1Work()).toEqual([]);
+    } finally {
+      releaseFirst.resolve(undefined);
+      await firstLifecycle.stop();
+      await queuedLifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+
+  it("waits for a finalizing native run when another drain starts during its cleanup", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const settleEntered = deferred<void>();
+    const releaseSettle = deferred<void>();
+    const secondStarted = deferred<void>();
+    let settles = 0;
+    const jobs = {
+      noteUserInput: () => undefined,
+      subscribe: () => () => undefined,
+      hasPendingEvents: () => false,
+      hasActiveAwait: () => false,
+      stopAwaitJobs: async () => undefined,
+      onRunSettled: async () => {
+        settles += 1;
+        if (settles > 1) return;
+        settleEntered.resolve(undefined);
+        await releaseSettle.promise;
+      },
+    } as unknown as NonNullable<Parameters<typeof startBusAgentRunner>[0]["jobs"]>;
+    const runner = await startBusAgentRunner({
+      bus,
+      blobStore: transcriptResultValue(await createMemoryBlobStore()),
+      pluginManager,
+      jobs,
+      config: parseCoreConfigV2ToUniversal({}),
+      subscriptionId: "native-finalizing-drain",
+      startPaused: true,
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      nativeExecution: {
+        validate: () => Result.ok({ safetyMode: "restricted" }),
+        settled: async () => Result.ok(undefined),
+      },
+      issueControlCapability: () => ({ capability: "native-finalizing", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "native-finalizing",
+            doStream: async ({ prompt, abortSignal }) => {
+              if (JSON.stringify(prompt).includes("first native request")) {
+                return level1TextStep("first done");
+              }
+              secondStarted.resolve(undefined);
+              await new Promise<void>((resolve) => {
+                abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+              });
+              throw Object.assign(new Error("cancelled"), { name: "AbortError" });
+            },
+          }),
+        }),
+    });
+    const sessionId = "native:finalizing";
+    const nativeDelivery = (name: string, text: string) =>
+      acceptedRunnerDelivery({
+        requestDeliveryId: crypto.randomUUID(),
+        requestId: `native:finalizing:${name}`,
+        sessionId,
+        queue: "prompt",
+        messages: [{ role: "user", content: text }],
+      });
+    const first = nativeDelivery("first", "first native request");
+    const second = nativeDelivery("second", "second native request");
+    try {
+      transcriptResultValue(await runner.resumeAcceptedDelivery(first));
+      runner.activate();
+      await settleEntered.promise;
+      transcriptResultValue(await runner.resumeAcceptedDelivery(second));
+      await secondStarted.promise;
+      const cancelled = runner.cancelNativeSession(sessionId);
+      const early = await Promise.race([
+        cancelled.then(() => "returned" as const),
+        new Promise<"waiting">((resolve) => setImmediate(() => resolve("waiting"))),
+      ]);
+      releaseSettle.resolve(undefined);
+      transcriptResultValue(await cancelled);
+      expect(early).toBe("waiting");
+    } finally {
+      releaseSettle.resolve(undefined);
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+  it("stops within the caller's deadline while terminal cleanup hangs", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "lilac-runner-stop-deadline-"));
+    const commandDir = path.join(dataDir, "cmds", "panic");
+    await mkdir(commandDir, { recursive: true });
+    await writeFile(
+      path.join(commandDir, "def.json"),
+      JSON.stringify({ name: "panic", description: "Raise a test Panic" }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(commandDir, "index.ts"),
+      "export async function execute() { return { type: 'json', value: null }; }\n",
+      "utf8",
+    );
+    const customCommands = new CustomCommandManager(dataDir);
+    const customCommandsInit = await customCommands.init();
+    if (customCommandsInit.status === "error") throw customCommandsInit.error;
+    const panic = new Panic({ message: "custom command invariant failed" });
+    customCommands.execute = async () => {
+      throw panic;
+    };
+    const cleanupStarted = deferred<void>();
+    const pluginManager = corePrimaryTestPluginManager();
+    const bus = createLilacBus(createInMemoryRawBus());
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "stop-deadline",
+      reportFatalPanic: () => undefined,
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      customCommands,
+      issueControlCapability: () => ({ capability: "stop-deadline", principal: null }),
+      expireControlCapability: () => {
+        cleanupStarted.resolve(undefined);
+        return new Promise<never>(() => undefined);
+      },
+      createAgent: () => {
+        throw new Error("custom command Panic must stop before agent creation");
+      },
+    });
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestId: "github:stop-deadline:request",
+        sessionId: "stop-deadline",
+        text: "/lilac:panic",
+        raw: {
+          customCommand: { name: "panic", args: [], text: "/lilac:panic", source: "text" },
+        },
+      });
+      await cleanupStarted.promise;
+      const startedAt = performance.now();
+      await runner.stop({ deadlineAtMs: Date.now() + 50 }).catch((cause: unknown) => {
+        expect(cause).toBe(panic);
+      });
+      expect(performance.now() - startedAt).toBeLessThan(2_000);
+    } finally {
+      await pluginManager.destroy();
+      await bus.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("bus agent runner terminal cleanup", () => {
@@ -6002,7 +6216,7 @@ describe("startBusAgentRunner production path", () => {
         requestInitiatorSessionId: "identity-session",
         currentTurnUserId: "identity-user",
       });
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(requestMessageCache.getOrigin(requestId)).toBeUndefined();
     } finally {
       await lifecycle.stop();
@@ -6229,7 +6443,7 @@ describe("startBusAgentRunner production path", () => {
 
       expect(runner.activate()).toBeUndefined();
       await publication;
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(modelCalls).toBe(1);
     } finally {
       await runner.stop();
@@ -6434,7 +6648,7 @@ describe("startBusAgentRunner production path", () => {
       expect(requestMessageCache.snapshot(queuedRequestId)?.ownerCount).toBe(1);
       releaseFirst.resolve(undefined);
       await secondStarted.promise;
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(modelCalls).toBe(2);
     } finally {
       releaseFirst.resolve(undefined);
@@ -6749,7 +6963,7 @@ describe("startBusAgentRunner production path", () => {
       });
       releaseCoalesced.resolve(undefined);
       await expect(lifecycle.terminal).resolves.toBe("resolved");
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(requestMessageCache.get(coalescedRequestId)).toBeUndefined();
     } finally {
       releaseFirst.resolve(undefined);
@@ -6963,7 +7177,7 @@ describe("startBusAgentRunner production path", () => {
 
       releaseActive.resolve(undefined);
       await expect(activeLifecycle.terminal).resolves.toBe("resolved");
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(requestMessageCache.get(activeRequestId)).toBeUndefined();
     } finally {
       releaseActive.resolve(undefined);
@@ -7170,7 +7384,7 @@ describe("startBusAgentRunner production path", () => {
 
       releaseActive.resolve(undefined);
       await expect(lifecycle.terminal).resolves.toBe("resolved");
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(requestMessageCache.get(requestId)).toBeUndefined();
     } finally {
       releaseActive.resolve(undefined);
@@ -7258,8 +7472,7 @@ describe("startBusAgentRunner production path", () => {
             },
           },
         });
-        const startedDrainOperation = runner.getActiveDrainOperation();
-        if (!startedDrainOperation) throw new Error("Expected the request to start a queue drain");
+        expect(runner.isSessionBusy("custom-panic")).toBe(true);
         expect(
           await Promise.race([
             commandStarted.promise.then(() => "command-started" as const),
@@ -7274,9 +7487,7 @@ describe("startBusAgentRunner production path", () => {
         });
         expect(queuedLifecycle.states).toEqual(["queued"]);
 
-        const activeDrainOperation = runner.getActiveDrainOperation();
-        if (!activeDrainOperation) throw new Error("Expected an active detached drain operation");
-        const rejectionObserved = activeDrainOperation.then(
+        const rejectionObserved = runner.waitForIdle().then(
           () => null,
           (error: unknown) => error,
         );
@@ -7571,7 +7782,7 @@ describe("startBusAgentRunner production path", () => {
       expect(requestMessageCache.snapshot(aliasRequestId)?.ownerCount).toBe(1);
       releaseFirst.resolve(undefined);
       await secondStarted.promise;
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(modelCalls).toBe(2);
     } finally {
       releaseFirst.resolve(undefined);
@@ -7710,7 +7921,7 @@ describe("startBusAgentRunner production path", () => {
         await secondStarted.promise;
         expect(requestMessageCache.getOrigin(testCase.requestId)).toBeDefined();
         expect(requestMessageCache.get(testCase.requestId)).toBeDefined();
-        await runner.getActiveDrainOperation();
+        await runner.waitForIdle();
         expect(contexts).toHaveLength(2);
         expect(contexts[1]).toMatchObject({
           requestId: testCase.requestId,
@@ -13914,7 +14125,7 @@ describe("native output runner durability", () => {
             },
           });
           await settled.promise;
-          await runner.getActiveDrainOperation();
+          await runner.waitForIdle();
           const chunks = events.flatMap((event) =>
             event.payload.type === "text" ? [event.payload.text] : [],
           );
@@ -14057,7 +14268,7 @@ describe("native output runner durability", () => {
       expect(terminals).toBe(0);
       release.resolve(undefined);
       await settled.promise;
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(
         checkpoints.some((checkpoint) =>
           JSON.stringify(checkpoint.messages).includes("visible answer"),
@@ -14171,7 +14382,7 @@ describe("native output runner durability", () => {
         text: "answer",
       });
       await settled.promise;
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(
         checkpoints.some((checkpoint) =>
           JSON.stringify(checkpoint.messages).includes("visible answer"),
@@ -14350,7 +14561,7 @@ describe("native output WAL recovery frontier", () => {
       transcriptResultValue(await runner.resumeAcceptedDelivery(accepted, head));
       runner.activate();
       await started.promise;
-      await runner.getActiveDrainOperation();
+      await runner.waitForIdle();
       expect(observedFrontier).toEqual({ ordinal: 17, position: 9 });
       expect(nativeEvents[0]?.ordinal).toBe(18);
       expect(nativeEvents[0]?.payload).toEqual({

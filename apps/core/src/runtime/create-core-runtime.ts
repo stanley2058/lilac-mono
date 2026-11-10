@@ -4518,7 +4518,13 @@ export async function createCoreRuntime(
     const registry = surfaceRuntimeRegistry;
     if (stopPass === "full") {
       // Stop in reverse order (best-effort).
-      await safe("agentRunner.stop", () => stopAgentRunner?.stop() ?? Promise.resolve());
+      await safe(
+        "agentRunner.stop",
+        () =>
+          stopAgentRunner?.stop({
+            deadlineAtMs: hardDeadlineAtMs - CORE_BLOB_STORE_CLEANUP_SLICE_MS,
+          }) ?? Promise.resolve(),
+      );
       await safe("jobService.close", () => jobService?.close() ?? Promise.resolve());
       await safe("native.output.stop", () => nativeRuntime?.stopOutput() ?? Promise.resolve());
       await safe("questionService.stop", () => questionService?.stop() ?? Promise.resolve());
@@ -4711,7 +4717,11 @@ export async function createCoreRuntime(
         supervision,
         cleanup,
         reportLatePanic: reportFatalError,
-        deadlineMs: GRACEFUL_DRAIN_DEADLINE_MS,
+        deadlineMs: resolveCoreGracefulDrainDeadlineMs({
+          nowMs: Date.now(),
+          hardDeadlineAtMs,
+          configuredDrainDeadlineMs: GRACEFUL_DRAIN_DEADLINE_MS,
+        }),
       });
     }
     residualRouterDoneSupervisions.length = 0;

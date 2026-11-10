@@ -2304,9 +2304,28 @@ class PreAgentRunCancelledError extends Error {
 
 const AGENT_TIMEOUT_ABORT_GRACE_MS = 5_000;
 const TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS = 4_000;
+const SHUTDOWN_ABORT_GRACE_MS = 500;
 const LIVE_PARENT_RECONCILE_MS = 1_000;
 const SUBAGENT_RESULT_MATERIALIZATION_ATTEMPTS = 3;
 export const WORKFLOW_REQUEST_CLAIM_HEARTBEAT_MS = 10_000;
+
+/** Waits for every operation to settle, giving up at the deadline; true when all settled. */
+async function settlesBefore(
+  operations: readonly Promise<unknown>[],
+  deadlineAtMs: number,
+): Promise<boolean> {
+  if (operations.length === 0) return true;
+  let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  const settled = await Promise.race([
+    Promise.allSettled(operations).then(() => true),
+    new Promise<false>((resolve) => {
+      deadlineTimer = setTimeout(() => resolve(false), Math.max(0, deadlineAtMs - Date.now()));
+      deadlineTimer.unref?.();
+    }),
+  ]);
+  if (deadlineTimer) clearTimeout(deadlineTimer);
+  return settled;
+}
 
 function isCancelControlEntry(entry: Enqueued): boolean {
   return parseRequestControlFromRaw(entry.raw).cancel;
@@ -2996,7 +3015,10 @@ export async function startBusAgentRunner(params: {
 
   const bySession = new Map<string, SessionQueue>();
   const nativeBlockedSessions = new Set<string>();
-  const sessionDrainOperations = new Map<string, Promise<void>>();
+  // Only drains that dequeued work are tracked; a run's drain stays tracked until it settles.
+  const sessionDrainOperations = new Map<string, Set<Promise<void>>>();
+  const allSessionDrainOperations = (): Promise<void>[] =>
+    [...sessionDrainOperations.values()].flatMap((operations) => [...operations]);
   const cancelledByRequestId = new Set<string>();
   const reservedQueueEntries = new Set<Enqueued>();
   const queueLifecycleAttempts = new Map<string, QueueLifecycleAttempt>();
@@ -3005,7 +3027,6 @@ export async function startBusAgentRunner(params: {
   let draining = false;
   let terminalPanic: Panic | null = null;
   let terminalPanicReported = false;
-  let activeDrainOperation: Promise<void> | null = null;
   let terminalCleanupOperations: readonly BusAgentRunnerTerminalCleanupOperation[] = [];
   let terminalCleanupCompletion: Promise<void> | null = null;
   let runnerActivated = params.startPaused !== true;
@@ -3368,7 +3389,7 @@ export async function startBusAgentRunner(params: {
     }
   };
 
-  const stopRunCheckpointWriters = async (): Promise<void> => {
+  const stopRunCheckpointWriters = async (deadlineAtMs: number): Promise<void> => {
     const operations = [...bySession.values()].flatMap((state) => {
       const run = state.activeRun;
       if (!run) return [];
@@ -3378,20 +3399,9 @@ export async function startBusAgentRunner(params: {
       return run.checkpointWriter.operation ? [run.checkpointWriter.operation] : [];
     });
     if (operations.length === 0) return;
-
-    let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
-    const completed = await Promise.race([
-      Promise.all(operations).then(() => true),
-      new Promise<false>((resolve) => {
-        deadlineTimer = setTimeout(() => resolve(false), TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS);
-        deadlineTimer.unref?.();
-      }),
-    ]).finally(() => {
-      if (deadlineTimer) clearTimeout(deadlineTimer);
-    });
-    if (completed) return;
+    if (await settlesBefore(operations, deadlineAtMs)) return;
     logger.warn("agent run checkpoint writes exceeded shutdown wait", {
-      timeoutMs: TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS,
+      deadlineAtMs,
       pendingCount: operations.length,
     });
   };
@@ -3664,10 +3674,20 @@ export async function startBusAgentRunner(params: {
       );
     };
     if (nativeBlockedSessions.has(sessionId)) return;
+    const dequeues = nextDequeueableEntry(state) !== undefined;
     const operation = superviseDrain();
-    sessionDrainOperations.set(sessionId, operation);
-    activeDrainOperation = operation;
     void ignoreDetachedFailure(operation);
+    if (!dequeues) return;
+    const operations = sessionDrainOperations.get(sessionId) ?? new Set<Promise<void>>();
+    operations.add(operation);
+    sessionDrainOperations.set(sessionId, operations);
+    const forget = (): void => {
+      operations.delete(operation);
+      if (operations.size === 0 && sessionDrainOperations.get(sessionId) === operations) {
+        sessionDrainOperations.delete(sessionId);
+      }
+    };
+    void operation.then(forget, forget);
 
     async function superviseDrain(): Promise<void> {
       const drained = await Result.tryPromise({
@@ -4906,18 +4926,15 @@ export async function startBusAgentRunner(params: {
     await stopStartedSubscription?.();
   };
 
+  /** Stops admission, lets active runs finish, then aborts the rest within the same deadline. */
   async function beginDrain(opts?: { deadlineMs?: number }) {
     draining = true;
     await stopSubscription();
 
     const deadlineMs = Math.max(1, opts?.deadlineMs ?? 3_000);
-    const startedAt = Date.now();
-    const hasRunning = () => [...bySession.values()].some((state) => state.running);
-
-    while (hasRunning() && Date.now() - startedAt < deadlineMs) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    if (!hasRunning()) return;
+    const deadlineAtMs = Date.now() + deadlineMs;
+    const abortGraceMs = Math.min(SHUTDOWN_ABORT_GRACE_MS, Math.floor(deadlineMs / 4));
+    if (await settlesBefore(allSessionDrainOperations(), deadlineAtMs - abortGraceMs)) return;
 
     for (const state of bySession.values()) {
       if (!state.running || !state.activeRun) continue;
@@ -4926,17 +4943,21 @@ export async function startBusAgentRunner(params: {
       state.activeRun.notifyWaiters();
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await settlesBefore(allSessionDrainOperations(), deadlineAtMs);
+  }
+
+  function nextDequeueableEntry(state: SessionQueue): Enqueued | undefined {
+    if (state.running || draining) return undefined;
+    const next = state.queue[0];
+    if (!next || reservedQueueEntries.has(next)) return undefined;
+    return next;
   }
 
   async function drainSessionQueue(sessionId: string, state: SessionQueue) {
     rethrowBusAgentRunnerPanic(terminalPanic);
-    if (state.running) return;
-
     const queueDepthBefore = state.queue.length;
-    const next = state.queue[0];
+    const next = nextDequeueableEntry(state);
     if (!next) return;
-    if (reservedQueueEntries.has(next)) return;
     state.queue.shift();
     // Claim the session before the first await so a concurrent admission cannot start a second run.
     state.running = true;
@@ -9492,7 +9513,7 @@ export async function startBusAgentRunner(params: {
       state.activeRun.cancel();
       state.agent?.cancel();
     }
-    await sessionDrainOperations.get(sessionId);
+    await Promise.allSettled(sessionDrainOperations.get(sessionId) ?? []);
     nativeBlockedSessions.delete(sessionId);
     return Result.ok(undefined);
   }
@@ -9836,29 +9857,28 @@ export async function startBusAgentRunner(params: {
         title: tool?.toolName ?? (responding ? "Responding…" : "Thinking…"),
       };
     },
-    getActiveDrainOperation: () => activeDrainOperation,
+    /** Resolves once no session drain is in flight; rejects with a drain's failure. */
+    async waitForIdle(): Promise<void> {
+      for (;;) {
+        const pending = allSessionDrainOperations();
+        if (pending.length === 0) return;
+        await Promise.all(pending);
+      }
+    },
     getTerminalCleanupOperations: () => terminalCleanupOperations,
-    stop: async () => {
+    stop: async (opts?: { readonly deadlineAtMs?: number }) => {
+      const deadlineAtMs = opts?.deadlineAtMs ?? Date.now() + TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS;
       stopRunnerAdmission();
       await stopSubscription();
-      await stopRunCheckpointWriters();
-      if (terminalCleanupCompletion) {
-        let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
-        const completed = await Promise.race([
-          terminalCleanupCompletion.then(() => true),
-          new Promise<false>((resolve) => {
-            deadlineTimer = setTimeout(() => resolve(false), TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS);
-            deadlineTimer.unref?.();
-          }),
-        ]).finally(() => {
-          if (deadlineTimer) clearTimeout(deadlineTimer);
+      await stopRunCheckpointWriters(deadlineAtMs);
+      if (
+        terminalCleanupCompletion &&
+        !(await settlesBefore([terminalCleanupCompletion], deadlineAtMs))
+      ) {
+        logger.warn("terminal agent-runner cleanup exceeded shutdown wait", {
+          deadlineAtMs,
+          pendingLabels: terminalCleanupOperations.map(({ label }) => label),
         });
-        if (!completed) {
-          logger.warn("terminal agent-runner cleanup exceeded shutdown wait", {
-            timeoutMs: TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS,
-            pendingLabels: terminalCleanupOperations.map(({ label }) => label),
-          });
-        }
       }
       bySession.clear();
       queueLifecycleAttempts.clear();
