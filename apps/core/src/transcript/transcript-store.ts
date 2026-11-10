@@ -2206,15 +2206,6 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
           return Result.ok(this.pruneRetention(now));
         };
 
-        const existing = this.db
-          .query<TranscriptRow, [string]>(
-            `SELECT request_id, session_id, request_client, created_ts, updated_ts, model_label,
-                    final_text, messages_json, context_meta_json, provider_state_json,
-                    stable_named_request_client, transcript_digest, loaded_catalog_ids_json
-           FROM request_transcripts WHERE request_id = ?`,
-          )
-          .get(input.requestId);
-        if (!existing) return persist();
         const digestRetained = this.db
           .query("SELECT 1 FROM core_lineage_request_refs WHERE referenced_request_id = ? LIMIT 1")
           .get(input.requestId);
@@ -2226,6 +2217,17 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
           .get(input.requestId);
         const digestIsRetained = digestRetained !== null;
         const requestMetadataIsRetained = requestMetadataRetained !== null;
+        // Only a lineage-retained transcript needs the stored row for comparison.
+        if (!digestIsRetained && !requestMetadataIsRetained) return persist();
+        const existing = this.db
+          .query<TranscriptRow, [string]>(
+            `SELECT request_id, session_id, request_client, created_ts, updated_ts, model_label,
+                    final_text, messages_json, context_meta_json, provider_state_json,
+                    stable_named_request_client, transcript_digest, loaded_catalog_ids_json
+           FROM request_transcripts WHERE request_id = ?`,
+          )
+          .get(input.requestId);
+        if (!existing) return persist();
         const existingTranscriptDecision = decodeTranscriptRow({
           row: existing,
           schemaVersion: TRANSCRIPT_SCHEMA_VERSION,

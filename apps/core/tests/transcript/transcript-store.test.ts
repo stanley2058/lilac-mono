@@ -1157,6 +1157,33 @@ describe("SqliteTranscriptStore", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
+  it("overwrites an unretained transcript without decoding the stored row", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcript-overwrite-"));
+    const dbPath = path.join(dir, "transcripts.db");
+    const store = new SqliteTranscriptStore(dbPath);
+    const save = (content: string) =>
+      store.saveRequestTranscript({
+        requestId: "overwrite",
+        sessionId: "session",
+        requestClient: "discord",
+        messages: [{ role: "user", content }],
+      });
+    resultValue(save("first"));
+    const mutation = new Database(dbPath);
+    mutation.run("UPDATE request_transcripts SET messages_json = '{' WHERE request_id = ?", [
+      "overwrite",
+    ]);
+    mutation.close();
+
+    resultValue(save("second"));
+    expect(resultValue(store.getRequestTranscript({ requestId: "overwrite" }))?.messages).toEqual([
+      { role: "user", content: "second" },
+    ]);
+
+    store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
   it("preserves direct persistence diagnostic Panic identity", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcript-diagnostic-panic-"));
     const dbPath = path.join(dir, "transcripts.db");
@@ -1282,10 +1309,8 @@ describe("SqliteTranscriptStore", () => {
       messages: [{ role: "assistant", content: "after provider" }],
       finalText: "after provider",
     });
-    expect(providerSave.status).toBe("error");
-    if (providerSave.status === "error") {
-      expect(providerSave.error).toMatchObject({ _tag: "MalformedSerialization" });
-    }
+    // No lineage retains this request, so the save overwrites without decoding the old row.
+    expect(providerSave.status).toBe("ok");
 
     expect(
       raw
@@ -1296,7 +1321,7 @@ describe("SqliteTranscriptStore", () => {
     ).toEqual([
       { request_id: "corrupt-owner", final_text: "before corruption" },
       { request_id: "lineage-owner", final_text: "before lineage" },
-      { request_id: "provider-owner", final_text: "before provider" },
+      { request_id: "provider-owner", final_text: "after provider" },
     ]);
     expect(
       raw
@@ -1315,7 +1340,6 @@ describe("SqliteTranscriptStore", () => {
       { record_id: "lineage-owner", field: "manifest_json" },
       { record_id: "lineage-owner", field: "manifest_json" },
       { record_id: "corrupt-owner", field: "messages_json" },
-      { record_id: "provider-owner", field: "provider_state_json" },
     ]);
 
     raw.close();
