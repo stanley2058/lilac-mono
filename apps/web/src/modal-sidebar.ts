@@ -19,7 +19,8 @@ export function useModalSidebar(
     const covered = modalBackground(root, sidebar, toggle);
     for (const element of covered) element.inert = true;
     if (!sidebar.contains(document.activeElement) && !toggle.contains(document.activeElement))
-      toggle.querySelector<HTMLElement>("button")?.focus();
+      // A tap opened the sidebar, so focus moves without the ring and tooltip a key press shows.
+      toggle.querySelector<HTMLElement>("button")?.focus({ focusVisible: false });
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
