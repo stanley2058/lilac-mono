@@ -956,6 +956,7 @@ class SqliteDiscoveryStore {
     source: DiscoverySource;
     kind?: IndexedDocument["kind"];
     documents: readonly IndexedDocument[];
+    changedDocuments?: readonly IndexedDocument[];
   }): void {
     const clauses: string[] = [];
     const values: string[] = [];
@@ -973,7 +974,7 @@ class SqliteDiscoveryStore {
         .all(...values) as Array<{ doc_key: string }>;
       const documentKeys = new Set(docs.map((doc) => doc.docKey));
 
-      this.upsertDocumentsInTransaction(docs);
+      this.upsertDocumentsInTransaction(params.changedDocuments ?? docs);
       for (const row of existingRows) {
         if (!documentKeys.has(row.doc_key)) {
           this.db.run("DELETE FROM discovery_documents WHERE doc_key = ?", [row.doc_key]);
@@ -1098,6 +1099,8 @@ export class DiscoveryService {
     string,
     { mtimeMs: number; size: number; documents: IndexedDocument[] }
   >();
+  private transcriptWatermark = 0;
+  private transcriptSnapshot = new Map<string, { updatedTs: number; fingerprint: string }>();
   private lastTranscriptVersion: string | undefined;
   private readonly transcriptDocuments = new Map<
     string,
@@ -1176,7 +1179,26 @@ export class DiscoveryService {
   private async syncConversationFromTranscripts(): Promise<void> {
     const version = this.params.transcriptStore?.getDiscoveryVersion?.();
     if (version !== undefined && version === this.lastTranscriptVersion) return;
-    const records = this.params.transcriptStore?.listDiscoveryRecords?.() ?? [];
+    const snapshot = this.params.transcriptStore?.getDiscoverySnapshot?.();
+    const changedIds = snapshot
+      ?.filter((row) => {
+        const previous = this.transcriptSnapshot.get(row.requestId);
+        return (
+          !previous ||
+          previous.updatedTs !== row.updatedTs ||
+          previous.fingerprint !== row.fingerprint ||
+          row.updatedTs >= this.transcriptWatermark
+        );
+      })
+      .map((row) => row.requestId);
+    const records = this.params.transcriptStore?.listDiscoveryRecords?.(changedIds) ?? [];
+    const liveSnapshotIds = snapshot ? new Set(snapshot.map((row) => row.requestId)) : undefined;
+    if (liveSnapshotIds) {
+      for (const requestId of this.transcriptDocuments.keys()) {
+        if (!liveSnapshotIds.has(requestId)) this.transcriptDocuments.delete(requestId);
+      }
+      for (const requestId of changedIds ?? []) this.transcriptDocuments.delete(requestId);
+    }
     const documents: IndexedDocument[] = [];
 
     for (const record of records) {
@@ -1208,14 +1230,24 @@ export class DiscoveryService {
     }
 
     const liveRequests = new Set(documents.map((document) => document.requestId));
-    for (const requestId of this.transcriptDocuments.keys()) {
-      if (!liveRequests.has(requestId)) this.transcriptDocuments.delete(requestId);
+    if (!snapshot) {
+      for (const requestId of this.transcriptDocuments.keys()) {
+        if (!liveRequests.has(requestId)) this.transcriptDocuments.delete(requestId);
+      }
     }
     this.store.replaceDocumentsWhere({
       source: "conversation",
       kind: "transcript_request",
-      documents,
+      documents: Array.from(this.transcriptDocuments.values(), (cached) => cached.document),
+      changedDocuments: documents,
     });
+    if (snapshot) {
+      this.transcriptSnapshot = new Map(snapshot.map((row) => [row.requestId, row]));
+      this.transcriptWatermark = snapshot.reduce(
+        (maximum, row) => Math.max(maximum, row.updatedTs),
+        this.transcriptWatermark,
+      );
+    }
     this.lastTranscriptVersion = version;
   }
 

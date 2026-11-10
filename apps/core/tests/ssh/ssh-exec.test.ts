@@ -243,6 +243,48 @@ printf '%s' '{"ok":true,"value":{"variant":"future"}}'
     };
   }
 
+  it("cancels a deployment waiter without cancelling the owner", async () => {
+    const callsPath = path.join(tempDir, "deployment-calls");
+    const existing = await readFile(sshPath, "utf8");
+    await writeFile(
+      sshPath,
+      existing.replace(
+        "set -euo pipefail",
+        `set -euo pipefail\nprintf 'call\\n' >> '${callsPath}'`,
+      ),
+    );
+    const active = Promise.withResolvers<void>();
+    const ownerSignal = new AbortController();
+    const waiterSignal = new AbortController();
+    const params = {
+      host: "fakehost",
+      cwd: "~",
+      js: `process.stdout.write('${crypto.randomUUID()}'); setInterval(() => {}, 1000);`,
+      input: testRemoteRunnerRequest(),
+      timeoutMs: 5000,
+      maxOutputChars: 1000,
+      decodeResponse: () => Result.ok(null),
+    };
+    const owner = sshExecScriptJson({
+      ...params,
+      signal: ownerSignal.signal,
+      onActivity: () => active.resolve(),
+    });
+    try {
+      await active.promise;
+      const waiter = sshExecScriptJson({ ...params, signal: waiterSignal.signal });
+      waiterSignal.abort();
+      expect((await waiter).match({ ok: () => "unexpected", err: (error) => error._tag })).toBe(
+        "SshExecutionCancelledError",
+      );
+      expect(ownerSignal.signal.aborted).toBe(false);
+      expect((await readFile(callsPath, "utf8")).trim().split("\n")).toHaveLength(2);
+    } finally {
+      ownerSignal.abort();
+      await owner;
+    }
+  });
+
   it("multiplexes connections and uploads a runner source once per host and hash", async () => {
     const scriptsDir = path.join(tempDir, "scripts");
     const argsPath = path.join(tempDir, "args");
@@ -267,8 +309,8 @@ printf '%s' '{"ok":true,"value":{"variant":"future"}}'
       maxOutputChars: 1000,
       decodeResponse: () => Result.ok(null),
     };
-    expect((await sshExecScriptJson(params)).isOk()).toBe(true);
-    expect((await sshExecScriptJson(params)).isOk()).toBe(true);
+    const results = await Promise.all([sshExecScriptJson(params), sshExecScriptJson(params)]);
+    expect(results.every((result) => result.isOk())).toBe(true);
     const scripts = await Promise.all(
       (await readdir(scriptsDir)).map((name) => readFile(path.join(scriptsDir, name), "utf8")),
     );

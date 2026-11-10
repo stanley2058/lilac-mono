@@ -21,6 +21,7 @@ const DEFAULT_CONNECT_TIMEOUT_SECS = 10;
 const DEFAULT_SSH_STDIN_MODE: SshBashStdinMode = "error";
 let sshControlDirectory: Promise<string> | undefined;
 const deployedRunners = new Set<string>();
+const runnerDeploymentGates = new Map<string, Promise<void>>();
 const logger = createLogger({ module: "ssh-exec" });
 
 export type SshBashStdinMode = "error" | "eof";
@@ -1119,6 +1120,24 @@ function sshJsonExecutionFailure(
   return undefined;
 }
 
+async function waitForRunnerDeployment(
+  pending: Promise<void>,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<"ready" | "aborted" | "timeout"> {
+  if (signal?.aborted) return "aborted";
+  if (timeoutMs <= 0) return "timeout";
+  const settled = Promise.withResolvers<"ready" | "aborted" | "timeout">();
+  const onAbort = () => settled.resolve("aborted");
+  const timeout = setTimeout(() => settled.resolve("timeout"), timeoutMs);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  void pending.then(() => settled.resolve("ready"));
+  return await settled.promise.finally(() => {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", onAbort);
+  });
+}
+
 export async function sshExecScriptJson<T, TDecodeError>(params: {
   host: string;
   cwd: string;
@@ -1141,36 +1160,54 @@ export async function sshExecScriptJson<T, TDecodeError>(params: {
   if (serializationFailure) return serializationFailure;
   const inputJson = serializedInput.match({ ok: (value) => value, err: () => "" });
 
+  const deadline = Date.now() + params.timeoutMs;
   const runnerHash = crypto.createHash("sha256").update(params.js).digest("hex");
   const runnerKey = `${params.host}:${runnerHash}`;
-  if (!deployedRunners.has(runnerKey)) {
-    const probe = await captureSshPromise({
-      run: () =>
-        sshExecBash({
-          host: params.host,
-          cmd: `test -f "\${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners/${runnerHash}.js"`,
+  while (!deployedRunners.has(runnerKey)) {
+    const pending = runnerDeploymentGates.get(runnerKey);
+    if (!pending) break;
+    const waited = await waitForRunnerDeployment(pending, params.signal, deadline - Date.now());
+    if (waited === "aborted")
+      return Result.err(new SshExecutionCancelledError({ message: "aborted" }));
+    if (waited === "timeout")
+      return Result.err(
+        new SshExecutionTimedOutError({
           timeoutMs: params.timeoutMs,
-          signal: params.signal,
-          maxOutputChars: 1000,
-          onActivity: params.onActivity,
+          message: `timeout:${params.timeoutMs}`,
         }),
-      fallback: "SSH runner cache probe failed",
-      mapError: (cause) =>
-        new SshExecutionAdapterError({ cause, message: "SSH runner cache probe failed" }),
-    });
-    const probeOutcome = probe.match<
-      { value: Awaited<ReturnType<typeof sshExecBash>> } | { error: SshExecutionAdapterError }
-    >({ ok: (value) => ({ value }), err: (error) => ({ error }) });
-    if ("error" in probeOutcome) return Result.err(probeOutcome.error);
-    const failure = sshJsonExecutionFailure(probeOutcome.value, params.timeoutMs);
-    if (failure && !(failure._tag === "SshSubprocessExitError" && failure.exitCode === 1))
-      return Result.err(failure);
-    if (!failure) deployedRunners.add(runnerKey);
+      );
   }
-  const source = Buffer.from(params.js).toString("base64");
-  const install = deployedRunners.has(runnerKey)
-    ? ""
-    : `
+  const deployment = deployedRunners.has(runnerKey) ? undefined : Promise.withResolvers<void>();
+  if (deployment) runnerDeploymentGates.set(runnerKey, deployment.promise);
+  return await (async () => {
+    if (!deployedRunners.has(runnerKey)) {
+      const probe = await captureSshPromise({
+        run: () =>
+          sshExecBash({
+            host: params.host,
+            cmd: `test -f "\${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners/${runnerHash}.js"`,
+            timeoutMs: Math.max(1, deadline - Date.now()),
+            signal: params.signal,
+            maxOutputChars: 1000,
+            onActivity: params.onActivity,
+          }),
+        fallback: "SSH runner cache probe failed",
+        mapError: (cause) =>
+          new SshExecutionAdapterError({ cause, message: "SSH runner cache probe failed" }),
+      });
+      const probeOutcome = probe.match<
+        { value: Awaited<ReturnType<typeof sshExecBash>> } | { error: SshExecutionAdapterError }
+      >({ ok: (value) => ({ value }), err: (error) => ({ error }) });
+      if ("error" in probeOutcome) return Result.err(probeOutcome.error);
+      const failure = sshJsonExecutionFailure(probeOutcome.value, params.timeoutMs);
+      if (failure && !(failure._tag === "SshSubprocessExitError" && failure.exitCode === 1))
+        return Result.err(failure);
+      if (!failure) deployedRunners.add(runnerKey);
+    }
+    const source = Buffer.from(params.js).toString("base64");
+    const install = deployedRunners.has(runnerKey)
+      ? ""
+      : `
 mkdir -p "$RUNNER_DIR"
 if [ ! -f "$TMP_JS" ]; then
   UPLOAD=$(mktemp "$RUNNER_DIR/upload.XXXXXX")
@@ -1179,8 +1216,15 @@ if [ ! -f "$TMP_JS" ]; then
   mv -f "$UPLOAD" "$TMP_JS"
 fi
 `;
-  const encodedInput = Buffer.from(inputJson).toString("base64");
-  const script = `set -euo pipefail
+    if (Date.now() >= deadline)
+      return Result.err(
+        new SshExecutionTimedOutError({
+          timeoutMs: params.timeoutMs,
+          message: `timeout:${params.timeoutMs}`,
+        }),
+      );
+    const encodedInput = Buffer.from(inputJson).toString("base64");
+    const script = `set -euo pipefail
 umask 077
 RUNNER_DIR="\${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners"
 TMP_JS="$RUNNER_DIR/${runnerHash}.js"
@@ -1194,30 +1238,36 @@ else
 fi
 `;
 
-  const executed = await captureSshPromise({
-    run: () =>
-      sshExecBash({
-        host: params.host,
-        cmd: script,
-        cwd: params.cwd,
-        timeoutMs: params.timeoutMs,
-        signal: params.signal,
-        maxOutputChars: params.maxOutputChars,
-        onActivity: params.onActivity,
-      }),
-    fallback: "Opaque SSH execution adapter failure",
-    mapError: (cause) =>
-      new SshExecutionAdapterError({ cause, message: "SSH execution adapter failed" }),
+    const executed = await captureSshPromise({
+      run: () =>
+        sshExecBash({
+          host: params.host,
+          cmd: script,
+          cwd: params.cwd,
+          timeoutMs: Math.max(1, deadline - Date.now()),
+          signal: params.signal,
+          maxOutputChars: params.maxOutputChars,
+          onActivity: params.onActivity,
+        }),
+      fallback: "Opaque SSH execution adapter failure",
+      mapError: (cause) =>
+        new SshExecutionAdapterError({ cause, message: "SSH execution adapter failed" }),
+    });
+    const executionOutcome = executed.match<
+      { value: Awaited<ReturnType<typeof sshExecBash>> } | { error: SshExecutionAdapterError }
+    >({ ok: (value) => ({ value }), err: (error) => ({ error }) });
+    if ("error" in executionOutcome) return Result.err(executionOutcome.error);
+    const res = executionOutcome.value;
+
+    const failure = sshJsonExecutionFailure(res, params.timeoutMs);
+    if (failure) return Result.err(failure);
+
+    deployedRunners.add(runnerKey);
+    return params.decodeResponse(res.stdout.trim());
+  })().finally(() => {
+    if (!deployment) return;
+    if (runnerDeploymentGates.get(runnerKey) === deployment.promise)
+      runnerDeploymentGates.delete(runnerKey);
+    deployment.resolve();
   });
-  const executionOutcome = executed.match<
-    { value: Awaited<ReturnType<typeof sshExecBash>> } | { error: SshExecutionAdapterError }
-  >({ ok: (value) => ({ value }), err: (error) => ({ error }) });
-  if ("error" in executionOutcome) return Result.err(executionOutcome.error);
-  const res = executionOutcome.value;
-
-  const failure = sshJsonExecutionFailure(res, params.timeoutMs);
-  if (failure) return Result.err(failure);
-
-  deployedRunners.add(runnerKey);
-  return params.decodeResponse(res.stdout.trim());
 }

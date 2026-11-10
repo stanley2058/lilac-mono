@@ -244,6 +244,63 @@ describe("tool-server discovery", () => {
     }
   });
 
+  it("reads only changed transcript records and reconciles deletions and coverage changes", async () => {
+    const fixture = await makeFixture();
+    const list = spyOn(fixture.transcriptStore, "listDiscoveryRecords");
+    const initialTime = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(initialTime + 10_000);
+    const search = (query = "deploy") =>
+      fixture.tool.call("discovery.search", { query, sources: ["conversation"], groupBy: "none" });
+    try {
+      await search();
+      fixture.transcriptStore.saveRequestTranscript({
+        requestId: "incremental-first",
+        sessionId: "owner/repo#91",
+        requestClient: "github",
+        messages: [],
+        finalText: "incrementalalpha",
+        modelLabel: "test",
+      });
+      await search("incrementalalpha");
+      clock.mockReturnValue(initialTime + 20_000);
+      fixture.transcriptStore.saveRequestTranscript({
+        requestId: "incremental-second",
+        sessionId: "owner/repo#92",
+        requestClient: "github",
+        messages: [],
+        finalText: "incrementalbeta",
+        modelLabel: "test",
+      });
+      await search("incrementalbeta");
+      expect(list.mock.calls.at(-1)?.[0]).toEqual(
+        expect.arrayContaining(["incremental-first", "incremental-second"]),
+      );
+      expect(list.mock.calls.at(-1)?.[0]).not.toContain("req-orphan");
+      const db = new Database(path.join(fixture.root, "transcripts.db"));
+      try {
+        db.run("DELETE FROM request_transcripts WHERE request_id = ?", ["incremental-first"]);
+      } finally {
+        db.close();
+      }
+      expect(await search("incrementalalpha")).toMatchObject({ groups: [] });
+      const ref = { platform: "discord" as const, channelId: "c3", messageId: "new-coverage" };
+      fixture.transcriptStore.linkSurfaceMessagesToRequest({
+        requestId: "req-orphan",
+        created: [ref],
+        last: ref,
+      });
+      expect(await search("retrospective")).toMatchObject({ groups: [] });
+      fixture.transcriptStore.unlinkSurfaceMessage(ref);
+      expect(JSON.stringify(await search("retrospective"))).toContain("retrospective");
+    } finally {
+      clock.mockRestore();
+      list.mockRestore();
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
   function openDiscoveryWriteAudit(dbPath: string): Database {
     const db = new Database(dbPath);
     db.run(`
