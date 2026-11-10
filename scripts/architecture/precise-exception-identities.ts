@@ -128,8 +128,8 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
     ["src/tool-server/tools/web/provider-page-extraction.ts", "withAbortSignal", "signal"],
     ["src/tools/tool-result-adapters.ts", "adaptToolResultToHost.err.<callback>", "signal"],
     [
-      "src/transcript/transcript-store.ts",
-      "SqliteTranscriptStore.migrate.transaction.<callback@1>",
+      "src/transcript/transcript-migrations.ts",
+      "migrateTranscriptSchema.transaction.<callback@1>",
       "signal",
     ],
     [
