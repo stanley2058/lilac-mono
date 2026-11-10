@@ -4205,7 +4205,16 @@ export async function createCoreRuntime(
           );
           const acceptedRecoveryFailure = acceptedRecovery.match<Error | null>({
             err: (error) => error,
-            ok: (summary) => summary.failures[0] ?? null,
+            ok: (summary) => {
+              // One bad record must not keep Core down; it stays accepted for the next start.
+              for (const failure of summary.failures) {
+                logger.error("Accepted request recovery skipped a record", {
+                  requestDeliveryId: failure.requestDeliveryId,
+                  error: safeRuntimeErrorText(failure.error, "Opaque recovery failure"),
+                });
+              }
+              return null;
+            },
           });
           if (acceptedRecoveryFailure) {
             return {
