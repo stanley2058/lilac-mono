@@ -76,7 +76,7 @@ import type { ChatCommon, ComposerSubmission } from "../types";
 import { resolveAttachmentIds } from "../uploads";
 import { inputDeliveryOptions } from "../input-mode";
 import { deliverPendingInput, type PendingInput } from "../pending-input";
-import { pendingMessageParts } from "../pending-message";
+import { pendingTurnSlot } from "../pending-message";
 export type { PendingInput } from "../pending-input";
 import { Button } from "./ui/button";
 import { Composer } from "./Composer";
@@ -256,6 +256,14 @@ export function Chat(props: ChatProps) {
     if (key === threadId) props.onDraft(threadId, value);
     if (draftCache) void attempt(() => draftCache.saveDraft(scope, key, value), setError);
   };
+  // Answered or closed question drafts are never shown again, so their saved row and cached query go.
+  const removeQuestionDraft = (key: string) => {
+    commitDraft(emptyDraft, key);
+    queries.removeQueries({
+      queryKey: composerDraftOptions(scope, key, draftCache).queryKey,
+      exact: true,
+    });
+  };
   const pendingEntries = props.pending;
   const commitPending = (update: (entries: PendingInput[]) => PendingInput[]) =>
     props.onPending(threadId, update);
@@ -348,21 +356,7 @@ export function Chat(props: ChatProps) {
   );
   const pendingTurn = useMemo<ReadyTurnSlot | undefined>(() => {
     if (!sendingEntry || (!sendingEntry.optimisticSlotIds && serverActive)) return;
-    return {
-      kind: "ready",
-      slotId: `sending:${sendingEntry.commandId}`,
-      turnId: `sending:${sendingEntry.commandId}`,
-      position: store.size,
-      state: "pending",
-      messages: [
-        {
-          id: sendingEntry.commandId,
-          role: "user",
-          metadata: { authorId: scope.principalId },
-          parts: pendingMessageParts(sendingEntry.submission, pendingAttachments),
-        },
-      ],
-    };
+    return pendingTurnSlot(sendingEntry, pendingAttachments, store.size, scope.principalId);
   }, [sendingEntry, pendingAttachments, serverActive, scope.principalId, store]);
   const optimisticTurn = useMemo<OptimisticTurn | undefined>(() => {
     if (!pendingTurn || !sendingEntry) return;
@@ -456,10 +450,10 @@ export function Chat(props: ChatProps) {
     for (const ordinal of previous.ordinals) {
       const key = questionDraftKey(threadId, previous.messageId, ordinal);
       const leftover = getDraft(key);
+      removeQuestionDraft(key);
       if (!leftover.text.trim() && !leftover.attachments.length && !leftover.skillIds.length)
         continue;
       commitDraft(mergeClosedReply(getDraft(threadId), leftover), threadId);
-      commitDraft(emptyDraft, key);
       moved = true;
     }
     if (moved) toast.add({ title: "The question closed. Your reply is now a regular draft." });
@@ -665,6 +659,7 @@ export function Chat(props: ChatProps) {
     const entry: PendingInput = {
       commandId: crypto.randomUUID(),
       text: submission.text,
+      createdAt: Date.now(),
       submission: questionReply ? { ...submission, questionReply } : submission,
       optimisticSlotIds: serverActive ? undefined : [...store.slotIds],
       state: "preparing",
@@ -862,7 +857,7 @@ export function Chat(props: ChatProps) {
       target,
     );
     for (const prompt of prompts)
-      commitDraft(emptyDraft, questionDraftKey(threadId, messageId, prompt.ordinal));
+      removeQuestionDraft(questionDraftKey(threadId, messageId, prompt.ordinal));
   }
   const questionAdvance = useEventCallback(() => {
     if (!replyQuestion) return;

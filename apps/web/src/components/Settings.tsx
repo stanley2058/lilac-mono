@@ -63,6 +63,10 @@ export function Settings({
   const [saving, setSaving] = useState<Partial<Record<ConfigKind, boolean>>>({});
   const tabRef = useRef(tab);
   tabRef.current = tab;
+  const popup = useRef<HTMLDivElement>(null);
+  // Tabs activate on focus, so opening on the first section would replace a `?settings=` deep link.
+  const focusSelectedSection = () =>
+    popup.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? true;
   const saveRequests = useRef({ core: 0, mcp: 0 });
   const savingKinds = useRef(new Set<ConfigKind>());
   const editor = tab === "core" || tab === "mcp" ? editors[tab] : undefined;
@@ -137,7 +141,11 @@ export function Settings({
         if (!open) onClose();
       }}
     >
-      <DialogContent className="settings-dialog flex w-[min(64rem,_calc(100vw_-_calc(var(--ui-space-unit)*8)))] max-w-none sm:max-w-none h-[min(48rem,_calc(100dvh_-_calc(var(--ui-space-unit)*8)))] p-6 overflow-hidden">
+      <DialogContent
+        ref={popup}
+        initialFocus={focusSelectedSection}
+        className="settings-dialog flex w-[min(64rem,_calc(100vw_-_calc(var(--ui-space-unit)*8)))] max-w-none sm:max-w-none h-[min(48rem,_calc(100dvh_-_calc(var(--ui-space-unit)*8)))] p-6 overflow-hidden"
+      >
         <DialogTitle className="sr-only absolute w-px h-px overflow-hidden [clip:rect(0,_0,_0,_0)] whitespace-nowrap">
           Settings
         </DialogTitle>

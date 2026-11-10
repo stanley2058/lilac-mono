@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { isNarrowWorkspace, subscribeNarrowWorkspace } from "../workspace-breakpoint";
 import { SkeletonRows } from "./ui/skeleton";
 import { fileDraftKey } from "../file-editors";
 import { FileDocumentEditor } from "./FileDocumentEditor";
@@ -283,16 +284,15 @@ export function RightPanelTabs({
     const collapse = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) setExpanded(false);
     };
-    const narrow = window.matchMedia("(width < 47.5rem)");
     const collapseWhenNarrow = () => {
-      if (narrow.matches) setExpanded(false);
+      if (isNarrowWorkspace()) setExpanded(false);
     };
     collapseWhenNarrow();
     window.addEventListener("keydown", collapse);
-    narrow.addEventListener("change", collapseWhenNarrow);
+    const stopWatching = subscribeNarrowWorkspace(collapseWhenNarrow);
     return () => {
       window.removeEventListener("keydown", collapse);
-      narrow.removeEventListener("change", collapseWhenNarrow);
+      stopWatching();
     };
   }, [expanded]);
   const activeType = tabs.items.find((tab) => tab.id === tabs.activeId)?.type;

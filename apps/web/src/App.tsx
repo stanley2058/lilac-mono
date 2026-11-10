@@ -71,13 +71,14 @@ import type { DisplayCatalog, NativeThread, SkillChoice } from "@stanley2058/lil
 import type { AppProps, ComposerSubmission } from "./types";
 import { resolveAttachmentIds } from "./uploads";
 import { Chat, type Draft, type PendingInput } from "./components/Chat";
+import { patchPendingInputs } from "./pending-input";
+import { isNarrowWorkspace, useNarrowWorkspace } from "./workspace-breakpoint";
+import { useModalSidebar } from "./modal-sidebar";
 import { Settings } from "./components/Settings";
 import { SidebarSearch } from "./components/SidebarSearch";
 const Sharing = lazy(() =>
   import("./components/Sharing").then((module) => ({ default: module.Sharing })),
 );
-// Mirrors --breakpoint-workspace, where the sidebar starts overlaying the main panel.
-const NARROW_WORKSPACE_QUERY = "(max-width: 47.5rem)";
 const WorkflowBoard = lazy(() =>
   import("./components/WorkflowBoard").then((module) => ({ default: module.WorkflowBoard })),
 );
@@ -304,6 +305,8 @@ function Workspace(props: AppProps) {
   );
   const sidebar = sidebarLayout.open;
   const rightOpen = rightLayout.open;
+  const narrow = useNarrowWorkspace();
+  useModalSidebar(viewport, narrow && sidebar && !rightOpen, panels.getState().toggleSidebar);
   const [searchQuery, setSearchQuery] = useState("");
   const queries = useQueryClient();
   const searchResults = useInfiniteQuery({
@@ -343,8 +346,7 @@ function Workspace(props: AppProps) {
   pending.current = pendingInputs;
   const patchPending = useCallback(
     (id: string, update: (entries: PendingInput[]) => PendingInput[]) => {
-      const changed = new Map(pending.current);
-      changed.set(id, update(changed.get(id) ?? []));
+      const changed = patchPendingInputs(pending.current, id, update);
       pending.current = changed;
       setPendingInputs(changed);
     },
@@ -479,7 +481,10 @@ function Workspace(props: AppProps) {
             setThreads((items) => items.filter((thread) => thread.id !== event.threadId));
             queries.removeQueries({ queryKey: ["participants", event.threadId] });
             drafts.current.delete(event.threadId);
-            pending.current.delete(event.threadId);
+            if (pending.current.has(event.threadId)) {
+              pending.current = patchPendingInputs(pending.current, event.threadId, null);
+              setPendingInputs(pending.current);
+            }
             readTurns.current.delete(event.threadId);
             if (activeRef.current && selectedRef.current === event.threadId) createThread();
             return;
@@ -941,8 +946,7 @@ function Workspace(props: AppProps) {
   const selectWorkflowRun = useEventCallback((runId: string) => {
     focusWorkflowCard(runId);
     // The sidebar covers the board on narrow screens, so step aside to reveal the card.
-    if (matchMedia(NARROW_WORKSPACE_QUERY).matches && panels.getState().sidebar.open)
-      panels.getState().toggleSidebar();
+    if (isNarrowWorkspace() && panels.getState().sidebar.open) panels.getState().toggleSidebar();
   });
   const otherView = external || archived || workflowsView ? search.view : undefined;
   const sidebarToolbar = useMemo(
@@ -1077,6 +1081,7 @@ function Workspace(props: AppProps) {
                       <button
                         type="button"
                         aria-label="Close sidebar"
+                        data-sidebar-scrim
                         className="absolute inset-0 z-20 hidden bg-overlay max-workspace:block"
                         onClick={panels.getState().toggleSidebar}
                       />

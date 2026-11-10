@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test";
 import type { CommandOutcome } from "@stanley2058/lilac-client";
 import type { NativeInput } from "@stanley2058/lilac-client-protocol";
-import { deliverPendingInput, type PendingInput } from "../src/pending-input";
+import { deliverPendingInput, patchPendingInputs, type PendingInput } from "../src/pending-input";
 import { inputDeliveryOptions } from "../src/input-mode";
 
 function fixture() {
   let entry: PendingInput = {
     commandId: "command",
     text: "Original message",
+    createdAt: 1,
     submission: {
       text: "Original message",
       mode: "steer",
@@ -185,4 +186,19 @@ test("a retry delivered as steering does not retain an optimistic turn", async (
   f.outcomes.push({ ...accepted, receipt: { ...accepted.receipt, turnId: "active-turn" } });
   await f.send();
   expect(f.removed()).toBe(true);
+});
+
+test("patching pending inputs returns a new map and leaves the rendered one intact", () => {
+  const entry = fixture().entry();
+  const rendered = new Map([
+    ["thread", [entry]],
+    ["other", [entry]],
+  ]);
+  const removed = patchPendingInputs(rendered, "thread", null);
+  expect(removed).not.toBe(rendered);
+  expect([...removed.keys()]).toEqual(["other"]);
+  expect(rendered.get("thread")).toEqual([entry]);
+  const appended = patchPendingInputs(rendered, "new", (entries) => [...entries, entry]);
+  expect(appended.get("new")).toEqual([entry]);
+  expect(rendered.has("new")).toBe(false);
 });

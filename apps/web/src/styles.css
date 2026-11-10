@@ -519,7 +519,7 @@
     color: var(--ui-muted-foreground);
     font-size: var(--ui-text-xs);
   }
-  @media (max-width: 760px) {
+  @media (width < 47.5rem) {
     :root {
       --ui-sidebar-width: 15rem;
     }
@@ -561,9 +561,6 @@
     width: calc(var(--ui-space-unit) * 4);
     height: calc(var(--ui-space-unit) * 4);
     flex-shrink: 0;
-  }
-
-  @media (max-width: 760px) {
   }
 }
 

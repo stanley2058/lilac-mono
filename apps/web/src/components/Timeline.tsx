@@ -16,7 +16,7 @@ import {
 } from "./ui/context-menu";
 import {
   ContextMessage,
-  NextContextStart,
+  NextContextStartAfter,
   TimestampSeparator,
   useRecentContext,
 } from "./RecentContext";
@@ -776,6 +776,12 @@ const SlotRow = memo(function SlotRow(props: {
   );
   const stored = useSlot(props.store, props.slotId);
   const previousTime = useSlotTime(props.store, timestamps ? previousSlotId : undefined);
+  const loadSlotId =
+    stored?.kind === "ready" ? props.slotId : (props.fallback?.slotId ?? props.slotId);
+  const loadMore = useCallback(
+    () => void client.loadTurnPage(threadId, loadSlotId),
+    [client, threadId, loadSlotId],
+  );
   const slot = stored?.kind === "ready" ? stored : (props.fallback ?? stored);
   if (!slot || posts.folded) return null;
   // A background job's wake runs with no message and appears only if the agent writes a reply.
@@ -842,9 +848,9 @@ const SlotRow = memo(function SlotRow(props: {
         }
         posts={posts.posts}
         onRewind={onRewind}
-        onLoadMore={() => void client.loadTurnPage(threadId, slot.slotId)}
+        onLoadMore={loadMore}
       />
-      {nextContextStart ? <NextContextStart /> : null}
+      {nextContextStart ? <NextContextStartAfter threadId={threadId} turn={slot} /> : null}
       {nextSlotId === undefined && !nextContextStart ? (
         // Hover controls float in the turn's bottom padding, which leaves them touching the composer.
         <div className="hidden h-4 [@media(hover:hover)]:block" aria-hidden="true" />
