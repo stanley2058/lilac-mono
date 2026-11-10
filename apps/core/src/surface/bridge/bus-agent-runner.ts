@@ -2476,6 +2476,15 @@ export async function startBusAgentRunner(params: {
                     controlTargetFor(state.agent),
                   );
                 }
+                await cancelTransferredControls(
+                  {
+                    eventId: msg.id,
+                    controlRequestId: requestId,
+                    controlRequestClient: requestClient,
+                  },
+                  sessionId,
+                  state,
+                );
                 logQueueTransition({
                   action: "apply_to_active",
                   queueDepthBefore: state.queue.length,
@@ -2763,6 +2772,17 @@ export async function startBusAgentRunner(params: {
                     await routeAfterTargetEnded();
                     return;
                   }
+                  if (requestControl.cancel) {
+                    await cancelTransferredControls(
+                      {
+                        eventId: msg.id,
+                        controlRequestId: requestId,
+                        controlRequestClient: requestClient,
+                      },
+                      sessionId,
+                      state,
+                    );
+                  }
                 }
 
                 logQueueTransition({
@@ -3028,7 +3048,40 @@ export async function startBusAgentRunner(params: {
         requestDeliveryId: entry.requestDeliveryId,
       });
     }
+    run.transferredControls = [...controls];
     state.queue.unshift(...controls);
+  }
+
+  function releaseControlOwners(controls: readonly Enqueued[]): void {
+    for (const control of controls) {
+      if (control.identityOwner) requestMessageCache.releaseOwner(control.identityOwner);
+    }
+  }
+
+  /**
+   * A cancel that reaches a run after it requeued its unconsumed controls cancels them as queued
+   * work, so they cannot start once the run finishes finalizing.
+   */
+  async function cancelTransferredControls(
+    control: Pick<QueueLifecycleAttempt, "eventId" | "controlRequestId" | "controlRequestClient">,
+    sessionId: string,
+    state: SessionQueue,
+  ): Promise<void> {
+    const transferred = (state.activeRun?.transferredControls ?? []).filter(
+      (entry) => state.queue.includes(entry) && !reservedQueueEntries.has(entry),
+    );
+    if (transferred.length === 0) return;
+    for (const entry of transferred) reservedQueueEntries.add(entry);
+    const attempt: QueueLifecycleAttempt = {
+      ...control,
+      sessionId,
+      kind: "queued-cancellation",
+      detail: "cancelled while queued",
+      pendingGroups: groupQueueCancellationEntries(transferred),
+      controlApplied: true,
+    };
+    queueLifecycleAttempts.set(control.eventId, attempt);
+    await resumeQueueLifecycleAttempt(attempt, state);
   }
 
   async function drainSessionQueue(sessionId: string, state: SessionQueue) {
@@ -3678,6 +3731,7 @@ export async function startBusAgentRunner(params: {
       ),
       retainedRequestDeliveryByInputId: new Map(),
       queuedControlEntries: new Map(),
+      transferredControls: [],
       journalHandle: null,
       nativeOutput,
       mcpImages,
@@ -7312,12 +7366,15 @@ export async function startBusAgentRunner(params: {
       if (!terminalPanic && shouldTerminalizeRequest)
         await publishNativeTerminal(requestTerminalKind);
       // A run left for recovery keeps its unconsumed controls, and recovery merges them back in.
-      if (!terminalPanic && shouldTerminalizeRequest) {
+      // A cancel that landed during cleanup has cleared the agent queue they came from.
+      if (
+        !terminalPanic &&
+        shouldTerminalizeRequest &&
+        !cancelledByRequestId.has(headers.request_id)
+      ) {
         requeueUnconsumedControls(state, unconsumedControls);
       } else {
-        for (const control of unconsumedControls) {
-          if (control.identityOwner) requestMessageCache.releaseOwner(control.identityOwner);
-        }
+        releaseControlOwners(unconsumedControls);
       }
       const terminalSurfaceWriteSatisfied =
         !terminalSurfaceWriteAttempted || terminalSurfaceWriteInitiated;

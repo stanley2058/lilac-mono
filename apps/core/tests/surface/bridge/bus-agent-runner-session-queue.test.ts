@@ -1175,8 +1175,8 @@ describe("session queue admission", () => {
         baseBus.subscribeTopic(
           topic,
           opts,
-          async (msg) => {
-            const result = await handler(msg);
+          async (msg, ctx) => {
+            const result = await handler(msg, ctx);
             const data = msg.data as { requestDeliveryId?: string };
             if (data.requestDeliveryId) handledDelivery(data.requestDeliveryId).resolve(undefined);
             return result;
@@ -1346,6 +1346,72 @@ describe("session queue admission", () => {
         { requestDeliveryId: queued, kind: "completed", code: undefined },
       ]);
     } finally {
+      await harness.close();
+    }
+  });
+
+  it("drops unconsumed controls when a cancel lands during run cleanup", async () => {
+    const cleanupReached = deferred<void>();
+    const releaseCleanup = deferred<void>();
+    const harness = await startUnconsumedControlRunner({
+      beforeQuestionCancel: async () => {
+        cleanupReached.resolve(undefined);
+        await releaseCleanup.promise;
+      },
+    });
+    try {
+      const first = await harness.publish({ queue: "prompt", text: "first request" });
+      await harness.firstStarted.promise;
+      const steer = await harness.publish({ queue: "steer", text: "steer" });
+      const followUp = await harness.publish({ queue: "followUp", text: "follow-up" });
+      harness.releaseFirst.resolve(undefined);
+      await cleanupReached.promise;
+      await harness.cancel();
+      releaseCleanup.resolve(undefined);
+
+      await harness.runner.waitForIdle();
+
+      expect(harness.modelCalls()).toBe(1);
+      expect(harness.terminalized.map(({ requestDeliveryId }) => requestDeliveryId).sort()).toEqual(
+        [first, steer, followUp].sort(),
+      );
+    } finally {
+      releaseCleanup.resolve(undefined);
+      await harness.close();
+    }
+  });
+
+  it("cancels transferred controls when a cancel lands during run finalization", async () => {
+    let first = "";
+    const terminalizeReached = deferred<void>();
+    const releaseTerminalize = deferred<void>();
+    const harness = await startUnconsumedControlRunner({
+      beforeTerminalize: async (requestDeliveryId) => {
+        if (requestDeliveryId !== first) return;
+        terminalizeReached.resolve(undefined);
+        await releaseTerminalize.promise;
+      },
+    });
+    try {
+      first = await harness.publish({ queue: "prompt", text: "first request" });
+      await harness.firstStarted.promise;
+      const steer = await harness.publish({ queue: "steer", text: "steer" });
+      const followUp = await harness.publish({ queue: "followUp", text: "follow-up" });
+      harness.releaseFirst.resolve(undefined);
+      await terminalizeReached.promise;
+      await harness.cancel();
+      releaseTerminalize.resolve(undefined);
+
+      await harness.runner.waitForIdle();
+
+      expect(harness.modelCalls()).toBe(1);
+      expect(harness.terminalized).toEqual([
+        { requestDeliveryId: steer, kind: "cancelled", code: "cancelled-while-queued" },
+        { requestDeliveryId: followUp, kind: "cancelled", code: "cancelled-while-queued" },
+        { requestDeliveryId: first, kind: "failed", code: undefined },
+      ]);
+    } finally {
+      releaseTerminalize.resolve(undefined);
       await harness.close();
     }
   });
