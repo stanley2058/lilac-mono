@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { IDBDatabase, IDBFactory, IDBIndex, IDBObjectStore } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBIndex, IDBObjectStore, IDBTransaction } from "fake-indexeddb";
 import type { CachePatch, CacheScope } from "@stanley2058/lilac-client";
 import type { BootstrapReply } from "@stanley2058/lilac-client-protocol";
 import { mergeCachePatches, WebNativeCache } from "../src/cache";
@@ -538,6 +538,49 @@ test("the sidebar reads every conversation with an unsent reply in one transacti
   expect(transactions).toHaveBeenCalledTimes(1);
   transactions.mockRestore();
 });
+
+/** Stands in for the page the cache listens to while `run` settles. */
+async function withPage(
+  run: (page: { hide: () => void; leave: () => void }) => Promise<void>,
+): Promise<void> {
+  const document = Object.assign(new EventTarget(), { visibilityState: "visible" });
+  const window = new EventTarget();
+  Object.defineProperty(globalThis, "document", { value: document, configurable: true });
+  Object.defineProperty(globalThis, "window", { value: window, configurable: true });
+  try {
+    await run({
+      hide: () => {
+        document.visibilityState = "hidden";
+        document.dispatchEvent(new Event("visibilitychange"));
+      },
+      leave: () => window.dispatchEvent(new Event("pagehide")),
+    });
+  } finally {
+    Reflect.deleteProperty(globalThis, "document");
+    Reflect.deleteProperty(globalThis, "window");
+  }
+}
+
+for (const event of ["hide", "leave"] as const)
+  test(`drafts typed just before the page ${event === "hide" ? "hides" : "unloads"} are saved`, async () => {
+    const factory = new IDBFactory();
+    await withPage(async (page) => {
+      const first = cache(factory, { draftWriteDelayMs: 60_000 });
+      const stored = first.saveDraft(scope, "cleared", { text: "Old", skillIds: [] });
+      await first.flushDrafts();
+      await stored;
+      void first.saveDraft(scope, "thread", { text: "Typed before leaving", skillIds: [] });
+      void first.saveDraft(scope, "cleared", { text: "", skillIds: [] });
+      const commit = spyOn(IDBTransaction.prototype, "commit");
+      page[event]();
+      // A frozen or unloaded page runs no more script, so the handler must commit the writes itself.
+      expect(commit).toHaveBeenCalledTimes(1);
+      commit.mockRestore();
+      first.close();
+    });
+    expect((await cache(factory).readDraft(scope, "thread")).text).toBe("Typed before leaving");
+    expect(await draftRowKeys(factory)).toEqual(["thread"]);
+  });
 
 function oversizedPatch(parts: number): CachePatch {
   const value = patch();

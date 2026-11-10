@@ -272,9 +272,9 @@ export class WebNativeCache implements NativeCache {
     if (typeof document === "undefined") return;
     // A hidden tab may be discarded or closed without another chance to write.
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") void this.flushDrafts();
+      if (document.visibilityState === "hidden") this.flushDraftsBeforeHide();
     });
-    window.addEventListener("pagehide", () => void this.flushDrafts());
+    window.addEventListener("pagehide", () => this.flushDraftsBeforeHide());
   }
   get persistent(): boolean {
     return Boolean(this.factory) && !this.disabled;
@@ -711,6 +711,38 @@ export class WebNativeCache implements NativeCache {
         settled.resolve();
       }),
     );
+  }
+  /**
+   * Writes every pending draft before the page is frozen or unloaded. The browser may run no more
+   * script after this handler, so the writes are queued and committed before it returns. The next
+   * ordinary draft write trims the scope back under its cap.
+   */
+  private flushDraftsBeforeHide(): void {
+    const db = this.database;
+    if (!db) {
+      void this.flushDrafts();
+      return;
+    }
+    clearTimeout(this.draftTimer);
+    this.draftTimer = undefined;
+    const pending = [...this.pendingDrafts.values()];
+    this.pendingDrafts.clear();
+    if (!pending.length) return;
+    const started = Result.try(() => {
+      const tx = db.transaction("drafts", "readwrite");
+      const store = tx.objectStore("drafts");
+      for (const { scope, threadId, value } of pending) {
+        const key = threadKey(scope, threadId);
+        if (draftIsEmpty(value)) store.delete(key);
+        else store.put({ key, scopeKey: cacheScopeKey(scope), ...value, updatedAt: Date.now() });
+      }
+      tx.commit();
+      return tx;
+    });
+    const committed = started.match({ ok: completed, err: () => Promise.resolve(false) });
+    void this.attempt(() => assertCommitted(committed)).then(() => {
+      for (const draft of pending) draft.settled.resolve();
+    });
   }
   private async writeDraft(scope: CacheScope, threadId: string, value: WebDraft): Promise<void> {
     const key = threadKey(scope, threadId);
