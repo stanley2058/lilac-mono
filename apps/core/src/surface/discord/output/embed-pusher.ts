@@ -178,9 +178,7 @@ export async function startEmbedPusher(params: {
   let responseQueue: string[] = [];
   let lastProgressHeartbeatAt = 0;
 
-  const syncToDiscord = async (
-    content: string,
-  ): Promise<ResultType<boolean, EmbedPusherError>> => {
+  const syncToDiscord = async (content: string): Promise<ResultType<boolean, EmbedPusherError>> => {
     const maxChunkLength = params.getMaxLength(false);
     const maxLastChunkLength = params.getMaxLength(true);
 
@@ -278,8 +276,7 @@ export async function startEmbedPusher(params: {
       const nextTitle = progressTitleForChunk ?? "";
       // The title carries an elapsed-seconds counter, so a title-only change waits for the
       // heartbeat instead of editing every second.
-      const titleNeedsPush =
-        sentTitle !== nextTitle && (sentTitle === "" || nextTitle === "");
+      const titleNeedsPush = sentTitle !== nextTitle && (sentTitle === "" || nextTitle === "");
       if (
         sentDescriptions[i] === description &&
         sentColors[i] === color &&

@@ -9,6 +9,7 @@ import {
   type Client,
   type Channel,
   EmbedBuilder,
+  GuildPremiumTier,
   type Message,
   type MessageCreateOptions,
 } from "discord.js";
@@ -606,6 +607,44 @@ function buildFinalStatsFieldValue(line: string): string {
   return wrapped.slice(0, maxLength - overflow.length) + overflow;
 }
 
+const DISCORD_MAX_FILES_PER_MESSAGE = 10;
+const MIB = 1024 * 1024;
+const DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES = 10 * MIB;
+
+/** Discord raises the per-message upload limit for boosted guilds. */
+function discordUploadLimitBytes(channel: Channel): number {
+  const tier = "guild" in channel ? channel.guild?.premiumTier : undefined;
+  switch (tier) {
+    case GuildPremiumTier.Tier2:
+      return 50 * MIB;
+    case GuildPremiumTier.Tier3:
+      return 100 * MIB;
+    default:
+      return DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES;
+  }
+}
+
+/**
+ * Splits off the next upload batch within the file-count and byte limits. A single file over the
+ * byte limit still goes alone, so Discord reports the failure instead of the file disappearing.
+ */
+function takeAttachmentBatch(
+  attachments: readonly SurfaceAttachment[],
+  maxFiles: number,
+  maxBytes: number,
+): [SurfaceAttachment[], SurfaceAttachment[]] {
+  let bytes = 0;
+  let count = 0;
+  for (const attachment of attachments) {
+    if (count >= maxFiles) break;
+    const size = attachment.bytes.byteLength;
+    if (count > 0 && bytes + size > maxBytes) break;
+    bytes += size;
+    count += 1;
+  }
+  return [attachments.slice(0, count), attachments.slice(count)];
+}
+
 async function fetchTextChannelResult(
   client: Client,
   channelId: string,
@@ -688,6 +727,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private textAcc = "";
   private previewTextAcc = "";
   private pendingAttachments: SurfaceAttachment[] = [];
+  private uploadLimitBytes = DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES;
 
   private firstMsg: Message | null = null;
   private lastMsg: Message | null = null;
@@ -1003,6 +1043,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     const channelResult = await fetchTextChannelResult(client, discordSessionRef.channelId);
     const channel = adaptDiscordOutputResultToHost(channelResult);
+    this.uploadLimitBytes = discordUploadLimitBytes(channel);
     let recoveredMessage: Message | null = null;
     const resumeAt = this.deps.opts?.resumeAt;
     if (
@@ -1296,11 +1337,16 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (!isDiscordSessionRef(sessionRef)) return [];
     if (this.pendingAttachments.length === 0) return [];
 
-    const MAX_FILES = 10;
     const created: MsgRef[] = [];
 
-    for (let i = 0; i < this.pendingAttachments.length; i += MAX_FILES) {
-      const chunk = this.pendingAttachments.slice(i, i + MAX_FILES);
+    let remaining = this.pendingAttachments;
+    while (remaining.length > 0) {
+      const [chunk, rest] = takeAttachmentBatch(
+        remaining,
+        DISCORD_MAX_FILES_PER_MESSAGE,
+        this.uploadLimitBytes,
+      );
+      remaining = rest;
       const msg = await replyTo.reply({
         files: toDiscordFiles(chunk),
         allowedMentions: { parse: [], repliedUser: false },
@@ -1320,11 +1366,13 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private async attachPendingAttachmentsToFinalMessage(target: Message): Promise<MsgRef[]> {
     if (this.pendingAttachments.length === 0) return [];
 
-    const MAX_FILES = 10;
-    const available = MAX_FILES - target.attachments.size;
+    const available = DISCORD_MAX_FILES_PER_MESSAGE - target.attachments.size;
     if (available <= 0) return this.flushPendingAttachments(target);
-    const filesForFinal = this.pendingAttachments.slice(0, available);
-    const overflow = this.pendingAttachments.slice(available);
+    const [filesForFinal, overflow] = takeAttachmentBatch(
+      this.pendingAttachments,
+      available,
+      this.uploadLimitBytes,
+    );
 
     if (filesForFinal.length === 0) return [];
 
@@ -1356,6 +1404,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     const channelResult = await fetchTextChannelResult(client, discordSessionRef.channelId);
     const channel = adaptDiscordOutputResultToHost(channelResult);
+    this.uploadLimitBytes = discordUploadLimitBytes(channel);
     const { CLOSING_TAG_BUFFER } = getEmbedPusherConstants();
     const fullText = this.getRenderedText("terminal");
     const content = fullText.length > 0 ? fullText : "*<empty_string>*";
@@ -1369,9 +1418,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       completeLastChunk: true,
     });
 
-    const MAX_FILES = 10;
-    const filesForLastMessage = this.pendingAttachments.slice(0, MAX_FILES);
-    const overflowAttachments = this.pendingAttachments.slice(MAX_FILES);
+    const [filesForLastMessage, overflowAttachments] = takeAttachmentBatch(
+      this.pendingAttachments,
+      DISCORD_MAX_FILES_PER_MESSAGE,
+      this.uploadLimitBytes,
+    );
 
     const displayChunks = chunks.length > 0 ? chunks : ["*<empty_string>*"];
     const createdMsgs: Message[] = [];
@@ -1484,6 +1535,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     const preparationStartedAt = performance.now();
     const channelResult = await fetchTextChannelResult(client, discordSessionRef.channelId);
     const channel = adaptDiscordOutputResultToHost(channelResult);
+    this.uploadLimitBytes = discordUploadLimitBytes(channel);
     const channelFetchedAt = performance.now();
     const displayChunks = await this.buildFinalPlainChunks();
     if (imageOutput) {
@@ -1495,9 +1547,11 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       });
     }
 
-    const MAX_FILES = 10;
-    const filesForLastMessage = this.pendingAttachments.slice(0, MAX_FILES);
-    const overflowAttachments = this.pendingAttachments.slice(MAX_FILES);
+    const [filesForLastMessage, overflowAttachments] = takeAttachmentBatch(
+      this.pendingAttachments,
+      DISCORD_MAX_FILES_PER_MESSAGE,
+      this.uploadLimitBytes,
+    );
 
     const createdMsgs: Message[] = [];
     let parent: Message | null = null;

@@ -593,6 +593,7 @@ function createFakeDiscordClient(opts?: {
   failResumeFetch?: boolean;
   resumeFetchFailure?: unknown;
   onEdit?: (options: unknown) => void;
+  guildPremiumTier?: number;
 }): {
   client: Client;
   createdMessageIds: string[];
@@ -729,6 +730,9 @@ function createFakeDiscordClient(opts?: {
   };
 
   const channel = {
+    ...(opts?.guildPremiumTier === undefined
+      ? {}
+      : { guild: { premiumTier: opts.guildPremiumTier } }),
     send: async (options: unknown) => {
       if (opts?.sendFailure) throw opts.sendFailure;
       sendAttempts += 1;
@@ -1401,6 +1405,41 @@ describe("attachment finalization", () => {
     const replyWithFiles = operations.filter((op) => op.kind === "reply" && hasFiles(op.options));
     expect(replyWithFiles.length).toBe(0);
   });
+
+  it.each([
+    [undefined, [2, 1]],
+    [2, [3]],
+  ] as const)(
+    "batches attachment uploads by the guild byte limit (tier %p)",
+    async (tier, expected) => {
+      const { client, operations } = createFakeDiscordClient({ guildPremiumTier: tier });
+      const out = new DiscordOutputStream({
+        client,
+        sessionRef: { platform: "discord", channelId: "chan" },
+        useSmartSplitting: false,
+        outputMode: "preview",
+        outputPreviewModeFinalStyle: "plain",
+        outputPreviewModeFinalText: "reply-chain",
+        reasoningDisplayMode: "none",
+        workingIndicators: ["Working"],
+      });
+
+      await out.push({ type: "text.delta", delta: "files" });
+      for (let i = 0; i < 3; i++) {
+        await out.push({
+          type: "attachment.add",
+          attachment: { ...makeAttachment(i), bytes: new Uint8Array(4 * 1024 * 1024) },
+        });
+      }
+      const result = resultValue(await out.finish());
+
+      const uploads = operations.filter(
+        (op) =>
+          hasFiles(op.options) && result.created.some((ref) => ref.messageId === op.messageId),
+      );
+      expect(uploads.map((op) => filesCount(op.options))).toEqual([...expected]);
+    },
+  );
 
   it("preview mode posts attachments on the final reposted split message", async () => {
     const { client, operations } = createFakeDiscordClient();
