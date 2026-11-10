@@ -84,6 +84,7 @@ for index = 8, #ARGV, 2 do
     or string.find(delivery_id, "[^0-9a-f]") then return {"panic", "orphan-identity-malformed"} end
   local key = state_key(id)
   if redis.call("EXISTS", key) == 0 then
+    if pending_owner(KEYS[1], group, id) ~= nil then
     if redis.call("ZSCORE", KEYS[2], id) or redis.call("ZSCORE", KEYS[3], id)
       or redis.call("ZSCORE", KEYS[4], id) then return {"panic", "index-orphan"} end
     local _, pending_error = require_source_and_pending(id)
@@ -95,6 +96,7 @@ for index = 8, #ARGV, 2 do
       "lease_deadline", tostring(deadline))
     redis.call("ZADD", KEYS[3], deadline, id)
     return {"claimed", id, "0", token, delivery_id, tostring(deadline)}
+    end
   elseif not type_is(key, "hash", false) then return {"panic", "state-type"} end
 end
 

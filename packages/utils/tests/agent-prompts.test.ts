@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 import {
+  promptWorkspaceSignature,
   applyBasePromptForProvider,
   buildAgentSystemPrompt,
   CORE_PROMPT_FILES,
@@ -420,4 +421,21 @@ describe("agent prompts", () => {
       expect(await Bun.file(baselinePath).text()).toBe(templateContent);
     });
   });
+});
+
+it("prompt fingerprints detect changes below another file's maximum mtime", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "prompt-signature-"));
+  try {
+    await ensurePromptWorkspace({ dataDir });
+    await utimes(promptPath(dataDir, "AGENTS.md"), 2000000000, 2000000000);
+    const before = await promptWorkspaceSignature({ dataDir });
+    await writeFile(promptPath(dataDir, "USER.md"), "changed user");
+    const after = await promptWorkspaceSignature({ dataDir });
+    expect(before.maxMtimeMs).toBe(after.maxMtimeMs);
+    expect(before.fingerprint).not.toBe(after.fingerprint);
+    await rm(promptPath(dataDir, "USER.md"));
+    expect((await promptWorkspaceSignature({ dataDir })).fingerprint).not.toBe(after.fingerprint);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });

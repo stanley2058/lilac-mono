@@ -1584,7 +1584,7 @@ describe("RedisStreamsBus", () => {
       expect(firstDeliveryId).toBe(
         managedRedisDeliveryId(streamKey, firstGroup, firstPublished.id),
       );
-      expect(await redis.keys(firstMetadataPattern)).not.toEqual([]);
+      expect(await redis.keys(firstMetadataPattern)).toEqual([]);
       // The lease key lasts only until the handler parks, so compare state from after that point.
       const replacementMetadata = await eventually(
         () => redis.keys(secondMetadataPattern),
@@ -2449,6 +2449,205 @@ describe("RedisStreamsBus", () => {
     } finally {
       await redis.del(streamKey);
       await raw.close();
+      await redis.quit();
+    }
+  });
+
+  it("drains recoverable entries before issuing another blocking read", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("recovery-batch")}`;
+    const stream = `${keyPrefix}:topic`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    const group = managedRedisPhysicalGroup("work", "recover");
+    let handled = 0;
+    let firstReadHandled: number | undefined;
+    const recovered = Promise.withResolvers<void>();
+    const send = Redis.prototype.sendCommand;
+    let watchReads = false;
+    const spy = spyOn(Redis.prototype, "sendCommand").mockImplementation(
+      function (this: Redis, command, stream) {
+        if (watchReads && command.name === "xreadgroup") firstReadHandled ??= handled;
+        return send.call(this, command, stream);
+      },
+    );
+    try {
+      for (let i = 0; i < 3; i++)
+        await raw.publish(
+          { topic: "topic", type: "test", data: i },
+          { topic: "topic", type: "test" },
+        );
+      await redis.xgroup("CREATE", stream, group, "0");
+      await redis.xreadgroup("GROUP", group, "old", "COUNT", 3, "STREAMS", stream, ">");
+      watchReads = true;
+      const sub = requireOk(
+        await raw.subscribe("topic", { mode: "work", subscriptionId: "recover" }, async () => {
+          if (++handled === 3) recovered.resolve();
+          return { disposition: "commit" };
+        }),
+      );
+      await recovered.promise;
+      await sub.stop();
+      expect(firstReadHandled === undefined || firstReadHandled === 3).toBe(true);
+    } finally {
+      spy.mockRestore();
+      await raw.close();
+      const keys = await redis.keys(`${keyPrefix}:*`);
+      if (keys.length) await redis.del(...keys);
+      await redis.quit();
+    }
+  });
+
+  for (const { ephemeral, failTick } of [
+    { ephemeral: false, failTick: false },
+    { ephemeral: true, failTick: false },
+    { ephemeral: false, failTick: true },
+  ]) {
+    it(`handles ${failTick ? "maintenance failure" : "owner expiry"} for ${ephemeral ? "ephemeral" : "durable"} subscriptions`, async () => {
+      const redis = new Redis(TEST_REDIS_URL);
+      const keyPrefix = `test:lilac-event-bus:${randomId("owner-expiry")}`;
+      const stream = `${keyPrefix}:topic`;
+      const raw = createRedisStreamsBus({ redis, keyPrefix });
+      let tick: (() => void) | undefined;
+      const nativeInterval = globalThis.setInterval;
+      const controlledInterval = (
+        callback: (...args: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === 10_000) tick = () => Reflect.apply(callback, undefined, args);
+        return nativeInterval(callback, delay, ...args);
+      };
+      const timer = spyOn(globalThis, "setInterval").mockImplementation(
+        controlledInterval as typeof setInterval,
+      );
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let handled = 0;
+      try {
+        const sub = requireOk(
+          await raw.subscribe(
+            "topic",
+            {
+              mode: "work",
+              subscriptionId: "expiry",
+              consumerId: "consumer",
+              ephemeral,
+              startFrom: "beginning",
+              batch: { maxWaitMs: 50 },
+            },
+            async () => {
+              if (++handled === 1) {
+                started.resolve();
+                await release.promise;
+              }
+              return { disposition: "commit" };
+            },
+          ),
+        );
+        await redis.xadd(stream, "*", "seed", "1");
+        await started.promise;
+        const owners = await redis.keys(`${stream}:subscription-owner:*`);
+        expect(owners).toHaveLength(1);
+        await redis.del(...owners);
+        if (failTick)
+          spyOn(redis, "eval").mockRejectedValueOnce(new Error("Maintenance tick failed"));
+        tick!();
+        if (ephemeral || failTick) {
+          release.resolve();
+          expect((await sub.done).status).toBe("error");
+          expect((await sub.stop()).status).toBe("error");
+          return;
+        }
+        await eventually(
+          () => redis.exists(owners[0]!),
+          (value) => value === 1,
+        );
+        release.resolve();
+        await redis.xadd(stream, "*", "seed", "2");
+        await eventually(
+          async () => {
+            await redis.ping();
+            return handled;
+          },
+          (value) => value === 2,
+        );
+        requireOk(await sub.stop());
+      } finally {
+        release.resolve();
+        timer.mockRestore();
+        await raw.close();
+        const keys = await redis.keys(`${keyPrefix}:*`);
+        if (keys.length) await redis.del(...keys);
+        await redis.quit();
+      }
+    });
+  }
+
+  it("stops tail subscriptions without an owner-key command", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const raw = createRedisStreamsBus({ redis });
+    const sub = requireOk(
+      await raw.subscribe(
+        "tail-cleanup",
+        {
+          mode: "tail",
+          offset: { type: "now" },
+          batch: { maxWaitMs: 50 },
+        },
+        async () => ({ disposition: "commit" }),
+      ),
+    );
+    const del = spyOn(redis, "del");
+    requireOk(await sub.stop());
+    expect(del).not.toHaveBeenCalled();
+    del.mockRestore();
+    await raw.close();
+    await redis.quit();
+  });
+
+  it("reaps expired ephemeral owners and empty consumers while preserving live and pending owners", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const keyPrefix = `test:lilac-event-bus:${randomId("reap")}`;
+    const stream = `${keyPrefix}:topic`;
+    const registry = `${stream}:subscription-owners:v1`;
+    const raw = createRedisStreamsBus({ redis, keyPrefix });
+    try {
+      await redis.xadd(stream, "*", "seed", "1");
+      for (const group of ["abandoned", "live", "durable"])
+        await redis.xgroup("CREATE", stream, group, "0");
+      const liveOwner = `${stream}:live`;
+      await redis.set(liveOwner, "1", "PX", 60000);
+      await redis.hset(
+        registry,
+        JSON.stringify(["abandoned", "old", true]),
+        `${stream}:gone`,
+        JSON.stringify(["live", "live", true]),
+        liveOwner,
+        JSON.stringify(["durable", "empty", false]),
+        `${stream}:gone`,
+        JSON.stringify(["durable", "pending", false]),
+        `${stream}:gone`,
+      );
+      await redis.xgroup("CREATECONSUMER", stream, "durable", "empty");
+      await redis.xreadgroup("GROUP", "durable", "pending", "COUNT", 1, "STREAMS", stream, ">");
+      const sub = requireOk(
+        await raw.subscribe(
+          "topic",
+          { mode: "fanout", subscriptionId: "new", ephemeral: true },
+          async () => ({ disposition: "commit" }),
+        ),
+      );
+      expect(consumerGroupNames(await redis.xinfo("GROUPS", stream))).not.toContain("abandoned");
+      expect(consumerGroupNames(await redis.xinfo("GROUPS", stream))).toContain("live");
+      const consumers = JSON.stringify(await redis.xinfo("CONSUMERS", stream, "durable"));
+      expect(consumers).not.toContain('"empty"');
+      expect(consumers).toContain('"pending"');
+      requireOk(await sub.stop());
+      await redis.del(liveOwner);
+    } finally {
+      await raw.close();
+      const keys = await redis.keys(`${keyPrefix}:*`);
+      if (keys.length) await redis.del(...keys);
       await redis.quit();
     }
   });

@@ -25,13 +25,12 @@ describe("RedisConnectionPool autoscale", () => {
 
     const leases = await Promise.all([pool.acquire(), pool.acquire()]);
     const first = requireOk(leases[0]!);
-    const second = requireOk(leases[1]!);
+    const second = leases[1]!;
     expect(duplicateCalls).toBe(1);
-    expect([first.shared, second.shared].sort()).toEqual([false, true]);
+    expect(second.status).toBe("error");
     expect(pool.stats()).toEqual({ max: 1, created: 1, available: 0, inUse: 1 });
 
     await first.release();
-    await second.release();
     await pool.close();
     base.disconnect();
   });
@@ -50,7 +49,6 @@ describe("RedisConnectionPool autoscale", () => {
     const failed = await pool.acquire();
     expect(failed.status).toBe("error");
     const acquired = requireOk(await pool.acquire());
-    expect(acquired.shared).toBe(false);
     expect(pool.stats().created).toBe(1);
 
     await acquired.release();
@@ -89,20 +87,19 @@ describe("RedisConnectionPool autoscale", () => {
     const b = requireOk(await pool.acquire());
 
     // Third acquire forces a grow (2 -> 4) and returns a dedicated client.
-    const c = requireOk(await pool.acquire());
-    expect(c.shared).toBe(false);
+    requireOk(await pool.acquire());
 
     const s = pool.stats();
     expect(s.max).toBe(4);
     expect(s.created).toBe(3);
     expect(s.inUse).toBe(3);
 
-    await Promise.all([a.release(), b.release(), c.release()]);
+    await Promise.all([a.release(), b.release()]);
     await pool.close();
     await base.quit();
   });
 
-  it("falls back to shared client once at cap", async () => {
+  it("returns an acquisition failure at cap without leasing the publisher", async () => {
     const base = new Redis(TEST_REDIS_URL);
     await base.ping();
 
@@ -121,13 +118,13 @@ describe("RedisConnectionPool autoscale", () => {
 
     const a = requireOk(await pool.acquire());
     const b = requireOk(await pool.acquire());
-    const c = requireOk(await pool.acquire());
+    const c = await pool.acquire();
 
-    expect(c.shared).toBe(true);
+    expect(c.status).toBe("error");
     expect(pool.stats().max).toBe(2);
     expect(pool.stats().inUse).toBe(2);
 
-    await Promise.all([a.release(), b.release(), c.release()]);
+    await Promise.all([a.release(), b.release()]);
     await pool.close();
     await base.quit();
   });

@@ -1678,6 +1678,13 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
       {
         identity: {
           module: "redis-streams-bus.ts",
+          exportName: "decodeSubscriptionMaintenance",
+        },
+        category: "wire",
+      },
+      {
+        identity: {
+          module: "redis-streams-bus.ts",
           exportName: "decodeRedisCleanupPendingPresence",
         },
         category: "wire",

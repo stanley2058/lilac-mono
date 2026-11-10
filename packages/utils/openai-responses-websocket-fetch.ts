@@ -192,6 +192,8 @@ export function createOpenAIResponsesWebSocketFetch(
   completionEventTypes.add("response.incomplete");
   const idleTimeoutMs = options.idleTimeoutMs ?? RESPONSES_WEBSOCKET_TIMEOUT_MS;
 
+  const sockets = new Set<WebSocket>();
+  const dedicatedConnects = new Set<AbortController>();
   let ws: WebSocket | null = null;
   let connecting: Promise<ResultType<WebSocket, CapturedResponsesFailure>> | null = null;
   let connectingAbortController: AbortController | null = null;
@@ -241,6 +243,7 @@ export function createOpenAIResponsesWebSocketFetch(
 
   function closeSocket(socket: WebSocket | null): void {
     if (!socket) return;
+    sockets.delete(socket);
     const outcome = settleSyncResult(() => socket.close());
     if (outcome.kind === "panic") throw outcome.panic;
   }
@@ -479,9 +482,15 @@ export function createOpenAIResponsesWebSocketFetch(
       clearIdleCloseTimer();
     }
 
+    const dedicatedController = new AbortController();
+    if (!useReusableConnection) dedicatedConnects.add(dedicatedController);
+    const dedicatedSignal = signal
+      ? AbortSignal.any([signal, dedicatedController.signal])
+      : dedicatedController.signal;
     const connected = await (useReusableConnection
       ? getConnection(socketUrl, wsHeaders, signal ?? undefined)
-      : connectWebSocket(socketUrl, wsHeaders, signal ?? undefined));
+      : connectWebSocket(socketUrl, wsHeaders, dedicatedSignal));
+    dedicatedConnects.delete(dedicatedController);
     const connectOutcome = captureResultOutcome(connected);
     if (!connectOutcome.ok) {
       if (useReusableConnection) reusableBusy = false;
@@ -504,6 +513,7 @@ export function createOpenAIResponsesWebSocketFetch(
       throw connectionError;
     }
     const connection = connectOutcome.value;
+    sockets.add(connection);
     const { stream: _stream, ...requestBody } = parsedBody;
     const fullRequestBody = cloneJsonObject(requestBody);
     pruneContinuationCache(Date.now());
@@ -537,275 +547,318 @@ export function createOpenAIResponsesWebSocketFetch(
     const transportDecision = Promise.withResolvers<"websocket" | "sse">();
     if (options.mode !== "auto") transportDecision.resolve("websocket");
 
-    const responseStream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        let cleanedUp = false;
-        let receivedMessage = false;
-        let responseId: string | null = null;
-        let outputItems: JsonObject[] = [];
-        let outputItemDrafts = new Map<string, JsonObject>();
-        let canPersistContinuation = true;
-        let responseTurnState = payloadResult.turnState;
-        let forwardedEventCount = 0;
-        let pendingPreOutputEvents: Record<string, unknown>[] = [];
-        let stalePreviousResponseRetryAttempted = false;
+    let cancelResponse = () => {};
+    const responseStream = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          let cleanedUp = false;
+          let receivedMessage = false;
+          let responseId: string | null = null;
+          let outputItems: JsonObject[] = [];
+          let outputItemDrafts = new Map<string, JsonObject>();
+          let canPersistContinuation = true;
+          let responseTurnState = payloadResult.turnState;
+          let forwardedEventCount = 0;
+          let pendingPreOutputEvents: Record<string, unknown>[] = [];
+          let pendingMetadataBytes = 0;
+          let stalePreviousResponseRetryAttempted = false;
 
-        const sendPayload = (payload: ResponsesRequestBody) => {
-          connection.send(JSON.stringify({ type: "response.create", ...payload }));
-        };
+          const sendPayload = (payload: ResponsesRequestBody) => {
+            connection.send(JSON.stringify({ type: "response.create", ...payload }));
+          };
 
-        const retryWithoutOptimization = (): boolean => {
-          if (!payloadResult.optimizationEnabled) return false;
-          if (stalePreviousResponseRetryAttempted) return false;
-          if (forwardedEventCount > 0) return false;
+          const retryWithoutOptimization = (): boolean => {
+            if (!payloadResult.optimizationEnabled) return false;
+            if (stalePreviousResponseRetryAttempted) return false;
+            if (forwardedEventCount > 0) return false;
 
-          stalePreviousResponseRetryAttempted = true;
-          clearReusableContinuationState();
-          websocketPayload = applyTurnStateToPayload(
-            cloneJsonObject(fullRequestBody),
-            options.turnStateHeaderName,
-            responseTurnState,
-          );
-          responseId = null;
-          outputItems = [];
-          outputItemDrafts = new Map<string, JsonObject>();
-          canPersistContinuation = true;
-          pendingPreOutputEvents = [];
-          reportTransportSelected({
-            requestUrl,
-            transport: "websocket",
-            optimizationEnabled: false,
-            optimizationReason: "stale_previous_response_id_retry",
-          });
-          sendPayload(websocketPayload);
-          return true;
-        };
-
-        const enqueueNormalizedEvent = (event: Record<string, unknown>): boolean => {
-          const bytes = encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
-          controller.enqueue(bytes);
-          forwardedEventCount++;
-          return true;
-        };
-
-        const flushPendingPreOutputEvents = (): boolean => {
-          for (const event of pendingPreOutputEvents) {
-            if (!enqueueNormalizedEvent(event)) return false;
-          }
-          pendingPreOutputEvents = [];
-          return true;
-        };
-
-        const cleanup = (params?: { closeConnection?: boolean }) => {
-          if (cleanedUp) return;
-          cleanedUp = true;
-
-          connection.removeEventListener("message", onMessage);
-          connection.removeEventListener("error", onError);
-          connection.removeEventListener("close", onClose);
-          signal?.removeEventListener("abort", onAbort);
-
-          if (useReusableConnection) {
-            reusableBusy = false;
-          }
-
-          const shouldClose = params?.closeConnection === true || !useReusableConnection;
-
-          if (useReusableConnection && (!canPersistContinuation || shouldClose)) {
+            stalePreviousResponseRetryAttempted = true;
             clearReusableContinuationState();
-          }
+            websocketPayload = applyTurnStateToPayload(
+              cloneJsonObject(fullRequestBody),
+              options.turnStateHeaderName,
+              responseTurnState,
+            );
+            responseId = null;
+            outputItems = [];
+            outputItemDrafts = new Map<string, JsonObject>();
+            canPersistContinuation = true;
+            pendingPreOutputEvents = [];
+            reportTransportSelected({
+              requestUrl,
+              transport: "websocket",
+              optimizationEnabled: false,
+              optimizationReason: "stale_previous_response_id_retry",
+            });
+            sendPayload(websocketPayload);
+            return true;
+          };
 
-          if (shouldClose) {
-            closeSocket(connection);
-            if (ws === connection) {
-              ws = null;
-              connectionHeadersKey = null;
+          const enqueueNormalizedEvent = (event: Record<string, unknown>): boolean => {
+            const bytes = encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
+            if ((controller.desiredSize ?? 0) < bytes.byteLength) {
+              onError(
+                new ErrorEvent("error", { message: "Responses WebSocket buffer exceeded 16 MiB" }),
+              );
+              return false;
+            }
+            controller.enqueue(bytes);
+            forwardedEventCount++;
+            return true;
+          };
+
+          const flushPendingPreOutputEvents = (): boolean => {
+            for (const event of pendingPreOutputEvents) {
+              if (!enqueueNormalizedEvent(event)) return false;
+            }
+            pendingPreOutputEvents = [];
+            pendingMetadataBytes = 0;
+            return true;
+          };
+
+          const cleanup = (params?: { closeConnection?: boolean }) => {
+            if (cleanedUp) return;
+            cleanedUp = true;
+
+            connection.removeEventListener("message", onMessage);
+            connection.removeEventListener("error", onError);
+            connection.removeEventListener("close", onClose);
+            signal?.removeEventListener("abort", onAbort);
+
+            if (useReusableConnection) {
+              reusableBusy = false;
+            }
+
+            const shouldClose = params?.closeConnection === true || !useReusableConnection;
+
+            if (useReusableConnection && (!canPersistContinuation || shouldClose)) {
               clearReusableContinuationState();
             }
-          } else {
-            scheduleIdleClose();
-          }
-        };
 
-        const onMessage = (event: Event) => {
-          receivedMessage = true;
-          transportDecision.resolve("websocket");
-          void (async () => {
-            const handled = await Result.tryPromise({
-              try: async () => {
-                if (cleanedUp) return;
-                const text = await decodeWebSocketData(event);
-                if (cleanedUp) return;
-                if (!text) return;
+            if (shouldClose) {
+              closeSocket(connection);
+              if (ws === connection) {
+                ws = null;
+                connectionHeadersKey = null;
+                clearReusableContinuationState();
+              }
+            } else {
+              scheduleIdleClose();
+            }
+          };
 
-                const eventJson = JSON.parse(text) as unknown;
+          cancelResponse = () => {
+            canPersistContinuation = false;
+            transportDecision.resolve("websocket");
+            cleanup({ closeConnection: true });
+          };
+          let frameQueue = Promise.resolve();
+          let pendingFrames = 0;
+          let pendingFrameBytes = 0;
+          const onMessage = (event: Event) => {
+            if (cleanedUp) return;
+            const frameBytes = webSocketFrameBytes(event);
+            pendingFrameBytes += frameBytes;
+            if (++pendingFrames > 256 || pendingFrameBytes > 16 * 1024 * 1024) {
+              onError(
+                new ErrorEvent("error", {
+                  message: "Responses WebSocket frame backlog exceeded its buffer budget",
+                }),
+              );
+              return;
+            }
+            receivedMessage = true;
+            transportDecision.resolve("websocket");
+            const previousFrame = frameQueue;
+            frameQueue = (async () => {
+              await previousFrame;
+              const handled = await Result.tryPromise({
+                try: async () => {
+                  if (cleanedUp) return;
+                  const text = await decodeWebSocketData(event);
+                  pendingFrames--;
+                  pendingFrameBytes -= frameBytes;
+                  if (text && text.length > 16 * 1024 * 1024)
+                    throw new Error("Responses WebSocket frame exceeded 16 MiB");
+                  if (cleanedUp) return;
+                  if (!text) return;
 
-                const eventRecord = asRecord(eventJson);
-                if (!eventRecord) return;
-                responseTurnState ??= extractTurnState(eventRecord, options.turnStateHeaderName);
-                const nextResponseId = extractResponseId(eventRecord);
-                if (nextResponseId) {
-                  responseId = nextResponseId;
-                }
+                  const eventJson = JSON.parse(text) as unknown;
 
-                updateOutputItemDraft(outputItemDrafts, eventRecord);
-                const doneItem = extractOutputItemDone(eventRecord);
-                if (doneItem) {
-                  outputItems.push(mergeOutputItemDraft(doneItem, outputItemDrafts));
-                }
-                const projectedEvent = projectResponsesEvent(eventRecord);
-                if (options.turnStateHeaderName && projectedEvent.type === "response.metadata") {
-                  return;
-                }
+                  const eventRecord = asRecord(eventJson);
+                  if (!eventRecord) return;
+                  responseTurnState ??= extractTurnState(eventRecord, options.turnStateHeaderName);
+                  const nextResponseId = extractResponseId(eventRecord);
+                  if (nextResponseId) {
+                    responseId = nextResponseId;
+                  }
 
-                const normalized = projectResponsesEvent(
-                  normalizeResponsesEvent(eventRecord, normalizeEvent),
-                );
+                  updateOutputItemDraft(outputItemDrafts, eventRecord);
+                  const doneItem = extractOutputItemDone(eventRecord);
+                  if (doneItem) {
+                    outputItems.push(mergeOutputItemDraft(doneItem, outputItemDrafts));
+                  }
+                  const projectedEvent = projectResponsesEvent(eventRecord);
+                  if (options.turnStateHeaderName && projectedEvent.type === "response.metadata") {
+                    return;
+                  }
 
-                if (
-                  isPreviousResponseNotFoundError(normalized.record) &&
-                  retryWithoutOptimization()
-                ) {
-                  return;
-                }
+                  const normalized = projectResponsesEvent(
+                    normalizeResponsesEvent(eventRecord, normalizeEvent),
+                  );
 
-                const type = normalized.type;
-                if (forwardedEventCount === 0 && isPreOutputMetadataEvent(type)) {
-                  pendingPreOutputEvents.push(normalized.record);
-                  return;
-                }
-
-                if (!flushPendingPreOutputEvents()) return;
-                if (!enqueueNormalizedEvent(normalized.record)) return;
-
-                if (type === "error") {
-                  canPersistContinuation = false;
-                }
-                if (completionEventTypes.has(type) || type === "error") {
                   if (
-                    useReusableConnection &&
-                    canPersistContinuation &&
-                    responseId &&
-                    connection === ws &&
-                    connection.readyState === WEBSOCKET_OPEN_STATE
+                    isPreviousResponseNotFoundError(normalized.record) &&
+                    retryWithoutOptimization()
                   ) {
-                    storeReusableContinuation({
-                      requestBody: fullRequestBody,
-                      requestUrl,
-                      responseId,
-                      outputItems,
-                      turnState: responseTurnState,
-                    });
+                    return;
                   }
-                  controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-                  cleanup({ closeConnection: type === "error" });
-                  if (type === "error" && useReusableConnection) {
-                    storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+
+                  const type = normalized.type;
+                  if (forwardedEventCount === 0 && isPreOutputMetadataEvent(type)) {
+                    pendingMetadataBytes += encoder.encode(text).byteLength;
+                    if (pendingMetadataBytes > 1024 * 1024)
+                      throw new Error("Responses WebSocket metadata exceeded 1 MiB");
+                    pendingPreOutputEvents.push(normalized.record);
+                    return;
                   }
-                  controller.close();
-                }
-              },
-              catch: (cause) => ({ restoreCause: () => cause }),
-            });
-            const handledOutcome = settleResponsesResult(handled);
-            if (handledOutcome.kind === "value") return;
-            const error = responsesFailureError(handledOutcome);
+
+                  if (!flushPendingPreOutputEvents()) return;
+                  if (!enqueueNormalizedEvent(normalized.record)) return;
+
+                  if (type === "error") {
+                    canPersistContinuation = false;
+                  }
+                  if (completionEventTypes.has(type) || type === "error") {
+                    if (
+                      useReusableConnection &&
+                      canPersistContinuation &&
+                      responseId &&
+                      connection === ws &&
+                      connection.readyState === WEBSOCKET_OPEN_STATE
+                    ) {
+                      storeReusableContinuation({
+                        requestBody: fullRequestBody,
+                        requestUrl,
+                        responseId,
+                        outputItems,
+                        turnState: responseTurnState,
+                      });
+                    }
+                    controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+                    cleanup({ closeConnection: type === "error" });
+                    if (type === "error" && useReusableConnection) {
+                      storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+                    }
+                    controller.close();
+                  }
+                },
+                catch: (cause) => ({ restoreCause: () => cause }),
+              });
+              const handledOutcome = settleResponsesResult(handled);
+              if (handledOutcome.kind === "value") return;
+              const error = responsesFailureError(handledOutcome);
+              canPersistContinuation = false;
+              cleanup({ closeConnection: true });
+              if (useReusableConnection) {
+                storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+              }
+              const signalled = Result.try({
+                try: () => signalResponsesStreamError(controller, error),
+                catch: (cause) => ({ restoreCause: () => cause }),
+              });
+              const signalOutcome = settleResponsesResult(signalled);
+              if (signalOutcome.kind !== "value") {
+                return Promise.reject(responsesFailureError(signalOutcome));
+              }
+              return;
+            })();
+          };
+
+          const onError = (event: Event) => {
+            transportDecision.resolve("websocket");
             canPersistContinuation = false;
             cleanup({ closeConnection: true });
             if (useReusableConnection) {
               storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
             }
-            const signalled = Result.try({
-              try: () => signalResponsesStreamError(controller, error),
-              catch: (cause) => ({ restoreCause: () => cause }),
-            });
-            const signalOutcome = settleResponsesResult(signalled);
-            if (signalOutcome.kind !== "value") {
-              return Promise.reject(responsesFailureError(signalOutcome));
+            signalResponsesStreamError(controller, extractWebSocketError(event));
+          };
+
+          const onClose = (event: Event) => {
+            const closeCode = event instanceof CloseEvent ? event.code : undefined;
+            const retryWithSse =
+              options.mode === "auto" && closeCode === 1009 && !receivedMessage && !signal?.aborted;
+            transportDecision.resolve(retryWithSse ? "sse" : "websocket");
+            canPersistContinuation = false;
+            cleanup({ closeConnection: true });
+            if (retryWithSse) {
+              controller.close();
+              return;
             }
-            return;
-          })();
-        };
+            if (useReusableConnection) {
+              storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+            }
+            const outcome = settleSyncResult(() =>
+              signalResponsesStreamError(
+                controller,
+                new Error(
+                  `WebSocket closed before a terminal response event (code: ${closeCode ?? "unknown"})`,
+                ),
+              ),
+            );
+            if (outcome.kind === "panic") throw outcome.panic;
+          };
 
-        const onError = (event: Event) => {
-          transportDecision.resolve("websocket");
-          canPersistContinuation = false;
-          cleanup({ closeConnection: true });
-          if (useReusableConnection) {
-            storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
-          }
-          signalResponsesStreamError(controller, extractWebSocketError(event));
-        };
+          const onAbort = () => {
+            transportDecision.resolve("websocket");
+            canPersistContinuation = false;
+            cleanup({ closeConnection: true });
+            const outcome = settleSyncResult(() =>
+              signalResponsesStreamError(
+                controller,
+                projectResponsesStreamError(
+                  signal?.reason ?? new DOMException("Aborted", "AbortError"),
+                ),
+              ),
+            );
+            if (outcome.kind === "panic") throw outcome.panic;
+          };
 
-        const onClose = (event: Event) => {
-          const closeCode = event instanceof CloseEvent ? event.code : undefined;
-          const retryWithSse =
-            options.mode === "auto" && closeCode === 1009 && !receivedMessage && !signal?.aborted;
-          transportDecision.resolve(retryWithSse ? "sse" : "websocket");
-          canPersistContinuation = false;
-          cleanup({ closeConnection: true });
-          if (retryWithSse) {
-            controller.close();
-            return;
+          connection.addEventListener("message", onMessage);
+          connection.addEventListener("error", onError);
+          connection.addEventListener("close", onClose);
+
+          if (signal) {
+            if (signal.aborted) {
+              onAbort();
+              return;
+            }
+            signal.addEventListener("abort", onAbort, { once: true });
           }
-          if (useReusableConnection) {
-            storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
-          }
-          const outcome = settleSyncResult(() =>
+
+          const sendOutcome = settleSyncResult(() => sendPayload(websocketPayload));
+          if (sendOutcome.kind !== "value") {
+            transportDecision.resolve("websocket");
+            canPersistContinuation = false;
+            cleanup({ closeConnection: true });
+            if (useReusableConnection) {
+              storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
+            }
             signalResponsesStreamError(
               controller,
-              new Error(
-                `WebSocket closed before a terminal response event (code: ${closeCode ?? "unknown"})`,
-              ),
-            ),
-          );
-          if (outcome.kind === "panic") throw outcome.panic;
-        };
-
-        const onAbort = () => {
-          transportDecision.resolve("websocket");
-          canPersistContinuation = false;
-          cleanup({ closeConnection: true });
-          const outcome = settleSyncResult(() =>
-            signalResponsesStreamError(
-              controller,
-              projectResponsesStreamError(
-                signal?.reason ?? new DOMException("Aborted", "AbortError"),
-              ),
-            ),
-          );
-          if (outcome.kind === "panic") throw outcome.panic;
-        };
-
-        connection.addEventListener("message", onMessage);
-        connection.addEventListener("error", onError);
-        connection.addEventListener("close", onClose);
-
-        if (signal) {
-          if (signal.aborted) {
-            onAbort();
-            return;
+              sendOutcome.kind === "panic"
+                ? sendOutcome.panic
+                : projectResponsesStreamError(sendOutcome.restoreCause()),
+            );
           }
-          signal.addEventListener("abort", onAbort, { once: true });
-        }
-
-        const sendOutcome = settleSyncResult(() => sendPayload(websocketPayload));
-        if (sendOutcome.kind !== "value") {
-          transportDecision.resolve("websocket");
-          canPersistContinuation = false;
-          cleanup({ closeConnection: true });
-          if (useReusableConnection) {
-            storeReusableTurnStateRetry(fullRequestBody, responseTurnState);
-          }
-          signalResponsesStreamError(
-            controller,
-            sendOutcome.kind === "panic"
-              ? sendOutcome.panic
-              : projectResponsesStreamError(sendOutcome.restoreCause()),
-          );
-        }
+        },
+        cancel() {
+          cancelResponse();
+        },
       },
-    });
+      { highWaterMark: 16 * 1024 * 1024, size: (chunk) => chunk?.byteLength ?? 0 },
+    );
 
     const forwardOversizedRequestWithSse = (): Promise<Response> => {
       reportAutoFallback({ reason: "websocket_message_too_big", requestUrl });
@@ -832,13 +885,16 @@ export function createOpenAIResponsesWebSocketFetch(
   return Object.assign(websocketFetch as typeof globalThis.fetch, {
     close() {
       clearIdleCloseTimer();
+      for (const controller of dedicatedConnects)
+        controller.abort(new Error("Responses WebSocket fetch closed"));
+      dedicatedConnects.clear();
       connectingAbortController?.abort(new Error("Responses WebSocket fetch closed"));
       connectingAbortController = null;
       if (connecting) {
         connecting = null;
         connectingKey = null;
       }
-      closeSocket(ws);
+      for (const socket of sockets) closeSocket(socket);
       ws = null;
       connectionHeadersKey = null;
       clearReusableContinuationState();
@@ -1940,6 +1996,14 @@ async function decodeRequestBody(input: FetchInput, init?: FetchInit): Promise<s
   }
 
   return undefined;
+}
+
+function webSocketFrameBytes(event: Event): number {
+  const data: unknown = event instanceof MessageEvent ? event.data : null;
+  if (typeof data === "string") return new TextEncoder().encode(data).byteLength;
+  if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) return data.byteLength;
+  if (data instanceof Blob) return data.size;
+  return 16 * 1024 * 1024;
 }
 
 async function decodeWebSocketData(event: Event): Promise<string | null> {

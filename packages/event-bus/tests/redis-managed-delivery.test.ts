@@ -18,6 +18,7 @@ import {
   type ManagedTerminalMaterial,
 } from "../redis-managed-delivery";
 import {
+  CLAIM_RECOVERABLE_SCRIPT,
   BEGIN_TERMINAL_SCRIPT,
   FINALIZE_TERMINAL_SCRIPT,
   STAGE_TERMINAL_SCRIPT,
@@ -554,6 +555,27 @@ describe("RedisManagedDelivery Lua transitions", () => {
     } finally {
       firstRedis.disconnect();
       secondRedis.disconnect();
+      await cleanupFixture(fixture);
+    }
+  });
+
+  it("skips an orphan committed between discovery and resolution", async () => {
+    const fixture = await createFixture("orphan-commit-race");
+    try {
+      const id = await makePending(fixture);
+      const evaluate = fixture.redis.eval.bind(fixture.redis);
+      let intercepted = false;
+      Reflect.set(fixture.redis, "eval", async (...args: Parameters<typeof fixture.redis.eval>) => {
+        const result = await evaluate(...args);
+        if (args[0] === CLAIM_RECOVERABLE_SCRIPT && !intercepted) {
+          intercepted = true;
+          const lease = await beginFreshInvocation(fixture, id);
+          expect(await fixture.delivery.commit(id, lease)).toEqual({ status: "committed" });
+        }
+        return result;
+      });
+      expect(await fixture.delivery.claimRecoverable()).toEqual({ status: "none" });
+    } finally {
       await cleanupFixture(fixture);
     }
   });
