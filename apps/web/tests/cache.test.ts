@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { IDBFactory, IDBIndex, IDBObjectStore } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBIndex, IDBObjectStore } from "fake-indexeddb";
 import type { CachePatch, CacheScope } from "@stanley2058/lilac-client";
 import type { BootstrapReply } from "@stanley2058/lilac-client-protocol";
-import { WebNativeCache } from "../src/cache";
+import { mergeCachePatches, WebNativeCache } from "../src/cache";
 
 const scope: CacheScope = {
   installationId: "install",
@@ -16,9 +16,9 @@ afterEach(() => {
 });
 function cache(
   factory: IDBFactory | null = new IDBFactory(),
-  options: { maxThreads?: number; maxBytes?: number } = {},
+  options: { maxThreads?: number; maxBytes?: number; draftWriteDelayMs?: number } = {},
 ) {
-  const instance = new WebNativeCache({ indexedDB: factory, ...options });
+  const instance = new WebNativeCache({ indexedDB: factory, draftWriteDelayMs: 0, ...options });
   caches.push(instance);
   return instance;
 }
@@ -89,6 +89,38 @@ describe("WebNativeCache", () => {
     await first.commit(scope, "thread", patch(2));
     expect(puts.mock.calls).toHaveLength(2);
     puts.mockRestore();
+  });
+
+  test("streamed patches that arrive during a write share the next transaction", async () => {
+    const factory = new IDBFactory();
+    const first = cache(factory);
+    await first.commit(scope, "thread", patch());
+    const transactions = spyOn(IDBDatabase.prototype, "transaction");
+    const writes = [2, 3, 4, 5].map((revision) =>
+      first.commit(scope, "thread", patch(revision, `delta ${revision}`)),
+    );
+    await Promise.all(writes);
+    // The first delta writes at once; the other three wait and land together.
+    expect(transactions).toHaveBeenCalledTimes(2);
+    transactions.mockRestore();
+    first.close();
+    const reopened = await cache(factory).read(scope, "thread");
+    expect(reopened?.checkpoint.projectionRevision).toBe(5);
+    expect(reopened?.slots[0]?.slot).toMatchObject({
+      messages: [{ parts: [{ text: "delta 5" }] }],
+    });
+  });
+
+  test("removing a thread drops its writes that have not started", async () => {
+    const factory = new IDBFactory();
+    const first = cache(factory);
+    await first.commit(scope, "thread", patch());
+    const running = first.commit(scope, "thread", patch(2));
+    const queued = first.commit(scope, "thread", patch(3));
+    await first.remove(scope, "thread");
+    await Promise.all([running, queued]);
+    first.close();
+    expect(await cache(factory).read(scope, "thread")).toBeUndefined();
   });
 
   test("LRU eviction never stores an incomplete incremental checkpoint", async () => {
@@ -419,4 +451,71 @@ test("in-memory drafts are capped per principal when IndexedDB is unavailable", 
   await first.saveDraft(scope, "draft:mine", { text: "Mine", skillIds: [] });
   await first.saveDraft(other, "draft:theirs", { text: "Theirs", skillIds: [] });
   expect((await first.readDraft(scope, "draft:mine")).text).toBe("Mine");
+});
+
+test("typing writes one draft row after the pause, and reads see every keystroke before it", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory, { draftWriteDelayMs: 60_000 });
+  const put = spyOn(IDBObjectStore.prototype, "put");
+  const saved: Promise<void>[] = [];
+  for (const text of ["H", "He", "Hel", "Hello"])
+    saved.push(first.saveDraft(scope, "thread", { text, skillIds: [] }));
+  expect((await first.readDraft(scope, "thread")).text).toBe("Hello");
+  expect(put).not.toHaveBeenCalled();
+  await first.flushDrafts();
+  await Promise.all(saved);
+  expect(
+    put.mock.calls.filter(([row]) => (row as { text?: string }).text !== undefined),
+  ).toHaveLength(1);
+  put.mockRestore();
+  first.close();
+  expect((await cache(factory).readDraft(scope, "thread")).text).toBe("Hello");
+});
+
+test("clearing a draft before its write lands leaves no row behind", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory, { draftWriteDelayMs: 60_000 });
+  void first.saveDraft(scope, "draft:local", { text: "Unsent", skillIds: [] });
+  expect((await first.listLocalDrafts(scope)).map((entry) => entry.threadId)).toEqual([
+    "draft:local",
+  ]);
+  void first.saveDraft(scope, "draft:local", { text: "", skillIds: [] });
+  expect(await first.listLocalDrafts(scope)).toEqual([]);
+  await first.flushDrafts();
+  expect(await draftRowKeys(factory)).toEqual([]);
+});
+
+test("merged patches match applying both in order", () => {
+  const slot = (slotId: string, revision: number) => ({
+    revision,
+    slot: { kind: "deferred" as const, slotId, position: revision, endPosition: revision + 1 },
+  });
+  const checkpoint = (projectionRevision: number) => ({
+    protocolVersion: 1 as const,
+    historyGeneration: 0,
+    projectionRevision,
+    cursor: `cursor_${projectionRevision}`,
+  });
+  const first = { checkpoint: checkpoint(1), replace: false, put: [slot("a", 1)], remove: ["b"] };
+  const next = {
+    checkpoint: checkpoint(2),
+    replace: false,
+    put: [slot("b", 2)],
+    remove: ["a", "c"],
+  };
+  expect(mergeCachePatches(first, next)).toEqual({
+    checkpoint: checkpoint(2),
+    replace: false,
+    put: [slot("b", 2)],
+    remove: ["a", "c"],
+  });
+  const replaced = { ...first, replace: true };
+  expect(mergeCachePatches(replaced, next)).toEqual({
+    checkpoint: checkpoint(2),
+    replace: true,
+    put: [slot("b", 2)],
+    remove: [],
+  });
+  const reset = { ...next, replace: true };
+  expect(mergeCachePatches(first, reset)).toBe(reset);
 });
