@@ -188,3 +188,13 @@ test("background controller defects reach the owned UI supervisor unchanged", as
   expect(await failed.promise).toBe(panic);
   owned.dispose();
 });
+
+test("draft updates retain the history revision", () => {
+  const { controller } = controllerFixture();
+  const historyVersion = controller.state.historyVersion;
+  controller.update({ draft: "typing" });
+  expect(controller.state.historyVersion).toBe(historyVersion);
+  controller.update({ slotIds: [] });
+  expect(controller.state.historyVersion).toBe(historyVersion + 1);
+  controller.dispose();
+});

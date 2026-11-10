@@ -6,7 +6,9 @@ type Mode = "build" | "compose-build";
 
 function parseMode(value: string | undefined): Mode {
   if (value === "build" || value === "compose-build") return value;
-  throw new Error("Usage: bun scripts/docker-build.ts <build|compose-build> [docker args...] [--dry-run]");
+  throw new Error(
+    "Usage: bun scripts/docker-build.ts <build|compose-build> [docker args...] [--dry-run]",
+  );
 }
 
 function formatEnvPreview(env: Record<string, string>): string {

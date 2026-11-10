@@ -164,3 +164,19 @@ describe("native installer", () => {
     expect(changed.getIn(["services", "lilac", "ports", 1])).toBeUndefined();
   });
 });
+
+it("configures web access from the existing-install menu", async () => {
+  const { configureExisting } = await import("../src/wizard");
+  const setup = fixture([
+    "native",
+    "local",
+    "http://localhost:8789",
+    "owner",
+    "fixture-password",
+    "review",
+  ]);
+  await configureExisting(setup.prompt, setup.draft);
+  expect(setup.draft.get(["surface", "native", "enabled"])).toBe(true);
+  expect(setup.draft.secrets.LILAC_NATIVE_LOCAL_PASSWORD_HASH).toBeDefined();
+  expect(setup.pending).toEqual([]);
+});

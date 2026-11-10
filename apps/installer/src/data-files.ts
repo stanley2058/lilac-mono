@@ -32,6 +32,8 @@ const ownTree = async (directory) => {
     await fs.chown(filename, 1000, 1000);
   }
 };
+const staged = [];
+let committed = false;
 const run = async () => {
   if (request.action === "read") {
     const content = await fs.readFile(target(request.relativePath), "utf8");
@@ -40,7 +42,6 @@ const run = async () => {
   }
   if (request.action !== "write" || !Array.isArray(request.files)) throw new Error("Invalid data operation");
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
-  const previousOwner = (await fs.stat(root)).uid;
   await fs.mkdir(path.join(root, "secret"), { recursive: true, mode: 0o700 });
   await fs.mkdir(path.join(root, "workspace"), { recursive: true, mode: 0o700 });
   await fs.chmod(root, 0o700);
@@ -55,14 +56,38 @@ const run = async () => {
       await fs.chown(parent, 1000, 1000);
     }
     const temporary = filename + "." + crypto.randomUUID() + ".tmp";
+    const previous = await fs.readFile(filename).catch((error) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    const mode = previous === undefined ? undefined : (await fs.stat(filename)).mode & 0o777;
+    staged.push({ filename, temporary, previous, mode, published: false });
     await fs.writeFile(temporary, file.content, { mode: file.mode ?? 0o600 });
     await fs.chmod(temporary, file.mode ?? 0o600);
     await fs.chown(temporary, 1000, 1000);
-    await fs.rename(temporary, filename);
   }
-  if (previousOwner !== 1000) await ownTree(root);
+  await ownTree(root);
+  for (const file of staged) {
+    await fs.rename(file.temporary, file.filename);
+    file.published = true;
+  }
+  committed = true;
 };
-await run().catch((failure) => {
+const restorePrevious = async (file) => {
+  await fs.writeFile(file.temporary, file.previous, { mode: file.mode });
+  await fs.chmod(file.temporary, file.mode);
+  await fs.chown(file.temporary, 1000, 1000);
+  await fs.rename(file.temporary, file.filename);
+};
+const rollback = async () => {
+  for (const file of staged.toReversed()) {
+    if (file.published && file.previous !== undefined) await restorePrevious(file);
+    if (file.published && file.previous === undefined) await fs.rm(file.filename, { force: true });
+    await fs.rm(file.temporary, { force: true });
+  }
+};
+await run().catch(async (failure) => {
+  if (!committed) await rollback();
   if (request.action === "read" && failure?.code === "ENOENT") {
     process.exitCode = 44;
     return;

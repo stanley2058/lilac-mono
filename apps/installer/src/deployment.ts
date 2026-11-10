@@ -558,12 +558,16 @@ export async function writeInstallation(
     temporary: `${file.filename}.${crypto.randomUUID()}.tmp`,
   }));
   const temporaryFiles: string[] = [];
+  const unusedBackups = new Set<string>();
+  const committed: { filename: string; backup?: string }[] = [];
+  let installed = false;
   const writeFailure = () =>
     new InstallerDeploymentFailed({
       message:
         "Could not write installation files. Check directory permissions and free disk space, then rerun setup.",
     });
   let cleanupResult: Result<void, InstallerDeploymentFailed> = Result.ok(undefined);
+  let rollbackResult: Result<void, InstallerDeploymentFailed> = Result.ok(undefined);
   const installation = await withInstallerCleanup(
     () =>
       Result.gen(async function* () {
@@ -603,6 +607,33 @@ export async function writeInstallation(
           }),
         );
         yield* Result.await(
+          Result.tryPromise({
+            try: async () => {
+              for (const file of staged) {
+                const backup = `${file.filename}.${crypto.randomUUID()}.bak`;
+                unusedBackups.add(backup);
+                const previous = await Result.tryPromise({
+                  try: () => copyFile(file.filename, backup),
+                  catch: (cause) => {
+                    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
+                      return "missing" as const;
+                    return "failed" as const;
+                  },
+                });
+                const state = previous.match({ ok: () => "saved" as const, err: (error) => error });
+                if (state === "failed") throw new Error("Could not back up installation file");
+                committed.push({
+                  filename: file.filename,
+                  backup: state === "saved" ? backup : undefined,
+                });
+                unusedBackups.delete(backup);
+                await rename(file.temporary, file.filename);
+              }
+            },
+            catch: writeFailure,
+          }),
+        );
+        yield* Result.await(
           writeData(
             path.join(options.root, "data"),
             [
@@ -612,19 +643,35 @@ export async function writeInstallation(
             options.image,
           ),
         );
-        yield* Result.await(
-          Result.tryPromise({
-            try: async () => {
-              for (const file of staged) await rename(file.temporary, file.filename);
-            },
-            catch: writeFailure,
-          }),
-        );
+        installed = true;
         return Result.ok(undefined);
       }),
     async () => {
+      const restored = [];
+      // After a successful install the backups are leftovers, so their removal failures are cleanup
+      // errors rather than a request to restore them.
+      for (const file of installed ? committed : []) {
+        if (file.backup) unusedBackups.add(file.backup);
+      }
+      for (const file of installed ? [] : committed.toReversed()) {
+        const result = await Result.tryPromise({
+          try: async () => {
+            if (file.backup) {
+              await rename(file.backup, file.filename);
+              return;
+            }
+            await rm(file.filename, { force: true });
+          },
+          catch: () =>
+            new InstallerDeploymentFailed({
+              message:
+                "Could not restore installation files. Restore the saved .bak files before rerunning setup.",
+            }),
+        });
+        restored.push(result);
+      }
       const removed = await Promise.all(
-        temporaryFiles.map((temporary) =>
+        [...temporaryFiles, ...unusedBackups].map((temporary) =>
           Result.tryPromise({
             try: () => rm(temporary, { force: true }),
             catch: () =>
@@ -635,10 +682,11 @@ export async function writeInstallation(
           }),
         ),
       );
+      rollbackResult = Result.all(restored).map(() => undefined);
       cleanupResult = Result.all(removed).map(() => undefined);
     },
   );
-  return installation.andThen(() => cleanupResult);
+  return rollbackResult.andThen(() => installation).andThen(() => cleanupResult);
 }
 
 export function composeArguments(root: string, deployment: Document) {

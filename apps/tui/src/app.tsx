@@ -4,6 +4,7 @@ import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } fro
 import {
   createEffect,
   createMemo,
+  untrack,
   createSignal,
   onCleanup,
   onMount,
@@ -78,12 +79,15 @@ export function TuiApp(props: {
     void state().version;
     return menuHidden() ? [] : controller.completions();
   });
+  const history = createMemo(() => state().historyVersion);
+  const queue = createMemo(() => state().queue);
   const content = createMemo(() => {
-    const snapshot = state();
+    history();
+    const snapshot = untrack(state);
     if (view() === "help") return help;
     if (view() === "queue")
       return (
-        snapshot.queue
+        queue()
           .map((item, index) => `${index + 1}. [${item.state}] ${item.text}`)
           .join("\n\n") || "Queue is empty."
       );

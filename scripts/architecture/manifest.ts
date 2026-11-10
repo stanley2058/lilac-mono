@@ -52,8 +52,6 @@ export interface BlobStorageArchitecturePolicy {
   readonly adapterFactoryOwners: readonly PackageModuleIdentity[];
   readonly closeOwnerModules: readonly PackageModuleIdentity[];
   readonly materializationModules: readonly PackageModuleIdentity[];
-  readonly migrationEntrypoint: string;
-  readonly migrationModules: readonly PackageModuleIdentity[];
   readonly allowedCoreBlobColumns: readonly string[];
 }
 
@@ -384,12 +382,11 @@ export const BLOB_STORAGE_ARCHITECTURE_POLICY = {
   adapterFactoryExports: ["createLocalBlobStore", "createS3BlobStore"],
   adapterFactoryOwners: [
     { workspace: "apps/core", module: "src/runtime/create-core-blob-store" },
-    { workspace: "apps/core", module: "scripts/blob-migration-target" },
+    { workspace: "apps/core", module: "scripts/blob-benchmark-target" },
   ],
   closeOwnerModules: [
     { workspace: "apps/core", module: "src/runtime/main" },
     { workspace: "apps/core", module: "scripts/bench-blob-storage" },
-    { workspace: "apps/core", module: "scripts/migrate-blob-storage" },
   ],
   materializationModules: [
     {
@@ -421,30 +418,8 @@ export const BLOB_STORAGE_ARCHITECTURE_POLICY = {
       workspace: "apps/core",
       module: "src/transcript/stored-message-materialization",
     },
-    { workspace: "apps/core", module: "scripts/blob-migration-target" },
+    { workspace: "apps/core", module: "scripts/blob-benchmark-target" },
     { workspace: "apps/core", module: "scripts/bench-blob-storage" },
-    {
-      workspace: "apps/core",
-      module: "scripts/legacy-workflow-blob-migration",
-    },
-  ],
-  migrationEntrypoint: "apps/core/scripts/migrate-blob-storage",
-  migrationModules: [
-    { workspace: "apps/core", module: "scripts/migrate-blob-storage" },
-    { workspace: "apps/core", module: "scripts/blob-migration-target" },
-    {
-      workspace: "apps/core",
-      module: "scripts/legacy-graceful-restart-blob-migration",
-    },
-    {
-      workspace: "apps/core",
-      module: "scripts/legacy-transcript-blob-migration",
-    },
-    { workspace: "apps/core", module: "scripts/legacy-transient-blob-state" },
-    {
-      workspace: "apps/core",
-      module: "scripts/legacy-workflow-blob-migration",
-    },
   ],
   allowedCoreBlobColumns: ["embedding"],
 } as const satisfies BlobStorageArchitecturePolicy;
@@ -618,16 +593,6 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         module: "src/runtime/create-core-blob-store.ts",
         exportName: "createCoreBlobStore",
       },
-      {
-        module: "scripts/legacy-workflow-blob-migration.ts",
-        exportName: "inspectLegacyWorkflowBlobMigration",
-      },
-      ...["preflightLegacyGracefulRestartMigration", "commitLegacyGracefulRestartMigration"].map(
-        (exportName) => ({
-          module: "scripts/legacy-graceful-restart-blob-migration.ts",
-          exportName,
-        }),
-      ),
       ...[
         "createCoreRequestDeliveryAdmission.validateAndBuildWork",
         "createLilacBusRequestDeliveryPublisher.acquire",
@@ -1478,78 +1443,13 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         },
         category: "persistence" as const,
       })),
-      ...[
-        "decodeSerialized",
-        "inspectBinaryData",
-        "inspectToolResult",
-        "inspectLegacyMessages",
-        "inspectTranscriptRow",
-        "findDataUrl",
-        "inspectProjectionRow",
-        "canonicalizeJson",
-        "inspectLineageRow",
-        "preflightUnsafe",
-        "decodeBinaryPayload",
-        "migrateToolOutput",
-        "migrateMessages",
-        "rewriteProjectionDigests",
-        "stageMigrationArtifacts",
-      ].map((exportName) => ({
-        identity: {
-          module: "scripts/legacy-transcript-blob-migration.ts",
-          exportName,
-        },
-        category: "persistence" as const,
-      })),
       {
         identity: {
-          module: "scripts/blob-migration-target.ts",
+          module: "scripts/blob-benchmark-target.ts",
           exportName: "decodeCoreConfig",
         },
         category: "persistence",
       },
-      {
-        identity: {
-          module: "scripts/legacy-graceful-restart-blob-migration.ts",
-          exportName: "decodeFormerGracefulRestartSnapshot",
-        },
-        category: "persistence",
-      },
-      {
-        identity: {
-          module: "scripts/legacy-graceful-restart-blob-migration.ts",
-          exportName: "preflightUnsafe",
-        },
-        category: "persistence",
-      },
-      {
-        identity: {
-          module: "scripts/legacy-graceful-restart-blob-migration.ts",
-          exportName: "decodeGracefulRestartMigrationRow",
-        },
-        category: "persistence",
-      },
-      ...["decodeLimits", "isWorkflowArtifactId"].map((exportName) => ({
-        identity: {
-          module: "scripts/legacy-workflow-blob-migration.ts",
-          exportName,
-        },
-        category: "persistence" as const,
-      })),
-      ...[
-        ["scripts/legacy-workflow-blob-migration.ts", "capturedFailure"],
-        ["scripts/legacy-workflow-blob-migration.ts", "inspectLegacyDirectory"],
-        ["scripts/legacy-workflow-blob-migration.ts", "readLegacyArtifact"],
-        ["scripts/legacy-workflow-blob-migration.ts", "blobErrorCode"],
-        ["scripts/legacy-workflow-blob-migration.ts", "removeLegacyDirectory"],
-        ["scripts/migrate-blob-storage.ts", "classifyCapturedOperationFailure"],
-        ["scripts/migrate-blob-storage.ts", "captureOperation"],
-        ["scripts/legacy-transient-blob-state.ts", "inspectRoot.catch@1"],
-        ["scripts/legacy-transient-blob-state.ts", "inspectRoot.catch@2"],
-      ].map(([module, exportName]) => ({
-        identity: { module: module!, exportName: exportName! },
-        category: "projection" as const,
-      })),
       {
         identity: {
           module: "src/surface/bridge/request-delivery/core-integration.ts",
@@ -3013,14 +2913,6 @@ const CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC = {
   provenance: ["current", "migrated", "missing-defaulted"],
 } as const satisfies PersistedCodecRegistration;
 
-const CORE_LEGACY_WORKFLOW_BLOB_MIGRATION_PERSISTED_CONSUMER = {
-  identity: {
-    module: "scripts/legacy-workflow-blob-migration.ts",
-    exportName: "inspectLegacyWorkflowBlobMigration",
-  },
-  codecs: [CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC.identity],
-} as const satisfies PersistedStoreConsumerRegistration;
-
 const CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC = {
   identity: {
     module: "src/surface/bridge/bus-agent-runner/anthropic-fallback-cache-codec.ts",
@@ -3252,28 +3144,6 @@ const CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS = [
   },
 ] as const satisfies readonly PersistedStoreConsumerRegistration[];
 
-const CORE_GRACEFUL_RESTART_PERSISTED_CODEC = {
-  identity: {
-    module: "src/migration/frozen-graceful-restart-store.ts",
-    exportName: "decodeGracefulRestartSnapshot",
-  },
-  inputParameter: 0,
-  fixtureCatalog: {
-    module: "src/migration/frozen-graceful-restart-store.ts",
-    exportName: "gracefulRestartSnapshotCodecCases",
-  },
-  provenance: ["current", "missing-defaulted"],
-  legacyOutcome: "rejected",
-} as const satisfies PersistedCodecRegistration;
-
-const CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER = {
-  identity: {
-    module: "scripts/legacy-graceful-restart-blob-migration.ts",
-    exportName: "classifyPersistedSnapshot",
-  },
-  codecs: [CORE_GRACEFUL_RESTART_PERSISTED_CODEC.identity],
-} as const satisfies PersistedStoreConsumerRegistration;
-
 const UTILS_SQLITE_TRANSACTION_ADAPTER_IDENTITY = {
   package: "@stanley2058/lilac-utils",
   module: "persistence.ts",
@@ -3361,10 +3231,6 @@ const CORE_SQLITE_TRANSACTION_CONSUMERS = [
       exportName,
     }),
   ),
-  {
-    module: "scripts/legacy-graceful-restart-blob-migration.ts",
-    exportName: "commitLegacyGracefulRestartMigration",
-  },
 ].map(
   (identity): SqliteTransactionConsumerRegistration => ({
     identity,
@@ -3532,17 +3398,12 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                 { include: "src/transcript/transcript-store.ts" },
                 { include: CORE_CLAUDE_ATTEMPT_PERSISTED_CONSUMER.identity.module },
                 { include: "src/surface/bridge/agent-run-journal/index.ts" },
-                { include: "src/migration/frozen-graceful-restart-store.ts" },
                 {
                   include: "src/workflow/workflow-artifact-persistence-codec.ts",
                 },
                 { include: "src/workflow/workflow-persistence-codec.ts" },
                 { include: "src/workflow/workflow-artifact-store.ts" },
                 { include: "src/workflow/durable-workflow-store.ts" },
-                {
-                  include: "scripts/legacy-graceful-restart-blob-migration.ts",
-                },
-                { include: "scripts/legacy-workflow-blob-migration.ts" },
                 {
                   include: CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC.identity.module,
                 },
@@ -3575,7 +3436,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               },
               { include: "src/transcript/transcript-persistence-codec.ts" },
               { include: "src/surface/bridge/agent-run-journal/index.ts" },
-              { include: "src/migration/frozen-graceful-restart-store.ts" },
               {
                 include: "src/workflow/workflow-artifact-persistence-codec.ts",
               },
@@ -3606,7 +3466,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             { include: "src/conversation/thread-store.ts" },
             { include: "src/question/question-store.ts" },
             { include: "src/jobs/job-store.ts" },
-            { include: "scripts/legacy-graceful-restart-blob-migration.ts" },
             { include: "src/surface/bridge/agent-run-journal/index.ts" },
             { include: "src/surface/bridge/request-delivery/sqlite-store.ts" },
             { include: "src/transcript/transcript-store.ts" },
@@ -3646,7 +3505,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                 CORE_AGENT_RUN_OPENED_PERSISTED_CODEC,
                 CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC,
                 CORE_AGENT_RUN_TERMINAL_PERSISTED_CODEC,
-                CORE_GRACEFUL_RESTART_PERSISTED_CODEC,
                 CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC,
                 CORE_WORKFLOW_ROW_PERSISTED_CODEC,
                 CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CODEC,
@@ -3670,9 +3528,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                   CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER,
                   CORE_AGENT_RUN_PREVIOUS_CHECKPOINT_PERSISTED_CONSUMER,
                   ...CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS,
-                  CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER,
                   CORE_WORKFLOW_ARTIFACT_PERSISTED_CONSUMER,
-                  CORE_LEGACY_WORKFLOW_BLOB_MIGRATION_PERSISTED_CONSUMER,
                   CORE_ANTHROPIC_FALLBACK_CACHE_PERSISTED_CONSUMER,
                   ...CORE_WORKFLOW_ROW_PERSISTED_CONSUMERS,
                 ]
@@ -4240,10 +4096,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               category: "projection" as const,
             })),
             {
-              identity: CORE_GRACEFUL_RESTART_PERSISTED_CODEC.identity,
-              category: "persistence",
-            },
-            {
               identity: CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC.identity,
               category: "persistence",
             },
@@ -4454,14 +4306,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             },
             {
               identity: {
-                module: "src/migration/frozen-graceful-restart-store.ts",
-                exportName: "isOpaqueSuperJsonValue",
-              },
-              reason:
-                "Checks only whether an opaque restart value has a SuperJSON-compatible outer JavaScript type before capability validation.",
-            },
-            {
-              identity: {
                 module: "src/mcp/error-format.ts",
                 exportName: "safeMcpErrorText",
               },
@@ -4542,22 +4386,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               reason:
                 "Checks one primitive SQLite field capability before constructing a typed request-delivery record.",
             })),
-            {
-              identity: {
-                module: "scripts/legacy-transcript-blob-migration.ts",
-                exportName: "isDecodeFailure",
-              },
-              reason:
-                "Checks the exact migration-owned decode-failure discriminant before legacy blob inspection continues.",
-            },
-            {
-              identity: {
-                module: "scripts/legacy-graceful-restart-blob-migration.ts",
-                exportName: "isFormerOpaqueSuperJsonValue",
-              },
-              reason:
-                "Checks only whether a former restart value has a SuperJSON-compatible outer JavaScript type before migration validation.",
-            },
           ]
         : []),
       ...(INTEGRATED_CAPABILITY_PREDICATES.get(root) ?? []),
@@ -5096,8 +4924,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER.identity,
             CORE_AGENT_RUN_PREVIOUS_CHECKPOINT_PERSISTED_CONSUMER.identity,
             ...CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS.map(({ identity }) => identity),
-            CORE_GRACEFUL_RESTART_PERSISTED_CODEC.identity,
-            CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER.identity,
             CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC.identity,
             CORE_WORKFLOW_ROW_PERSISTED_CODEC.identity,
             CORE_WORKFLOW_ARTIFACT_PERSISTED_CONSUMER.identity,
@@ -5360,11 +5186,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               kind: "local" as const,
               module: "src/agent/claude-composition.ts",
               exportName: "formatClaudeLifecycleLogFields",
-            },
-            {
-              kind: "local" as const,
-              module: "scripts/migrate-blob-storage.ts",
-              exportName: "formatBlobStorageMigrationFailureForLog",
             },
           ]
         : []),
@@ -5693,7 +5514,6 @@ export function assertBlobStorageArchitecturePolicyIntegrity(
     policy.adapterFactoryOwners,
     policy.closeOwnerModules,
     policy.materializationModules,
-    policy.migrationModules,
   ]) {
     const seen = new Set<string>();
     for (const registration of registrations) {
@@ -5715,7 +5535,6 @@ export function assertBlobStorageArchitecturePolicyIntegrity(
   }
   requireUniqueValues(policy.adapterFactoryExports, "blob storage adapter factory exports");
   requireUniqueValues(policy.allowedCoreBlobColumns, "allowed Core SQLite BLOB columns");
-  requireNonempty(policy.migrationEntrypoint, "blob storage migration entrypoint");
 }
 
 export function assertArchitectureManifestIntegrity(manifest: ArchitectureManifest): void {

@@ -37,6 +37,7 @@ export type TuiState = {
   slotIds: readonly string[];
   slotId?: string;
   version: number;
+  historyVersion: number;
   submitting: boolean;
   uncertainId?: string;
 };
@@ -51,6 +52,7 @@ export class TuiController {
     queue: [],
     slotIds: [],
     version: 0,
+    historyVersion: 0,
     submitting: false,
   };
   private listeners = new Set<() => void>();
@@ -84,7 +86,14 @@ export class TuiController {
   }
   update(change: Partial<TuiState>): void {
     if (this.lifetime.signal.aborted) return;
-    this.state = { ...this.state, ...change, version: this.state.version + 1 };
+    this.state = {
+      ...this.state,
+      ...change,
+      version: this.state.version + 1,
+      historyVersion:
+        this.state.historyVersion +
+        Number("slotIds" in change || "slotId" in change || "selected" in change),
+    };
     for (const listener of this.listeners) listener();
   }
   async attempt<T>(operation: () => Promise<T>): Promise<T | undefined> {

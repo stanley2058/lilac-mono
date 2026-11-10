@@ -287,7 +287,9 @@ adapter-neutral references. Tool-result encryption and domain retention metadata
 domains.
 
 This transition is offline and fail-closed. Runtime startup does not read or rewrite legacy blob state.
-Before starting the new runtime, stop Core, back up its data, and run:
+The legacy migration tools were removed after commit `f2c90667`, the last commit containing them.
+Older deployments must first check out `f2c90667`, stop Core, back up its data, and run the command
+below from that checkout. Complete the migration before upgrading to the current release:
 
 ```sh
 bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data
@@ -434,8 +436,7 @@ from accepted work.
 
 The former runtime graceful-restart snapshot subsystem is removed. Runtime startup does not open,
 import, migrate, or delete `graceful-restart.db`; existing files remain inert. The offline unified blob
-migration retains its frozen decoder only to classify supported historical snapshots during that explicit
-operator command.
+migration at `f2c90667` retains its frozen decoder only for that operator command.
 
 Before the first upgrade, stop and drain Core and back up `request-delivery.db` when avoiding duplicate
 effects matters. No graceful snapshot is imported. Work accepted by an older build may restart from its

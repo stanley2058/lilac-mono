@@ -1345,13 +1345,6 @@ export function findBlobStorageSeamViolationsInSourceFile(
 ): SyntacticFinding<BlobStorageSeamKind>[] {
   if (!manifest.workspaces.some(({ name }) => name === blobPolicy.storageWorkspace)) return [];
   const identity = sourceIdentity(filePath);
-  const normalizedFile = normalizeFilePath(filePath).replace(/\.(?:[cm]?[jt]sx?)$/iu, "");
-  const migrationEntrypoint = normalizeFilePath(blobPolicy.migrationEntrypoint);
-  const isMigrationEntrypoint =
-    normalizedFile === migrationEntrypoint || normalizedFile.endsWith(`/${migrationEntrypoint}`);
-  const isMigrationModule =
-    isMigrationEntrypoint ||
-    registeredPackageModule(identity.workspace, identity.module, blobPolicy.migrationModules);
   const findings: SyntacticFinding<BlobStorageSeamKind>[] = [];
   const add = (node: ts.Node, kind: BlobStorageSeamKind, message: string): void => {
     findings.push(createFinding(sourceFile, filePath, node, kind, message));
@@ -1426,13 +1419,12 @@ export function findBlobStorageSeamViolationsInSourceFile(
           identity.workspace,
           identity.module,
           blobPolicy.adapterFactoryOwners,
-        ) &&
-        !isMigrationEntrypoint
+        )
       ) {
         add(
           statement,
           "adapter-construction-import",
-          "Construct blob adapters only in the registered Core composition module or offline migration task",
+          "Construct blob adapters only in registered composition or benchmark modules",
         );
       }
     }
@@ -1440,12 +1432,8 @@ export function findBlobStorageSeamViolationsInSourceFile(
     const legacyNames = names.filter((name) => name.startsWith("decodeLegacy"));
     const legacyModule =
       /legacy/iu.test(specifier) && /blob|attachment|artifact|binary|media/iu.test(specifier);
-    if (!isMigrationModule && (legacyNames.length > 0 || legacyModule)) {
-      add(
-        statement,
-        "legacy-blob-decoder-import",
-        "Legacy blob decoders may be imported only by apps/core/scripts/migrate-blob-storage.ts",
-      );
+    if (legacyNames.length > 0 || legacyModule) {
+      add(statement, "legacy-blob-decoder-import", "Legacy blob decoders are no longer supported");
     }
   }
 
@@ -1522,7 +1510,6 @@ export function findBlobStorageSeamViolationsInSourceFile(
 
     if (
       identity.workspace === blobPolicy.coreWorkspace &&
-      !isMigrationModule &&
       (ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
       /\b(?:ADD\s+COLUMN|ALTER\s+TABLE|CREATE\s+TABLE)\b/iu.test(node.text)
     ) {
@@ -1572,13 +1559,12 @@ export function findBlobStorageSeamViolationsInSourceFile(
           identity.workspace,
           identity.module,
           blobPolicy.adapterFactoryOwners,
-        ) &&
-        !isMigrationEntrypoint
+        )
       ) {
         add(
           node,
           "adapter-construction-import",
-          "Construct blob adapters only in the registered Core composition module or offline migration task",
+          "Construct blob adapters only in registered composition or benchmark modules",
         );
       }
       if (called && (called[1] === "close" || called[1] === "open")) {

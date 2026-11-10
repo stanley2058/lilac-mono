@@ -47,6 +47,11 @@ class Docker implements RunnerDocker {
   dead = new Set<string>();
   occupied = new Set<number>();
   execution: (() => Promise<ResultType<RunnerReply, GatewayFailure>>) | undefined;
+  async inspect(id: string) {
+    return this.failList
+      ? Result.err(failure("unavailable", "Docker unavailable"))
+      : Result.ok(this.containers.find((item) => item.id === id));
+  }
   async list() {
     return this.failList
       ? Result.err(failure("unavailable", "Docker unavailable"))
@@ -379,4 +384,14 @@ test("viewer lookup is session scoped and never provisions or refreshes expiry",
   expect(docker.starts).toBe(1);
   value(await lifecycle.terminate(sessionA));
   expect(value(lifecycle.viewer(sessionA))).toEqual({ status: "absent" });
+});
+
+test("execution inspects only its selected container", async () => {
+  const { lifecycle, docker } = await setup();
+  await lifecycle.provision(sessionA);
+  await lifecycle.provision(sessionB);
+  docker.list = async () => {
+    throw new Error("execution must not enumerate containers");
+  };
+  expect((await lifecycle.execute(sessionA, "print(1)")).isOk()).toBe(true);
 });
