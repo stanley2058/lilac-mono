@@ -3187,6 +3187,20 @@ const CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC = {
   legacyOutcome: "rejected",
 } as const satisfies PersistedCodecRegistration;
 
+const CORE_AGENT_RUN_CHECKPOINT_DELTA_PERSISTED_CODEC = {
+  identity: {
+    module: "src/surface/bridge/agent-run-journal/index.ts",
+    exportName: "decodeAgentRunCheckpointDelta",
+  },
+  inputParameter: 0,
+  fixtureCatalog: {
+    module: "src/surface/bridge/agent-run-journal/index.ts",
+    exportName: "agentRunCheckpointDeltaPayloadCodecCases",
+  },
+  provenance: ["current"],
+  legacyOutcome: "rejected",
+} as const satisfies PersistedCodecRegistration;
+
 const CORE_AGENT_RUN_TERMINAL_PERSISTED_CODEC = {
   identity: {
     module: "src/surface/bridge/agent-run-journal/index.ts",
@@ -3206,10 +3220,7 @@ const CORE_AGENT_RUN_JOURNAL_PERSISTED_CONSUMER = {
     module: "src/surface/bridge/agent-run-journal/index.ts",
     exportName: "SqliteAgentRunJournal.#decodeHead",
   },
-  codecs: [
-    CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC.identity,
-    CORE_AGENT_RUN_TERMINAL_PERSISTED_CODEC.identity,
-  ],
+  codecs: [CORE_AGENT_RUN_TERMINAL_PERSISTED_CODEC.identity],
 } as const satisfies PersistedStoreConsumerRegistration;
 
 const CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER = {
@@ -3220,33 +3231,29 @@ const CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER = {
   codecs: [CORE_AGENT_RUN_OPENED_PERSISTED_CODEC.identity],
 } as const satisfies PersistedStoreConsumerRegistration;
 
-const CORE_AGENT_RUN_PREVIOUS_CHECKPOINT_PERSISTED_CONSUMER = {
+const CORE_AGENT_RUN_CHECKPOINT_CHAIN_PERSISTED_CONSUMER = {
   identity: {
     module: "src/surface/bridge/agent-run-journal/index.ts",
-    exportName: "SqliteAgentRunJournal.#decodePreviousCheckpoint",
+    exportName: "SqliteAgentRunJournal.#decodeCheckpointChain",
   },
-  codecs: [CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC.identity],
+  codecs: [
+    CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC.identity,
+    CORE_AGENT_RUN_CHECKPOINT_DELTA_PERSISTED_CODEC.identity,
+  ],
 } as const satisfies PersistedStoreConsumerRegistration;
 
 const CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS = [
   {
     identity: {
       module: "src/surface/bridge/agent-run-journal/index.ts",
-      exportName: "validatedOpenedPayload",
+      exportName: "openedPayload",
     },
     codecs: [CORE_AGENT_RUN_OPENED_PERSISTED_CODEC.identity],
   },
   {
     identity: {
       module: "src/surface/bridge/agent-run-journal/index.ts",
-      exportName: "validatedCheckpointPayload",
-    },
-    codecs: [CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC.identity],
-  },
-  {
-    identity: {
-      module: "src/surface/bridge/agent-run-journal/index.ts",
-      exportName: "validatedTerminalPayload",
+      exportName: "terminalPayload",
     },
     codecs: [CORE_AGENT_RUN_TERMINAL_PERSISTED_CODEC.identity],
   },
@@ -3645,6 +3652,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                 CORE_RESOURCE_PERSISTED_CODEC,
                 CORE_AGENT_RUN_OPENED_PERSISTED_CODEC,
                 CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC,
+                CORE_AGENT_RUN_CHECKPOINT_DELTA_PERSISTED_CODEC,
                 CORE_AGENT_RUN_TERMINAL_PERSISTED_CODEC,
                 CORE_GRACEFUL_RESTART_PERSISTED_CODEC,
                 CORE_WORKFLOW_ARTIFACT_PERSISTED_CODEC,
@@ -3668,7 +3676,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                   CORE_RESOURCE_PERSISTED_CONSUMER,
                   CORE_AGENT_RUN_JOURNAL_PERSISTED_CONSUMER,
                   CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER,
-                  CORE_AGENT_RUN_PREVIOUS_CHECKPOINT_PERSISTED_CONSUMER,
+                  CORE_AGENT_RUN_CHECKPOINT_CHAIN_PERSISTED_CONSUMER,
                   ...CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS,
                   CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER,
                   CORE_WORKFLOW_ARTIFACT_PERSISTED_CONSUMER,
@@ -5091,10 +5099,11 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             CORE_RESOURCE_PERSISTED_CONSUMER.identity,
             CORE_AGENT_RUN_OPENED_PERSISTED_CODEC.identity,
             CORE_AGENT_RUN_CHECKPOINT_PERSISTED_CODEC.identity,
+            CORE_AGENT_RUN_CHECKPOINT_DELTA_PERSISTED_CODEC.identity,
             CORE_AGENT_RUN_TERMINAL_PERSISTED_CODEC.identity,
             CORE_AGENT_RUN_JOURNAL_PERSISTED_CONSUMER.identity,
             CORE_AGENT_RUN_OPENED_EVENT_PERSISTED_CONSUMER.identity,
-            CORE_AGENT_RUN_PREVIOUS_CHECKPOINT_PERSISTED_CONSUMER.identity,
+            CORE_AGENT_RUN_CHECKPOINT_CHAIN_PERSISTED_CONSUMER.identity,
             ...CORE_AGENT_RUN_JOURNAL_ENCODER_CONSUMERS.map(({ identity }) => identity),
             CORE_GRACEFUL_RESTART_PERSISTED_CODEC.identity,
             CORE_LEGACY_GRACEFUL_RESTART_PERSISTED_CONSUMER.identity,

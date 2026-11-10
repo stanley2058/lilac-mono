@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import {
   corePrimaryLineageV2Schema,
   nativeOutputFrontierSchema,
@@ -20,7 +21,11 @@ import {
   type McpImageCheckpointReference,
 } from "../../../mcp/image-checkpoint";
 
-const JOURNAL_SCHEMA_VERSION = 1 as const;
+const JOURNAL_SCHEMA_VERSION = 2 as const;
+// Schema 1 stored only full checkpoints; its events read as schema 2 snapshots.
+const MIGRATABLE_JOURNAL_SCHEMA_VERSION = 1 as const;
+// A delta chain this long is folded into a fresh snapshot on the next write.
+const MAX_CHECKPOINT_DELTA_CHAIN = 64;
 
 const terminalOutcomeSchema = z.strictObject({
   kind: z.enum([
@@ -57,6 +62,37 @@ export const agentRunCheckpointV1Schema = z
   });
 
 export type AgentRunCheckpointV1 = z.output<typeof agentRunCheckpointV1Schema>;
+
+/** Keeps the first `keep` messages of the preceding checkpoint and appends `append`. */
+const agentRunCheckpointDeltaSchema = z.strictObject({
+  version: z.literal(2),
+  keep: z.number().int().nonnegative(),
+  append: storedMessagesV1Schema,
+  mcpImages: z.array(mcpImageCheckpointReferenceSchema).optional(),
+  corePrimaryLineage: corePrimaryLineageV2Schema.optional(),
+  nativeOutput: nativeOutputFrontierSchema.optional(),
+  loadedCatalogIds: z.array(z.string().min(1)).optional(),
+  questionResultIds: z.array(z.string().min(1)).optional(),
+  currentTurnUserId: z.string().optional(),
+  retainedRequestDeliveries: z.array(retainedDeliverySchema),
+});
+
+type AgentRunCheckpointDelta = z.output<typeof agentRunCheckpointDeltaSchema>;
+
+type CheckpointMetadata = Omit<AgentRunCheckpointV1, "version" | "messages">;
+
+type LatestCheckpointState = {
+  readonly sequence: number;
+  readonly messages: readonly StoredMessageV1[];
+  readonly metadataHash: string;
+  readonly deltasSinceSnapshot: number;
+};
+
+type JournalCheckpointEventRow = {
+  sequence: number;
+  delta: number;
+  payload_json: string;
+};
 
 const openedPayloadSchema = z.strictObject({
   version: z.literal(1),
@@ -330,6 +366,61 @@ function payloadHash(payload: string): string {
   return new Bun.CryptoHasher("sha256").update(payload).digest("hex");
 }
 
+function checkpointMetadata(checkpoint: AgentRunCheckpointV1): CheckpointMetadata {
+  const { version: _version, messages: _messages, ...metadata } = checkpoint;
+  return metadata;
+}
+
+function sharedMessagePrefix(
+  previous: readonly StoredMessageV1[],
+  next: readonly StoredMessageV1[],
+): number {
+  const limit = Math.min(previous.length, next.length);
+  let index = 0;
+  while (index < limit) {
+    const before = previous[index];
+    const after = next[index];
+    if (before !== after && !isDeepStrictEqual(before, after)) break;
+    index += 1;
+  }
+  return index;
+}
+
+export function decodeAgentRunCheckpointDelta(
+  payloadJson: string,
+  runId = "agent-run-checkpoint-delta",
+): ResultType<
+  { readonly value: AgentRunCheckpointDelta; readonly provenance: "current" },
+  AgentRunJournalCodecFailure
+> {
+  return deserialize(runId, "checkpoint", agentRunCheckpointDeltaSchema, payloadJson).map(
+    (value) => ({ value, provenance: "current" as const }),
+  );
+}
+
+function applyCheckpointDelta(
+  runId: string,
+  base: AgentRunCheckpointV1,
+  delta: AgentRunCheckpointDelta,
+): ResultType<AgentRunCheckpointV1, AgentRunJournalCodecFailure> {
+  const { version: _version, keep, append, ...metadata } = delta;
+  const checkpoint: AgentRunCheckpointV1 = {
+    version: 1,
+    messages: [...base.messages.slice(0, keep), ...append],
+    ...metadata,
+  };
+  if (keep > base.messages.length || !validMcpImageCheckpointReferences(checkpoint)) {
+    return Result.err(
+      new AgentRunJournalCodecFailure({
+        runId,
+        field: "checkpoint",
+        message: "Persisted agent run journal checkpoint delta does not fit its base",
+      }),
+    );
+  }
+  return Result.ok(checkpoint);
+}
+
 function handleFromRow(row: JournalHeadStateRow): AgentRunJournalHandle {
   return {
     runId: row.request_delivery_id,
@@ -342,8 +433,8 @@ function handleFromRow(row: JournalHeadStateRow): AgentRunJournalHandle {
 export class SqliteAgentRunJournal implements AgentRunJournal {
   readonly #database: Database;
   readonly #now: () => number;
-  // Hash of each run's latest checkpoint payload, so a write never reads the payload back.
-  readonly #checkpointHashes = new Map<string, string>();
+  // Each run's latest checkpoint as last written, so the next write can append a delta.
+  readonly #latestCheckpoints = new Map<string, LatestCheckpointState>();
 
   constructor(input: { readonly dbPath: string; readonly now?: () => number }) {
     this.#database = new Database(input.dbPath, { create: true, strict: true });
@@ -351,7 +442,10 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     this.#database.run("PRAGMA foreign_keys = ON");
     this.#database.run("PRAGMA journal_mode = WAL");
     Result.try({
-      try: () => this.#createTables(),
+      try: () => {
+        this.#createTables();
+        this.#migrateSchema();
+      },
       catch: () =>
         new AgentRunJournalSqliteFailure({
           operation: "initialize",
@@ -394,6 +488,7 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
         event_kind TEXT NOT NULL CHECK (event_kind IN ('opened', 'checkpoint', 'terminal')),
         payload_json TEXT NOT NULL,
         created_at INTEGER NOT NULL,
+        delta INTEGER NOT NULL DEFAULT 0 CHECK (delta IN (0, 1)),
         PRIMARY KEY (request_delivery_id, sequence),
         FOREIGN KEY (request_delivery_id) REFERENCES request_delivery_records(request_delivery_id)
           ON DELETE CASCADE
@@ -406,6 +501,26 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
   }
 
   /** Reads a head's state without its payload columns, which can hold a whole transcript. */
+  /** Upgrades schema 1 in place: its full checkpoints become snapshots and stay recoverable. */
+  #migrateSchema(): void {
+    const metadata = this.#database
+      .query<{ schema_version: number }, []>(
+        "SELECT schema_version FROM agent_run_wal_metadata WHERE singleton = 1",
+      )
+      .get();
+    if (metadata?.schema_version !== MIGRATABLE_JOURNAL_SCHEMA_VERSION) return;
+    this.#database.transaction(() => {
+      this.#database.run(
+        "ALTER TABLE agent_run_wal_events ADD COLUMN delta INTEGER NOT NULL DEFAULT 0 CHECK (delta IN (0, 1))",
+      );
+      this.#database.run("UPDATE agent_run_wal_heads SET checkpoint_json = NULL");
+      this.#database.run(
+        "UPDATE agent_run_wal_metadata SET schema_version = ? WHERE singleton = 1",
+        [JOURNAL_SCHEMA_VERSION],
+      );
+    })();
+  }
+
   #selectHead(runId: string): JournalHeadStateRow | null {
     return (
       this.#database
@@ -418,18 +533,76 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     );
   }
 
-  /** Compares against the latest checkpoint by hash, falling back to SQLite after a restart. */
-  #isLatestCheckpoint(current: JournalHeadStateRow, payload: string, hash: string): boolean {
-    if (current.checkpoint_sequence === null) return false;
-    const known = this.#checkpointHashes.get(current.request_delivery_id);
-    if (known) return known === hash;
-    return (
-      this.#database
-        .query<{ same: number }, [string, string]>(
-          "SELECT checkpoint_json = ? AS same FROM agent_run_wal_heads WHERE request_delivery_id = ?",
-        )
-        .get(payload, current.request_delivery_id)?.same === 1
-    );
+  /** Returns the run's latest checkpoint, decoding it once when this process has not written it. */
+  #latestCheckpoint(
+    current: JournalHeadStateRow,
+  ): ResultType<LatestCheckpointState | null, AgentRunJournalCodecFailure> {
+    if (current.checkpoint_sequence === null) return Result.ok(null);
+    const known = this.#latestCheckpoints.get(current.request_delivery_id);
+    if (known?.sequence === current.checkpoint_sequence) return Result.ok(known);
+    return this.#decodeCheckpointChain(current).map((chain) => {
+      if (!chain.latest) return null;
+      const state: LatestCheckpointState = {
+        sequence: current.checkpoint_sequence ?? 0,
+        messages: chain.latest.messages,
+        metadataHash: payloadHash(SuperJSON.stringify(checkpointMetadata(chain.latest))),
+        deltasSinceSnapshot: chain.deltasSinceSnapshot,
+      };
+      this.#latestCheckpoints.set(current.request_delivery_id, state);
+      return state;
+    });
+  }
+
+  /** Rebuilds the latest checkpoint and its predecessor from the retained snapshot and deltas. */
+  #decodeCheckpointChain(row: JournalHeadStateRow): ResultType<
+    {
+      readonly latest?: AgentRunCheckpointV1;
+      readonly previous?: AgentRunCheckpointV1;
+      readonly deltasSinceSnapshot: number;
+    },
+    AgentRunJournalCodecFailure
+  > {
+    if (row.checkpoint_sequence === null) return Result.ok({ deltasSinceSnapshot: 0 });
+    const runId = row.request_delivery_id;
+    const events = this.#database
+      .query<JournalCheckpointEventRow, [string]>(
+        `SELECT sequence, delta, payload_json
+         FROM agent_run_wal_events
+         WHERE request_delivery_id = ? AND event_kind = 'checkpoint'
+         ORDER BY sequence`,
+      )
+      .all(runId);
+    if (events[0]?.delta !== 0 || events.at(-1)?.sequence !== row.checkpoint_sequence) {
+      return Result.err(
+        new AgentRunJournalCodecFailure({
+          runId,
+          field: "checkpoint",
+          message: "Persisted agent run journal checkpoints do not start with a snapshot",
+        }),
+      );
+    }
+    let latest: AgentRunCheckpointV1 | undefined;
+    let previous: AgentRunCheckpointV1 | undefined;
+    let deltasSinceSnapshot = 0;
+    for (const event of events) {
+      const base = latest;
+      const decoded =
+        event.delta === 1 && base
+          ? decodeAgentRunCheckpointDelta(event.payload_json, runId).andThen(({ value }) =>
+              applyCheckpointDelta(runId, base, value),
+            )
+          : decodeAgentRunCheckpointPayload(event.payload_json, runId).map(({ value }) => value);
+      const failure = decoded.match({ ok: () => null, err: (error) => error });
+      if (failure) return Result.err(failure);
+      previous = latest;
+      latest = decoded.match({ ok: (value) => value, err: () => undefined });
+      deltasSinceSnapshot = event.delta === 1 ? deltasSinceSnapshot + 1 : 0;
+    }
+    return Result.ok({
+      ...(latest ? { latest } : {}),
+      ...(previous ? { previous } : {}),
+      deltasSinceSnapshot,
+    });
   }
 
   openRun(work: AgentRunJournalOwner): ResultType<AgentRunJournalHandle, AgentRunJournalError> {
@@ -510,11 +683,16 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     );
   }
 
+  /**
+   * Appends the checkpoint as a delta on the latest one when they share a message prefix, or as
+   * a snapshot otherwise. An unchanged checkpoint keeps the handle.
+   */
   writeCheckpoint(
     handle: AgentRunJournalHandle,
     checkpoint: AgentRunCheckpointV1,
   ): ResultType<AgentRunJournalHandle, AgentRunJournalError> {
-    return checkpointPayload(handle.runId, checkpoint).andThen((payload) =>
+    const metadata = checkpointMetadata(checkpoint);
+    return serialize(handle.runId, "checkpoint", metadata).andThen((metadataPayload) =>
       transaction(
         this.#database,
         "write-checkpoint",
@@ -536,8 +714,31 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
               }),
             );
           }
-          const hash = payloadHash(payload);
-          if (this.#isLatestCheckpoint(current, payload, hash)) return Result.ok(handle);
+          const latestResult = this.#latestCheckpoint(current);
+          const latestFailure = latestResult.match({ ok: () => null, err: (error) => error });
+          if (latestFailure) return Result.err(latestFailure);
+          const latest = latestResult.match({ ok: (value) => value, err: () => null });
+          const metadataHash = payloadHash(metadataPayload);
+          const keep = latest ? sharedMessagePrefix(latest.messages, checkpoint.messages) : 0;
+          const unchanged =
+            latest !== null &&
+            keep === latest.messages.length &&
+            keep === checkpoint.messages.length &&
+            latest.metadataHash === metadataHash;
+          if (unchanged) return Result.ok(handle);
+          const appendsDelta =
+            latest !== null && keep > 0 && latest.deltasSinceSnapshot < MAX_CHECKPOINT_DELTA_CHAIN;
+          const payload = appendsDelta
+            ? serialize(handle.runId, "checkpoint", {
+                ...metadata,
+                version: 2,
+                keep,
+                append: checkpoint.messages.slice(keep),
+              } satisfies AgentRunCheckpointDelta)
+            : serialize(handle.runId, "checkpoint", checkpoint);
+          const payloadFailure = payload.match({ ok: () => null, err: (error) => error });
+          if (payloadFailure) return Result.err(payloadFailure);
+          const payloadJson = payload.match({ ok: (value) => value, err: () => "" });
           const sequence = handle.sequence + 1;
           const observedNow = this.#now();
           if (!nonnegativeSafeInteger(observedNow)) {
@@ -552,28 +753,35 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
           const now = Math.max(observedNow, current.updated_at);
           this.#database.run(
             `INSERT INTO agent_run_wal_events (
-               request_delivery_id, sequence, event_kind, payload_json, created_at
-             ) VALUES (?, ?, 'checkpoint', ?, ?)`,
-            [handle.runId, sequence, payload, now],
+               request_delivery_id, sequence, event_kind, payload_json, created_at, delta
+             ) VALUES (?, ?, 'checkpoint', ?, ?, ?)`,
+            [handle.runId, sequence, payloadJson, now, appendsDelta ? 1 : 0],
           );
           this.#database.run(
             `UPDATE agent_run_wal_heads
-             SET latest_sequence = ?, checkpoint_sequence = ?, checkpoint_json = ?, updated_at = ?
+             SET latest_sequence = ?, checkpoint_sequence = ?, checkpoint_json = NULL, updated_at = ?
              WHERE request_delivery_id = ?`,
-            [sequence, sequence, payload, now, handle.runId],
+            [sequence, sequence, now, handle.runId],
           );
-          this.#database.run(
-            `DELETE FROM agent_run_wal_events
-             WHERE request_delivery_id = ? AND event_kind = 'checkpoint' AND sequence NOT IN (
-               SELECT sequence
-               FROM agent_run_wal_events
-               WHERE request_delivery_id = ? AND event_kind = 'checkpoint'
-               ORDER BY sequence DESC
-               LIMIT 2
-             )`,
-            [handle.runId, handle.runId],
-          );
-          this.#checkpointHashes.set(handle.runId, hash);
+          // Keep the chains of the new checkpoint and of its predecessor, nothing older.
+          if (current.checkpoint_sequence !== null) {
+            this.#database.run(
+              `DELETE FROM agent_run_wal_events
+               WHERE request_delivery_id = ? AND event_kind = 'checkpoint' AND sequence < (
+                 SELECT MAX(sequence)
+                 FROM agent_run_wal_events
+                 WHERE request_delivery_id = ? AND event_kind = 'checkpoint'
+                   AND delta = 0 AND sequence <= ?
+               )`,
+              [handle.runId, handle.runId, current.checkpoint_sequence],
+            );
+          }
+          this.#latestCheckpoints.set(handle.runId, {
+            sequence,
+            messages: checkpoint.messages,
+            metadataHash,
+            deltasSinceSnapshot: appendsDelta ? (latest?.deltasSinceSnapshot ?? 0) + 1 : 0,
+          });
           return Result.ok({ ...handle, sequence });
         },
       ),
@@ -606,16 +814,11 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
               }),
             );
           }
-          const previous = this.#database
-            .query<Pick<JournalEventRow, "payload_json">, [string]>(
-              `SELECT payload_json
-               FROM agent_run_wal_events
-               WHERE request_delivery_id = ? AND event_kind = 'checkpoint'
-               ORDER BY sequence DESC
-               LIMIT 1 OFFSET 1`,
-            )
-            .get(handle.runId);
-          if (!previous || previous.payload_json !== payload) {
+          const chain = this.#decodeCheckpointChain(current);
+          const chainFailure = chain.match({ ok: () => null, err: (error) => error });
+          if (chainFailure) return Result.err(chainFailure);
+          const previous = chain.match({ ok: (value) => value.previous, err: () => undefined });
+          if (!previous || SuperJSON.stringify(previous) !== payload) {
             return Result.err(
               new AgentRunJournalConflict({
                 runId: handle.runId,
@@ -642,17 +845,22 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
           );
           this.#database.run(
             `INSERT INTO agent_run_wal_events (
-               request_delivery_id, sequence, event_kind, payload_json, created_at
-             ) VALUES (?, ?, 'checkpoint', ?, ?)`,
+               request_delivery_id, sequence, event_kind, payload_json, created_at, delta
+             ) VALUES (?, ?, 'checkpoint', ?, ?, 0)`,
             [handle.runId, sequence, payload, now],
           );
           this.#database.run(
             `UPDATE agent_run_wal_heads
-             SET latest_sequence = ?, checkpoint_sequence = ?, checkpoint_json = ?, updated_at = ?
+             SET latest_sequence = ?, checkpoint_sequence = ?, checkpoint_json = NULL, updated_at = ?
              WHERE request_delivery_id = ?`,
-            [sequence, sequence, payload, now, handle.runId],
+            [sequence, sequence, now, handle.runId],
           );
-          this.#checkpointHashes.set(handle.runId, payloadHash(payload));
+          this.#latestCheckpoints.set(handle.runId, {
+            sequence,
+            messages: checkpoint.messages,
+            metadataHash: payloadHash(SuperJSON.stringify(checkpointMetadata(checkpoint))),
+            deltasSinceSnapshot: 0,
+          });
           return Result.ok({ ...handle, sequence });
         },
       ),
@@ -734,11 +942,9 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
         invalidHead(row, "Persisted agent run journal head has incoherent timestamps"),
       );
     }
-    const hasCheckpointSequence = row.checkpoint_sequence !== null;
-    const hasCheckpointPayload = row.checkpoint_json !== null;
-    if (hasCheckpointSequence !== hasCheckpointPayload) {
+    if (row.checkpoint_json !== null) {
       return Result.err(
-        invalidHead(row, "Persisted agent run journal head has an incomplete checkpoint"),
+        invalidHead(row, "Persisted agent run journal head duplicates its checkpoint payload"),
       );
     }
     if (row.checkpoint_sequence !== null && row.checkpoint_sequence > row.latest_sequence) {
@@ -757,26 +963,15 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
           }),
         );
       }
-      if (row.checkpoint_json === null) {
-        return this.#validateHeadEvents(row).map(() => ({
+      return this.#validateHeadEvents(row).andThen(() =>
+        this.#decodeCheckpointChain(row).map(({ latest, previous }) => ({
           handle,
           state: "active" as const,
+          ...(latest ? { checkpoint: latest } : {}),
+          ...(previous ? { previousCheckpoint: previous } : {}),
           createdAt: row.created_at,
           updatedAt: row.updated_at,
-        }));
-      }
-      return decodeAgentRunCheckpointPayload(row.checkpoint_json, row.request_delivery_id).andThen(
-        ({ value: checkpoint }) =>
-          this.#decodePreviousCheckpoint(row).andThen((previousCheckpoint) =>
-            this.#validateHeadEvents(row).map(() => ({
-              handle,
-              state: "active" as const,
-              checkpoint,
-              ...(previousCheckpoint ? { previousCheckpoint } : {}),
-              createdAt: row.created_at,
-              updatedAt: row.updated_at,
-            })),
-          ),
+        })),
       );
     }
     if (row.state !== "terminal" || row.terminal_outcome_json === null) {
@@ -791,48 +986,21 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     return decodeAgentRunTerminalPayload(
       row.terminal_outcome_json,
       row.request_delivery_id,
-    ).andThen(({ value: terminal }) => {
-      const checkpoint: ResultType<AgentRunCheckpointV1 | undefined, AgentRunJournalCodecFailure> =
-        row.checkpoint_json
-          ? decodeAgentRunCheckpointPayload(row.checkpoint_json, row.request_delivery_id).map(
-              ({ value }) => value as AgentRunCheckpointV1 | undefined,
-            )
-          : Result.ok(undefined);
-      return checkpoint.andThen((decodedCheckpoint) =>
-        this.#decodePreviousCheckpoint(row).andThen((previousCheckpoint) =>
-          this.#validateHeadEvents(row).map(() => ({
-            handle,
-            state: "terminal" as const,
-            ...(decodedCheckpoint ? { checkpoint: decodedCheckpoint } : {}),
-            ...(previousCheckpoint ? { previousCheckpoint } : {}),
-            terminalOutcome: terminal.outcome,
-            ...(terminal.finalReplayDeadline === undefined
-              ? {}
-              : { finalReplayDeadline: terminal.finalReplayDeadline }),
-            createdAt: row.created_at,
-            updatedAt: row.updated_at,
-          })),
-        ),
-      );
-    });
-  }
-
-  #decodePreviousCheckpoint(
-    row: JournalHeadRow,
-  ): ResultType<AgentRunCheckpointV1 | undefined, AgentRunJournalCodecFailure> {
-    if (row.checkpoint_sequence === null) return Result.ok(undefined);
-    const previous = this.#database
-      .query<{ payload_json: string }, [string, number]>(
-        `SELECT payload_json
-         FROM agent_run_wal_events
-         WHERE request_delivery_id = ? AND event_kind = 'checkpoint' AND sequence < ?
-         ORDER BY sequence DESC
-         LIMIT 1`,
-      )
-      .get(row.request_delivery_id, row.checkpoint_sequence);
-    if (!previous) return Result.ok(undefined);
-    return decodeAgentRunCheckpointPayload(previous.payload_json, row.request_delivery_id).map(
-      ({ value }) => value,
+    ).andThen(({ value: terminal }) =>
+      this.#validateHeadEvents(row).andThen(() =>
+        this.#decodeCheckpointChain(row).map(({ latest, previous }) => ({
+          handle,
+          state: "terminal" as const,
+          ...(latest ? { checkpoint: latest } : {}),
+          ...(previous ? { previousCheckpoint: previous } : {}),
+          terminalOutcome: terminal.outcome,
+          ...(terminal.finalReplayDeadline === undefined
+            ? {}
+            : { finalReplayDeadline: terminal.finalReplayDeadline }),
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        })),
+      ),
     );
   }
 
@@ -851,7 +1019,7 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     const checkpointEventCountIsCoherent =
       row.checkpoint_sequence === null
         ? checkpointEvents.length === 0
-        : checkpointEvents.length === 1 || checkpointEvents.length === 2;
+        : checkpointEvents.length > 0;
     const expectedEventCount = 1 + checkpointEvents.length + (row.state === "terminal" ? 1 : 0);
     const everyEventTimestampIsCoherent = events.every(
       (event) =>
@@ -873,8 +1041,7 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
     const checkpointEventIsCoherent =
       row.checkpoint_sequence === null
         ? checkpointEvent === undefined
-        : checkpointEvent?.sequence === row.checkpoint_sequence &&
-          checkpointEvent.payload_json === row.checkpoint_json;
+        : checkpointEvent?.sequence === row.checkpoint_sequence;
     const latestEvent = events.at(-1);
     const latestEventIsCoherent =
       latestEvent?.sequence === row.latest_sequence &&
@@ -992,13 +1159,13 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
   }
 
   #deleteRun(runId: string): void {
-    this.#checkpointHashes.delete(runId);
+    this.#latestCheckpoints.delete(runId);
     this.#database.run("DELETE FROM agent_run_wal_events WHERE request_delivery_id = ?", [runId]);
     this.#database.run("DELETE FROM agent_run_wal_heads WHERE request_delivery_id = ?", [runId]);
   }
 
   #resetAllTables(): void {
-    this.#checkpointHashes.clear();
+    this.#latestCheckpoints.clear();
     this.#database.run(`
       DROP TABLE IF EXISTS agent_run_wal_events;
       DROP TABLE IF EXISTS agent_run_wal_heads;
@@ -1084,6 +1251,38 @@ export const agentRunCheckpointPayloadCodecCases = {
     input: SuperJSON.stringify({
       version: 1,
       messages: [{ role: "invalid", content: "recover" }],
+      retainedRequestDeliveries: [],
+    }),
+    outcome: "error",
+  },
+} as const;
+
+export const agentRunCheckpointDeltaPayloadCodecCases = {
+  current: {
+    input: SuperJSON.stringify({
+      version: 2,
+      keep: 1,
+      append: [{ role: "assistant", content: "continued" }],
+      retainedRequestDeliveries: [],
+    }),
+    outcome: "ok",
+    provenance: "current",
+  },
+  legacy: { input: checkpointFixture, outcome: "error" },
+  "missing-defaulted": {
+    input: SuperJSON.stringify({ version: 2, keep: 1, append: [] }),
+    outcome: "error",
+  },
+  "unsupported-version": {
+    input: SuperJSON.stringify({ version: 3, keep: 1, append: [], retainedRequestDeliveries: [] }),
+    outcome: "error",
+  },
+  "malformed-serialization": { input: "{", outcome: "error" },
+  "corrupt-fields": {
+    input: SuperJSON.stringify({
+      version: 2,
+      keep: -1,
+      append: [],
       retainedRequestDeliveries: [],
     }),
     outcome: "error",
