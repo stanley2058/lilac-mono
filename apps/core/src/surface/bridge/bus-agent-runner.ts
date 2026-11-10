@@ -2305,6 +2305,7 @@ class PreAgentRunCancelledError extends Error {
 const AGENT_TIMEOUT_ABORT_GRACE_MS = 5_000;
 const TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS = 4_000;
 const SHUTDOWN_ABORT_GRACE_MS = 500;
+const COMPACTED_TOOL_CALL_SESSION_LIMIT = 1_000;
 const LIVE_PARENT_RECONCILE_MS = 1_000;
 const SUBAGENT_RESULT_MATERIALIZATION_ATTEMPTS = 3;
 export const WORKFLOW_REQUEST_CLAIM_HEARTBEAT_MS = 10_000;
@@ -3014,6 +3015,7 @@ export async function startBusAgentRunner(params: {
   const workflowRunnerOwnerId = `agent-runner:${process.pid}:${crypto.randomUUID()}`;
 
   const bySession = new Map<string, SessionQueue>();
+  const compactedToolCallIdsBySession = new Map<string, Set<string>>();
   const nativeBlockedSessions = new Set<string>();
   // Only drains that dequeued work are tracked; a run's drain stays tracked until it settles.
   const sessionDrainOperations = new Map<string, Set<Promise<void>>>();
@@ -3661,6 +3663,42 @@ export async function startBusAgentRunner(params: {
     if (state && !state.running) startSessionQueueDrain(attempt.sessionId, state);
   }
 
+  function createSessionQueue(sessionId: string): SessionQueue {
+    return {
+      running: false,
+      agent: null,
+      queue: [],
+      activeRequestId: null,
+      activeRun: null,
+      compactedToolCallIds: compactedToolCallIdsFor(sessionId),
+    };
+  }
+
+  /**
+   * Compaction choices outlive session eviction so pruning keeps batching by `minimumTokens`
+   * instead of re-pruning every run; the least recently used sessions are forgotten past the cap.
+   */
+  function compactedToolCallIdsFor(sessionId: string): Set<string> {
+    const existing = compactedToolCallIdsBySession.get(sessionId) ?? new Set<string>();
+    compactedToolCallIdsBySession.delete(sessionId);
+    compactedToolCallIdsBySession.set(sessionId, existing);
+    const oldest = compactedToolCallIdsBySession.keys().next().value;
+    if (compactedToolCallIdsBySession.size > COMPACTED_TOOL_CALL_SESSION_LIMIT && oldest) {
+      compactedToolCallIdsBySession.delete(oldest);
+    }
+    return existing;
+  }
+
+  /** Drops a session's in-memory state once it has no run and no queued work. */
+  function evictIdleSession(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    const state = bySession.get(sessionId);
+    if (!state || state.running || state.activeRun || state.agent || state.queue.length > 0) {
+      return;
+    }
+    bySession.delete(sessionId);
+  }
+
   function startSessionQueueDrain(
     sessionId: string,
     state: SessionQueue,
@@ -3677,7 +3715,10 @@ export async function startBusAgentRunner(params: {
     const dequeues = nextDequeueableEntry(state) !== undefined;
     const operation = superviseDrain();
     void ignoreDetachedFailure(operation);
-    if (!dequeues) return;
+    if (!dequeues) {
+      evictIdleSession(sessionId);
+      return;
+    }
     const operations = sessionDrainOperations.get(sessionId) ?? new Set<Promise<void>>();
     operations.add(operation);
     sessionDrainOperations.set(sessionId, operations);
@@ -4070,16 +4111,7 @@ export async function startBusAgentRunner(params: {
 
             const requestControl = parseRequestControlFromRaw(entry.raw);
 
-            const state =
-              bySession.get(sessionId) ??
-              ({
-                running: false,
-                agent: null,
-                queue: [] as Enqueued[],
-                activeRequestId: null,
-                activeRun: null,
-                compactedToolCallIds: new Set<string>(),
-              } satisfies SessionQueue);
+            const state = bySession.get(sessionId) ?? createSessionQueue(sessionId);
             bySession.set(sessionId, state);
 
             const logQueueTransition = (input: {
@@ -4865,8 +4897,11 @@ export async function startBusAgentRunner(params: {
         },
         async (msg) => {
           switch (msg.type) {
-            case lilacEventTypes.CmdRequestMessage:
-              return await handleCmdRequestMessage(msg);
+            case lilacEventTypes.CmdRequestMessage: {
+              const handled = await handleCmdRequestMessage(msg);
+              evictIdleSession(msg.headers?.session_id);
+              return handled;
+            }
           }
         },
         busAgentRunnerDeliveryDisposition,
@@ -9791,16 +9826,7 @@ export async function startBusAgentRunner(params: {
         : {}),
       ...(recoveryHead ? { journalHandle: recoveryHead.handle } : {}),
     };
-    const state =
-      bySession.get(work.sessionId) ??
-      ({
-        running: false,
-        agent: null,
-        queue: [] as Enqueued[],
-        activeRequestId: null,
-        activeRun: null,
-        compactedToolCallIds: new Set<string>(),
-      } satisfies SessionQueue);
+    const state = bySession.get(work.sessionId) ?? createSessionQueue(work.sessionId);
     state.queue.push(entry);
     bySession.set(work.sessionId, state);
     if (runnerActivated && !state.running) {
@@ -9865,6 +9891,8 @@ export async function startBusAgentRunner(params: {
         await Promise.all(pending);
       }
     },
+    /** Number of sessions holding in-memory queue state; idle sessions are evicted. */
+    trackedSessionCount: () => bySession.size,
     getTerminalCleanupOperations: () => terminalCleanupOperations,
     stop: async (opts?: { readonly deadlineAtMs?: number }) => {
       const deadlineAtMs = opts?.deadlineAtMs ?? Date.now() + TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS;

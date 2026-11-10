@@ -5815,6 +5815,56 @@ describe("session queue admission", () => {
       await rm(dataDir, { recursive: true, force: true });
     }
   });
+  it("evicts session state once its runs finish", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "idle-eviction",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({ capability: "idle-eviction", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "idle-eviction",
+            doStream: async () => level1TextStep("done"),
+          }),
+        }),
+    });
+    const lifecycle = await observeRequestLifecycle(bus, "github:idle-eviction:request");
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestId: "github:idle-eviction:request",
+        sessionId: "idle-eviction",
+        text: "finish and leave",
+      });
+      await expect(lifecycle.terminal).resolves.toBe("resolved");
+      await runner.waitForIdle();
+      expect(runner.trackedSessionCount()).toBe(0);
+
+      await publishRunnerRequest({
+        bus,
+        requestId: "github:idle-eviction:stray-cancel",
+        sessionId: "idle-eviction-stray",
+        queue: "interrupt",
+        text: "",
+        messages: [],
+        raw: { cancel: true },
+      });
+      expect(runner.trackedSessionCount()).toBe(0);
+    } finally {
+      await lifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
 });
 
 describe("bus agent runner terminal cleanup", () => {
