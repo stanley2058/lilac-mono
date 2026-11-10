@@ -3016,6 +3016,7 @@ export async function startBusAgentRunner(params: {
 
   const bySession = new Map<string, SessionQueue>();
   const compactedToolCallIdsBySession = new Map<string, Set<string>>();
+  const sessionControlOperations = new Map<string, Promise<void>>();
   const nativeBlockedSessions = new Set<string>();
   // Only drains that dequeued work are tracked; a run's drain stays tracked until it settles.
   const sessionDrainOperations = new Map<string, Set<Promise<void>>>();
@@ -3689,14 +3690,32 @@ export async function startBusAgentRunner(params: {
     return existing;
   }
 
-  /** Drops a session's in-memory state once it has no run and no queued work. */
+  /** Drops a session's in-memory state once it has no run, queued work, or pending control. */
   function evictIdleSession(sessionId: string | undefined): void {
-    if (!sessionId) return;
+    if (!sessionId || sessionControlOperations.has(sessionId)) return;
     const state = bySession.get(sessionId);
     if (!state || state.running || state.activeRun || state.agent || state.queue.length > 0) {
       return;
     }
     bySession.delete(sessionId);
+  }
+
+  /** Runs control settlement for one session in arrival order, off the shared bus handler. */
+  function enqueueSessionControl(sessionId: string, operation: () => Promise<void>): void {
+    // Start at once when nothing is pending so the control reaches the agent in the same tick.
+    const previous = sessionControlOperations.get(sessionId);
+    const started = previous ? previous.then(operation) : operation();
+    const settled = started.then(undefined, (cause: unknown) => {
+      superviseAgentRunnerBackgroundFailure(cause);
+    });
+    sessionControlOperations.set(sessionId, settled);
+    void ignoreDetachedFailure(settled);
+    const forget = (): void => {
+      if (sessionControlOperations.get(sessionId) !== settled) return;
+      sessionControlOperations.delete(sessionId);
+      evictIdleSession(sessionId);
+    };
+    void settled.then(forget, forget);
   }
 
   function startSessionQueueDrain(
@@ -4412,6 +4431,7 @@ export async function startBusAgentRunner(params: {
                         "active-cancel-applied",
                         checkpoint,
                       ),
+                    (operation) => enqueueSessionControl(sessionId, operation),
                   );
                 }
                 logQueueTransition({
@@ -4695,6 +4715,7 @@ export async function startBusAgentRunner(params: {
                             "active-input-applied",
                             checkpoint,
                           ),
+                        (operation) => enqueueSessionControl(sessionId, operation),
                       ),
                   );
                   const applyError = applied.match({
@@ -4722,6 +4743,7 @@ export async function startBusAgentRunner(params: {
                         "active-input-applied",
                         checkpoint,
                       ),
+                    (operation) => enqueueSessionControl(sessionId, operation),
                   );
                 }
 
@@ -9883,10 +9905,10 @@ export async function startBusAgentRunner(params: {
         title: tool?.toolName ?? (responding ? "Responding…" : "Thinking…"),
       };
     },
-    /** Resolves once no session drain is in flight; rejects with a drain's failure. */
+    /** Resolves once no session drain or control is in flight; rejects with a drain's failure. */
     async waitForIdle(): Promise<void> {
       for (;;) {
-        const pending = allSessionDrainOperations();
+        const pending = [...allSessionDrainOperations(), ...sessionControlOperations.values()];
         if (pending.length === 0) return;
         await Promise.all(pending);
       }
@@ -10027,6 +10049,10 @@ function mergeQueuedForSameRequest(
   return { messages: merged, storedMessages, discarded };
 }
 
+/**
+ * Applies a control to the running agent. Waits for the agent or its children to settle run
+ * through `settle`, which orders them per session, so the caller never blocks on them.
+ */
 async function applyToRunningAgent(
   agent: AiSdkPiAgent<ToolSet>,
   entry: Enqueued,
@@ -10038,6 +10064,7 @@ async function applyToRunningAgent(
       | { readonly kind: "queued"; readonly inputId: AgentInputQueueId }
       | { readonly kind: "pending" },
   ) => void,
+  settle: (operation: () => Promise<void>) => void,
 ) {
   activeRun?.flushOutput();
   const liveParent = activeRun?.liveParent;
@@ -10058,6 +10085,17 @@ async function applyToRunningAgent(
     const inputId = mode === "steer" ? agent.steer(merged) : agent.followUp(merged);
     retainAppliedControl({ kind: "queued", inputId });
     notifyWaiters?.();
+  };
+
+  const cancelRun = () => {
+    retainAppliedControl({ kind: "pending" });
+    cancelledByRequestId.add(entry.requestId);
+    settle(async () => {
+      await liveParent?.cancelAll("parent request aborted");
+      await activeRun?.stopAwaitJobs?.();
+      agent.cancel();
+      notifyWaiters?.();
+    });
   };
 
   const promptWhileIdle = () => {
@@ -10111,12 +10149,7 @@ async function applyToRunningAgent(
       }
       case "interrupt": {
         if (cancel) {
-          retainAppliedControl({ kind: "pending" });
-          cancelledByRequestId.add(entry.requestId);
-          await liveParent?.cancelAll("parent request aborted");
-          await activeRun?.stopAwaitJobs?.();
-          agent.cancel();
-          notifyWaiters?.();
+          cancelRun();
           return;
         }
         if (hasBufferedCompletions) {
@@ -10124,8 +10157,10 @@ async function applyToRunningAgent(
           return;
         }
         retainAppliedControl({ kind: "canonical" });
-        await agent.interrupt(merged);
-        notifyWaiters?.();
+        settle(async () => {
+          await agent.interrupt(merged);
+          notifyWaiters?.();
+        });
         return;
       }
       default: {
@@ -10150,18 +10185,15 @@ async function applyToRunningAgent(
     }
     case "interrupt": {
       if (cancel) {
-        retainAppliedControl({ kind: "pending" });
-        cancelledByRequestId.add(entry.requestId);
-        await liveParent?.cancelAll("parent request aborted");
-        await activeRun?.stopAwaitJobs?.();
-        agent.cancel();
-        notifyWaiters?.();
+        cancelRun();
         return;
       }
       const steeringId = agent.steer(merged);
       retainAppliedControl({ kind: "queued", inputId: steeringId });
-      await agent.interruptQueuedSteeringAsync();
-      notifyWaiters?.();
+      settle(async () => {
+        await agent.interruptQueuedSteeringAsync();
+        notifyWaiters?.();
+      });
       return;
     }
     case "prompt": {

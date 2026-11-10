@@ -5865,6 +5865,89 @@ describe("session queue admission", () => {
       await bus.close();
     }
   });
+  it("returns from an interrupt delivery before the agent settles", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const stuckStarted = deferred<void>();
+    const releaseStuck = deferred<void>();
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "control-isolation",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({ capability: "control-isolation", principal: null }),
+      createAgent: (options) => {
+        let modelCalls = 0;
+        return new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "control-isolation",
+            doStream: async ({ prompt }) => {
+              modelCalls += 1;
+              const stuck = JSON.stringify(prompt).includes("ignore aborts");
+              if (stuck && modelCalls === 1) {
+                return level1ToolCallStep([{ toolCallId: "stuck", toolName: "stuck" }]);
+              }
+              return level1TextStep("done");
+            },
+          }),
+          beforeStep: undefined,
+          normalizeToolResultOutput: undefined,
+          tools: {
+            stuck: tool({
+              inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+              execute: async () => {
+                stuckStarted.resolve(undefined);
+                await releaseStuck.promise;
+                return "released";
+              },
+            }),
+          },
+        });
+      },
+    });
+    const stuckRequestId = "github:control-isolation:stuck";
+    const otherRequestId = "github:control-isolation:other";
+    const stuckLifecycle = await observeRequestLifecycle(bus, stuckRequestId);
+    const otherLifecycle = await observeRequestLifecycle(bus, otherRequestId);
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestId: stuckRequestId,
+        sessionId: "control-isolation-stuck",
+        text: "ignore aborts",
+      });
+      await stuckStarted.promise;
+      // The in-memory bus resolves a publish once its handler returns.
+      await publishRunnerRequest({
+        bus,
+        requestId: stuckRequestId,
+        sessionId: "control-isolation-stuck",
+        queue: "interrupt",
+        text: "interrupt now",
+      });
+      await publishRunnerRequest({
+        bus,
+        requestId: otherRequestId,
+        sessionId: "control-isolation-other",
+        text: "independent work",
+      });
+      await expect(otherLifecycle.terminal).resolves.toBe("resolved");
+      releaseStuck.resolve(undefined);
+      await expect(stuckLifecycle.terminal).resolves.toBe("resolved");
+      await runner.waitForIdle();
+    } finally {
+      releaseStuck.resolve(undefined);
+      await stuckLifecycle.stop();
+      await otherLifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
 });
 
 describe("bus agent runner terminal cleanup", () => {
