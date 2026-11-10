@@ -140,6 +140,7 @@ import { WorkflowSidebarRow } from "./components/WorkflowSidebar";
 import {
   WorkflowCardSource,
   workflowTrackListClass,
+  WorkflowBoardTracks,
   WorkflowTrackFrame,
   workflowTrackRowClass,
 } from "./components/WorkflowBoard";
@@ -689,61 +690,56 @@ function Threads() {
               onReaction: () => {},
             }}
           >
-            <div className="flex h-144 max-h-[70dvh] gap-2 overflow-x-auto">
-              <WorkflowTrackFrame id="running" label="Running" count={1}>
-                <VirtualList
-                  items={[workflowRunSamples[0]!]}
-                  itemKey={(run) => run.id}
-                  label="Running"
-                  className={workflowTrackListClass}
-                  estimate={260}
-                  render={(run) => (
-                    <div className={workflowTrackRowClass}>
-                      <WorkflowCard
-                        messageId={run.id}
-                        card={run.card}
-                        source={<WorkflowCardSource run={run} onOpen={() => {}} />}
-                        runId="wfrun:example-run"
-                        onOpen={() => setWorkflowOpen(true)}
-                        body="preview"
-                      />
-                    </div>
-                  )}
-                />
-              </WorkflowTrackFrame>
-              <WorkflowTrackFrame id="finished" label="Finished" count={1} more>
-                <VirtualList
-                  items={[workflowResultSample]}
-                  itemKey={(card) => card.name}
-                  label="Finished"
-                  className={workflowTrackListClass}
-                  estimate={260}
-                  render={(card) => (
-                    <div className={workflowTrackRowClass}>
-                      <WorkflowCard
-                        messageId="sample-result"
-                        card={card}
-                        runId="wfrun:example-run"
-                        onOpen={() => setWorkflowOpen(true)}
-                        body="preview"
-                        selected
-                      />
-                    </div>
-                  )}
-                />
-              </WorkflowTrackFrame>
-              <WorkflowTrackFrame id="paused" label="Paused" count={0}>
-                <VirtualList
-                  items={[]}
-                  itemKey={() => ""}
-                  label="Paused"
-                  className={workflowTrackListClass}
-                  render={() => null}
-                />
-              </WorkflowTrackFrame>
-              <WorkflowTrackFrame id="failed" label="Failed" count={0}>
-                <Skeleton className="h-40 w-full rounded-xl" />
-              </WorkflowTrackFrame>
+            <div className="flex h-144 max-h-[70dvh]">
+              <WorkflowBoardTracks>
+                <WorkflowTrackFrame id="attention" label="Needs attention" count={0} collapsed />
+                <WorkflowTrackFrame id="running" label="Running" count={1}>
+                  <VirtualList
+                    items={[workflowRunSamples[0]!]}
+                    itemKey={(run) => run.id}
+                    label="Running"
+                    className={workflowTrackListClass}
+                    estimate={260}
+                    render={(run) => (
+                      <div className={workflowTrackRowClass}>
+                        <WorkflowCard
+                          messageId={run.id}
+                          card={run.card}
+                          source={<WorkflowCardSource run={run} onOpen={() => {}} />}
+                          runId="wfrun:example-run"
+                          onOpen={() => setWorkflowOpen(true)}
+                          body="preview"
+                        />
+                      </div>
+                    )}
+                  />
+                </WorkflowTrackFrame>
+                <WorkflowTrackFrame id="finished" label="Finished" count={1} more>
+                  <VirtualList
+                    items={[workflowResultSample]}
+                    itemKey={(card) => card.name}
+                    label="Finished"
+                    className={workflowTrackListClass}
+                    estimate={260}
+                    render={(card) => (
+                      <div className={workflowTrackRowClass}>
+                        <WorkflowCard
+                          messageId="sample-result"
+                          card={card}
+                          runId="wfrun:example-run"
+                          onOpen={() => setWorkflowOpen(true)}
+                          body="preview"
+                          selected
+                        />
+                      </div>
+                    )}
+                  />
+                </WorkflowTrackFrame>
+                <WorkflowTrackFrame id="paused" label="Paused" count={0} collapsed />
+                <WorkflowTrackFrame id="failed" label="Failed" count={0}>
+                  <Skeleton className="h-40 w-full rounded-xl" />
+                </WorkflowTrackFrame>
+              </WorkflowBoardTracks>
             </div>
             <Modal open={workflowOpen} wide title="Workflow" onClose={() => setWorkflowOpen(false)}>
               <WorkflowCard messageId="sample-result" card={workflowResultSample} body="full" />
