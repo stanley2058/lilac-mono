@@ -3813,7 +3813,6 @@ export async function startBusAgentRunner(params: {
       );
     }
     if (!requestId || !sessionId) {
-      if (!pendingAttempt) abandonQueueLifecycleAttempt(msg.id);
       const missing: ("request_id" | "session_id")[] = [];
       if (!requestId) missing.push("request_id");
       if (!sessionId) missing.push("session_id");
@@ -3957,11 +3956,9 @@ export async function startBusAgentRunner(params: {
     });
     const requestProjection = selectRequestProjection();
     if (projectionFailure) {
-      if (!pendingAttempt) abandonQueueLifecycleAttempt(msg.id);
       return reconcileAcceptedProjectionFailure(projectionFailure);
     }
     if (!requestProjection) {
-      if (!pendingAttempt) abandonQueueLifecycleAttempt(msg.id);
       if (acceptedRecord) {
         return reconcileAcceptedProjectionFailure(
           new BusAgentRunnerIntakeFailed({
