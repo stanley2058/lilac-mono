@@ -4,13 +4,20 @@ import { Result, TaggedError, type Result as ResultType } from "better-result";
 
 import { chunkMarkdownForEmbeds } from "./markdown-chunker";
 
-export type SafeEdit = (msg: Message, options: Parameters<Message["edit"]>[0]) => Promise<boolean>;
+export type EmbedEditOutcome =
+  | { readonly kind: "edited" }
+  | { readonly kind: "not-found" }
+  | { readonly kind: "failed"; readonly cause: Error };
+
+export type EditEmbedMessage = (
+  msg: Message,
+  options: Parameters<Message["edit"]>[0],
+) => Promise<EmbedEditOutcome>;
 
 const STREAMING_INDICATOR = " ⚪";
 const EDIT_DELAY_MS = 250;
-const STREAM_MIN_PUSH_INTERVAL_MS = 500;
 const CLOSING_TAG_BUFFER = 10;
-const PROGRESS_HEARTBEAT_MS = 1_000;
+const PROGRESS_HEARTBEAT_MS = 5_000;
 
 const EMBED_COLOR_COMPLETE = Colors.Blue;
 const EMBED_COLOR_INCOMPLETE = Colors.Yellow;
@@ -23,11 +30,19 @@ export class DiscordEmbedPusherInvariant extends TaggedError("DiscordEmbedPusher
   readonly message: string;
 }> {}
 
+/** Carries the Discord edit error so the output stream can classify it. */
+export class DiscordEmbedEditFailed extends TaggedError("DiscordEmbedEditFailed")<{
+  readonly message: string;
+  readonly cause: Error;
+}> {}
+
+type EmbedPusherError = DiscordEmbedPusherInvariant | DiscordEmbedEditFailed;
+
 type EmbedPushStep =
   | { readonly kind: "continue" }
   | { readonly kind: "delay" }
   | { readonly kind: "settled" }
-  | { readonly kind: "failed"; readonly error: DiscordEmbedPusherInvariant };
+  | { readonly kind: "failed"; readonly error: EmbedPusherError };
 
 function clampWithEllipsis(text: string, maxChars: number): string {
   if (maxChars <= 0) return "";
@@ -129,7 +144,7 @@ export async function startEmbedPusher(params: {
   getMaxLength: (isStreaming: boolean) => number;
   streamDone: Promise<void>;
   useSmartSplitting: boolean;
-  safeEdit: SafeEdit;
+  editMessage: EditEmbedMessage;
   /**
    * Optional additional edit options for the FIRST message in the chain.
    * Used for surface controls (e.g. Cancel buttons) that must persist across edits.
@@ -142,7 +157,7 @@ export async function startEmbedPusher(params: {
       responseQueue: string[];
       discordMessageCreated: string[];
     },
-    DiscordEmbedPusherInvariant
+    EmbedPusherError
   >
 > {
   let streaming = true;
@@ -162,11 +177,8 @@ export async function startEmbedPusher(params: {
 
   let responseQueue: string[] = [];
   let lastProgressHeartbeatAt = 0;
-  let lastStreamPushAt = 0;
 
-  const syncToDiscord = async (
-    content: string,
-  ): Promise<ResultType<boolean, DiscordEmbedPusherInvariant>> => {
+  const syncToDiscord = async (content: string): Promise<ResultType<boolean, EmbedPusherError>> => {
     const maxChunkLength = params.getMaxLength(false);
     const maxLastChunkLength = params.getMaxLength(true);
 
@@ -215,8 +227,6 @@ export async function startEmbedPusher(params: {
       const nowMs = Date.now();
       const shouldForceProgressHeartbeat =
         heartbeatDue && showStreamIndicator && Boolean(progressTitleForChunk);
-      const shouldForceStreamPush =
-        showStreamIndicator && nowMs - lastStreamPushAt >= STREAM_MIN_PUSH_INTERVAL_MS;
       const actionsValueForChunk =
         showStreamIndicator && actionsLines.length > 0 ? buildActionsValue(actionsLines) : "";
 
@@ -235,64 +245,67 @@ export async function startEmbedPusher(params: {
           ? params.getFirstMessageEditExtras(streaming)
           : undefined;
 
-      if (i >= chunkMessages.length) {
+      const recordSent = () => {
+        sentDescriptions[i] = description;
+        sentColors[i] = color;
+        sentProgressTitle[i] = progressTitleForChunk ?? "";
+        sentReasoning[i] = reasoningValueForChunk ?? "";
+        sentActions[i] = actionsValueForChunk;
+        sentStats[i] = statsLineForChunk ?? "";
+        if (showStreamIndicator && progressTitleForChunk) {
+          lastProgressHeartbeatAt = nowMs;
+        }
+        didUpdate = true;
+      };
+      const createChunkMessage = async () => {
         const msg =
           i === 0
             ? await params.createFirst(emb)
             : await params.createReply(chunkMessages[i - 1]!, emb);
-
-        chunkMessages.push(msg);
+        chunkMessages[i] = msg;
         discordMessageCreated.push(msg.id);
-        sentDescriptions[i] = description;
-        sentColors[i] = color;
-        sentProgressTitle[i] = progressTitleForChunk ?? "";
-        sentReasoning[i] = reasoningValueForChunk ?? "";
-        sentActions[i] = actionsValueForChunk;
-        sentStats[i] = statsLineForChunk ?? "";
-        if (showStreamIndicator) {
-          lastStreamPushAt = nowMs;
-        }
-        if (showStreamIndicator && progressTitleForChunk) {
-          lastProgressHeartbeatAt = nowMs;
-        }
-        didUpdate = true;
+        recordSent();
+      };
+
+      if (i >= chunkMessages.length) {
+        await createChunkMessage();
         continue;
       }
 
+      const sentTitle = sentProgressTitle[i] ?? "";
+      const nextTitle = progressTitleForChunk ?? "";
+      // The title carries an elapsed-seconds counter, so a title-only change waits for the
+      // heartbeat instead of editing every second.
+      const titleNeedsPush = sentTitle !== nextTitle && (sentTitle === "" || nextTitle === "");
       if (
-        sentDescriptions[i] !== description ||
-        sentColors[i] !== color ||
-        sentProgressTitle[i] !== (progressTitleForChunk ?? "") ||
-        sentReasoning[i] !== (reasoningValueForChunk ?? "") ||
-        sentActions[i] !== actionsValueForChunk ||
-        sentStats[i] !== (statsLineForChunk ?? "") ||
-        shouldForceProgressHeartbeat ||
-        shouldForceStreamPush
+        sentDescriptions[i] === description &&
+        sentColors[i] === color &&
+        !titleNeedsPush &&
+        sentReasoning[i] === (reasoningValueForChunk ?? "") &&
+        sentActions[i] === actionsValueForChunk &&
+        sentStats[i] === (statsLineForChunk ?? "") &&
+        !shouldForceProgressHeartbeat
       ) {
-        const edited = await params.safeEdit(chunkMessages[i]!, {
-          embeds: [emb],
-          ...firstExtras,
-        });
-        if (!edited) {
+        continue;
+      }
+
+      const target = chunkMessages[i]!;
+      const edited = await params.editMessage(target, { embeds: [emb], ...firstExtras });
+      switch (edited.kind) {
+        case "edited":
+          recordSent();
+          continue;
+        case "not-found":
+          // Someone deleted this chunk mid-stream; keep the output going in a fresh message.
+          await createChunkMessage();
+          continue;
+        case "failed":
           return Result.err(
-            new DiscordEmbedPusherInvariant({
-              message: `startEmbedPusher failed to edit message ${chunkMessages[i]!.id}`,
+            new DiscordEmbedEditFailed({
+              message: `startEmbedPusher failed to edit message ${target.id}`,
+              cause: edited.cause,
             }),
           );
-        }
-        sentDescriptions[i] = description;
-        sentColors[i] = color;
-        sentProgressTitle[i] = progressTitleForChunk ?? "";
-        sentReasoning[i] = reasoningValueForChunk ?? "";
-        sentActions[i] = actionsValueForChunk;
-        sentStats[i] = statsLineForChunk ?? "";
-        if (showStreamIndicator) {
-          lastStreamPushAt = nowMs;
-        }
-        if (showStreamIndicator && progressTitleForChunk) {
-          lastProgressHeartbeatAt = nowMs;
-        }
-        didUpdate = true;
       }
     }
 
@@ -300,7 +313,7 @@ export async function startEmbedPusher(params: {
     return Result.ok(didUpdate);
   };
 
-  const pushUntilSettled = async (): Promise<ResultType<void, DiscordEmbedPusherInvariant>> => {
+  const pushUntilSettled = async (): Promise<ResultType<void, EmbedPusherError>> => {
     while (true) {
       const contentWasStreaming = streaming;
       const content = params.getContent(contentWasStreaming);
@@ -330,19 +343,15 @@ export async function startEmbedPusher(params: {
   };
 
   const pushed = await pushUntilSettled();
-  const continuePushed = pushed.match({
-    err: (error) => () => Result.err(error),
-    ok: () => () => {
-      const lastMsg = chunkMessages.at(-1);
-      if (!lastMsg) {
-        return Result.err(
-          new DiscordEmbedPusherInvariant({ message: "startEmbedPusher produced no messages" }),
-        );
-      }
-      return Result.ok({ lastMsg, responseQueue, discordMessageCreated });
-    },
+  return pushed.andThen(() => {
+    const lastMsg = chunkMessages.at(-1);
+    if (!lastMsg) {
+      return Result.err(
+        new DiscordEmbedPusherInvariant({ message: "startEmbedPusher produced no messages" }),
+      );
+    }
+    return Result.ok({ lastMsg, responseQueue, discordMessageCreated });
   });
-  return continuePushed();
 }
 
 export function getEmbedPusherConstants() {

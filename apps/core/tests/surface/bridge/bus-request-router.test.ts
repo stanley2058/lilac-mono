@@ -476,7 +476,10 @@ class FakeAdapter extends SurfaceAdapterTestBase {
     return Result.ok(this.messages[key] ?? null);
   }
 
-  async listMsg(sessionRef: SessionRef, opts?: LimitOpts) {
+  async listMsg(
+    sessionRef: SessionRef,
+    opts?: LimitOpts,
+  ): Promise<SurfaceOperationResult<SurfaceMessage[]>> {
     const limit = opts?.limit ?? 50;
     const before = opts?.beforeMessageId;
 
@@ -1163,6 +1166,43 @@ describe("Discord request router context fallbacks", () => {
     expect(readMsg).not.toHaveBeenCalled();
     transcriptStore.close();
     readMsg.mockRestore();
+  });
+
+  it("reads only the linked final text for replied-message gate context", async () => {
+    const adapter = new FakeAdapter({});
+    const transcriptStore = new SqliteTranscriptStore(":memory:");
+    transcriptStore.saveRequestTranscript({
+      requestId: "request",
+      sessionId: "channel",
+      requestClient: "discord",
+      messages: [{ role: "assistant", content: "stored answer" }],
+      finalText: "stored answer",
+    });
+    const replyRef = { platform: "discord" as const, channelId: "channel", messageId: "answer" };
+    transcriptStore.linkSurfaceMessagesToRequest({
+      requestId: "request",
+      created: [replyRef],
+      last: replyRef,
+    });
+    const fullRead = spyOn(transcriptStore, "getTranscriptBySurfaceMessage");
+
+    const resolved = await resolveRepliedToMessageText({
+      adapter,
+      transcriptStore,
+      input: { sessionId: "channel", replyToMessageId: "answer" },
+    });
+
+    expect(resolved).toBe("stored answer");
+    expect(fullRead).not.toHaveBeenCalled();
+    expect(
+      transcriptStore.getSurfaceMessageFinalText({
+        ...replyRef,
+        requestClient: "discord",
+        sessionId: "other",
+      }),
+    ).toEqual(Result.ok(null));
+    fullRead.mockRestore();
+    transcriptStore.close();
   });
 
   it("preserves Panic from previous-message context and falls back for a typed failure", async () => {
@@ -2472,6 +2512,359 @@ describe("startBusRequestRouter", () => {
     );
 
     expect(received.length).toBe(0);
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("drops a gated batch when a mention publishes while the gate is pending", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const logger = new Logger({ module: "bus-request-router-supersede-test" });
+    const batchDecision = Promise.withResolvers<unknown>();
+    const info = spyOn(logger, "info").mockImplementation((message: unknown, context?: unknown) => {
+      if (message === "router.route.decision") batchDecision.resolve(context);
+    });
+
+    const sessionId = "chan";
+    const now = Date.now();
+    const adapter = new FakeAdapter({
+      [`${sessionId}:m1`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "hello there",
+        ts: now,
+        raw: { reference: {} },
+      },
+      [`${sessionId}:m2`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi",
+        ts: now + 1,
+        raw: { reference: {} },
+      },
+    });
+
+    const gateEntered = Promise.withResolvers<void>();
+    const gateDecision = Promise.withResolvers<{ forward: boolean; reason: string }>();
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      logger,
+      routerGate: async () => {
+        gateEntered.resolve();
+        return await gateDecision.promise;
+      },
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+            previewFinalOutputStyle: "embed",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await subscribeTopicForTest(
+      bus,
+      "cmd.request",
+      { mode: "fanout", subscriptionId: "test", consumerId: "c1" },
+      async (m) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) received.push(m);
+        return Result.ok(undefined);
+      },
+    );
+
+    await triggerRouterDebounce(
+      () =>
+        bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+          platform: "discord",
+          channelId: sessionId,
+          messageId: "m1",
+          userId: "u1",
+          userName: "user1",
+          text: "hello there",
+          ts: now,
+          raw: { discord: { isDMBased: false, mentionsBot: false, replyToBot: false } },
+        }),
+      gateEntered.promise,
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: "m2",
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi",
+      ts: now + 1,
+      raw: { discord: { isDMBased: false, mentionsBot: true, replyToBot: false } },
+    });
+    expect(received).toHaveLength(1);
+    expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:m2`);
+
+    gateDecision.resolve({ forward: true, reason: "yes" });
+    expect(await batchDecision.promise).toMatchObject({
+      decision: "skip",
+      reason: "active_batch_superseded",
+    });
+    expect(received).toHaveLength(1);
+
+    info.mockRestore();
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("joins a mention to a batch that is still composing instead of publishing twice", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const sessionId = "chan";
+    const now = Date.now();
+    const compositionEntered = Promise.withResolvers<void>();
+    const resumeComposition = Promise.withResolvers<void>();
+    let pausedComposition = false;
+    class PausingAdapter extends FakeAdapter {
+      override async listMsg(sessionRef: SessionRef, opts?: LimitOpts) {
+        if (!pausedComposition) {
+          pausedComposition = true;
+          compositionEntered.resolve();
+          await resumeComposition.promise;
+        }
+        return await super.listMsg(sessionRef, opts);
+      }
+    }
+    const adapter = new PausingAdapter({
+      [`${sessionId}:m1`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "hello there",
+        ts: now,
+        raw: { reference: {} },
+      },
+      [`${sessionId}:m2`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi",
+        ts: now + 1,
+        raw: { reference: {} },
+      },
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+            previewFinalOutputStyle: "embed",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: false, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const batchPublished = Promise.withResolvers<void>();
+    const sub = await subscribeTopicForTest(
+      bus,
+      "cmd.request",
+      { mode: "fanout", subscriptionId: "test", consumerId: "c1" },
+      async (m) => {
+        if (m.type !== lilacEventTypes.CmdRequestMessage) return Result.ok(undefined);
+        received.push(m);
+        const isBatchPrompt =
+          m.data.queue === "prompt" && !String(m.headers?.request_id).startsWith("discord:");
+        if (isBatchPrompt) batchPublished.resolve();
+        return Result.ok(undefined);
+      },
+    );
+
+    await triggerRouterDebounce(
+      () =>
+        bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+          platform: "discord",
+          channelId: sessionId,
+          messageId: "m1",
+          userId: "u1",
+          userName: "user1",
+          text: "hello there",
+          ts: now,
+          raw: { discord: { isDMBased: false, mentionsBot: false, replyToBot: false } },
+        }),
+      compositionEntered.promise,
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: "m2",
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi",
+      ts: now + 1,
+      raw: { discord: { isDMBased: false, mentionsBot: true, replyToBot: false } },
+    });
+
+    resumeComposition.resolve();
+    await batchPublished.promise;
+
+    const requestIds = new Set(received.map((m) => m.headers?.request_id));
+    expect(requestIds.size).toBe(1);
+    expect(received.filter((m) => m.data.queue === "prompt")).toHaveLength(1);
+
+    await sub.stop();
+    await router.stop();
+  });
+
+  it("releases the session claim when a batch fails to publish", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const logger = new Logger({ module: "bus-request-router-claim-release-test" });
+    const batchFailed = Promise.withResolvers<void>();
+    const markFailed = () => batchFailed.resolve();
+    spyOn(logger, "warn").mockImplementation(markFailed);
+    spyOn(logger, "error").mockImplementation(markFailed);
+    const sessionId = "chan";
+    const now = Date.now();
+    const adapter = new FakeAdapter({
+      [`${sessionId}:m2`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi",
+        ts: now + 1,
+        raw: { reference: {} },
+      },
+    });
+    const listFailure = new SurfaceUnavailable({
+      platform: "discord",
+      operation: "list-messages",
+      message: "unavailable",
+    });
+    // Only the first composition fails; the mention afterwards composes normally.
+    const listMsg = adapter.listMsg.bind(adapter);
+    let listCalls = 0;
+    spyOn(adapter, "listMsg").mockImplementation(async (sessionRef, opts) => {
+      listCalls += 1;
+      if (listCalls === 1) return Result.err(listFailure);
+      return await listMsg(sessionRef, opts);
+    });
+
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      logger,
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+            previewFinalOutputStyle: "embed",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: false, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await subscribeTopicForTest(
+      bus,
+      "cmd.request",
+      { mode: "fanout", subscriptionId: "test", consumerId: "c1" },
+      async (m) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) received.push(m);
+        return Result.ok(undefined);
+      },
+    );
+
+    await triggerRouterDebounce(
+      () =>
+        bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+          platform: "discord",
+          channelId: sessionId,
+          messageId: "m1",
+          userId: "u1",
+          userName: "user1",
+          text: "hello there",
+          ts: now,
+          raw: { discord: { isDMBased: false, mentionsBot: false, replyToBot: false } },
+        }),
+      batchFailed.promise,
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: "m2",
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi",
+      ts: now + 1,
+      raw: { discord: { isDMBased: false, mentionsBot: true, replyToBot: false } },
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:m2`);
+    expect(received[0].data.queue).toBe("prompt");
 
     await sub.stop();
     await router.stop();

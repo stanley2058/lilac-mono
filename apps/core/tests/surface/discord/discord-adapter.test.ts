@@ -264,6 +264,20 @@ describe("classifyDiscordSurfaceError", () => {
     expect(classified).toMatchObject({ platform: "discord", operation: "send-message" });
   });
 
+  it("keeps the Discord error message", () => {
+    const cause = Object.assign(new Error("Invalid Form Body\nembeds[0].description"), {
+      code: 50_035,
+      status: 400,
+    });
+    expect(classifyDiscordSurfaceError("send-message", cause)).toMatchObject({
+      _tag: "SurfaceInvalidInput",
+      message: "Invalid Form Body\nembeds[0].description",
+    });
+    expect(classifyDiscordSurfaceError("send-message", { status: 503 })).toMatchObject({
+      message: "Discord operation failed",
+    });
+  });
+
   it("classifies adapter availability and leaves unknown defects unclassified", () => {
     expect(
       classifyDiscordSurfaceError(
@@ -594,6 +608,35 @@ describe("DiscordAdapter.sendMsg content validation", () => {
       operation: "send-message",
       field: "content.accentColor",
     });
+  });
+
+  it("rejects action-card text past the embed description limit", async () => {
+    const sends: unknown[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          send: async (payload: unknown) => {
+            sends.push(payload);
+            return { id: "sent-1" };
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.sendMsg(
+      { platform: "discord", channelId: "c1" },
+      {
+        text: "x".repeat(4097),
+        actions: [{ actionId: "choose", label: "1", style: "primary" as const }],
+      },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected oversized embed failure");
+    expect(result.error).toBeInstanceOf(SurfaceInvalidInput);
+    expect(result.error).toMatchObject({ operation: "send-message", field: "content.text" });
+    expect(sends).toEqual([]);
   });
 
   it("notifies action-card replies only when explicitly requested", async () => {
@@ -1885,6 +1928,62 @@ it("preserves idle presence when the configured status message changes", async (
   }
 });
 
+describe("DiscordAdapter.deleteMsg", () => {
+  it("deletes by id without reading the message first", async () => {
+    const calls: string[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => {
+              calls.push("fetch");
+              throw new Error("unexpected message read");
+            },
+            delete: async (messageId: string) => {
+              calls.push(`delete:${messageId}`);
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.deleteMsg({
+      platform: "discord",
+      channelId: "c1",
+      messageId: "m1",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(calls).toEqual(["delete:m1"]);
+  });
+
+  it("classifies a missing message", async () => {
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            delete: async () => {
+              throw Object.assign(new Error("Unknown Message"), { code: 10_008, status: 404 });
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.deleteMsg({
+      platform: "discord",
+      channelId: "c1",
+      messageId: "m1",
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected delete failure");
+    expect(result.error).toBeInstanceOf(SurfaceMessageNotFound);
+  });
+});
+
 describe("DiscordAdapter.editMsg", () => {
   it("replaces only the embed description for single-embed bot messages", async () => {
     const editCalls: Array<Record<string, unknown>> = [];
@@ -1927,7 +2026,7 @@ describe("DiscordAdapter.editMsg", () => {
     );
 
     expect(editCalls).toHaveLength(1);
-    expect(fetchCalls).toEqual([{ message: "m1", cache: false, force: true }]);
+    expect(fetchCalls).toEqual([{ message: "m1" }]);
     expect(editCalls[0]?.content).toBeUndefined();
 
     const embeds = editCalls[0]?.embeds as Array<{ toJSON(): Record<string, unknown> }> | undefined;
@@ -1975,6 +2074,33 @@ describe("DiscordAdapter.editMsg", () => {
     expect(editCalls).toHaveLength(1);
     expect(editCalls[0]?.attachments).toEqual([]);
     expect(editCalls[0]?.files).toEqual([]);
+  });
+
+  it("rejects embed text past the description limit", async () => {
+    const editCalls: unknown[] = [];
+    const message = {
+      author: { id: "bot" },
+      embeds: [{ toJSON: () => ({ description: "old-description" }) }],
+      edit: async (options: unknown) => {
+        editCalls.push(options);
+      },
+    } as unknown as Message;
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      user: { id: "bot" },
+      channels: { fetch: async () => ({ messages: { fetch: async () => message } }) },
+    };
+
+    const result = await adapter.editMsg(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      { text: "x".repeat(4097) },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected oversized embed failure");
+    expect(result.error).toBeInstanceOf(SurfaceInvalidInput);
+    expect(result.error).toMatchObject({ operation: "edit-message", field: "content.text" });
+    expect(editCalls).toEqual([]);
   });
 
   it("fails for non-bot-authored messages", async () => {

@@ -28,6 +28,7 @@ function fixture() {
     adapters: { resolve: () => null, registeredPlatforms: () => [] },
     transcripts: {
       listDiscoveryRecords: () => [],
+      listDiscoveryRecordsInSurfaceChannel: () => [],
       getRequestTranscript: () => Result.ok(null),
       getCorePrimaryLineageManifest: () => Result.ok(null),
       getCoreSurfaceProjection: () => Result.ok(null),

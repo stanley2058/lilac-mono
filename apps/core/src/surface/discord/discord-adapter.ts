@@ -115,6 +115,7 @@ const discordOperationErrorSchema = z
     code: z.number().int().optional(),
     status: z.number().int().optional(),
     retry_after: z.number().nonnegative().optional(),
+    message: z.string().min(1).optional(),
   })
   .loose();
 
@@ -165,7 +166,7 @@ export function captureDiscordSurfaceError(cause: unknown): Error | Panic {
 export function classifyDiscordSurfaceError(
   operation: SurfaceOperation,
   error: unknown,
-  message = "Discord operation failed",
+  messageOverride?: string,
 ): SurfaceOperationError | null {
   if (error instanceof DiscordAdapterUnavailable) {
     return new SurfaceUnavailable({ platform: "discord", operation, message: error.message });
@@ -173,6 +174,7 @@ export function classifyDiscordSurfaceError(
   const parsed = discordOperationErrorSchema.safeParse(error);
   if (!parsed.success) return null;
   const { code, status, retry_after: retryAfterSeconds } = parsed.data;
+  const message = messageOverride ?? parsed.data.message ?? "Discord operation failed";
   if (code === 10_003 || code === 10_008 || status === 404) {
     return new SurfaceMessageNotFound({ platform: "discord", operation, message });
   }
@@ -201,6 +203,22 @@ export function classifyDiscordSurfaceError(
     return new SurfaceUnavailable({ platform: "discord", operation, message });
   }
   return null;
+}
+
+const DISCORD_EMBED_DESCRIPTION_MAX_CHARS = 4096;
+
+/** EmbedBuilder throws an untyped validation error past Discord's description limit. */
+function oversizedEmbedDescription(
+  operation: SurfaceOperation,
+  description: string,
+): SurfaceInvalidInput | null {
+  if (description.length <= DISCORD_EMBED_DESCRIPTION_MAX_CHARS) return null;
+  return new SurfaceInvalidInput({
+    platform: "discord",
+    operation,
+    field: "content.text",
+    message: `Discord embed text has ${description.length} characters; the limit is ${DISCORD_EMBED_DESCRIPTION_MAX_CHARS}`,
+  });
 }
 
 export function classifyDiscordSurfaceNotFound(
@@ -1586,6 +1604,8 @@ export class DiscordAdapter implements SurfaceAdapter {
         );
       }
       const text = this.entityMapper?.rewriteOutgoingText(content.text ?? "") ?? content.text ?? "";
+      const oversized = oversizedEmbedDescription("send-message", text);
+      if (oversized) return Result.err(oversized);
       const embed = new EmbedBuilder().setDescription(text || "*<empty_string>*");
       if (content.accentColor !== undefined) embed.setColor(content.accentColor);
       const sent = await captureDiscordOperation("send-message", async () =>
@@ -1744,8 +1764,9 @@ export class DiscordAdapter implements SurfaceAdapter {
       );
     }
 
+    // Gateway updates keep cached messages current, so only a cache miss needs a REST read.
     const messageResult = await captureDiscordOperation("edit-message", () =>
-      channel.messages.fetch({ message: discordRef.messageId, cache: false, force: true }),
+      channel.messages.fetch({ message: discordRef.messageId }),
     );
     const messageError = messageResult.match({ ok: () => null, err: (error) => error });
     if (messageError) return Result.err(messageError);
@@ -1816,6 +1837,8 @@ export class DiscordAdapter implements SurfaceAdapter {
       );
     }
 
+    const oversized = oversizedEmbedDescription("edit-message", rewritten);
+    if (oversized) return Result.err(oversized);
     const embed = new EmbedBuilder(existingEmbed.toJSON());
     embed.setDescription(rewritten);
     if (content.accentColor !== undefined) embed.setColor(content.accentColor);
@@ -1849,7 +1872,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const fetchError = fetched.match({ ok: () => null, err: (error) => error });
     if (fetchError) return Result.err(fetchError);
     const channel = selectResultValue(fetched);
-    if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
+    if (!channel || !("messages" in channel) || !channel.messages?.delete) {
       return Result.err(
         new SurfaceMessageNotFound({
           platform: "discord",
@@ -1859,13 +1882,8 @@ export class DiscordAdapter implements SurfaceAdapter {
       );
     }
 
-    const message = await captureDiscordOperation("delete-message", () =>
-      channel.messages.fetch({ message: discordRef.messageId, cache: false, force: true }),
-    );
-    const messageError = message.match({ ok: () => null, err: (error) => error });
-    if (messageError) return Result.err(messageError);
     const deleted = await captureDiscordOperation("delete-message", () =>
-      selectResultValue(message).delete(),
+      channel.messages.delete(discordRef.messageId),
     );
     return deleted.map(() => undefined);
   }
@@ -2890,6 +2908,8 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
     const raw = content.text ?? "";
     const rewritten = this.entityMapper?.rewriteOutgoingText(raw) ?? raw;
+    const oversized = oversizedEmbedDescription("edit-message", rewritten);
+    if (oversized) return Result.err(oversized);
     const embed = new EmbedBuilder().setDescription(rewritten);
     if (content.accentColor !== undefined) embed.setColor(content.accentColor);
     const updated = await captureDiscordOperation("edit-message", () =>

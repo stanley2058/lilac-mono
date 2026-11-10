@@ -587,11 +587,13 @@ function createFakeDiscordClient(opts?: {
   editFailure?: unknown;
   failEditWithFiles?: boolean;
   sendFailure?: unknown;
+  failSendAt?: number;
   failReplyAt?: number;
   replyFailure?: unknown;
   failResumeFetch?: boolean;
   resumeFetchFailure?: unknown;
   onEdit?: (options: unknown) => void;
+  guildPremiumTier?: number;
 }): {
   client: Client;
   createdMessageIds: string[];
@@ -626,6 +628,7 @@ function createFakeDiscordClient(opts?: {
   let nextMessageId = 1;
   let nextAttachmentId = 1;
   let replyAttempts = 0;
+  let sendAttempts = 0;
   const channelId = "chan";
 
   const fileCountFromOptions = (options: unknown): number => {
@@ -727,8 +730,15 @@ function createFakeDiscordClient(opts?: {
   };
 
   const channel = {
+    ...(opts?.guildPremiumTier === undefined
+      ? {}
+      : { guild: { premiumTier: opts.guildPremiumTier } }),
     send: async (options: unknown) => {
       if (opts?.sendFailure) throw opts.sendFailure;
+      sendAttempts += 1;
+      if (sendAttempts === opts?.failSendAt) {
+        throw Object.assign(new Error("send unavailable"), { status: 503 });
+      }
       return createMessage({ operation: "send", options });
     },
     messages: {
@@ -963,26 +973,19 @@ describe("Discord initial output", () => {
 
 describe("Discord compact progress integration", () => {
   it("moves a completed agent into history before newer tool activity", async () => {
-    let resolveActiveEdit: (options: unknown) => void = () => {};
     let resolveCompletedEdit: (options: unknown) => void = () => {};
     let resolveShiftedEdit: (options: unknown) => void = () => {};
-    const activeEdit = new Promise<unknown>((resolve) => {
-      resolveActiveEdit = resolve;
-    });
     const completedEdit = new Promise<unknown>((resolve) => {
       resolveCompletedEdit = resolve;
     });
     const shiftedEdit = new Promise<unknown>((resolve) => {
       resolveShiftedEdit = resolve;
     });
-    const { client } = createFakeDiscordClient({
+    const { client, operations } = createFakeDiscordClient({
       onEdit: (options) => {
         const lines = embedFieldValuesFromOptions(options)
           .flatMap((value) => value.replaceAll("\\", "").split("\n"))
           .filter(Boolean);
-        if (lines.some((line) => line.includes("… general") && line.includes("1/2"))) {
-          resolveActiveEdit(options);
-        }
         if (lines.some((line) => line.includes("✓ general")) && lines.length === 1) {
           resolveCompletedEdit(options);
         }
@@ -1010,7 +1013,10 @@ describe("Discord compact progress integration", () => {
         display: "subagent (general; gpt-5.6-sol [high]; 1/2 done)\n`- > bash child-check",
       },
     });
-    await activeEdit;
+    const activeLines = embedFieldValuesFromOptions(operations[0]?.options).join("\n");
+    expect(operations[0]?.kind).toBe("send");
+    expect(activeLines).toContain("general");
+    expect(activeLines).toContain("1/2");
 
     await out.push({
       type: "tool.status",
@@ -1268,9 +1274,78 @@ describe("output operation failures", () => {
     });
 
     await out.push({ type: "text.delta", delta: "hello" });
-    await expect(out.finish()).rejects.toMatchObject({
-      _tag: "DiscordEmbedPusherInvariant",
+    const result = await out.finish();
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected finish failure");
+    expect(result.error).toMatchObject({
+      _tag: "SurfaceOperationPartiallyCompleted",
+      operation: "finish-output",
     });
+  });
+
+  it("continues streaming in a fresh message when the edited message was deleted", async () => {
+    const { client, createdMessageIds, operations } = createFakeDiscordClient({
+      editFailure: { code: 10_008, status: 404 },
+    });
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "hello" });
+    const result = resultValue(await out.finish());
+
+    expect(createdMessageIds.length).toBeGreaterThan(1);
+    expect(result.last.messageId).toBe(createdMessageIds.at(-1)!);
+    const last = operations.filter((op) => op.messageId === result.last.messageId).at(-1);
+    expect(embedDescriptionsFromOptions(last?.options)).toEqual(["hello"]);
+  });
+
+  it("keeps the preview when the final reply fails", async () => {
+    const { client, createdMessageIds, deletedMessageIds } = createFakeDiscordClient({
+      failSendAt: 2,
+    });
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      outputPreviewModeFinalStyle: "plain",
+      outputPreviewModeFinalText: "reply-chain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "hello" });
+    const result = await out.finish();
+
+    expect(result.status).toBe("error");
+    expect(createdMessageIds).toHaveLength(1);
+    expect(deletedMessageIds).toEqual([]);
+  });
+
+  it("deletes the preview after the final reply succeeds", async () => {
+    const { client, createdMessageIds, deletedMessageIds } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      outputPreviewModeFinalStyle: "plain",
+      outputPreviewModeFinalText: "reply-chain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "hello" });
+    resultValue(await out.finish());
+
+    expect(createdMessageIds).toHaveLength(2);
+    expect(deletedMessageIds).toEqual([createdMessageIds[0]!]);
   });
 
   it("returns partial completion when a later final chunk fails", async () => {
@@ -1330,6 +1405,73 @@ describe("attachment finalization", () => {
     const replyWithFiles = operations.filter((op) => op.kind === "reply" && hasFiles(op.options));
     expect(replyWithFiles.length).toBe(0);
   });
+
+  const MIB = 1024 * 1024;
+  const sizedAttachment = (index: number, mib: number): SurfaceAttachment => ({
+    ...makeAttachment(index),
+    bytes: new Uint8Array(mib * MIB),
+  });
+  const finishWithAttachments = async (tier: number | undefined, sizesMib: readonly number[]) => {
+    const { client, operations } = createFakeDiscordClient({ guildPremiumTier: tier });
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      outputPreviewModeFinalStyle: "plain",
+      outputPreviewModeFinalText: "reply-chain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "files" });
+    for (const [index, mib] of sizesMib.entries()) {
+      await out.push({ type: "attachment.add", attachment: sizedAttachment(index, mib) });
+    }
+    const result = resultValue(await out.finish());
+    const finalOps = operations.filter((op) =>
+      result.created.some((ref) => ref.messageId === op.messageId),
+    );
+    return {
+      uploads: finalOps.filter((op) => hasFiles(op.options)).map((op) => filesCount(op.options)),
+      contents: finalOps.flatMap((op) => contentFromOptions(op.options) ?? []),
+    };
+  };
+
+  it.each([
+    ["a DM", undefined],
+    ["a tier 2 guild", 2],
+    ["a tier 3 guild", 3],
+  ] as const)("keeps each upload request within the request byte budget in %s", async (_, tier) => {
+    const { uploads } = await finishWithAttachments(tier, [12, 12, 12]);
+    expect(uploads).toEqual([2, 1]);
+  });
+
+  it.each([
+    ["a tier 2 guild", 2, [40, 12]],
+    ["a tier 3 guild", 3, [90, 12]],
+  ] as const)(
+    "sends a file over the request budget alone when %s allows its size",
+    async (_, tier, sizesMib) => {
+      const { uploads, contents } = await finishWithAttachments(tier, sizesMib);
+      expect(uploads).toEqual([1, 1]);
+      expect(contents.some((content) => content.includes("Skipped attachment"))).toBe(false);
+    },
+  );
+
+  it.each([
+    ["a DM", undefined, 21, "20 MiB"],
+    ["a tier 2 guild", 2, 51, "50 MiB"],
+  ] as const)(
+    "skips a file over the per-file limit in %s with a notice",
+    async (_, tier, mib, limit) => {
+      const { uploads, contents } = await finishWithAttachments(tier, [mib, 1]);
+      expect(uploads).toEqual([1]);
+      expect(contents).toContain(
+        `Skipped attachment \`image-0.png\` (${mib} MiB): over the ${limit} Discord upload limit for this channel.`,
+      );
+    },
+  );
 
   it("preview mode posts attachments on the final reposted split message", async () => {
     const { client, operations } = createFakeDiscordClient();
@@ -1461,6 +1603,28 @@ describe("styled message send", () => {
       "hello",
     ]);
     expect(operations.some((op) => contentFromOptions(op.options) === "hello")).toBe(false);
+  });
+
+  it("sends embed style directly without a streaming edit", async () => {
+    const { client, operations } = createFakeDiscordClient();
+
+    const last = resultValue(
+      await sendDiscordStyledMessage({
+        client,
+        sessionRef,
+        content: { text: "x".repeat(5000), attachments: [makeAttachment(1)] },
+        opts: { replyTo: { platform: "discord", channelId: "chan", messageId: "origin" } },
+        useSmartSplitting: false,
+      }),
+    );
+
+    expect(operations.map((op) => op.kind)).toEqual(["send", "reply"]);
+    expect(operations[0]?.options).toMatchObject({ reply: { messageReference: "origin" } });
+    expect(operations.flatMap((op) => embedDescriptionsFromOptions(op.options)).join("")).toBe(
+      "x".repeat(5000),
+    );
+    expect(uploadedFileNames(operations[1]?.options)).toEqual(["image-1.png"]);
+    expect(last.messageId).toBe(operations[1]!.messageId);
   });
 });
 

@@ -9,6 +9,7 @@ import {
   type Client,
   type Channel,
   EmbedBuilder,
+  GuildPremiumTier,
   type Message,
   type MessageCreateOptions,
 } from "discord.js";
@@ -29,6 +30,7 @@ import type {
   SurfaceToolStatusUpdate,
 } from "../../adapter";
 import {
+  SurfaceMessageNotFound,
   SurfacePlatformMismatch,
   SurfaceOperationPartiallyCompleted,
   SurfaceUnavailable,
@@ -48,7 +50,12 @@ import type { MarkdownTableRenderOptions } from "../../../shared/markdown-table-
 
 // Attachments are buffered during streaming and finalized on the terminal message.
 
-import { getEmbedPusherConstants, startEmbedPusher } from "./embed-pusher";
+import {
+  DiscordEmbedEditFailed,
+  getEmbedPusherConstants,
+  startEmbedPusher,
+  type EmbedEditOutcome,
+} from "./embed-pusher";
 import { chunkMarkdownForEmbeds } from "./markdown-chunker";
 import { normalizeDiscordBlockquotes } from "./discord-markdown-normalize";
 import {
@@ -157,6 +164,11 @@ async function captureDiscordOutputOperation<T>(
             new SurfaceUnavailable({ platform: "discord", operation, message: cause.message }),
           ),
         };
+      }
+      if (cause instanceof DiscordEmbedEditFailed) {
+        const classified = classifyDiscordSurfaceError(operation, cause.cause);
+        if (classified) return { kind: "result", result: Result.err(classified) };
+        return { kind: "failure", cause };
       }
       if (cause instanceof DiscordOutputInvariantViolation) {
         return {
@@ -595,6 +607,80 @@ function buildFinalStatsFieldValue(line: string): string {
   return wrapped.slice(0, maxLength - overflow.length) + overflow;
 }
 
+const DISCORD_MAX_FILES_PER_MESSAGE = 10;
+const MIB = 1024 * 1024;
+const DISCORD_DEFAULT_FILE_LIMIT_BYTES = 20 * MIB;
+const DISCORD_REQUEST_LIMIT_BYTES = 25 * MIB;
+// The JSON payload and multipart framing share the request limit with the files.
+const DISCORD_REQUEST_FILE_BUDGET_BYTES = DISCORD_REQUEST_LIMIT_BYTES - MIB;
+
+/** Discord raises the per-file upload limit for boosted guilds; DMs keep the default. */
+function discordFileLimitBytes(channel: Channel): number {
+  const tier = "guild" in channel ? channel.guild?.premiumTier : undefined;
+  switch (tier) {
+    case GuildPremiumTier.Tier2:
+      return 50 * MIB;
+    case GuildPremiumTier.Tier3:
+      return 100 * MIB;
+    default:
+      return DISCORD_DEFAULT_FILE_LIMIT_BYTES;
+  }
+}
+
+type AttachmentBatch = {
+  batch: SurfaceAttachment[];
+  rest: SurfaceAttachment[];
+  skipped: SurfaceAttachment[];
+};
+
+/**
+ * Splits off the next upload batch within the file-count limit and the request byte budget.
+ * Files over the per-file limit are skipped. A single file over the request budget but within the
+ * per-file limit still goes alone, because boosted guilds accept files larger than the budget.
+ */
+function takeAttachmentBatch(
+  attachments: readonly SurfaceAttachment[],
+  maxFiles: number,
+  fileLimitBytes: number,
+): AttachmentBatch {
+  const batch: SurfaceAttachment[] = [];
+  const skipped: SurfaceAttachment[] = [];
+  let bytes = 0;
+  let index = 0;
+  for (; index < attachments.length; index++) {
+    const attachment = attachments[index]!;
+    const size = attachment.bytes.byteLength;
+    if (size > fileLimitBytes) {
+      skipped.push(attachment);
+      continue;
+    }
+    if (batch.length >= maxFiles) break;
+    if (batch.length > 0 && bytes + size > DISCORD_REQUEST_FILE_BUDGET_BYTES) break;
+    batch.push(attachment);
+    bytes += size;
+  }
+  return { batch, rest: attachments.slice(index), skipped };
+}
+
+function formatMib(bytes: number): string {
+  return `${(bytes / MIB).toFixed(1).replace(/\.0$/, "")} MiB`;
+}
+
+function skippedAttachmentNotice(
+  skipped: readonly SurfaceAttachment[],
+  fileLimitBytes: number,
+): string {
+  const lines = skipped.map(
+    (attachment) =>
+      `Skipped attachment \`${attachment.filename.replaceAll("`", "")}\` (${formatMib(
+        attachment.bytes.byteLength,
+      )}): over the ${formatMib(fileLimitBytes)} Discord upload limit for this channel.`,
+  );
+  const notice = lines.join("\n");
+  if (notice.length <= DISCORD_CONTENT_MAX_CHARS) return notice;
+  return `${notice.slice(0, DISCORD_CONTENT_MAX_CHARS - 1)}…`;
+}
+
 async function fetchTextChannelResult(
   client: Client,
   channelId: string,
@@ -622,17 +708,28 @@ function toDiscordFiles(attachments: readonly SurfaceAttachment[]): MessageCreat
   }));
 }
 
+async function editMessage(
+  msg: Message,
+  options: Parameters<Message["edit"]>[0],
+): Promise<EmbedEditOutcome> {
+  const edited = await Result.tryPromise({
+    try: () => msg.edit(options),
+    catch: captureDiscordSurfaceError,
+  });
+  return edited.match<EmbedEditOutcome>({
+    ok: () => ({ kind: "edited" }),
+    err: (cause) => {
+      if (Panic.is(cause)) return adaptDiscordOutputResultToHost(Result.err(cause));
+      if (classifyDiscordSurfaceError("edit-message", cause) instanceof SurfaceMessageNotFound) {
+        return { kind: "not-found" };
+      }
+      return { kind: "failed", cause };
+    },
+  });
+}
+
 async function safeEdit(msg: Message, options: Parameters<Message["edit"]>[0]): Promise<boolean> {
-  const edited = settleSurfaceFallback(
-    await Result.tryPromise({
-      try: () => msg.edit(options),
-      catch: (cause) =>
-        Panic.is(cause)
-          ? { kind: "panic", panic: cause, fallback: false }
-          : { kind: "fallback", fallback: false },
-    }),
-  );
-  return edited.match({ ok: () => true, err: () => false });
+  return (await editMessage(msg, options)).kind === "edited";
 }
 
 function adaptDiscordOutputResultToHost<T, E>(result: ResultType<T, E>): T {
@@ -666,6 +763,8 @@ export class DiscordOutputStream implements SurfaceOutputStream {
   private textAcc = "";
   private previewTextAcc = "";
   private pendingAttachments: SurfaceAttachment[] = [];
+  private readonly skippedAttachments = new Set<SurfaceAttachment>();
+  private fileLimitBytes = DISCORD_DEFAULT_FILE_LIMIT_BYTES;
 
   private firstMsg: Message | null = null;
   private lastMsg: Message | null = null;
@@ -981,6 +1080,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     const channelResult = await fetchTextChannelResult(client, discordSessionRef.channelId);
     const channel = adaptDiscordOutputResultToHost(channelResult);
+    this.fileLimitBytes = discordFileLimitBytes(channel);
     let recoveredMessage: Message | null = null;
     const resumeAt = this.deps.opts?.resumeAt;
     if (
@@ -1142,7 +1242,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         getMaxLength,
         streamDone: this.done.promise,
         useSmartSplitting: this.deps.useSmartSplitting,
-        safeEdit,
+        editMessage,
         getFirstMessageEditExtras: (isStreaming) => ({
           components: isStreaming ? buildCancelComponents(true) : [],
         }),
@@ -1274,11 +1374,13 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     if (!isDiscordSessionRef(sessionRef)) return [];
     if (this.pendingAttachments.length === 0) return [];
 
-    const MAX_FILES = 10;
     const created: MsgRef[] = [];
 
-    for (let i = 0; i < this.pendingAttachments.length; i += MAX_FILES) {
-      const chunk = this.pendingAttachments.slice(i, i + MAX_FILES);
+    let remaining = this.pendingAttachments;
+    while (remaining.length > 0) {
+      const { batch: chunk, rest } = this.takeUploadBatch(remaining, DISCORD_MAX_FILES_PER_MESSAGE);
+      remaining = rest;
+      if (chunk.length === 0) break;
       const msg = await replyTo.reply({
         files: toDiscordFiles(chunk),
         allowedMentions: { parse: [], repliedUser: false },
@@ -1295,16 +1397,58 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     return created;
   }
 
+  /** Records files over the per-file limit so the terminal notice can name them. */
+  private takeUploadBatch(
+    attachments: readonly SurfaceAttachment[],
+    maxFiles: number,
+  ): { batch: SurfaceAttachment[]; rest: SurfaceAttachment[] } {
+    const { batch, rest, skipped } = takeAttachmentBatch(
+      attachments,
+      maxFiles,
+      this.fileLimitBytes,
+    );
+    for (const attachment of skipped) this.skippedAttachments.add(attachment);
+    return { batch, rest };
+  }
+
+  private async postSkippedAttachmentNotice(replyTo: Message): Promise<MsgRef[]> {
+    const { sessionRef } = this.deps;
+    if (!isDiscordSessionRef(sessionRef)) return [];
+    if (this.skippedAttachments.size === 0) return [];
+
+    const content = skippedAttachmentNotice([...this.skippedAttachments], this.fileLimitBytes);
+    this.skippedAttachments.clear();
+    const msg = await replyTo.reply({
+      content,
+      allowedMentions: { parse: [], repliedUser: false },
+    });
+    const ref = asDiscordMsgRef(sessionRef.channelId, msg.id);
+    this.created.push(ref);
+    this.notifyCreated(ref);
+    this.lastMsg = msg;
+    return [ref];
+  }
+
   private async attachPendingAttachmentsToFinalMessage(target: Message): Promise<MsgRef[]> {
+    const created = await this.attachPendingFiles(target);
+    const notice = await this.postSkippedAttachmentNotice(this.lastMsg ?? target);
+    return [...created, ...notice];
+  }
+
+  private async attachPendingFiles(target: Message): Promise<MsgRef[]> {
     if (this.pendingAttachments.length === 0) return [];
 
-    const MAX_FILES = 10;
-    const available = MAX_FILES - target.attachments.size;
+    const available = DISCORD_MAX_FILES_PER_MESSAGE - target.attachments.size;
     if (available <= 0) return this.flushPendingAttachments(target);
-    const filesForFinal = this.pendingAttachments.slice(0, available);
-    const overflow = this.pendingAttachments.slice(available);
+    const { batch: filesForFinal, rest: overflow } = this.takeUploadBatch(
+      this.pendingAttachments,
+      available,
+    );
 
-    if (filesForFinal.length === 0) return [];
+    if (filesForFinal.length === 0) {
+      this.pendingAttachments = overflow;
+      return [];
+    }
 
     const keepAttachmentIds = [...target.attachments.keys()].map((id) => ({ id }));
     const edited = await safeEdit(target, {
@@ -1334,6 +1478,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
 
     const channelResult = await fetchTextChannelResult(client, discordSessionRef.channelId);
     const channel = adaptDiscordOutputResultToHost(channelResult);
+    this.fileLimitBytes = discordFileLimitBytes(channel);
     const { CLOSING_TAG_BUFFER } = getEmbedPusherConstants();
     const fullText = this.getRenderedText("terminal");
     const content = fullText.length > 0 ? fullText : "*<empty_string>*";
@@ -1347,9 +1492,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       completeLastChunk: true,
     });
 
-    const MAX_FILES = 10;
-    const filesForLastMessage = this.pendingAttachments.slice(0, MAX_FILES);
-    const overflowAttachments = this.pendingAttachments.slice(MAX_FILES);
+    const { batch: filesForLastMessage, rest: overflowAttachments } = this.takeUploadBatch(
+      this.pendingAttachments,
+      DISCORD_MAX_FILES_PER_MESSAGE,
+    );
 
     const displayChunks = chunks.length > 0 ? chunks : ["*<empty_string>*"];
     const createdMsgs: Message[] = [];
@@ -1462,6 +1608,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     const preparationStartedAt = performance.now();
     const channelResult = await fetchTextChannelResult(client, discordSessionRef.channelId);
     const channel = adaptDiscordOutputResultToHost(channelResult);
+    this.fileLimitBytes = discordFileLimitBytes(channel);
     const channelFetchedAt = performance.now();
     const displayChunks = await this.buildFinalPlainChunks();
     if (imageOutput) {
@@ -1473,9 +1620,10 @@ export class DiscordOutputStream implements SurfaceOutputStream {
       });
     }
 
-    const MAX_FILES = 10;
-    const filesForLastMessage = this.pendingAttachments.slice(0, MAX_FILES);
-    const overflowAttachments = this.pendingAttachments.slice(MAX_FILES);
+    const { batch: filesForLastMessage, rest: overflowAttachments } = this.takeUploadBatch(
+      this.pendingAttachments,
+      DISCORD_MAX_FILES_PER_MESSAGE,
+    );
 
     const createdMsgs: Message[] = [];
     let parent: Message | null = null;
@@ -1585,6 +1733,18 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     );
   }
 
+  /** Posts complete text as final embeds without streaming edits. */
+  async sendEmbeds(
+    text: string,
+    attachments: readonly SurfaceAttachment[],
+  ): Promise<SurfaceOperationResult<SurfaceOutputResult>> {
+    this.textAcc = text;
+    this.pendingAttachments = [...attachments];
+    return await this.captureFinishOutput(async () =>
+      this.completeFinalReply(await this.postFinalReplyEmbeds()),
+    );
+  }
+
   private async captureFinishOutput(
     effect: () => Promise<SurfaceOutputResult>,
   ): Promise<SurfaceOperationResult<SurfaceOutputResult>> {
@@ -1628,37 +1788,20 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     }
 
     if (this.isPreviewMode()) {
-      const finalReplyPromise =
+      // The preview stays until the final reply lands, so a failed reply never leaves the
+      // channel without any visible output.
+      const [finalReplySettled] = await Promise.allSettled([
         this.deps.outputPreviewModeFinalStyle === "plain"
           ? this.postFinalReplyPlain()
-          : this.postFinalReplyEmbeds();
-      const deletePreviewPromise = this.deleteTransientPreviewMessages();
-
-      const [finalReplySettled, deletePreviewSettled] = await Promise.allSettled([
-        finalReplyPromise,
-        deletePreviewPromise,
+          : this.postFinalReplyEmbeds(),
       ]);
-      if (finalReplySettled.status === "rejected" && Panic.is(finalReplySettled.reason)) {
-        throw finalReplySettled.reason;
-      }
-      if (deletePreviewSettled.status === "rejected") {
-        const failure =
-          deletePreviewSettled.reason instanceof Error
-            ? deletePreviewSettled.reason
-            : new DiscordOutputInvariantViolation({
-                message: "Discord preview cleanup rejected with a non-Error value",
-              });
-        throw failure;
-      }
       if (finalReplySettled.status === "rejected") {
-        const failure =
-          finalReplySettled.reason instanceof Error
-            ? finalReplySettled.reason
-            : new DiscordOutputInvariantViolation({
-                message: "Discord final reply rejected with a non-Error value",
-              });
-        throw failure;
+        if (finalReplySettled.reason instanceof Error) throw finalReplySettled.reason;
+        throw new DiscordOutputInvariantViolation({
+          message: "Discord final reply rejected with a non-Error value",
+        });
       }
+      await this.deleteTransientPreviewMessages();
       return await this.completeFinalReply(finalReplySettled.value);
     }
 
@@ -1789,34 +1932,9 @@ export async function sendDiscordStyledMessage(params: {
     workingIndicators: ["Working"],
   });
 
-  if (params.content.style === "plain") {
-    const sent = await out.sendPlain(text, attachments);
-    return sent.map((value) => value.last);
-  }
-
-  const pushAttachmentAt = async (index: number): Promise<SurfaceOperationResult<MsgRef>> => {
-    const attachment = attachments[index];
-    if (attachment) {
-      const pushed = await out.push({ type: "attachment.add", attachment });
-      const continuePushed = pushed.match<() => Promise<SurfaceOperationResult<MsgRef>>>({
-        err: (error) => async () => Result.err(error),
-        ok: () => async () => await pushAttachmentAt(index + 1),
-      });
-      return await continuePushed();
-    }
-    const textPushed = await out.push({ type: "text.set", text });
-    const continueText = textPushed.match<() => Promise<SurfaceOperationResult<MsgRef>>>({
-      err: (error) => async () => Result.err(error),
-      ok: () => async () => {
-        const finished = await out.finish();
-        const continueFinished = finished.match<() => SurfaceOperationResult<MsgRef>>({
-          err: (error) => () => Result.err(error),
-          ok: (value) => () => Result.ok(value.last),
-        });
-        return continueFinished();
-      },
-    });
-    return await continueText();
-  };
-  return await pushAttachmentAt(0);
+  const sent =
+    params.content.style === "plain"
+      ? await out.sendPlain(text, attachments)
+      : await out.sendEmbeds(text, attachments);
+  return sent.map((value) => value.last);
 }
