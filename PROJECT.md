@@ -103,6 +103,9 @@ admits execution. Stable delivery identities bridge these stores; the native sur
 second model-execution queue. Each human user also has one permanent native DM, with gap-based
 context sessions and manual compaction through the shared agent engine. DM display history
 is retained, and search/read authority remains restricted to its starter. Starter authority and history generation are rechecked at admission.
+Each native primary transcript row holds one turn; `execution.ts` rebuilds a thread's model context by joining
+the rows of its canonical turns from the selected start, beginning at the newest full row (a compaction checkpoint
+or a row written before turn rows). See [native turn transcripts](MIGRATIONS.md#native-turn-transcripts).
 Native surface-tool sends default to `triggerRun=false` and are persisted in request groups. The request
 lifecycle bus closes groups; native thread activity gates atomic delivery in first-group order. The tool
 returns a queued acknowledgment while messages remain absent from history. Explicit `triggerRun=true` sends retain their

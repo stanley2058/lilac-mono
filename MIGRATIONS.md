@@ -39,7 +39,6 @@ Deploy Core, web, and TUI together because older strict wire decoders reject the
 Before downgrading, remove `transport` from the stored deployment settings or restore a pre-upgrade
 backup. The native database schema version is unchanged.
 
-
 For v3, follow the [ordered upgrade procedure](docs/core-config-migrations.md#upgrade-procedure).
 V1/v2 remain readable. Their legacy profile model choices are ignored; delegated models are selected
 per call. V3 changes default delegated authority from restricted to full when the caller can grant it.
@@ -436,6 +435,20 @@ leave schema 14 unchanged, and older builds ignore them. The first start on a la
 time building them. Retention pruning now runs in its own transaction after each save, so a pruning
 failure logs `transcript retention prune failed` and keeps the saved transcript. To restore an exact
 pre-upgrade schema, drop the three indexes; an older binary does not need that.
+
+### Native turn transcripts
+
+A native primary run now saves only its own turn: its input message, any steering, generated context,
+and the response. Earlier rows held the run's whole context, so a thread's storage grew with the square
+of its turn count. Core rebuilds a native thread's context by joining the rows of its canonical turns,
+which native retention already keeps. A compaction checkpoint, and a run that compacted before failing,
+still save the full compacted context, and the rebuild starts there. Schema 14 is unchanged.
+
+Existing rows need no migration. A row that does not start with its own turn's input message is read as
+full context, as before, so a thread can mix old and new rows. Rollback is not seamless: an older
+build reads a new row as the run's whole context, so it sees only the latest turn of a thread that
+gained new rows. Restore the pre-upgrade transcript and native databases together to keep that
+history across a rollback.
 
 ### Accepted work and agent-run checkpoints
 

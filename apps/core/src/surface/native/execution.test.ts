@@ -20,6 +20,7 @@ import {
 } from "@stanley2058/lilac-event-bus";
 import { SqliteTranscriptStore } from "../../transcript/transcript-store";
 import { createNativeExecution } from "./execution";
+import { selectNativeTurnMessages } from "./turn-transcript";
 import { NativeStore } from "./store";
 import { parseNativeRequestMetadata } from "../authenticated-request";
 import {
@@ -1270,4 +1271,138 @@ test("DM context includes a deferred notification after delivery", async () => {
   } finally {
     f.close();
   }
+});
+
+describe("native turn transcripts", () => {
+  type Mode = "full" | "turn" | "mixed";
+  const labels = (messages: readonly StoredMessageV1[]) =>
+    messages.map((message) => {
+      if (typeof message.content === "string") return message.content;
+      const text = message.content.find((part) => part.type === "text");
+      // DM inputs carry a fixed instruction paragraph before the typed text.
+      return text?.type === "text"
+        ? (stripLeadingSurfaceMetadataLine(text.text).split("\n\n").at(-1) ?? "")
+        : "";
+    });
+  const harness = (mode: Mode, direct = false) => {
+    const f = fixture(undefined, direct);
+    let finished = 0;
+    const finish = async (compacted = false) => {
+      finished += 1;
+      const request = f.request();
+      const published = storedMessagesV1Schema.parse(f.published.at(-1)!.data.messages);
+      const answer: StoredMessageV1 = { role: "assistant", content: `a${finished}` };
+      const all = [...published, answer];
+      const turnOnly = !compacted && (mode === "turn" || (mode === "mixed" && finished > 2));
+      value(
+        f.transcripts.saveRequestTranscript({
+          ...request,
+          requestClient: "native",
+          ...(compacted
+            ? {
+                contextMeta: { type: "compaction", formatVersion: 1 } as const,
+                messages: [
+                  { role: "user", content: "<context-compaction>summary</context-compaction>" },
+                  published.at(-1)!,
+                  answer,
+                ],
+              }
+            : { messages: turnOnly ? selectNativeTurnMessages(all, request.requestId) : all }),
+        }),
+      );
+      if (turnOnly) {
+        const saved = value(f.transcripts.getRequestTranscript({ requestId: request.requestId }));
+        expect(labels(saved!.messages)).toEqual([`m${finished}`, `a${finished}`]);
+      }
+      value(await f.execution.runnerLifecycle.settled(request, "completed"));
+    };
+    const send = async (at: number) => {
+      f.setNow(at);
+      const receipt = f.submit(`m${finished + 1}`);
+      value(await f.execution.kick(f.thread.id));
+      return {
+        input: value(f.store.getInput(receipt.inputId)),
+        history: labels(storedMessagesV1Schema.parse(f.published.at(-1)!.data.messages)),
+      };
+    };
+    return { f, finish, send };
+  };
+
+  test.each<Mode>(["full", "turn", "mixed"])(
+    "rebuilds the same history across an advancing cutoff from %s rows",
+    async (mode) => {
+      const { f, finish, send } = harness(mode);
+      try {
+        expect((await send(1_000)).history).toEqual(["m1"]);
+        await finish();
+        const second = await send(2_000);
+        expect(second.history).toEqual(["m1", "a1", "m2"]);
+        await finish();
+        f.setMaxAge(1_500);
+        const third = await send(3_000);
+        expect(third.history).toEqual(["m2", "a2", "m3"]);
+        expect(third.input.canonicalHistoryStartRequestId).toBe(second.input.requestId);
+        await finish();
+        expect((await send(3_100)).history).toEqual(["m2", "a2", "m3", "a3", "m4"]);
+        await finish();
+        const fifth = await send(3_600);
+        expect(fifth.history).toEqual(["m3", "a3", "m4", "a4", "m5"]);
+        expect(fifth.input.canonicalHistoryStartRequestId).toBe(third.input.requestId);
+        await finish();
+        f.setMaxAge(undefined);
+        expect((await send(3_700)).history).toEqual(["m3", "a3", "m4", "a4", "m5", "a5", "m6"]);
+      } finally {
+        f.close();
+      }
+    },
+  );
+
+  test.each<Mode>(["full", "turn", "mixed"])(
+    "keeps DM session windows from %s rows",
+    async (mode) => {
+      const { f, finish, send } = harness(mode, true);
+      try {
+        f.setDmGap(1_000);
+        await send(1_000);
+        await finish();
+        await send(1_900);
+        await finish();
+        expect((await send(2_800)).history).toEqual(["m1", "a1", "m2", "a2", "m3"]);
+        await finish();
+        f.setNow(3_700);
+        expect(value(f.execution.context("owner", f.thread.id))).toMatchObject({
+          firstTurnPosition: 0,
+        });
+        const fresh = await send(5_601);
+        expect(fresh.history).toEqual(["m4"]);
+        await finish();
+        expect((await send(5_700)).history).toEqual(["m4", "a4", "m5"]);
+      } finally {
+        f.close();
+      }
+    },
+  );
+
+  test("continues from a compaction checkpoint followed by turn rows", async () => {
+    const { f, finish, send } = harness("turn");
+    try {
+      await send(1_000);
+      await finish();
+      await send(2_000);
+      await finish(true);
+      await send(3_000);
+      await finish();
+      expect(value(f.execution.context("owner", f.thread.id)).hasSummary).toBe(true);
+      expect((await send(4_000)).history).toEqual([
+        "<context-compaction>summary</context-compaction>",
+        "m2",
+        "a2",
+        "m3",
+        "a3",
+        "m4",
+      ]);
+    } finally {
+      f.close();
+    }
+  });
 });

@@ -1364,6 +1364,37 @@ describe("selectPersistedTranscriptMessages", () => {
     ).toEqual(finalMessages);
   });
 
+  it("persists a native primary run from its own input through the response", () => {
+    const opening = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: '<LILAC_META:v1>{"platform":"native","thread_id":"t1","message_id":"m2"}</LILAC_META:v1>\nsecond',
+        },
+      ],
+    } satisfies ModelMessage;
+    const history = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "answer one" },
+    ] satisfies ModelMessage[];
+    const own = [opening, { role: "assistant", content: "answer two" }] satisfies ModelMessage[];
+    const select = (overrides: { didCompact?: boolean; nativeRequestId?: string }) =>
+      selectPersistedTranscriptMessages({
+        finalMessages: [...history, ...own],
+        responseStartIndex: 3,
+        isPrimary: true,
+        didCompact: false,
+        ...overrides,
+      });
+    expect(select({ nativeRequestId: "native:t1:m2" })).toEqual(own);
+    expect(select({ nativeRequestId: "native:t1:m2", didCompact: true })).toEqual([
+      ...history,
+      ...own,
+    ]);
+    expect(select({ nativeRequestId: "native:t1:other" })).toEqual([...history, ...own]);
+  });
+
   it("keeps non-primary full-transcript persistence unchanged", () => {
     expect(
       selectPersistedTranscriptMessages({
