@@ -2716,7 +2716,7 @@ describe("SqliteTranscriptStore", () => {
     db.close();
 
     expect(() => new SqliteTranscriptStore(dbPath)).toThrow(
-      "Core transcript schema 1 requires offline blob migration. Run: bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
+      "Core transcript schema 1 requires offline blob migration. Run: check out commit f2c90667 (see MIGRATIONS.md), then bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
     );
 
     const migrated = new Database(dbPath);
@@ -2769,7 +2769,7 @@ describe("SqliteTranscriptStore", () => {
     db.close();
 
     expect(() => new SqliteTranscriptStore(dbPath)).toThrow(
-      "Core transcript schema 1 requires offline blob migration. Run: bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
+      "Core transcript schema 1 requires offline blob migration. Run: check out commit f2c90667 (see MIGRATIONS.md), then bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
     );
 
     const rolledBack = new Database(dbPath);

@@ -1430,7 +1430,7 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
       }
       if (version !== 0 && version < 6) {
         throw new Error(
-          `Core transcript schema ${version} requires offline blob migration. Run: bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data`,
+          `Core transcript schema ${version} requires offline blob migration. Run: check out commit f2c90667 (see MIGRATIONS.md), then bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data`,
         );
       }
 

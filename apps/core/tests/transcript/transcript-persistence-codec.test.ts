@@ -336,7 +336,7 @@ describe("transcript persistence codecs", () => {
       const dbPath = path.join(dir, "transcripts.db");
       createTranscriptSchemaMigrationFixture(dbPath, startVersion);
       expect(() => new SqliteTranscriptStore(dbPath)).toThrow(
-        "bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
+        "check out commit f2c90667 (see MIGRATIONS.md), then bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data",
       );
       const inspection = new Database(dbPath, { strict: true });
       try {

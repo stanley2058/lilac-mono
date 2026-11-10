@@ -12,7 +12,7 @@ import { canonicalJson } from "./workflow-definition";
 export const WORKFLOW_SCHEMA_VERSION = 28;
 const WORKFLOW_BLOB_SCHEMA_VERSION = 26;
 export const WORKFLOW_BLOB_MIGRATION_COMMAND =
-  "bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data";
+  "check out commit f2c90667 (see MIGRATIONS.md), then bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data";
 
 type WorkflowMigration = {
   version: number;
