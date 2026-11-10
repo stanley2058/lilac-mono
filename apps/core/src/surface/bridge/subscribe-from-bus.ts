@@ -454,21 +454,33 @@ type ActiveRelay = {
   }): Promise<void>;
 };
 
-function mergeContinuationText(existing: string, continuation: string): string {
+export function mergeContinuationText(existing: string, continuation: string): string {
   if (existing.length === 0) return continuation;
   if (continuation.length === 0) return existing;
   if (continuation.startsWith(existing)) return continuation;
 
-  const maxOverlap = Math.min(existing.length, continuation.length);
-  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
-    const existingSuffix = existing.slice(existing.length - overlap);
-    const continuationPrefix = continuation.slice(0, overlap);
-    if (existingSuffix === continuationPrefix) {
-      return `${existing}${continuation.slice(overlap)}`;
-    }
-  }
+  const overlap = longestSuffixPrefixOverlap(existing, continuation);
+  return `${existing}${continuation.slice(overlap)}`;
+}
 
-  return `${existing}${continuation}`;
+/** Length of the longest suffix of `text` that is a prefix of `pattern`, in linear time (KMP). */
+function longestSuffixPrefixOverlap(text: string, pattern: string): number {
+  const maxOverlap = Math.min(text.length, pattern.length);
+  const prefix = pattern.slice(0, maxOverlap);
+  const failure = new Int32Array(prefix.length);
+  for (let index = 1, matched = 0; index < prefix.length; index += 1) {
+    while (matched > 0 && prefix[index] !== prefix[matched]) matched = failure[matched - 1] ?? 0;
+    if (prefix[index] === prefix[matched]) matched += 1;
+    failure[index] = matched;
+  }
+  let matched = 0;
+  for (let index = text.length - maxOverlap; index < text.length; index += 1) {
+    while (matched > 0 && (matched === prefix.length || text[index] !== prefix[matched])) {
+      matched = failure[matched - 1] ?? 0;
+    }
+    if (text[index] === prefix[matched]) matched += 1;
+  }
+  return matched;
 }
 
 export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(params: {
