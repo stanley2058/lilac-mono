@@ -1609,18 +1609,27 @@ export async function startBusAgentRunner(params: {
 
   /** Runs control settlement for one session in arrival order, off the shared bus handler. */
   function enqueueSessionControl(sessionId: string, operation: () => Promise<void>): void {
-    // Start at once when nothing is pending so the control reaches the agent in the same tick.
-    const previous = sessionControlOperations.get(sessionId);
-    const started = previous ? previous.then(operation) : operation();
-    const settled = started.then(undefined, superviseAgentRunnerBackgroundFailure);
+    const settled = settleSessionControl(sessionControlOperations.get(sessionId), operation);
     sessionControlOperations.set(sessionId, settled);
-    void ignoreDetachedFailure(settled);
     const forget = (): void => {
       if (sessionControlOperations.get(sessionId) !== settled) return;
       sessionControlOperations.delete(sessionId);
       evictIdleSession(sessionId);
     };
-    void settled.then(forget, forget);
+    void ignoreDetachedFailure(settled).then(forget);
+  }
+
+  async function settleSessionControl(
+    previous: Promise<void> | undefined,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    // Start at once when nothing is pending so the control reaches the agent in the same tick.
+    if (previous) await ignoreDetachedFailure(previous);
+    const applied = await Result.tryPromise({ try: operation, catch: captureError });
+    applied.match({
+      ok: () => undefined,
+      err: ({ cause }) => superviseAgentRunnerBackgroundFailure(cause),
+    });
   }
 
   function startSessionQueueDrain(
@@ -1652,7 +1661,7 @@ export async function startBusAgentRunner(params: {
         sessionDrainOperations.delete(sessionId);
       }
     };
-    void operation.then(forget, forget);
+    void ignoreDetachedFailure(operation).then(forget);
 
     async function superviseDrain(): Promise<void> {
       const drained = await Result.tryPromise({
