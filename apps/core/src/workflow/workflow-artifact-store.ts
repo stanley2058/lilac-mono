@@ -562,6 +562,10 @@ export async function deleteWorkflowArtifactIfUnreferenced(input: {
   if (releaseOutcome.kind === "error") return Result.err(releaseOutcome.error);
   if (releaseOutcome.kind === "retained") return Result.ok("retained");
   return (await input.blobStore.delete(releaseOutcome.reference.blobRef))
-    .map((status) => (status === "absent" ? "absent" : "deleted"))
+    .andThen((status) =>
+      input.workflowStore
+        .removeWorkflowArtifactPublication(releaseOutcome.reference)
+        .map(() => (status === "absent" ? ("absent" as const) : ("deleted" as const))),
+    )
     .mapError((error) => ioFailure(input.artifactId, "delete-artifact", error));
 }

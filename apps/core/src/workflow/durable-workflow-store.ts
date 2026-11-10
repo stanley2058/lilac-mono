@@ -340,6 +340,19 @@ export type DurableWorkflowStoreOptions = {
 };
 
 export class DurableWorkflowStore {
+  private readonly changeListeners = new Set<() => void>();
+
+  subscribeChanges(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  private notifyChanges(): void {
+    for (const listener of this.changeListeners) listener();
+  }
+
   private readonly db: Database;
   private readonly options: DurableWorkflowStoreOptions;
   private readonly pendingPersistenceDiagnostics: WorkflowPersistenceDiagnostic[] = [];
@@ -621,7 +634,10 @@ export class DurableWorkflowStore {
 
   releaseWorkflowArtifactIfUnreferenced(
     artifactId: string,
-  ): ResultType<WorkflowArtifactReference | null, DurableWorkflowReadError> {
+  ): ResultType<
+    WorkflowArtifactReference | null,
+    DurableWorkflowReadError | DurableWorkflowInvariantViolation
+  > {
     return runWorkflowTransaction(this.db, "release-workflow-artifact", () => {
       const loaded = this.getWorkflowArtifact(artifactId);
       return loaded.andThen((reference) => {
@@ -641,8 +657,10 @@ export class DurableWorkflowStore {
           )
           .get(artifactId, artifactId, artifactId, artifactId)?.count;
         if (referenced !== 0) return Result.ok(null);
-        this.db.run("DELETE FROM workflow_artifacts WHERE artifact_id = ?", [artifactId]);
-        return Result.ok(reference);
+        return this.beginWorkflowArtifactPublication(reference, Date.now()).map(() => {
+          this.db.run("DELETE FROM workflow_artifacts WHERE artifact_id = ?", [artifactId]);
+          return reference;
+        });
       });
     });
   }
@@ -1986,7 +2004,9 @@ export class DurableWorkflowStore {
           WHERE EXISTS (
             SELECT 1 FROM workflow_runs
             WHERE run_id = ? AND state = 'running' AND claimed_by = ?
-          )
+          ) AND (? <> 'agent' OR (SELECT COUNT(*) FROM workflow_operations WHERE run_id = ? AND kind = 'agent') <
+            (SELECT json_extract(capabilities_json, '$.agents.maxTotal') FROM workflow_revisions
+             JOIN workflow_runs USING (revision_id) WHERE run_id = ?))
         ON CONFLICT(run_id, operation_id) DO NOTHING`,
       )
       .run(
@@ -2016,8 +2036,64 @@ export class DurableWorkflowStore {
         operation.terminalAt,
         operation.runId,
         runOwnerId,
+        operation.kind,
+        operation.runId,
+        operation.runId,
       );
     return result.changes === 1;
+  }
+
+  createOperationAndWait(
+    operation: WorkflowOperation,
+    wait: WorkflowWait,
+    ownerId: string,
+  ): boolean {
+    return runWorkflowTransactionForStoreHost(this.db, "journal-operation-and-wait", () => {
+      const existing = adaptToolResultToHost(
+        this.getOperation(operation.runId, operation.operationId),
+      );
+      if (!existing && !this.createOperation(operation, ownerId)) return false;
+      return this.createWait(wait, ownerId);
+    });
+  }
+
+  aggregateUsage(runId: string): {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    agentCount: number;
+    activeAgents: number;
+  } {
+    return this.db
+      .query<
+        {
+          inputTokens: number;
+          outputTokens: number;
+          totalTokens: number;
+          agentCount: number;
+          activeAgents: number;
+        },
+        [string]
+      >(`
+      SELECT COALESCE(SUM(json_extract(usage_json, '$.inputTokens')), 0) AS inputTokens,
+        COALESCE(SUM(json_extract(usage_json, '$.outputTokens')), 0) AS outputTokens,
+        COALESCE(SUM(json_extract(usage_json, '$.totalTokens')), 0) AS totalTokens,
+        COALESCE(SUM(kind = 'agent'), 0) AS agentCount,
+        COALESCE(SUM(kind = 'agent' AND state IN ('dispatched', 'running')), 0) AS activeAgents
+      FROM workflow_operations WHERE run_id = ?`)
+      .get(runId)!;
+  }
+
+  pendingCancellations(): { requestId: string; sessionId: string; deliveryId: string }[] {
+    return this.db
+      .query<{ requestId: string; sessionId: string; deliveryId: string }, []>(
+        "SELECT request_id AS requestId, session_id AS sessionId, delivery_id AS deliveryId FROM workflow_cancellation_outbox LIMIT 1000",
+      )
+      .all();
+  }
+
+  completeCancellation(deliveryId: string): void {
+    this.db.run("DELETE FROM workflow_cancellation_outbox WHERE delivery_id = ?", [deliveryId]);
   }
 
   getOperation(
@@ -2292,16 +2368,16 @@ export class DurableWorkflowStore {
     const output = input.output ?? null;
     const usage = input.usage ?? null;
     if (input.state === "resolved" && output === null && !input.resultArtifact) return false;
-    return runWorkflowResultTransactionForStoreHost<boolean, DurableWorkflowInvariantViolation>(
-      this.db,
-      "record-workflow-request-terminal",
-      () => {
-        if (input.resultArtifact) {
-          this.ensureWorkflowArtifactReference(input.resultArtifact, input.now);
-        }
-        const inserted = this.db
-          .query(
-            `INSERT INTO workflow_request_terminal_receipts (
+    const changed = runWorkflowResultTransactionForStoreHost<
+      boolean,
+      DurableWorkflowInvariantViolation
+    >(this.db, "record-workflow-request-terminal", () => {
+      if (input.resultArtifact) {
+        this.ensureWorkflowArtifactReference(input.resultArtifact, input.now);
+      }
+      const inserted = this.db
+        .query(
+          `INSERT INTO workflow_request_terminal_receipts (
              request_id, run_id, operation_id, dispatch_epoch, state, detail, output_json,
              result_artifact_id, usage_json, created_at
            )
@@ -2313,53 +2389,54 @@ export class DurableWorkflowStore {
                 AND prompt_published_at IS NOT NULL
             )
            ON CONFLICT(request_id) DO NOTHING`,
-          )
-          .run(
-            input.requestId,
-            input.runId,
-            input.operationId,
-            input.dispatchEpoch,
-            input.state,
-            input.detail ?? null,
-            output === null ? null : JSON.stringify(output),
-            input.resultArtifact === undefined || input.resultArtifact === null
-              ? null
-              : encodeWorkflowArtifactReference(input.resultArtifact),
-            usage === null ? null : JSON.stringify(usage),
-            input.now,
-            input.requestId,
-            input.runId,
-            input.operationId,
-            input.dispatchEpoch,
-            input.ownerId,
-          );
-        if (inserted.changes !== 1) return Result.ok(false);
-        const deactivated = this.db
-          .query(
-            `UPDATE workflow_request_dispatches
+        )
+        .run(
+          input.requestId,
+          input.runId,
+          input.operationId,
+          input.dispatchEpoch,
+          input.state,
+          input.detail ?? null,
+          output === null ? null : JSON.stringify(output),
+          input.resultArtifact === undefined || input.resultArtifact === null
+            ? null
+            : encodeWorkflowArtifactReference(input.resultArtifact),
+          usage === null ? null : JSON.stringify(usage),
+          input.now,
+          input.requestId,
+          input.runId,
+          input.operationId,
+          input.dispatchEpoch,
+          input.ownerId,
+        );
+      if (inserted.changes !== 1) return Result.ok(false);
+      const deactivated = this.db
+        .query(
+          `UPDATE workflow_request_dispatches
            SET active = 0, updated_at = ?
            WHERE request_id = ? AND run_id = ? AND operation_id = ?
              AND dispatch_epoch = ? AND owner_id = ? AND active = 1
              AND prompt_published_at IS NOT NULL`,
-          )
-          .run(
-            input.now,
-            input.requestId,
-            input.runId,
-            input.operationId,
-            input.dispatchEpoch,
-            input.ownerId,
-          );
-        if (deactivated.changes !== 1) {
-          return Result.err(
-            new DurableWorkflowInvariantViolation({
-              message: `Workflow terminal receipt lost its exact dispatch: ${input.requestId}`,
-            }),
-          );
-        }
-        return Result.ok(true);
-      },
-    );
+        )
+        .run(
+          input.now,
+          input.requestId,
+          input.runId,
+          input.operationId,
+          input.dispatchEpoch,
+          input.ownerId,
+        );
+      if (deactivated.changes !== 1) {
+        return Result.err(
+          new DurableWorkflowInvariantViolation({
+            message: `Workflow terminal receipt lost its exact dispatch: ${input.requestId}`,
+          }),
+        );
+      }
+      return Result.ok(true);
+    });
+    if (changed) this.notifyChanges();
+    return changed;
   }
 
   getWorkflowRequestTerminalReceipt(
@@ -2901,6 +2978,7 @@ export class DurableWorkflowStore {
     matchKind?: WorkflowWait["match"]["kind"];
     matchKey?: string;
     dueBefore?: number;
+    awaitingTimestampCompletion?: boolean;
     limit?: number;
   }): ResultType<WorkflowWait[], DurableWorkflowReadError> {
     return captureWorkflowRead("list-waits", () => {
@@ -2954,14 +3032,16 @@ export class DurableWorkflowStore {
   listDueWaits(now: number): ResultType<WorkflowWait[], DurableWorkflowReadError> {
     return captureWorkflowRead("list-due-waits", () => {
       const rows = this.persistedRows(
-        `SELECT workflow_waits.* FROM workflow_waits
+        `SELECT * FROM (SELECT workflow_waits.* FROM workflow_waits
          JOIN workflow_runs ON workflow_runs.run_id = workflow_waits.run_id
-         WHERE workflow_waits.state IN ('pending', 'claimed')
-          AND workflow_runs.state = 'running' AND (
-           (due_at IS NOT NULL AND due_at <= ?) OR
-           (deadline_at IS NOT NULL AND deadline_at <= ?)
-          ) ORDER BY COALESCE(workflow_waits.due_at, workflow_waits.deadline_at),
-            workflow_waits.created_at LIMIT 1000`,
+         WHERE workflow_waits.state IN ('pending', 'claimed') AND workflow_runs.state = 'running'
+           AND due_at <= ?
+         UNION
+         SELECT workflow_waits.* FROM workflow_waits
+         JOIN workflow_runs ON workflow_runs.run_id = workflow_waits.run_id
+         WHERE workflow_waits.state IN ('pending', 'claimed') AND workflow_runs.state = 'running'
+           AND deadline_at <= ?
+         ) ORDER BY COALESCE(due_at, deadline_at), created_at LIMIT 1000`,
       ).all(now, now);
       return this.decodeRows(rows, decodeWorkflowWaitRow);
     });
@@ -3163,6 +3243,7 @@ export class DurableWorkflowStore {
         input.from,
         input.runOwnerId,
       );
+    if (result.changes === 1) this.notifyChanges();
     return result.changes === 1;
   }
 
@@ -3177,7 +3258,7 @@ export class DurableWorkflowStore {
     result: WorkflowWait["result"];
     now: number;
   }): WorkflowWait | null {
-    return runWorkflowTransactionForStoreHost(this.db, "resolve-reply-wait", () => {
+    const resolved = runWorkflowTransactionForStoreHost(this.db, "resolve-reply-wait", () => {
       const readWait = this.getWait(input.runId, input.operationId).match({
         ok: (value) => () => value,
         err: (error) => () => signalDurableWorkflowReadErrorToHost(error),
@@ -3232,6 +3313,8 @@ export class DurableWorkflowStore {
       });
       return readResolvedWait();
     });
+    if (resolved) this.notifyChanges();
+    return resolved;
   }
 
   tryClaimWait(input: {
@@ -3443,6 +3526,7 @@ export class DurableWorkflowStore {
     revisionId?: string;
     state?: WorkflowTriggerState;
     dueBefore?: number;
+    awaitingTimestampCompletion?: boolean;
     canonicalProjectId?: string;
     originClient?: string;
     originUserId?: string;
@@ -3458,6 +3542,11 @@ export class DurableWorkflowStore {
       if (options?.state) {
         clauses.push("workflow_triggers.state = ?");
         bindings.push(options.state);
+      }
+      if (options?.awaitingTimestampCompletion) {
+        clauses.push(
+          "json_extract(workflow_triggers.definition_json, '$.kind') = 'timestamp' AND workflow_triggers.next_fire_at IS NULL AND workflow_triggers.last_run_id IS NOT NULL",
+        );
       }
       if (options?.dueBefore !== undefined) {
         clauses.push(
@@ -3804,12 +3893,18 @@ export class DurableWorkflowStore {
 
   listSurfaceBindings(options?: {
     dueBefore?: number;
+    awaitingTimestampCompletion?: boolean;
     missingMessageOnly?: boolean;
     limit?: number;
   }): ResultType<WorkflowSurfaceBinding[], DurableWorkflowReadError> {
     return captureWorkflowRead("list-surface-bindings", () => {
       const clauses: string[] = [];
       const bindings: number[] = [];
+      if (options?.awaitingTimestampCompletion) {
+        clauses.push(
+          "json_extract(workflow_triggers.definition_json, '$.kind') = 'timestamp' AND workflow_triggers.next_fire_at IS NULL AND workflow_triggers.last_run_id IS NOT NULL",
+        );
+      }
       if (options?.dueBefore !== undefined) {
         clauses.push(
           "permanent_failure_json IS NULL AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?",

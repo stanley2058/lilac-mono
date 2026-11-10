@@ -154,6 +154,7 @@ export class JobService {
   #wakePort: JobWakePort | null = null;
   #isSessionBusy: (sessionId: string) => boolean = () => false;
   #closing = false;
+  #retentionTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(input: {
     readonly store: SqliteJobStore;
@@ -212,6 +213,8 @@ export class JobService {
     readonly port: JobWakePort;
     readonly isSessionBusy: (sessionId: string) => boolean;
   }): void {
+    this.#retentionTimer ??= setInterval(() => this.#deleteExpired(), 60 * 60 * 1_000);
+    this.#retentionTimer.unref?.();
     this.#wakePort = input.port;
     this.#isSessionBusy = input.isSessionBusy;
     const sessions = this.#store.listSessionsWithPending().match({
@@ -428,6 +431,8 @@ export class JobService {
    */
   async close(): Promise<void> {
     this.#closing = true;
+    if (this.#retentionTimer) clearInterval(this.#retentionTimer);
+    this.#retentionTimer = null;
     for (const timer of this.#wakeTimers.values()) clearTimeout(timer);
     this.#wakeTimers.clear();
     const running = [...this.#running.values()];
@@ -689,7 +694,7 @@ export class JobService {
     const read = await Result.tryPromise({
       try: async () => {
         if (!existsSync(logPath)) return { output: "", totalBytes: 0, returnedFromByte: 0 };
-        const handle = await open(logPath, "r");
+        await using handle = await open(logPath, "r");
         const { size } = await handle.stat();
         const limit = Math.min(
           options.tailBytes ?? JOB_LIMITS.defaultReadBytes,
@@ -702,7 +707,6 @@ export class JobService {
         const length = Math.min(limit, size - start);
         const buffer = Buffer.alloc(length);
         await handle.read(buffer, 0, length, start);
-        await handle.close();
         return { output: buffer.toString("utf8"), totalBytes: size, returnedFromByte: start };
       },
       catch: captureRuntimeError,

@@ -647,3 +647,25 @@ Native-origin runs retain their original principal. Restricted or unverified req
 fallback, and other users' private DMs remain inaccessible. Heartbeat posts are notifications and do not
 admit another agent turn in their destination. This is a deliberate authority-policy change, not a change
 to human login or thread-sharing permissions. Deploy Core; web clients need no protocol upgrade.
+
+### Workflow schema 28: cancellation intent and atomic waits
+
+Core upgrades workflow schema 27 to 28 online. It adds the run-claim index on
+`(state, claimed_at, run_id)` and a wait-deadline index. Due waits use separate due-time
+and deadline scans. Existing run and wait records retain their values.
+
+Cancelled operations retain an interrupt intent in `workflow_cancellation_outbox` in the
+same transaction as cancellation. The engine retries publication with the stored delivery
+identity and removes the intent after successful publication. Operations and their waits
+now commit together, so recovery cannot observe a newly journaled wait operation without
+its wait. Existing incomplete pairs are repaired during replay.
+
+Back up the workflow database before upgrading. Older builds reject schema 28. Drain
+workflows and cancellation intents before restoring the pre-upgrade database for rollback.
+
+### Periodic job retention
+
+Core now removes ended jobs and their output files every hour while job wakes are active,
+using the existing retention period. Previously this ran only during restart reconciliation.
+The job schema is unchanged. Export retained output before it reaches the retention limit;
+deleted output cannot be recovered by downgrading.

@@ -117,11 +117,6 @@ export function createDiscordEntityMapper(deps: {
 }): EntityMapper {
   const cfgIndex = buildDiscordEntityConfig(deps.cfg);
 
-  // Best-effort caches to keep DB calls off hot paths.
-  const cachedUserIdByUsernameLc = new Map<string, string>();
-  const cachedCanonicalUserById = new Map<string, string>();
-  const cachedTokenByChannelId = new Map<string, string>();
-
   function resolveUserIdByUsername(usernameRaw: string): string | null {
     const username = sanitizeToken(usernameRaw);
     const lc = username.toLowerCase();
@@ -129,13 +124,9 @@ export function createDiscordEntityMapper(deps: {
     const fromCfg = cfgIndex.userByUsernameLc.get(lc);
     if (fromCfg) return fromCfg.userId;
 
-    const cached = cachedUserIdByUsernameLc.get(lc);
-    if (cached) return cached;
-
     const fromDb = deps.store.getUserIdByUsername(username);
     if (!fromDb) return null;
 
-    cachedUserIdByUsernameLc.set(lc, fromDb);
     return fromDb;
   }
 
@@ -143,15 +134,11 @@ export function createDiscordEntityMapper(deps: {
     const cfgUser = cfgIndex.userById.get(userId);
     if (cfgUser) return cfgUser.canonical;
 
-    const cached = cachedCanonicalUserById.get(userId);
-    if (cached) return cached;
-
     const row = deps.store.getUserName(userId);
     const raw = row?.username ?? row?.global_name ?? row?.display_name;
     if (!raw) return null;
 
     const canonical = sanitizeToken(raw);
-    cachedCanonicalUserById.set(userId, canonical);
     return canonical;
   }
 
@@ -165,15 +152,11 @@ export function createDiscordEntityMapper(deps: {
     const cfgToken = cfgIndex.tokenByChannelId.get(channelId);
     if (cfgToken) return cfgToken.canonical;
 
-    const cached = cachedTokenByChannelId.get(channelId);
-    if (cached) return cached;
-
     const row = deps.store.getChannelName(channelId);
     const raw = row?.name;
     if (!raw) return null;
 
     const canonical = sanitizeToken(raw);
-    cachedTokenByChannelId.set(channelId, canonical);
     return canonical;
   }
 
@@ -227,17 +210,6 @@ export function createDiscordEntityMapper(deps: {
         return `#${canonical ?? `channel_${id}`}`;
       });
     });
-  }
-
-  // Warm caches with config so case-insensitive matches don't hit DB.
-  for (const [lc, v] of cfgIndex.userByUsernameLc) {
-    cachedUserIdByUsernameLc.set(lc, v.userId);
-  }
-  for (const [userId, v] of cfgIndex.userById) {
-    cachedCanonicalUserById.set(userId, v.canonical);
-  }
-  for (const [channelId, v] of cfgIndex.tokenByChannelId) {
-    cachedTokenByChannelId.set(channelId, v.canonical);
   }
 
   return { normalizeIncomingText, rewriteOutgoingText };

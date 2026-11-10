@@ -176,7 +176,7 @@ describe("durable workflow store minimal dispatch schema", () => {
         workflowStoreValue(upgraded.getWorkflowArtifact(revision().snapshotArtifact.artifactId)),
       ).toEqual(originalArtifact);
       expect(workflowStoreValue(upgraded.listWorkflowArtifactPublications())).toEqual([]);
-      expect(upgraded.listMigrations().at(-1)?.version).toBe(27);
+      expect(upgraded.listMigrations().at(-1)?.version).toBe(WORKFLOW_SCHEMA_VERSION);
     } finally {
       upgraded.close();
       rmSync(file, { force: true });
@@ -727,7 +727,7 @@ describe("durable workflow store minimal dispatch schema", () => {
       );
       expect(store.listMigrations().at(-1)).toMatchObject({
         version: WORKFLOW_SCHEMA_VERSION,
-        name: "recoverable workflow artifact publications",
+        name: "workflow cancellation outbox and atomic wait journaling",
       });
     } finally {
       store.close();
@@ -1273,4 +1273,112 @@ it("lists bounded subagent pages for only the requested parent session, includin
   } finally {
     store.close();
   }
+});
+
+describe("workflow audit recovery invariants", () => {
+  it("enforces the revision agent budget in the insert and sums usage past a page", () => {
+    const store = new DurableWorkflowStore(":memory:");
+    const rev = revision();
+    rev.resources.agents.maxTotal = 1001;
+    workflowStoreValue(store.createInvocation({ revision: rev, run: run() }));
+    store.tryClaimRun({ runId: "run-1", claimerId: "worker", now: 20 });
+    for (let index = 0; index < 1001; index++) {
+      expect(
+        store.createOperation(
+          {
+            ...operation("run-1", `op-${index}`),
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+          },
+          "worker",
+        ),
+      ).toBe(true);
+    }
+    expect(store.createOperation(operation("run-1", "excess"), "worker")).toBe(false);
+    expect(store.aggregateUsage("run-1")).toEqual({
+      inputTokens: 1001,
+      outputTokens: 2002,
+      totalTokens: 3003,
+      agentCount: 1001,
+      activeAgents: 0,
+    });
+    store.close();
+  });
+
+  it("rolls back the operation when journaling its wait fails", () => {
+    const file = dbPath("atomic-wait");
+    const store = new DurableWorkflowStore(file);
+    const db = new Database(file);
+    try {
+      workflowStoreValue(store.createInvocation({ revision: revision(), run: run() }));
+      store.tryClaimRun({ runId: "run-1", claimerId: "worker", now: 20 });
+      db.run(
+        "CREATE TRIGGER reject_wait BEFORE INSERT ON workflow_waits BEGIN SELECT RAISE(ABORT, 'test failure'); END",
+      );
+      expect(() =>
+        store.createOperationAndWait(
+          { ...operation("run-1", "sleep"), kind: "wait" },
+          {
+            runId: "run-1",
+            operationId: "sleep",
+            state: "pending",
+            match: { kind: "sleep" },
+            matchKey: "sleep:30",
+            dueAt: 30,
+            deadlineAt: null,
+            resolverCursor: null,
+            result: null,
+            resolvedBy: null,
+            claimedBy: null,
+            claimedAt: null,
+            createdAt: 20,
+            updatedAt: 20,
+            resolvedAt: null,
+          },
+          "worker",
+        ),
+      ).toThrow();
+      expect(workflowStoreValue(store.getOperation("run-1", "sleep"))).toBeNull();
+    } finally {
+      db.close();
+      store.close();
+      rmSync(file, { force: true });
+    }
+  });
+
+  it("retains cancellation intent across reopen until publication is acknowledged", () => {
+    const file = dbPath("cancel-outbox");
+    let store = new DurableWorkflowStore(file);
+    const db = new Database(file);
+    try {
+      workflowStoreValue(store.createInvocation({ revision: revision(), run: run() }));
+      store.tryClaimRun({ runId: "run-1", claimerId: "worker", now: 20 });
+      store.createOperation(operation("run-1", "agent"), "worker");
+      db.run(
+        `INSERT INTO workflow_request_dispatches (request_id, run_id, operation_id, session_id, platform, policy_json, active, created_at, updated_at, dispatch_epoch) VALUES ('request', 'run-1', 'agent', 'session', 'discord', '{}', 1, 20, 20, 'epoch')`,
+      );
+      expect(
+        store.terminalizeRun({
+          runId: "run-1",
+          from: "running",
+          to: "failed",
+          ownerId: "worker",
+          now: 30,
+          detail: "failed",
+          result: null,
+          resultArtifact: null,
+        }),
+      ).toBe(true);
+      store.close();
+      store = new DurableWorkflowStore(file);
+      expect(store.pendingCancellations()).toEqual([
+        { requestId: "request", sessionId: "session", deliveryId: "workflow-cancel:request:epoch" },
+      ]);
+      store.completeCancellation("workflow-cancel:request:epoch");
+      expect(store.pendingCancellations()).toEqual([]);
+    } finally {
+      db.close();
+      store.close();
+      rmSync(file, { force: true });
+    }
+  });
 });

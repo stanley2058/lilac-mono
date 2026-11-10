@@ -397,3 +397,35 @@ describe("workflow trigger scheduler", () => {
     }
   });
 });
+
+it("awaits an active trigger tick during stop", async () => {
+  const store = new DurableWorkflowStore(":memory:");
+  const bus = createLilacBus(new CapturingRawBus());
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<number>();
+  createRevision(store);
+  store.createTrigger(trigger());
+  const scheduler = new WorkflowTriggerScheduler({
+    bus,
+    store,
+    now: () => 100,
+    getMaxActiveRuns: () => {
+      entered.resolve();
+      return release.promise;
+    },
+  });
+  const tick = scheduler.tick();
+  await entered.promise;
+  let stopped = false;
+  const stop = scheduler.stop().then(() => {
+    stopped = true;
+  });
+  await Promise.resolve();
+  expect(stopped).toBe(false);
+  release.resolve(100);
+  await tick;
+  await stop;
+  expect(stopped).toBe(true);
+  store.close();
+  await bus.close();
+});

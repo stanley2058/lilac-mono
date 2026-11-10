@@ -9,7 +9,7 @@ import {
 } from "./workflow-domain";
 import { canonicalJson } from "./workflow-definition";
 
-export const WORKFLOW_SCHEMA_VERSION = 27;
+export const WORKFLOW_SCHEMA_VERSION = 28;
 const WORKFLOW_BLOB_SCHEMA_VERSION = 26;
 export const WORKFLOW_BLOB_MIGRATION_COMMAND =
   "bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data";
@@ -1535,6 +1535,26 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
       )`,
       `CREATE INDEX idx_workflow_artifact_publications_created
        ON workflow_artifact_publications (created_at, object_id)`,
+    ],
+  },
+  {
+    version: 28,
+    name: "workflow cancellation outbox and atomic wait journaling",
+    statements: [
+      `CREATE INDEX idx_workflow_runs_claim ON workflow_runs(state, claimed_at, run_id)`,
+      `CREATE INDEX idx_workflow_waits_deadline ON workflow_waits(state, deadline_at)`,
+      `CREATE TABLE workflow_cancellation_outbox (
+        request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, delivery_id TEXT NOT NULL UNIQUE
+      )`,
+      `CREATE TRIGGER workflow_operation_cancellation_intent
+       AFTER UPDATE OF state ON workflow_operations
+       WHEN NEW.state = 'cancelled' AND OLD.state <> 'cancelled'
+       BEGIN
+         INSERT OR IGNORE INTO workflow_cancellation_outbox(request_id, session_id, delivery_id)
+         SELECT request_id, session_id, 'workflow-cancel:' || request_id || ':' || dispatch_epoch
+         FROM workflow_request_dispatches
+         WHERE run_id = NEW.run_id AND operation_id = NEW.operation_id AND active = 1;
+       END`,
     ],
   },
 ];

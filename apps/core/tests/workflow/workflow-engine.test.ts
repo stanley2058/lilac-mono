@@ -2886,3 +2886,51 @@ describe("WorkflowEngine", () => {
     }
   });
 });
+
+it("renews ownership while sandbox source loading blocks the launch tick", async () => {
+  const store = new DurableWorkflowStore(":memory:");
+  const bus = createLilacBus(new LiveCapturingRawBus());
+  createApprovedRun(store);
+  const loading = Promise.withResolvers<void>();
+  const source = Promise.withResolvers<string>();
+  let now = 100;
+  const engine = new WorkflowEngine({
+    bus,
+    store,
+    blobStore,
+    dataDir: tmpdir(),
+    subscriptionId: "blocked-launch-heartbeat",
+    now: () => now,
+    runClaimHeartbeatMs: 5,
+    pollMs: 1000000,
+    loadSnapshot: () => {
+      loading.resolve();
+      return source.promise;
+    },
+    compileSource: compileTestWorkflow,
+    dispatchAgentRequest: async () => ({
+      state: "resolved",
+      output: "done",
+      detail: null,
+      usage: null,
+    }),
+  });
+  const started = engine.start();
+  try {
+    await loading.promise;
+    now = 70_000;
+    await waitFor(() => workflowStoreValue(store.getRun("run-1"))?.claimedAt === now);
+    expect(
+      store.tryClaimRun({ runId: "run-1", claimerId: "other-worker", now, staleAfterMs: 60_000 }),
+    ).toBeNull();
+    source.resolve(agentWorkflowSource());
+    await started;
+    await waitFor(() => workflowStoreValue(store.getRun("run-1"))?.state === "succeeded");
+  } finally {
+    source.resolve(agentWorkflowSource());
+    await started;
+    await engine.stop();
+    await bus.close();
+    store.close();
+  }
+});
