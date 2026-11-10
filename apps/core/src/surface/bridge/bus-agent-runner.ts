@@ -3705,9 +3705,7 @@ export async function startBusAgentRunner(params: {
     // Start at once when nothing is pending so the control reaches the agent in the same tick.
     const previous = sessionControlOperations.get(sessionId);
     const started = previous ? previous.then(operation) : operation();
-    const settled = started.then(undefined, (cause: unknown) => {
-      superviseAgentRunnerBackgroundFailure(cause);
-    });
+    const settled = started.then(undefined, superviseAgentRunnerBackgroundFailure);
     sessionControlOperations.set(sessionId, settled);
     void ignoreDetachedFailure(settled);
     const forget = (): void => {
