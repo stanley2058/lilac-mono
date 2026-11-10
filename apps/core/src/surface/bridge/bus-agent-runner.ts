@@ -5,12 +5,7 @@ import type { JobService } from "../../jobs/job-service";
 import type { QuestionService } from "../../question/question-service";
 import { QuestionContinuation } from "../../question/question-continuation";
 import { createRunWaitTracker } from "./bus-agent-runner/run-wait";
-import { autoInjectPlannerContext, decisionAutoInjectContext } from "./bus-agent-runner/text-units";
-import {
-  buildGeneratedMessage,
-  generatedMessageMetadata,
-  isGeneratedMessage,
-} from "@stanley2058/lilac-agent";
+import { buildGeneratedMessage, generatedMessageMetadata } from "@stanley2058/lilac-agent";
 import { customCommandUserContent } from "./bus-agent-runner/generated-command-content";
 import { expandConversationReferencesForModel } from "./conversation-references";
 import type { NativeOutputFrontier } from "@stanley2058/lilac-event-bus";
@@ -29,7 +24,6 @@ import {
 import { createCoreClaudeComposition } from "../../agent/claude-composition";
 /* oxlint-disable eslint/no-control-regex */
 
-import { createFreshOnlyLineage } from "../../shared/core-primary-lineage";
 import { captureError } from "../../shared/error-capture";
 import { consumerId } from "../../shared/event-bus-consumer";
 
@@ -38,12 +32,9 @@ import {
   type FinishReason,
   type LanguageModelUsage,
   type ModelMessage,
-  type ToolContent,
   type ToolSet,
-  type UserContent,
 } from "ai";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
-import { boundToolResultMediaForModelView } from "@stanley2058/lilac-tool-results/tool-result-media";
 import type {
   ConfiguredModelChainEntry,
   CoreConfig,
@@ -59,11 +50,8 @@ import {
   CUSTOM_COMMAND_TOOL_NAME,
   deriveSubagentIdleTimeoutMs,
   env,
-  extractAiErrorLogDetails,
   getCoreConfig,
-  isPanic,
   isRecord,
-  opaqueErrorMessage,
   ModelCapability,
   openAIMessagePhase,
   createLogger,
@@ -77,26 +65,16 @@ import {
   withModelPlanReasoning,
 } from "@stanley2058/lilac-utils";
 import {
-  corePrimaryLineageV2Schema,
-  decodeCorePrimaryLineageV2,
   EventDeliveryStopped,
-  extendCoreLineagePrefixDigestV2,
   lilacEventTypes,
   type AdapterPlatform,
-  type CoreLineageManifestV2,
-  type CorePrimaryLineageV2,
   type DecodedLilacMessageForTopic,
-  type DeliveryDisposition,
   type LilacBus,
   type RequestLifecycleState,
-  type RequestOrigin,
-  type RequestQueueMode,
-  type RequestRunPolicy,
   type StoredMessageV1,
 } from "@stanley2058/lilac-event-bus";
 import {
   advanceHistoryProviderState,
-  AgentIdleTimeoutError,
   AiSdkPiAgent,
   attachAutoCompaction,
   buildSafeRecoveryCheckpoint,
@@ -169,26 +147,7 @@ import {
   type TranscriptSnapshot,
   type TranscriptStore,
 } from "../../transcript/transcript-store";
-import {
-  createConversationThreadAutoInjectUsageAccumulator,
-  type ConversationThreadAutoInjectUsageAccumulator,
-  type ConversationThreadSearchResult,
-  type ConversationThreadToolService,
-} from "../../conversation/thread-service";
-import {
-  rankAutoInjectedThreadSearchResults,
-  type RankedAutoInjectThread,
-} from "../../conversation/thread-auto-inject-ranking";
-import { collectDecisionAutoInjectImages } from "../../conversation/thread-auto-inject-images";
-import {
-  createDecisionAutoInjectEvaluator,
-  decideDecisionAutoInject,
-  selectDecisionAutoInjectModel,
-  DecisionAutoInjectEvaluationFailed,
-  type DecisionAutoInjectAnswers,
-  type DecisionAutoInjectEvaluator,
-  type DecisionAutoInjectUnavailable,
-} from "../../conversation/thread-auto-inject-decision";
+import { type ConversationThreadToolService } from "../../conversation/thread-service";
 import {
   createStoredMessageIdentityProjectionV1,
   materializeStoredMessagesV1,
@@ -197,10 +156,7 @@ import {
   type StoredMessageIdentityProjectionV1,
 } from "../../transcript/stored-message-materialization";
 import type { ResourceAccess } from "../../resource";
-import {
-  defaultStoredBlobFilename,
-  hashCanonicalStoredMessagesV2,
-} from "../../transcript/transcript-persistence-codec";
+import { defaultStoredBlobFilename } from "../../transcript/transcript-persistence-codec";
 import type {
   CoreAcceptedRequestWork,
   CorePreparedRequestEnvelope,
@@ -234,7 +190,6 @@ import {
   resolveCorePrimaryLoadedCatalogIds,
 } from "./bus-agent-runner/lineage-tool-authority";
 import { type AnthropicFallbackBlobStore } from "../../agent/anthropic-fallback-media";
-import { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
 import {
   nativeToolActivityDetail,
   nativeToolOnlyWaits,
@@ -242,16 +197,10 @@ import {
   nativeToolActivityResult,
   type NativeToolActivityResult,
 } from "./bus-agent-runner/native-activity-result";
-import {
-  debugJsonStringify,
-  safeStringify,
-  sanitizeFilenameToken,
-} from "./bus-agent-runner/formatting";
+import { debugJsonStringify, sanitizeFilenameToken } from "./bus-agent-runner/formatting";
 
 import {
   parseCustomCommandFromRaw,
-  parseBufferedForActiveRequestIdFromRaw,
-  getParticipantUserIdsFromRaw,
   isJobWakeRequestRaw,
   parseRequestControlFromRaw,
   parseRequestModelOverrideFromRaw,
@@ -270,13 +219,7 @@ import {
 import {
   type AgentOutputPublishFailed,
   createAgentOutputPublisher,
-  REASONING_DETAIL_MAX_CHARS,
 } from "./bus-agent-runner/output-publisher";
-import {
-  latestUserInput,
-  measureMeaningfulTextUnits,
-  shouldRunAutoInjectedThreadSearch,
-} from "./bus-agent-runner/text-units";
 import { createTransientModelRetryController } from "./bus-agent-runner/transient-retry";
 import {
   type materializeClaudeCodeRunResult,
@@ -301,13 +244,127 @@ import { buildAgentRunSystemPrompt } from "./bus-agent-runner/system-prompt";
 import { resolveSessionSafetyMode, type SessionSafetyMode } from "../session-policy";
 import type { AuthenticatedSurfaceOrigin, MsgRef, SurfacePrincipal } from "../types";
 import type { SurfaceProtocolResolver } from "../runtime-descriptor";
-import type { NativeOutputPublisher, NativeOutputPublication } from "../native/output";
+import type { NativeOutputPublisher } from "../native/output";
 import type {
   CustomCommandExecutionError,
   CustomCommandManager,
 } from "../../custom-commands/manager";
 import { type CoreNamedClaudeRuntime } from "../../agent/core-named-continuation";
 import { type CorePrimaryClaudeRuntime } from "../../agent/core-primary-continuation";
+import {
+  type ReasoningChunkState,
+  consumeAssistantTextDelta,
+  consumeReasoningChunkEvent,
+  createAssistantTextPartBoundaryState,
+  markAssistantTextPartEnded,
+  markAssistantTextPartStarted,
+  removeSilentAssistantTurnMessages,
+} from "./bus-agent-runner/agent-event-projector";
+import {
+  BusAgentRunnerAuthenticationProjectionInvalid,
+  type BusAgentRunnerDeliveryError,
+  type BusAgentRunnerErrorProjection,
+  BusAgentRunnerIntakeFailed,
+  BusAgentRunnerOperationFailed,
+  BusAgentRunnerQueueAttemptRouteInvalid,
+  BusAgentRunnerRecoveryStopped,
+  BusAgentRunnerRequestHeadersInvalid,
+  type BusAgentRunnerTerminalCleanup,
+  type BusAgentRunnerTerminalCleanupOperation,
+  PreAgentRunCancelledError,
+  ShutdownDrainingAbort,
+  busAgentRunnerDeliveryDisposition,
+  captureBusAgentRunnerOperation,
+  projectBusAgentRunnerError,
+  rethrowBusAgentRunnerPanic,
+  signalBusAgentRunnerHostFailure,
+  startBusAgentRunnerTerminalCleanup,
+} from "./bus-agent-runner/errors";
+import {
+  applyToolOutputCompactionView,
+  maybeMarkOldToolOutputsCompacted,
+  scrubLargeBinaryForModelView,
+} from "./bus-agent-runner/tool-output-policy";
+import { maybeBuildAutoInjectedThreadSearchMessages } from "./bus-agent-runner/auto-inject-thread-search";
+import {
+  appendAutoInjectedThreadSearchLineage,
+  corePrimaryLineageHasCompactionCheckpoint,
+  degradeCorePrimaryLineageForMutation,
+  mapCorePrimaryCompactionCurrentCanonicalStart,
+  persistedCompleteLineage,
+  requireStoredMessageHash,
+  resolveCorePrimaryTranscriptProviderState,
+  validateCorePrimaryLineageAtRunnerIntake,
+} from "./bus-agent-runner/lineage";
+import {
+  type Enqueued,
+  type QueueLifecycleAttempt,
+  type SessionQueue,
+  collectBufferedPromptEntriesForActiveRequest,
+  groupQueueCancellationEntries,
+  isCancelControlEntry,
+  mergeQueuedControlsForRecovery,
+  mergeQueuedForSameRequest,
+  removeQueuedEntriesByReference,
+  settlesBefore,
+  shouldCancelRunPolicyRequest,
+} from "./bus-agent-runner/session-queue";
+import { applyToRunningAgent } from "./bus-agent-runner/controls";
+export { mergeToSingleUserMessage } from "./bus-agent-runner/controls";
+export {
+  type AgentRunnerRetainedRequestDelivery,
+  shouldCancelIdleOnlyGlobalRequest,
+  shouldCancelRunPolicyRequest,
+} from "./bus-agent-runner/session-queue";
+export {
+  appendAutoInjectedThreadSearchLineage,
+  corePrimaryLineageHasCompactionCheckpoint,
+  degradeCorePrimaryLineageForMutation,
+  mapCorePrimaryCompactionCurrentCanonicalStart,
+  resolveCorePrimaryTranscriptProviderState,
+  validateCorePrimaryLineageAtRunnerIntake,
+} from "./bus-agent-runner/lineage";
+export {
+  AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH,
+  type AutoInjectedThreadSearchPayload,
+  buildAutoInjectedThreadSearchMessages,
+  maybeBuildAutoInjectedThreadSearchMessages,
+} from "./bus-agent-runner/auto-inject-thread-search";
+export {
+  applyToolOutputCompactionView,
+  maybeMarkOldToolOutputsCompacted,
+  scrubLargeBinaryForModelView,
+} from "./bus-agent-runner/tool-output-policy";
+export {
+  BusAgentRunnerAuthenticationProjectionInvalid,
+  type BusAgentRunnerDeliveryError,
+  BusAgentRunnerIntakeFailed,
+  BusAgentRunnerOperationFailed,
+  BusAgentRunnerQueueAttemptRouteInvalid,
+  BusAgentRunnerRecoveryStopped,
+  BusAgentRunnerRequestHeadersInvalid,
+  type BusAgentRunnerTerminalCleanup,
+  type BusAgentRunnerTerminalCleanupBatch,
+  type BusAgentRunnerTerminalCleanupOperation,
+  busAgentRunnerDeliveryDisposition,
+  captureBusAgentRunnerOperation,
+  projectBusAgentRunnerError,
+  rethrowBusAgentRunnerCleanupDefect,
+  rethrowBusAgentRunnerPanic,
+  signalBusAgentRunnerHostFailure,
+  startBusAgentRunnerTerminalCleanup,
+} from "./bus-agent-runner/errors";
+export {
+  type AssistantTextPartBoundaryState,
+  type ReasoningChunkState,
+  consumeAssistantTextDelta,
+  consumeReasoningChunkEvent,
+  createAssistantTextPartBoundaryState,
+  markAssistantTextPartEnded,
+  markAssistantTextPartStarted,
+  removeSilentAssistantTurnMessages,
+  withBlankLineBetweenTextParts,
+} from "./bus-agent-runner/agent-event-projector";
 
 export { formatUnknownErrorForDisplay } from "./bus-agent-runner/error-display";
 export {
@@ -371,95 +428,6 @@ export { shouldUsePersistentCoreClaudeRuntime } from "../../agent/claude-composi
 
 export { resolveStoredResourceProviderTarget } from "../../agent/agent-composition";
 
-export function rethrowBusAgentRunnerPanic(
-  cause: unknown,
-  beforeRethrow?: (panic: Panic) => void,
-): void {
-  if (!isPanic(cause)) return;
-  beforeRethrow?.(cause);
-  throw cause;
-}
-
-export class BusAgentRunnerRequestHeadersInvalid extends TaggedError(
-  "BusAgentRunnerRequestHeadersInvalid",
-)<{
-  readonly missing: readonly ("request_id" | "session_id")[];
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerQueueAttemptRouteInvalid extends TaggedError(
-  "BusAgentRunnerQueueAttemptRouteInvalid",
-)<{
-  readonly eventId: string;
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerRecoveryStopped extends TaggedError("BusAgentRunnerRecoveryStopped")<{
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerIntakeFailed extends TaggedError("BusAgentRunnerIntakeFailed")<{
-  readonly cause: unknown;
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerAuthenticationProjectionInvalid extends TaggedError(
-  "BusAgentRunnerAuthenticationProjectionInvalid",
-)<{
-  readonly cause:
-    | AuthenticatedRequestProjectionInvalid
-    | RequestMessageCacheAdmissionError
-    | RequestIdentitySourceMissing
-    | RequestIdentityAliasTargetOccupied
-    | AuthenticatedRequestProjectionInvalid;
-  readonly message: string;
-}> {}
-
-export class BusAgentRunnerOperationFailed extends TaggedError("BusAgentRunnerOperationFailed")<{
-  readonly operation: string;
-  readonly cause: unknown;
-  readonly failureKind: "idle-timeout" | "pre-agent-cancelled" | "shutdown-draining" | "other";
-  readonly displayMessage: string;
-  readonly details?: ReturnType<typeof extractAiErrorLogDetails>;
-  readonly message: string;
-}> {}
-
-export async function captureBusAgentRunnerOperation<T>(
-  operation: string,
-  run: () => T | Promise<T>,
-  beforePanicRethrow?: (panic: Panic) => void,
-): Promise<ResultType<Awaited<T>, BusAgentRunnerOperationFailed>> {
-  {
-    const attempt = await Result.tryPromise({
-      try: async () => {
-        return Result.ok(await run());
-      },
-      catch: captureError,
-    });
-
-    if (attempt.isErr()) {
-      const cause = attempt.error.cause;
-      rethrowBusAgentRunnerPanic(cause, beforePanicRethrow);
-      const projection = projectBusAgentRunnerError(cause, `${operation} failed`);
-      let failureKind: BusAgentRunnerOperationFailed["failureKind"] = "other";
-      if (cause instanceof AgentIdleTimeoutError) failureKind = "idle-timeout";
-      if (cause instanceof PreAgentRunCancelledError) failureKind = "pre-agent-cancelled";
-      if (cause instanceof ShutdownDrainingAbort) failureKind = "shutdown-draining";
-      return Result.err(
-        new BusAgentRunnerOperationFailed({
-          operation,
-          cause,
-          failureKind,
-          displayMessage: formatUnknownErrorForDisplay(cause),
-          details: projection.details,
-          message: projection.message,
-        }),
-      );
-    }
-    return attempt.value;
-  }
-}
-
 export function toIdleRetryDecision(
   backoff: ResultType<RetryBackoffAttempt | null, RetryBackoffAborted | RetryBackoffDelayFailed>,
 ):
@@ -486,12 +454,6 @@ export function toIdleRetryDecision(
       }
     },
   });
-}
-
-export function signalBusAgentRunnerHostFailure(
-  failure: Error | BusAgentRunnerOperationFailed,
-): never {
-  throw failure instanceof BusAgentRunnerOperationFailed ? failure.cause : failure;
 }
 
 export function settleStoredMessageIdentityRemember(
@@ -550,104 +512,7 @@ function adaptModelResolutionToBusRunnerHost<T>(result: ResultType<T, ModelResol
   })();
 }
 
-type BusAgentRunnerErrorProjection = {
-  readonly message: string;
-  readonly details?: ReturnType<typeof extractAiErrorLogDetails>;
-};
-
-export function projectBusAgentRunnerError(
-  cause: unknown,
-  fallback = "Agent runner operation failed",
-): BusAgentRunnerErrorProjection {
-  const projectedCause =
-    isRecord(cause) && cause["loaded"] === false && "error" in cause ? cause["error"] : cause;
-  const message = opaqueErrorMessage(projectedCause, fallback);
-  {
-    const attempt = Result.try({
-      try: () => {
-        const details = extractAiErrorLogDetails(projectedCause);
-        return details ? { message, details } : { message };
-      },
-      catch: captureError,
-    });
-
-    if (attempt.isErr()) {
-      return { message };
-    }
-    return attempt.value;
-  }
-}
-
-export type BusAgentRunnerDeliveryError =
-  | BusAgentRunnerRequestHeadersInvalid
-  | BusAgentRunnerQueueAttemptRouteInvalid
-  | BusAgentRunnerRecoveryStopped
-  | BusAgentRunnerAuthenticationProjectionInvalid
-  | BusAgentRunnerIntakeFailed;
-
-export function busAgentRunnerDeliveryDisposition(
-  error: BusAgentRunnerDeliveryError,
-): DeliveryDisposition {
-  switch (error._tag) {
-    case "BusAgentRunnerRequestHeadersInvalid":
-    case "BusAgentRunnerQueueAttemptRouteInvalid":
-    case "BusAgentRunnerAuthenticationProjectionInvalid":
-      return "dead-letter";
-    case "BusAgentRunnerRecoveryStopped":
-      return "stop";
-    case "BusAgentRunnerIntakeFailed":
-      return "park-pending";
-  }
-}
-
 export { resolveCoreClaudeCompactionSummaryModel } from "../../agent/claude-composition";
-
-export async function rethrowBusAgentRunnerCleanupDefect(
-  cleanup: () => void | Promise<void>,
-): Promise<void> {
-  await cleanup();
-}
-
-export type BusAgentRunnerTerminalCleanup = {
-  readonly label:
-    | "workflow-claim-timer-clear"
-    | "control-capability-expire"
-    | "workflow-request-expire"
-    | "run-idle-watchdog-stop"
-    | "questions-cancel"
-    | "agent-unsubscribe"
-    | "compaction-unsubscribe"
-    | "output-publisher-drain"
-    | "core-named-retire"
-    | "core-primary-retire"
-    | "claude-dispose"
-    | "level1-toolset-release"
-    | "live-close";
-  readonly run: () => void | Promise<void>;
-};
-
-export type BusAgentRunnerTerminalCleanupOperation = {
-  readonly label: BusAgentRunnerTerminalCleanup["label"];
-  readonly operation: Promise<void>;
-};
-
-export type BusAgentRunnerTerminalCleanupBatch = {
-  readonly operations: readonly BusAgentRunnerTerminalCleanupOperation[];
-  readonly completion: Promise<void>;
-};
-
-export function startBusAgentRunnerTerminalCleanup(
-  cleanups: readonly BusAgentRunnerTerminalCleanup[],
-): BusAgentRunnerTerminalCleanupBatch {
-  const operations = cleanups.map((cleanup) => {
-    const operation = rethrowBusAgentRunnerCleanupDefect(cleanup.run);
-    return { label: cleanup.label, operation };
-  });
-  const completion = Promise.allSettled(operations.map(({ operation }) => operation)).then(
-    () => undefined,
-  );
-  return { operations, completion };
-}
 
 function buildResumePrompt(partialText: string): ModelMessage {
   const base =
@@ -661,289 +526,6 @@ function buildResumePrompt(partialText: string): ModelMessage {
     role: "user",
     content,
   };
-}
-
-// OpenCode-style tool output pruning:
-// - Keep full tool call/result structure for forkability.
-// - Compact *old* tool results (replace output with a placeholder) only in the
-//   model-facing view, right before sending.
-// - Track compacted toolCallIds in-memory per session for stability (cache hits).
-const TOOL_OUTPUT_PLACEHOLDER = "[Old tool result content cleared]";
-const TOOL_OUTPUT_CHARS_PER_TOKEN = 4;
-const TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS = new Set(["skill", "subagent_result"]);
-
-export function withBlankLineBetweenTextParts(params: {
-  accumulatedText: string;
-  delta: string;
-  partChanged: boolean;
-}): string {
-  if (!params.partChanged) return params.delta;
-  if (params.accumulatedText.length === 0) return params.delta;
-  if (params.delta.length === 0) return params.delta;
-  if (/^\s/u.test(params.delta)) return params.delta;
-  if (/\n\s*\n\s*$/u.test(params.accumulatedText)) return params.delta;
-  if (/\n\s*$/u.test(params.accumulatedText)) return `\n${params.delta}`;
-  return `\n\n${params.delta}`;
-}
-
-export type AssistantTextPartBoundaryState = {
-  lastTextPartId: string | null;
-  pendingRecoveryTextBoundary: boolean;
-  pendingTextPartStartIds: Set<string>;
-};
-
-export function createAssistantTextPartBoundaryState(
-  partialText: string | undefined,
-): AssistantTextPartBoundaryState {
-  return {
-    lastTextPartId: null,
-    pendingRecoveryTextBoundary: Boolean(partialText?.trim()),
-    pendingTextPartStartIds: new Set<string>(),
-  };
-}
-
-export function markAssistantTextPartStarted(
-  state: AssistantTextPartBoundaryState,
-  partId: string,
-): void {
-  state.pendingTextPartStartIds.add(partId);
-}
-
-export function markAssistantTextPartEnded(
-  state: AssistantTextPartBoundaryState,
-  partId: string,
-): void {
-  state.pendingTextPartStartIds.delete(partId);
-}
-
-export function consumeAssistantTextDelta(params: {
-  state: AssistantTextPartBoundaryState;
-  finalText: string;
-  recoveryPartialText?: string;
-  partId: string;
-  delta: string;
-}): string {
-  const startedNewTextBlock = params.state.pendingTextPartStartIds.has(params.partId);
-  const hasPartBoundary =
-    startedNewTextBlock ||
-    (params.state.lastTextPartId !== null && params.partId !== params.state.lastTextPartId);
-  const accumulatedTextForBoundary =
-    params.finalText.length > 0 ? params.finalText : (params.recoveryPartialText ?? "");
-  const nextDelta = withBlankLineBetweenTextParts({
-    accumulatedText: accumulatedTextForBoundary,
-    delta: params.delta,
-    partChanged: hasPartBoundary || params.state.pendingRecoveryTextBoundary,
-  });
-  if (nextDelta.length > 0) {
-    const boundaryResolvedByThisDelta = /\S/u.test(params.delta);
-    if (boundaryResolvedByThisDelta) {
-      params.state.pendingRecoveryTextBoundary = false;
-      params.state.pendingTextPartStartIds.delete(params.partId);
-    }
-  }
-  params.state.lastTextPartId = params.partId;
-  return nextDelta;
-}
-
-export function removeSilentAssistantTurnMessages(input: {
-  messages: readonly ModelMessage[];
-  startIndex: number;
-  messageCount: number;
-}): ModelMessage[] {
-  const endIndex = input.startIndex + input.messageCount;
-  const messages: ModelMessage[] = [];
-
-  for (let index = 0; index < input.messages.length; index += 1) {
-    const message = input.messages[index]!;
-    if (index < input.startIndex || index >= endIndex || message.role !== "assistant") {
-      messages.push(message);
-      continue;
-    }
-
-    const text = (() => {
-      if (typeof message.content === "string") return message.content;
-      const textParts = message.content.filter((part) => part.type === "text");
-      const finalAnswerParts = textParts.filter(
-        (part) => openAIMessagePhase(part.providerOptions) === "final_answer",
-      );
-      return (finalAnswerParts.length > 0 ? finalAnswerParts : textParts)
-        .map((part) => part.text)
-        .join("\n\n");
-    })();
-    if (resolveReplyDeliveryFromFinalText(text) !== "skip") {
-      messages.push(message);
-      continue;
-    }
-    if (typeof message.content === "string") continue;
-
-    const content = message.content.filter((part) => part.type !== "text");
-    if (content.every((part) => part.type === "reasoning")) continue;
-    messages.push({ ...message, content });
-  }
-
-  return messages;
-}
-
-export type ReasoningChunkState = {
-  chunks: Map<string, string>;
-  seq: number;
-};
-
-export function consumeReasoningChunkEvent(
-  state: ReasoningChunkState,
-  event:
-    | { type: "start"; chunkId: string }
-    | { type: "delta"; chunkId: string; delta: string }
-    | { type: "end"; chunkId: string },
-): {
-  publishStart: boolean;
-  snapshot: { delta: string; seq: number } | null;
-} {
-  if (event.type === "end") {
-    state.chunks.delete(event.chunkId);
-    return { publishStart: false, snapshot: null };
-  }
-
-  if (event.type === "start") {
-    if (!state.chunks.has(event.chunkId)) {
-      state.chunks.set(event.chunkId, "");
-    }
-    return { publishStart: true, snapshot: null };
-  }
-
-  const publishStart = !state.chunks.has(event.chunkId);
-  const chunk = `${state.chunks.get(event.chunkId) ?? ""}${event.delta}`;
-  state.chunks.set(event.chunkId, chunk);
-  if (event.delta.length === 0) {
-    return { publishStart, snapshot: null };
-  }
-
-  state.seq += 1;
-  return {
-    publishStart,
-    // One character past the relay limit is enough for the relay to mark the detail truncated.
-    snapshot: { delta: chunk.slice(0, REASONING_DETAIL_MAX_CHARS + 1), seq: state.seq },
-  };
-}
-
-function estimateTokensFromValue(value: unknown): number {
-  // Best-effort token estimate (OpenCode uses chars/4).
-  const chars = safeStringify(value).length;
-  return Math.max(0, Math.round(chars / TOOL_OUTPUT_CHARS_PER_TOKEN));
-}
-
-// Tool results are immutable once produced, so each one is stringified for its estimate once.
-type ToolResultOutput = Extract<ToolContent[number], { type: "tool-result" }>["output"];
-
-const toolOutputTokenEstimates = new WeakMap<ToolResultOutput, number>();
-
-function estimateToolOutputTokens(output: ToolResultOutput): number {
-  const cached = toolOutputTokenEstimates.get(output);
-  if (cached !== undefined) return cached;
-  const estimate = estimateTokensFromValue(output);
-  toolOutputTokenEstimates.set(output, estimate);
-  return estimate;
-}
-
-export function maybeMarkOldToolOutputsCompacted(params: {
-  messages: readonly ModelMessage[];
-  compactedToolCallIds: Set<string>;
-  protectTokens: number;
-  minimumTokens: number;
-}): number {
-  let turns = 0;
-  let total = 0;
-  let pruned = 0;
-  const toCompact = new Set<string>();
-
-  // Walk backwards; skip the last turn (turn = user message).
-  // This mirrors OpenCode's "turns < 2" behavior.
-  outer: for (let msgIndex = params.messages.length - 1; msgIndex >= 0; msgIndex--) {
-    const msg = params.messages[msgIndex]!;
-    if (msg.role === "user" && !isGeneratedMessage(msg)) turns++;
-    if (turns < 2) continue;
-
-    if (msg.role !== "tool") continue;
-    if (!Array.isArray(msg.content)) continue;
-
-    for (let partIndex = msg.content.length - 1; partIndex >= 0; partIndex--) {
-      const part = msg.content[partIndex];
-      if (part?.type !== "tool-result") continue;
-
-      const toolName = part.toolName;
-      if (toolName && TOOL_OUTPUT_PRUNE_PROTECTED_TOOLS.has(toolName)) continue;
-      const toolCallId = part.toolCallId;
-      if (!toolCallId) continue;
-
-      // Once we reach already-compacted results, stop. Older ones should already be compacted.
-      if (params.compactedToolCallIds.has(toolCallId)) break outer;
-
-      const output = part.output;
-      const estimate = estimateToolOutputTokens(output);
-      total += estimate;
-
-      if (total > params.protectTokens) {
-        pruned += estimate;
-        toCompact.add(toolCallId);
-      }
-    }
-  }
-
-  if (pruned <= params.minimumTokens) return 0;
-
-  let changed = false;
-  for (const id of toCompact) {
-    if (params.compactedToolCallIds.has(id)) continue;
-    params.compactedToolCallIds.add(id);
-    changed = true;
-  }
-  return changed ? pruned : 0;
-}
-
-export function applyToolOutputCompactionView(params: {
-  messages: readonly ModelMessage[];
-  compactedToolCallIds: ReadonlySet<string>;
-}): ModelMessage[] {
-  let changed = false;
-
-  const out = params.messages.map((m) => {
-    if (m.role !== "tool") return m;
-    if (!Array.isArray(m.content)) return m;
-
-    let nextContent: ToolContent | null = null;
-
-    for (let i = 0; i < m.content.length; i++) {
-      const part = m.content[i];
-      if (part?.type !== "tool-result") continue;
-
-      const toolCallId = part.toolCallId;
-      if (!toolCallId) continue;
-      if (!params.compactedToolCallIds.has(toolCallId)) continue;
-
-      nextContent ??= m.content.map((p) => ({ ...p }));
-
-      const nextPart = nextContent?.[i];
-      if (nextPart?.type !== "tool-result") continue;
-
-      nextPart["output"] = { type: "text", value: TOOL_OUTPUT_PLACEHOLDER };
-      changed = true;
-    }
-
-    if (!nextContent) return m;
-    return {
-      ...m,
-      content: nextContent,
-    } satisfies ModelMessage;
-  });
-
-  return changed ? out : [...params.messages];
-}
-
-export function scrubLargeBinaryForModelView(
-  messages: readonly ModelMessage[],
-  limits: { maxBytesPerPart: number; maxBytesTotal: number },
-): ModelMessage[] {
-  return boundToolResultMediaForModelView(messages, limits);
 }
 
 function getSubagentOkFromResult(event: { readonly result: unknown }): boolean | null {
@@ -984,13 +566,6 @@ function buildCustomCommandToolCallId(requestId: string, name: string): string {
   return buildSyntheticToolCallId({
     prefix: CUSTOM_COMMAND_TOOL_NAME,
     seed: `${requestId}:${name}`,
-  });
-}
-
-function buildAutoInjectedThreadSearchToolCallId(requestId: string): string {
-  return buildSyntheticToolCallId({
-    prefix: "conversation_thread_search",
-    seed: `${requestId}:auto-inject`,
   });
 }
 
@@ -1068,639 +643,6 @@ export function customCommandExecutionErrorText(error: CustomCommandExecutionErr
     case "CustomCommandExecuteRejectedError":
     case "CustomCommandResultInvalidError":
       return error.message;
-  }
-}
-
-const AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME = "conversation_thread_search";
-export const AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH = 320;
-const AUTO_INJECTED_THREAD_BRIEF_FULL_THRESHOLD = Math.floor(
-  AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH * 1.1,
-);
-
-export type AutoInjectedThreadSearchPayload = {
-  entries: Array<{
-    surface: "discord" | "native";
-    threadId: string;
-    /** The `conversation.thread.read` offset where the recalled subject starts. */
-    offset?: number;
-    title: string;
-    brief?: string;
-    timeRange?: string;
-  }>;
-};
-
-type AutoInjectedThreadSearchEntry = AutoInjectedThreadSearchPayload["entries"][number] & {
-  entryId?: string;
-};
-
-type AutoInjectedThreadRankingDiagnostic = {
-  threadId: string;
-  rawScore: number;
-  confidence: number;
-  searchIndex: number;
-  rank: number;
-  breakdown: RankedAutoInjectThread["breakdown"];
-};
-
-type AutoInjectedThreadSearchAppendedEvent = {
-  toolCallId: string;
-  mode: "hybrid" | "semantic" | "lexical";
-  limit: number;
-  minScore: number;
-  searches: readonly (readonly string[])[];
-  participantFilterUserCount: number;
-  entries: readonly AutoInjectedThreadSearchEntry[];
-  ranking: readonly (AutoInjectedThreadRankingDiagnostic & {
-    selection: RankedAutoInjectThread["selection"];
-  })[];
-  highestRejectedByConfidence: AutoInjectedThreadRankingDiagnostic | null;
-  expansionMinConfidence: number;
-  corpusDocumentCount: number;
-};
-
-type DecisionAutoInjectedThreadSearchEvent = {
-  mode: "off" | "shadow" | "enforce";
-  outcome: "search" | "skip" | "failed" | "length-skip";
-  model?: string;
-  probabilities?: Pick<DecisionAutoInjectAnswers, "mayHelp" | "clearlyUnneeded">;
-  elapsedMs: number;
-};
-
-type AutoInjectToolStatusUpdate = {
-  toolCallId: string;
-  status: "start" | "end";
-  display: string;
-  ok?: boolean;
-  error?: string;
-  /** Shown only in native activity details; Discord tool status keeps the label alone. */
-  output?: string;
-};
-
-export function buildAutoInjectedThreadSearchMessages(params: {
-  toolCallId: string;
-  entries: readonly AutoInjectedThreadSearchEntry[];
-  note?: string;
-}): ModelMessage[] {
-  const payload: AutoInjectedThreadSearchPayload = {
-    entries: params.entries.map((entry) => ({
-      threadId: entry.threadId,
-      surface: entry.surface,
-      ...(entry.offset ? { offset: entry.offset } : {}),
-      title: entry.title,
-      ...(entry.brief ? { brief: entry.brief } : {}),
-      ...(entry.timeRange ? { timeRange: entry.timeRange } : {}),
-    })),
-  };
-
-  return [
-    buildGeneratedMessage({
-      kind: "conversation_recall",
-      id: params.toolCallId,
-      // Entry ids, so another subject of the same thread can still be recalled later.
-      threadIds: params.entries.map((entry) => entry.entryId ?? entry.threadId),
-      content: JSON.stringify({
-        note: params.note ?? "auto-injected after long user input",
-        ...payload,
-      }),
-    }),
-  ];
-}
-
-function formatAutoInjectedThreadSearchOutput(
-  entries: readonly AutoInjectedThreadSearchEntry[],
-): string {
-  if (entries.length === 0) return "No related threads injected.";
-  const lines = entries.map((entry) =>
-    entry.timeRange ? `- ${entry.title} (${entry.timeRange})` : `- ${entry.title}`,
-  );
-  const noun = entries.length === 1 ? "thread" : "threads";
-  return [`Injected ${entries.length} related ${noun}:`, ...lines].join("\n");
-}
-
-function formatAutoInjectedThreadBrief(brief: string): string | undefined {
-  const trimmed = brief.trim();
-  if (trimmed.length === 0) return undefined;
-  if (trimmed.length <= AUTO_INJECTED_THREAD_BRIEF_FULL_THRESHOLD) return trimmed;
-
-  return `${trimmed.slice(0, AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH).trimEnd()} ...(${trimmed.length - AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH} remaining)`;
-}
-
-function formatAutoInjectedThreadSearchResult(
-  result: ConversationThreadSearchResult["results"][number],
-): AutoInjectedThreadSearchEntry {
-  const timeRange = result.timeRange ? formatInjectedThreadTimeRange(result.timeRange) : undefined;
-  const brief = formatAutoInjectedThreadBrief(result.brief);
-  return {
-    threadId: result.threadId,
-    entryId: result.entryId ?? result.threadId,
-    surface: result.surface,
-    ...(result.offset ? { offset: result.offset } : {}),
-    title: result.title,
-    ...(brief ? { brief } : {}),
-    ...(timeRange ? { timeRange } : {}),
-  };
-}
-
-/** A thread's first entry id is its thread id, which is what older transcripts recorded. */
-function collectAutoInjectedEntryIds(messages: readonly ModelMessage[]): Set<string> {
-  const entryIds = new Set<string>();
-
-  for (const message of messages) {
-    const generated = generatedMessageMetadata(message);
-    if (generated?.kind === "conversation_recall" && Array.isArray(generated.threadIds)) {
-      for (const id of generated.threadIds) {
-        if (typeof id === "string") entryIds.add(id);
-      }
-      continue;
-    }
-    const content: unknown = message.content;
-    if (message.role !== "tool" || !Array.isArray(content)) continue;
-
-    for (const part of content) {
-      if (!isRecord(part)) continue;
-      if (part.type !== "tool-result" || part.toolName !== AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME) {
-        continue;
-      }
-
-      const output = part.output;
-      const payload = isRecord(output) && output.type === "json" ? output.value : output;
-      const entries = isRecord(payload) ? payload.entries : undefined;
-      if (!Array.isArray(entries)) continue;
-
-      for (const entry of entries) {
-        if (!isRecord(entry)) continue;
-        const threadId = entry.threadId;
-        if (typeof threadId === "string" && threadId.length > 0) entryIds.add(threadId);
-      }
-    }
-  }
-
-  return entryIds;
-}
-
-function padLocalDatePart(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function formatLocalThreadTime(value: string): string | null {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return null;
-
-  const year = date.getFullYear();
-  const month = padLocalDatePart(date.getMonth() + 1);
-  const day = padLocalDatePart(date.getDate());
-  const hour = padLocalDatePart(date.getHours());
-  const minute = padLocalDatePart(date.getMinutes());
-  return `${year}/${month}/${day} ${hour}:${minute}`;
-}
-
-function formatInjectedThreadTimeRange(input: { start: string; end: string }): string | undefined {
-  const start = formatLocalThreadTime(input.start);
-  const end = formatLocalThreadTime(input.end);
-  if (!start || !end) return undefined;
-  return `${start} - ${end}`;
-}
-
-async function publishAutoInjectToolStatusBestEffort(
-  params: {
-    publishToolStatus: (update: AutoInjectToolStatusUpdate) => Promise<void>;
-    onError: (message: string, error: BusAgentRunnerErrorProjection) => void;
-  },
-  update: AutoInjectToolStatusUpdate,
-): Promise<void> {
-  const attempt = await Result.tryPromise({
-    try: async () => {
-      await params.publishToolStatus(update);
-    },
-    catch: captureError,
-  });
-
-  if (attempt.isErr()) {
-    params.onError(
-      "auto-injected thread search status publish failed; continuing",
-      projectBusAgentRunnerError(attempt.error.cause),
-    );
-  }
-}
-
-function notifyAutoInjectObserverBestEffort(
-  onError: (message: string, error: BusAgentRunnerErrorProjection) => void,
-  notify: () => void,
-): void {
-  const attempt = Result.try({ try: notify, catch: captureError });
-
-  if (attempt.isErr()) {
-    onError(
-      "auto-injected thread search append log failed; continuing",
-      projectBusAgentRunnerError(attempt.error.cause),
-    );
-  }
-}
-
-type AutoInjectedThreadSearchParams = {
-  surface?: "discord" | "native";
-  cfg: CoreConfig;
-  conversationThreads?: ConversationThreadToolService;
-  requestId: string;
-  /** Session of the request; for native requests this is also the current conversation thread id. */
-  sessionId?: string;
-  raw?: AgentRunnerRaw;
-  previousMessages?: readonly ModelMessage[];
-  userMessages: readonly ModelMessage[];
-  publishToolStatus: (update: AutoInjectToolStatusUpdate) => Promise<void>;
-  onInjected?: (event: AutoInjectedThreadSearchAppendedEvent) => void;
-  onDecisionEvaluated?: (event: DecisionAutoInjectedThreadSearchEvent) => void;
-  onError: (message: string, error: BusAgentRunnerErrorProjection) => void;
-  autoInjectUsage?: ConversationThreadAutoInjectUsageAccumulator;
-  loadDecisionUserMessages?: () => Promise<readonly ModelMessage[]>;
-  /** Overrides the configured decision evaluator; used by tests. */
-  createDecisionEvaluator?: (
-    model: string,
-  ) => ResultType<DecisionAutoInjectEvaluator, DecisionAutoInjectUnavailable>;
-};
-
-type DecisionEvaluatorResolution =
-  | { kind: "ready"; model: string; evaluator: DecisionAutoInjectEvaluator }
-  | { kind: "unavailable"; message: string };
-
-type DecisionEvaluationOutcome =
-  | { kind: "answered"; answers: DecisionAutoInjectAnswers }
-  | { kind: "failed"; message: string };
-
-function createEnvDecisionAutoInjectEvaluator(
-  model: string,
-): ResultType<DecisionAutoInjectEvaluator, DecisionAutoInjectUnavailable> {
-  const settings = model.startsWith("openai/") ? env.providers.openai : env.providers.typesafe;
-  return createDecisionAutoInjectEvaluator({
-    apiKey: settings.apiKey,
-    baseUrl: settings.baseUrl,
-    model,
-  });
-}
-
-function resolveDecisionAutoInjectEvaluator(
-  params: AutoInjectedThreadSearchParams,
-  hasImages: boolean,
-): DecisionEvaluatorResolution {
-  const model = selectDecisionAutoInjectModel(
-    params.cfg.conversation.thread.autoInject.gate?.model ?? [],
-    hasImages,
-  );
-  const create = params.createDecisionEvaluator ?? createEnvDecisionAutoInjectEvaluator;
-  return create(model).match<DecisionEvaluatorResolution>({
-    ok: (evaluator) => ({ kind: "ready", model, evaluator }),
-    err: (error) => ({ kind: "unavailable", message: error.message }),
-  });
-}
-
-async function prepareDecisionAutoInjectImages(
-  params: AutoInjectedThreadSearchParams,
-): Promise<ResultType<string[], DecisionAutoInjectEvaluationFailed>> {
-  const latest = latestUserInput(params.userMessages);
-  const supportsImages = (params.cfg.conversation.thread.autoInject.gate?.model ?? []).some(
-    (model) => model.startsWith("openai/"),
-  );
-  if (!supportsImages || (!latest.hasAttachment && !params.loadDecisionUserMessages))
-    return Result.ok([]);
-  const prepared = await Result.tryPromise({
-    try: async () =>
-      latestUserInput(
-        await (params.loadDecisionUserMessages?.() ?? Promise.resolve(params.userMessages)),
-      ).content,
-    catch: (cause) =>
-      new DecisionAutoInjectEvaluationFailed({
-        message: opaqueErrorMessage(cause, "Decision image materialization failed"),
-      }),
-  });
-  return Result.gen(async function* () {
-    const content = yield* prepared;
-    const images = yield* Result.await(
-      collectDecisionAutoInjectImages({
-        content,
-        maxBytesPerPart: params.cfg.tools.media.maxInlineBytesPerPart,
-        maxBytesTotal: params.cfg.tools.media.maxInlineBytesTotal,
-      }),
-    );
-    return Result.ok(images);
-  });
-}
-
-async function shouldSkipAutoInjectByDecision(
-  params: AutoInjectedThreadSearchParams,
-  autoInjectUsage: ConversationThreadAutoInjectUsageAccumulator,
-): Promise<boolean> {
-  const gate = params.cfg.conversation.thread.autoInject.gate;
-  if (!gate || gate.mode === "off") return false;
-  const startedAt = performance.now();
-  const notify = (event: Omit<DecisionAutoInjectedThreadSearchEvent, "mode" | "elapsedMs">) =>
-    notifyAutoInjectObserverBestEffort(params.onError, () =>
-      params.onDecisionEvaluated?.({
-        ...event,
-        mode: gate.mode,
-        elapsedMs: performance.now() - startedAt,
-      }),
-    );
-  const prepared = (await prepareDecisionAutoInjectImages(params)).match<
-    { kind: "prepared"; images: string[] } | { kind: "failed"; message: string }
-  >({
-    ok: (images) => ({ kind: "prepared", images }),
-    err: (error) => ({ kind: "failed", message: error.message }),
-  });
-  if (prepared.kind === "failed") {
-    notify({ outcome: "failed" });
-    params.onError(
-      "Decision image preparation failed; continuing to planner",
-      projectBusAgentRunnerError(new Error(prepared.message)),
-    );
-    return false;
-  }
-  const latest = latestUserInput(params.userMessages);
-  if (latest.hasAttachment && !latest.authoredText.trim() && prepared.images.length === 0) {
-    notify({ outcome: "search" });
-    return false;
-  }
-  const resolution = resolveDecisionAutoInjectEvaluator(params, prepared.images.length > 0);
-  if (resolution.kind === "unavailable") {
-    notify({ outcome: "failed" });
-    params.onError(
-      "Decision gate unavailable; continuing to planner",
-      projectBusAgentRunnerError(new Error(resolution.message)),
-    );
-    return false;
-  }
-  const evaluator = resolution.evaluator;
-  const evaluated = await evaluator.evaluate({
-    message: decisionAutoInjectContext(
-      latestUserInput(params.userMessages).authoredText,
-      params.previousMessages ?? [],
-    ),
-    images: evaluator.supportsImages ? prepared.images : undefined,
-  });
-  autoInjectUsage.recordTiming("decision", performance.now() - startedAt);
-  const outcome = evaluated.match<DecisionEvaluationOutcome>({
-    ok: (answers) => ({ kind: "answered", answers }),
-    err: (error) => ({ kind: "failed", message: error.message }),
-  });
-  if (outcome.kind === "failed") {
-    notify({ outcome: "failed", model: evaluator.model });
-    params.onError(
-      "Decision gate evaluation failed; continuing to planner",
-      projectBusAgentRunnerError(new Error(outcome.message)),
-    );
-    return false;
-  }
-  const { answers } = outcome;
-  autoInjectUsage.recordDecisionUsage({ model: evaluator.model, ...answers.usage });
-  const decision = decideDecisionAutoInject(answers, gate.skipMinProbability);
-  notify({
-    outcome: decision,
-    model: evaluator.model,
-    probabilities: { mayHelp: answers.mayHelp, clearlyUnneeded: answers.clearlyUnneeded },
-  });
-  return gate.mode === "enforce" && decision === "skip";
-}
-
-export async function maybeBuildAutoInjectedThreadSearchMessages(
-  params: AutoInjectedThreadSearchParams,
-): Promise<ModelMessage[]> {
-  const autoInject = params.cfg.conversation.thread.autoInject;
-  if (!autoInject.enabled) return [];
-  if (!params.conversationThreads) return [];
-  const conversationThreads = params.conversationThreads;
-  const autoInjectUsage =
-    params.autoInjectUsage ??
-    createConversationThreadAutoInjectUsageAccumulator({ requestId: params.requestId });
-  const latestInput = latestUserInput(params.userMessages);
-  const text = autoInjectPlannerContext(latestInput.text, params.previousMessages ?? []);
-  const previouslyInjectedEntryIds = collectAutoInjectedEntryIds(params.previousMessages ?? []);
-  const minTextUnits =
-    previouslyInjectedEntryIds.size > 0 ? autoInject.followUpMinTextUnits : autoInject.minTextUnits;
-  if (
-    !latestInput.hasAttachment &&
-    !shouldRunAutoInjectedThreadSearch({
-      text: latestInput.authoredText,
-      minTextUnits,
-    })
-  ) {
-    notifyAutoInjectObserverBestEffort(params.onError, () =>
-      params.onDecisionEvaluated?.({
-        mode: autoInject.gate?.mode ?? "off",
-        outcome: "length-skip",
-        elapsedMs: 0,
-      }),
-    );
-    autoInjectUsage.finish({ status: "abstained" });
-    return [];
-  }
-  if (await shouldSkipAutoInjectByDecision(params, autoInjectUsage)) {
-    autoInjectUsage.finish({ status: "abstained" });
-    return [];
-  }
-
-  const participantIds =
-    autoInject.filterCurrentParticipants && params.surface !== "native"
-      ? getParticipantUserIdsFromRaw(params.raw)
-      : [];
-
-  let usageStatus: "completed" | "abstained" | "partial" | "failed" = "failed";
-  let usageSearchCount = 0;
-  let usageQueryCount = 0;
-
-  const toolCallId = buildAutoInjectedThreadSearchToolCallId(params.requestId);
-  const display = `${AUTO_INJECTED_THREAD_SEARCH_TOOL_NAME} auto-injected metadata`;
-  const publishToolStatusBestEffort = async (update: AutoInjectToolStatusUpdate) =>
-    await publishAutoInjectToolStatusBestEffort(params, update);
-
-  await publishToolStatusBestEffort({ toolCallId, status: "start", display });
-
-  {
-    const attempt = await Result.tryPromise({
-      try: async () => {
-        const planningStartedAt = performance.now();
-        const plan = await conversationThreads.planAutoInjectSearch({
-          text,
-          content:
-            typeof latestInput.content === "string"
-              ? text
-              : [
-                  ...(text ? [{ type: "text" as const, text }] : []),
-                  ...latestInput.content.filter((part) => part.type !== "text"),
-                ],
-          autoInjectUsage,
-        });
-        autoInjectUsage.recordTiming("planning", performance.now() - planningStartedAt);
-        usageSearchCount = plan.searches.length;
-        usageQueryCount = plan.searches.reduce(
-          (sum, searchPlan) => sum + searchPlan.queries.length,
-          0,
-        );
-        if (plan.searches.length === 0) {
-          usageStatus = "abstained";
-          await publishToolStatusBestEffort({
-            toolCallId,
-            status: "end",
-            display,
-            ok: true,
-            output: formatAutoInjectedThreadSearchOutput([]),
-          });
-          return [];
-        }
-        const searchRecallLimit = Math.min(50, Math.max(autoInject.limit * 5, 10));
-        const searchStartedAt = performance.now();
-        const settledSearches = await Promise.allSettled(
-          plan.searches.map((searchPlan) =>
-            conversationThreads.search({
-              query: searchPlan.queries,
-              queryAboutness: searchPlan.aboutness,
-              limit: searchRecallLimit,
-              minScore: autoInject.minScore,
-              mode: autoInject.mode,
-              verbose: true,
-              autoInjectUsage,
-              ...(participantIds.length > 0
-                ? { participantIdsAny: participantIds, participantSurface: params.surface }
-                : {}),
-            }),
-          ),
-        );
-        autoInjectUsage.recordTiming("search", performance.now() - searchStartedAt);
-        let fulfilledSearches = 0;
-        const successfulSearches: Array<{
-          searchIndex: number;
-          result: ConversationThreadSearchResult;
-        }> = [];
-        settledSearches.forEach((result, searchIndex) => {
-          if (result.status === "fulfilled") {
-            fulfilledSearches += 1;
-            successfulSearches.push({ searchIndex, result: result.value });
-            return;
-          }
-
-          params.onError(
-            "auto-injected thread search failed; continuing with partial metadata",
-            projectBusAgentRunnerError(result.reason, `Search ${searchIndex} failed`),
-          );
-        });
-        if (fulfilledSearches === 0) {
-          const failure = projectBusAgentRunnerError(
-            new Error("all auto-injected thread searches failed"),
-          );
-          await publishToolStatusBestEffort({
-            toolCallId,
-            status: "end",
-            display,
-            ok: false,
-            error: failure.message,
-          });
-          params.onError(
-            "auto-injected thread search failed; continuing without metadata",
-            failure,
-          );
-          return [];
-        }
-        usageStatus = fulfilledSearches === plan.searches.length ? "completed" : "partial";
-        const corpusStartedAt = performance.now();
-        const corpusDocuments =
-          (await conversationThreads.getAutoInjectRankingCorpusDocuments?.()) ?? [];
-        autoInjectUsage.recordTiming("corpus", performance.now() - corpusStartedAt);
-        const rankingStartedAt = performance.now();
-        const rankingResult = rankAutoInjectedThreadSearchResults({
-          plan,
-          searches: successfulSearches,
-          corpusDocuments,
-          excludedEntryIds: previouslyInjectedEntryIds,
-          limit: autoInject.limit,
-          expansionMinConfidence: autoInject.expansionMinConfidence,
-        });
-        autoInjectUsage.recordTiming("ranking", performance.now() - rankingStartedAt);
-        const rankedEntries = rankingResult.selected;
-        const entries = rankedEntries.map((candidate) =>
-          formatAutoInjectedThreadSearchResult(candidate.result),
-        );
-
-        await publishToolStatusBestEffort({
-          toolCallId,
-          status: "end",
-          display,
-          ok: true,
-          output: formatAutoInjectedThreadSearchOutput(entries),
-        });
-
-        if (entries.length === 0) return [];
-        {
-          const attempt = Result.try({
-            try: () => {
-              params.onInjected?.({
-                toolCallId,
-                mode: autoInject.mode,
-                limit: autoInject.limit,
-                minScore: autoInject.minScore,
-                searches: plan.searches.map((searchPlan) => searchPlan.queries),
-                participantFilterUserCount: participantIds.length,
-                entries,
-                ranking: rankedEntries.map((entry) => ({
-                  threadId: entry.result.threadId,
-                  rawScore: entry.rawScore,
-                  confidence: entry.confidence,
-                  selection: entry.selection,
-                  searchIndex: entry.searchIndex,
-                  rank: entry.rank,
-                  breakdown: entry.breakdown,
-                })),
-                highestRejectedByConfidence: rankingResult.highestRejectedByConfidence
-                  ? {
-                      threadId: rankingResult.highestRejectedByConfidence.result.threadId,
-                      rawScore: rankingResult.highestRejectedByConfidence.rawScore,
-                      confidence: rankingResult.highestRejectedByConfidence.confidence,
-                      searchIndex: rankingResult.highestRejectedByConfidence.searchIndex,
-                      rank: rankingResult.highestRejectedByConfidence.rank,
-                      breakdown: rankingResult.highestRejectedByConfidence.breakdown,
-                    }
-                  : null,
-                expansionMinConfidence: autoInject.expansionMinConfidence,
-                corpusDocumentCount: corpusDocuments.length,
-              });
-            },
-            catch: captureError,
-          });
-
-          if (attempt.isErr()) {
-            const error = attempt.error.cause;
-            params.onError(
-              "auto-injected thread search append log failed; continuing",
-              projectBusAgentRunnerError(error),
-            );
-          }
-        }
-        return buildAutoInjectedThreadSearchMessages({ toolCallId, entries });
-      },
-      catch: captureError,
-    });
-
-    if (attempt.isErr()) {
-      const error = attempt.error.cause;
-      const projected = projectBusAgentRunnerError(error);
-      await publishToolStatusBestEffort({
-        toolCallId,
-        status: "end",
-        display,
-        ok: false,
-        error: projected.message,
-      });
-      params.onError("auto-injected thread search failed; continuing without metadata", projected);
-      autoInjectUsage.finish({
-        status: "failed",
-        searchCount: usageSearchCount,
-        queryCount: usageQueryCount,
-      });
-      return [];
-    }
-    autoInjectUsage.finish({
-      status: usageStatus,
-      searchCount: usageSearchCount,
-      queryCount: usageQueryCount,
-    });
-    return attempt.value;
   }
 }
 
@@ -1945,66 +887,6 @@ export function persistHeartbeatSurfaceHandoffs(params: {
   }
 }
 
-type Enqueued = {
-  nativeHistoryProviderState?: HistoryProviderState;
-  queueEntryId: string;
-  requestDeliveryId?: string;
-  requestId: string;
-  sessionId: string;
-  requestClient: AdapterPlatform;
-  queue: RequestQueueMode;
-  runPolicy: RequestRunPolicy;
-  origin?: RequestOrigin;
-  messages: ModelMessage[];
-  storedMessages: StoredMessageV1[];
-  corePrimaryLineage?: CorePrimaryLineageV2;
-  modelOverride?: string;
-  raw?: AgentRunnerRaw;
-  authenticatedOrigin?: AuthenticatedSurfaceOrigin;
-  currentTurnUserId?: string;
-  currentTurnMessageRef?: MsgRef;
-  verifiedIngress?: boolean;
-  identityOwner?: RequestMessageCacheOwner;
-  restoredSafetyMode?: SessionSafetyMode;
-  nativeResolvedModelRequest?: DurableResolvedModelRequest;
-  recovery?: {
-    checkpointMessages: ModelMessage[];
-    partialText: string;
-    nativeOutputFrontier?: NativeOutputFrontier;
-  };
-  storedRecoveryCheckpoint?: StoredMessageV1[];
-  recoveryMcpImages?: McpImageCheckpointReference[];
-  previousRecoveryCheckpoint?: AgentRunCheckpointV1;
-  loadedCatalogIds?: readonly string[];
-  questionResultIds?: readonly string[];
-  acceptedCorePrimaryLineage?: CorePrimaryLineageV2;
-  acceptedCurrentTurnUserId?: string;
-  retainedRequestDeliveries?: readonly AgentRunnerRetainedRequestDelivery[];
-  journalHandle?: AgentRunJournalHandle;
-};
-
-type QueueCancellationGroup = {
-  readonly requestId: string;
-  readonly requestClient: AdapterPlatform;
-  readonly entries: readonly Enqueued[];
-};
-
-type QueueLifecycleAttempt = {
-  readonly eventId: string;
-  readonly controlRequestId: string;
-  readonly controlRequestClient: AdapterPlatform;
-  readonly sessionId: string;
-  readonly kind: "queued-cancellation" | "buffered-absorption";
-  readonly detail: string;
-  pendingGroups: QueueCancellationGroup[];
-  controlApplied: boolean;
-};
-
-export type AgentRunnerRetainedRequestDelivery = {
-  readonly requestDeliveryId: string;
-  readonly outcome: RequestDeliveryTerminalOutcome;
-};
-
 export type NativeRunnerRequest = {
   readonly requestId: string;
   readonly requestDeliveryId: string;
@@ -2039,267 +921,6 @@ export type BusAgentRunnerRequestDelivery = Pick<
   "handleDelivery" | "replaceAcceptedWork" | "terminalize"
 >;
 
-export function validateCorePrimaryLineageAtRunnerIntake(input: {
-  requestClient: AdapterPlatform;
-  sessionId?: string;
-  runProfile: AgentRunProfile;
-  messages: readonly ModelMessage[];
-  corePrimaryLineage: unknown;
-  transcriptStore?: TranscriptStore;
-}): CorePrimaryLineageV2 | undefined {
-  if (input.requestClient !== "discord" || input.runProfile !== "primary") return undefined;
-  const fallbackCurrentCanonicalStart = Math.max(
-    0,
-    input.messages.findLastIndex(
-      (message) => message.role === "user" && !isGeneratedMessage(message),
-    ),
-  );
-  if (input.corePrimaryLineage === undefined) {
-    return createFreshOnlyLineage("missing-manifest", fallbackCurrentCanonicalStart);
-  }
-  const decoded = decodeCorePrimaryLineageV2(input.corePrimaryLineage, input.messages);
-  const continueDecoded = decoded.match<() => CorePrimaryLineageV2>({
-    err: () => () =>
-      createFreshOnlyLineage("malformed-or-unaligned-manifest", fallbackCurrentCanonicalStart),
-    ok: (lineage) => () => {
-      if (lineage.state !== "complete") return lineage;
-      if (!input.sessionId) {
-        return createFreshOnlyLineage("missing-lineage-scope", lineage.currentCanonicalStart);
-      }
-      if (!input.transcriptStore?.validateCorePrimaryLineageReferences) {
-        return createFreshOnlyLineage("lineage-store-unavailable", lineage.currentCanonicalStart);
-      }
-      const invalidReason = input.transcriptStore.validateCorePrimaryLineageReferences({
-        manifest: lineage,
-        requestClient: input.requestClient,
-        sessionId: input.sessionId,
-        surfaceId: `discord:${input.sessionId}`,
-      });
-      const continueValidation = invalidReason.match<() => CorePrimaryLineageV2>({
-        err: () => () =>
-          createFreshOnlyLineage("lineage-store-unavailable", lineage.currentCanonicalStart),
-        ok: (storedInvalidReason) => () =>
-          storedInvalidReason
-            ? createFreshOnlyLineage(storedInvalidReason, lineage.currentCanonicalStart)
-            : lineage,
-      });
-      return continueValidation();
-    },
-  });
-  return continueDecoded();
-}
-
-export function degradeCorePrimaryLineageForMutation(
-  reason: string,
-  currentCanonicalStart = 0,
-): CorePrimaryLineageV2 {
-  return createFreshOnlyLineage(reason, currentCanonicalStart);
-}
-
-export function corePrimaryLineageHasCompactionCheckpoint(
-  lineage: CorePrimaryLineageV2 | undefined,
-): boolean {
-  return (
-    lineage?.state === "complete" &&
-    lineage.segments.some((segment) => segment.atoms.some((atom) => atom.kind === "checkpoint"))
-  );
-}
-
-const AUTO_INJECTED_THREAD_SEARCH_LINEAGE_SOURCE = "conversation-thread-auto-inject";
-
-export function appendAutoInjectedThreadSearchLineage(input: {
-  lineage: unknown;
-  canonicalMessages: readonly ModelMessage[];
-  injectedMessages: readonly ModelMessage[];
-}): CorePrimaryLineageV2 {
-  const parsedShape = corePrimaryLineageV2Schema.safeParse(input.lineage);
-  const fallbackCurrentCanonicalStart = parsedShape.success
-    ? parsedShape.data.currentCanonicalStart
-    : Math.max(
-        0,
-        input.canonicalMessages.findLastIndex(
-          (message) => message.role === "user" && !isGeneratedMessage(message),
-        ),
-      );
-  const failClosed = () =>
-    degradeCorePrimaryLineageForMutation(
-      "synthetic-thread-search-insertion",
-      fallbackCurrentCanonicalStart,
-    );
-
-  const decoded = decodeCorePrimaryLineageV2(input.lineage, input.canonicalMessages);
-  const continueDecoded = decoded.match<() => CorePrimaryLineageV2>({
-    err: () => failClosed,
-    ok: (lineage) => () => {
-      if (lineage.state !== "complete" || input.injectedMessages.length === 0) {
-        return failClosed();
-      }
-      const previous = lineage.segments.at(-1);
-      if (!previous || previous.canonicalEnd !== input.canonicalMessages.length) {
-        return failClosed();
-      }
-
-      const preparedInjected = projectStoredMessagesV1(input.injectedMessages).andThen((messages) =>
-        hashCanonicalStoredMessagesV2(messages).map((digest) => ({
-          messages,
-          messageDigest: digest.hash,
-        })),
-      );
-      const prepared = preparedInjected.match({
-        ok: (value) => value,
-        err: () => null,
-      });
-      if (!prepared) return failClosed();
-      const atom = {
-        kind: "synthetic" as const,
-        source: AUTO_INJECTED_THREAD_SEARCH_LINEAGE_SOURCE,
-        messageDigest: prepared.messageDigest,
-      };
-      const cumulativeAtomCount = previous.cumulativeAtomCount + 1;
-      const extended = extendCoreLineagePrefixDigestV2(
-        previous.cumulativePrefixDigest,
-        cumulativeAtomCount,
-        atom,
-      );
-      const continueExtended = extended.match<() => CorePrimaryLineageV2>({
-        err: () => failClosed,
-        ok: (cumulativePrefixDigest) => () => {
-          const candidate = {
-            ...lineage,
-            segments: [
-              ...lineage.segments,
-              {
-                atoms: [atom],
-                canonicalMessages: prepared.messages,
-                canonicalStart: previous.canonicalEnd,
-                canonicalEnd: previous.canonicalEnd + input.injectedMessages.length,
-                cumulativeAtomCount,
-                cumulativePrefixDigest,
-              },
-            ],
-          };
-          const parsed = decodeCorePrimaryLineageV2(candidate, [
-            ...input.canonicalMessages,
-            ...prepared.messages,
-          ]);
-          const continueParsed = parsed.match<() => CorePrimaryLineageV2>({
-            ok: (value) => () => (value.state === "complete" ? value : failClosed()),
-            err: () => failClosed,
-          });
-          return continueParsed();
-        },
-      });
-      return continueExtended();
-    },
-  });
-  return continueDecoded();
-}
-
-export function mapCorePrimaryCompactionCurrentCanonicalStart(input: {
-  previousCurrentCanonicalStart: number;
-  replacement: {
-    originalSuffixStart: number;
-    replacementSuffixStart: number;
-    replacementMessageCount: number;
-  };
-}): number {
-  const retainedOffset =
-    input.previousCurrentCanonicalStart - input.replacement.originalSuffixStart;
-  if (retainedOffset < 0) return 0;
-  return Math.min(
-    input.replacement.replacementMessageCount,
-    input.replacement.replacementSuffixStart + retainedOffset,
-  );
-}
-
-function persistedCompleteLineage(lineage: CorePrimaryLineageV2 | undefined): {
-  corePrimaryLineage?: CoreLineageManifestV2;
-} {
-  return lineage?.state === "complete" ? { corePrimaryLineage: lineage } : {};
-}
-
-function requireStoredMessageHash(messages: readonly StoredMessageV1[]): string {
-  return hashCanonicalStoredMessagesV2(messages).match({
-    ok: (digest) => () => digest.hash,
-    err: (error) => () => signalBusAgentRunnerHostFailure(error),
-  })();
-}
-
-export function resolveCorePrimaryTranscriptProviderState(input: {
-  targetFamily: HistoryProviderState["lastFamily"];
-  lineage?: CorePrimaryLineageV2;
-  transcriptStore?: TranscriptStore;
-}): HistoryProviderState {
-  const lineage = input.lineage;
-  let containsCrossFamilyTurns = lineage?.state !== "complete";
-  if (lineage?.state === "complete") {
-    for (const segment of lineage.segments) {
-      const atom = segment.atoms[0];
-      if (!atom) {
-        containsCrossFamilyTurns = true;
-        continue;
-      }
-      if (atom.kind === "request") {
-        const transcript = input.transcriptStore?.getRequestTranscript?.({
-          requestId: atom.requestId,
-        });
-        const state = transcript?.match({
-          ok: (value) => value?.providerState,
-          err: () => undefined,
-        });
-        if (
-          !state ||
-          state.lastFamily !== atom.providerFamily ||
-          state.containsCrossFamilyTurns !== atom.containsCrossFamilyTurns ||
-          state.lastFamily !== input.targetFamily ||
-          state.containsCrossFamilyTurns
-        ) {
-          containsCrossFamilyTurns = true;
-        }
-        continue;
-      }
-      if (atom.kind === "checkpoint") {
-        const transcript = input.transcriptStore?.getRequestTranscript?.({
-          requestId: atom.requestId,
-        });
-        const state = transcript?.match({
-          ok: (value) => value?.providerState,
-          err: () => undefined,
-        });
-        if (!state || state.lastFamily !== input.targetFamily || state.containsCrossFamilyTurns) {
-          containsCrossFamilyTurns = true;
-        }
-        continue;
-      }
-      if (
-        segment.canonicalMessages.some(
-          (message) => message.role === "assistant" || message.role === "tool",
-        )
-      ) {
-        containsCrossFamilyTurns = true;
-      }
-    }
-  }
-  return {
-    lastFamily: input.targetFamily,
-    containsCrossFamilyTurns,
-  };
-}
-
-class ShutdownDrainingAbort extends Error {
-  constructor() {
-    super("server shutting down");
-    this.name = "ShutdownDrainingAbort";
-  }
-}
-
-class PreAgentRunCancelledError extends Error {
-  constructor() {
-    super("cancelled before agent start");
-    this.name = "PreAgentRunCancelledError";
-  }
-}
-
 const AGENT_TIMEOUT_ABORT_GRACE_MS = 5_000;
 const TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS = 4_000;
 const SHUTDOWN_ABORT_GRACE_MS = 500;
@@ -2307,80 +928,6 @@ const COMPACTED_TOOL_CALL_SESSION_LIMIT = 1_000;
 const LIVE_PARENT_RECONCILE_MS = 1_000;
 const SUBAGENT_RESULT_MATERIALIZATION_ATTEMPTS = 3;
 export const WORKFLOW_REQUEST_CLAIM_HEARTBEAT_MS = 10_000;
-
-/** Waits for every operation to settle, giving up at the deadline; true when all settled. */
-async function settlesBefore(
-  operations: readonly Promise<unknown>[],
-  deadlineAtMs: number,
-): Promise<boolean> {
-  if (operations.length === 0) return true;
-  let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
-  const settled = await Promise.race([
-    Promise.allSettled(operations).then(() => true),
-    new Promise<false>((resolve) => {
-      deadlineTimer = setTimeout(() => resolve(false), Math.max(0, deadlineAtMs - Date.now()));
-      deadlineTimer.unref?.();
-    }),
-  ]);
-  if (deadlineTimer) clearTimeout(deadlineTimer);
-  return settled;
-}
-
-function isCancelControlEntry(entry: Enqueued): boolean {
-  return parseRequestControlFromRaw(entry.raw).cancel;
-}
-
-function collectBufferedPromptEntriesForActiveRequest(input: {
-  queue: readonly Enqueued[];
-  activeRequestId: string;
-}): Enqueued[] {
-  const out: Enqueued[] = [];
-
-  for (const next of input.queue) {
-    if (next.queue !== "prompt") continue;
-    if (parseBufferedForActiveRequestIdFromRaw(next.raw) !== input.activeRequestId) continue;
-    out.push(next);
-  }
-
-  return out;
-}
-
-function removeQueuedEntriesByReference(queue: Enqueued[], removed: readonly Enqueued[]): number {
-  if (removed.length === 0) return 0;
-  const targets = new Set(removed);
-  const before = queue.length;
-
-  for (let i = 0; i < queue.length; ) {
-    if (!targets.has(queue[i]!)) {
-      i += 1;
-      continue;
-    }
-
-    queue.splice(i, 1);
-  }
-
-  return before - queue.length;
-}
-
-function groupQueueCancellationEntries(entries: readonly Enqueued[]): QueueCancellationGroup[] {
-  const groups = new Map<string, QueueCancellationGroup>();
-  for (const entry of entries) {
-    const existing = groups.get(entry.requestId);
-    if (existing) {
-      groups.set(entry.requestId, {
-        ...existing,
-        entries: [...existing.entries, entry],
-      });
-      continue;
-    }
-    groups.set(entry.requestId, {
-      requestId: entry.requestId,
-      requestClient: entry.requestClient,
-      entries: [entry],
-    });
-  }
-  return [...groups.values()];
-}
 
 export function buildPersistedHeartbeatMessages(finalText: string): StoredMessageV1[] {
   return [{ role: "assistant", content: finalText }];
@@ -2395,37 +942,6 @@ function toolCallIdsFromMessages(messages: readonly ModelMessage[]): Set<string>
     }
   }
   return ids;
-}
-
-export function shouldCancelIdleOnlyGlobalRequest(params: {
-  runPolicy: RequestRunPolicy;
-  sessionId: string;
-  states: ReadonlyMap<string, SessionQueue>;
-}): boolean {
-  if (params.runPolicy !== "idle_only_global") return false;
-
-  for (const [queuedSessionId, state] of params.states) {
-    if (!state.running) continue;
-    if (queuedSessionId === params.sessionId) return true;
-    if (!isHeartbeatSessionId(queuedSessionId)) return true;
-  }
-
-  return false;
-}
-
-export function shouldCancelRunPolicyRequest(params: {
-  runPolicy: RequestRunPolicy;
-  sessionId: string;
-  states: ReadonlyMap<string, SessionQueue>;
-}): boolean {
-  if (params.runPolicy === "idle_only_global") {
-    return shouldCancelIdleOnlyGlobalRequest(params);
-  }
-
-  if (params.runPolicy !== "idle_only_session") return false;
-
-  const state = params.states.get(params.sessionId);
-  return Boolean(state?.running);
 }
 
 export class AgentRunModelSelectionInvalid extends TaggedError("AgentRunModelSelectionInvalid")<{
@@ -2686,79 +1202,6 @@ export async function refreshSelectedLevel1Tools(params: {
 export { applyCompleteLevel1Tools } from "../../agent/claude-composition";
 
 export { completeLevel1ToolMapping } from "../../agent/claude-composition";
-
-type SessionQueue = {
-  running: boolean;
-  agent: AiSdkPiAgent<ToolSet> | null;
-  queue: Enqueued[];
-  activeRequestId: string | null;
-  activeRun: {
-    mcpImages: McpImageCheckpointRegistry;
-    requestDeliveryId?: string;
-    requestId: string;
-    sessionId: string;
-    requestClient: AdapterPlatform;
-    runProfile: AgentRunProfile;
-    queue: RequestQueueMode;
-    runPolicy: RequestRunPolicy;
-    origin?: RequestOrigin;
-    messages: ModelMessage[];
-    storedMessages: StoredMessageV1[];
-    corePrimaryLineage?: CorePrimaryLineageV2;
-    toolAuthority: LineageToolAuthority;
-    questionContinuation: QuestionContinuation;
-    modelOverride?: string;
-    currentTurnUserId?: string;
-    currentTurnMessageRef?: MsgRef;
-    raw?: AgentRunnerRaw;
-    resolvedModelSpec: string | null;
-    resolvedReasoning: ModelReasoningEffort | undefined;
-    resolvedProviderFamily: HistoryProviderState["lastFamily"] | null;
-    partialText: string;
-    liveParent: ReturnType<WorkflowLiveParentBridge["registerParent"]> | undefined;
-    hasPendingJobEvents?: () => boolean;
-    stopAwaitJobs?: () => Promise<void>;
-    materializeStoredMessages:
-      | ((messages: readonly StoredMessageV1[]) => Promise<ModelMessage[]>)
-      | null;
-    rememberStoredMessages: (
-      providerMessages: readonly ModelMessage[],
-      storedMessages: readonly StoredMessageV1[],
-    ) => void;
-    notifyWaiters: () => void;
-    flushOutput: () => void;
-    setCurrentTurnContext: (userId: string | undefined, messageRef: MsgRef | undefined) => void;
-    cancel: () => void;
-    started: boolean;
-    startedAt: number;
-    activeTools: Map<string, { toolName: string; startedAt: number }>;
-    retainedRequestDeliveries: Map<string, RequestDeliveryTerminalOutcome>;
-    checkpointedRetainedRequestDeliveryIds: Set<string>;
-    retainedRequestDeliveryByInputId: Map<AgentInputQueueId, string>;
-    journalHandle: AgentRunJournalHandle | null;
-    nativeOutput: NativeOutputPublisher | undefined;
-    checkpointWriter: {
-      disabled: boolean;
-      pending: {
-        readonly messages: readonly ModelMessage[];
-        readonly canonicalInputIds: ReadonlySet<AgentInputQueueId>;
-        readonly identityProjection: StoredMessageIdentityProjectionV1;
-        readonly nativeOutputBarrier?: Promise<NativeOutputPublication>;
-        readonly nativeOutputFrontier?: NativeOutputFrontier;
-      } | null;
-      operation: Promise<void> | null;
-      closed: boolean;
-      abandoned: boolean;
-      retryInputIds: Set<AgentInputQueueId>;
-      inFlightInputIds: ReadonlySet<AgentInputQueueId> | null;
-      lastCommittedProviderMessages: readonly ModelMessage[];
-      lastCommittedStoredMessages: readonly StoredMessageV1[];
-      retainedPredecessorStoredMessages: readonly StoredMessageV1[];
-    };
-  } | null;
-  /** Track toolCallIds whose outputs are compacted in the model-facing view. */
-  compactedToolCallIds: Set<string>;
-};
 
 export function isActiveRuntimeModelCompatible(input: {
   readonly activeSpec: string;
@@ -9953,256 +8396,6 @@ async function publishLifecycle(params: {
   })();
 }
 
-function mergeQueuedControlsForRecovery(
-  first: Enqueued,
-  queue: Enqueued[],
-  reservedQueueEntries: ReadonlySet<Enqueued>,
-): {
-  readonly storedMessages: readonly StoredMessageV1[];
-  readonly reapplied: readonly Enqueued[];
-  readonly discarded: readonly Enqueued[];
-} {
-  const retainedRequestDeliveryIds = new Set(
-    first.retainedRequestDeliveries?.map(({ requestDeliveryId }) => requestDeliveryId),
-  );
-  const storedMessages: StoredMessageV1[] = [];
-  const reapplied: Enqueued[] = [];
-  const discarded: Enqueued[] = [];
-
-  for (let index = 0; index < queue.length; ) {
-    const entry = queue[index]!;
-    const control = parseRequestControlFromRaw(entry.raw);
-    const targetsRecoveredRun = entry.requestId === first.requestId || control.requiresActive;
-    const isActiveControl = entry.queue !== "prompt" && !control.cancel && targetsRecoveredRun;
-    if (!isActiveControl || reservedQueueEntries.has(entry)) {
-      index += 1;
-      continue;
-    }
-
-    const alreadyRetained =
-      entry.requestDeliveryId !== undefined &&
-      retainedRequestDeliveryIds.has(entry.requestDeliveryId);
-    if (!alreadyRetained) {
-      storedMessages.push(...entry.storedMessages);
-      reapplied.push(entry);
-      first.currentTurnUserId = entry.currentTurnUserId;
-      first.currentTurnMessageRef = entry.currentTurnMessageRef;
-    }
-    discarded.push(entry);
-    queue.splice(index, 1);
-  }
-
-  if (reapplied.length > 0) {
-    first.corePrimaryLineage = degradeCorePrimaryLineageForMutation(
-      "queued-request-coalesced",
-      first.corePrimaryLineage?.currentCanonicalStart,
-    );
-  }
-
-  return { storedMessages, reapplied, discarded };
-}
-
-function mergeQueuedForSameRequest(
-  first: Enqueued,
-  queue: Enqueued[],
-  reservedQueueEntries: ReadonlySet<Enqueued>,
-): {
-  readonly messages: ModelMessage[];
-  readonly storedMessages: StoredMessageV1[];
-  readonly discarded: readonly Enqueued[];
-} {
-  const merged: ModelMessage[] = [...first.messages];
-  const storedMessages: StoredMessageV1[] = [...first.storedMessages];
-  const discarded: Enqueued[] = [];
-
-  // Pull in any already-queued items for the same request id so they become
-  // additional user messages in the same initial run.
-  for (let i = 0; i < queue.length; ) {
-    const next = queue[i]!;
-    if (next.requestId !== first.requestId || reservedQueueEntries.has(next)) {
-      i += 1;
-      continue;
-    }
-
-    merged.push(...next.messages);
-    storedMessages.push(...next.storedMessages);
-    first.currentTurnUserId = next.currentTurnUserId;
-    first.currentTurnMessageRef = next.currentTurnMessageRef;
-    discarded.push(next);
-    queue.splice(i, 1);
-  }
-
-  if (discarded.length > 0) {
-    first.corePrimaryLineage = degradeCorePrimaryLineageForMutation(
-      "queued-request-coalesced",
-      first.corePrimaryLineage?.currentCanonicalStart,
-    );
-  }
-
-  return { messages: merged, storedMessages, discarded };
-}
-
-/**
- * Applies a control to the running agent. Waits for the agent or its children to settle run
- * through `settle`, which orders them per session, so the caller never blocks on them.
- */
-async function applyToRunningAgent(
-  agent: AiSdkPiAgent<ToolSet>,
-  entry: Enqueued,
-  cancelledByRequestId: Set<string>,
-  activeRun: SessionQueue["activeRun"],
-  retainAppliedControl: (
-    checkpoint:
-      | { readonly kind: "canonical" }
-      | { readonly kind: "queued"; readonly inputId: AgentInputQueueId }
-      | { readonly kind: "pending" },
-  ) => void,
-  settle: (operation: () => Promise<void>) => void,
-) {
-  activeRun?.flushOutput();
-  const liveParent = activeRun?.liveParent;
-  const notifyWaiters = activeRun?.notifyWaiters;
-  const cancel = parseRequestControlFromRaw(entry.raw).cancel;
-  const providerMessages =
-    !cancel && activeRun?.materializeStoredMessages
-      ? await activeRun.materializeStoredMessages(entry.storedMessages)
-      : entry.messages;
-  const merged = mergeToSingleUserMessage(providerMessages);
-  if (!cancel) {
-    activeRun?.rememberStoredMessages(
-      [merged],
-      [mergeToSingleStoredUserMessage(entry.storedMessages)],
-    );
-  }
-  const queueWhileIdle = (mode: "followUp" | "steer") => {
-    const inputId = mode === "steer" ? agent.steer(merged) : agent.followUp(merged);
-    retainAppliedControl({ kind: "queued", inputId });
-    notifyWaiters?.();
-  };
-
-  const cancelRun = () => {
-    retainAppliedControl({ kind: "pending" });
-    cancelledByRequestId.add(entry.requestId);
-    settle(async () => {
-      await liveParent?.cancelAll("parent request aborted");
-      await activeRun?.stopAwaitJobs?.();
-      agent.cancel();
-      notifyWaiters?.();
-    });
-  };
-
-  const promptWhileIdle = () => {
-    retainAppliedControl({ kind: "canonical" });
-    void observePrompt();
-    notifyWaiters?.();
-
-    async function observePrompt(): Promise<void> {
-      const prompted = await Result.tryPromise({
-        try: () => agent.prompt(merged),
-        catch: () => undefined,
-      });
-      if (prompted.match({ ok: () => false, err: () => true })) notifyWaiters?.();
-    }
-  };
-
-  if (!cancel) {
-    activeRun?.setCurrentTurnContext(entry.currentTurnUserId, entry.currentTurnMessageRef);
-  }
-  if (!cancel && activeRun?.runProfile === "primary" && activeRun.requestClient === "discord") {
-    activeRun.corePrimaryLineage = degradeCorePrimaryLineageForMutation(
-      entry.queue === "steer" || entry.queue === "interrupt"
-        ? "steering-transform"
-        : "follow-up-transform",
-      agent.state.messages.length,
-    );
-  }
-
-  const hasBufferedCompletions =
-    (liveParent?.snapshot().hasPendingCompletions ?? false) ||
-    (activeRun?.hasPendingJobEvents?.() ?? false);
-
-  if (!agent.state.isStreaming) {
-    switch (entry.queue) {
-      case "steer": {
-        if (hasBufferedCompletions) {
-          queueWhileIdle("steer");
-          return;
-        }
-        promptWhileIdle();
-        return;
-      }
-      case "followUp":
-      case "prompt": {
-        if (hasBufferedCompletions) {
-          queueWhileIdle("followUp");
-          return;
-        }
-        promptWhileIdle();
-        return;
-      }
-      case "interrupt": {
-        if (cancel) {
-          cancelRun();
-          return;
-        }
-        if (hasBufferedCompletions) {
-          queueWhileIdle("steer");
-          return;
-        }
-        retainAppliedControl({ kind: "canonical" });
-        settle(async () => {
-          await agent.interrupt(merged);
-          notifyWaiters?.();
-        });
-        return;
-      }
-      default: {
-        const _exhaustive: never = entry.queue;
-        return _exhaustive;
-      }
-    }
-  }
-
-  switch (entry.queue) {
-    case "steer": {
-      const steeringId = agent.steer(merged);
-      retainAppliedControl({ kind: "queued", inputId: steeringId });
-      notifyWaiters?.();
-      return;
-    }
-    case "followUp": {
-      const followUpId = agent.followUp(merged);
-      retainAppliedControl({ kind: "queued", inputId: followUpId });
-      notifyWaiters?.();
-      return;
-    }
-    case "interrupt": {
-      if (cancel) {
-        cancelRun();
-        return;
-      }
-      const steeringId = agent.steer(merged);
-      retainAppliedControl({ kind: "queued", inputId: steeringId });
-      settle(async () => {
-        await agent.interruptQueuedSteeringAsync();
-        notifyWaiters?.();
-      });
-      return;
-    }
-    case "prompt": {
-      // Cannot prompt while streaming; treat as followUp.
-      const followUpId = agent.followUp(merged);
-      retainAppliedControl({ kind: "queued", inputId: followUpId });
-      notifyWaiters?.();
-      return;
-    }
-    default: {
-      const _exhaustive: never = entry.queue;
-      return _exhaustive;
-    }
-  }
-}
-
 export function selectPersistedTranscriptMessages(input: {
   finalMessages: readonly ModelMessage[];
   responseStartIndex: number;
@@ -10234,81 +8427,4 @@ export function resolveCompactionCheckpointMeta(input: {
     type: "compaction",
     formatVersion: COMPACTION_CHECKPOINT_FORMAT_VERSION,
   } as const;
-}
-
-export function mergeToSingleUserMessage(messages: ModelMessage[]): ModelMessage {
-  const userMessages = messages.filter((m) => m.role === "user");
-  if (userMessages.length === 0) {
-    return { role: "user", content: "" };
-  }
-
-  const hasMultipart = userMessages.some((m) => typeof m.content !== "string");
-
-  if (hasMultipart) {
-    const parts: UserContent = [];
-    for (let i = 0; i < userMessages.length; i++) {
-      const msg = userMessages[i]!;
-      if (i > 0) {
-        parts.push({ type: "text", text: "\n\n" });
-      }
-
-      if (typeof msg.content === "string") {
-        if (msg.content.length > 0) {
-          parts.push({ type: "text", text: msg.content });
-        }
-      } else {
-        parts.push(...msg.content);
-      }
-    }
-
-    return {
-      role: "user",
-      content: parts,
-    };
-  }
-
-  // Preserve existing behavior: merge batches into one user message separated by blank lines.
-  const parts: string[] = [];
-  for (const m of userMessages) {
-    if (typeof m.content === "string") {
-      parts.push(m.content);
-    }
-  }
-
-  return {
-    role: "user",
-    content: parts.join("\n\n").trim(),
-  };
-}
-
-function mergeToSingleStoredUserMessage(messages: readonly StoredMessageV1[]): StoredMessageV1 {
-  const userMessages = messages.filter(
-    (message): message is Extract<StoredMessageV1, { readonly role: "user" }> =>
-      message.role === "user",
-  );
-  if (userMessages.length === 0) return { role: "user", content: "" };
-  const hasMultipart = userMessages.some((message) => typeof message.content !== "string");
-  if (!hasMultipart) {
-    return {
-      role: "user",
-      content: userMessages
-        .flatMap((message) => (typeof message.content === "string" ? [message.content] : []))
-        .join("\n\n")
-        .trim(),
-    };
-  }
-
-  const content: Exclude<Extract<StoredMessageV1, { readonly role: "user" }>["content"], string> =
-    [];
-  for (let index = 0; index < userMessages.length; index += 1) {
-    const message = userMessages[index];
-    if (!message) continue;
-    if (index > 0) content.push({ type: "text", text: "\n\n" });
-    if (typeof message.content === "string") {
-      if (message.content.length > 0) content.push({ type: "text", text: message.content });
-      continue;
-    }
-    content.push(...message.content);
-  }
-  return { role: "user", content };
 }

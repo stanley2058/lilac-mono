@@ -257,8 +257,8 @@ export const CORE_FINAL_BOUNDARY_IDENTITIES = [
   ["src/surface/bridge/bus-agent-runner/stats.ts", "systemPromptToText"],
   ["src/surface/bridge/bus-agent-runner/stats.ts", "buildInputCompositionLine"],
   ["src/agent/core-named-continuation.ts", "semanticFingerprint"],
-  ["src/surface/bridge/bus-agent-runner.ts", "estimateTokensFromValue"],
-  ["src/surface/bridge/bus-agent-runner.ts", "projectBusAgentRunnerError"],
+  ["src/surface/bridge/bus-agent-runner/tool-output-policy.ts", "estimateTokensFromValue"],
+  ["src/surface/bridge/bus-agent-runner/errors.ts", "projectBusAgentRunnerError"],
   [
     "src/surface/bridge/bus-agent-runner.ts",
     "startBusAgentRunner.handleCmdRequestMessage.<callback>",
@@ -301,13 +301,19 @@ export const CORE_FINAL_BOUNDARY_IDENTITIES = [
   ],
   ["src/surface/bridge/bus-agent-runner.ts", "getSubagentOkFromResult"],
   ["src/surface/bridge/bus-agent-runner.ts", "decodeDeferredSubagentAcceptedResult"],
-  ["src/surface/bridge/bus-agent-runner.ts", "collectAutoInjectedEntryIds"],
+  [
+    "src/surface/bridge/bus-agent-runner/auto-inject-thread-search.ts",
+    "collectAutoInjectedEntryIds",
+  ],
   ["src/surface/bridge/bus-agent-runner.ts", "closeLegacyDeferredSubagentCalls"],
-  ["src/surface/bridge/bus-agent-runner.ts", "validateCorePrimaryLineageAtRunnerIntake"],
-  ["src/surface/bridge/bus-agent-runner.ts", "appendAutoInjectedThreadSearchLineage"],
-  ["src/surface/bridge/bus-agent-runner.ts", "collectBufferedPromptEntriesForActiveRequest"],
+  ["src/surface/bridge/bus-agent-runner/lineage.ts", "validateCorePrimaryLineageAtRunnerIntake"],
+  ["src/surface/bridge/bus-agent-runner/lineage.ts", "appendAutoInjectedThreadSearchLineage"],
+  [
+    "src/surface/bridge/bus-agent-runner/session-queue.ts",
+    "collectBufferedPromptEntriesForActiveRequest",
+  ],
   ["src/surface/bridge/bus-agent-runner.ts", "modelChangingRequestId"],
-  ["src/surface/bridge/bus-agent-runner.ts", "applyToRunningAgent"],
+  ["src/surface/bridge/bus-agent-runner/controls.ts", "applyToRunningAgent"],
   ["src/workflow/workflow-source-compiler.ts", "parseWorkflowCallSiteManifestUnchecked"],
   ["src/workflow/workflow-sandbox.ts", "decodeWorkflowSandboxOutputLine"],
   ["src/workflow/workflow-sandbox.ts", "startWorkflowSandbox.executionResult.<callback>"],
@@ -368,7 +374,7 @@ export const CORE_FINAL_BOUNDARY_IDENTITIES = [
   ["src/mcp/registry.ts", "isNonTerminalInboundMcpError"],
   ["src/mcp/config-file.ts", "McpConfigError.constructor"],
   ["src/mcp/oauth-provider.ts", "McpOAuthProviderError.constructor"],
-  ["src/surface/bridge/bus-agent-runner.ts", "signalBusAgentRunnerHostFailure"],
+  ["src/surface/bridge/bus-agent-runner/errors.ts", "signalBusAgentRunnerHostFailure"],
   [
     "src/surface/bridge/bus-agent-runner.ts",
     "startBusAgentRunner.drainSessionQueue.captureBusAgentRunnerOperation.<callback@2>.reportAutoInjectedThreadSearchError",
@@ -444,7 +450,7 @@ export const CORE_FINAL_CAPABILITY_IDENTITIES = [
   ["src/plugins/builtin/local-tools.ts", "isDelegateHandler"],
   ["src/plugins/builtin/local-tools.ts", "isAgentActivityHandler"],
   ["src/surface/bridge/bus-agent-runner.ts", "isWorkflowAgentRecoveryEntry"],
-  ["src/surface/bridge/bus-agent-runner.ts", "isCancelControlEntry"],
+  ["src/surface/bridge/bus-agent-runner/session-queue.ts", "isCancelControlEntry"],
 ] as const;
 export const CORE_FINAL_REVIEWED_OPAQUE_IDENTITIES = [
   [
@@ -470,7 +476,7 @@ export const CORE_FINAL_REVIEWED_OPAQUE_IDENTITIES = [
   ],
   ["src/surface/adapter.ts", "preserveSurfacePanic"],
   ["src/surface/bridge/subscribe-from-bus.ts", "rethrowBusToAdapterPanic"],
-  ["src/surface/bridge/bus-agent-runner.ts", "rethrowBusAgentRunnerPanic"],
+  ["src/surface/bridge/bus-agent-runner/errors.ts", "rethrowBusAgentRunnerPanic"],
   ["src/mcp/credential-file.ts", "credentialError"],
   ["src/mcp/oauth-provider.ts", "oauthProviderError"],
   ["src/runtime/main.ts", "handleUnhandledRejection"],

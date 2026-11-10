@@ -219,8 +219,8 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
       "maybeBuildSkillsSectionForPrimary",
       "signal",
     ],
-    ["src/surface/bridge/bus-agent-runner.ts", "rethrowBusAgentRunnerPanic", "signal"],
-    ["src/surface/bridge/bus-agent-runner.ts", "signalBusAgentRunnerHostFailure", "signal"],
+    ["src/surface/bridge/bus-agent-runner/errors.ts", "rethrowBusAgentRunnerPanic", "signal"],
+    ["src/surface/bridge/bus-agent-runner/errors.ts", "signalBusAgentRunnerHostFailure", "signal"],
     ["src/agent/anthropic-fallback-media.ts", "fitImageForAnthropicFallback", "signal"],
     [
       "src/agent/anthropic-fallback-media.ts",
