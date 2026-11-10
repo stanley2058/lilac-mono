@@ -2887,22 +2887,26 @@ export async function startBusAgentRunner(params: {
     return subscriptionStart;
   };
 
-  let subscriptionStopped = false;
-  const stopSubscription = async () => {
-    if (subscriptionStopped) return;
-    subscriptionStopped = true;
-    await stopStartedSubscription?.();
+  let subscriptionStop: Promise<void> | null = null;
+  const stopSubscription = (): Promise<void> => {
+    subscriptionStop ??= (async () => {
+      await stopStartedSubscription?.();
+    })();
+    return subscriptionStop;
   };
 
   /** Stops admission, lets active runs finish, then aborts the rest within the same deadline. */
   async function beginDrain(opts?: { deadlineMs?: number }) {
     draining = true;
-    await stopSubscription();
-
     const deadlineMs = Math.max(1, opts?.deadlineMs ?? 3_000);
     const deadlineAtMs = Date.now() + deadlineMs;
     const abortGraceMs = Math.min(SHUTDOWN_ABORT_GRACE_MS, Math.floor(deadlineMs / 4));
-    if (await settlesBefore(allSessionDrainOperations(), deadlineAtMs - abortGraceMs)) return;
+    // Stopping the subscription waits for in-flight bus handlers, so it shares the drain deadline.
+    const subscriptionStopped = stopSubscription();
+    void ignoreDetachedFailure(subscriptionStopped);
+    const pending = () => [subscriptionStopped, ...allSessionDrainOperations()];
+    if (await settlesBefore(pending(), deadlineAtMs - abortGraceMs))
+      return await subscriptionStopped;
 
     for (const state of bySession.values()) {
       if (!state.running || !state.activeRun) continue;
@@ -2911,7 +2915,7 @@ export async function startBusAgentRunner(params: {
       state.activeRun.notifyWaiters();
     }
 
-    await settlesBefore(allSessionDrainOperations(), deadlineAtMs);
+    if (await settlesBefore(pending(), deadlineAtMs)) await subscriptionStopped;
   }
 
   function nextDequeueableEntry(state: SessionQueue): Enqueued | undefined {
@@ -3023,6 +3027,13 @@ export async function startBusAgentRunner(params: {
           err: () => [],
         });
       }
+    }
+    if (draining) {
+      // beginDrain's abort pass cannot reach a run that has no activeRun yet; keep the work
+      // queued and accepted so the next start recovers it instead of starting the model now.
+      state.queue.unshift(next);
+      releaseDequeuedSession();
+      return;
     }
     if (next.recovery) {
       const mergedControls = mergeQueuedControlsForRecovery(
@@ -6202,6 +6213,10 @@ export async function startBusAgentRunner(params: {
             }
           }
 
+          // The drain abort pass may have run while setup awaited, before the agent could stop.
+          if (shutdownAbortRequestIds.delete(headers.request_id)) {
+            return signalBusAgentRunnerHostFailure(new ShutdownDrainingAbort());
+          }
           if (state.activeRun) state.activeRun.started = true;
           runIdleWatchdog?.start();
 

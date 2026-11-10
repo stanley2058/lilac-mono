@@ -16,6 +16,7 @@ import {
   type BusAgentRunnerRequestDelivery,
 } from "../../../src/surface/bridge/bus-agent-runner";
 import { CustomCommandManager } from "../../../src/custom-commands/manager";
+import type { JobService } from "../../../src/jobs/job-service";
 import {
   TEST_BLOB_STORE,
   startBusAgentRunner,
@@ -127,6 +128,195 @@ describe("session queue admission", () => {
       blobs.gate.resolve(undefined);
       await lifecycleA.stop();
       await lifecycleB.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+  it("keeps recovered work queued when its materialization outlives the drain deadline", async () => {
+    const bus = createLilacBus(createInMemoryRawBus({ waitForActiveHandlersOnStop: true }));
+    const pluginManager = corePrimaryTestPluginManager();
+    const blobs = gatedBlobStore();
+    let modelCalls = 0;
+    const runner = await startBusAgentRunner({
+      bus,
+      blobStore: blobs.store,
+      subscriptionId: "materializing-drain",
+      startPaused: true,
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({ capability: "materializing-drain", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "materializing-drain",
+            doStream: async () => {
+              modelCalls += 1;
+              return level1TextStep("should not run");
+            },
+          }),
+        }),
+    });
+    const sessionId = "materializing-drain";
+    const accepted = acceptedRunnerDelivery({
+      requestDeliveryId: crypto.randomUUID(),
+      requestId: "github:materializing-drain:a",
+      sessionId,
+      queue: "prompt",
+      messages: [await uploadedBlobMessage("recovered work")],
+    });
+    const lifecycle = await observeRequestLifecycle(bus, accepted.requestId);
+    try {
+      transcriptResultValue(await runner.resumeAcceptedDelivery(accepted));
+      runner.activate();
+      await blobs.opened.promise;
+      await runner.beginDrain({ deadlineMs: 20 });
+      blobs.gate.resolve(undefined);
+      await runner.waitForIdle();
+      expect(modelCalls).toBe(0);
+      expect(runner.isSessionBusy(sessionId)).toBe(true);
+      expect(lifecycle.states).not.toContain("resolved");
+      expect(lifecycle.states).not.toContain("failed");
+    } finally {
+      blobs.gate.resolve(undefined);
+      await lifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+  it("does not start the model when run setup outlives the drain deadline", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const setupEntered = deferred<void>();
+    const releaseSetup = deferred<void>();
+    let modelCalls = 0;
+    let pendingJobEvents = true;
+    const jobs = {
+      noteUserInput: () => undefined,
+      subscribe: () => () => undefined,
+      hasPendingEvents: () => pendingJobEvents,
+      pendingEvents: async () => {
+        pendingJobEvents = false;
+        setupEntered.resolve(undefined);
+        await releaseSetup.promise;
+        return [];
+      },
+      acknowledgeEvents: () => undefined,
+      hasActiveAwait: () => false,
+      stopAwaitJobs: async () => undefined,
+      onRunSettled: async () => undefined,
+    } as unknown as JobService;
+    const runner = await startBusAgentRunner({
+      bus,
+      jobs,
+      subscriptionId: "setup-drain",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({ capability: "setup-drain", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "setup-drain",
+            doStream: async () => {
+              modelCalls += 1;
+              return level1TextStep("should not run");
+            },
+          }),
+        }),
+    });
+    const lifecycle = await observeRequestLifecycle(bus, "github:setup-drain:request");
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestId: "github:setup-drain:request",
+        sessionId: "setup-drain",
+        text: "request",
+      });
+      await setupEntered.promise;
+      await runner.beginDrain({ deadlineMs: 20 });
+      releaseSetup.resolve(undefined);
+      await runner.waitForIdle();
+      expect(modelCalls).toBe(0);
+      expect(lifecycle.states).not.toContain("resolved");
+      expect(lifecycle.states).not.toContain("failed");
+    } finally {
+      releaseSetup.resolve(undefined);
+      await lifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+  it("aborts the active run at the drain deadline while a bus handler blocks shutdown", async () => {
+    const bus = createLilacBus(createInMemoryRawBus({ waitForActiveHandlersOnStop: true }));
+    const pluginManager = corePrimaryTestPluginManager();
+    const firstStarted = deferred<void>();
+    const firstAborted = deferred<void>();
+    const intakeEntered = deferred<void>();
+    const releaseIntake = deferred<void>();
+    let intakeReleased = false;
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "drain-blocked-subscription",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      beforeRequestIntake: async (message) => {
+        if (message.headers?.request_id !== "github:drain-blocked-subscription:second") return;
+        intakeEntered.resolve(undefined);
+        await releaseIntake.promise;
+      },
+      issueControlCapability: () => ({ capability: "drain-blocked-subscription", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "drain-blocked-subscription",
+            doStream: async ({ abortSignal }) => {
+              firstStarted.resolve(undefined);
+              await new Promise<void>((resolve) => {
+                abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+              });
+              firstAborted.resolve(undefined);
+              throw abortSignal?.reason ?? new Error("aborted");
+            },
+          }),
+        }),
+    });
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestId: "github:drain-blocked-subscription:first",
+        sessionId: "drain-blocked-subscription:first",
+        text: "first request",
+      });
+      await firstStarted.promise;
+      const published = publishRunnerRequest({
+        bus,
+        requestId: "github:drain-blocked-subscription:second",
+        sessionId: "drain-blocked-subscription:second",
+        text: "second request",
+      });
+      await intakeEntered.promise;
+      await runner.beginDrain({ deadlineMs: 20 });
+      await firstAborted.promise;
+      expect(intakeReleased).toBe(false);
+      intakeReleased = true;
+      releaseIntake.resolve(undefined);
+      await published;
+    } finally {
+      releaseIntake.resolve(undefined);
       await runner.stop();
       await pluginManager.destroy();
       await bus.close();
