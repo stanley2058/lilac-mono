@@ -156,7 +156,7 @@ function deriveCwdContext(options: Pick<SegmentAnalyzeOptions, "cwd" | "effectiv
 } {
   const cwdUnknown = options.effectiveCwd === null;
   const cwdForRm = cwdUnknown ? undefined : (options.effectiveCwd ?? options.cwd);
-  const originalCwd = cwdUnknown ? undefined : options.cwd;
+  const originalCwd = options.cwd;
   return { cwdUnknown, cwdForRm, originalCwd };
 }
 

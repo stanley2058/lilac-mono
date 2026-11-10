@@ -239,7 +239,19 @@ function analyzeGitCheckout(tokens: readonly string[]): string | null {
   }
 
   const positionalArgs = getCheckoutPositionalArgs(tokens);
-  if (positionalArgs.length >= 2) {
+  if (
+    positionalArgs.length >= 2 ||
+    positionalArgs.some(
+      (arg) =>
+        arg === "." ||
+        arg === ".." ||
+        arg.startsWith("./") ||
+        arg.startsWith("../") ||
+        arg.startsWith("/") ||
+        arg.startsWith(":(") ||
+        arg.includes("*"),
+    )
+  ) {
     return REASON_CHECKOUT_AMBIGUOUS;
   }
 

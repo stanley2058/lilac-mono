@@ -198,7 +198,7 @@ function toBasicFsErrorCode(code: string | undefined): ReadErrorCode {
 
 function compileEditRegex(pattern: string): ResultType<RegExp, EditOperationFailed> {
   const captured = Result.try({
-    try: () => new RegExp(pattern, "g"),
+    try: () => new RegExp(pattern, "gm"),
     catch: (cause) => ({ cause }),
   });
   const outcome = captured.match<{ readonly value: RegExp } | { readonly cause: unknown }>({
@@ -856,7 +856,11 @@ export class FileSystem {
         currentLineUtf16Length = 0;
       };
 
-      const consumeText = (text: string) => {
+      let pendingCR = false;
+      const consumeText = (input: string, final = false) => {
+        const combined = (pendingCR ? "\r" : "") + input;
+        pendingCR = !final && combined.endsWith("\r");
+        const text = (pendingCR ? combined.slice(0, -1) : combined).replace(/\r\n/g, "\n");
         for (const character of text) {
           if (character === "\n") {
             finishLine(true);
@@ -882,10 +886,11 @@ export class FileSystem {
         }
       };
 
-      const consumeBufferedLine = (bytes: Buffer) => {
+      const consumeBufferedLine = (bytes: Buffer, hasNewline = false) => {
         if (!isCurrentLineSelected()) return;
 
-        const text = bytes.toString("utf8");
+        const decoded = bytes.toString("utf8");
+        const text = hasNewline ? decoded.replace(/\r$/, "") : decoded;
         currentLineUtf16Length = text.length;
         const remainingCharacters = Math.max(0, storedCharacterLimit - storedCharacters);
         const contentStart = lineNumber === requestedStartLine ? requestedStartColumn : 0;
@@ -922,13 +927,31 @@ export class FileSystem {
             return;
           }
 
-          consumeBufferedLine(bytes.subarray(lineStart, newline));
+          consumeBufferedLine(bytes.subarray(lineStart, newline), true);
           finishLine(true);
           lineNumber++;
           lineStart = newline + 1;
         }
       };
 
+      const consumeLineBytes = (bytes: Buffer) => {
+        let offset = 0;
+        while (offset < bytes.length) {
+          const newline = bytes.indexOf(0x0a, offset);
+          const end = newline === -1 ? bytes.length : newline + 1;
+          if (isCurrentLineSelected()) {
+            consumeText(decoder.write(bytes.subarray(offset, end)));
+          } else if (newline !== -1) {
+            finishLine(true);
+            lineNumber++;
+          }
+          offset = end;
+        }
+      };
+      const consumeStreamBytes = (bytes: Buffer) => {
+        if (start.type === "line") return consumeLineBytes(bytes);
+        consumeText(decoder.write(bytes));
+      };
       const bufferedChunks: Buffer[] = [];
       let bufferedBytes = 0;
       let streamHighWaterMark: number | undefined;
@@ -962,13 +985,13 @@ export class FileSystem {
               streamingText = true;
               for (const buffered of bufferedChunks) {
                 hasher.update(buffered);
-                consumeText(decoder.write(buffered));
+                consumeStreamBytes(buffered);
               }
               bufferedChunks.length = 0;
             }
 
             hasher.update(bytes);
-            consumeText(decoder.write(bytes));
+            consumeStreamBytes(bytes);
           }
         }),
       );
@@ -981,7 +1004,7 @@ export class FileSystem {
             : Buffer.concat(bufferedChunks, bufferedBytes);
         consumeBufferedFile(bytes);
       } else {
-        consumeText(decoder.end());
+        consumeText(decoder.end(), true);
         if (start.type === "offset" && offsetStartLine === undefined) {
           offsetStartLine = lineNumber;
           offsetStartColumn = currentLineCharacters;
@@ -1514,6 +1537,7 @@ export class FileSystem {
       return count;
     };
 
+    const snippetChanges: { start: number; end: number; text: string }[] = [];
     const replaceExactOccurrences = (
       haystack: string,
       needle: string,
@@ -1530,6 +1554,7 @@ export class FileSystem {
       while (replacementsMade < maxReplacements) {
         const idx = haystack.indexOf(needle, start);
         if (idx === -1) break;
+        snippetChanges.push({ start: idx, end: idx + needle.length, text: replacement });
         result += haystack.slice(start, idx) + replacement;
         start = idx + needle.length;
         replacementsMade++;
@@ -1558,22 +1583,45 @@ export class FileSystem {
       maxReplacements: number,
     ) => {
       let replacementsMade = 0;
-      let lastIndex = 0;
-      let result = "";
-
       re.lastIndex = 0;
-      while (replacementsMade < maxReplacements) {
-        const match = re.exec(haystack);
-        if (!match) break;
-
-        result += haystack.slice(lastIndex, match.index) + replacement;
-        lastIndex = match.index + match[0].length;
-        replacementsMade++;
-
-        if (match[0].length === 0) re.lastIndex++;
-      }
-
-      result += haystack.slice(lastIndex);
+      const result = haystack.replace(
+        re,
+        (...args: [string, ...(string | number | Record<string, string> | undefined)[]]) => {
+          const match = args[0];
+          if (replacementsMade >= maxReplacements) return match;
+          replacementsMade++;
+          const last = args[args.length - 1];
+          const groups = typeof last === "object" ? last : undefined;
+          const hasGroups = groups !== undefined;
+          const offsetIndex = args.length - (hasGroups ? 3 : 2);
+          const offset = Number(args[offsetIndex]);
+          const captures = args.slice(1, offsetIndex);
+          const expanded = replacement.replace(
+            /\$(\$|&|`|'|[0-9]{1,2}|<[^>]*>)/g,
+            (token, key: string) => {
+              switch (key) {
+                case "$":
+                  return "$";
+                case "&":
+                  return match;
+                case "`":
+                  return haystack.slice(0, offset);
+                case "'":
+                  return haystack.slice(offset + match.length);
+              }
+              if (key.startsWith("<")) return groups ? (groups[key.slice(1, -1)] ?? "") : token;
+              const index = Number(key);
+              if (index > 0 && index <= captures.length) return String(captures[index - 1] ?? "");
+              const first = Number(key[0]);
+              if (key.length === 2 && first > 0 && first <= captures.length)
+                return String(captures[first - 1] ?? "") + key[1];
+              return token;
+            },
+          );
+          snippetChanges.push({ start: offset, end: offset + match.length, text: expanded });
+          return expanded;
+        },
+      );
       return { result, replacementsMade };
     };
 
@@ -1629,7 +1677,16 @@ export class FileSystem {
       return undefined;
     };
 
-    let lines = file.split("\n");
+    let endings: string[] = file.match(/\r?\n/g) ?? [];
+    const lineEnding =
+      endings.filter((ending) => ending === "\r\n").length > endings.length / 2 ? "\r\n" : "\n";
+    const spliceEndings = (start: number, count: number, inserted: number) => {
+      const previous = endings.slice(start, start + count);
+      const next: string[] = [];
+      for (let index = 0; index < inserted; index++) next.push(previous[index] ?? lineEnding);
+      endings.splice(start, count, ...next);
+    };
+    let lines = file.replace(/\r\n/g, "\n").split("\n");
     const succeededOperations: FileEdit["type"][] = [];
     let replacementsMade = 0;
 
@@ -1667,7 +1724,7 @@ export class FileSystem {
 
           if (expectedOldText !== undefined) {
             const actual = lines.slice(startLine - 1, endLine).join("\n");
-            if (actual !== expectedOldText) {
+            if (actual !== expectedOldText.replace(/\r\n/g, "\n")) {
               return this.editOperationFailure(
                 resolvedPath,
                 oldHash,
@@ -1681,7 +1738,16 @@ export class FileSystem {
             }
           }
 
-          lines.splice(startLine - 1, endLine - startLine + 1, ...newText.split("\n"));
+          spliceEndings(
+            startLine - 1,
+            endLine - startLine + 1,
+            newText.replace(/\r\n/g, "\n").split("\n").length,
+          );
+          lines.splice(
+            startLine - 1,
+            endLine - startLine + 1,
+            ...newText.replace(/\r\n/g, "\n").split("\n"),
+          );
           break;
         }
         case "insert_at": {
@@ -1699,7 +1765,8 @@ export class FileSystem {
             );
           }
 
-          lines.splice(line - 1, 0, ...newText.split("\n"));
+          spliceEndings(line - 1, 0, newText.replace(/\r\n/g, "\n").split("\n").length);
+          lines.splice(line - 1, 0, ...newText.replace(/\r\n/g, "\n").split("\n"));
           break;
         }
         case "delete_range": {
@@ -1721,7 +1788,7 @@ export class FileSystem {
 
           if (expectedOldText !== undefined) {
             const actual = lines.slice(startLine - 1, endLine).join("\n");
-            if (actual !== expectedOldText) {
+            if (actual !== expectedOldText.replace(/\r\n/g, "\n")) {
               return this.editOperationFailure(
                 resolvedPath,
                 oldHash,
@@ -1735,18 +1802,20 @@ export class FileSystem {
             }
           }
 
+          spliceEndings(startLine - 1, endLine - startLine + 1, 0);
           lines.splice(startLine - 1, endLine - startLine + 1);
           break;
         }
         case "replace_snippet": {
           const {
-            target,
+            target: suppliedTarget,
             matching = "exact",
             newText,
             occurrence = "first",
             expectedMatches = 1,
           } = edit;
 
+          const target = suppliedTarget.replace(/\r\n/g, "\n");
           if (target.length === 0) {
             return this.editOperationFailure(
               resolvedPath,
@@ -1760,7 +1829,7 @@ export class FileSystem {
             );
           }
 
-          if (matching === "exact" && target === newText) {
+          if (matching === "exact" && target === newText.replace(/\r\n/g, "\n")) {
             return this.editOperationFailure(
               resolvedPath,
               oldHash,
@@ -1801,6 +1870,7 @@ export class FileSystem {
           }
 
           const content = lines.join("\n");
+          snippetChanges.length = 0;
 
           if (matching === "exact") {
             const matchesFound = countExactOccurrences(content, target);
@@ -1815,7 +1885,12 @@ export class FileSystem {
               );
             }
 
-            const replaced = replaceExactOccurrences(content, target, newText, maxReplace);
+            const replaced = replaceExactOccurrences(
+              content,
+              target,
+              newText.replace(/\r\n/g, "\n"),
+              maxReplace,
+            );
 
             lines = replaced.result.split("\n");
             replacementsMade += replaced.replacementsMade;
@@ -1842,11 +1917,31 @@ export class FileSystem {
               );
             }
 
-            const replaced = replaceRegexOccurrences(content, compiled.value, newText, maxReplace);
+            const replaced = replaceRegexOccurrences(
+              content,
+              compiled.value,
+              newText.replace(/\r\n/g, "\n"),
+              maxReplace,
+            );
             lines = replaced.result.split("\n");
             replacementsMade += replaced.replacementsMade;
           }
 
+          const nextEndings: string[] = [];
+          const newlinePositions = [...content.matchAll(/\n/g)].map((match) => match.index);
+          let cursor = 0;
+          for (const change of snippetChanges) {
+            while (cursor < newlinePositions.length && newlinePositions[cursor]! < change.start)
+              nextEndings.push(endings[cursor++]!);
+            const removed: string[] = [];
+            while (cursor < newlinePositions.length && newlinePositions[cursor]! < change.end)
+              removed.push(endings[cursor++]!);
+            let index = 0;
+            for (const _newline of change.text.matchAll(/\n/g))
+              nextEndings.push(removed[index++] ?? lineEnding);
+          }
+          for (; cursor < endings.length; cursor++) nextEndings.push(endings[cursor]!);
+          endings = nextEndings;
           break;
         }
       }
@@ -1854,7 +1949,9 @@ export class FileSystem {
       succeededOperations.push(edit.type);
     }
 
-    const nextContent = lines.join("\n");
+    const nextContent = lines
+      .map((line, index) => line + (index < lines.length - 1 ? (endings[index] ?? lineEnding) : ""))
+      .join("");
     const newHash = this.hash(nextContent);
     const changesMade = newHash !== oldHash;
 

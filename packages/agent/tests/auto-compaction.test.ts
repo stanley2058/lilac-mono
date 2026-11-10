@@ -1,3 +1,6 @@
+import { lengthRecoveryContinueMessage } from "../agent-runtime-support";
+import { Result } from "better-result";
+import { AgentStateTransitionFailed } from "../agent-runtime-support";
 import { describe, expect, it, spyOn } from "bun:test";
 import { jsonSchema, tool, type LanguageModel, type ModelMessage } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
@@ -17,6 +20,40 @@ import {
   readOpenAIServerCompactionArtifact,
   type OpenAIServerCompactionArtifact,
 } from "../openai-server-compaction";
+
+function legacyAutoContinueMessage(): ModelMessage {
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+      },
+    ],
+    providerOptions: { lilac: { autoCompactionContinue: true } },
+  };
+}
+
+async function chooseTail(params: {
+  messages: ModelMessage[];
+  keepRecentTokens: number;
+  keepRecentTurns: number;
+}) {
+  return __autoCompactionInternals.chooseCanonicalRetainedTailStart({
+    canonicalMessages: params.messages,
+    keepRecentTokens: params.keepRecentTokens,
+    keepRecentTurns: params.keepRecentTurns,
+    context: { system: "", tools: {} },
+    prepareFullModelView: (messages) => [...messages],
+  });
+}
+async function chooseBoundary(params: {
+  messages: ModelMessage[];
+  keepRecentTokens: number;
+  keepRecentTurns: number;
+}) {
+  return { suffixStart: await chooseTail(params) };
+}
 
 function createRegistryFetch(registry: unknown): typeof fetch {
   return (async () => {
@@ -257,7 +294,7 @@ describe("auto-compaction internals", () => {
     expect(__autoCompactionInternals.estimateMessageTokens(message)).toBe(31);
   });
 
-  it("retains two continuable turns plus intervening messages", () => {
+  it("retains two continuable turns plus intervening messages", async () => {
     const messages: ModelMessage[] = [
       { role: "user", content: "old request" },
       { role: "assistant", content: "old answer" },
@@ -289,7 +326,7 @@ describe("auto-compaction internals", () => {
       { role: "user", content: "latest user" },
     ];
 
-    const boundary = __autoCompactionInternals.resolveCompactionBoundary({
+    const boundary = await chooseBoundary({
       messages,
       keepRecentTokens: 10_000,
       keepRecentTurns: 2,
@@ -298,7 +335,7 @@ describe("auto-compaction internals", () => {
     expect(__autoCompactionInternals.hasCompletedAssistantToolTurn(messages, 4)).toBe(true);
     expect(__autoCompactionInternals.hasCompletedAssistantToolTurn(messages, 3)).toBe(false);
     expect(
-      __autoCompactionInternals.chooseRetainedTailStart({
+      await chooseTail({
         messages,
         keepRecentTokens: 10_000,
         keepRecentTurns: 2,
@@ -308,7 +345,7 @@ describe("auto-compaction internals", () => {
     expect(messages.slice(boundary.suffixStart)).toEqual(messages.slice(4));
   });
 
-  it("summarizes an oversized newest atomic tool turn instead of exceeding the cap", () => {
+  it("summarizes an oversized newest atomic tool turn instead of exceeding the cap", async () => {
     const messages: ModelMessage[] = [
       { role: "user", content: "request" },
       {
@@ -336,7 +373,7 @@ describe("auto-compaction internals", () => {
     ];
 
     expect(
-      __autoCompactionInternals.resolveCompactionBoundary({
+      await chooseBoundary({
         messages,
         keepRecentTokens: 100,
         keepRecentTurns: 2,
@@ -355,7 +392,7 @@ describe("auto-compaction internals", () => {
     expect(__autoCompactionInternals.retainServerCompactionUserMessages(messages, 20)).toEqual([]);
   });
 
-  it("summarizes an oversized newest user turn instead of exceeding the hard cap", () => {
+  it("summarizes an oversized newest user turn instead of exceeding the hard cap", async () => {
     const messages: ModelMessage[] = [
       { role: "user", content: "older request" },
       { role: "assistant", content: "older response" },
@@ -363,70 +400,10 @@ describe("auto-compaction internals", () => {
     ];
 
     expect(
-      __autoCompactionInternals.resolveCompactionBoundary({
+      await chooseBoundary({
         messages,
         keepRecentTokens: 100,
         keepRecentTurns: 2,
-      }),
-    ).toEqual({ suffixStart: messages.length });
-  });
-
-  it("separates a threshold continuation from retained-tail selection", () => {
-    const continuation = __autoCompactionInternals.buildAutoContinueMessage();
-    const messages: ModelMessage[] = [
-      { role: "user", content: "real request" },
-      { role: "assistant", content: "completed response" },
-      continuation,
-    ];
-
-    expect(__autoCompactionInternals.splitThresholdContinueTrailer(messages)).toEqual({
-      messages: messages.slice(0, -1),
-      trailer: [messages[2]!],
-    });
-    expect(
-      __autoCompactionInternals.splitThresholdContinueTrailer([
-        ...messages,
-        { role: "user", content: "new actual request" },
-      ]),
-    ).toEqual({
-      messages: [...messages.slice(0, -1), { role: "user", content: "new actual request" }],
-      trailer: [],
-    });
-    expect(
-      __autoCompactionInternals.splitThresholdContinueTrailer([
-        { role: "user", content: "real request" },
-        continuation,
-        { role: "assistant", content: "continued response" },
-      ]),
-    ).toEqual({
-      messages: [
-        { role: "user", content: "real request" },
-        continuation,
-        { role: "assistant", content: "continued response" },
-      ],
-      trailer: [],
-    });
-  });
-
-  it("forces automatic pressure to summarize a wholly retainable transcript", () => {
-    const messages: ModelMessage[] = [
-      { role: "user", content: "small request" },
-      { role: "assistant", content: "small response" },
-    ];
-
-    expect(
-      __autoCompactionInternals.resolveCompactionBoundary({
-        messages,
-        keepRecentTokens: 10_000,
-        keepRecentTurns: 2,
-      }),
-    ).toEqual({ suffixStart: 0 });
-    expect(
-      __autoCompactionInternals.resolveCompactionBoundary({
-        messages,
-        keepRecentTokens: 10_000,
-        keepRecentTurns: 2,
-        forceCompaction: true,
       }),
     ).toEqual({ suffixStart: messages.length });
   });
@@ -1369,7 +1346,7 @@ describe("auto-compaction internals", () => {
         { role: "assistant", content: "middle response" },
         { role: "user", content: "recent request" },
         { role: "assistant", content: "initial response" },
-        __autoCompactionInternals.buildAutoContinueMessage(),
+        legacyAutoContinueMessage(),
       ],
     });
     const statuses: string[] = [];
@@ -1414,71 +1391,7 @@ describe("auto-compaction internals", () => {
     expect(agent.state.messages.at(-1)?.role).toBe("assistant");
   });
 
-  it("drops a reconstructed threshold trailer when a real user prompt supersedes it", async () => {
-    let modelInput = "";
-    const model = new MockLanguageModelV4({
-      doStream: async ({ prompt }) => {
-        modelInput = JSON.stringify(prompt);
-        return {
-          stream: simulateReadableStream({
-            chunks: [
-              { type: "text-start" as const, id: "text" },
-              { type: "text-delta" as const, id: "text", delta: "new response" },
-              { type: "text-end" as const, id: "text" },
-              {
-                type: "finish" as const,
-                finishReason: { unified: "stop" as const, raw: "stop" },
-                usage: zeroUsage(),
-              },
-            ],
-          }),
-        };
-      },
-    });
-    let summaryCalls = 0;
-    const summaryModel = new MockLanguageModelV4({
-      doStream: async () => {
-        summaryCalls += 1;
-        throw new Error("stale small marker must not force compaction");
-      },
-    });
-    const agent = new AiSdkPiAgent({
-      system: "test",
-      model,
-      modelSpecifier: "test/main",
-      messages: [
-        { role: "user", content: "old request" },
-        { role: "assistant", content: "old response" },
-        __autoCompactionInternals.buildAutoContinueMessage(),
-      ],
-    });
-    const detach = await attachAutoCompaction(agent, {
-      model: "test/main",
-      modelCapability: new ModelCapability({ fetch: createRegistryFetch({}) }),
-      summaryModel,
-      resolveContextLimit: async () => ({ context: 10_000, output: 1_000 }),
-    });
-
-    try {
-      await agent.prompt("new actual request");
-    } finally {
-      detach();
-    }
-
-    expect(modelInput).not.toContain("autoCompactionContinue");
-    expect(modelInput).not.toContain("Continue if you have next steps");
-    expect(summaryCalls).toBe(0);
-    expect(agent.state.messages.map((message) => message.role)).toEqual([
-      "user",
-      "assistant",
-      "user",
-      "assistant",
-    ]);
-    expect(agent.state.messages[2]?.content).toBe("new actual request");
-    expect(JSON.stringify(agent.state.messages)).not.toContain("autoCompactionContinue");
-  });
-
-  it("compacts an over-budget restored transcript after removing a superseded trailer", async () => {
+  it("compacts an over-budget restored transcript containing a legacy continuation", async () => {
     let summaryCalls = 0;
     const summaryModel = new MockLanguageModelV4({
       doStream: async () => {
@@ -1500,7 +1413,7 @@ describe("auto-compaction internals", () => {
       messages: [
         { role: "user", content: `old request ${"a".repeat(20_000)}` },
         { role: "assistant", content: `old response ${"b".repeat(20_000)}` },
-        __autoCompactionInternals.buildAutoContinueMessage(),
+        legacyAutoContinueMessage(),
       ],
     });
     const detach = await attachAutoCompaction(agent, {
@@ -2470,4 +2383,242 @@ it("manually compacts small context once even when automatic compaction is disab
   } finally {
     detach();
   }
+});
+
+it("compaction reserves system and tool tokens and summarizes an oversized answer once", async () => {
+  let summaries = 0;
+  let estimate = 0;
+  let budget = 0;
+  const agent = new AiSdkPiAgent({
+    system: "system instructions ".repeat(700),
+    tools: {
+      inspect: tool({
+        description: "tool description ".repeat(400),
+        inputSchema: jsonSchema({ type: "object" }),
+        execute: async () => "ok",
+      }),
+    },
+    model: new MockLanguageModelV4({ doStream: async () => summaryResponse("answer") }),
+    modelSpecifier: "test/main",
+    messages: [
+      { role: "user", content: "old ".repeat(4_000) },
+      { role: "assistant", content: "response ".repeat(3_000) },
+    ],
+  });
+  const detach = await attachAutoCompaction(agent, {
+    model: "test/main",
+    modelCapability: new ModelCapability({ fetch: createRegistryFetch({}) }),
+    enabled: false,
+    compactOnStart: true,
+    resolveContextLimit: async () => ({ context: 8_000, output: 1_000 }),
+    resolveSummaryContextLimit: async () => 100_000,
+    summaryModel: new MockLanguageModelV4({
+      doStream: async () => {
+        summaries++;
+        return summaryResponse("summary ".repeat(5_000));
+      },
+    }),
+    onCompactionEnd: (event) => {
+      if (event.status === "completed") {
+        estimate = event.estimatedInputTokensAfter ?? 0;
+        budget = event.budget.inputBudget;
+      }
+    },
+  });
+  try {
+    await agent.prompt("compact now");
+    expect(summaries).toBe(1);
+    expect(estimate).toBeGreaterThan(0);
+    expect(estimate).toBeLessThanOrEqual(budget);
+  } finally {
+    detach();
+  }
+});
+
+it("sizes the retained tail after reserving system prompt tokens", async () => {
+  let status = "";
+  const agent = new AiSdkPiAgent({
+    system: "system instructions ".repeat(1_500),
+    model: new MockLanguageModelV4({ doStream: async () => summaryResponse("answer") }),
+    modelSpecifier: "test/main",
+    messages: [
+      { role: "user", content: "old ".repeat(6_000) },
+      { role: "assistant", content: "old answer" },
+      { role: "user", content: `MIDDLE_TURN ${"mid ".repeat(2_000)}` },
+      { role: "assistant", content: "middle answer" },
+    ],
+  });
+  const detach = await attachAutoCompaction(agent, {
+    model: "test/main",
+    modelCapability: new ModelCapability({ fetch: createRegistryFetch({}) }),
+    thresholdInputSource: "transcript-estimate",
+    keepRecentTurns: 3,
+    keepRecentTokens: 100_000,
+    resolveContextLimit: async () => ({ context: 16_000, output: 1_000 }),
+    summaryModel: new MockLanguageModelV4({ doStream: async () => summaryResponse("summary") }),
+    onCompactionEnd: (event) => {
+      status = event.status;
+    },
+  });
+  try {
+    await agent.prompt("current");
+  } finally {
+    detach();
+  }
+  expect(status).toBe("completed");
+  expect(JSON.stringify(agent.state.messages)).not.toContain("MIDDLE_TURN");
+});
+
+it("rejects a failed transcript replacement before reporting compaction success", async () => {
+  const agent = new AiSdkPiAgent({
+    system: "test",
+    model: new MockLanguageModelV4({ doStream: async () => summaryResponse("answer") }),
+    modelSpecifier: "test/main",
+    messages: [
+      { role: "user", content: "history" },
+      { role: "assistant", content: "response" },
+    ],
+  });
+  const statuses: string[] = [];
+  const detach = await attachAutoCompaction(agent, {
+    model: "test/main",
+    modelCapability: new ModelCapability({ fetch: createRegistryFetch({}) }),
+    enabled: false,
+    compactOnStart: true,
+    resolveContextLimit: async () => ({ context: 10_000, output: 1_000 }),
+    summaryModel: new MockLanguageModelV4({ doStream: async () => summaryResponse("summary") }),
+    onCompactionEnd: (event) => {
+      statuses.push(event.status);
+    },
+  });
+  const replace = spyOn(agent, "replaceMessages").mockReturnValue(
+    Result.err(
+      new AgentStateTransitionFailed({
+        operation: "replace-messages",
+        message: "replacement rejected",
+      }),
+    ),
+  );
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await expect(agent.prompt("compact")).rejects.toThrow("replacement rejected");
+    expect(statuses).toEqual(["failed"]);
+  } finally {
+    replace.mockRestore();
+    errors.mockRestore();
+    detach();
+  }
+});
+
+it("drops a reconstructed threshold trailer when a real user prompt supersedes it", async () => {
+  let modelInput = "";
+  const model = new MockLanguageModelV4({
+    doStream: async ({ prompt }) => {
+      modelInput = JSON.stringify(prompt);
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start" as const, id: "text" },
+            { type: "text-delta" as const, id: "text", delta: "new response" },
+            { type: "text-end" as const, id: "text" },
+            {
+              type: "finish" as const,
+              finishReason: { unified: "stop" as const, raw: "stop" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      };
+    },
+  });
+  let summaryCalls = 0;
+  const summaryModel = new MockLanguageModelV4({
+    doStream: async () => {
+      summaryCalls += 1;
+      throw new Error("stale small marker must not force compaction");
+    },
+  });
+  const agent = new AiSdkPiAgent({
+    system: "test",
+    model,
+    modelSpecifier: "test/main",
+    messages: [
+      { role: "user", content: "old request" },
+      { role: "assistant", content: "old response" },
+      lengthRecoveryContinueMessage(),
+    ],
+  });
+  const detach = await attachAutoCompaction(agent, {
+    model: "test/main",
+    modelCapability: new ModelCapability({ fetch: createRegistryFetch({}) }),
+    summaryModel,
+    resolveContextLimit: async () => ({ context: 10_000, output: 1_000 }),
+  });
+
+  try {
+    await agent.prompt("new actual request");
+  } finally {
+    detach();
+  }
+
+  expect(modelInput).not.toContain("autoCompactionContinue");
+  expect(modelInput).not.toContain("Continue if you have next steps");
+  expect(summaryCalls).toBe(0);
+  expect(agent.state.messages.map((message) => message.role)).toEqual([
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+  ]);
+  expect(agent.state.messages[2]?.content).toBe("new actual request");
+  expect(JSON.stringify(agent.state.messages)).not.toContain("autoCompactionContinue");
+});
+
+it("compacts an over-budget restored transcript after removing a superseded trailer", async () => {
+  let summaryCalls = 0;
+  const summaryModel = new MockLanguageModelV4({
+    doStream: async () => {
+      summaryCalls += 1;
+      return summaryResponse("Restored transcript summary.");
+    },
+  });
+  let providerInvokedBeforeCompaction = false;
+  const mainModel = new MockLanguageModelV4({
+    doStream: async () => {
+      providerInvokedBeforeCompaction = summaryCalls === 0;
+      return summaryResponse("new response");
+    },
+  });
+  const agent = new AiSdkPiAgent({
+    system: "test",
+    model: mainModel,
+    modelSpecifier: "test/main",
+    messages: [
+      { role: "user", content: `old request ${"a".repeat(20_000)}` },
+      { role: "assistant", content: `old response ${"b".repeat(20_000)}` },
+      lengthRecoveryContinueMessage(),
+    ],
+  });
+  const detach = await attachAutoCompaction(agent, {
+    model: "test/main",
+    modelCapability: new ModelCapability({ fetch: createRegistryFetch({}) }),
+    summaryModel,
+    thresholdInputSource: "transcript-estimate",
+    keepRecentTurns: 1,
+    keepRecentTokens: 500,
+    resolveContextLimit: async () => ({ context: 10_000, output: 1_000 }),
+  });
+
+  try {
+    await agent.prompt("new actual request");
+  } finally {
+    detach();
+  }
+
+  expect(summaryCalls).toBeGreaterThan(0);
+  expect(providerInvokedBeforeCompaction).toBe(false);
+  expect(mainModel.doStreamCalls).toHaveLength(1);
+  expect(agent.state.messages[0]?.content).toContain("Restored transcript summary.");
+  expect(agent.state.messages.at(-2)?.content).toBe("new actual request");
+  expect(JSON.stringify(agent.state.messages)).not.toContain("autoCompactionContinue");
 });

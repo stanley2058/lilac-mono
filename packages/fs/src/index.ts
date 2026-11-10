@@ -4,3 +4,4 @@ export * from "./hashline";
 export * from "./ripgrep";
 export * from "./remote-runner-protocol";
 export * from "./search-backend";
+export * from "./text-window";

@@ -670,3 +670,11 @@ Native-origin runs retain their original principal. Restricted or unverified req
 fallback, and other users' private DMs remain inaccessible. Heartbeat posts are notifications and do not
 admit another agent turn in their destination. This is a deliberate authority-policy change, not a change
 to human login or thread-sharing permissions. Deploy Core; web clients need no protocol upgrade.
+
+## Tool-result artifact maintenance
+
+Blob-backed tool-result artifacts now keep a process-local metadata index and schedule cleanup at the
+next expiry. Startup still discards the previous process's encrypted artifacts because the encryption
+key is ephemeral. No metadata format or blob-reference version changes. Maintenance checks metadata
+and expiry without reading every artifact's content. Artifact reads still authenticate their content.
+Deploy the tool-results package with Core. Rollback requires no data conversion.
