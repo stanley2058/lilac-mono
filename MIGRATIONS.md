@@ -647,3 +647,26 @@ Native-origin runs retain their original principal. Restricted or unverified req
 fallback, and other users' private DMs remain inaccessible. Heartbeat posts are notifications and do not
 admit another agent turn in their destination. This is a deliberate authority-policy change, not a change
 to human login or thread-sharing permissions. Deploy Core; web clients need no protocol upgrade.
+
+## Redis subscription owner leases and reaping
+
+Managed Redis subscriptions now register an owner key per process and subscription incarnation under
+`<stream>:subscription-owner:*`, plus an index at `<stream>:subscription-owners:v1`. Owners renew every
+10 seconds with a 60-second TTL. An expired owner cannot renew or resume its subscription. A Redis
+script checks expiry and destroys abandoned ephemeral groups atomically. Durable groups remain;
+only consumers with no pending entries are deleted. Pending deliveries keep their existing recovery
+policy. Reaping runs while a subscription to that stream is active.
+
+Deploy the new Core normally. Groups left by older builds have no owner registration and require
+manual inspection and cleanup. Older builds ignore these additive keys. Stop new subscribers before
+rolling back; expired registrations can be removed after their groups have been checked.
+
+## Bundled model catalog data asset
+
+The bundled models.dev fallback is now committed JSON, decoded through the existing typed catalog
+schema when a catalog cache is seeded. Docker builds use these committed bytes and no longer fetch
+models.dev. Refresh the snapshot explicitly with `bun run codegen:model-catalog`, review the JSON
+change, and commit it. `bun run build:model-catalog` remains an alias for that command.
+
+The SQLite catalog cache keeps schema version 1 and its existing daily refresh policy. Existing
+caches and deployments need no data rewrite. Deployments can roll back without migrating the cache.

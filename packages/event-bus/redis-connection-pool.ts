@@ -84,7 +84,6 @@ export class RedisConnectionPool {
   private readonly warm: number;
   private readonly logger?: Logger;
   private readonly label: string;
-  private readonly onExhausted: RedisPoolExhaustedPolicy;
 
   private readonly autoscale: Required<
     Pick<
@@ -94,8 +93,6 @@ export class RedisConnectionPool {
   >;
 
   private lastResizeAt = 0;
-  private lastExhaustedWarnAt = 0;
-  private exhaustedWarnSuppressed = 0;
 
   private closed = false;
 
@@ -138,7 +135,6 @@ export class RedisConnectionPool {
     this.warm = clampInt(opts.warm ?? 0, 0, this.max);
     this.logger = opts.logger;
     this.label = opts.label ?? "redis";
-    this.onExhausted = opts.onExhausted ?? "fallback_to_shared_with_warn";
 
     // Best-effort warm-up in the background.
     if (this.warm > 0) {
@@ -361,44 +357,13 @@ export class RedisConnectionPool {
       });
     }
 
-    // Pool exhausted.
-    if (this.onExhausted === "fallback_to_shared_with_warn") {
-      const s = this.stats();
-      const nowMs = Date.now();
-      const warnCooldownMs = 30_000;
-      if (nowMs - this.lastExhaustedWarnAt >= warnCooldownMs) {
-        this.logger?.warn("redis connection pool exhausted; falling back to shared client", {
-          label: this.label,
-          max: s.max,
-          created: s.created,
-          available: s.available,
-          inUse: s.inUse,
-          autoscale: this.autoscale.enabled
-            ? {
-                min: this.autoscale.min,
-                cap: this.autoscale.cap,
-              }
-            : undefined,
-          suppressedCount: this.exhaustedWarnSuppressed,
-          warnCooldownMs,
-        });
-        this.lastExhaustedWarnAt = nowMs;
-        this.exhaustedWarnSuppressed = 0;
-      } else {
-        this.exhaustedWarnSuppressed += 1;
-      }
-      return Result.ok({
-        redis: this.base,
-        shared: true,
-        release: async () => {},
-      });
-    }
-
-    return Result.ok({
-      redis: this.base,
-      shared: true,
-      release: async () => {},
-    });
+    return Result.err(
+      new RedisConnectionCreateFailed({
+        label: this.label,
+        cause: new Error("Redis subscription connection pool exhausted"),
+        message: "Redis subscription connection pool exhausted",
+      }),
+    );
   }
 
   private async release(redis: Redis, opts?: { unhealthy?: boolean }): Promise<void> {
