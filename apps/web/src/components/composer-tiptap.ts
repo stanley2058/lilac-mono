@@ -13,13 +13,19 @@ import {
   citationInputFits,
   type AssistantCitation,
 } from "@stanley2058/lilac-client-protocol";
-import { KEYS, NodeApi } from "platejs";
 import {
-  createComposerEditor,
-  composerMarkdown,
-  composerSubmissionMarkdown,
-  composerPlainText,
-} from "./composer-document";
+  BLOCKQUOTE,
+  CODE_BLOCK,
+  CODE_LINE,
+  PARAGRAPH,
+  RULE,
+  composerBlocksText,
+  nodeString,
+  readComposerBlocks,
+  writeComposerBlocks,
+  type ComposerBlock,
+  type ComposerNode,
+} from "./composer-markdown";
 import type { Attachment } from "../types";
 import { skillMentionPattern } from "./skill-mentions";
 import { isWorkflowRunId, splitWorkflowRunIds } from "../workflow-run-id";
@@ -281,26 +287,6 @@ export const composerSchema = getSchema([
 ]);
 export { Placeholder };
 
-type ComposerLeaf = {
-  text: string;
-  bold?: boolean;
-  italic?: boolean;
-  strikethrough?: boolean;
-  code?: boolean;
-};
-type ComposerBlock = {
-  type: string;
-  children: ComposerNode[];
-  indent?: number;
-  listStyleType?: string;
-  listStart?: number;
-  checked?: boolean;
-  lang?: string;
-  attachmentKey?: string;
-  name?: string;
-  url?: string;
-};
-type ComposerNode = ComposerLeaf | ComposerBlock;
 const markKeys = ["bold", "italic", "strikethrough", "code"] as const;
 const marks = { bold: "bold", italic: "italic", strikethrough: "strike", code: "code" };
 function inline(nodes: ComposerNode[]): JSONContent[] {
@@ -332,15 +318,15 @@ function block(node: ComposerBlock): JSONContent {
   const attrs = {
     indent: typeof node.indent === "number" && !node.listStyleType ? node.indent : 0,
   };
-  if (node.type === KEYS.codeBlock) {
-    const text = node.children.map((child) => NodeApi.string(child)).join("\n");
+  if (node.type === CODE_BLOCK) {
+    const text = node.children.map(nodeString).join("\n");
     return {
       type: "codeBlock",
       attrs: { ...attrs, language: node.lang ?? null },
       content: text ? [{ type: "text", text }] : [],
     };
   }
-  if (node.type === KEYS.blockquote) {
+  if (node.type === BLOCKQUOTE) {
     const children = node.children.filter((child): child is ComposerBlock => !("text" in child));
     return {
       type: "blockquote",
@@ -356,7 +342,7 @@ function block(node: ComposerBlock): JSONContent {
       attrs: { ...attrs, level: Number(node.type.slice(1)) },
       content: inline(node.children),
     };
-  if (node.type === KEYS.hr) return { type: "horizontalRule" };
+  if (node.type === RULE) return { type: "horizontalRule" };
   return { type: "paragraph", attrs, content: inline(node.children) };
 }
 function blocks(nodes: ComposerBlock[]): JSONContent[] {
@@ -401,7 +387,7 @@ function blocks(nodes: ComposerBlock[]): JSONContent[] {
 }
 
 export function readComposerDocument(text: string, schema: Schema = composerSchema): DocumentNode {
-  return schema.nodeFromJSON({ type: "doc", content: blocks(createComposerEditor(text).children) });
+  return schema.nodeFromJSON({ type: "doc", content: blocks(readComposerBlocks(text)) });
 }
 function leafMarks(node: DocumentNode) {
   return Object.fromEntries(
@@ -482,25 +468,24 @@ function plateBlocks(node: DocumentNode): ComposerBlock[] {
 }
 function plateBlock(node: DocumentNode): ComposerBlock {
   const name = node.type.name;
-  if (name === "horizontalRule") return { type: KEYS.hr, children: [{ text: "" }] };
+  if (name === "horizontalRule") return { type: RULE, children: [{ text: "" }] };
   if (name === "blockquote")
-    return { type: KEYS.blockquote, children: plateBlocks(node), indent: node.attrs.indent };
+    return { type: BLOCKQUOTE, children: plateBlocks(node), indent: node.attrs.indent };
   if (name === "codeBlock")
     return {
-      type: KEYS.codeBlock,
+      type: CODE_BLOCK,
       lang: node.attrs.language ?? undefined,
       children: node.textContent
         .split("\n")
-        .map((text) => ({ type: KEYS.codeLine, children: [{ text }] })),
+        .map((text) => ({ type: CODE_LINE, children: [{ text }] })),
       indent: node.attrs.indent,
     };
   return {
-    type: name === "heading" ? `h${node.attrs.level}` : KEYS.p,
+    type: name === "heading" ? `h${node.attrs.level}` : PARAGRAPH,
     children: leaves(node),
     indent: node.attrs.indent,
   };
 }
-const markdownCodec = createComposerEditor();
 const documentValues = new WeakMap<DocumentNode, ComposerBlock[]>();
 function codec(doc: DocumentNode) {
   let value = documentValues.get(doc);
@@ -508,16 +493,14 @@ function codec(doc: DocumentNode) {
     value = plateBlocks(doc);
     documentValues.set(doc, value);
   }
-  markdownCodec.children = value;
-  return markdownCodec;
+  return value;
 }
-// Keep the existing Markdown codec so saved drafts, resource links, and copied messages keep their syntax.
+/** Writes the draft Markdown, or with `references: false` the Markdown a send delivers. */
 export function writeComposerDocument(doc: DocumentNode, references = true): string {
-  const editor = codec(doc);
-  return references ? composerMarkdown(editor) : composerSubmissionMarkdown(editor);
+  return writeComposerBlocks(codec(doc), references);
 }
 export function composerText(doc: DocumentNode): string {
-  return composerPlainText(codec(doc));
+  return composerBlocksText(codec(doc));
 }
 export function composerCompletionPrefix(editor: Editor): string {
   const { empty, $from } = editor.state.selection;

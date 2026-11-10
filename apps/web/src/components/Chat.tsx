@@ -50,7 +50,6 @@ import {
   type PromptAnswer,
 } from "../question-reply";
 import { QuestionPanel, QuestionWaiting } from "./QuestionReply";
-import { composerSubmissionMarkdown, createComposerEditor } from "./composer-document";
 import { useWorkspace } from "../workspace-context";
 import {
   useCallback,
@@ -837,9 +836,12 @@ export function Chat(props: ChatProps) {
     const messageId = question.questionCallId;
     const prompts = questionPrompts(question);
     sendingReply.current = true;
-    const drafts = await Promise.all(
-      prompts.map((prompt) => loadDraft(questionDraftKey(threadId, messageId, prompt.ordinal))),
-    );
+    const [drafts, { composerSubmission }] = await Promise.all([
+      Promise.all(
+        prompts.map((prompt) => loadDraft(questionDraftKey(threadId, messageId, prompt.ordinal))),
+      ),
+      loadComposerEditor(),
+    ]);
     sendingReply.current = false;
     const choice = questionReplyStore.getState().choices.get(threadId);
     if (currentId.current !== threadId || choice?.messageId !== messageId || !choice.replying)
@@ -853,7 +855,7 @@ export function Chat(props: ChatProps) {
       const saved = drafts[position];
       if (!saved) return;
       const answer = { option: options[prompt.ordinal], attachments: saved.attachments.length };
-      const text = composerSubmissionMarkdown(createComposerEditor(saved.text));
+      const text = composerSubmission(saved.text);
       answers.set(prompt.ordinal, { ...answer, text });
       typed.set(prompt.ordinal, { ...answer, text: saved.text });
     }

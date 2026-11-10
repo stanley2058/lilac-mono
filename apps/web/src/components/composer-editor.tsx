@@ -86,19 +86,11 @@ import {
   type CompletionRange,
 } from "./composer-tiptap";
 export {
-  createComposerEditor,
-  replaceComposerDocument,
-  composerMarkdown,
-  composerPrefix,
-  composerPlainText,
-  insertComposerCompletion,
-  insertComposerAttachment,
-  composerSubmissionMarkdown,
+  composerSubmission,
   remapComposerAttachments,
   resolveComposerAttachments,
   restoreMessageAttachments,
-  captureComposerPaste,
-} from "./composer-document";
+} from "./composer-markdown";
 const emptyAttachments: readonly Attachment[] = [];
 const emptySkills: readonly ComposerSkill[] = [];
 type OpenCitation = { key: string; anchor?: CitationAnchor; fresh?: { before: boolean } };

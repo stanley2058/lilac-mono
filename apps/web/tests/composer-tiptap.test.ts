@@ -25,7 +25,7 @@ import {
   insertEditorReference,
   insertLiteralWorkflowRunIds,
 } from "../src/components/composer-tiptap";
-import { createComposerEditor, composerMarkdown } from "../src/components/composer-document";
+import { readComposerBlocks, writeComposerBlocks } from "../src/components/composer-markdown";
 import {
   serializeCitation,
   collectCitations,
@@ -376,7 +376,7 @@ it("preserves existing draft and submission syntax through the Tiptap document",
     "[Discussion](/?ref=discord%3Achannel&range=first..last)",
     "[#native:thread](/?ref=native%3Athread&message=message)",
   ]) {
-    const expected = composerMarkdown(createComposerEditor(text));
+    const expected = writeComposerBlocks(readComposerBlocks(text));
     const actual = writeComposerDocument(readComposerDocument(text));
     expect(actual).toBe(expected);
     expect(writeComposerDocument(readComposerDocument(actual))).toBe(actual);

@@ -1,4 +1,4 @@
-import type { MdRoot, MdRootContent } from "@platejs/markdown";
+import type { Root as MdRoot, RootContent as MdRootContent } from "mdast";
 import { markdownTableSource } from "../markdown-table-source";
 
 export function editableComposerTables() {
