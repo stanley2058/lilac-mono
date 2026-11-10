@@ -1,14 +1,18 @@
 import { Result } from "better-result";
 import { z } from "zod";
 import {
+  cacheProjectionKey,
   cacheScopeKey,
   MemoryNativeCache,
+  mergeCachePatches,
   type CachePatch,
   type CacheScope,
   type CachedSlot,
   type NativeCache,
   type ThreadCheckpoint,
 } from "@stanley2058/lilac-client";
+
+export { mergeCachePatches };
 import {
   bootstrapReplySchema,
   replayCheckpointSchema,
@@ -171,6 +175,9 @@ async function assertCommitted(completion: Promise<boolean>): Promise<void> {
 function threadKey(scope: CacheScope, threadId: string): string {
   return JSON.stringify([cacheScopeKey(scope), threadId]);
 }
+function projectionThreadKey(scope: CacheScope, threadId: string): string {
+  return JSON.stringify([cacheProjectionKey(scope), threadId]);
+}
 function slotKey(key: string, slotId: string): string {
   return JSON.stringify([key, slotId]);
 }
@@ -218,16 +225,6 @@ function decodeThreadUsage(value: unknown): z.infer<typeof threadUsageSchema> | 
   return parsed.success ? parsed.data : undefined;
 }
 /** Folds a later patch into one still waiting to be written, as if both were applied in order. */
-export function mergeCachePatches(first: CachePatch, next: CachePatch): CachePatch {
-  if (next.replace) return next;
-  const put = new Map(first.put.map((value) => [value.slot.slotId, value]));
-  for (const id of next.remove) put.delete(id);
-  for (const value of next.put) put.set(value.slot.slotId, value);
-  const remove = first.replace
-    ? []
-    : [...new Set([...first.remove, ...next.remove])].filter((id) => !put.has(id));
-  return { checkpoint: next.checkpoint, replace: first.replace, put: [...put.values()], remove };
-}
 type QueuedWrite = {
   scope: CacheScope;
   threadId: string;
@@ -364,18 +361,18 @@ export class WebNativeCache implements NativeCache {
     const epoch = this.epoch;
     const cached = await this.memory.read(scope, threadId);
     if (cached) {
-      const resident = this.residentThreads.get(threadKey(scope, threadId));
+      const resident = this.residentThreads.get(projectionThreadKey(scope, threadId));
       if (resident) this.touch(scope, threadId, resident.bytes);
       return cached;
     }
-    const key = threadKey(scope, threadId);
+    const key = projectionThreadKey(scope, threadId);
     for (let writes = this.threadWrites.get(key); writes; writes = this.threadWrites.get(key))
       await writes.running;
     const loaded = await this.attempt(async (db) => {
       const tx = db.transaction(["threads", "slots"], "readwrite");
       const done = completed(tx);
       const row = decodeThread(await idbRequest(tx.objectStore("threads").get(key)));
-      if (!row || row.scopeKey !== cacheScopeKey(scope) || row.threadId !== threadId) {
+      if (!row || row.scopeKey !== cacheProjectionKey(scope) || row.threadId !== threadId) {
         await assertCommitted(done);
         return undefined;
       }
@@ -387,7 +384,7 @@ export class WebNativeCache implements NativeCache {
       const slots: CachedSlot[] = [];
       for (const value of values) {
         const slot = decodeSlot(value);
-        if (!slot || slot.threadKey !== key || slot.scopeKey !== cacheScopeKey(scope)) {
+        if (!slot || slot.threadKey !== key || slot.scopeKey !== cacheProjectionKey(scope)) {
           await assertCommitted(done);
           return undefined;
         }
@@ -412,7 +409,7 @@ export class WebNativeCache implements NativeCache {
     return loaded;
   }
   private touch(scope: CacheScope, threadId: string, bytes: number): void {
-    const key = threadKey(scope, threadId);
+    const key = projectionThreadKey(scope, threadId);
     this.residentThreads.delete(key);
     this.residentThreads.set(key, { scope, threadId, bytes });
   }
@@ -428,7 +425,7 @@ export class WebNativeCache implements NativeCache {
   }
   async commit(scope: CacheScope, threadId: string, patch: CachePatch): Promise<void> {
     await this.memory.commit(scope, threadId, patch);
-    const key = threadKey(scope, threadId);
+    const key = projectionThreadKey(scope, threadId);
     const writes = this.threadWrites.get(key);
     if (!writes) return this.startWrite(key, scope, threadId, patch);
     if (writes.queued) {
@@ -464,8 +461,8 @@ export class WebNativeCache implements NativeCache {
     }
   }
   private async writeThread(scope: CacheScope, threadId: string, patch: CachePatch): Promise<void> {
-    const key = threadKey(scope, threadId);
-    const scopeKey = cacheScopeKey(scope);
+    const key = projectionThreadKey(scope, threadId);
+    const scopeKey = cacheProjectionKey(scope);
     const rows: SlotRow[] = patch.put.map((data) => ({
       key: slotKey(key, data.slot.slotId),
       threadKey: key,
@@ -537,15 +534,15 @@ export class WebNativeCache implements NativeCache {
     const key = threadKey(scope, threadId);
     this.pendingDrafts.get(key)?.settled.resolve();
     this.pendingDrafts.delete(key);
-    const scopeKey = cacheScopeKey(scope);
+    const scopeKey = cacheProjectionKey(scope);
     this.cancelQueuedWrites(
       (queuedScope, queuedThread) =>
-        cacheScopeKey(queuedScope) === scopeKey &&
+        cacheProjectionKey(queuedScope) === scopeKey &&
         (queuedThread === threadId || queuedThread.startsWith(`subagent:${threadId}:`)),
     );
     for (const [id, row] of this.residentThreads) {
       if (
-        cacheScopeKey(row.scope) === scopeKey &&
+        cacheProjectionKey(row.scope) === scopeKey &&
         (row.threadId === threadId || row.threadId.startsWith(`subagent:${threadId}:`))
       )
         this.residentThreads.delete(id);
@@ -574,13 +571,11 @@ export class WebNativeCache implements NativeCache {
     this.epoch++;
     await this.memory.purge(scope);
     const key = cacheScopeKey(scope);
-    this.cancelQueuedWrites((queuedScope) => cacheScopeKey(queuedScope) === key);
+    const projectionKey = cacheProjectionKey(scope);
+    this.cancelQueuedWrites((queuedScope) => cacheProjectionKey(queuedScope) === projectionKey);
     this.snapshots.delete(key);
     for (const [id, value] of this.residentThreads) {
-      if (cacheScopeKey(value.scope) === key) {
-        this.residentThreads.delete(id);
-        this.drafts.delete(id);
-      }
+      if (cacheProjectionKey(value.scope) === projectionKey) this.residentThreads.delete(id);
     }
     for (const id of this.drafts.keys()) {
       if (id.startsWith(JSON.stringify([key]).slice(0, -1))) this.drafts.delete(id);
@@ -594,8 +589,11 @@ export class WebNativeCache implements NativeCache {
       const tx = db.transaction(["threads", "slots", "snapshots", "drafts"], "readwrite");
       const done = completed(tx);
       tx.objectStore("snapshots").delete(key);
-      await deleteIndex(tx.objectStore("threads"), "scope", key);
-      await deleteIndex(tx.objectStore("slots"), "scope", key);
+      // Also drop rows an older bundle wrote under the scope key before projections were versioned.
+      for (const scopeKey of new Set([key, projectionKey])) {
+        await deleteIndex(tx.objectStore("threads"), "scope", scopeKey);
+        await deleteIndex(tx.objectStore("slots"), "scope", scopeKey);
+      }
       await deleteIndex(tx.objectStore("drafts"), "scope", key);
       await assertCommitted(done);
     });

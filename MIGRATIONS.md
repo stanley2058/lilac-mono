@@ -763,7 +763,9 @@ Core sends fragments to every client. Older bundles cannot reconstruct them and 
 blank placeholders, so deploy the updated clients with Core. Incomplete parts resume from the
 three-segment start cursor. Part-boundary cursors also use three segments, which older Core builds
 accept after rollback. Four-segment cursors remain accepted by updated Core, including a zero offset.
-Rollback clients and Core together; version 2 cache keys are separate from older bundles' version 1 keys.
+Rollback clients and Core together. Cached threads and slots move to version 2 projection keys, so
+older bundles' replay rows are discarded. Drafts, bootstrap snapshots and catalogs keep the unchanged
+version 1 scope key, so unsent drafts survive the upgrade.
 
 Replay changes containing messages over the 128-part wire limit now force a bounded replay window.
 The window exposes remaining parts through its parts cursor. Canonical stored turns remain complete.

@@ -623,3 +623,55 @@ test("replacing an oversized stored slot subtracts its bytes from the thread tot
   raw.close();
   expect(thread?.[0]?.bytes).toBe(slots?.reduce((sum, row) => sum + row.bytes, 0));
 });
+
+describe("projection version changes", () => {
+  function openRaw(factory: IDBFactory): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      const request = factory.open("lilac-native-v1", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  test("keep drafts and discard replay rows written before the bump", async () => {
+    const factory = new IDBFactory();
+    const seed = cache(factory);
+    await seed.saveDraft(scope, "seed", { text: "seed", skillIds: [] });
+    seed.close();
+    // Rows as an older bundle wrote them, under the projection version 1 scope key.
+    const v1Scope = JSON.stringify(["install", "owner", 1, 1]);
+    const db = await openRaw(factory);
+    const tx = db.transaction(["threads", "slots", "drafts"], "readwrite");
+    const drafts = tx.objectStore("drafts");
+    for (const [threadId, text] of [
+      ["thread", "unsent reply"],
+      ["draft:new", "new conversation"],
+    ]) {
+      drafts.put({
+        key: JSON.stringify([v1Scope, threadId]),
+        scopeKey: v1Scope,
+        text,
+        skillIds: [],
+        updatedAt: Date.now(),
+      });
+    }
+    const threadKey = JSON.stringify([v1Scope, "old"]);
+    tx.objectStore("threads").put({
+      key: threadKey,
+      scopeKey: v1Scope,
+      threadId: "old",
+      checkpoint: patch().checkpoint,
+      updatedAt: 1,
+      bytes: 10,
+    });
+    await new Promise((resolve) => (tx.oncomplete = resolve));
+    db.close();
+
+    const reopened = cache(factory);
+    expect((await reopened.readDraft(scope, "thread")).text).toBe("unsent reply");
+    expect((await reopened.listLocalDrafts(scope)).map((entry) => entry.draft.text)).toEqual([
+      "new conversation",
+    ]);
+    expect(await reopened.read(scope, "old")).toBeUndefined();
+  });
+});

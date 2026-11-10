@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { ReadyTurnSlot, ReplayCheckpoint } from "@stanley2058/lilac-client-protocol";
 import { NativeThreadStore } from "../src/thread-store.ts";
-import { MemoryNativeCache, NoNativeCache, cacheScopeKey, type CacheScope } from "../src/cache.ts";
+import {
+  MemoryNativeCache,
+  NoNativeCache,
+  cacheProjectionKey,
+  cacheScopeKey,
+  type CacheScope,
+} from "../src/cache.ts";
 import { DisplayCatalogCache } from "../src/catalog.ts";
 
 const checkpoint = (revision = 1, generation = 0): ReplayCheckpoint => ({
@@ -372,8 +378,9 @@ describe("cache and catalog", () => {
   });
 });
 
-test("cache scope keys discard projection version 1 records", () => {
-  expect(JSON.parse(cacheScopeKey(scope))).toEqual(["install", "owner", 1, 2]);
+test("projection keys discard version 1 records while scope keys stay stable", () => {
+  expect(JSON.parse(cacheProjectionKey(scope))).toEqual(["install", "owner", 1, 2]);
+  expect(JSON.parse(cacheScopeKey(scope))).toEqual(["install", "owner", 1, 1]);
 });
 test("an invalid fragment publishes a restart cursor", () => {
   const store = new NativeThreadStore();

@@ -29,7 +29,18 @@ export interface NativeCache {
   purge(scope: CacheScope): Promise<void>;
 }
 
+/** Keys principal-scoped data that survives projection changes, such as drafts and catalogs. */
 export function cacheScopeKey(scope: CacheScope): string {
+  return JSON.stringify([
+    scope.installationId,
+    scope.principalId,
+    scope.protocolVersion,
+    scope.projectionVersion,
+  ]);
+}
+
+/** Keys cached projected threads, so a projection version change discards only replay data. */
+export function cacheProjectionKey(scope: CacheScope): string {
   return JSON.stringify([
     scope.installationId,
     scope.principalId,
@@ -45,7 +56,7 @@ export class MemoryNativeCache implements NativeCache {
   >();
 
   async read(scope: CacheScope, threadId: string): Promise<ThreadCheckpoint | undefined> {
-    const value = this.scopes.get(cacheScopeKey(scope))?.get(threadId);
+    const value = this.scopes.get(cacheProjectionKey(scope))?.get(threadId);
     if (!value) return undefined;
     return {
       checkpoint: { ...value.checkpoint },
@@ -56,7 +67,7 @@ export class MemoryNativeCache implements NativeCache {
   }
 
   async commit(scope: CacheScope, threadId: string, patch: CachePatch): Promise<void> {
-    const key = cacheScopeKey(scope);
+    const key = cacheProjectionKey(scope);
     const threads =
       this.scopes.get(key) ??
       new Map<string, { checkpoint: ReplayCheckpoint; slots: Map<string, CachedSlot> }>();
@@ -75,14 +86,14 @@ export class MemoryNativeCache implements NativeCache {
   }
 
   async remove(scope: CacheScope, threadId: string): Promise<void> {
-    const threads = this.scopes.get(cacheScopeKey(scope));
+    const threads = this.scopes.get(cacheProjectionKey(scope));
     for (const key of threads?.keys() ?? []) {
       if (key === threadId || key.startsWith(`subagent:${threadId}:`)) threads?.delete(key);
     }
   }
 
   async purge(scope: CacheScope): Promise<void> {
-    this.scopes.delete(cacheScopeKey(scope));
+    this.scopes.delete(cacheProjectionKey(scope));
   }
 }
 
@@ -111,6 +122,7 @@ export function mergeCachePatches(previous: CachePatch | undefined, next: CacheP
     checkpoint: next.checkpoint,
     replace: previous.replace,
     put: [...put.values()],
-    remove: [...remove],
+    // A merged replace rewrites every slot, so earlier removals have nothing left to remove.
+    remove: previous.replace ? [] : [...remove],
   };
 }
