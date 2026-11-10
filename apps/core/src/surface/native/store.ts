@@ -1727,12 +1727,14 @@ export class NativeStore {
         ) {
           // Older Core persisted changes without part-count bounds; an undecodable row falls back
           // to a bounded window instead of failing every sync from this checkpoint.
-          const decodedResult = Result.all(rows.map((row) => decodeNativeRecord(row)));
-          const decoded = decodedResult.isOk() ? decodedResult.value : [];
-          const changes = decoded.flatMap((record) =>
+          const decoded = Result.all(rows.map((row) => decodeNativeRecord(row))).match({
+            ok: (records) => records,
+            err: () => null,
+          });
+          const changes = (decoded ?? []).flatMap((record) =>
             record.value.kind === "replay" ? record.value.value.changes : [],
           );
-          const complete = decodedResult.isOk() && rows.every((row) => row.kind !== "reset");
+          const complete = decoded !== null && rows.every((row) => row.kind !== "reset");
           if (
             complete &&
             changes.length <= 128 &&
