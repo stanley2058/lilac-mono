@@ -21,7 +21,7 @@ import { parseReferenceHref } from "@stanley2058/lilac-client-protocol";
 import { ThreadReferenceView } from "./components/ThreadReferenceView";
 import { SidebarEmptyState } from "./components/SidebarEmptyState";
 import type { WorkspaceSearch } from "./router";
-import { readTheme, setThemeMode } from "./theme/theme";
+import { chooseThemeMode, useThemeMode } from "./theme/theme";
 import { FileViewerProvider } from "./components/file-viewer-context";
 import { RightPanel } from "./components/FileViewer";
 import { useEventCallback } from "./use-event-callback";
@@ -50,7 +50,6 @@ import {
 import { useStore } from "zustand";
 import { WorkspaceProvider, useWorkspace } from "./workspace-context";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Result } from "better-result";
 import { Tooltip } from "@base-ui/react/tooltip";
 import {
   Plus,
@@ -344,7 +343,7 @@ function Workspace(props: AppProps) {
     setRename(undefined);
     setConfirmDelete(undefined);
   }, [active]);
-  const [theme, setTheme] = useState<string>(() => readTheme());
+  const theme = useThemeMode();
   const drafts = useRef(new Map<string, Draft>());
   const [pendingInputs, setPendingInputs] = useState(new Map<string, PendingInput[]>());
   const pending = useRef(pendingInputs);
@@ -430,14 +429,6 @@ function Workspace(props: AppProps) {
     navigate,
   ]);
 
-  useEffect(() => {
-    setThemeMode(theme);
-    const saved = Result.try({
-      try: () => localStorage.setItem("lilac-theme-v1", theme),
-      catch: () => "Storage unavailable",
-    });
-    saved.match({ ok: () => {}, err: () => {} });
-  }, [theme]);
   const upsert = useCallback(
     (thread: NativeThread) =>
       setThreads((current) => {
@@ -1414,7 +1405,7 @@ function Workspace(props: AppProps) {
                       onTabChange={(settings) => changeView({ settings })}
                       agent={identities.agent}
                       theme={theme}
-                      onTheme={setTheme}
+                      onTheme={chooseThemeMode}
                     />
                   ) : null}
                   {sharing && owner && selected ? (

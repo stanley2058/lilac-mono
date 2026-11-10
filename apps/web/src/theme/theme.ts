@@ -9,17 +9,22 @@ import type { ResolvedTheme, ThemeKind } from "./resolve-theme";
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeSelection = Record<ThemeKind, ThemeId>;
 const selectionKey = "lilac-theme-palette-v1";
+const modeKey = "lilac-theme-v1";
 const selectionSchema = z.object({ light: z.enum(themeIds), dark: z.enum(themeIds) });
 const lilac = cachedThemePair("lilac")!;
 const defaultSelection: ThemeSelection = { light: "lilac", dark: "lilac" };
-let mode: ThemeMode = "system";
 let appliedSelection = defaultSelection;
 const themeStore = createStore(() => ({
+  mode: "system" as ThemeMode,
   selection: defaultSelection,
   themes: lilac,
   syntax: lilac.dark.syntax,
   applied: { kind: "dark" as ThemeKind, theme: lilac.dark },
 }));
+
+export function useThemeMode() {
+  return useStore(themeStore, (state) => state.mode);
+}
 
 export function useSyntaxTheme() {
   return useStore(themeStore, (state) => state.syntax);
@@ -43,9 +48,24 @@ export function themeStyle(theme: ResolvedTheme): CSSProperties {
   );
 }
 
+function decodeThemeMode(value: string | null | undefined): ThemeMode {
+  return value === "light" || value === "dark" ? value : "system";
+}
+
+/** Shows a color scheme without saving it, as the design-system preview does. */
 export function setThemeMode(value: string) {
-  mode = value === "light" || value === "dark" ? value : "system";
+  themeStore.setState({ mode: decodeThemeMode(value) });
   applyTheme();
+}
+
+/** Applies the person's color scheme and remembers it in this browser. */
+export function chooseThemeMode(value: string) {
+  setThemeMode(value);
+  const saved = Result.try({
+    try: () => localStorage.setItem(modeKey, themeStore.getState().mode),
+    catch: () => "Storage unavailable",
+  });
+  saved.match({ ok: () => {}, err: () => {} });
 }
 
 export function installThemes(pair: { light: ResolvedTheme; dark: ResolvedTheme }) {
@@ -89,6 +109,7 @@ async function applySelection(selection: ThemeSelection) {
 }
 
 function effectiveKind(): ThemeKind {
+  const mode = themeStore.getState().mode;
   if (mode !== "system") return mode;
   return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
@@ -97,7 +118,7 @@ function applyTheme() {
   const kind = effectiveKind();
   const theme = themeStore.getState().themes[kind];
   const root = document.documentElement;
-  root.dataset.theme = mode;
+  root.dataset.theme = themeStore.getState().mode;
   root.style.colorScheme = kind;
   for (const [name, value] of Object.entries(theme.variables))
     root.style.setProperty(`--ui-${name}`, value);
@@ -109,12 +130,9 @@ function applyTheme() {
 
 export function readTheme(): ThemeMode {
   return Result.try({
-    try: () => localStorage.getItem("lilac-theme-v1"),
+    try: () => localStorage.getItem(modeKey),
     catch: () => "Storage unavailable",
-  }).match({
-    ok: (value) => (value === "light" || value === "dark" ? value : "system"),
-    err: () => "system",
-  });
+  }).match({ ok: decodeThemeMode, err: () => "system" });
 }
 
 export function decodeThemeSelection(raw: string | null): ThemeSelection {
@@ -139,7 +157,7 @@ function readSelection(): ThemeSelection {
 }
 
 export function watchSystemTheme() {
-  mode = readTheme();
+  themeStore.setState({ mode: readTheme() });
   const media = matchMedia("(prefers-color-scheme: light)");
   media.addEventListener("change", applyTheme);
   applyTheme();
