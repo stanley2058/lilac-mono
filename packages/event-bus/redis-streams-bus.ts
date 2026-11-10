@@ -1077,7 +1077,7 @@ export type RedisStreamsBusOptions = {
   };
 };
 
-// Renewal cannot recreate an expired owner. The atomic reaper therefore fences a paused subscriber.
+// Ephemeral owners stay fenced after expiry; durable groups survive and can register again.
 const SUBSCRIPTION_REGISTER_SCRIPT = `
 redis.call('SET', KEYS[1], '1', 'PX', 60000)
 redis.call('HSET', KEYS[2], ARGV[1], KEYS[1])
@@ -1157,7 +1157,6 @@ export class RedisStreamsBus implements RawBus {
       base: this.redis,
       max,
       warm,
-      onExhausted: "fallback_to_shared_with_warn",
       autoscale: poolCfg?.autoscale,
       logger: this.logger,
       label: "event-bus:subscribe",
@@ -1679,6 +1678,19 @@ export class RedisStreamsBus implements RawBus {
       if (!response.success)
         return signalEventBusPanic("Invalid subscription maintenance response");
       if (response.data[0] === "expired" && response.data.length === 1) {
+        if (!ephemeral && group && consumerId) {
+          await this.redis.eval(
+            SUBSCRIPTION_REGISTER_SCRIPT,
+            2,
+            subscriptionOwnerKey,
+            subscriptionRegistryKey,
+            JSON.stringify([group, consumerId, ephemeral]),
+          );
+          return;
+        }
+        maintenanceFailure = ownedRedisStreamsFailure(
+          new Error("Subscription owner lease expired"),
+        );
         abortController.abort();
         releaseUnhealthy = true;
         subRedis.disconnect();
@@ -1826,17 +1838,15 @@ export class RedisStreamsBus implements RawBus {
         ok: () => undefined,
         err: (failure) => failure,
       });
-      const released = lease.shared
-        ? undefined
-        : await Result.tryPromise({
-            try: () => lease.release({ unhealthy: true }),
-            catch: captureRedisStreamsFailure,
-          }).then((result) =>
-            settleRedisStreamsCapture(result).match<CapturedRedisStreamsFailure | undefined>({
-              ok: () => undefined,
-              err: (failure) => failure,
-            }),
-          );
+      const released = await Result.tryPromise({
+        try: () => lease.release({ unhealthy: true }),
+        catch: captureRedisStreamsFailure,
+      }).then((result) =>
+        settleRedisStreamsCapture(result).match<CapturedRedisStreamsFailure | undefined>({
+          ok: () => undefined,
+          err: (failure) => failure,
+        }),
+      );
       if (rolledBack?.kind === "panic") return rolledBack;
       if (disconnected?.kind === "panic") return disconnected;
       if (released?.kind === "panic") return released;
@@ -2718,6 +2728,10 @@ export class RedisStreamsBus implements RawBus {
           err: (failure) => failure,
         });
         if (readError) {
+          if (maintenanceFailure) {
+            if (maintenanceFailure.kind === "panic") throw maintenanceFailure.panic;
+            return Result.err(readFailure(maintenanceFailure.restoreCause()));
+          }
           if (readError.kind === "panic") throw readError.panic;
           if (
             disconnectOnStop &&
@@ -2754,6 +2768,10 @@ export class RedisStreamsBus implements RawBus {
           if (handled.status === "post-commit-error") return Result.err(handled.error);
         }
       }
+      if (maintenanceFailure) {
+        if (maintenanceFailure.kind === "panic") throw maintenanceFailure.panic;
+        return Result.err(readFailure(maintenanceFailure.restoreCause()));
+      }
       return Result.ok(undefined);
     };
 
@@ -2770,11 +2788,9 @@ export class RedisStreamsBus implements RawBus {
     const cleanupLease = (): Promise<CleanupAttempt> => {
       const releaseLease = async (): Promise<void> => {
         managedRedisClient?.disconnect();
-        if (!lease.shared) {
-          await lease.release({
-            unhealthy: disconnectOnStop || releaseUnhealthy,
-          });
-        }
+        await lease.release({
+          unhealthy: disconnectOnStop || releaseUnhealthy,
+        });
       };
       leaseCleanup ??= Result.tryPromise({
         try: releaseLease,
@@ -2836,8 +2852,8 @@ export class RedisStreamsBus implements RawBus {
       const cleanGroup = async (): Promise<CleanupAttempt> => {
         clearInterval(maintenanceTimer);
         await maintenancePending;
-        await this.redis.del(subscriptionOwnerKey);
         if (group && consumerId) {
+          await this.redis.del(subscriptionOwnerKey);
           if (ephemeral && createdGroup) {
             if (!ephemeralGroupDestroyed) {
               const destroyed = await this.redis.xgroup("DESTROY", streamKey, group);
@@ -2925,7 +2941,7 @@ export class RedisStreamsBus implements RawBus {
         abortController.abort();
         activeAttempt?.shutdown();
         managedRedisClient?.disconnect();
-        if (!lease.shared && blockMs > 500) {
+        if (blockMs > 500) {
           disconnectOnStop = true;
           subRedis.disconnect();
         }

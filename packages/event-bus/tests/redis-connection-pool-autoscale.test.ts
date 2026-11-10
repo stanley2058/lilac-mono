@@ -27,7 +27,6 @@ describe("RedisConnectionPool autoscale", () => {
     const first = requireOk(leases[0]!);
     const second = leases[1]!;
     expect(duplicateCalls).toBe(1);
-    expect(first.shared).toBe(false);
     expect(second.status).toBe("error");
     expect(pool.stats()).toEqual({ max: 1, created: 1, available: 0, inUse: 1 });
 
@@ -50,7 +49,6 @@ describe("RedisConnectionPool autoscale", () => {
     const failed = await pool.acquire();
     expect(failed.status).toBe("error");
     const acquired = requireOk(await pool.acquire());
-    expect(acquired.shared).toBe(false);
     expect(pool.stats().created).toBe(1);
 
     await acquired.release();
@@ -89,8 +87,7 @@ describe("RedisConnectionPool autoscale", () => {
     const b = requireOk(await pool.acquire());
 
     // Third acquire forces a grow (2 -> 4) and returns a dedicated client.
-    const c = requireOk(await pool.acquire());
-    expect(c.shared).toBe(false);
+    requireOk(await pool.acquire());
 
     const s = pool.stats();
     expect(s.max).toBe(4);

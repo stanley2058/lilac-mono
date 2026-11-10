@@ -1,5 +1,4 @@
 import { Database } from "bun:sqlite";
-import bundledSnapshotBytes from "./model-catalog-snapshot.json.txt" with { type: "text" };
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { findWorkspaceRoot } from "./find-root";
@@ -116,7 +115,14 @@ function openStore(filename: string, seed: () => ModelsDevRegistry): Database {
 }
 
 function bundledSnapshot(): ModelsDevRegistry {
-  return decodeModelsDevRegistry(JSON.parse(bundledSnapshotBytes)) ?? {};
+  // Keep the data lazy while letting Bun embed it in bundles. Source require wraps text in default;
+  // bundled require returns the string directly.
+  const snapshot: string | { default: string } = require("./model-catalog-snapshot.json.txt");
+  return (
+    decodeModelsDevRegistry(
+      JSON.parse(typeof snapshot === "string" ? snapshot : snapshot.default),
+    ) ?? {}
+  );
 }
 
 export class ModelCatalogCache {

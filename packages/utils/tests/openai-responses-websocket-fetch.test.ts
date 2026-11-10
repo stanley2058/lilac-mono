@@ -182,6 +182,30 @@ describe("createOpenAIResponsesWebSocketFetch", () => {
     fetch.close();
   });
 
+  it("fails after many individually bounded frames fill the unread stream", async () => {
+    const fetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ stream: true, input: "hi" }),
+    });
+    const socket = FakeWebSocket.instances[0]!;
+    const frame = JSON.stringify({
+      type: "response.output_text.delta",
+      delta: "x".repeat(1024 * 1024),
+    });
+    // Decode each frame before sending the next so this exercises the unread stream budget.
+    for (let index = 0; index < 20; index++) {
+      socket.emitMessage(frame);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (socket.readyState === FakeWebSocket.CLOSED) break;
+    }
+    await expect(withTimeout(response.text())).rejects.toThrow(
+      "Responses WebSocket buffer exceeded 16 MiB",
+    );
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+    fetch.close();
+  });
+
   it("closes a socket when its response body is cancelled", async () => {
     const fetch = createOpenAIResponsesWebSocketFetch({ mode: "websocket" });
     const response = await fetch("https://api.openai.com/v1/responses", {

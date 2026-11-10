@@ -2,8 +2,6 @@ import type Redis from "ioredis";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 import type { Logger } from "@stanley2058/simple-module-logger";
 
-export type RedisPoolExhaustedPolicy = "fallback_to_shared_with_warn";
-
 export type RedisConnectionPoolAutoscaleOptions = {
   /** Enable autoscaling of the pool size. Default: false. */
   enabled?: boolean;
@@ -30,8 +28,6 @@ export type RedisConnectionPoolOptions = {
   warm?: number;
   /** Max time to wait for a lease (not used for current policy; reserved). */
   acquireTimeoutMs?: number;
-  /** Behavior when all pooled connections are already leased. */
-  onExhausted?: RedisPoolExhaustedPolicy;
   /** Optional autoscaling config for the pool size. */
   autoscale?: RedisConnectionPoolAutoscaleOptions;
   logger?: Logger;
@@ -40,8 +36,6 @@ export type RedisConnectionPoolOptions = {
 
 export type RedisLease = {
   redis: Redis;
-  /** True when falling back to the shared base connection. */
-  shared: boolean;
   /** Release the lease back to the pool. */
   release(opts?: { unhealthy?: boolean }): Promise<void>;
 };
@@ -315,7 +309,6 @@ export class RedisConnectionPool {
       this.inUse.add(existing);
       return Result.ok({
         redis: existing,
-        shared: false,
         release: async (opts) => {
           await this.release(existing, opts);
         },
@@ -332,7 +325,6 @@ export class RedisConnectionPool {
       this.inUse.add(c);
       return Result.ok({
         redis: c,
-        shared: false,
         release: async (opts) => {
           await this.release(c, opts);
         },
@@ -350,7 +342,6 @@ export class RedisConnectionPool {
       this.inUse.add(c);
       return Result.ok({
         redis: c,
-        shared: false,
         release: async (opts) => {
           await this.release(c, opts);
         },
@@ -368,7 +359,7 @@ export class RedisConnectionPool {
 
   private async release(redis: Redis, opts?: { unhealthy?: boolean }): Promise<void> {
     if (!this.inUse.has(redis)) {
-      // Shared clients are not tracked, and double-release is a no-op.
+      // Double-release is a no-op.
       return;
     }
 

@@ -2497,6 +2497,114 @@ describe("RedisStreamsBus", () => {
     }
   });
 
+  for (const { ephemeral, failTick } of [
+    { ephemeral: false, failTick: false },
+    { ephemeral: true, failTick: false },
+    { ephemeral: false, failTick: true },
+  ]) {
+    it(`handles ${failTick ? "maintenance failure" : "owner expiry"} for ${ephemeral ? "ephemeral" : "durable"} subscriptions`, async () => {
+      const redis = new Redis(TEST_REDIS_URL);
+      const keyPrefix = `test:lilac-event-bus:${randomId("owner-expiry")}`;
+      const stream = `${keyPrefix}:topic`;
+      const raw = createRedisStreamsBus({ redis, keyPrefix });
+      let tick: (() => void) | undefined;
+      const nativeInterval = globalThis.setInterval;
+      const controlledInterval = (
+        callback: (...args: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === 10_000) tick = () => Reflect.apply(callback, undefined, args);
+        return nativeInterval(callback, delay, ...args);
+      };
+      const timer = spyOn(globalThis, "setInterval").mockImplementation(
+        controlledInterval as typeof setInterval,
+      );
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let handled = 0;
+      try {
+        const sub = requireOk(
+          await raw.subscribe(
+            "topic",
+            {
+              mode: "work",
+              subscriptionId: "expiry",
+              consumerId: "consumer",
+              ephemeral,
+              startFrom: "beginning",
+              batch: { maxWaitMs: 50 },
+            },
+            async () => {
+              if (++handled === 1) {
+                started.resolve();
+                await release.promise;
+              }
+              return { disposition: "commit" };
+            },
+          ),
+        );
+        await redis.xadd(stream, "*", "seed", "1");
+        await started.promise;
+        const owners = await redis.keys(`${stream}:subscription-owner:*`);
+        expect(owners).toHaveLength(1);
+        await redis.del(...owners);
+        if (failTick)
+          spyOn(redis, "eval").mockRejectedValueOnce(new Error("Maintenance tick failed"));
+        tick!();
+        if (ephemeral || failTick) {
+          release.resolve();
+          expect((await sub.done).status).toBe("error");
+          expect((await sub.stop()).status).toBe("error");
+          return;
+        }
+        await eventually(
+          () => redis.exists(owners[0]!),
+          (value) => value === 1,
+        );
+        release.resolve();
+        await redis.xadd(stream, "*", "seed", "2");
+        await eventually(
+          async () => {
+            await redis.ping();
+            return handled;
+          },
+          (value) => value === 2,
+        );
+        requireOk(await sub.stop());
+      } finally {
+        release.resolve();
+        timer.mockRestore();
+        await raw.close();
+        const keys = await redis.keys(`${keyPrefix}:*`);
+        if (keys.length) await redis.del(...keys);
+        await redis.quit();
+      }
+    });
+  }
+
+  it("stops tail subscriptions without an owner-key command", async () => {
+    const redis = new Redis(TEST_REDIS_URL);
+    const raw = createRedisStreamsBus({ redis });
+    const sub = requireOk(
+      await raw.subscribe(
+        "tail-cleanup",
+        {
+          mode: "tail",
+          offset: { type: "now" },
+          batch: { maxWaitMs: 50 },
+        },
+        async () => ({ disposition: "commit" }),
+      ),
+    );
+    const del = spyOn(redis, "del");
+    requireOk(await sub.stop());
+    expect(del).not.toHaveBeenCalled();
+    del.mockRestore();
+    await raw.close();
+    await redis.quit();
+  });
+
   it("reaps expired ephemeral owners and empty consumers while preserving live and pending owners", async () => {
     const redis = new Redis(TEST_REDIS_URL);
     const keyPrefix = `test:lilac-event-bus:${randomId("reap")}`;

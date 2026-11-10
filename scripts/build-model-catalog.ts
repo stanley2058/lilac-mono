@@ -8,5 +8,5 @@ const catalog = decodeModelsDevRegistry(await response.json());
 if (!catalog || Object.keys(catalog).length === 0) throw new Error("Invalid models.dev catalog");
 await Bun.write(
   new URL("../packages/utils/model-catalog-snapshot.json.txt", import.meta.url),
-  `${JSON.stringify(catalog)}\n`,
+  `${JSON.stringify(catalog, null, 1)}\n`,
 );

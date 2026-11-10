@@ -652,8 +652,9 @@ to human login or thread-sharing permissions. Deploy Core; web clients need no p
 
 Managed Redis subscriptions now register an owner key per process and subscription incarnation under
 `<stream>:subscription-owner:*`, plus an index at `<stream>:subscription-owners:v1`. Owners renew every
-10 seconds with a 60-second TTL. An expired owner cannot renew or resume its subscription. A Redis
-script checks expiry and destroys abandoned ephemeral groups atomically. Durable groups remain;
+10 seconds with a 60-second TTL. An expired ephemeral owner cannot renew or resume its subscription.
+Durable subscriptions register their owner again after expiry. A Redis script checks expiry and destroys abandoned ephemeral groups
+atomically. Managed-delivery state is cleared afterwards, outside the script. Durable groups remain;
 only consumers with no pending entries are deleted. Pending deliveries keep their existing recovery
 policy. Reaping runs while a subscription to that stream is active.
 
