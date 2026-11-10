@@ -110,6 +110,10 @@ Select specific channels or allow an entire server. The initial trigger mode is 
 responds when mentioned or replied to. You can select active mode and optionally customize Lilac's
 bot name and status message.
 
+Lilac reads Discord messages from its live gateway session. Messages sent while Core is stopped or
+restarting go unanswered, including mentions and replies, because Lilac does not scan channels for
+missed messages at startup. Mention Lilac again after Core is back.
+
 ### Optional setup
 
 The optional menu includes computer use, GitHub authentication, blob storage, web providers,
