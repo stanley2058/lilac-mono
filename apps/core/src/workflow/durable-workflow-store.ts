@@ -609,10 +609,8 @@ export class DurableWorkflowStore {
           )
           .get(artifactId, artifactId, artifactId, artifactId)?.count;
         if (referenced !== 0) return Result.ok(null);
-        return this.beginWorkflowArtifactPublication(reference, Date.now()).map(() => {
-          this.db.run("DELETE FROM workflow_artifacts WHERE artifact_id = ?", [artifactId]);
-          return reference;
-        });
+        this.db.run("DELETE FROM workflow_artifacts WHERE artifact_id = ?", [artifactId]);
+        return Result.ok(reference);
       });
     });
   }
@@ -2930,7 +2928,6 @@ export class DurableWorkflowStore {
     matchKind?: WorkflowWait["match"]["kind"];
     matchKey?: string;
     dueBefore?: number;
-    awaitingTimestampCompletion?: boolean;
     limit?: number;
   }): ResultType<WorkflowWait[], DurableWorkflowReadError> {
     return captureWorkflowRead("list-waits", () => {
@@ -3845,18 +3842,12 @@ export class DurableWorkflowStore {
 
   listSurfaceBindings(options?: {
     dueBefore?: number;
-    awaitingTimestampCompletion?: boolean;
     missingMessageOnly?: boolean;
     limit?: number;
   }): ResultType<WorkflowSurfaceBinding[], DurableWorkflowReadError> {
     return captureWorkflowRead("list-surface-bindings", () => {
       const clauses: string[] = [];
       const bindings: number[] = [];
-      if (options?.awaitingTimestampCompletion) {
-        clauses.push(
-          "json_extract(workflow_triggers.definition_json, '$.kind') = 'timestamp' AND workflow_triggers.next_fire_at IS NULL AND workflow_triggers.last_run_id IS NOT NULL",
-        );
-      }
       if (options?.dueBefore !== undefined) {
         clauses.push(
           "permanent_failure_json IS NULL AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?",

@@ -23,7 +23,7 @@ matter when upgrading an older installation.
    Verify native deployment settings and subagent authority after adopting v3.
 
 Rollback uses the matching pre-upgrade databases and blob storage together. Current workflow schema
-27, transcript schema 14, and native schema 7 are not readable by older builds. Strict record codecs
+28, transcript schema 14, and native schema 7 are not readable by older builds. Strict record codecs
 can also change within a schema version; a matching version number alone does not establish downgrade
 compatibility. Keep producers stopped while restoring. Never remove migration markers to force an
 older binary to open current data.
@@ -301,7 +301,7 @@ Use `--dry-run` for a read-only preflight. The normal command preflights and the
 invocation. It accepts only supported legacy schemas, verifies every copied object's SHA-256 and byte
 length, rewrites each database only after its required objects exist, and removes replaced legacy byte
 columns and files. The offline command emits transcript schema 6 and workflow schema 26; current Core
-then applies transcript schemas 7 through 14 and workflow schema 27 during startup. Databases below
+then applies transcript schemas 7 through 14 and workflow schemas 27 through 28 during startup. Databases below
 those blob baselines, including partially migrated legacy databases, stop startup with the migration command.
 
 The migration copies durable transcript, projection, lineage, and workflow artifact content. It discards
@@ -371,6 +371,21 @@ earlier versions cannot be identified safely by this migration and are not delet
 A process interrupted immediately after a delayed backend decision write can leave an inert metadata
 file after deletion. It cannot resurrect readable content or a durable blob reference. Completed calls
 clean that file; removing every such interrupted marker would require a separate backend storage change.
+
+### Workflow schema 28: cancellation intent and atomic waits
+
+Core upgrades workflow schema 27 to 28 online. It adds the run-claim index on
+`(state, claimed_at, run_id)` and a wait-deadline index. Due waits use separate due-time
+and deadline scans. Existing run and wait records retain their values.
+
+Cancelled operations retain an interrupt intent in `workflow_cancellation_outbox` in the
+same transaction as cancellation. The engine retries publication with the stored delivery
+identity and removes the intent after successful publication. Operations and their waits
+now commit together, so recovery cannot observe a newly journaled wait operation without
+its wait. Existing incomplete pairs are repaired during replay.
+
+Back up the workflow database before upgrading. Older builds reject schema 28. Drain
+workflows and cancellation intents before restoring the pre-upgrade database for rollback.
 
 ### Redis managed event delivery v2
 
@@ -557,6 +572,13 @@ job still running at that point is not reported or stopped by the older build. O
 a wake's native turn as an empty row, and an older build cannot parse an in-flight Discord wake's
 request ID, so drain work before rolling back.
 
+### Periodic job retention
+
+Core now removes ended jobs and their output files every hour while job wakes are active,
+using the existing retention period. Previously this ran only during restart reconciliation.
+The job schema is unchanged. Export retained output before it reaches the retention limit;
+deleted output cannot be recovered by downgrading.
+
 ## MCP and computer-use integration
 
 ### MCP subagent access defaults to disabled
@@ -647,25 +669,3 @@ Native-origin runs retain their original principal. Restricted or unverified req
 fallback, and other users' private DMs remain inaccessible. Heartbeat posts are notifications and do not
 admit another agent turn in their destination. This is a deliberate authority-policy change, not a change
 to human login or thread-sharing permissions. Deploy Core; web clients need no protocol upgrade.
-
-### Workflow schema 28: cancellation intent and atomic waits
-
-Core upgrades workflow schema 27 to 28 online. It adds the run-claim index on
-`(state, claimed_at, run_id)` and a wait-deadline index. Due waits use separate due-time
-and deadline scans. Existing run and wait records retain their values.
-
-Cancelled operations retain an interrupt intent in `workflow_cancellation_outbox` in the
-same transaction as cancellation. The engine retries publication with the stored delivery
-identity and removes the intent after successful publication. Operations and their waits
-now commit together, so recovery cannot observe a newly journaled wait operation without
-its wait. Existing incomplete pairs are repaired during replay.
-
-Back up the workflow database before upgrading. Older builds reject schema 28. Drain
-workflows and cancellation intents before restoring the pre-upgrade database for rollback.
-
-### Periodic job retention
-
-Core now removes ended jobs and their output files every hour while job wakes are active,
-using the existing retention period. Previously this ran only during restart reconciliation.
-The job schema is unchanged. Export retained output before it reaches the retention limit;
-deleted output cannot be recovered by downgrading.

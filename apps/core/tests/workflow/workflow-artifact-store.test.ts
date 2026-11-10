@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it } from "bun:test";
 
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
 import {
@@ -82,36 +82,4 @@ describe("workflow artifact store", () => {
     expect((await blobStore.open(written.value.blobRef)).status).toBe("error");
     workflowStore.close();
   });
-});
-
-it("keeps durable ownership while blob deletion is pending", async () => {
-  const blobStore = await createWorkflowTestBlobStore();
-  const workflowStore = new DurableWorkflowStore(":memory:");
-  const written = await writeWorkflowValueArtifact({
-    blobStore,
-    workflowStore,
-    value: "orphan",
-    maxBytes: 1024,
-  });
-  if (written.status === "error") throw written.error;
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const original = blobStore.delete.bind(blobStore);
-  const remove = spyOn(blobStore, "delete").mockImplementation(async (reference) => {
-    entered.resolve();
-    await release.promise;
-    return original(reference);
-  });
-  const deletion = deleteWorkflowArtifactIfUnreferenced({
-    blobStore,
-    workflowStore,
-    artifactId: written.value.artifactId,
-  });
-  await entered.promise;
-  expect(workflowStore.listWorkflowArtifactPublications().unwrap()).toEqual([written.value]);
-  release.resolve();
-  expect((await deletion).unwrap()).toBe("deleted");
-  expect(workflowStore.listWorkflowArtifactPublications().unwrap()).toEqual([]);
-  remove.mockRestore();
-  workflowStore.close();
 });

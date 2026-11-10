@@ -1382,3 +1382,36 @@ describe("workflow audit recovery invariants", () => {
     }
   });
 });
+
+it("uses claim, due-time and deadline indexes for maintenance scans", () => {
+  const file = dbPath("maintenance-query-plans");
+  const store = new DurableWorkflowStore(file);
+  const db = new Database(file);
+  try {
+    const claim = db
+      .query<{ detail: string }, []>(`EXPLAIN QUERY PLAN SELECT * FROM workflow_runs
+      WHERE state = 'running' AND claimed_at IS NOT NULL AND claimed_at <= 100
+      ORDER BY claimed_at, run_id LIMIT 1000`)
+      .all()
+      .map((row) => row.detail)
+      .join("\n");
+    expect(claim).toContain("idx_workflow_runs_claim");
+    const due = db
+      .query<{ detail: string }, []>(`EXPLAIN QUERY PLAN SELECT * FROM (
+      SELECT workflow_waits.* FROM workflow_waits JOIN workflow_runs ON workflow_runs.run_id = workflow_waits.run_id
+      WHERE workflow_waits.state IN ('pending', 'claimed') AND workflow_runs.state = 'running' AND due_at <= 100
+      UNION
+      SELECT workflow_waits.* FROM workflow_waits JOIN workflow_runs ON workflow_runs.run_id = workflow_waits.run_id
+      WHERE workflow_waits.state IN ('pending', 'claimed') AND workflow_runs.state = 'running' AND deadline_at <= 100
+      ) ORDER BY COALESCE(due_at, deadline_at), created_at LIMIT 1000`)
+      .all()
+      .map((row) => row.detail)
+      .join("\n");
+    expect(due).toContain("idx_workflow_waits_due");
+    expect(due).toContain("idx_workflow_waits_deadline");
+  } finally {
+    db.close();
+    store.close();
+    rmSync(file, { force: true });
+  }
+});

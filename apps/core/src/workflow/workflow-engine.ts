@@ -1152,6 +1152,16 @@ export class WorkflowEngine {
       return await this.waitDurably(run, revision, operation, decodedCall, signal);
     }
     if (!this.input.store.createOperation(operation, this.workerId)) {
+      if (
+        decodedCall.kind === "agent" &&
+        this.input.store.aggregateUsage(runId).agentCount >= revision.resources.agents.maxTotal
+      ) {
+        return Result.err(
+          workflowExecutionFailure(
+            `Workflow agent total exceeds ${revision.resources.agents.maxTotal}`,
+          ),
+        );
+      }
       return Result.err(workflowExecutionFailure(`Failed to journal workflow operation ${id}`));
     }
     const published = await captureWorkflowExternal(() =>
@@ -2101,22 +2111,26 @@ export class WorkflowEngine {
       });
       if (outcome.status === "return") return outcome.value;
     };
-    const waitForReceiptPoll = (): Promise<void> =>
-      new Promise((resolve) => {
+    let receiptDirty = false;
+    let wakeReceiptPoll: (() => void) | null = null;
+    const waitForReceiptPoll = (): Promise<void> => {
+      if (receiptDirty) return Promise.resolve();
+      return new Promise((resolve) => {
         const finish = () => {
-          clearTimeout(timer);
-          unsubscribe();
+          if (receiptTimer) clearTimeout(receiptTimer);
+          receiptTimer = null;
+          wakeReceiptPoll = null;
           resolve();
         };
-        const unsubscribe = this.input.store.subscribeChanges(finish);
-        receiptUnsubscribe = unsubscribe;
-        const timer = setTimeout(finish, this.input.receiptPollMs ?? 5_000);
-        receiptTimer = timer;
+        wakeReceiptPoll = finish;
+        receiptTimer = setTimeout(finish, this.input.receiptPollMs ?? 5_000);
         receiptTimer.unref?.();
       });
+    };
     const pollReceipts = async (): Promise<AgentRequestResult> => {
       while (!settled && !this.stopping) {
         await waitForReceiptPoll();
+        receiptDirty = false;
         await pollReceipt();
       }
       return await new Promise<AgentRequestResult>(() => {});
@@ -2369,6 +2383,10 @@ export class WorkflowEngine {
     {
       const attempt = await Result.tryPromise({
         try: async () => {
+          receiptUnsubscribe = this.input.store.subscribeChanges(() => {
+            receiptDirty = true;
+            wakeReceiptPoll?.();
+          });
           armIdle();
           await pollReceipt();
           const receiptPollingDefect = pollReceipts();
@@ -2566,6 +2584,9 @@ export class WorkflowEngine {
       });
       const cleanupAttempt = await Result.tryPromise({
         try: async () => {
+          receiptUnsubscribe?.();
+          receiptUnsubscribe = null;
+          if (receiptTimer) clearTimeout(receiptTimer);
           input.signal.removeEventListener("abort", abort);
           if (abortStarted) [abortOutcome] = await Promise.allSettled([abortCancellation]);
           cleanupFailures = (

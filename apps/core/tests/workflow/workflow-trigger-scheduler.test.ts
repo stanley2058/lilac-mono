@@ -429,3 +429,33 @@ it("awaits an active trigger tick during stop", async () => {
   store.close();
   await bus.close();
 });
+
+it("lists only timestamp triggers awaiting completion", async () => {
+  const store = new DurableWorkflowStore(":memory:");
+  createRevision(store);
+  const bus = createLilacBus(new CapturingRawBus());
+  try {
+    store.createTrigger(trigger());
+    await new WorkflowTriggerScheduler({ bus, store, now: () => 100 }).tick();
+    const fired = workflowStoreValue(store.getTrigger("trigger-1"));
+    if (!fired?.lastRunId) throw new Error("Missing scheduled run");
+    store.transitionTrigger({ triggerId: "trigger-1", from: "active", to: "completed", now: 101 });
+    const base = { ...trigger(), nextFireAt: null, lastRunId: fired.lastRunId };
+    store.createTrigger({ ...base, triggerId: "awaiting" });
+    store.createTrigger({ ...base, triggerId: "scheduled", nextFireAt: 200 });
+    store.createTrigger({ ...base, triggerId: "unfired", lastRunId: null });
+    store.createTrigger({
+      ...base,
+      triggerId: "recurring",
+      definition: { kind: "cron", expression: "* * * * *", timezone: null },
+    });
+    expect(
+      workflowStoreValue(
+        store.listTriggers({ state: "active", awaitingTimestampCompletion: true }),
+      ).map((item) => item.triggerId),
+    ).toEqual(["awaiting"]);
+  } finally {
+    await bus.close();
+    store.close();
+  }
+});
