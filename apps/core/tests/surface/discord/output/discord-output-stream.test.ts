@@ -969,26 +969,19 @@ describe("Discord initial output", () => {
 
 describe("Discord compact progress integration", () => {
   it("moves a completed agent into history before newer tool activity", async () => {
-    let resolveActiveEdit: (options: unknown) => void = () => {};
     let resolveCompletedEdit: (options: unknown) => void = () => {};
     let resolveShiftedEdit: (options: unknown) => void = () => {};
-    const activeEdit = new Promise<unknown>((resolve) => {
-      resolveActiveEdit = resolve;
-    });
     const completedEdit = new Promise<unknown>((resolve) => {
       resolveCompletedEdit = resolve;
     });
     const shiftedEdit = new Promise<unknown>((resolve) => {
       resolveShiftedEdit = resolve;
     });
-    const { client } = createFakeDiscordClient({
+    const { client, operations } = createFakeDiscordClient({
       onEdit: (options) => {
         const lines = embedFieldValuesFromOptions(options)
           .flatMap((value) => value.replaceAll("\\", "").split("\n"))
           .filter(Boolean);
-        if (lines.some((line) => line.includes("… general") && line.includes("1/2"))) {
-          resolveActiveEdit(options);
-        }
         if (lines.some((line) => line.includes("✓ general")) && lines.length === 1) {
           resolveCompletedEdit(options);
         }
@@ -1016,7 +1009,10 @@ describe("Discord compact progress integration", () => {
         display: "subagent (general; gpt-5.6-sol [high]; 1/2 done)\n`- > bash child-check",
       },
     });
-    await activeEdit;
+    const activeLines = embedFieldValuesFromOptions(operations[0]?.options).join("\n");
+    expect(operations[0]?.kind).toBe("send");
+    expect(activeLines).toContain("general");
+    expect(activeLines).toContain("1/2");
 
     await out.push({
       type: "tool.status",

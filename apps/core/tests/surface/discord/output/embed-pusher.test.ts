@@ -64,6 +64,38 @@ describe("startEmbedPusher content phase", () => {
     expect(phases).toEqual([true, true, false, false]);
   });
 
+  it("skips edits for unchanged content and for elapsed-time-only title changes", async () => {
+    const streamDone = Promise.withResolvers<void>();
+    const message = { id: "message-1" } as Message;
+    let reads = 0;
+    let titleTick = 0;
+    const edits: boolean[] = [];
+
+    const result = await startEmbedPusher({
+      createFirst: async () => message,
+      createReply: async () => message,
+      getContent: (isStreaming) => {
+        reads += 1;
+        if (reads === 4) streamDone.resolve();
+        return isStreaming ? "same" : "done";
+      },
+      getProgressTitle: () => `Working... ${titleTick++}s`,
+      shouldHeartbeatProgress: () => true,
+      getActionsLines: () => [],
+      getMaxLength: () => 4096,
+      streamDone: streamDone.promise,
+      useSmartSplitting: false,
+      editMessage: async () => {
+        edits.push(true);
+        return { kind: "edited" };
+      },
+    });
+
+    if (result.status === "error") throw result.error;
+    expect(edits).toHaveLength(1);
+    expect(result.value.responseQueue).toEqual(["done"]);
+  });
+
   it("continues in a fresh message when the edited message is gone", async () => {
     let resolveDone: () => void = () => {};
     const streamDone = new Promise<void>((resolve) => {
@@ -78,6 +110,7 @@ describe("startEmbedPusher content phase", () => {
       createFirst: async () => {
         const next = created.shift();
         if (!next) throw new Error("unexpected create");
+        resolveDone();
         return next;
       },
       createReply: async () => {

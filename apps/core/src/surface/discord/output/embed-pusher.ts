@@ -16,9 +16,8 @@ export type EditEmbedMessage = (
 
 const STREAMING_INDICATOR = " ⚪";
 const EDIT_DELAY_MS = 250;
-const STREAM_MIN_PUSH_INTERVAL_MS = 500;
 const CLOSING_TAG_BUFFER = 10;
-const PROGRESS_HEARTBEAT_MS = 1_000;
+const PROGRESS_HEARTBEAT_MS = 5_000;
 
 const EMBED_COLOR_COMPLETE = Colors.Blue;
 const EMBED_COLOR_INCOMPLETE = Colors.Yellow;
@@ -178,7 +177,6 @@ export async function startEmbedPusher(params: {
 
   let responseQueue: string[] = [];
   let lastProgressHeartbeatAt = 0;
-  let lastStreamPushAt = 0;
 
   const syncToDiscord = async (
     content: string,
@@ -231,8 +229,6 @@ export async function startEmbedPusher(params: {
       const nowMs = Date.now();
       const shouldForceProgressHeartbeat =
         heartbeatDue && showStreamIndicator && Boolean(progressTitleForChunk);
-      const shouldForceStreamPush =
-        showStreamIndicator && nowMs - lastStreamPushAt >= STREAM_MIN_PUSH_INTERVAL_MS;
       const actionsValueForChunk =
         showStreamIndicator && actionsLines.length > 0 ? buildActionsValue(actionsLines) : "";
 
@@ -258,9 +254,6 @@ export async function startEmbedPusher(params: {
         sentReasoning[i] = reasoningValueForChunk ?? "";
         sentActions[i] = actionsValueForChunk;
         sentStats[i] = statsLineForChunk ?? "";
-        if (showStreamIndicator) {
-          lastStreamPushAt = nowMs;
-        }
         if (showStreamIndicator && progressTitleForChunk) {
           lastProgressHeartbeatAt = nowMs;
         }
@@ -281,15 +274,20 @@ export async function startEmbedPusher(params: {
         continue;
       }
 
+      const sentTitle = sentProgressTitle[i] ?? "";
+      const nextTitle = progressTitleForChunk ?? "";
+      // The title carries an elapsed-seconds counter, so a title-only change waits for the
+      // heartbeat instead of editing every second.
+      const titleNeedsPush =
+        sentTitle !== nextTitle && (sentTitle === "" || nextTitle === "");
       if (
         sentDescriptions[i] === description &&
         sentColors[i] === color &&
-        sentProgressTitle[i] === (progressTitleForChunk ?? "") &&
+        !titleNeedsPush &&
         sentReasoning[i] === (reasoningValueForChunk ?? "") &&
         sentActions[i] === actionsValueForChunk &&
         sentStats[i] === (statsLineForChunk ?? "") &&
-        !shouldForceProgressHeartbeat &&
-        !shouldForceStreamPush
+        !shouldForceProgressHeartbeat
       ) {
         continue;
       }
