@@ -927,6 +927,7 @@ export function createToolServer(options: ToolServerOptions) {
 
   async function resolveSafetyMode(
     ctx: RequestContext,
+    getConfig = options.getConfig,
   ): Promise<ResultType<SafetyMode, ToolSafetyModeResolutionError>> {
     if (ctx.operator) return Result.ok("trusted");
     if (ctx.controlPolicy) return Result.ok(ctx.safetyMode ?? "restricted");
@@ -944,8 +945,8 @@ export function createToolServer(options: ToolServerOptions) {
         assertedSafetyMode = resolvedValue;
       } else {
         const sessionId = ctx.sessionId;
-        if (!sessionId || !options.getConfig) return Result.ok("restricted");
-        const loaded = await captureSafetyModeProvider(ctx, "config", options.getConfig);
+        if (!sessionId || !getConfig) return Result.ok("restricted");
+        const loaded = await captureSafetyModeProvider(ctx, "config", getConfig);
         const loadedValue = loaded.match({ ok: (value) => value, err: () => null });
         if (!loadedValue) return loaded.map(() => "restricted");
         assertedSafetyMode = resolveSessionSafetyMode(loadedValue, sessionId);
@@ -981,8 +982,12 @@ export function createToolServer(options: ToolServerOptions) {
   }
 
   async function listToolsForContext(ctx: RequestContext) {
-    const safetyMode = resolveSafetyModeFailClosed(await resolveSafetyMode(ctx));
+    let configPromise: Promise<CoreConfig> | undefined;
+    const getConfig = options.getConfig;
+    const loadConfig = getConfig ? () => (configPromise ??= getConfig()) : undefined;
+    const safetyMode = resolveSafetyModeFailClosed(await resolveSafetyMode(ctx, loadConfig));
 
+    const config = ctx.subagentProfile && loadConfig ? await loadConfig() : undefined;
     const visible: Array<{
       callableId: string;
       name: string;
@@ -993,7 +998,7 @@ export function createToolServer(options: ToolServerOptions) {
     }> = [];
     for (const entry of toolCatalog) {
       if (!isCallableAllowedForControlCapability(entry.callableId, ctx)) continue;
-      if (!(await isCallableAllowedForNativeProfile(entry.callableId, ctx))) continue;
+      if (!(await isCallableAllowedForNativeProfile(entry.callableId, ctx, config))) continue;
       if (
         safetyMode === "restricted" &&
         !isRestrictedCallableAllowed({ callableId: entry.callableId, ctx })
@@ -1015,13 +1020,14 @@ export function createToolServer(options: ToolServerOptions) {
   async function isCallableAllowedForNativeProfile(
     callableId: string,
     ctx: RequestContext,
+    config?: Awaited<ReturnType<NonNullable<typeof options.getConfig>>>,
   ): Promise<boolean> {
     if (!ctx.subagentProfile) return true;
     if (!options.getConfig) return options.pluginManager === undefined;
     const contribution = level2ContributionMapping.get(callableId);
     if (!contribution) return false;
     return isLevel2ContributionAllowedForNativeProfile({
-      config: await options.getConfig(),
+      config: config ?? (await options.getConfig()),
       profileName: ctx.subagentProfile,
       pluginId: contribution.pluginId,
       callableId,
@@ -1578,13 +1584,7 @@ export function createToolServer(options: ToolServerOptions) {
           errorCode: safeFailure.code,
           cancelled: combinedSignal.aborted,
         };
-        if (body.callableId === "mcp.add") {
-          logger.error("tool.call.result", {
-            ...errorLogDetails,
-          });
-        } else {
-          logger.error("tool.call.result", errorLogDetails);
-        }
+        logger.error("tool.call.result", errorLogDetails);
         return {
           status: "error" as const,
           error: safeFailure,

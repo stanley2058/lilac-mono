@@ -864,9 +864,8 @@ class SqliteDiscoveryStore {
   }
 
   private upsertDocumentsInTransaction(documents: readonly IndexedDocument[]): void {
-    for (const doc of documents) {
-      this.db.run(
-        `
+    const upsert = this.db.prepare(
+      `
           INSERT INTO discovery_documents (
             doc_key,
             source,
@@ -921,25 +920,26 @@ class SqliteDiscoveryStore {
             discovery_documents.end_line IS NOT excluded.end_line OR
             discovery_documents.deleted IS NOT excluded.deleted
           `,
-        [
-          doc.docKey,
-          doc.source,
-          doc.kind,
-          doc.platform ?? null,
-          doc.sessionId ?? null,
-          doc.messageId ?? null,
-          doc.requestId ?? null,
-          doc.filePath ?? null,
-          doc.title ?? null,
-          doc.authorId ?? null,
-          doc.authorName ?? null,
-          doc.text,
-          doc.ts,
-          doc.updatedTs,
-          doc.startLine ?? null,
-          doc.endLine ?? null,
-          doc.deleted ? 1 : 0,
-        ],
+    );
+    for (const doc of documents) {
+      upsert.run(
+        doc.docKey,
+        doc.source,
+        doc.kind,
+        doc.platform ?? null,
+        doc.sessionId ?? null,
+        doc.messageId ?? null,
+        doc.requestId ?? null,
+        doc.filePath ?? null,
+        doc.title ?? null,
+        doc.authorId ?? null,
+        doc.authorName ?? null,
+        doc.text,
+        doc.ts,
+        doc.updatedTs,
+        doc.startLine ?? null,
+        doc.endLine ?? null,
+        doc.deleted ? 1 : 0,
       );
     }
   }
@@ -956,6 +956,7 @@ class SqliteDiscoveryStore {
     source: DiscoverySource;
     kind?: IndexedDocument["kind"];
     documents: readonly IndexedDocument[];
+    changedDocuments?: readonly IndexedDocument[];
   }): void {
     const clauses: string[] = [];
     const values: string[] = [];
@@ -973,7 +974,7 @@ class SqliteDiscoveryStore {
         .all(...values) as Array<{ doc_key: string }>;
       const documentKeys = new Set(docs.map((doc) => doc.docKey));
 
-      this.upsertDocumentsInTransaction(docs);
+      this.upsertDocumentsInTransaction(params.changedDocuments ?? docs);
       for (const row of existingRows) {
         if (!documentKeys.has(row.doc_key)) {
           this.db.run("DELETE FROM discovery_documents WHERE doc_key = ?", [row.doc_key]);
@@ -1094,6 +1095,17 @@ class SqliteDiscoveryStore {
 export class DiscoveryService {
   private readonly store: SqliteDiscoveryStore;
   private lastDiscordUpdatedTs: number | undefined;
+  private readonly fileDocuments = new Map<
+    string,
+    { mtimeMs: number; size: number; documents: IndexedDocument[] }
+  >();
+  private transcriptWatermark = 0;
+  private transcriptSnapshot = new Map<string, { updatedTs: number; fingerprint: string }>();
+  private lastTranscriptVersion: string | undefined;
+  private readonly transcriptDocuments = new Map<
+    string,
+    { updatedTs: number; text: string; document: IndexedDocument }
+  >();
   private sourceSyncPromise: Promise<void> | undefined;
 
   constructor(
@@ -1165,14 +1177,40 @@ export class DiscoveryService {
   }
 
   private async syncConversationFromTranscripts(): Promise<void> {
-    const records = this.params.transcriptStore?.listDiscoveryRecords?.() ?? [];
+    const version = this.params.transcriptStore?.getDiscoveryVersion?.();
+    if (version !== undefined && version === this.lastTranscriptVersion) return;
+    const snapshot = this.params.transcriptStore?.getDiscoverySnapshot?.();
+    const changedIds = snapshot
+      ?.filter((row) => {
+        const previous = this.transcriptSnapshot.get(row.requestId);
+        return (
+          !previous ||
+          previous.updatedTs !== row.updatedTs ||
+          previous.fingerprint !== row.fingerprint ||
+          row.updatedTs >= this.transcriptWatermark
+        );
+      })
+      .map((row) => row.requestId);
+    const records = this.params.transcriptStore?.listDiscoveryRecords?.(changedIds) ?? [];
+    const liveSnapshotIds = snapshot ? new Set(snapshot.map((row) => row.requestId)) : undefined;
+    if (liveSnapshotIds) {
+      for (const requestId of this.transcriptDocuments.keys()) {
+        if (!liveSnapshotIds.has(requestId)) this.transcriptDocuments.delete(requestId);
+      }
+      for (const requestId of changedIds ?? []) this.transcriptDocuments.delete(requestId);
+    }
     const documents: IndexedDocument[] = [];
 
     for (const record of records) {
       const text = record.finalText?.trim();
       if (!text) continue;
       if (record.requestClient === "native" || hasIndexedSurfaceCoverage(record)) continue;
-      documents.push({
+      const cached = this.transcriptDocuments.get(record.requestId);
+      if (cached && cached.updatedTs === record.updatedTs && cached.text === text) {
+        documents.push(cached.document);
+        continue;
+      }
+      const document: IndexedDocument = {
         docKey: `conversation:transcript:${record.requestClient}:${record.sessionId}:${record.requestId}`,
         source: "conversation",
         kind: "transcript_request",
@@ -1182,14 +1220,35 @@ export class DiscoveryService {
         text,
         ts: record.updatedTs,
         updatedTs: record.updatedTs,
+      };
+      this.transcriptDocuments.set(record.requestId, {
+        updatedTs: record.updatedTs,
+        text,
+        document,
       });
+      documents.push(document);
     }
 
+    const liveRequests = new Set(documents.map((document) => document.requestId));
+    if (!snapshot) {
+      for (const requestId of this.transcriptDocuments.keys()) {
+        if (!liveRequests.has(requestId)) this.transcriptDocuments.delete(requestId);
+      }
+    }
     this.store.replaceDocumentsWhere({
       source: "conversation",
       kind: "transcript_request",
-      documents,
+      documents: Array.from(this.transcriptDocuments.values(), (cached) => cached.document),
+      changedDocuments: documents,
     });
+    if (snapshot) {
+      this.transcriptSnapshot = new Map(snapshot.map((row) => [row.requestId, row]));
+      this.transcriptWatermark = snapshot.reduce(
+        (maximum, row) => Math.max(maximum, row.updatedTs),
+        this.transcriptWatermark,
+      );
+    }
+    this.lastTranscriptVersion = version;
   }
 
   private async buildPromptDocuments(): Promise<IndexedDocument[]> {
@@ -1199,6 +1258,11 @@ export class DiscoveryService {
     for (const fileName of CORE_PROMPT_FILES) {
       const filePath = path.join(promptDir, fileName);
       const stat = await Bun.file(filePath).stat();
+      const cached = this.fileDocuments.get(filePath);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        documents.push(...cached.documents);
+        continue;
+      }
       const raw = await Bun.file(filePath).text();
       const text = stripFrontmatter(raw).trim();
       const blocks = extractFileBlocks({
@@ -1208,8 +1272,9 @@ export class DiscoveryService {
         text,
         ts: Math.floor(stat.mtimeMs),
       });
+      const fileDocuments: IndexedDocument[] = [];
       for (const block of blocks) {
-        documents.push({
+        fileDocuments.push({
           docKey: block.docKey,
           source: "prompt",
           kind: "file_block",
@@ -1222,6 +1287,12 @@ export class DiscoveryService {
           endLine: block.endLine,
         });
       }
+      this.fileDocuments.set(filePath, {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        documents: fileDocuments,
+      });
+      documents.push(...fileDocuments);
     }
 
     return documents;
@@ -1238,6 +1309,11 @@ export class DiscoveryService {
 
     for (const filePath of uniqueFilePaths) {
       const stat = await Bun.file(filePath).stat();
+      const cached = this.fileDocuments.get(filePath);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        documents.push(...cached.documents);
+        continue;
+      }
       const raw = await Bun.file(filePath).text();
       const text = filePath === paths.heartbeatFilePath ? stripFrontmatter(raw).trim() : raw.trim();
       if (!text) continue;
@@ -1248,8 +1324,9 @@ export class DiscoveryService {
         text,
         ts: Math.floor(stat.mtimeMs),
       });
+      const fileDocuments: IndexedDocument[] = [];
       for (const block of blocks) {
-        documents.push({
+        fileDocuments.push({
           docKey: block.docKey,
           source: "heartbeat",
           kind: "file_block",
@@ -1262,6 +1339,12 @@ export class DiscoveryService {
           endLine: block.endLine,
         });
       }
+      this.fileDocuments.set(filePath, {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        documents: fileDocuments,
+      });
+      documents.push(...fileDocuments);
     }
 
     return documents;
@@ -1274,6 +1357,12 @@ export class DiscoveryService {
       this.buildHeartbeatDocuments(),
     ]);
 
+    const livePaths = new Set(
+      [...promptDocuments, ...heartbeatDocuments].map((doc) => doc.filePath),
+    );
+    for (const filePath of this.fileDocuments.keys()) {
+      if (!livePaths.has(filePath)) this.fileDocuments.delete(filePath);
+    }
     this.store.replaceDocumentsWhere({ source: "prompt", documents: promptDocuments });
     this.store.replaceDocumentsWhere({ source: "heartbeat", documents: heartbeatDocuments });
   }

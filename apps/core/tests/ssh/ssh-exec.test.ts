@@ -1,5 +1,5 @@
 import { watch } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -8,7 +8,7 @@ import {
   decodeRemoteRunnerResponseJson,
   type BundledRemoteRunnerRequest,
 } from "@stanley2058/lilac-fs";
-import { Panic } from "better-result";
+import { Panic, Result } from "better-result";
 import { z } from "zod";
 import type { Tool } from "ai";
 
@@ -28,6 +28,8 @@ import {
   remoteGrep,
   remoteReadTextFile,
 } from "../../src/tools/fs/remote-fs";
+import { SSH } from "../../src/tool-server/tools/ssh";
+import { createHash } from "node:crypto";
 import { fsTool } from "../../src/tools/fs/fs";
 import { remoteApplyPatch } from "../../src/tools/apply-patch/remote-apply-patch";
 
@@ -242,6 +244,211 @@ printf '%s' '{"ok":true,"value":{"variant":"future"}}'
       input: { patchText: "*** Begin Patch\n*** End Patch" },
     };
   }
+
+  it("keeps probe cwd failures in the capability report", async () => {
+    const ssh = new SSH();
+    for (const cwd of [tempDir, path.join(tempDir, "missing")]) {
+      const result = await ssh.call("ssh.probe", { host: "fakehost", cwd, timeoutMs: 30000 });
+      expect(result).toMatchObject({
+        status: "ok",
+        value: {
+          ok: true,
+          probe: { cwd: { attempted: cwd, used: cwd === tempDir ? tempDir : "" } },
+        },
+      });
+    }
+  }, 60000);
+
+  it("repairs a deleted or corrupt cached runner after a failed execution", async () => {
+    const js = `console.log('${crypto.randomUUID()}');`;
+    const runnerPath = path.join(
+      process.env.XDG_CACHE_HOME ?? path.join(process.env.HOME!, ".cache"),
+      "lilac/remote-runners",
+      `${createHash("sha256").update(js).digest("hex")}.js`,
+    );
+    const params = {
+      host: "fakehost",
+      cwd: tempDir,
+      js,
+      input: testRemoteRunnerRequest(),
+      timeoutMs: 5000,
+      maxOutputChars: 1000,
+      decodeResponse: () => Result.ok(null),
+    };
+    expect((await sshExecScriptJson(params)).isOk()).toBe(true);
+    for (const corrupt of [false, true]) {
+      if (corrupt) await writeFile(runnerPath, "syntax error !!!");
+      else await rm(runnerPath);
+      expect((await sshExecScriptJson(params)).isErr()).toBe(true);
+      expect((await sshExecScriptJson(params)).isOk()).toBe(true);
+    }
+    await rm(runnerPath);
+  });
+
+  it("reports missing remote cwd without retrying the bundled runner", async () => {
+    const callsPath = path.join(tempDir, "cwd-calls");
+    await writeFile(
+      sshPath,
+      (await readFile(sshPath, "utf8")).replace(
+        "set -euo pipefail",
+        `set -euo pipefail\nprintf 'call\\n' >> '${callsPath}'`,
+      ),
+    );
+    for (const run of [remoteGlob, remoteGrep] as const) {
+      const result = await run({
+        host: "fakehost",
+        cwd: path.join(tempDir, "missing", "child"),
+        patterns: ["*"],
+        input: { pattern: "x" },
+        denyPaths: [],
+        fsBackend: "fff",
+      });
+      expect(result).toMatchObject({
+        status: "error",
+        error: {
+          message: expect.stringContaining("Remote cwd does not exist or is not a directory"),
+        },
+      });
+    }
+    expect((await readFile(callsPath, "utf8")).trim().split("\n")).toHaveLength(2);
+    const result = await sshExecScriptJson({
+      host: "fakehost",
+      cwd: path.join(tempDir, "missing"),
+      js: `// ${crypto.randomUUID()}`,
+      input: testRemoteRunnerRequest(),
+      timeoutMs: 5000,
+      maxOutputChars: 1000,
+      decodeResponse: () => Result.ok(null),
+    });
+    expect(result).toMatchObject({
+      status: "error",
+      error: {
+        message: expect.stringContaining("Remote cwd does not exist or is not a directory"),
+      },
+    });
+  });
+
+  it("keeps oversized media codes compatible for local and remote reads", async () => {
+    await writeFile(path.join(tempDir, "oversized.png"), Buffer.alloc(32));
+    const tools = fsTool(tempDir, {
+      maxInlineMediaBytesPerPart: 16,
+      readFileDirectImageSupported: true,
+    });
+    for (const cwd of [tempDir, `fakehost:${tempDir}`]) {
+      const result = await executeTool(tools.read, { path: "oversized.png", cwd }, "oversized");
+      expect(result).toMatchObject({ success: false, error: { code: "UNKNOWN" } });
+      expect(JSON.stringify(result)).toContain("16");
+    }
+  });
+
+  it("cancels a deployment waiter without cancelling the owner", async () => {
+    const callsPath = path.join(tempDir, "deployment-calls");
+    const existing = await readFile(sshPath, "utf8");
+    await writeFile(
+      sshPath,
+      existing.replace(
+        "set -euo pipefail",
+        `set -euo pipefail\nprintf 'call\\n' >> '${callsPath}'`,
+      ),
+    );
+    const active = Promise.withResolvers<void>();
+    const ownerSignal = new AbortController();
+    const waiterSignal = new AbortController();
+    const params = {
+      host: "fakehost",
+      cwd: "~",
+      js: `process.stdout.write('${crypto.randomUUID()}'); setInterval(() => {}, 1000);`,
+      input: testRemoteRunnerRequest(),
+      timeoutMs: 5000,
+      maxOutputChars: 1000,
+      decodeResponse: () => Result.ok(null),
+    };
+    const owner = sshExecScriptJson({
+      ...params,
+      signal: ownerSignal.signal,
+      onActivity: () => active.resolve(),
+    });
+    try {
+      await active.promise;
+      const waiter = sshExecScriptJson({ ...params, signal: waiterSignal.signal });
+      waiterSignal.abort();
+      expect((await waiter).match({ ok: () => "unexpected", err: (error) => error._tag })).toBe(
+        "SshExecutionCancelledError",
+      );
+      expect(ownerSignal.signal.aborted).toBe(false);
+      expect((await readFile(callsPath, "utf8")).trim().split("\n")).toHaveLength(2);
+    } finally {
+      ownerSignal.abort();
+      await owner;
+    }
+  });
+
+  it("multiplexes connections and uploads a runner source once per host and hash", async () => {
+    const scriptsDir = path.join(tempDir, "scripts");
+    const argsPath = path.join(tempDir, "args");
+    await mkdir(scriptsDir);
+    const existing = await readFile(sshPath, "utf8");
+    await writeFile(
+      sshPath,
+      existing
+        .replace("set -euo pipefail", `set -euo pipefail\nprintf '%s\\n' "$@" > '${argsPath}'`)
+        .replace(
+          'exec "$@"',
+          `SCRIPT=$(mktemp '${scriptsDir}/script.XXXXXX')\ncat >"$SCRIPT"\nexec "$@" <"$SCRIPT"`,
+        ),
+    );
+    const js = `console.log(JSON.stringify({ marker: '${crypto.randomUUID()}' }));`;
+    const params = {
+      host: "fakehost",
+      cwd: "~",
+      js,
+      input: { op: "fs.glob" as const, denyPaths: [], input: { patterns: ["*"], maxEntries: 1 } },
+      timeoutMs: 5000,
+      maxOutputChars: 1000,
+      decodeResponse: () => Result.ok(null),
+    };
+    const results = await Promise.all([sshExecScriptJson(params), sshExecScriptJson(params)]);
+    expect(results.every((result) => result.isOk())).toBe(true);
+    const scripts = await Promise.all(
+      (await readdir(scriptsDir)).map((name) => readFile(path.join(scriptsDir, name), "utf8")),
+    );
+    const commands = scripts.map((script) => {
+      const encoded = /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(script)![1]!;
+      const fields = JSON.parse(Buffer.from(encoded, "base64").toString()) as string[];
+      return Buffer.from(fields[1]!, "base64").toString();
+    });
+    expect(
+      commands.filter((command) => command.includes(Buffer.from(js).toString("base64"))),
+    ).toHaveLength(1);
+    const args = await readFile(argsPath, "utf8");
+    expect(args).toContain("ControlMaster=auto");
+    expect(args).toContain("ControlPersist=60");
+    expect(args).toContain("ControlPath=");
+  });
+
+  it("does not retry capped FFF output through the bundled runner", async () => {
+    process.env.LILAC_REMOTE_FS_RUNNER_COMMAND = "printf '%0500001d' 0";
+    const callsPath = path.join(tempDir, "ssh-calls");
+    const existing = await readFile(sshPath, "utf8");
+    await writeFile(
+      sshPath,
+      existing.replace(
+        "set -euo pipefail",
+        `set -euo pipefail\nprintf 'call\\n' >> '${callsPath}'`,
+      ),
+    );
+    const result = await remoteGlob({
+      host: "fakehost",
+      cwd: "~",
+      patterns: ["*"],
+      denyPaths: [],
+      fsBackend: "fff",
+    });
+    expect(result.match({ ok: () => "unexpected", err: (error) => error._tag })).toBe(
+      "SshExecutionOutputCappedError",
+    );
+    expect((await readFile(callsPath, "utf8")).trim().split("\n")).toHaveLength(1);
+  });
 
   it("runs large remote commands without passing them as a bash argument", async () => {
     const padding = "x".repeat(200_000);

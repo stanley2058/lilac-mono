@@ -1132,3 +1132,24 @@ describe("web search and permits", () => {
     expect(observedPools).toEqual([sharedFetchPermits, sharedFetchPermits]);
   });
 });
+
+describe("fetch URL protocols", () => {
+  it("rejects non-HTTP URLs before any acquisition in every mode", async () => {
+    const web = new Web(baseWebDependencies);
+    for (const mode of ["auto", "fetch", "browser", "extract", "provider-only"]) {
+      for (const url of [
+        "file:///etc/passwd",
+        "data:text/plain,hello",
+        "javascript:alert(1)",
+        "ftp://example.com",
+      ]) {
+        const result = await web.call(
+          "fetch",
+          { url, mode },
+          { context: { safetyMode: "restricted" } },
+        );
+        expect(result.isErr()).toBe(true);
+      }
+    }
+  });
+});

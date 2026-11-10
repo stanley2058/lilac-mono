@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -189,6 +189,117 @@ describe("tool-server discovery", () => {
       transcriptStore,
     };
   }
+
+  it("pins restricted discovery to the caller and omits prompt and heartbeat sources", async () => {
+    const fixture = await makeFixture();
+    try {
+      const result = (await fixture.tool.call(
+        "discovery.search",
+        { query: "deploy", sessionId: "c2", sources: ["conversation", "prompt", "heartbeat"] },
+        { context: { safetyMode: "restricted", sessionId: "c1" } },
+      )) as { groups: Array<{ source: string; origin?: { sessionId?: string } }> };
+      expect(result.groups.length).toBeGreaterThan(0);
+      for (const group of result.groups) {
+        expect(group.source).toBe("conversation");
+        expect(group.origin?.sessionId).toBe("c1");
+      }
+      expect(
+        (
+          await fixture.tool.callResult(
+            "discovery.search",
+            { query: "deploy" },
+            { context: { safetyMode: "restricted" } },
+          )
+        ).isErr(),
+      ).toBe(true);
+    } finally {
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
+  it("skips unchanged transcript enumeration using the store change watermark", async () => {
+    const fixture = await makeFixture();
+    const list = spyOn(fixture.transcriptStore, "listDiscoveryRecords");
+    try {
+      await fixture.tool.call("discovery.search", { query: "deploy" });
+      await fixture.tool.call("discovery.search", { query: "deploy" });
+      expect(list).toHaveBeenCalledTimes(1);
+      fixture.transcriptStore.saveRequestTranscript({
+        requestId: "new-deploy",
+        sessionId: "owner/repo#99",
+        requestClient: "github",
+        messages: [],
+        finalText: "deploy watermark",
+        modelLabel: "test",
+      });
+      await fixture.tool.call("discovery.search", { query: "deploy" });
+      expect(list).toHaveBeenCalledTimes(2);
+    } finally {
+      list.mockRestore();
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
+  it("reads only changed transcript records and reconciles deletions and coverage changes", async () => {
+    const fixture = await makeFixture();
+    const list = spyOn(fixture.transcriptStore, "listDiscoveryRecords");
+    const initialTime = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(initialTime + 10_000);
+    const search = (query = "deploy") =>
+      fixture.tool.call("discovery.search", { query, sources: ["conversation"], groupBy: "none" });
+    try {
+      await search();
+      fixture.transcriptStore.saveRequestTranscript({
+        requestId: "incremental-first",
+        sessionId: "owner/repo#91",
+        requestClient: "github",
+        messages: [],
+        finalText: "incrementalalpha",
+        modelLabel: "test",
+      });
+      await search("incrementalalpha");
+      clock.mockReturnValue(initialTime + 20_000);
+      fixture.transcriptStore.saveRequestTranscript({
+        requestId: "incremental-second",
+        sessionId: "owner/repo#92",
+        requestClient: "github",
+        messages: [],
+        finalText: "incrementalbeta",
+        modelLabel: "test",
+      });
+      await search("incrementalbeta");
+      expect(list.mock.calls.at(-1)?.[0]).toEqual(
+        expect.arrayContaining(["incremental-first", "incremental-second"]),
+      );
+      expect(list.mock.calls.at(-1)?.[0]).not.toContain("req-orphan");
+      const db = new Database(path.join(fixture.root, "transcripts.db"));
+      try {
+        db.run("DELETE FROM request_transcripts WHERE request_id = ?", ["incremental-first"]);
+      } finally {
+        db.close();
+      }
+      expect(await search("incrementalalpha")).toMatchObject({ groups: [] });
+      const ref = { platform: "discord" as const, channelId: "c3", messageId: "new-coverage" };
+      fixture.transcriptStore.linkSurfaceMessagesToRequest({
+        requestId: "req-orphan",
+        created: [ref],
+        last: ref,
+      });
+      expect(await search("retrospective")).toMatchObject({ groups: [] });
+      fixture.transcriptStore.unlinkSurfaceMessage(ref);
+      expect(JSON.stringify(await search("retrospective"))).toContain("retrospective");
+    } finally {
+      clock.mockRestore();
+      list.mockRestore();
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
 
   function openDiscoveryWriteAudit(dbPath: string): Database {
     const db = new Database(dbPath);

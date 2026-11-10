@@ -30,7 +30,7 @@ test("prefix reads cap allocations and return original size for files above whol
   expect(prefix.bytesLength).toBe(65_536);
   expect(prefix.totalBytes).toBe(1_073_741_824);
   const complete = await fs.readFileBytes({ path: file, maxBytes: 65_536 });
-  expect(complete.success).toBe(false);
+  expect(complete).toMatchObject({ success: false, error: { code: "MEDIA_TOO_LARGE" } });
 });
 
 test("prefix reads preserve deny-path checks including symlink targets", async () => {

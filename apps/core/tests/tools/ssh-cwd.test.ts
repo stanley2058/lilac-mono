@@ -49,3 +49,9 @@ describe("ssh cwd parsing", () => {
     expect(formatRemoteDisplayPath("stanley-desktop", "repo")).toBe("@SD:~/repo");
   });
 });
+
+it("rejects control characters before trimming remote cwds", () => {
+  for (const cwd of ["host:/tmp\n", "host:~/a\rb", "host:/tmp\u0000", "host:/a\u007fb"]) {
+    expect(() => parseSshCwdTarget(cwd)).toThrow("control characters");
+  }
+});

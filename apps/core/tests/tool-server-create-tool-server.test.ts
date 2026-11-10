@@ -11,11 +11,7 @@ import {
   ToolPluginManager,
   type Level1ToolSpec,
 } from "@stanley2058/lilac-plugin-runtime";
-import {
-  createLogger,
-  parseCoreConfigV2ToUniversal,
-  parseCoreConfigV3ToUniversal,
-} from "@stanley2058/lilac-utils";
+import { createLogger, parseCoreConfigV3ToUniversal } from "@stanley2058/lilac-utils";
 import { Panic, Result, TaggedError } from "better-result";
 
 import {
@@ -1077,9 +1073,13 @@ describe("createToolServer", () => {
           },
         },
       });
+      let configReads = 0;
       const server = createToolServer({
         pluginManager,
-        getConfig: async () => config,
+        getConfig: async () => {
+          configReads++;
+          return config;
+        },
         requestMessageCache: {
           get: () => [{ role: "user", content: "cached" }],
           getOrigin: (requestId) =>
@@ -1100,6 +1100,7 @@ describe("createToolServer", () => {
         expect(await list.json()).toMatchObject({
           tools: [{ callableId: "profile.allowed" }],
         });
+        expect(configReads).toBe(1);
 
         const denied = await server.app.handle(
           new Request("http://localhost/call", {

@@ -339,6 +339,7 @@ export async function handleRequest(envelope: RemoteFsDaemonRequest): Promise<Re
           ok: false,
           resolvedPath: result.resolvedPath,
           error: result.error.message,
+          errorCode: result.error.code,
         };
       }
       return {

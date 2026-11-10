@@ -153,6 +153,7 @@ function getGlobSearchRoots(patterns: readonly string[]): string[] {
 
 export const READ_ERROR_CODES = ["NOT_FOUND", "PERMISSION", "UNKNOWN"] as const;
 export type ReadErrorCode = (typeof READ_ERROR_CODES)[number];
+type ReadFileBytesErrorCode = ReadErrorCode | "MEDIA_TOO_LARGE";
 
 export const WRITE_ERROR_CODES = [
   "NOT_FOUND",
@@ -242,7 +243,7 @@ export type ReadFileBytesResult =
       success: false;
       resolvedPath: string;
       error: {
-        code: ReadErrorCode;
+        code: ReadFileBytesErrorCode;
         message: string;
       };
     };
@@ -1244,7 +1245,7 @@ export class FileSystem {
             success: false,
             resolvedPath,
             error: {
-              code: "UNKNOWN",
+              code: "MEDIA_TOO_LARGE",
               message: `File is too large to inline (${stats.value.size} bytes; maximum ${maxBytes} bytes): ${resolvedPath}`,
             },
           });

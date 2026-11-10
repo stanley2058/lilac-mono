@@ -1002,6 +1002,12 @@ export type RecentAgentWriteSnapshot = {
   finalText?: string;
 };
 
+export type TranscriptDiscoverySnapshot = {
+  requestId: string;
+  updatedTs: number;
+  fingerprint: string;
+};
+
 export type TranscriptDiscoveryRecord = {
   requestId: string;
   sessionId: string;
@@ -1231,7 +1237,9 @@ export type TranscriptStore = {
     client?: AdapterPlatform;
   }): RecentAgentWriteSnapshot[];
 
-  listDiscoveryRecords?(): TranscriptDiscoveryRecord[];
+  listDiscoveryRecords?(requestIds?: readonly string[]): TranscriptDiscoveryRecord[];
+  getDiscoverySnapshot?(): TranscriptDiscoverySnapshot[];
+  getDiscoveryVersion?(): string;
 
   close(): void;
 };
@@ -5348,10 +5356,41 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
     return out;
   }
 
-  listDiscoveryRecords(): TranscriptDiscoveryRecord[] {
-    const rows = this.db
-      .query<PersistedDiscoveryRecordRow, []>(
-        `
+  getDiscoveryVersion(): string {
+    const local = this.db.query<{ changes: number }, []>("SELECT total_changes() AS changes").get();
+    const external = this.db.query<{ data_version: number }, []>("PRAGMA data_version").get();
+    return `${local?.changes ?? 0}:${external?.data_version ?? 0}`;
+  }
+
+  getDiscoverySnapshot(): TranscriptDiscoverySnapshot[] {
+    return this.db
+      .query<TranscriptDiscoverySnapshot, []>(`
+      SELECT rt.request_id AS requestId, rt.updated_ts AS updatedTs,
+        json_array(rt.session_id, rt.request_client, (
+          SELECT json_group_array(json_array(sm.platform, sm.channel_id, sm.message_id, sm.created_ts))
+          FROM surface_message_to_request sm
+          WHERE sm.request_id = rt.request_id AND sm.deleted_ts IS NULL
+        )) AS fingerprint
+      FROM request_transcripts rt
+    `)
+      .all();
+  }
+
+  listDiscoveryRecords(requestIds?: readonly string[]): TranscriptDiscoveryRecord[] {
+    if (requestIds?.length === 0) return [];
+    const batches: Array<readonly string[] | undefined> = [];
+    if (requestIds) {
+      for (let offset = 0; offset < requestIds.length; offset += 200)
+        batches.push(requestIds.slice(offset, offset + 200));
+    } else {
+      batches.push(undefined);
+    }
+    const rows: PersistedDiscoveryRecordRow[] = [];
+    for (const batch of batches) {
+      const where = batch ? `WHERE rt.request_id IN (${batch.map(() => "?").join(",")})` : "";
+      const selected = this.db
+        .query<PersistedDiscoveryRecordRow, string[]>(
+          `
         SELECT
           rt.request_id,
           rt.session_id,
@@ -5365,10 +5404,13 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
         FROM request_transcripts rt
         LEFT JOIN surface_message_to_request sm
           ON sm.request_id = rt.request_id AND sm.deleted_ts IS NULL
+        ${where}
         ORDER BY rt.updated_ts DESC, rt.created_ts DESC, sm.created_ts ASC, sm.rowid ASC
         `,
-      )
-      .all();
+        )
+        .all(...(batch ?? []));
+      for (const row of selected) rows.push(row);
+    }
 
     const byRequestId = new Map<string, TranscriptDiscoveryRecord>();
     for (const row of rows) {

@@ -1,3 +1,5 @@
+import { Result } from "better-result";
+import { adaptToolResultToHost } from "../tools/tool-result-adapters";
 import path from "node:path";
 
 export type SshCwdTarget =
@@ -11,6 +13,12 @@ export type SshCwdTarget =
        */
       cwd: string;
     };
+
+function hasControlCharacters(value: string): boolean {
+  return Array.from(value).some(
+    (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+  );
+}
 
 function isWindowsDrivePath(p: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(p);
@@ -42,6 +50,8 @@ function normalizeTildeRelativePath(rel: string): string {
 }
 
 export function normalizeRemoteCwd(input: string): string {
+  if (hasControlCharacters(input))
+    return adaptToolResultToHost(Result.err(new Error("Remote cwd contains control characters")));
   const trimmed = input.trim();
   if (trimmed.length === 0) return "~";
 
@@ -74,6 +84,8 @@ export function normalizeRemoteCwd(input: string): string {
 export function parseSshCwdTarget(cwd?: string): SshCwdTarget {
   if (!cwd) return { kind: "local", cwd };
 
+  if (hasControlCharacters(cwd))
+    return adaptToolResultToHost(Result.err(new Error("Cwd contains control characters")));
   const raw = cwd.trim();
   if (raw.length === 0) return { kind: "local", cwd: undefined };
   if (isWindowsDrivePath(raw)) return { kind: "local", cwd: raw };

@@ -314,7 +314,6 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
       "signal",
     ],
     ["src/surface/discord/discord-request-router/common.ts", "getDiscordFlags", "signal"],
-    ["src/ssh/ssh-exec.ts", "sshExecScriptJson.err@4.<callback>", "signal"],
     [
       "src/surface/bridge/request-composition/attachments.ts",
       "appendDiscordAttachmentsToUserContent",

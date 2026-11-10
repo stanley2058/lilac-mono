@@ -1,10 +1,10 @@
+import { DEFAULT_FS_DENY_PATHS } from "../fs/deny-paths";
 import { decodeRemoteApplyPatchResponseJson } from "@stanley2058/lilac-fs";
 
 import { sshExecScriptJson } from "../../ssh/ssh-exec";
 import { getRemoteRunnerJsText } from "../../ssh/remote-js";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
-const REMOTE_DENY_PATHS = ["~/.ssh", "~/.aws", "~/.gnupg"] as const;
 const REMOTE_ALLOW_ALL_PATHS: readonly string[] = [];
 
 export async function remoteApplyPatch(params: {
@@ -26,7 +26,7 @@ export async function remoteApplyPatch(params: {
         input: {
           op: "apply_patch",
           denyPaths: [
-            ...(params.dangerouslyAllow === true ? REMOTE_ALLOW_ALL_PATHS : REMOTE_DENY_PATHS),
+            ...(params.dangerouslyAllow === true ? REMOTE_ALLOW_ALL_PATHS : DEFAULT_FS_DENY_PATHS),
           ],
           input: { patchText: params.patchText },
         },
