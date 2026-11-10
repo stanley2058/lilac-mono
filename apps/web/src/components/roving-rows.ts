@@ -65,10 +65,12 @@ export function useRovingRows(
   const applyTabStops = () => {
     const rendered = rows();
     const selected = latest.current.selected;
-    let stop = rendered.find((row) => rowIndex(row) === current.current && primaryOf(row));
-    if (current.current === undefined && selected)
-      stop ??= rendered.find((row) => row.querySelector(selected));
-    stop ??= rendered.find((row) => primaryOf(row));
+    const focused = rendered.find((row) => rowIndex(row) === current.current && primaryOf(row));
+    const opened =
+      current.current === undefined && selected
+        ? rendered.find((row) => row.querySelector(selected))
+        : undefined;
+    const stop = focused ?? opened ?? rendered.find((row) => primaryOf(row));
     const control = stop && primaryOf(stop);
     // Writing only changed values keeps the mutation observer below from looping.
     for (const row of rendered)
