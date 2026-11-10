@@ -2919,40 +2919,66 @@ export async function startDiscordRequestRouter(
     if (superseded()) return;
     const newestBufferedMessage = b.messages[b.messages.length - 1];
 
+    // Claim the session before publication awaits composition and admission. A mention that
+    // arrives meanwhile then joins this request instead of publishing a second one.
+    const requestId = randomRequestId();
+    const previousActive = activeBySession.get(sessionId);
+    activeBySession.set(sessionId, { requestId, activeOutputMessageIds: new Set() });
+
     // Gate-forwarded prompt: do NOT reply-to a message.
     // Use newest message as the context anchor.
-    await publishActiveChannelPrompt({
-      adapter,
-      bus,
-      cfg,
-      requestId: randomRequestId(),
-      sessionId,
-      sessionConfigId: b.sessionConfigId,
-      parentChannelId: b.parentChannelId,
-      // Use newest message as the context anchor (not a reply trigger).
-      triggerMsgRef: newestBufferedMessage?.msgRef,
-      ingressMessages: b.messages.flatMap((message) =>
-        message.ingressMessage ? [message.ingressMessage] : [],
-      ),
-      currentMessageIds: b.messages.map((message) => message.msgRef.messageId),
-      triggerType: undefined,
-      sessionMode: "active",
-      modelOverride,
-      botMentionNames: resolveBotMentionNames({
+    const published: ResultType<void, BusRequestRouterRoutingError> =
+      await publishActiveChannelPrompt({
+        adapter,
+        bus,
         cfg,
-        botUserId:
-          overrideCarrier?.botUserId ?? b.messages[b.messages.length - 1]?.botUserId ?? self.userId,
-      }),
-      transformTriggerUserText: overrideCarrier
-        ? (text: string) =>
-            stripLeadingModelOverrideDirective({
-              text,
-              botNames: resolveBotMentionNames({ cfg, botUserId: overrideCarrier?.botUserId }),
-            })
-        : undefined,
-      transformUserTextForMessageId: overrideCarrier?.messageId,
-      markActive: true,
+        requestId,
+        sessionId,
+        sessionConfigId: b.sessionConfigId,
+        parentChannelId: b.parentChannelId,
+        // Use newest message as the context anchor (not a reply trigger).
+        triggerMsgRef: newestBufferedMessage?.msgRef,
+        ingressMessages: b.messages.flatMap((message) =>
+          message.ingressMessage ? [message.ingressMessage] : [],
+        ),
+        currentMessageIds: b.messages.map((message) => message.msgRef.messageId),
+        triggerType: undefined,
+        sessionMode: "active",
+        modelOverride,
+        botMentionNames: resolveBotMentionNames({
+          cfg,
+          botUserId:
+            overrideCarrier?.botUserId ??
+            b.messages[b.messages.length - 1]?.botUserId ??
+            self.userId,
+        }),
+        transformTriggerUserText: overrideCarrier
+          ? (text: string) =>
+              stripLeadingModelOverrideDirective({
+                text,
+                botNames: resolveBotMentionNames({ cfg, botUserId: overrideCarrier?.botUserId }),
+              })
+          : undefined,
+        transformUserTextForMessageId: overrideCarrier?.messageId,
+        markActive: false,
+      });
+    published.match({
+      ok: () => undefined,
+      err: () => releaseDebounceClaim(sessionId, requestId, previousActive),
     });
+  }
+
+  function releaseDebounceClaim(
+    sessionId: string,
+    requestId: string,
+    previousActive: ActiveSessionState | undefined,
+  ) {
+    if (activeBySession.get(sessionId)?.requestId !== requestId) return;
+    if (previousActive) {
+      activeBySession.set(sessionId, previousActive);
+      return;
+    }
+    activeBySession.delete(sessionId);
   }
 
   async function handleMentionMode(input: {
