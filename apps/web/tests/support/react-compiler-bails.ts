@@ -1,49 +1,63 @@
-import { transformAsync } from "@babel/core";
 import { Glob } from "bun";
 import path from "node:path";
+import { transformSync } from "oxc-transform-react";
+import { parseSync } from "vite";
 
 export type CompilerBail = {
   file: string;
   /** The skipped function's name, or `anonymous` when the source gives it none. */
   name: string;
   /** Where the skipped function starts, which tells apart functions that share a name. */
-  start?: number;
+  start: number;
   reason: string;
-  line?: number;
+  line: number;
 };
 
-type CompilerEvent = {
-  kind: string;
-  fnName?: string | null;
-  fnLoc?: { start?: { line?: number; index?: number } } | null;
-  detail?: {
-    reason?: string;
-    loc?: { start?: { line?: number } } | null;
-    options?: { reason?: string; details?: { loc?: { start?: { line?: number } } }[] };
-  };
-};
+type Node = { type: string; start: number; end: number; [key: string]: unknown };
 
-function bailLine(event: CompilerEvent): number | undefined {
-  const detail = event.detail;
-  return (
-    detail?.loc?.start?.line ??
-    detail?.options?.details?.find((item) => item.loc?.start?.line)?.loc?.start?.line ??
-    event.fnLoc?.start?.line
+type CompiledFunction = { name: string; start: number; end: number; optedOut: boolean };
+
+const functionTypes = new Set([
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+]);
+
+function isNode(value: unknown): value is Node {
+  return typeof value === "object" && value !== null && typeof (value as Node).type === "string";
+}
+
+function children(node: Node): Node[] {
+  return Object.values(node).flatMap((value) =>
+    Array.isArray(value) ? value.filter(isNode) : isNode(value) ? [value] : [],
   );
 }
 
-/** The compiler's events leave `fnName` empty, so the name comes from the source at the function. */
-function functionName(code: string, start: number | undefined): string {
-  if (start === undefined) return "anonymous";
-  const declared = /^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*([\w$]+)/.exec(
-    code.slice(start, start + 200),
+function optedOut(fn: Node): boolean {
+  const body = fn.body as Node | undefined;
+  if (body?.type !== "BlockStatement") return false;
+  return (body.body as Node[]).some(
+    (statement) => statement.directive === "use no memo" || statement.directive === "use no forget",
   );
-  if (declared) return declared[1]!;
-  const lineStart = code.lastIndexOf("\n", start - 1) + 1;
-  const assigned = /([\w$]+)\s*(?::[^=]*)?=\s*(?:[\w$.]+\()?\s*$/.exec(
-    code.slice(lineStart, start),
-  );
-  return assigned?.[1] ?? "anonymous";
+}
+
+/**
+ * The outermost functions in a module, which are the ones the compiler compiles. A nested callback
+ * belongs to its enclosing component or hook, so its diagnostics count against that function.
+ */
+function outermostFunctions(node: Node, name?: string): CompiledFunction[] {
+  if (functionTypes.has(node.type)) {
+    const id = node.id as { name?: string } | null | undefined;
+    const fnName = id?.name ?? name ?? "anonymous";
+    return [{ name: fnName, start: node.start, end: node.end, optedOut: optedOut(node) }];
+  }
+  const id = node.type === "VariableDeclarator" ? (node.id as { name?: string }).name : undefined;
+  return children(node).flatMap((child) => outermostFunctions(child, id ?? name));
+}
+
+/** Oxc labels diagnostics with UTF-8 byte offsets, while the parser reports UTF-16 positions. */
+function utf16Offset(bytes: Buffer, byteOffset: number): number {
+  return bytes.subarray(0, byteOffset).toString().length;
 }
 
 /**
@@ -60,16 +74,6 @@ export function bailEntries(bails: readonly CompilerBail[]): string[] {
   return [...entries.values()].sort();
 }
 
-/** A function opts out with a `"use no memo"` directive right after its parameter list. */
-function optedOut(lines: readonly string[], start: number | undefined): boolean {
-  if (start === undefined) return false;
-  const bodyStart = lines.findIndex(
-    (line, index) => index >= start - 1 && /\)(:[^=]*)? \{$/.test(line.trimEnd()),
-  );
-  if (bodyStart < 0) return false;
-  return lines.slice(bodyStart + 1, bodyStart + 4).some((line) => line.includes('"use no memo"'));
-}
-
 /**
  * Runs the React Compiler over `src` with the build's options and lists each function it skipped,
  * except functions that opt out explicitly.
@@ -78,38 +82,24 @@ export async function reactCompilerBails(root: string): Promise<CompilerBail[]> 
   const bails: CompilerBail[] = [];
   for await (const file of new Glob("src/**/*.{ts,tsx}").scan(root)) {
     if (file.includes("/generated/")) continue;
-    const code = await Bun.file(path.join(root, file)).text();
-    const lines = code.split("\n");
-    await transformAsync(code, {
-      filename: path.join(root, file),
-      babelrc: false,
-      configFile: false,
-      parserOpts: { plugins: file.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"] },
-      plugins: [
-        [
-          "babel-plugin-react-compiler",
-          {
-            logger: {
-              logEvent(_filename: string, event: CompilerEvent) {
-                if (event.kind !== "CompileError" && event.kind !== "PipelineError") return;
-                if (optedOut(lines, event.fnLoc?.start?.line)) return;
-                const reason = event.detail?.reason ?? event.detail?.options?.reason ?? "";
-                const start = event.fnLoc?.start?.index;
-                bails.push({
-                  file,
-                  name: functionName(code, start),
-                  start,
-                  reason: reason.split("\n")[0]!,
-                  line: bailLine(event),
-                });
-              },
-            },
-          },
-        ],
-      ],
-    });
+    const filename = path.join(root, file);
+    const code = await Bun.file(filename).text();
+    const result = transformSync(filename, code, { jsx: "preserve", reactCompiler: {} });
+    if (result.errors.length === 0) continue;
+    const bytes = Buffer.from(code);
+    const functions = outermostFunctions(parseSync(filename, code).program as unknown as Node);
+    for (const error of result.errors) {
+      const at = utf16Offset(bytes, error.labels[0]?.start ?? 0);
+      const fn = functions.find((item) => item.start <= at && at < item.end);
+      if (fn?.optedOut) continue;
+      bails.push({
+        file,
+        name: fn?.name ?? "anonymous",
+        start: fn?.start ?? -1,
+        reason: error.message.split("\n")[0]!,
+        line: code.slice(0, at).split("\n").length,
+      });
+    }
   }
   return bails;
 }
-
-if (import.meta.main) console.log(JSON.stringify(await reactCompilerBails(process.argv[2]!)));
