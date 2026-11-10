@@ -36,6 +36,9 @@ export function useWorkspace() {
 }
 
 export function WorkspaceProvider({ children, ...props }: AppProps & { children: ReactNode }) {
+  // Stores are rebuilt per installation and principal, not per scope object, which the compiler
+  // cannot express.
+  "use no memo";
   const { client, scope, upload, resourceUrl, draftCache, accountProfile } = props;
   useEffect(() => watchConnectionLifecycle(client), [client]);
   const keybindings = useMemo(

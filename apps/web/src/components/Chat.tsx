@@ -56,6 +56,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -101,6 +102,8 @@ export type Draft = {
   attachments: string[];
   savedText?: string;
 };
+// The compiler cannot memoize a component that contains `import()`.
+const loadComposerEditor = () => import("./composer-editor");
 const emptyDraft: Draft = { text: "", skillIds: [], attachments: [] };
 /** What the conversation needs from a draft. Typing changes only the text, which the composer reads. */
 type DraftSummary = Omit<Draft, "text"> & { hasText: boolean };
@@ -109,6 +112,7 @@ const summarizeDraft = ({ text, ...draft }: Draft): DraftSummary => ({
   hasText: !!text.trim(),
 });
 const emptySummary = summarizeDraft(emptyDraft);
+const noPrompts: ReturnType<typeof questionPrompts> = [];
 const draftText = (draft: Draft) => draft.text;
 export type ChatProps = Pick<ChatCommon, "catalog" | "onError"> & {
   threadId: string;
@@ -185,10 +189,7 @@ export function Chat(props: ChatProps) {
   const replyChoice = useStore(questionReplyStore, (state) => state.choices.get(threadId));
   const replyQuestion = activeReplyQuestion(answerable, replyChoice);
   const replyMessageId = replyQuestion?.questionCallId;
-  const replyPrompts = useMemo(
-    () => (replyQuestion ? questionPrompts(replyQuestion) : []),
-    [replyQuestion],
-  );
+  const replyPrompts = replyQuestion ? questionPrompts(replyQuestion) : noPrompts;
   const progressKey = replyMessageId ? replyProgressKey(threadId, replyMessageId) : "";
   const progress = useStore(
     questionReplyStore,
@@ -200,10 +201,7 @@ export function Chat(props: ChatProps) {
     replyMessageId && replyPrompt
       ? questionDraftKey(threadId, replyMessageId, replyPrompt.ordinal)
       : threadId;
-  const draftOptions = useMemo(
-    () => composerDraftOptions(scope, draftKey, draftCache),
-    [scope, draftKey, draftCache],
-  );
+  const draftOptions = composerDraftOptions(scope, draftKey, draftCache);
   // Draft writes wait for a pause in typing; leaving the conversation writes them now.
   useEffect(() => () => void draftCache?.flushDrafts?.(), [draftCache, threadId]);
   const draftInitialData = draftKey === threadId ? props.draft : undefined;
@@ -215,10 +213,7 @@ export function Chat(props: ChatProps) {
   });
   const draft = localThread ? summarizeDraft(localThread.draft) : (draftQuery.data ?? emptySummary);
   const draftLoaded = local ? !!localThread : !draftQuery.isPending;
-  const draftSource = useMemo(
-    () => ({ local, threadId, options: draftOptions, initialData: draftInitialData }),
-    [local, threadId, draftOptions, draftInitialData],
-  );
+  const draftSource = { local, threadId, options: draftOptions, initialData: draftInitialData };
   const [view, setView] = useState<{
     id: string;
     error?: string;
@@ -261,7 +256,6 @@ export function Chat(props: ChatProps) {
   const { error, historyError, rewindTarget, rewinding, latestVisible, unknownAuthor } =
     view.id === threadId ? view : {};
   const currentId = useRef(threadId);
-  currentId.current = threadId;
   const getDraft = (key = draftKey) =>
     local
       ? (draftStore.getState().localDrafts.get(threadId)?.draft ?? emptyDraft)
@@ -306,7 +300,11 @@ export function Chat(props: ChatProps) {
   const active = serverActive || !!sendingEntry;
   const previousActive = useRef(active);
   const canEdit = useRef(editable);
-  canEdit.current = editable;
+  // Async sends compare against the conversation and permission that are on screen now.
+  useLayoutEffect(() => {
+    currentId.current = threadId;
+    canEdit.current = editable;
+  });
   const participants = useQuery({
     ...participantOptions(client, threadId),
     enabled: online && !local,
@@ -447,6 +445,8 @@ export function Chat(props: ChatProps) {
   const autoReply = draftLoaded
     ? autoReplyQuestion(answerable, replyChoice, regularDraftEmpty)
     : undefined;
+  const chooseReply = (messageId: string, replying: boolean) =>
+    questionReplyStore.getState().choose(threadId, { messageId, replying });
   useEffect(() => {
     if (autoReply) chooseReply(autoReply, true);
   }, [autoReply, threadId]);
@@ -518,7 +518,7 @@ export function Chat(props: ChatProps) {
   ): Promise<NativeInput | undefined> {
     const [ids, { resolveComposerAttachments }] = await Promise.all([
       resolveAttachmentIds(pool, threadId, entry.submission.attachments, retryFailed),
-      import("./composer-editor"),
+      loadComposerEditor(),
     ]);
     if (currentId.current === threadId && !canEdit.current) {
       setPending(entry.commandId, {
@@ -788,7 +788,7 @@ export function Chat(props: ChatProps) {
         setError,
       );
     },
-    [client, threadId],
+    [client, threadId, setError],
   );
   const onReaction = useCallback(
     (messageId: string, emoji: string, enabled: boolean) => {
@@ -798,10 +798,8 @@ export function Chat(props: ChatProps) {
         setError,
       );
     },
-    [client, threadId],
+    [client, threadId, setError],
   );
-  const chooseReply = (messageId: string, replying: boolean) =>
-    questionReplyStore.getState().choose(threadId, { messageId, replying });
   const updateProgress = (messageId: string, change: ProgressChange) =>
     questionReplyStore.getState().update(replyProgressKey(threadId, messageId), change);
   const loadDraft = async (key: string) =>
@@ -954,14 +952,8 @@ export function Chat(props: ChatProps) {
   const dismissReply = useEventCallback(() =>
     replyQuestion ? questionDismiss(replyQuestion) : Promise.resolve(undefined),
   );
-  const questionServices = useMemo<QuestionServices>(
-    () => ({ onReply: questionReply, onDismiss: questionDismiss }),
-    [questionReply, questionDismiss],
-  );
-  const replyView = useMemo<QuestionReplyView>(
-    () => ({ messageId: replyMessageId }),
-    [replyMessageId],
-  );
+  const questionServices: QuestionServices = { onReply: questionReply, onDismiss: questionDismiss };
+  const replyView: QuestionReplyView = { messageId: replyMessageId };
   const replyReady = replyChosen !== undefined;
   const replyCount = replyPrompt ? replyPrompts.length : 0;
   // The composer is memoized, so typing and streaming must not hand it a new object each render.

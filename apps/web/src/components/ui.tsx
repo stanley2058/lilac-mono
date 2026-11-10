@@ -144,6 +144,8 @@ export function VirtualList<T>({
   /** For lists that share a cursor with others, where a short list must not page for itself. */
   loadOnlyAfterScroll?: boolean;
 }) {
+  // TanStack Virtual returns a mutable virtualizer, which the compiler cannot memoize safely.
+  "use no memo";
   const parent = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLDivElement>(null);
   const motion = useRef<ReturnType<typeof createVirtualListMotion>>(undefined);

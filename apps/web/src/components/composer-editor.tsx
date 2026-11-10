@@ -343,6 +343,8 @@ export type ComposerEditorProps = {
   formattingTarget?: HTMLElement | null;
 };
 const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) {
+  // TipTap builds the editor once, and its callbacks read the latest props through a ref.
+  "use no memo";
   const [openCitation, setOpenCitation] = useState<OpenCitation>();
   const current = useRef(props);
   current.current = props;

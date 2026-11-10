@@ -64,7 +64,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.6",
+    "@babel/core": "^7.29.0",
     "@rolldown/plugin-babel": "^0.2.4",
     "@types/novnc__novnc": "^1.6.0",
     "@types/react": "^19.3.0",

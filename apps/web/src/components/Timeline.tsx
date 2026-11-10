@@ -324,6 +324,8 @@ export function useLatestReadableTurn(store: NativeThreadStore) {
 }
 
 export const Timeline = memo(function Timeline(props: TimelineProps) {
+  // TanStack Virtual returns a mutable virtualizer, which the compiler cannot memoize safely.
+  "use no memo";
   const services = useMessageServicesValue(props);
   const store = props.client.thread(props.threadId);
   const storedIds = useSlotIds(store);
@@ -756,10 +758,9 @@ const SlotRow = memo(function SlotRow(props: {
   const nextSlotId = posts.posts.length ? posts.next : props.nextSlotId;
   const previousSlotId = posts.previous ?? props.previousSlotId;
   const recentContext = useRecentContext();
+  const generation = props.store.checkpoint?.historyGeneration;
   const groupingContext =
-    recentContext?.historyGeneration === props.store.checkpoint?.historyGeneration
-      ? recentContext
-      : undefined;
+    recentContext && recentContext.historyGeneration === generation ? recentContext : undefined;
   const joinedBefore = useJoinedTurns(
     props.store,
     previousSlotId,
@@ -797,10 +798,7 @@ const SlotRow = memo(function SlotRow(props: {
     ) : (
       <DeferredSlot store={props.store} slot={slot} previousSlotId={props.previousSlotId} />
     );
-  const currentContext =
-    recentContext?.historyGeneration === props.store.checkpoint?.historyGeneration
-      ? recentContext
-      : undefined;
+  const currentContext = groupingContext;
   const contextStart = currentContext?.firstTurnPosition === slot.position && slot.position > 0;
   const firstTurnPosition = currentContext?.firstTurnPosition ?? null;
   const summarized =

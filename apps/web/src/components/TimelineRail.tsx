@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
   type KeyboardEvent,
   type MouseEvent,
+  type RefObject,
 } from "react";
 import { Result } from "better-result";
 import {
@@ -353,7 +354,10 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
   const activate = (index: number | null) => {
     const next = index === null ? undefined : railAnchor(items[index]);
     // Moving within one tick keeps the same anchor, so it doesn't rerender the rail.
-    setActiveAnchor((value) => (value?.key === next?.key ? value : next));
+    setActiveAnchor((value) => {
+      const same = value?.key === next?.key;
+      return same ? value : next;
+    });
   };
   const preview = useRailPreviews(
     props.source,
@@ -541,7 +545,7 @@ export const TimelineRail = memo(function TimelineRail(props: TimelineRailProps)
                       item.window.firstPosition <= contextStart &&
                       contextStart < item.window.endPosition
                     }
-                    strips={strips.current}
+                    strips={strips}
                   />
                 );
               })}
@@ -646,7 +650,7 @@ const RailStrip = memo(function RailStrip({
   top: number;
   distance: number | null;
   context: boolean;
-  strips: Map<string, HTMLSpanElement>;
+  strips: RefObject<Map<string, HTMLSpanElement>>;
 }) {
   return (
     // Width tiers are a scale on a fixed box and the in-view highlight is an opacity overlay, so
@@ -666,8 +670,8 @@ const RailStrip = memo(function RailStrip({
       )}
       style={{ top }}
       ref={(node) => {
-        if (node) strips.set(item.key, node);
-        else strips.delete(item.key);
+        if (node) strips.current.set(item.key, node);
+        else strips.current.delete(item.key);
       }}
     >
       <span

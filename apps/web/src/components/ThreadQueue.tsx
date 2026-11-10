@@ -104,10 +104,8 @@ export function ThreadQueue({
       keyboardCodes: { start: ["Space"], cancel: ["Escape"], end: ["Space", "Enter"] },
     }),
   );
-  const visible = useMemo(
-    () => (drag?.move ? moveInQueues(queues, drag.move) : queues),
-    [queues, drag?.move],
-  );
+  const move = drag?.move;
+  const visible = useMemo(() => (move ? moveInQueues(queues, move) : queues), [queues, move]);
   const dragging = !!drag;
   const rows = useMemo<QueueRow[]>(() => {
     const drafts = visible.active.filter((thread) => !thread.source);
@@ -313,12 +311,14 @@ function QueueItem({
 }) {
   const draggable = useDraggable({ id, disabled });
   const droppable = useDroppable({ id, disabled });
+  const setDragNode = draggable.setNodeRef;
+  const setDropNode = droppable.setNodeRef;
   const setNodeRef = useCallback(
     (node: HTMLDivElement | null) => {
-      draggable.setNodeRef(node);
-      droppable.setNodeRef(node);
+      setDragNode(node);
+      setDropNode(node);
     },
-    [draggable.setNodeRef, droppable.setNodeRef],
+    [setDragNode, setDropNode],
   );
   return (
     <div

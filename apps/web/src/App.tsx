@@ -79,6 +79,8 @@ import { SidebarSearch } from "./components/SidebarSearch";
 const Sharing = lazy(() =>
   import("./components/Sharing").then((module) => ({ default: module.Sharing })),
 );
+// The compiler cannot memoize a component that contains `import()`.
+const loadComposerEditor = () => import("./components/composer-editor");
 const WorkflowBoard = lazy(() =>
   import("./components/WorkflowBoard").then((module) => ({ default: module.WorkflowBoard })),
 );
@@ -138,6 +140,8 @@ export function App(props: AppProps) {
   );
 }
 function Workspace(props: AppProps) {
+  // Callbacks here read the latest selection through refs assigned during render.
+  "use no memo";
   const viewport = useWorkspaceViewport();
   const navigate = useNavigate();
   const router = useRouter();
@@ -372,12 +376,6 @@ function Workspace(props: AppProps) {
     }),
     [catalog?.agent, viewer],
   );
-  const listedArchived = useRef(false);
-  useEffect(() => {
-    if (listedArchived.current === archived) return;
-    listedArchived.current = archived;
-    void listThreads(archived);
-  }, [archived]);
   const [draftsHydrated, setDraftsHydrated] = useState(!props.draftCache);
   const routeDraftExists = useStore(
     draftStore,
@@ -452,6 +450,48 @@ function Workspace(props: AppProps) {
       }),
     [],
   );
+  async function listThreads(showArchived: boolean, cursor?: string) {
+    if (!client.rpc || (cursor && threadListRequest.current.loading)) return;
+    const request = { loading: true };
+    threadListRequest.current = request;
+    setLoadingThreads(true);
+    setThreadListError(false);
+    if (!cursor) setNextCursor(undefined);
+    const page = await attempt(
+      () =>
+        client.rpc!.threads.list({
+          archived: showArchived,
+          excludeSettled: !showArchived,
+          limit: 100,
+          cursor,
+        }),
+      (message) => {
+        if (threadListRequest.current === request) setError(message);
+      },
+    );
+    if (threadListRequest.current !== request) return;
+    request.loading = false;
+    setLoadingThreads(false);
+    if (!page) {
+      setThreadListError(true);
+      return;
+    }
+    setThreads((current) => {
+      if (!cursor) return [...current.filter((thread) => thread.kind === "dm"), ...page.items];
+      const ids = new Set(current.map((thread) => thread.id));
+      return [...current, ...page.items.filter((thread) => !ids.has(thread.id))];
+    });
+    setNextCursor(page.nextCursor);
+  }
+  const createThread = useEventCallback(function createThread() {
+    blurForThreadNavigation();
+    const draft = newDraftThread();
+    const changed = new Map(draftStore.getState().localDrafts);
+    for (const [id, existing] of changed) if (!hasDraftContent(existing)) changed.delete(id);
+    changed.set(draft.id, draft);
+    setLocalDrafts(changed);
+    void navigate({ to: "/", state: { draftThreadId: draft.id }, search: {} });
+  });
   useEffect(
     () =>
       client.subscribe((event) => {
@@ -583,15 +623,6 @@ function Workspace(props: AppProps) {
     void navigate({ to: "/threads/$threadId", params: { threadId: id }, search });
   });
 
-  const createThread = useEventCallback(function createThread() {
-    blurForThreadNavigation();
-    const draft = newDraftThread();
-    const changed = new Map(draftStore.getState().localDrafts);
-    for (const [id, existing] of changed) if (!hasDraftContent(existing)) changed.delete(id);
-    changed.set(draft.id, draft);
-    setLocalDrafts(changed);
-    void navigate({ to: "/", state: { draftThreadId: draft.id }, search: {} });
-  });
   function finishDraftNavigation(draftId: string, threadId: string) {
     if (selectedRef.current !== draftId) return;
     if (activeRef.current) {
@@ -637,8 +668,7 @@ function Workspace(props: AppProps) {
       (error) => changeLocalDraft(id, (draft) => ({ ...draft, sending: false, error })),
     );
     if (!initialThread || pool.signal.aborted) return;
-    const { remapComposerAttachments, resolveComposerAttachments } =
-      await import("./components/composer-editor");
+    const { remapComposerAttachments, resolveComposerAttachments } = await loadComposerEditor();
     const created = await applyDraftTitleChanges({
       thread: initialThread,
       initialTitle: creation.autoTitle ? undefined : creation.title,
@@ -760,39 +790,13 @@ function Workspace(props: AppProps) {
         : { state: "rejected", error: outcome.error.message },
     );
   }
-  async function listThreads(showArchived: boolean, cursor?: string) {
-    if (!client.rpc || (cursor && threadListRequest.current.loading)) return;
-    const request = { loading: true };
-    threadListRequest.current = request;
-    setLoadingThreads(true);
-    setThreadListError(false);
-    if (!cursor) setNextCursor(undefined);
-    const page = await attempt(
-      () =>
-        client.rpc!.threads.list({
-          archived: showArchived,
-          excludeSettled: !showArchived,
-          limit: 100,
-          cursor,
-        }),
-      (message) => {
-        if (threadListRequest.current === request) setError(message);
-      },
-    );
-    if (threadListRequest.current !== request) return;
-    request.loading = false;
-    setLoadingThreads(false);
-    if (!page) {
-      setThreadListError(true);
-      return;
-    }
-    setThreads((current) => {
-      if (!cursor) return [...current.filter((thread) => thread.kind === "dm"), ...page.items];
-      const ids = new Set(current.map((thread) => thread.id));
-      return [...current, ...page.items.filter((thread) => !ids.has(thread.id))];
-    });
-    setNextCursor(page.nextCursor);
-  }
+
+  const listedArchived = useRef(false);
+  useEffect(() => {
+    if (listedArchived.current === archived) return;
+    listedArchived.current = archived;
+    void listThreads(archived);
+  }, [archived]);
   async function update(
     id: string,
     change: { title?: string; archived?: boolean; regenerateTitle?: true },
