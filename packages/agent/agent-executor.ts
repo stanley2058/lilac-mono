@@ -571,6 +571,11 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     return id;
   }
 
+  /** Snapshot follow-ups that no turn has taken yet. */
+  getQueuedFollowUpIds(): AgentInputQueueId[] {
+    return this.followUpQueue.map((entry) => entry.id);
+  }
+
   /**
    * Interrupt the active turn with a snapshot of every currently queued steering message.
    *

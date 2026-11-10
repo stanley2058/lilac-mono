@@ -1151,6 +1151,204 @@ describe("session queue admission", () => {
       await bus.close();
     }
   });
+  /**
+   * Starts a runner whose first model call blocks until `releaseFirst`, then fails, so controls
+   * published meanwhile stay queued in the agent. Later calls record their last user message.
+   */
+  async function startUnconsumedControlRunner(hooks: {
+    readonly beforeTerminalize?: (requestDeliveryId: string) => Promise<void>;
+    readonly beforeQuestionCancel?: () => Promise<void>;
+  }) {
+    const baseBus = createLilacBus(createInMemoryRawBus());
+    const handled = new Map<string, ReturnType<typeof deferred<void>>>();
+    const handledDelivery = (requestDeliveryId: string) => {
+      const existing = handled.get(requestDeliveryId);
+      if (existing) return existing;
+      const created = deferred<void>();
+      handled.set(requestDeliveryId, created);
+      return created;
+    };
+    // Signals when the runner finishes handling a delivery, so a test can order its next step.
+    const bus: typeof baseBus = {
+      ...baseBus,
+      subscribeTopic: (topic, opts, handler, deliveryPolicy) =>
+        baseBus.subscribeTopic(
+          topic,
+          opts,
+          async (msg) => {
+            const result = await handler(msg);
+            const data = msg.data as { requestDeliveryId?: string };
+            if (data.requestDeliveryId) handledDelivery(data.requestDeliveryId).resolve(undefined);
+            return result;
+          },
+          deliveryPolicy,
+        ),
+    };
+    const pluginManager = corePrimaryTestPluginManager();
+    const sessionId = "unconsumed-controls";
+    const requestId = "github:unconsumed-controls:request";
+    const accepted = new Map<string, ReturnType<typeof acceptedRunnerDelivery>>();
+    const terminalized: Array<{ requestDeliveryId: string; kind: string; code?: string }> = [];
+    const prompts: string[][] = [];
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    let modelCalls = 0;
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "unconsumed-controls",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      ...(hooks.beforeQuestionCancel
+        ? {
+            questions: {
+              subscribe: () => () => {},
+              listDeferred: () => Result.ok([]),
+              cancelRequest: hooks.beforeQuestionCancel,
+            } as unknown as NonNullable<Parameters<typeof startBusAgentRunner>[0]["questions"]>,
+          }
+        : {}),
+      requestDelivery: {
+        handleDelivery: async (requestDeliveryId: string) =>
+          Result.ok({
+            disposition: "accepted",
+            record: accepted.get(requestDeliveryId),
+            source: "new",
+          }),
+        replaceAcceptedWork: () => {
+          throw new Error("replaceAcceptedWork is not used by these controls");
+        },
+        terminalize: async (input: {
+          requestDeliveryId: string;
+          outcome: { kind: string; code?: string };
+        }) => {
+          await hooks.beforeTerminalize?.(input.requestDeliveryId);
+          terminalized.push({
+            requestDeliveryId: input.requestDeliveryId,
+            kind: input.outcome.kind,
+            code: input.outcome.code,
+          });
+          return Result.ok(undefined);
+        },
+      } as unknown as BusAgentRunnerRequestDelivery,
+      issueControlCapability: () => ({ capability: "unconsumed-controls", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "unconsumed-controls",
+            doStream: async ({ prompt }) => {
+              modelCalls += 1;
+              if (modelCalls === 1) {
+                firstStarted.resolve(undefined);
+                await releaseFirst.promise;
+                throw new Error("provider rejected the request");
+              }
+              prompts.push(userTexts(prompt));
+              return level1TextStep("handled");
+            },
+          }),
+        }),
+    });
+
+    const publish = async (input: {
+      readonly queue: "prompt" | "followUp" | "steer";
+      readonly text: string;
+      readonly requestId?: string;
+    }): Promise<string> => {
+      const delivery = acceptedRunnerDelivery({
+        requestDeliveryId: crypto.randomUUID(),
+        requestId: input.requestId ?? requestId,
+        sessionId,
+        queue: input.queue,
+        messages: [{ role: "user", content: input.text }],
+      });
+      accepted.set(delivery.requestDeliveryId, delivery);
+      return publishRunnerRequest({
+        bus,
+        requestDeliveryId: delivery.requestDeliveryId,
+        requestId: input.requestId ?? requestId,
+        sessionId,
+        queue: input.queue,
+        text: input.text,
+      });
+    };
+    /** Publishes a Cancel and resolves once the runner has handled it. */
+    const cancel = async (): Promise<void> => {
+      const requestDeliveryId = await publishRunnerRequest({
+        bus,
+        requestId,
+        sessionId,
+        queue: "interrupt",
+        text: "",
+        raw: { cancel: true },
+      });
+      await handledDelivery(requestDeliveryId).promise;
+    };
+
+    return {
+      runner,
+      publish,
+      cancel,
+      terminalized,
+      prompts,
+      firstStarted,
+      releaseFirst,
+      modelCalls: () => modelCalls,
+      close: async () => {
+        releaseFirst.resolve(undefined);
+        await runner.stop();
+        await pluginManager.destroy();
+        await baseBus.close();
+      },
+    };
+  }
+
+  function userTexts(prompt: readonly { role: string; content: unknown }[]): string[] {
+    return prompt.flatMap((message) =>
+      message.role === "user" && Array.isArray(message.content)
+        ? message.content.flatMap((part: { type?: string; text?: string }) =>
+            part.type === "text" && part.text ? [part.text] : [],
+          )
+        : [],
+    );
+  }
+
+  it("runs unconsumed steers and follow-ups in arrival order ahead of queued prompts", async () => {
+    const harness = await startUnconsumedControlRunner({});
+    try {
+      const first = await harness.publish({ queue: "prompt", text: "first request" });
+      await harness.firstStarted.promise;
+      const steer = await harness.publish({ queue: "steer", text: "early steer" });
+      const followUp = await harness.publish({ queue: "followUp", text: "follow-up" });
+      const queued = await harness.publish({
+        queue: "prompt",
+        text: "queued prompt",
+        requestId: "github:unconsumed-controls:queued",
+      });
+      const lateSteer = await harness.publish({ queue: "steer", text: "late steer" });
+      harness.releaseFirst.resolve(undefined);
+
+      await harness.runner.waitForIdle();
+
+      // The requeued controls share the request, so its next run coalesces them in arrival order.
+      expect(harness.prompts).toEqual([
+        ["early steer", "follow-up", "late steer"],
+        ["queued prompt"],
+      ]);
+      expect(harness.terminalized).toEqual([
+        { requestDeliveryId: first, kind: "failed", code: undefined },
+        { requestDeliveryId: steer, kind: "completed", code: undefined },
+        { requestDeliveryId: followUp, kind: "completed", code: "coalesced-into-active-run" },
+        { requestDeliveryId: lateSteer, kind: "completed", code: "coalesced-into-active-run" },
+        { requestDeliveryId: queued, kind: "completed", code: undefined },
+      ]);
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 describe("shouldCancelIdleOnlyGlobalRequest", () => {

@@ -2996,9 +2996,13 @@ export async function startBusAgentRunner(params: {
   function takeUnconsumedControls(state: SessionQueue): Enqueued[] {
     const run = state.activeRun;
     if (!run || !state.agent || run.queuedControlEntries.size === 0) return [];
-    return state.agent.getQueuedSteeringIds().flatMap((inputId) => {
-      const entry = run.queuedControlEntries.get(inputId);
-      if (!entry) return [];
+    const unconsumedInputIds = new Set<AgentInputQueueId>([
+      ...state.agent.getQueuedSteeringIds(),
+      ...state.agent.getQueuedFollowUpIds(),
+    ]);
+    // The map keeps arrival order across steers and follow-ups.
+    return [...run.queuedControlEntries].flatMap(([inputId, entry]) => {
+      if (!unconsumedInputIds.has(inputId)) return [];
       const owner = requestMessageCache.acquireOwner(entry.requestId).match({
         ok: (identityOwner) => identityOwner,
         err: () => null,
