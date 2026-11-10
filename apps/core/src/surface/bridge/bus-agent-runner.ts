@@ -4232,8 +4232,9 @@ export async function startBusAgentRunner(params: {
             }
 
             if (draining) {
+              // Accepted durable work stays non-terminal so the next start recovers it.
               logger.debug(
-                "dropping request message while draining",
+                "leaving request message for recovery while draining",
                 formatBridgeLogContext({
                   requestId,
                   sessionId,
@@ -4246,7 +4247,6 @@ export async function startBusAgentRunner(params: {
                 queueDepthAfter: state.queue.length,
                 reason: "draining",
               });
-              await terminalizeProjectedDelivery("abandoned", "runner-draining-drop");
               return;
             }
 
@@ -4938,6 +4938,13 @@ export async function startBusAgentRunner(params: {
     if (!next) return;
     if (reservedQueueEntries.has(next)) return;
     state.queue.shift();
+    // Claim the session before the first await so a concurrent admission cannot start a second run.
+    state.running = true;
+    state.activeRequestId = next.requestId;
+    const releaseDequeuedSession = (): void => {
+      state.running = false;
+      state.activeRequestId = null;
+    };
     if (next.requestClient === "native") {
       const validated = validateNativeRequest({
         requestId: next.requestId,
@@ -4948,6 +4955,7 @@ export async function startBusAgentRunner(params: {
       const rejection = validated.match({ ok: () => null, err: (error) => error });
       if (rejection) {
         const rejected = await rejectNativeDelivery(next.requestDeliveryId ?? "", rejection);
+        releaseDequeuedSession();
         const failure = rejected.match({ ok: () => null, err: (error) => error });
         if (failure) return signalBusAgentRunnerHostFailure(failure);
         if (next.identityOwner) requestMessageCache.releaseOwner(next.identityOwner);
@@ -4981,8 +4989,10 @@ export async function startBusAgentRunner(params: {
         err: (error) => error,
       });
       if (materializationError) {
-        state.queue.unshift(next);
-        return signalBusAgentRunnerHostFailure(materializationError);
+        releaseDequeuedSession();
+        await failUnmaterializableEntry(next, materializationError);
+        startSessionQueueDrain(sessionId, state);
+        return;
       }
       next.messages = materialized.match({
         ok: (value) => value,
@@ -5068,6 +5078,7 @@ export async function startBusAgentRunner(params: {
       const rejection = validated.match({ ok: () => null, err: (error) => error });
       if (rejection) {
         const rejected = await rejectNativeDelivery(next.requestDeliveryId ?? "", rejection);
+        releaseDequeuedSession();
         const failure = rejected.match({ ok: () => null, err: (error) => error });
         if (failure) return signalBusAgentRunnerHostFailure(failure);
         if (next.identityOwner) requestMessageCache.releaseOwner(next.identityOwner);
@@ -5089,9 +5100,6 @@ export async function startBusAgentRunner(params: {
       activeRequestId: state.activeRequestId,
       draining,
     });
-
-    state.running = true;
-    state.activeRequestId = next.requestId;
 
     const runStartedAt = Date.now();
 
@@ -9386,6 +9394,75 @@ export async function startBusAgentRunner(params: {
     return rejection.mapError(
       (error) => new BusAgentRunnerIntakeFailed({ cause: error, message: cause.message }),
     );
+  }
+
+  /** Ends accepted work whose stored messages cannot be loaded so the session queue can continue. */
+  async function failUnmaterializableEntry(entry: Enqueued, cause: Error): Promise<void> {
+    const context = {
+      requestId: entry.requestId,
+      sessionId: entry.sessionId,
+      requestDeliveryId: entry.requestDeliveryId,
+    };
+    logger.error(
+      "accepted request messages could not be materialized",
+      formatBridgeTaggedErrorForLog(cause, context),
+    );
+    if (entry.identityOwner) requestMessageCache.releaseOwner(entry.identityOwner);
+    await publishLifecycle({
+      bus,
+      headers: {
+        request_id: entry.requestId,
+        session_id: entry.sessionId,
+        request_client: entry.requestClient,
+      },
+      state: "failed",
+      detail: "stored request messages could not be loaded",
+    });
+    const requestDeliveryId = entry.requestDeliveryId;
+    if (!requestDeliveryId || !params.requestDelivery) return;
+    const outcomes: Array<readonly [string, RequestDeliveryTerminalOutcome]> = [
+      [requestDeliveryId, { kind: "failed", code: "stored-message-materialization-failed" }],
+      ...(entry.retainedRequestDeliveries ?? []).map(
+        (retained) => [retained.requestDeliveryId, retained.outcome] as const,
+      ),
+    ];
+    let terminalized = true;
+    for (const [deliveryId, outcome] of outcomes) {
+      const result = await params.requestDelivery.terminalize({
+        requestDeliveryId: deliveryId,
+        outcome,
+        transportCommitRequired: true,
+      });
+      const failure = result.match({ ok: () => null, err: (error) => error });
+      if (!failure) continue;
+      terminalized = false;
+      logger.error(
+        "request delivery terminalization failed",
+        formatBridgeTaggedErrorForLog(failure, { ...context, requestDeliveryId: deliveryId }),
+      );
+    }
+    if (!terminalized) return;
+    const removed = activeAgentRunJournal?.removeReconciled(requestDeliveryId);
+    if (removed?.isOk()) releaseRunCheckpointBlobs({ ...context, requestDeliveryId });
+    if (entry.requestClient === "native") {
+      const settled = await params.nativeExecution?.settled(
+        {
+          requestId: entry.requestId,
+          requestDeliveryId,
+          sessionId: entry.sessionId,
+          raw: entry.raw,
+        },
+        "failed",
+      );
+      const settlementError = settled?.match({ ok: () => null, err: (error) => error });
+      if (settlementError) {
+        logger.error(
+          "native request settlement failed",
+          formatBridgeTaggedErrorForLog(settlementError, context),
+        );
+      }
+    }
+    for (const [deliveryId] of outcomes) params.onRequestSettled?.(deliveryId);
   }
 
   async function cancelNativeSession(sessionId: string): Promise<ResultType<void, Error>> {

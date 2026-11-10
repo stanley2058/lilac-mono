@@ -2479,6 +2479,7 @@ class ProductionPathDiscordAdapter extends SurfaceAdapterTestBase {
 
 async function observeRequestLifecycle(bus: ReturnType<typeof createLilacBus>, requestId: string) {
   const terminal = deferred<"resolved" | "cancelled" | "failed">();
+  const first = deferred<string>();
   const states: string[] = [];
   const details: Array<string | undefined> = [];
   const subscriptionResult = await bus.subscribeTopic(
@@ -2491,6 +2492,7 @@ async function observeRequestLifecycle(bus: ReturnType<typeof createLilacBus>, r
       ) {
         states.push(message.data.state);
         details.push(message.data.detail);
+        first.resolve(message.data.state);
         if (
           message.data.state === "resolved" ||
           message.data.state === "cancelled" ||
@@ -2508,6 +2510,7 @@ async function observeRequestLifecycle(bus: ReturnType<typeof createLilacBus>, r
   return {
     states,
     details,
+    first: first.promise,
     terminal: terminal.promise,
     stop: async () => {
       const stopped = await subscription.stop();
@@ -5320,6 +5323,282 @@ describe("durable accepted runner recovery", () => {
       store.close();
       await bus.close();
       await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("session queue admission", () => {
+  function gatedBlobStore() {
+    const gate = deferred<void>();
+    const opened = deferred<void>();
+    const store = new Proxy(TEST_BLOB_STORE, {
+      get(target, property, receiver) {
+        if (property !== "open") {
+          const value: unknown = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async (...args: Parameters<BlobStore["open"]>) => {
+          opened.resolve(undefined);
+          await gate.promise;
+          return target.open(...args);
+        };
+      },
+    });
+    return { store, gate, opened };
+  }
+
+  async function uploadedBlobMessage(text: string): Promise<StoredMessageV1> {
+    const uploaded = transcriptResultValue(
+      await TEST_BLOB_STORE.startUpload({
+        source: new TextEncoder().encode(text),
+        retention: { kind: "durable" },
+      }),
+    );
+    const reference = transcriptResultValue(await uploaded.completion);
+    return {
+      role: "user",
+      content: [
+        { type: "text", text },
+        { type: "blob", blob: reference, mediaType: "text/plain", filename: "note.txt" },
+      ],
+    };
+  }
+
+  it("queues a new request while a recovered run is still materializing", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const blobs = gatedBlobStore();
+    const modelCalls: string[] = [];
+    const runner = await startBusAgentRunner({
+      bus,
+      blobStore: blobs.store,
+      subscriptionId: "materializing-admission",
+      startPaused: true,
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({ capability: "materializing-admission", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "materializing-admission",
+            doStream: async ({ prompt }) => {
+              modelCalls.push(JSON.stringify(prompt).includes("recovered work") ? "A" : "B");
+              return level1TextStep("done");
+            },
+          }),
+        }),
+    });
+    const sessionId = "materializing-admission";
+    const accepted = acceptedRunnerDelivery({
+      requestDeliveryId: crypto.randomUUID(),
+      requestId: "github:materializing-admission:a",
+      sessionId,
+      queue: "prompt",
+      messages: [await uploadedBlobMessage("recovered work")],
+    });
+    const lifecycleA = await observeRequestLifecycle(bus, accepted.requestId);
+    const lifecycleB = await observeRequestLifecycle(bus, "github:materializing-admission:b");
+    try {
+      transcriptResultValue(await runner.resumeAcceptedDelivery(accepted));
+      runner.activate();
+      await blobs.opened.promise;
+      await publishRunnerRequest({
+        bus,
+        requestId: "github:materializing-admission:b",
+        sessionId,
+        text: "new request",
+      });
+      await expect(lifecycleB.first).resolves.toBe("queued");
+      blobs.gate.resolve(undefined);
+      await expect(lifecycleA.terminal).resolves.toBe("resolved");
+      await expect(lifecycleB.terminal).resolves.toBe("resolved");
+      expect(modelCalls).toEqual(["A", "B"]);
+    } finally {
+      blobs.gate.resolve(undefined);
+      await lifecycleA.stop();
+      await lifecycleB.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+  it("fails recovered work whose messages cannot load and runs the next request", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const terminalized: Array<{ requestDeliveryId: string; kind: string; code?: string }> = [];
+    const settled: string[] = [];
+    let modelCalls = 0;
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "unmaterializable-recovery",
+      startPaused: true,
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      requestDelivery: {
+        handleDelivery: async () => {
+          throw new Error("handleDelivery is not used by recovery");
+        },
+        replaceAcceptedWork: () => {
+          throw new Error("replaceAcceptedWork is not used by recovery");
+        },
+        terminalize: async (input: {
+          requestDeliveryId: string;
+          outcome: { kind: string; code?: string };
+        }) => {
+          terminalized.push({
+            requestDeliveryId: input.requestDeliveryId,
+            kind: input.outcome.kind,
+            code: input.outcome.code,
+          });
+          return Result.ok(undefined);
+        },
+      } as unknown as BusAgentRunnerRequestDelivery,
+      onRequestSettled: (requestDeliveryId) => settled.push(requestDeliveryId),
+      issueControlCapability: () => ({ capability: "unmaterializable", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "unmaterializable-recovery",
+            doStream: async () => {
+              modelCalls += 1;
+              return level1TextStep("next request ran");
+            },
+          }),
+        }),
+    });
+    const sessionId = "unmaterializable-recovery";
+    const broken = acceptedRunnerDelivery({
+      requestDeliveryId: crypto.randomUUID(),
+      requestId: "github:unmaterializable-recovery:broken",
+      sessionId,
+      queue: "prompt",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "blob",
+              blob: {
+                version: 1,
+                objectId: `b1_${"33".repeat(16)}`,
+                sha256: "44".repeat(32),
+                byteLength: 1,
+              },
+              mediaType: "text/plain",
+              filename: "missing.txt",
+            },
+          ],
+        },
+      ],
+    });
+    const following = acceptedRunnerDelivery({
+      requestDeliveryId: crypto.randomUUID(),
+      requestId: "github:unmaterializable-recovery:following",
+      sessionId,
+      queue: "prompt",
+      messages: [{ role: "user", content: "run after the broken request" }],
+    });
+    const brokenLifecycle = await observeRequestLifecycle(bus, broken.requestId);
+    const followingLifecycle = await observeRequestLifecycle(bus, following.requestId);
+    try {
+      transcriptResultValue(await runner.resumeAcceptedDelivery(broken));
+      transcriptResultValue(await runner.resumeAcceptedDelivery(following));
+      runner.activate();
+      await expect(brokenLifecycle.terminal).resolves.toBe("failed");
+      await expect(followingLifecycle.terminal).resolves.toBe("resolved");
+      expect(modelCalls).toBe(1);
+      expect(terminalized).toContainEqual({
+        requestDeliveryId: broken.requestDeliveryId,
+        kind: "failed",
+        code: "stored-message-materialization-failed",
+      });
+      expect(settled).toContain(broken.requestDeliveryId);
+    } finally {
+      await brokenLifecycle.stop();
+      await followingLifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+  it("leaves work accepted during drain for the next start to recover", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const intakeEntered = deferred<void>();
+    const releaseIntake = deferred<void>();
+    const terminalized: string[] = [];
+    let modelCalls = 0;
+    const sessionId = "drain-admission";
+    const accepted = acceptedRunnerDelivery({
+      requestDeliveryId: crypto.randomUUID(),
+      requestId: "github:drain-admission:request",
+      sessionId,
+      queue: "prompt",
+      messages: [{ role: "user", content: "arrived during shutdown" }],
+    });
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "drain-admission",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      requestDelivery: {
+        handleDelivery: async () =>
+          Result.ok({ disposition: "accepted", record: accepted, source: "new" }),
+        replaceAcceptedWork: () => {
+          throw new Error("replaceAcceptedWork is not used during drain");
+        },
+        terminalize: async (input: { requestDeliveryId: string }) => {
+          terminalized.push(input.requestDeliveryId);
+          return Result.ok(undefined);
+        },
+      } as unknown as BusAgentRunnerRequestDelivery,
+      beforeRequestIntake: async () => {
+        intakeEntered.resolve(undefined);
+        await releaseIntake.promise;
+      },
+      issueControlCapability: () => ({ capability: "drain-admission", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "drain-admission",
+            doStream: async () => {
+              modelCalls += 1;
+              return level1TextStep("should not run");
+            },
+          }),
+        }),
+    });
+    try {
+      const published = publishRunnerRequest({
+        bus,
+        requestDeliveryId: accepted.requestDeliveryId,
+        requestId: accepted.requestId,
+        sessionId,
+        text: "arrived during shutdown",
+      });
+      await intakeEntered.promise;
+      const drained = runner.beginDrain({ deadlineMs: 1_000 });
+      releaseIntake.resolve(undefined);
+      await Promise.all([published, drained]);
+      expect(terminalized).toEqual([]);
+      expect(modelCalls).toBe(0);
+    } finally {
+      releaseIntake.resolve(undefined);
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
     }
   });
 });
