@@ -17,6 +17,8 @@ import {
 } from "../../../src/surface/bridge/bus-agent-runner";
 import { CustomCommandManager } from "../../../src/custom-commands/manager";
 import type { JobService } from "../../../src/jobs/job-service";
+import { ResourceNotFound } from "../../../src/resource/errors";
+import type { ResourceAccess } from "../../../src/resource/service";
 import {
   TEST_BLOB_STORE,
   startBusAgentRunner,
@@ -757,6 +759,98 @@ describe("session queue admission", () => {
       expect(runner.trackedSessionCount()).toBe(0);
     } finally {
       await lifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+  it("runs a steer whose run ended while it loaded as a new run", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const controlLoading = deferred<void>();
+    const releaseControl = deferred<void>();
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const secondModelCall = deferred<number>();
+    let agentsCreated = 0;
+    let modelCalls = 0;
+    // Only the running agent's materialization opens resources, so this gates the steer there.
+    const resourceAccess = {
+      describe: (uri: string) =>
+        Result.ok({ uri, detectedMediaType: "image/png", declaredMediaType: "image/png" }),
+      open: async (uri: string) => {
+        controlLoading.resolve(undefined);
+        await releaseControl.promise;
+        return Result.err(new ResourceNotFound({ uri, message: "gone" }));
+      },
+    } as unknown as Pick<ResourceAccess, "describe" | "open">;
+    const runner = await startBusAgentRunner({
+      bus,
+      resourceAccess,
+      subscriptionId: "ended-target-control",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({ capability: "ended-target-control", principal: null }),
+      createAgent: (options) => {
+        agentsCreated += 1;
+        return new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "ended-target-control",
+            doStream: async () => {
+              modelCalls += 1;
+              if (modelCalls === 1) {
+                firstStarted.resolve(undefined);
+                await releaseFirst.promise;
+              } else {
+                secondModelCall.resolve(agentsCreated);
+              }
+              return level1TextStep("done");
+            },
+          }),
+        });
+      },
+    });
+    const sessionId = "ended-target-control";
+    const requestId = "github:ended-target-control:request";
+    try {
+      await publishRunnerRequest({ bus, requestId, sessionId, text: "first request" });
+      await firstStarted.promise;
+      const steer = publishRunnerRequest({
+        bus,
+        requestId,
+        sessionId,
+        queue: "steer",
+        text: "late steer",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "late steer" },
+              {
+                type: "resource",
+                uri: "resource://r1_00000000000000000000000000000001",
+                mediaType: "image/png",
+                filename: "image.png",
+              },
+            ],
+          },
+        ],
+      });
+      await controlLoading.promise;
+      releaseFirst.resolve(undefined);
+      await runner.waitForIdle();
+      releaseControl.resolve(undefined);
+      await steer;
+      await expect(secondModelCall.promise).resolves.toBe(2);
+      await runner.waitForIdle();
+      expect(modelCalls).toBe(2);
+    } finally {
+      releaseFirst.resolve(undefined);
+      releaseControl.resolve(undefined);
       await runner.stop();
       await pluginManager.destroy();
       await bus.close();

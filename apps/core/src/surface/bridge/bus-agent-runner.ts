@@ -299,7 +299,7 @@ import {
   settlesBefore,
   shouldCancelRunPolicyRequest,
 } from "./bus-agent-runner/session-queue";
-import { applyToRunningAgent } from "./bus-agent-runner/controls";
+import { applyToRunningAgent, type RunningAgentControlTarget } from "./bus-agent-runner/controls";
 export { mergeToSingleUserMessage } from "./bus-agent-runner/controls";
 export {
   type AgentRunnerRetainedRequestDelivery,
@@ -2252,6 +2252,129 @@ export async function startBusAgentRunner(params: {
               await terminalizeProjectedDelivery("abandoned", "control-target-absent");
             };
 
+            /** Queues a control for an idle session, or drops one that needs an active run. */
+            const routeToIdleSession = async (): Promise<void> => {
+              // Some messages only make sense when a run is already active.
+              if (requestControl.requiresActive && entry.queue !== "prompt") {
+                logger.debug(
+                  "dropping request message (requires active run)",
+                  formatBridgeLogContext({
+                    requestId,
+                    sessionId,
+                    queue: entry.queue,
+                  }),
+                );
+                logQueueTransition({
+                  action: "drop",
+                  queueDepthBefore: state.queue.length,
+                  queueDepthAfter: state.queue.length,
+                  reason: "requires_active_without_run",
+                });
+                await terminalizeProjectedDelivery("abandoned", "active-run-required");
+                return;
+              }
+
+              const queueDepthBefore = state.queue.length;
+              const owner = requestMessageCache.acquireOwner(requestId);
+              const selectOwner = owner.match<() => RequestMessageCacheOwner | null>({
+                err: (error) => () => {
+                  identityError = error;
+                  return null;
+                },
+                ok: (identityOwner) => () => identityOwner,
+              });
+              const identityOwner = selectOwner();
+              if (!identityOwner) return;
+              entry.identityOwner = identityOwner;
+              state.queue.push(entry);
+              logQueueTransition({
+                action: "enqueue",
+                queueDepthBefore,
+                queueDepthAfter: state.queue.length,
+                reason: "start_when_idle",
+              });
+              startSessionQueueDrain(sessionId, state, requestId);
+            };
+            /** Queues a prompt behind another request's run, or drops a control aimed at a stale run. */
+            const routeBehindOtherRequest = async (): Promise<void> => {
+              // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
+              // an unrelated active request.
+              if (requestControl.requiresActive || requestControl.cancel) {
+                logger.debug(
+                  "dropping request message (requires active request id)",
+                  formatBridgeLogContext({
+                    requestId,
+                    sessionId,
+                    activeRequestId: state.activeRequestId,
+                    queue: entry.queue,
+                  }),
+                );
+                logQueueTransition({
+                  action: "drop",
+                  queueDepthBefore: state.queue.length,
+                  queueDepthAfter: state.queue.length,
+                  reason: "requires_active_different_request_id",
+                });
+                await terminalizeProjectedDelivery("abandoned", "active-request-mismatch");
+                return;
+              }
+
+              // No parallel runs: queue prompt messages for later.
+              const queueDepthBefore = state.queue.length;
+              const owner = requestMessageCache.acquireOwner(requestId);
+              const selectOwner = owner.match<() => RequestMessageCacheOwner | null>({
+                err: (error) => () => {
+                  identityError = error;
+                  return null;
+                },
+                ok: (identityOwner) => () => identityOwner,
+              });
+              const identityOwner = selectOwner();
+              if (!identityOwner) return;
+              entry.identityOwner = identityOwner;
+              const enqueued = await enqueueWithLifecycle(entry, "queued behind active request");
+              const enqueueError = enqueued.match({
+                ok: () => null,
+                err: (error) => error,
+              });
+              if (enqueueError) {
+                intakeError = enqueueError;
+                return;
+              }
+
+              logQueuedBehindActiveRun(requestId);
+              logQueueTransition({
+                action: "enqueue",
+                queueDepthBefore,
+                queueDepthAfter: state.queue.length,
+                reason: "queued_behind_active",
+              });
+            };
+            // A control whose run ended while its messages loaded is routed as if it arrived after.
+            const routeAfterTargetEnded = async (): Promise<void> => {
+              if (state.running) return routeBehindOtherRequest();
+              return routeToIdleSession();
+            };
+            const dropControlForEndedRun = async (): Promise<void> => {
+              logQueueTransition({
+                action: "drop",
+                queueDepthBefore: state.queue.length,
+                queueDepthAfter: state.queue.length,
+                reason: "target_run_ended",
+              });
+              if (await terminalizeProjectedDelivery("abandoned", "control-target-absent")) return;
+              if (intakeError) signalBusAgentRunnerHostFailure(intakeError);
+            };
+            const controlTargetFor = (
+              runningAgent: AiSdkPiAgent<ToolSet>,
+            ): RunningAgentControlTarget => {
+              const targetRun = state.activeRun;
+              return {
+                isCurrent: () => state.activeRun === targetRun && state.agent === runningAgent,
+                dropEnded: dropControlForEndedRun,
+              };
+            };
+
             if (requestControl.cancel && requestControl.cancelQueued) {
               const matchedEntries: Enqueued[] = [];
 
@@ -2343,6 +2466,7 @@ export async function startBusAgentRunner(params: {
                         checkpoint,
                       ),
                     (operation) => enqueueSessionControl(sessionId, operation),
+                    controlTargetFor(state.agent),
                   );
                 }
                 logQueueTransition({
@@ -2369,46 +2493,7 @@ export async function startBusAgentRunner(params: {
                 return;
               }
 
-              // Some messages only make sense when a run is already active.
-              if (requestControl.requiresActive && entry.queue !== "prompt") {
-                logger.debug(
-                  "dropping request message (requires active run)",
-                  formatBridgeLogContext({
-                    requestId,
-                    sessionId,
-                    queue: entry.queue,
-                  }),
-                );
-                logQueueTransition({
-                  action: "drop",
-                  queueDepthBefore: state.queue.length,
-                  queueDepthAfter: state.queue.length,
-                  reason: "requires_active_without_run",
-                });
-                await terminalizeProjectedDelivery("abandoned", "active-run-required");
-                return;
-              }
-
-              const queueDepthBefore = state.queue.length;
-              const owner = requestMessageCache.acquireOwner(requestId);
-              const selectOwner = owner.match<() => RequestMessageCacheOwner | null>({
-                err: (error) => () => {
-                  identityError = error;
-                  return null;
-                },
-                ok: (identityOwner) => () => identityOwner,
-              });
-              const identityOwner = selectOwner();
-              if (!identityOwner) return;
-              entry.identityOwner = identityOwner;
-              state.queue.push(entry);
-              logQueueTransition({
-                action: "enqueue",
-                queueDepthBefore,
-                queueDepthAfter: state.queue.length,
-                reason: "start_when_idle",
-              });
-              startSessionQueueDrain(sessionId, state, requestId);
+              await routeToIdleSession();
             } else {
               if (
                 state.activeRequestId === requestId &&
@@ -2627,6 +2712,7 @@ export async function startBusAgentRunner(params: {
                             checkpoint,
                           ),
                         (operation) => enqueueSessionControl(sessionId, operation),
+                        controlTargetFor(runningAgent),
                       ),
                   );
                   const applyError = applied.match({
@@ -2640,10 +2726,18 @@ export async function startBusAgentRunner(params: {
                     queueLifecycleAttempts.delete(msg.id);
                     signalBusAgentRunnerHostFailure(applyError);
                   }
+                  if (applied.match({ ok: (o) => o === "target-ended", err: () => false })) {
+                    for (const bufferedPrompt of bufferedPrompts) {
+                      reservedQueueEntries.delete(bufferedPrompt);
+                    }
+                    queueLifecycleAttempts.delete(msg.id);
+                    await routeAfterTargetEnded();
+                    return;
+                  }
                   attempt.controlApplied = true;
                   await resumeQueueLifecycleAttempt(attempt, state);
                 } else {
-                  await applyToRunningAgent(
+                  const applied = await applyToRunningAgent(
                     runningAgent,
                     mergedEntry,
                     cancelledByRequestId,
@@ -2655,7 +2749,12 @@ export async function startBusAgentRunner(params: {
                         checkpoint,
                       ),
                     (operation) => enqueueSessionControl(sessionId, operation),
+                    controlTargetFor(runningAgent),
                   );
+                  if (applied === "target-ended") {
+                    await routeAfterTargetEnded();
+                    return;
+                  }
                 }
 
                 logQueueTransition({
@@ -2668,58 +2767,7 @@ export async function startBusAgentRunner(params: {
                       : "same_request_id",
                 });
               } else {
-                // Prevent stale surface controls (e.g. Cancel button) from enqueueing behind
-                // an unrelated active request.
-                if (requestControl.requiresActive || requestControl.cancel) {
-                  logger.debug(
-                    "dropping request message (requires active request id)",
-                    formatBridgeLogContext({
-                      requestId,
-                      sessionId,
-                      activeRequestId: state.activeRequestId,
-                      queue: entry.queue,
-                    }),
-                  );
-                  logQueueTransition({
-                    action: "drop",
-                    queueDepthBefore: state.queue.length,
-                    queueDepthAfter: state.queue.length,
-                    reason: "requires_active_different_request_id",
-                  });
-                  await terminalizeProjectedDelivery("abandoned", "active-request-mismatch");
-                  return;
-                }
-
-                // No parallel runs: queue prompt messages for later.
-                const queueDepthBefore = state.queue.length;
-                const owner = requestMessageCache.acquireOwner(requestId);
-                const selectOwner = owner.match<() => RequestMessageCacheOwner | null>({
-                  err: (error) => () => {
-                    identityError = error;
-                    return null;
-                  },
-                  ok: (identityOwner) => () => identityOwner,
-                });
-                const identityOwner = selectOwner();
-                if (!identityOwner) return;
-                entry.identityOwner = identityOwner;
-                const enqueued = await enqueueWithLifecycle(entry, "queued behind active request");
-                const enqueueError = enqueued.match({
-                  ok: () => null,
-                  err: (error) => error,
-                });
-                if (enqueueError) {
-                  intakeError = enqueueError;
-                  return;
-                }
-
-                logQueuedBehindActiveRun(requestId);
-                logQueueTransition({
-                  action: "enqueue",
-                  queueDepthBefore,
-                  queueDepthAfter: state.queue.length,
-                  reason: "queued_behind_active",
-                });
+                await routeBehindOtherRequest();
               }
             }
           })();

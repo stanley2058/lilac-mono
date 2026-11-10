@@ -6,9 +6,19 @@ import { parseRequestControlFromRaw } from "./raw";
 import { degradeCorePrimaryLineageForMutation } from "./lineage";
 import { type Enqueued, type SessionQueue } from "./session-queue";
 
+/** The run a control was routed to, checked again after each await before the agent is used. */
+export type RunningAgentControlTarget = {
+  /** True while the captured run still owns its session and agent. */
+  readonly isCurrent: () => boolean;
+  /** Handles a deferred control whose run ended before it could be applied. */
+  readonly dropEnded: () => Promise<void>;
+};
+
 /**
  * Applies a control to the running agent. Waits for the agent or its children to settle run
  * through `settle`, which orders them per session, so the caller never blocks on them.
+ * Returns `target-ended` without touching the agent when the run ended while the control's
+ * messages loaded; the caller then routes it as if it had arrived after the run.
  */
 export async function applyToRunningAgent(
   agent: AiSdkPiAgent<ToolSet>,
@@ -22,7 +32,8 @@ export async function applyToRunningAgent(
       | { readonly kind: "pending" },
   ) => void,
   settle: (operation: () => Promise<void>) => void,
-) {
+  target: RunningAgentControlTarget,
+): Promise<"applied" | "target-ended"> {
   activeRun?.flushOutput();
   const liveParent = activeRun?.liveParent;
   const notifyWaiters = activeRun?.notifyWaiters;
@@ -31,6 +42,8 @@ export async function applyToRunningAgent(
     !cancel && activeRun?.materializeStoredMessages
       ? await activeRun.materializeStoredMessages(entry.storedMessages)
       : entry.messages;
+  // An idle agent whose run already finalized would start a model run nobody owns.
+  if (!target.isCurrent()) return "target-ended";
   const merged = mergeToSingleUserMessage(providerMessages);
   if (!cancel) {
     activeRun?.rememberStoredMessages(
@@ -90,35 +103,37 @@ export async function applyToRunningAgent(
       case "steer": {
         if (hasBufferedCompletions) {
           queueWhileIdle("steer");
-          return;
+          return "applied";
         }
         promptWhileIdle();
-        return;
+        return "applied";
       }
       case "followUp":
       case "prompt": {
         if (hasBufferedCompletions) {
           queueWhileIdle("followUp");
-          return;
+          return "applied";
         }
         promptWhileIdle();
-        return;
+        return "applied";
       }
       case "interrupt": {
         if (cancel) {
           cancelRun();
-          return;
+          return "applied";
         }
         if (hasBufferedCompletions) {
           queueWhileIdle("steer");
-          return;
+          return "applied";
         }
-        retainAppliedControl({ kind: "canonical" });
         settle(async () => {
+          // Earlier controls in this session may have held the queue until the run ended.
+          if (!target.isCurrent()) return target.dropEnded();
+          retainAppliedControl({ kind: "canonical" });
           await agent.interrupt(merged);
           notifyWaiters?.();
         });
-        return;
+        return "applied";
       }
       default: {
         const _exhaustive: never = entry.queue;
@@ -132,18 +147,18 @@ export async function applyToRunningAgent(
       const steeringId = agent.steer(merged);
       retainAppliedControl({ kind: "queued", inputId: steeringId });
       notifyWaiters?.();
-      return;
+      return "applied";
     }
     case "followUp": {
       const followUpId = agent.followUp(merged);
       retainAppliedControl({ kind: "queued", inputId: followUpId });
       notifyWaiters?.();
-      return;
+      return "applied";
     }
     case "interrupt": {
       if (cancel) {
         cancelRun();
-        return;
+        return "applied";
       }
       const steeringId = agent.steer(merged);
       retainAppliedControl({ kind: "queued", inputId: steeringId });
@@ -151,14 +166,14 @@ export async function applyToRunningAgent(
         await agent.interruptQueuedSteeringAsync();
         notifyWaiters?.();
       });
-      return;
+      return "applied";
     }
     case "prompt": {
       // Cannot prompt while streaming; treat as followUp.
       const followUpId = agent.followUp(merged);
       retainAppliedControl({ kind: "queued", inputId: followUpId });
       notifyWaiters?.();
-      return;
+      return "applied";
     }
     default: {
       const _exhaustive: never = entry.queue;
