@@ -5460,16 +5460,39 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
 
   listDiscoveryRecords(requestIds?: readonly string[]): TranscriptDiscoveryRecord[] {
     if (requestIds?.length === 0) return [];
-    const batches: Array<readonly string[] | undefined> = [];
-    if (requestIds) {
-      for (let offset = 0; offset < requestIds.length; offset += 200)
-        batches.push(requestIds.slice(offset, offset + 200));
-    } else {
-      batches.push(undefined);
+    if (!requestIds) return this.readDiscoveryRecords([{ where: "", params: [] }]);
+    const batches: Array<{ readonly where: string; readonly params: readonly string[] }> = [];
+    for (let offset = 0; offset < requestIds.length; offset += 200) {
+      const batch = requestIds.slice(offset, offset + 200);
+      batches.push({
+        where: `WHERE rt.request_id IN (${batch.map(() => "?").join(",")})`,
+        params: batch,
+      });
     }
+    return this.readDiscoveryRecords(batches);
+  }
+
+  /** Lists records for requests with a live output message in one surface channel. */
+  listDiscoveryRecordsInSurfaceChannel(input: {
+    readonly platform: AdapterPlatform;
+    readonly channelId: string;
+  }): TranscriptDiscoveryRecord[] {
+    return this.readDiscoveryRecords([
+      {
+        where: `WHERE rt.request_id IN (
+          SELECT request_id FROM surface_message_to_request
+          WHERE platform = ? AND channel_id = ? AND deleted_ts IS NULL
+        )`,
+        params: [input.platform, input.channelId],
+      },
+    ]);
+  }
+
+  private readDiscoveryRecords(
+    queries: ReadonlyArray<{ readonly where: string; readonly params: readonly string[] }>,
+  ): TranscriptDiscoveryRecord[] {
     const rows: PersistedDiscoveryRecordRow[] = [];
-    for (const batch of batches) {
-      const where = batch ? `WHERE rt.request_id IN (${batch.map(() => "?").join(",")})` : "";
+    for (const query of queries) {
       const selected = this.db
         .query<PersistedDiscoveryRecordRow, string[]>(
           `
@@ -5486,11 +5509,11 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
         FROM request_transcripts rt
         LEFT JOIN surface_message_to_request sm
           ON sm.request_id = rt.request_id AND sm.deleted_ts IS NULL
-        ${where}
+        ${query.where}
         ORDER BY rt.updated_ts DESC, rt.created_ts DESC, sm.created_ts ASC, sm.rowid ASC
         `,
         )
-        .all(...(batch ?? []));
+        .all(...query.params);
       for (const row of selected) rows.push(row);
     }
 

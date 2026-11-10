@@ -10,6 +10,7 @@ import {
 } from "../../../src/surface/native/search-external";
 import type {
   CoreStoredLineageManifestV2,
+  TranscriptDiscoveryRecord,
   TranscriptSnapshot,
   SqliteTranscriptStore,
 } from "../../../src/transcript/transcript-store";
@@ -42,6 +43,22 @@ function fixture(
   extraReplyIds: readonly string[] = [],
 ) {
   let reads = 0;
+  const listRecords = (): TranscriptDiscoveryRecord[] =>
+    snapshots.map((s) => ({
+      ...s,
+      surfaceRefs: [
+        {
+          platform: s.requestClient === "github" ? "github" : "discord",
+          channelId: s.sessionId,
+          messageId: `reply-${s.requestId}`,
+        },
+        ...extraReplyIds.map((messageId) => ({
+          platform: "discord" as const,
+          channelId: s.sessionId,
+          messageId,
+        })),
+      ],
+    }));
   const service = new NativeExternalThreads({
     getUser: (id) =>
       Result.ok({
@@ -94,22 +111,13 @@ function fixture(
       getCoreSurfaceProjection: () => Result.ok(null),
       getLatestCoreSurfaceSegment: () => Result.ok(null),
       ...projections,
-      listDiscoveryRecords: () =>
-        snapshots.map((s) => ({
-          ...s,
-          surfaceRefs: [
-            {
-              platform: s.requestClient === "github" ? "github" : "discord",
-              channelId: s.sessionId,
-              messageId: `reply-${s.requestId}`,
-            },
-            ...extraReplyIds.map((messageId) => ({
-              platform: "discord" as const,
-              channelId: s.sessionId,
-              messageId,
-            })),
-          ],
-        })),
+      listDiscoveryRecordsInSurfaceChannel: ({ platform, channelId }) =>
+        listRecords().filter((record) =>
+          record.surfaceRefs.some(
+            (ref) => ref.platform === platform && ref.channelId === channelId,
+          ),
+        ),
+      listDiscoveryRecords: () => listRecords(),
       getRequestTranscript: ({ requestId }) => {
         reads++;
         return Result.ok(snapshots.find((s) => s.requestId === requestId) ?? null);

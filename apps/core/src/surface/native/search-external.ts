@@ -79,6 +79,7 @@ type RetainedRun = {
 type ExternalTranscripts = Pick<
   SqliteTranscriptStore,
   | "listDiscoveryRecords"
+  | "listDiscoveryRecordsInSurfaceChannel"
   | "getRequestTranscript"
   | "getCorePrimaryLineageManifest"
   | "getCoreSurfaceProjection"
@@ -110,8 +111,22 @@ function owner(getUser: UserLookup, userId: string): ResultType<void, NativeStor
   );
 }
 function retainedRuns(transcripts: ExternalTranscripts): RetainedRun[] {
-  return transcripts
-    .listDiscoveryRecords()
+  return toRetainedRuns(transcripts.listDiscoveryRecords());
+}
+
+/** Reads only the runs whose output landed in one external channel. */
+function retainedRunsInChannel(
+  transcripts: ExternalTranscripts,
+  platform: ConversationReference["surface"],
+  channelId: string,
+): RetainedRun[] {
+  return toRetainedRuns(
+    transcripts.listDiscoveryRecordsInSurfaceChannel({ platform, channelId }),
+  ).filter((run) => run.platform === platform && run.channelId === channelId);
+}
+
+function toRetainedRuns(records: readonly TranscriptDiscoveryRecord[]): RetainedRun[] {
+  return records
     .flatMap((record) => {
       if (record.requestClient !== "discord" && record.requestClient !== "github") return [];
       const ref = record.surfaceRefs.find((ref) => ref.platform === record.requestClient);
@@ -638,12 +653,11 @@ export class NativeExternalThreads {
       if (!target.messageId) return Result.ok({});
       const position = this.params.history?.getMessagePosition(target.sessionId, target.messageId);
       if (position) return Result.ok({ conversationThreadId: position.threadId });
-      const run = retainedRuns(this.params.transcripts).find(
-        (run) =>
-          run.platform === target.surface &&
-          run.channelId === target.sessionId &&
-          run.record.surfaceRefs.some((ref) => ref.messageId === target.messageId),
-      );
+      const run = retainedRunsInChannel(
+        this.params.transcripts,
+        target.surface,
+        target.sessionId,
+      ).find((run) => run.record.surfaceRefs.some((ref) => ref.messageId === target.messageId));
       const origin =
         run && this.params.history ? cachedPosition(this.params.history, run.record) : null;
       return Result.ok(origin ? { conversationThreadId: origin.threadId } : {});
@@ -653,9 +667,11 @@ export class NativeExternalThreads {
   async describeReference(userId: string, target: ConversationReference) {
     return Result.gen(async function* () {
       const resolved = yield* this.resolveReference(userId, target);
-      const run = retainedRuns(this.params.transcripts).find(
-        (run) => run.platform === target.surface && run.channelId === target.sessionId,
-      );
+      const run = retainedRunsInChannel(
+        this.params.transcripts,
+        target.surface,
+        target.sessionId,
+      )[0];
       if (!run) return Result.err(nativeFailure("not-found", "Conversation is unavailable"));
       const display = this.display(run, await this.sessions());
       const sourceUrl =
@@ -723,9 +739,7 @@ export class NativeExternalThreads {
     return Result.gen(async function* () {
       yield* owner(this.params.getUser, userId);
       const ref = yield* parseExternalThreadId(input.threadId);
-      const runs = retainedRuns(this.params.transcripts).filter(
-        (run) => run.platform === ref.platform && run.channelId === ref.sessionId,
-      );
+      const runs = retainedRunsInChannel(this.params.transcripts, ref.platform, ref.sessionId);
       const newest = runs[0];
       if (!newest) return Result.err(nativeFailure("not-found", "Conversation is unavailable"));
       const cursor = input.cursor ? /^([a-f0-9]{64})_(\d+)$/.exec(input.cursor) : null;

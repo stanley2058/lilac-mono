@@ -628,6 +628,42 @@ describe("SqliteTranscriptStore", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
+  it("lists discovery records for one surface channel", async () => {
+    const store = new SqliteTranscriptStore(":memory:");
+    for (const [requestId, channelId] of [
+      ["in-channel", "chan-a"],
+      ["other-channel", "chan-b"],
+    ] as const) {
+      store.saveRequestTranscript({
+        requestId,
+        sessionId: channelId,
+        requestClient: "discord",
+        messages: [{ role: "assistant", content: requestId }],
+        finalText: requestId,
+      });
+      const ref = { platform: "discord", channelId, messageId: `${requestId}-out` } as const;
+      store.linkSurfaceMessagesToRequest({ requestId, created: [ref], last: ref });
+    }
+    const thread = { platform: "discord", channelId: "thread", messageId: "followup" } as const;
+    store.linkSurfaceMessagesToRequest({
+      requestId: "in-channel",
+      created: [thread],
+      last: thread,
+    });
+
+    const records = store.listDiscoveryRecordsInSurfaceChannel({
+      platform: "discord",
+      channelId: "chan-a",
+    });
+
+    expect(records.map((record) => record.requestId)).toEqual(["in-channel"]);
+    expect(records[0]?.surfaceRefs.map((ref) => ref.channelId)).toEqual(["chan-a", "thread"]);
+    expect(
+      store.listDiscoveryRecordsInSurfaceChannel({ platform: "github", channelId: "chan-a" }),
+    ).toEqual([]);
+    store.close();
+  });
+
   it("returns latest transcript by session", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcripts-"));
     const dbPath = path.join(dir, "transcripts.db");
