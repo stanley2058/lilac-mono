@@ -2380,7 +2380,7 @@ const INTEGRATED_OPAQUE_UNKNOWN = new Map<string, readonly ReasonedSymbolExcepti
       })),
       {
         identity: {
-          module: "src/runtime/create-core-runtime.ts",
+          module: "src/runtime/core-runtime-cleanup.ts",
           exportName: "createCoreRuntimeCleanupSupervisor.runOutcome",
         },
         reason:
@@ -5521,7 +5521,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "f7c9941c7188ffff956bae2253b3f130fa998f8165f2ae5e671cdcd284434424";
+  "3c23cbfcb110518f419eb5db8696b24d9a6aedc5c432a4a9c05492a0a00634e0";
 
 export const architectureManifest = {
   version: 1,

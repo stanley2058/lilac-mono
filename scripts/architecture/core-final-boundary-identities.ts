@@ -329,7 +329,7 @@ export const CORE_FINAL_BOUNDARY_IDENTITIES = [
     "createCoreRuntime.startCoreConfigWatcher.on.<callback@2>",
   ],
   ["src/runtime/create-core-runtime.ts", "createCoreRuntime.start.catch.<callback@1>"],
-  ["src/runtime/create-core-runtime.ts", "normalizeRouterDoneDefect"],
+  ["src/runtime/residual-discord-router.ts", "normalizeRouterDoneDefect"],
   ["src/tools/attachment.ts", "normalizeAttachmentAddFilesInput"],
   ["src/tools/attachment.ts", "attachmentTools.execute@2"],
   ["src/agent/core-named-continuation.ts", "hashCoreNamedExecutionScope"],
