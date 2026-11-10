@@ -161,6 +161,21 @@ function classifyTarget(target: string, ctx: RmContext): TargetClassification {
     return { kind: "temp_target" };
   }
 
+  if (!ctx.resolvedCwd && !target.startsWith("/")) {
+    return ["*", ".", "./", "..", "./*", "../*"].includes(target)
+      ? { kind: "cwd_self_target" }
+      : { kind: "unknown" };
+  }
+
+  if (
+    ctx.resolvedCwd &&
+    (!anchoredCwd || !isTargetWithinCwd(target, anchoredCwd, ctx.resolvedCwd)) &&
+    !target.includes("..") &&
+    isTempTarget(resolve(ctx.resolvedCwd, target), ctx.trustTmpdirVar)
+  ) {
+    return { kind: "temp_target" };
+  }
+
   if (anchoredCwd) {
     if (isCwdHomeForRmPolicy(anchoredCwd, ctx.homeDir)) {
       return { kind: "root_or_home_target" };
@@ -233,7 +248,7 @@ function isDangerousRootOrHomeTarget(path: string): boolean {
   return false;
 }
 
-function isTempTarget(path: string, allowTmpdirVar: boolean): boolean {
+export function isTempTarget(path: string, allowTmpdirVar: boolean): boolean {
   const normalized = path.trim();
 
   if (normalized.includes("..")) {

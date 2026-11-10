@@ -358,6 +358,8 @@ export function analyzeSegment(
 
   if (isFind) {
     const findResult = analyzeFind(stripped, {
+      cwd: commandEffectiveCwd ?? (commandEffectiveCwd === null ? null : options.cwd),
+      allowTmpdirVar,
       analyzeCommand: (command, cwdUnknown) =>
         analyzeSegment(
           command.map((token) => token.replaceAll("{}", DYNAMIC_EXPANSION_MARKER)),

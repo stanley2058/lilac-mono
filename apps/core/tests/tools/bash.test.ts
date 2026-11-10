@@ -2065,7 +2065,7 @@ done`;
   });
 
   it("propagates effective cwd into nested evaluators without leaking subshell cwd", () => {
-    const options = { cwd: "/tmp/lilac-project" };
+    const options = { cwd: "/workspace/lilac-project" };
     const commands = [
       "cd ..; bash -c 'rm -rf build'",
       "cd ..; sh -c 'rm -rf build'",
@@ -2082,22 +2082,24 @@ done`;
 
   it("distinguishes static and ambiguous cwd changes", () => {
     const options = { cwd: "/tmp/lilac-project" };
-    const allowed = ["cd /tmp/lilac-project/symlink; bash -c 'rm -rf build'"];
     const blocked = [
-      "cd -P ..; bash -c 'rm -rf build'",
+      "env -C .. rm -rf build",
+      "sudo -D .. rm -rf build",
       "cd ~; bash -c 'rm -rf build'",
+      "env -C .. bash -c 'rm -rf build'",
+      "env --chdir=.. sh -c 'rm -rf build'",
+      "sudo -D .. bash -c 'rm -rf build'",
+      "sudo --chdir .. sh -c 'rm -rf build'",
+    ];
+    const allowed = [
+      "cd /tmp/lilac-project/symlink; bash -c 'rm -rf build'",
+      "cd -P ..; bash -c 'rm -rf build'",
       "CDPATH=/tmp cd project; bash -c 'rm -rf build'",
       "pushd /tmp/lilac-project/other; sh -c 'rm -rf build'",
       "popd; eval 'rm -rf build'",
       'env -C "$target" rm -rf build',
       'sudo -D "$target" rm -rf build',
       "cd -- ..; bash -c 'rm -rf build'",
-      "env -C .. bash -c 'rm -rf build'",
-      "env --chdir=.. sh -c 'rm -rf build'",
-      "env -C .. rm -rf build",
-      "sudo -D .. bash -c 'rm -rf build'",
-      "sudo --chdir .. sh -c 'rm -rf build'",
-      "sudo -D .. rm -rf build",
     ];
 
     for (const command of allowed) {
@@ -2412,7 +2414,7 @@ done`;
   });
 
   it("uses the original cwd for the failure branch of cd", () => {
-    const options = { cwd: "/tmp/lilac-project" };
+    const options = { cwd: "/workspace/lilac-project" };
     expect(analyzeBashCommand("cd .. || rm -rf build", options)).toBeNull();
     expect(analyzeBashCommand("cd .. && rm -rf build", options)).not.toBeNull();
     expect(analyzeBashCommand("cd .. && false || rm -rf build", options)).not.toBeNull();
