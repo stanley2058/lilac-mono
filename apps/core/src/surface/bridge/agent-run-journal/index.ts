@@ -13,6 +13,7 @@ import { Result, TaggedError, type Result as ResultType } from "better-result";
 import SuperJSON from "superjson";
 import { z } from "zod";
 
+import { adaptToolResultToHost } from "../../../tools/tool-result-adapters";
 import type { RequestDeliveryTerminalOutcome } from "../request-delivery";
 
 import {
@@ -471,10 +472,8 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
           message: "Agent run journal schema migration failed",
         }),
     });
-    if (migrated.isErr()) {
-      this.#database.close();
-      throw migrated.error;
-    }
+    if (migrated.isErr()) this.#database.close();
+    adaptToolResultToHost(migrated);
   }
 
   close(): void {
