@@ -53,21 +53,27 @@ function parsePatchHeader(
   return filePath ? { kind: "update", filePath, movePath, nextIndex } : null;
 }
 
+// Precomputed so that skipping a blank separator stays linear in the number of blank lines.
+function followingContentLines(lines: readonly string[]): string[] {
+  const following = Array.from({ length: lines.length }, () => "");
+  let next = "";
+  for (let index = lines.length - 1; index >= 0; index--) {
+    following[index] = next;
+    if (lines[index]!.trim() !== "") next = lines[index]!;
+  }
+  return following;
+}
+
 function parseAddFileContent(
   lines: readonly string[],
+  following: readonly string[],
   startIndex: number,
 ): { contents: string; nextIndex: number } {
   let contents = "";
   let index = startIndex;
   while (index < lines.length && !lines[index]!.startsWith("***")) {
     const line = lines[index]!;
-    if (
-      line.trim() === "" &&
-      lines
-        .slice(index + 1)
-        .find((value) => value.trim() !== "")
-        ?.startsWith("***")
-    ) {
+    if (line.trim() === "" && following[index]!.startsWith("***")) {
       index++;
       continue;
     }
@@ -81,6 +87,7 @@ function parseAddFileContent(
 
 function parseUpdateChunks(
   lines: readonly string[],
+  following: readonly string[],
   startIndex: number,
 ): { chunks: UpdateFileChunk[]; nextIndex: number } {
   const chunks: UpdateFileChunk[] = [];
@@ -108,10 +115,8 @@ function parseUpdateChunks(
         index++;
         break;
       }
-      if (
-        line.trim() === "" &&
-        /^(?:@@|\*\*\*)/.test(lines.slice(index + 1).find((value) => value.trim() !== "") ?? "")
-      ) {
+      // Only a truly empty line can be a separator; " " is an empty context line.
+      if (line === "" && /^(?:@@|\*\*\*)/.test(following[index]!)) {
         index++;
         continue;
       }
@@ -151,6 +156,7 @@ export function parsePatchResult(patchText: string): ResultType<PatchHunk[], Pat
     );
   }
 
+  const following = followingContentLines(lines);
   const hunks: PatchHunk[] = [];
   let index = begin + 1;
   while (index < end) {
@@ -161,7 +167,7 @@ export function parsePatchResult(patchText: string): ResultType<PatchHunk[], Pat
     }
 
     if (header.kind === "add") {
-      const parsed = parseAddFileContent(lines, header.nextIndex);
+      const parsed = parseAddFileContent(lines, following, header.nextIndex);
       if (parsed.nextIndex === lines.length)
         return Result.err(new PatchRejected({ message: "Invalid add line: expected + prefix" }));
       hunks.push({ type: "add", path: header.filePath, contents: parsed.contents });
@@ -173,7 +179,7 @@ export function parsePatchResult(patchText: string): ResultType<PatchHunk[], Pat
       index = header.nextIndex;
       continue;
     }
-    const parsed = parseUpdateChunks(lines, header.nextIndex);
+    const parsed = parseUpdateChunks(lines, following, header.nextIndex);
     if (parsed.chunks.length === 0)
       return Result.err(
         new PatchRejected({ message: "Invalid update chunk: expected prefixed lines" }),

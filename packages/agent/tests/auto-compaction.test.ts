@@ -2435,6 +2435,40 @@ it("compaction reserves system and tool tokens and summarizes an oversized answe
   }
 });
 
+it("sizes the retained tail after reserving system prompt tokens", async () => {
+  let status = "";
+  const agent = new AiSdkPiAgent({
+    system: "system instructions ".repeat(1_500),
+    model: new MockLanguageModelV4({ doStream: async () => summaryResponse("answer") }),
+    modelSpecifier: "test/main",
+    messages: [
+      { role: "user", content: "old ".repeat(6_000) },
+      { role: "assistant", content: "old answer" },
+      { role: "user", content: `MIDDLE_TURN ${"mid ".repeat(2_000)}` },
+      { role: "assistant", content: "middle answer" },
+    ],
+  });
+  const detach = await attachAutoCompaction(agent, {
+    model: "test/main",
+    modelCapability: new ModelCapability({ fetch: createRegistryFetch({}) }),
+    thresholdInputSource: "transcript-estimate",
+    keepRecentTurns: 3,
+    keepRecentTokens: 100_000,
+    resolveContextLimit: async () => ({ context: 16_000, output: 1_000 }),
+    summaryModel: new MockLanguageModelV4({ doStream: async () => summaryResponse("summary") }),
+    onCompactionEnd: (event) => {
+      status = event.status;
+    },
+  });
+  try {
+    await agent.prompt("current");
+  } finally {
+    detach();
+  }
+  expect(status).toBe("completed");
+  expect(JSON.stringify(agent.state.messages)).not.toContain("MIDDLE_TURN");
+});
+
 it("rejects a failed transcript replacement before reporting compaction success", async () => {
   const agent = new AiSdkPiAgent({
     system: "test",

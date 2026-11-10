@@ -1829,7 +1829,7 @@ export class FileSystem {
             );
           }
 
-          if (matching === "exact" && target === newText) {
+          if (matching === "exact" && target === newText.replace(/\r\n/g, "\n")) {
             return this.editOperationFailure(
               resolvedPath,
               oldHash,

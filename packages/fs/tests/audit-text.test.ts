@@ -130,6 +130,25 @@ for (const [name, content, target, newText, expected] of [
     }
   });
 }
+test("rejects a CRLF snippet edit whose newText equals its target", async () => {
+  const root = await mkdtemp(join(tmpdir(), "review-noop-"));
+  try {
+    const file = join(root, "a");
+    await writeFile(file, "a\r\nb\r\n");
+    const fs = new FileSystem(root);
+    const read = await fs.readFile({ path: file });
+    if (!read.success) throw new Error("fixture read failed");
+    expect(
+      await fs.editFile({
+        path: file,
+        expectedHash: read.fileHash,
+        edits: [{ type: "replace_snippet", target: "a\r\nb", newText: "a\r\nb" }],
+      }),
+    ).toMatchObject({ success: false });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 test("hashline preserves each mixed terminator", () => {
   expect(
     applyHashlineEdits({
