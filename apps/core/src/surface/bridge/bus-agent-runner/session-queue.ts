@@ -255,6 +255,8 @@ export type SessionQueue = {
     retainedRequestDeliveries: Map<string, RequestDeliveryTerminalOutcome>;
     checkpointedRetainedRequestDeliveryIds: Set<string>;
     retainedRequestDeliveryByInputId: Map<AgentInputQueueId, string>;
+    /** Controls applied as queued agent input, rerun as the next prompt if the run never takes them. */
+    queuedControlEntries: Map<AgentInputQueueId, Enqueued>;
     journalHandle: AgentRunJournalHandle | null;
     nativeOutput: NativeOutputPublisher | undefined;
     checkpointWriter: {

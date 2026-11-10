@@ -910,6 +910,121 @@ describe("session queue admission", () => {
       await bus.close();
     }
   });
+  it("runs a steer that its run ended without consuming as the next prompt", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const sessionId = "unconsumed-steer";
+    const requestId = "github:unconsumed-steer:request";
+    const first = acceptedRunnerDelivery({
+      requestDeliveryId: crypto.randomUUID(),
+      requestId,
+      sessionId,
+      queue: "prompt",
+      messages: [{ role: "user", content: "first request" }],
+    });
+    const steer = acceptedRunnerDelivery({
+      requestDeliveryId: crypto.randomUUID(),
+      requestId,
+      sessionId,
+      queue: "steer",
+      messages: [{ role: "user", content: "late steer" }],
+    });
+    const accepted = new Map([
+      [first.requestDeliveryId, first],
+      [steer.requestDeliveryId, steer],
+    ]);
+    const terminalized: Array<{ requestDeliveryId: string; kind: string; code?: string }> = [];
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const secondPrompt = deferred<string>();
+    let modelCalls = 0;
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "unconsumed-steer",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      requestDelivery: {
+        handleDelivery: async (requestDeliveryId: string) =>
+          Result.ok({
+            disposition: "accepted",
+            record: accepted.get(requestDeliveryId),
+            source: "new",
+          }),
+        replaceAcceptedWork: () => {
+          throw new Error("replaceAcceptedWork is not used by steering");
+        },
+        terminalize: async (input: {
+          requestDeliveryId: string;
+          outcome: { kind: string; code?: string };
+        }) => {
+          terminalized.push({
+            requestDeliveryId: input.requestDeliveryId,
+            kind: input.outcome.kind,
+            code: input.outcome.code,
+          });
+          return Result.ok(undefined);
+        },
+      } as unknown as BusAgentRunnerRequestDelivery,
+      issueControlCapability: () => ({ capability: "unconsumed-steer", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "unconsumed-steer",
+            doStream: async ({ prompt }) => {
+              modelCalls += 1;
+              if (modelCalls === 1) {
+                firstStarted.resolve(undefined);
+                await releaseFirst.promise;
+                throw new Error("provider rejected the request");
+              }
+              secondPrompt.resolve(JSON.stringify(prompt));
+              return level1TextStep("steer handled");
+            },
+          }),
+        }),
+    });
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestDeliveryId: first.requestDeliveryId,
+        requestId,
+        sessionId,
+        text: "first request",
+      });
+      await firstStarted.promise;
+      await publishRunnerRequest({
+        bus,
+        requestDeliveryId: steer.requestDeliveryId,
+        requestId,
+        sessionId,
+        queue: "steer",
+        text: "late steer",
+      });
+      releaseFirst.resolve(undefined);
+
+      await expect(secondPrompt.promise).resolves.toContain("late steer");
+      // The steer's delivery stays accepted until the run that applies it ends.
+      expect(terminalized.map(({ requestDeliveryId }) => requestDeliveryId)).toEqual([
+        first.requestDeliveryId,
+      ]);
+      await runner.waitForIdle();
+      expect(modelCalls).toBe(2);
+      // It ends as its own run's delivery, not as input the failed run applied.
+      expect(terminalized).toEqual([
+        { requestDeliveryId: first.requestDeliveryId, kind: "failed", code: undefined },
+        { requestDeliveryId: steer.requestDeliveryId, kind: "completed", code: undefined },
+      ]);
+    } finally {
+      releaseFirst.resolve(undefined);
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
   it("returns from an interrupt delivery before the agent settles", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const pluginManager = corePrimaryTestPluginManager();
