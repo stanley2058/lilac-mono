@@ -435,6 +435,31 @@ type DecodedSchemaVersion = {
   readonly provenance: "current" | "migrated";
 };
 
+const transcriptRowSchema = z.object({
+  request_id: z.string().min(1),
+  session_id: z.string().min(1),
+  request_client: adapterPlatformSchema,
+  created_ts: nonNegativeIntegerSchema,
+  updated_ts: nonNegativeIntegerSchema,
+  model_label: z.string().nullable(),
+  final_text: z.string().nullable(),
+  messages_json: z.string(),
+  context_meta_json: z.string().nullable(),
+  provider_state_json: z.string().nullable(),
+  stable_named_request_client: adapterPlatformSchema.nullable(),
+  transcript_digest: z.string().nullable(),
+  loaded_catalog_ids_json: z.string().nullable(),
+});
+const coreSurfaceProjectionRowSchema = z.object({
+  request_client: adapterPlatformSchema,
+  surface_id: z.string().min(1),
+  session_id: z.string().min(1),
+  message_id: z.string().min(1),
+  projection_format_version: z.literal(CORE_SURFACE_PROJECTION_FORMAT_VERSION),
+  canonical_messages_json: z.string(),
+  source_facts_json: z.string(),
+  created_ts: nonNegativeIntegerSchema,
+});
 const transcriptMigrationVersionRowSchema = z.strictObject({
   version: nonNegativeIntegerSchema,
 });
@@ -1692,23 +1717,7 @@ export function decodeTranscriptRow(
   return adaptTranscriptPersistenceDecodeResult(
     Result.gen(function* () {
       const version = yield* decodeSchemaVersion(input.schemaVersion, TRANSCRIPT_TABLE, recordId);
-      const rowSchema = z
-        .object({
-          request_id: z.string().min(1),
-          session_id: z.string().min(1),
-          request_client: adapterPlatformSchema,
-          created_ts: nonNegativeIntegerSchema,
-          updated_ts: nonNegativeIntegerSchema,
-          model_label: z.string().nullable(),
-          final_text: z.string().nullable(),
-          messages_json: z.string(),
-          context_meta_json: z.string().nullable(),
-          provider_state_json: z.string().nullable(),
-          stable_named_request_client: adapterPlatformSchema.nullable(),
-          transcript_digest: z.string().nullable(),
-          loaded_catalog_ids_json: z.string().nullable(),
-        })
-        .safeParse(input.row);
+      const rowSchema = transcriptRowSchema.safeParse(input.row);
       if (!rowSchema.success) {
         return Result.err(
           corrupt({
@@ -1831,18 +1840,7 @@ export function decodeCoreSurfaceProjectionRow(input: {
         });
       const recordId = `${input.row.request_client}:${input.row.surface_id}:${input.row.session_id}:${input.row.message_id}`;
       const version = yield* decodeSchemaVersion(input.schemaVersion, PROJECTION_TABLE, recordId);
-      const row = z
-        .object({
-          request_client: adapterPlatformSchema,
-          surface_id: z.string().min(1),
-          session_id: z.string().min(1),
-          message_id: z.string().min(1),
-          projection_format_version: z.literal(CORE_SURFACE_PROJECTION_FORMAT_VERSION),
-          canonical_messages_json: z.string(),
-          source_facts_json: z.string(),
-          created_ts: nonNegativeIntegerSchema,
-        })
-        .safeParse(input.row);
+      const row = coreSurfaceProjectionRowSchema.safeParse(input.row);
       if (!row.success) {
         return Result.err(
           corrupt({
