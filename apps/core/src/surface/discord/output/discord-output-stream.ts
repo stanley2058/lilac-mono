@@ -29,6 +29,7 @@ import type {
   SurfaceToolStatusUpdate,
 } from "../../adapter";
 import {
+  SurfaceMessageNotFound,
   SurfacePlatformMismatch,
   SurfaceOperationPartiallyCompleted,
   SurfaceUnavailable,
@@ -48,7 +49,12 @@ import type { MarkdownTableRenderOptions } from "../../../shared/markdown-table-
 
 // Attachments are buffered during streaming and finalized on the terminal message.
 
-import { getEmbedPusherConstants, startEmbedPusher } from "./embed-pusher";
+import {
+  DiscordEmbedEditFailed,
+  getEmbedPusherConstants,
+  startEmbedPusher,
+  type EmbedEditOutcome,
+} from "./embed-pusher";
 import { chunkMarkdownForEmbeds } from "./markdown-chunker";
 import { normalizeDiscordBlockquotes } from "./discord-markdown-normalize";
 import {
@@ -157,6 +163,11 @@ async function captureDiscordOutputOperation<T>(
             new SurfaceUnavailable({ platform: "discord", operation, message: cause.message }),
           ),
         };
+      }
+      if (cause instanceof DiscordEmbedEditFailed) {
+        const classified = classifyDiscordSurfaceError(operation, cause.cause, cause.message);
+        if (classified) return { kind: "result", result: Result.err(classified) };
+        return { kind: "failure", cause };
       }
       if (cause instanceof DiscordOutputInvariantViolation) {
         return {
@@ -622,17 +633,28 @@ function toDiscordFiles(attachments: readonly SurfaceAttachment[]): MessageCreat
   }));
 }
 
+async function editMessage(
+  msg: Message,
+  options: Parameters<Message["edit"]>[0],
+): Promise<EmbedEditOutcome> {
+  const edited = await Result.tryPromise({
+    try: () => msg.edit(options),
+    catch: captureDiscordSurfaceError,
+  });
+  return edited.match<EmbedEditOutcome>({
+    ok: () => ({ kind: "edited" }),
+    err: (cause) => {
+      if (Panic.is(cause)) return adaptDiscordOutputResultToHost(Result.err(cause));
+      if (classifyDiscordSurfaceError("edit-message", cause) instanceof SurfaceMessageNotFound) {
+        return { kind: "not-found" };
+      }
+      return { kind: "failed", cause };
+    },
+  });
+}
+
 async function safeEdit(msg: Message, options: Parameters<Message["edit"]>[0]): Promise<boolean> {
-  const edited = settleSurfaceFallback(
-    await Result.tryPromise({
-      try: () => msg.edit(options),
-      catch: (cause) =>
-        Panic.is(cause)
-          ? { kind: "panic", panic: cause, fallback: false }
-          : { kind: "fallback", fallback: false },
-    }),
-  );
-  return edited.match({ ok: () => true, err: () => false });
+  return (await editMessage(msg, options)).kind === "edited";
 }
 
 function adaptDiscordOutputResultToHost<T, E>(result: ResultType<T, E>): T {
@@ -1142,7 +1164,7 @@ export class DiscordOutputStream implements SurfaceOutputStream {
         getMaxLength,
         streamDone: this.done.promise,
         useSmartSplitting: this.deps.useSmartSplitting,
-        safeEdit,
+        editMessage,
         getFirstMessageEditExtras: (isStreaming) => ({
           components: isStreaming ? buildCancelComponents(true) : [],
         }),

@@ -1274,9 +1274,35 @@ describe("output operation failures", () => {
     });
 
     await out.push({ type: "text.delta", delta: "hello" });
-    await expect(out.finish()).rejects.toMatchObject({
-      _tag: "DiscordEmbedPusherInvariant",
+    const result = await out.finish();
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected finish failure");
+    expect(result.error).toMatchObject({
+      _tag: "SurfaceOperationPartiallyCompleted",
+      operation: "finish-output",
     });
+  });
+
+  it("continues streaming in a fresh message when the edited message was deleted", async () => {
+    const { client, createdMessageIds, operations } = createFakeDiscordClient({
+      editFailure: { code: 10_008, status: 404 },
+    });
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "inline",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "hello" });
+    const result = resultValue(await out.finish());
+
+    expect(createdMessageIds.length).toBeGreaterThan(1);
+    expect(result.last.messageId).toBe(createdMessageIds.at(-1)!);
+    const last = operations.filter((op) => op.messageId === result.last.messageId).at(-1);
+    expect(embedDescriptionsFromOptions(last?.options)).toEqual(["hello"]);
   });
 
   it("keeps the preview when the final reply fails", async () => {
