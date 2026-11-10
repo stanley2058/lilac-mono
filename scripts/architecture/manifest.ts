@@ -3905,6 +3905,8 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             "decodeDraft",
             "decodeDraftRow",
             "localDraftId",
+            "decodeStoredBytes",
+            "decodeThreadUsage",
           ].map((exportName) => ({
             identity: { module: "src/cache.ts", exportName },
             category: "persistence" as const,

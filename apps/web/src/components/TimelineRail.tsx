@@ -122,11 +122,20 @@ async function refreshNewestOutlinePage(
   signal: AbortSignal,
 ) {
   const queryKey = ["thread-outline", threadId, generation];
-  const fresh = await Result.tryPromise(() => source.page(undefined, signal));
-  if (fresh.isErr() || signal.aborted) return;
-  queries.setQueryData<InfiniteData<ThreadOutline, number | undefined>>(queryKey, (current) =>
-    current ? { ...current, pages: spliceNewestOutlinePage(current.pages, fresh.value) } : current,
-  );
+  const fresh = await Result.tryPromise({
+    try: () => source.page(undefined, signal),
+    catch: () => "The outline did not load",
+  });
+  fresh.match({
+    ok: (page) => {
+      if (signal.aborted) return;
+      queries.setQueryData<InfiniteData<ThreadOutline, number | undefined>>(queryKey, (current) =>
+        current ? { ...current, pages: spliceNewestOutlinePage(current.pages, page) } : current,
+      );
+    },
+    // The next turn change refreshes the rail again.
+    err: () => {},
+  });
 }
 
 function previewOptions(

@@ -163,7 +163,7 @@ function slotKey(key: string, slotId: string): string {
   return JSON.stringify([key, slotId]);
 }
 const draftKeySchema = z.tuple([z.string(), z.string()]);
-function draftThreadId(key: string, scopeKey: string): string | undefined {
+function localDraftId(key: string, scopeKey: string): string | undefined {
   const decoded = Result.try({ try: () => JSON.parse(key), catch: () => undefined });
   const value = decoded.match({ ok: (value) => value, err: () => undefined });
   const parsed = draftKeySchema.safeParse(value);
@@ -189,19 +189,21 @@ function trimScope<T>(map: Map<string, T>, scopeKey: string, limit: number): voi
   const keys = [...map.keys()].filter((key) => key.startsWith(prefix));
   for (const key of keys.slice(0, Math.max(0, keys.length - limit))) map.delete(key);
 }
+// Writes need only these fields; the non-strict schemas skip the slot and checkpoint they sit beside.
+const storedBytesSchema = z.object({ bytes: revisionSchema });
+const threadUsageSchema = z.object({
+  key: z.string(),
+  updatedAt: revisionSchema,
+  bytes: revisionSchema,
+});
 /** Reads a stored row's byte count without decoding the slot it describes. */
-function storedBytes(value: unknown): number | undefined {
-  if (typeof value !== "object" || value === null || !("bytes" in value)) return undefined;
-  return typeof value.bytes === "number" && Number.isFinite(value.bytes) ? value.bytes : undefined;
+function decodeStoredBytes(value: unknown): number | undefined {
+  const parsed = storedBytesSchema.safeParse(value);
+  return parsed.success ? parsed.data.bytes : undefined;
 }
-type ThreadUsage = { key: string; updatedAt: number; bytes: number };
-function threadUsage(value: unknown): ThreadUsage | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const { key, updatedAt } = value as { key?: unknown; updatedAt?: unknown };
-  const bytes = storedBytes(value);
-  if (typeof key !== "string" || typeof updatedAt !== "number" || bytes === undefined)
-    return undefined;
-  return { key, updatedAt, bytes };
+function decodeThreadUsage(value: unknown): z.infer<typeof threadUsageSchema> | undefined {
+  const parsed = threadUsageSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 /** Folds a later patch into one still waiting to be written, as if both were applied in order. */
 export function mergeCachePatches(first: CachePatch, next: CachePatch): CachePatch {
@@ -430,14 +432,12 @@ export class WebNativeCache implements NativeCache {
     threadId: string,
     patch: CachePatch,
   ): Promise<void> {
-    const running = this.writeThread(scope, threadId, patch).finally(() => {
+    // Failed writes disable the cache inside writeThread, so this chain only resolves.
+    const running = this.writeThread(scope, threadId, patch).then(() => {
       const next = this.threadWrites.get(key)?.queued;
       this.threadWrites.delete(key);
       if (!next) return;
-      this.startWrite(key, next.scope, next.threadId, next.patch).then(
-        next.settled.resolve,
-        next.settled.reject,
-      );
+      void this.startWrite(key, next.scope, next.threadId, next.patch).then(next.settled.resolve);
     });
     this.threadWrites.set(key, { running });
     return running;
@@ -466,7 +466,7 @@ export class WebNativeCache implements NativeCache {
       const done = completed(tx);
       const threads = tx.objectStore("threads");
       const slots = tx.objectStore("slots");
-      const previous = threadUsage(await idbRequest(threads.get(key)));
+      const previous = decodeThreadUsage(await idbRequest(threads.get(key)));
       if (!previous && !patch.replace) {
         await assertCommitted(done);
         return 0;
@@ -476,7 +476,7 @@ export class WebNativeCache implements NativeCache {
       for (const id of new Set([...patch.remove, ...patch.put.map((value) => value.slot.slotId)])) {
         const old = patch.replace
           ? undefined
-          : storedBytes(await idbRequest(slots.get(slotKey(key, id))));
+          : decodeStoredBytes(await idbRequest(slots.get(slotKey(key, id))));
         if (old !== undefined) total -= old;
         slots.delete(slotKey(key, id));
       }
@@ -495,7 +495,7 @@ export class WebNativeCache implements NativeCache {
       const all = await idbRequest(threads.getAll());
       const metadata = Array.isArray(all)
         ? all
-            .map(threadUsage)
+            .map(decodeThreadUsage)
             .filter((row) => row !== undefined)
             .sort((a, b) => a.updatedAt - b.updatedAt)
         : [];
@@ -769,15 +769,15 @@ export class WebNativeCache implements NativeCache {
     const drafts = new Map<string, WebDraft>();
     if (epoch !== this.epoch) return drafts;
     for (const row of rows ?? []) {
-      const threadId = draftThreadId(row.key, scopeKey);
+      const threadId = localDraftId(row.key, scopeKey);
       if (threadId) drafts.set(threadId, decodeDraft(row));
     }
     for (const [key, draft] of this.drafts) {
-      const threadId = draftThreadId(key, scopeKey);
+      const threadId = localDraftId(key, scopeKey);
       if (threadId) drafts.set(threadId, draft);
     }
     for (const [key, pending] of this.pendingDrafts) {
-      const threadId = draftThreadId(key, scopeKey);
+      const threadId = localDraftId(key, scopeKey);
       if (threadId) drafts.set(threadId, pending.value);
     }
     for (const [threadId, draft] of drafts)

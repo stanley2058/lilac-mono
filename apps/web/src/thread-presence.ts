@@ -20,7 +20,12 @@ export function createThreadPresence(client: Pick<NativeClient, "rpc" | "subscri
       try: () => rpc.notifications.presence({ clientId, threadId }),
       catch: () => "Presence unavailable",
     });
-    if (result.isErr() && reported === sent) reported = undefined;
+    result.match({
+      ok: () => {},
+      err: () => {
+        if (reported === sent) reported = undefined;
+      },
+    });
   }
 
   /** Settles once the report, if one was needed, has finished. */
