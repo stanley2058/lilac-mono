@@ -124,7 +124,7 @@ test("a rejected subscription leaves background push off and exposes the failure
 });
 
 test("iOS without PushManager explains Home Screen installation", () => {
-  using f = fixture();
+  using _f = fixture();
   Object.defineProperty(globalThis, "window", {
     configurable: true,
     value: { isSecureContext: true },

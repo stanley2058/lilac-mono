@@ -7,7 +7,6 @@ import { useEventCallback } from "../use-event-callback";
 import { Result } from "better-result";
 import { useOptionalWorkspace } from "../workspace-context";
 import "./composer-rich.css";
-import { Button } from "./ui/button";
 import {
   memo,
   lazy,
