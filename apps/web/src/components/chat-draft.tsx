@@ -1,5 +1,6 @@
 import { useStore } from "zustand";
 import { useQuery } from "@tanstack/react-query";
+import type { DraftThread } from "../draft-thread";
 import { composerDraftOptions } from "../queries";
 import { useWorkspace } from "../workspace-context";
 import { Composer, type ComposerProps } from "./Composer";
@@ -22,6 +23,18 @@ export const summarizeDraft = ({ text, ...draft }: Draft): DraftSummary => ({
 export const emptySummary = summarizeDraft(emptyDraft);
 
 export const draftText = (draft: Draft) => draft.text;
+
+/**
+ * A local conversation without its draft. Typing replaces the draft on every keystroke, so a
+ * shallow-compared selector over this keeps the conversation from rerendering.
+ */
+export const localThreadSettings = (thread: DraftThread | undefined) => {
+  if (!thread) return undefined;
+  const { draft: _draft, ...settings } = thread;
+  return settings;
+};
+export const localDraftSummary = (thread: DraftThread | undefined) =>
+  thread && summarizeDraft(thread.draft);
 
 export type DraftTextSource = {
   local: boolean;

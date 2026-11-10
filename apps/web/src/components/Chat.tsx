@@ -7,6 +7,7 @@ import { rewindDraft } from "../rewind-draft";
 import type { OptimisticTurn } from "../optimistic-turns";
 import { useEventCallback } from "../use-event-callback";
 import { useStore } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { draftAttachment, releaseDraftAttachments, type DraftThread } from "../draft-thread";
 import type { ActorIdentity } from "./ActorAvatar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -86,7 +87,15 @@ import { attempt, Modal } from "./ui";
 import { toast } from "./ui/toast";
 import { isConnectionFailure } from "../connection-lifecycle";
 import { UploadProgressContext } from "../upload-context";
-import { type Draft, emptyDraft, summarizeDraft, emptySummary, DraftComposer } from "./chat-draft";
+import {
+  type Draft,
+  emptyDraft,
+  summarizeDraft,
+  emptySummary,
+  DraftComposer,
+  localDraftSummary,
+  localThreadSettings,
+} from "./chat-draft";
 export type { PendingInput } from "../pending-input";
 export type { Draft } from "./chat-draft";
 
@@ -126,7 +135,14 @@ export function Chat(props: ChatProps) {
   } = useWorkspace();
   const { thread, threadId } = props;
   const local = threadId.startsWith("draft:");
-  const localThread = useStore(draftStore, (state) => state.localDrafts.get(threadId));
+  const localThread = useStore(
+    draftStore,
+    useShallow((state) => localThreadSettings(state.localDrafts.get(threadId))),
+  );
+  const localDraft = useStore(
+    draftStore,
+    useShallow((state) => localDraftSummary(state.localDrafts.get(threadId))),
+  );
   const editable = local ? !!localThread : !!thread?.capabilities.edit;
   const queries = useQueryClient();
   const identity = useContext(MessageIdentityContext);
@@ -194,7 +210,7 @@ export function Chat(props: ChatProps) {
     enabled: !local,
     select: summarizeDraft,
   });
-  const draft = localThread ? summarizeDraft(localThread.draft) : (draftQuery.data ?? emptySummary);
+  const draft = localDraft ?? draftQuery.data ?? emptySummary;
   const draftLoaded = local ? !!localThread : !draftQuery.isPending;
   const draftSource = { local, threadId, options: draftOptions, initialData: draftInitialData };
   const [view, setView] = useState<{

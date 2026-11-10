@@ -313,7 +313,7 @@ describe("cache and catalog", () => {
   test("atomic patches retain unresolved slots on a current checkpoint", async () => {
     const cache = new MemoryNativeCache();
     const store = new NativeThreadStore();
-    const writes: Promise<void>[] = [];
+    const writes: Promise<unknown>[] = [];
     store.subscribe(({ patch }) => {
       if (patch) writes.push(cache.commit(scope, "thread", patch));
     });

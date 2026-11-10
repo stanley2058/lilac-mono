@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { IDBDatabase, IDBFactory, IDBIndex, IDBObjectStore, IDBTransaction } from "fake-indexeddb";
-import type { CachePatch, CacheScope } from "@stanley2058/lilac-client";
+import { NativeClient, type CachePatch, type CacheScope } from "@stanley2058/lilac-client";
 import type { BootstrapReply } from "@stanley2058/lilac-client-protocol";
 import { mergeCachePatches, WebNativeCache } from "../src/cache";
 
@@ -128,11 +128,49 @@ describe("WebNativeCache", () => {
     const first = cache(factory, { maxThreads: 1 });
     await first.commit(scope, "one", patch());
     await first.commit(scope, "two", patch());
-    await first.commit(scope, "one", patch(2));
+    expect(await first.commit(scope, "one", patch(2))).toBe("missing");
     first.close();
     const second = cache(factory, { maxThreads: 1 });
     expect(await second.read(scope, "one")).toBeUndefined();
     expect(await second.read(scope, "two")).toBeDefined();
+  });
+
+  test("a thread evicted from IndexedDB caches again on its next update", async () => {
+    const factory = new IDBFactory();
+    const first = cache(factory, { maxThreads: 1 });
+    const client = new NativeClient({
+      scope,
+      cache: first,
+      openSocket: () => new WebSocket("ws://unused.invalid"),
+      bootstrap: async () => bootstrap,
+    });
+    const one = client.thread("one");
+    one.replay({ kind: "window", checkpoint: patch().checkpoint, slots: [patch().put[0]!.slot] });
+    await client.loadCached("one");
+    const two = client.thread("two");
+    two.replay({ kind: "window", checkpoint: patch().checkpoint, slots: [patch().put[0]!.slot] });
+    await client.loadCached("two");
+    one.update({
+      checkpoint: patch(2).checkpoint,
+      changes: [
+        {
+          kind: "append-text",
+          turnId: "turn",
+          position: 1,
+          messageId: "msg",
+          partIndex: 0,
+          text: " again",
+        },
+      ],
+    });
+    await client.loadCached("one");
+    await client.dispose();
+    first.close();
+    const reopened = await cache(factory, { maxThreads: 1 }).read(scope, "one");
+    expect(reopened?.checkpoint.projectionRevision).toBe(2);
+    expect(reopened?.slots[0]?.slot).toMatchObject({
+      messages: [{ parts: [{ text: "hello again" }] }],
+    });
   });
 
   test("unsupported IndexedDB uses isolated memory cache", async () => {

@@ -28,7 +28,8 @@ export function seedNativeWorkflowRun(
   },
 ) {
   const resources = normalizeWorkflowResourcePolicy({
-    agents: { maxConcurrent: 2, maxTotal: 4 },
+    // Seeding stops at the run's agent cap, so the cap covers every seeded step.
+    agents: { maxConcurrent: 2, maxTotal: Math.max(4, options.total ?? 0) },
     maxNestingDepth: 4,
     operationIdleTimeoutMs: 10000,
     waits: [],
