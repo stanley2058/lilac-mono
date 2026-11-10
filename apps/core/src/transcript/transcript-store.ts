@@ -1127,6 +1127,19 @@ export type TranscriptStore = {
     messageId: string;
   }): ResultType<TranscriptSnapshot | null, TranscriptStoreReadError>;
 
+  /**
+   * Reads only the final text of the transcript linked to a surface message. Returns null when no
+   * transcript for that request client and session is linked; `finalText` is null when the
+   * transcript has none.
+   */
+  getSurfaceMessageFinalText?(input: {
+    platform: AdapterPlatform;
+    channelId: string;
+    messageId: string;
+    requestClient: AdapterPlatform;
+    sessionId: string;
+  }): ResultType<{ readonly finalText: string | null } | null, TranscriptStoreReadError>;
+
   unlinkSurfaceMessage?(input: {
     platform: AdapterPlatform;
     channelId: string;
@@ -4343,6 +4356,37 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
         .get(mapRow.request_id);
     });
     return this.finalizeTranscriptRead(read);
+  }
+
+  getSurfaceMessageFinalText(input: {
+    platform: AdapterPlatform;
+    channelId: string;
+    messageId: string;
+    requestClient: AdapterPlatform;
+    sessionId: string;
+  }): ResultType<{ readonly finalText: string | null } | null, TranscriptStoreReadError> {
+    return this.readFromSqlite("get-surface-message-final-text", () => {
+      const row = this.db
+        .query<
+          { final_text: string | null },
+          [AdapterPlatform, string, string, AdapterPlatform, string]
+        >(
+          `SELECT t.final_text
+           FROM surface_message_to_request m
+           JOIN request_transcripts t ON t.request_id = m.request_id
+           WHERE m.platform = ? AND m.channel_id = ? AND m.message_id = ?
+             AND t.request_client = ? AND t.session_id = ?`,
+        )
+        .get(
+          input.platform,
+          input.channelId,
+          input.messageId,
+          input.requestClient,
+          input.sessionId,
+        );
+      if (!row) return null;
+      return { finalText: typeof row.final_text === "string" ? row.final_text : null };
+    });
   }
 
   getLatestTranscriptBySession(input: {

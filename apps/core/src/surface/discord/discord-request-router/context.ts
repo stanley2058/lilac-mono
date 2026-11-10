@@ -1,7 +1,10 @@
 import type { SurfaceAdapter } from "../../adapter";
 import type { MsgRef, SurfaceMessage } from "../../types";
 import type { TranscriptStore } from "../../../transcript/transcript-store";
-import { buildAssistantOnlyMessageFromTranscript } from "../../bridge/request-composition/normalization";
+import {
+  buildAssistantOnlyMessageFromTranscript,
+  normalizeAssistantContextText,
+} from "../../bridge/request-composition/normalization";
 import type { DiscordMessageCacheAccess } from "../../store/discord-search-store";
 
 import { compareMessagePosition, normalizeGateText } from "./common";
@@ -67,23 +70,12 @@ export async function resolveRepliedToMessageText(params: {
   });
   if (cached && !cached.deleted) return normalizeGateText(cached.text);
 
-  const linked = params.transcriptStore?.getTranscriptBySurfaceMessage({
-    platform: "discord",
-    channelId: params.input.sessionId,
+  const linkedText = resolveLinkedTranscriptText({
+    transcriptStore: params.transcriptStore,
+    sessionId: params.input.sessionId,
     messageId: params.input.replyToMessageId,
   });
-  const snapshot =
-    linked?.match({
-      ok: (value) =>
-        value?.requestClient === "discord" && value.sessionId === params.input.sessionId
-          ? value
-          : null,
-      err: () => null,
-    }) ?? null;
-  const assistant = snapshot ? buildAssistantOnlyMessageFromTranscript(snapshot) : null;
-  if (assistant && typeof assistant.content === "string") {
-    return normalizeGateText(assistant.content);
-  }
+  if (linkedText !== null) return normalizeGateText(linkedText);
 
   const repliedTo = await params.adapter.readMsg({
     platform: "discord",
@@ -96,6 +88,37 @@ export async function resolveRepliedToMessageText(params: {
       ok: (value) => value?.text,
     }),
   );
+}
+
+function resolveLinkedTranscriptText(params: {
+  transcriptStore?: TranscriptStore;
+  sessionId: string;
+  messageId: string;
+}): string | null {
+  const ref = {
+    platform: "discord" as const,
+    channelId: params.sessionId,
+    messageId: params.messageId,
+  };
+  // The gate needs only the final text, so read that column before decoding a whole transcript.
+  const finalText = params.transcriptStore?.getSurfaceMessageFinalText?.({
+    ...ref,
+    requestClient: "discord",
+    sessionId: params.sessionId,
+  });
+  const light = finalText?.match({ ok: (value) => value, err: () => undefined });
+  if (light === null) return null;
+  if (typeof light?.finalText === "string") return normalizeAssistantContextText(light.finalText);
+
+  const linked = params.transcriptStore?.getTranscriptBySurfaceMessage(ref);
+  const snapshot =
+    linked?.match({
+      ok: (value) =>
+        value?.requestClient === "discord" && value.sessionId === params.sessionId ? value : null,
+      err: () => null,
+    }) ?? null;
+  const assistant = snapshot ? buildAssistantOnlyMessageFromTranscript(snapshot) : null;
+  return assistant && typeof assistant.content === "string" ? assistant.content : null;
 }
 
 export async function resolvePreviousBatchMessageText(params: {

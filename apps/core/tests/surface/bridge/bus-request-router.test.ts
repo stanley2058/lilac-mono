@@ -1165,6 +1165,43 @@ describe("Discord request router context fallbacks", () => {
     readMsg.mockRestore();
   });
 
+  it("reads only the linked final text for replied-message gate context", async () => {
+    const adapter = new FakeAdapter({});
+    const transcriptStore = new SqliteTranscriptStore(":memory:");
+    transcriptStore.saveRequestTranscript({
+      requestId: "request",
+      sessionId: "channel",
+      requestClient: "discord",
+      messages: [{ role: "assistant", content: "stored answer" }],
+      finalText: "stored answer",
+    });
+    const replyRef = { platform: "discord" as const, channelId: "channel", messageId: "answer" };
+    transcriptStore.linkSurfaceMessagesToRequest({
+      requestId: "request",
+      created: [replyRef],
+      last: replyRef,
+    });
+    const fullRead = spyOn(transcriptStore, "getTranscriptBySurfaceMessage");
+
+    const resolved = await resolveRepliedToMessageText({
+      adapter,
+      transcriptStore,
+      input: { sessionId: "channel", replyToMessageId: "answer" },
+    });
+
+    expect(resolved).toBe("stored answer");
+    expect(fullRead).not.toHaveBeenCalled();
+    expect(
+      transcriptStore.getSurfaceMessageFinalText({
+        ...replyRef,
+        requestClient: "discord",
+        sessionId: "other",
+      }),
+    ).toEqual(Result.ok(null));
+    fullRead.mockRestore();
+    transcriptStore.close();
+  });
+
   it("preserves Panic from previous-message context and falls back for a typed failure", async () => {
     const adapter = new FakeAdapter({});
     const panic = new Panic({ message: "reply context invariant failed" });
