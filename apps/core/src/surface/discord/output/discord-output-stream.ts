@@ -1628,37 +1628,20 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     }
 
     if (this.isPreviewMode()) {
-      const finalReplyPromise =
+      // The preview stays until the final reply lands, so a failed reply never leaves the
+      // channel without any visible output.
+      const [finalReplySettled] = await Promise.allSettled([
         this.deps.outputPreviewModeFinalStyle === "plain"
           ? this.postFinalReplyPlain()
-          : this.postFinalReplyEmbeds();
-      const deletePreviewPromise = this.deleteTransientPreviewMessages();
-
-      const [finalReplySettled, deletePreviewSettled] = await Promise.allSettled([
-        finalReplyPromise,
-        deletePreviewPromise,
+          : this.postFinalReplyEmbeds(),
       ]);
-      if (finalReplySettled.status === "rejected" && Panic.is(finalReplySettled.reason)) {
-        throw finalReplySettled.reason;
-      }
-      if (deletePreviewSettled.status === "rejected") {
-        const failure =
-          deletePreviewSettled.reason instanceof Error
-            ? deletePreviewSettled.reason
-            : new DiscordOutputInvariantViolation({
-                message: "Discord preview cleanup rejected with a non-Error value",
-              });
-        throw failure;
-      }
       if (finalReplySettled.status === "rejected") {
-        const failure =
-          finalReplySettled.reason instanceof Error
-            ? finalReplySettled.reason
-            : new DiscordOutputInvariantViolation({
-                message: "Discord final reply rejected with a non-Error value",
-              });
-        throw failure;
+        if (finalReplySettled.reason instanceof Error) throw finalReplySettled.reason;
+        throw new DiscordOutputInvariantViolation({
+          message: "Discord final reply rejected with a non-Error value",
+        });
       }
+      await this.deleteTransientPreviewMessages();
       return await this.completeFinalReply(finalReplySettled.value);
     }
 

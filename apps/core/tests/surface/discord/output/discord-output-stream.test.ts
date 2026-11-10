@@ -587,6 +587,7 @@ function createFakeDiscordClient(opts?: {
   editFailure?: unknown;
   failEditWithFiles?: boolean;
   sendFailure?: unknown;
+  failSendAt?: number;
   failReplyAt?: number;
   replyFailure?: unknown;
   failResumeFetch?: boolean;
@@ -626,6 +627,7 @@ function createFakeDiscordClient(opts?: {
   let nextMessageId = 1;
   let nextAttachmentId = 1;
   let replyAttempts = 0;
+  let sendAttempts = 0;
   const channelId = "chan";
 
   const fileCountFromOptions = (options: unknown): number => {
@@ -729,6 +731,10 @@ function createFakeDiscordClient(opts?: {
   const channel = {
     send: async (options: unknown) => {
       if (opts?.sendFailure) throw opts.sendFailure;
+      sendAttempts += 1;
+      if (sendAttempts === opts?.failSendAt) {
+        throw Object.assign(new Error("send unavailable"), { status: 503 });
+      }
       return createMessage({ operation: "send", options });
     },
     messages: {
@@ -1271,6 +1277,49 @@ describe("output operation failures", () => {
     await expect(out.finish()).rejects.toMatchObject({
       _tag: "DiscordEmbedPusherInvariant",
     });
+  });
+
+  it("keeps the preview when the final reply fails", async () => {
+    const { client, createdMessageIds, deletedMessageIds } = createFakeDiscordClient({
+      failSendAt: 2,
+    });
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      outputPreviewModeFinalStyle: "plain",
+      outputPreviewModeFinalText: "reply-chain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "hello" });
+    const result = await out.finish();
+
+    expect(result.status).toBe("error");
+    expect(createdMessageIds).toHaveLength(1);
+    expect(deletedMessageIds).toEqual([]);
+  });
+
+  it("deletes the preview after the final reply succeeds", async () => {
+    const { client, createdMessageIds, deletedMessageIds } = createFakeDiscordClient();
+    const out = new DiscordOutputStream({
+      client,
+      sessionRef: { platform: "discord", channelId: "chan" },
+      useSmartSplitting: false,
+      outputMode: "preview",
+      outputPreviewModeFinalStyle: "plain",
+      outputPreviewModeFinalText: "reply-chain",
+      reasoningDisplayMode: "none",
+      workingIndicators: ["Working"],
+    });
+
+    await out.push({ type: "text.delta", delta: "hello" });
+    resultValue(await out.finish());
+
+    expect(createdMessageIds).toHaveLength(2);
+    expect(deletedMessageIds).toEqual([createdMessageIds[0]!]);
   });
 
   it("returns partial completion when a later final chunk fails", async () => {
