@@ -254,21 +254,22 @@ type IndexedMessageRow = {
   reply_to_message_id: string | null;
 };
 
+// The summary's `updated_at` shadows the thread's in a joined row, so the thread's is aliased.
+type ThreadEntryRow = ConversationThreadRow & SummaryEntryRow & { thread_updated_at: number };
+
 type SummaryEntryRow = PersistedConversationThreadSummaryRow & {
   entry_ordinal: number;
   summary_updated_at: number;
   anchor_ordinal: number | null;
 };
 
-type ThreadSearchRow = ConversationThreadRow &
-  SummaryEntryRow & {
-    lexical_score: number;
-  };
+type ThreadSearchRow = ThreadEntryRow & {
+  lexical_score: number;
+};
 
-type ThreadSemanticSearchRow = ConversationThreadRow &
-  SummaryEntryRow & {
-    semantic_score: number;
-  };
+type ThreadSemanticSearchRow = ThreadEntryRow & {
+  semantic_score: number;
+};
 
 type NativeDmState = { revision: string; windows: string };
 
@@ -2350,6 +2351,7 @@ export class ConversationThreadStore {
         `
         SELECT
           t.*,
+          t.updated_at AS thread_updated_at,
           ${SUMMARY_ENTRY_COLUMNS},
           max(fm.facet_score) AS lexical_score
         FROM (
@@ -2385,7 +2387,7 @@ export class ConversationThreadStore {
       const summary = selectResultValue(decoded).value;
       const summarized =
         row.last_summarized_at !== null &&
-        row.last_summarized_at >= row.updated_at &&
+        row.last_summarized_at >= row.thread_updated_at &&
         row.summary_version === CONVERSATION_THREAD_SUMMARY_VERSION;
       const lexicalScore = row.lexical_score ?? 0;
       hits.push({
@@ -2452,6 +2454,7 @@ export class ConversationThreadStore {
         )
         SELECT
           t.*,
+          t.updated_at AS thread_updated_at,
           ${SUMMARY_ENTRY_COLUMNS},
           -min(hits.rank) AS lexical_score
         FROM hits
@@ -2481,7 +2484,7 @@ export class ConversationThreadStore {
       const summary = selectResultValue(decoded).value;
       const summarized =
         row.last_summarized_at !== null &&
-        row.last_summarized_at >= row.updated_at &&
+        row.last_summarized_at >= row.thread_updated_at &&
         row.summary_version === CONVERSATION_THREAD_SUMMARY_VERSION;
       const lexicalScore = row.lexical_score ?? 0;
       hits.push({
@@ -2614,6 +2617,7 @@ export class ConversationThreadStore {
         )
         SELECT
           t.*,
+          t.updated_at AS thread_updated_at,
           ${SUMMARY_ENTRY_COLUMNS},
           scores.semantic_score
         FROM scores
@@ -2644,7 +2648,7 @@ export class ConversationThreadStore {
       const summary = selectResultValue(decoded).value;
       const summarized =
         row.last_summarized_at !== null &&
-        row.last_summarized_at >= row.updated_at &&
+        row.last_summarized_at >= row.thread_updated_at &&
         row.summary_version === CONVERSATION_THREAD_SUMMARY_VERSION;
       const semanticScore = row.semantic_score ?? 0;
       hits.push({

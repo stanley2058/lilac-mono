@@ -895,3 +895,16 @@ test("a turn without messages keeps the DM windows on both sides of it together"
   sendNative(dm.id, "alice", "deployment later");
   expect(windows()).toEqual([4]);
 });
+
+test("a thread changed after its summary is reported stale", async () => {
+  const ref = createDiscord();
+  await service.runSummarization({ now: Date.now() });
+  const derivedState = async () =>
+    (await service.search({ query: "deployment", mode: "lexical", verbose: true })).unwrap()
+      .results[0]?.derivedState;
+  expect(await derivedState()).toEqual({ summarized: true, stale: false });
+
+  index.invalidateMaterializedMessages({ channelId: "c1", messageIds: ["1"] });
+  expect(index.getSummary(ref).unwrap()).not.toBeNull();
+  expect(await derivedState()).toEqual({ summarized: false, stale: true });
+});
