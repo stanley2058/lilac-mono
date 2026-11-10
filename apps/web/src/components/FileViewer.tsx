@@ -303,7 +303,7 @@ export function RightPanelTabs({
     <>
       {expanded ? (
         <div
-          className="file-panel-backdrop fixed inset-0 z-50 bg-overlay supports-backdrop-filter:backdrop-blur-xs"
+          className="file-panel-backdrop fixed inset-0 z-50 bg-overlay"
           aria-hidden
           onClick={() => setExpanded(false)}
         />
