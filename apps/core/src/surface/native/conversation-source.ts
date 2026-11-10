@@ -13,17 +13,21 @@ export function installNativeConversationSource(db: Database, databasePath?: str
   db.run("DROP VIEW IF EXISTS temp.native_conversation_turns");
   if (!databasePath) {
     db.run(`CREATE TEMP VIEW native_conversation_threads AS SELECT
-      '' AS id, '' AS revision, 0 AS updated_at, 0 AS active, 0 AS dm WHERE 0`);
+      '' AS id, '' AS change_key, 0 AS updated_at, 0 AS active, 0 AS dm WHERE 0`);
     db.run(`CREATE TEMP VIEW native_conversation_messages AS SELECT
       '' AS channel_id, '' AS message_id, '' AS user_id, '' AS user_name,
       '' AS text, 0 AS ts, 0 AS ordinal, 0 AS turn_position WHERE 0`);
     return;
   }
+  // change_key moves on every write to the thread, its turns, or its inputs without reading turn
+  // content. It also moves on title and access changes, so it only gates the content comparison.
   db.run(`CREATE TEMP VIEW native_conversation_threads AS SELECT
     t.id, json_extract(t.data_json,'$.value.historyGeneration') || ':' ||
-      COALESCE((SELECT group_concat(messages,char(0)) FROM
-        (SELECT json_extract(r.data_json,'$.value.messages') AS messages
-          FROM native_conversation.native_records r WHERE r.kind='turn' AND r.thread_id=t.id ORDER BY r.position)), '') AS revision,
+      json_extract(t.data_json,'$.value.revision') || ':' ||
+      (SELECT COUNT(*) || ':' || COALESCE(MAX(r.updated_at),0) FROM native_conversation.native_records r
+        WHERE r.thread_id=t.id AND r.kind='turn') || ':' ||
+      (SELECT COALESCE(MAX(i.updated_at),0) FROM native_conversation.native_records i
+        WHERE i.thread_id=t.id AND i.kind='input') AS change_key,
     COALESCE((SELECT MAX(r.updated_at) FROM native_conversation.native_records r
       WHERE r.kind='turn' AND r.thread_id=t.id),t.updated_at) AS updated_at,
     json_extract(t.data_json,'$.value.activeRunId') IS NOT NULL AS active,
@@ -66,7 +70,7 @@ const timestamp = z.number().int().nonnegative().max(8_640_000_000_000_000);
 const nativeThreadProjectionSchema = z.array(
   z.object({
     id: z.string().min(1),
-    revision: z.string(),
+    change_key: z.string(),
     updated_at: timestamp,
     dm: z.union([z.literal(0), z.literal(1)]),
   }),
@@ -133,9 +137,22 @@ export function readNativeConversationThreads(db: Database) {
       .all();
     yield* Result.all(rows.map((row) => decodeNativeRecord(row)));
     return decodeNativeThreadProjection(
-      db.query("SELECT id,revision,updated_at,dm FROM native_conversation_threads").all(),
+      db.query("SELECT id,change_key,updated_at,dm FROM native_conversation_threads").all(),
     );
   });
+}
+/** History generation and every turn's messages: the content a native summary was built from. */
+export function readNativeConversationContentRevision(db: Database, threadId: string): string {
+  const row = db
+    .query<{ revision: string | null }, [string]>(
+      `SELECT json_extract(t.data_json,'$.value.historyGeneration') || ':' ||
+        COALESCE((SELECT group_concat(messages,char(0)) FROM
+          (SELECT json_extract(r.data_json,'$.value.messages') AS messages
+            FROM native_conversation.native_records r WHERE r.kind='turn' AND r.thread_id=t.id ORDER BY r.position)), '') AS revision
+      FROM native_conversation.native_records t WHERE t.kind='thread' AND t.id=?`,
+    )
+    .get(threadId);
+  return row?.revision ?? "";
 }
 /** Timing of every turn, including turns without messages, for the DM context-window rule. */
 export function readNativeConversationTurnTimings(db: Database, threadId: string) {

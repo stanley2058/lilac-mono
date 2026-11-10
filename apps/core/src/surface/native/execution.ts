@@ -17,7 +17,7 @@ import {
 import { Result, type Result as ResultType } from "better-result";
 import { CUSTOM_COMMAND_TEXT_PREFIX } from "@stanley2058/lilac-utils/custom-commands";
 import type { CustomCommandManager } from "../../custom-commands/manager";
-import type { TranscriptStore } from "../../transcript/transcript-store";
+import type { TranscriptSnapshot, TranscriptStore } from "../../transcript/transcript-store";
 import { parseNativeRequestEnvelope } from "../authenticated-request";
 import { deleteDiscordRequestBlobHandles } from "../bridge/request-composition/attachments";
 import { prepareStoredMessagesForBus } from "../bridge/request-composition/prepare-bus-messages";
@@ -32,6 +32,7 @@ import { nativeFailure, NativeStoreFailure } from "./errors";
 import { nativeSessionId } from "./native-protocol";
 import type { NativeStore } from "./store";
 import type { NativeMetrics } from "./metrics";
+import { opensNativeTurn } from "./turn-transcript";
 
 export type NativeRunnerControl = {
   cancelNativeSession(sessionId: string): Promise<ResultType<void, Error>>;
@@ -156,28 +157,33 @@ export function createNativeExecution(options: {
     return store.selectCanonicalInput(thread.id, { since: cutoff });
   }
 
-  function selectedHistory(
-    input: NativeInputRecord,
-    latestRequestId: string,
+  type SelectedHistory = { messages: readonly StoredMessageV1[]; firstRequestId?: string };
+
+  function canonicalSource(threadId: string, turn: NativeInputRecord) {
+    return turn.canonicalHistoryStartRequestId
+      ? store.getInputByRequestId(turn.canonicalHistoryStartRequestId)
+      : store.selectCanonicalInput(threadId);
+  }
+
+  /**
+   * Trims a full-history row to start at `first`. Rows written before native turn slices, and
+   * compaction checkpoints, hold the turn's whole canonical context.
+   */
+  function fullRowHistory(
+    thread: NativeThreadRecord,
+    first: NativeInputRecord,
+    latest: NativeInputRecord,
     canonical: readonly StoredMessageV1[],
-    sessionAt: number,
-  ): ResultType<{ messages: readonly StoredMessageV1[]; firstRequestId?: string }, Error> {
+  ): ResultType<SelectedHistory, Error> {
     return Result.gen(function* () {
       const empty = { messages: [] as readonly StoredMessageV1[] };
-      if (input.canonicalHistoryStartRequestId === input.requestId) return Result.ok(empty);
-      const thread = yield* store.getThreadRecord(input.threadId);
-      const first = input.canonicalHistoryStartRequestId
-        ? yield* store.getInputByRequestId(input.canonicalHistoryStartRequestId)
-        : yield* selectFirstInput(thread, sessionAt);
-      if (!first) return Result.ok(empty);
-      const latest = yield* store.getInputByRequestId(latestRequestId);
-      if (!latest)
-        return Result.err(nativeFailure("invalid", "Canonical history has no retained turn"));
-      const snapshots = new Map<string, readonly StoredMessageV1[]>([[latestRequestId, canonical]]);
+      const snapshots = new Map<string, readonly StoredMessageV1[]>([
+        [latest.requestId, canonical],
+      ]);
       const pending: { messages: readonly StoredMessageV1[]; firstRequestId: string }[] = [];
       let turn = latest;
       let selectedTurn = first;
-      let selected: { messages: readonly StoredMessageV1[]; firstRequestId?: string } = empty;
+      let selected: SelectedHistory = empty;
       while (true) {
         let messages = snapshots.get(turn.requestId);
         if (!messages) {
@@ -189,16 +195,14 @@ export function createNativeExecution(options: {
           messages = snapshot.messages;
           snapshots.set(turn.requestId, messages);
         }
-        const source = turn.canonicalHistoryStartRequestId
-          ? yield* store.getInputByRequestId(turn.canonicalHistoryStartRequestId)
-          : yield* store.selectCanonicalInput(input.threadId);
+        const source = yield* canonicalSource(thread.id, turn);
         if (!source || source.position > turn.position) return Result.ok(empty);
         if (selectedTurn.position <= source.position) {
           selected = { messages, firstRequestId: source.requestId };
           break;
         }
         pending.push({ messages, firstRequestId: selectedTurn.requestId });
-        const previous = yield* store.selectCanonicalInput(input.threadId, {
+        const previous = yield* store.selectCanonicalInput(thread.id, {
           before: selectedTurn.position,
         });
         if (!previous) return Result.ok(empty);
@@ -213,7 +217,7 @@ export function createNativeExecution(options: {
           )
         ) {
           if (thread.kind !== "dm") return Result.ok(empty);
-          return directHistorySuffix(input.threadId, first.position, canonical);
+          return directHistorySuffix(thread.id, first.position, canonical);
         }
         selected = {
           messages: boundary.messages.slice(selected.messages.length),
@@ -221,6 +225,68 @@ export function createNativeExecution(options: {
         };
       }
       return Result.ok(selected);
+    });
+  }
+
+  /**
+   * Rebuilds the canonical context that follows `latestRequestId`. Each native transcript row holds
+   * one turn, so the context is the turns from the selected start through the latest one. A
+   * full-history row ends the walk. Returns null when the latest turn's transcript is gone.
+   */
+  function selectedHistory(
+    input: NativeInputRecord,
+    latestRequestId: string,
+    sessionAt: number,
+  ): ResultType<SelectedHistory | null, Error> {
+    return Result.gen(function* () {
+      const empty = { messages: [] as readonly StoredMessageV1[] };
+      const latest = yield* store.getInputByRequestId(latestRequestId);
+      if (!latest)
+        return Result.err(nativeFailure("invalid", "Canonical history has no retained turn"));
+      const latestSnapshot = yield* (
+        options.transcriptStore.getRequestTranscript?.({ requestId: latestRequestId }) ??
+          Result.ok(null)
+      );
+      if (!latestSnapshot) return Result.ok(null);
+      if (input.canonicalHistoryStartRequestId === input.requestId) return Result.ok(empty);
+      const thread = yield* store.getThreadRecord(input.threadId);
+      const first = input.canonicalHistoryStartRequestId
+        ? yield* store.getInputByRequestId(input.canonicalHistoryStartRequestId)
+        : yield* selectFirstInput(thread, sessionAt);
+      if (!first) return Result.ok(empty);
+      const source = yield* canonicalSource(input.threadId, latest);
+      if (!source || source.position > latest.position) return Result.ok(empty);
+      // The latest turn saw nothing before its own start, so neither does the next one.
+      const start = first.position > source.position ? first : source;
+      const turns: { requestId: string; messages: readonly StoredMessageV1[] }[] = [];
+      let turn: NativeInputRecord | null = latest;
+      let snapshot: TranscriptSnapshot | null = latestSnapshot;
+      while (turn && turn.position >= start.position) {
+        snapshot ??= yield* (
+          options.transcriptStore.getRequestTranscript?.({ requestId: turn.requestId }) ??
+            Result.ok(null)
+        );
+        if (!snapshot) return Result.ok(empty);
+        if (snapshot.contextMeta || !opensNativeTurn(snapshot.messages[0], turn.requestId)) {
+          const full = yield* fullRowHistory(thread, start, turn, snapshot.messages);
+          // A full row that cannot reach `start` leaves no valid prefix for the later turns.
+          if (full.messages.length === 0) return Result.ok(empty);
+          turns.push({ requestId: full.firstRequestId ?? turn.requestId, ...full });
+          break;
+        }
+        turns.push({ requestId: turn.requestId, messages: snapshot.messages });
+        snapshot = null;
+        turn =
+          turn.position === start.position
+            ? null
+            : yield* store.selectCanonicalInput(input.threadId, { before: turn.position });
+      }
+      const earliest = turns.at(-1);
+      if (!earliest) return Result.ok(empty);
+      return Result.ok({
+        messages: turns.toReversed().flatMap((selected) => selected.messages),
+        firstRequestId: earliest.requestId,
+      });
     });
   }
 
@@ -412,20 +478,11 @@ export function createNativeExecution(options: {
         const posts = yield* includeDeliveredPosts(input, []);
         return Result.ok([...posts, message]);
       }
-      const previous = yield* (
-        options.transcriptStore.getRequestTranscript?.({ requestId: previousRequestId }) ??
-          Result.ok(null)
-      );
-      if (!previous)
+      const history = yield* selectedHistory(input, previousRequestId, input.createdAt);
+      if (!history)
         return Result.err(
           nativeFailure("conflict", "The retained canonical transcript is unavailable"),
         );
-      const history = yield* selectedHistory(
-        input,
-        previousRequestId,
-        previous.messages,
-        input.createdAt,
-      );
       yield* store.setInputCanonicalHistoryStart(
         input.id,
         history.messages.length > 0 ? (history.firstRequestId ?? input.requestId) : input.requestId,
@@ -769,21 +826,13 @@ export function createNativeExecution(options: {
       const active = thread.activeRunId
         ? yield* store.getInputByRequestId(thread.activeRunId)
         : null;
-      const snapshot = yield* (
-        options.transcriptStore.getRequestTranscript?.({ requestId: latestId }) ?? Result.ok(null)
-      );
-      if (!snapshot) return Result.ok(empty);
       const selector = active ?? {
         ...latest,
         requestId: "preview",
         canonicalHistoryStartRequestId: undefined,
       };
-      const history = yield* selectedHistory(
-        selector,
-        latestId,
-        snapshot.messages,
-        active?.createdAt ?? evaluatedAt,
-      );
+      const history = yield* selectedHistory(selector, latestId, active?.createdAt ?? evaluatedAt);
+      if (!history) return Result.ok(empty);
       if (active?.turnId && active.canonicalHistoryStartRequestId === active.requestId)
         return Result.ok({
           ...empty,

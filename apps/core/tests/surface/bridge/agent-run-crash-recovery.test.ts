@@ -31,7 +31,10 @@ import {
   createAgentRunCheckpoint,
   type AgentRunJournal,
 } from "../../../src/surface/bridge/agent-run-journal";
-import { startBusAgentRunner } from "../../../src/surface/bridge/bus-agent-runner";
+import {
+  startBusAgentRunner,
+  type NativeRunnerLifecycle,
+} from "../../../src/surface/bridge/bus-agent-runner";
 import {
   RequestDeliveryCoordinator,
   SqliteRequestDeliveryStore,
@@ -173,6 +176,7 @@ type AcceptedInput = {
   readonly label: string;
   readonly requestId?: string;
   readonly sessionId?: string;
+  readonly requestClient?: CoreAcceptedRequestWork["requestClient"];
   readonly queue?: CoreAcceptedRequestWork["data"]["queue"];
   readonly messages?: readonly StoredMessageV1[];
   readonly raw?: unknown;
@@ -186,10 +190,11 @@ function acceptWork(
   const requestDeliveryId = crypto.randomUUID();
   const requestId = input.requestId ?? `github:crash:${input.label}`;
   const sessionId = input.sessionId ?? `session-${input.label}`;
+  const requestClient = input.requestClient ?? "github";
   const headers = {
     request_id: requestId,
     session_id: sessionId,
-    request_client: "github" as const,
+    request_client: requestClient,
   };
   const data: CoreAcceptedRequestWork["data"] = {
     requestDeliveryId,
@@ -201,7 +206,7 @@ function acceptWork(
     requestDeliveryId,
     requestId,
     sessionId,
-    requestClient: "github",
+    requestClient,
     headers,
     data,
   };
@@ -296,6 +301,7 @@ async function reconstruct(input: {
   readonly transcriptStore?: TranscriptStore;
   readonly beforeActivate?: (bus: ReturnType<typeof createLilacBus>) => Promise<void>;
   readonly createAgent?: (options: AiSdkPiAgentOptions<ToolSet>) => AiSdkPiAgent<ToolSet>;
+  readonly nativeExecution?: NativeRunnerLifecycle;
 }): Promise<RecoveredRun> {
   const store = new SqliteRequestDeliveryStore({
     dbPath: input.dbPath,
@@ -345,6 +351,7 @@ async function reconstruct(input: {
     requestDelivery: delivery,
     agentRunJournal: journalPort,
     transcriptStore: input.transcriptStore,
+    ...(input.nativeExecution ? { nativeExecution: input.nativeExecution } : {}),
     subscriptionId: `crash-recovery-${crypto.randomUUID()}`,
     config: parseCoreConfigV2ToUniversal(
       input.createAgent ? { agent: { retry: { enabled: false } } } : {},
@@ -773,6 +780,76 @@ describe("agent run hard-crash recovery", () => {
     await closeRecovered(recovered);
     await resultValue(initial.blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
   });
+
+  it.each(["completed", "failed"] as const)(
+    "persists the inherited compaction summary when a recovered native run ends %s",
+    async (outcome) => {
+      const initial = await fixture();
+      const requestId = "native:thread-1:m3";
+      const opening: StoredMessageV1 = {
+        role: "user",
+        content:
+          '<LILAC_META:v1>{"platform":"native","thread_id":"thread-1","message_id":"m3"}</LILAC_META:v1>\nthird',
+      };
+      const summary: StoredMessageV1 = {
+        role: "user",
+        content: "<context-compaction>\nsummary of m1 and m2\n</context-compaction>",
+      };
+      const accepted = acceptWork(
+        initial.store,
+        {
+          label: "native-compacted-recovery",
+          requestId,
+          requestClient: "native",
+          messages: [
+            { role: "user", content: "first" },
+            { role: "assistant", content: "answer one" },
+            opening,
+          ],
+        },
+        1,
+      );
+      checkpoint(initial.journal, accepted, [summary, opening]);
+      initial.journal.close();
+      initial.store.close();
+      const transcripts = new SqliteTranscriptStore(":memory:");
+      const run = await reconstruct({
+        dbPath: initial.dbPath,
+        blobStore: initial.blobStore,
+        transcriptStore: transcripts,
+        nativeExecution: {
+          validate: () => Result.ok({ safetyMode: "restricted" }),
+          settled: async () => Result.ok(undefined),
+        },
+        ...(outcome === "failed"
+          ? {
+              createAgent: (options: AiSdkPiAgentOptions<ToolSet>) =>
+                new AiSdkPiAgent({
+                  ...options,
+                  model: new MockLanguageModelV4({
+                    modelId: "crash-recovery",
+                    doStream: async () => {
+                      throw new Error("recovered provider failure");
+                    },
+                  }),
+                }),
+            }
+          : {}),
+      });
+      try {
+        await waitForTerminal(run.store, [accepted.requestDeliveryId]);
+        expect(value(run.store.load(accepted.requestDeliveryId))).toMatchObject({
+          outcome: { kind: outcome },
+        });
+        const saved = value(transcripts.getRequestTranscript({ requestId }));
+        expect(saved?.messages.slice(0, 2)).toEqual([summary, opening]);
+      } finally {
+        await closeRecovered(run);
+        transcripts.close();
+        await resultValue(initial.blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+      }
+    },
+  );
 
   it("reconstructs original, semantic, tool, subagent, and terminal boundaries", async () => {
     const first = await fixture();

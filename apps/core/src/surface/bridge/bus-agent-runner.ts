@@ -235,6 +235,7 @@ import { resolveSessionSafetyMode, type SessionSafetyMode } from "../session-pol
 import type { AuthenticatedSurfaceOrigin, MsgRef, SurfacePrincipal } from "../types";
 import type { SurfaceProtocolResolver } from "../runtime-descriptor";
 import type { NativeOutputPublisher } from "../native/output";
+import { selectNativeRunMessages } from "../native/turn-transcript";
 import type {
   CustomCommandExecutionError,
   CustomCommandManager,
@@ -6431,8 +6432,16 @@ export async function startBusAgentRunner(params: {
                   return selectPersistedTranscriptMessages({
                     finalMessages: finalMessagesForPersistence,
                     responseStartIndex,
-                    isPrimary: runProfile === "primary" && next.requestClient !== "native",
+                    isPrimary: runProfile === "primary",
                     didCompact: isCompactionCheckpoint,
+                    ...(next.requestClient === "native"
+                      ? {
+                          native: {
+                            requestId: headers.request_id,
+                            requestMessages: next.messages,
+                          },
+                        }
+                      : {}),
                   });
                 })();
                 const persistedMessages = await projectTranscriptMessagesForPersistence({
@@ -6919,8 +6928,12 @@ export async function startBusAgentRunner(params: {
                   return buildPersistedHeartbeatMessages(`Error: ${msg}`);
                 }
 
-                if (next.requestClient === "native")
-                  return safeFinalMessages.length > 0 ? safeFinalMessages : next.messages;
+                if (next.requestClient === "native") {
+                  const messages = safeFinalMessages.length > 0 ? safeFinalMessages : next.messages;
+                  return runProfile === "primary" && completedCompactionCount === 0
+                    ? selectNativeRunMessages(messages, headers.request_id, next.messages)
+                    : messages;
+                }
                 return runProfile === "primary" ? responseMessages : safeFinalMessages;
               })();
               const persistedMessages = await projectTranscriptMessagesForPersistence({
@@ -7942,8 +7955,16 @@ export function selectPersistedTranscriptMessages(input: {
   responseStartIndex: number;
   isPrimary: boolean;
   didCompact: boolean;
+  /** Native history is rebuilt from per-turn rows, so a native row keeps its own input too. */
+  native?: { requestId: string; requestMessages: readonly ModelMessage[] };
 }): ModelMessage[] {
   if (!input.isPrimary || input.didCompact) return [...input.finalMessages];
+  if (input.native)
+    return selectNativeRunMessages(
+      input.finalMessages,
+      input.native.requestId,
+      input.native.requestMessages,
+    );
   return input.finalMessages.slice(input.responseStartIndex);
 }
 
