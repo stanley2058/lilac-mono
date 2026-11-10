@@ -517,6 +517,13 @@ async function captureDiscordOperation<T>(
   }
 }
 
+async function removeDiscordReaction(
+  reaction: MessageReaction,
+): Promise<SurfaceOperationResult<void>> {
+  const removed = await captureDiscordOperation("remove-reaction", () => reaction.remove());
+  return removed.map(() => undefined);
+}
+
 function externalCallFailure(operation: string): DiscordExternalCallFailed {
   return new DiscordExternalCallFailed({
     operation,
@@ -2110,7 +2117,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     const fetchError = fetched.match({ ok: () => null, err: (error) => error });
     if (fetchError) return Result.err(fetchError);
     const channel = selectResultValue(fetched);
-    if (!channel || !("messages" in channel) || !channel.messages?.fetch) {
+    if (!channel || !("messages" in channel) || !channel.messages?.react) {
       return Result.err(
         new SurfaceMessageNotFound({
           platform: "discord",
@@ -2119,17 +2126,8 @@ export class DiscordAdapter implements SurfaceAdapter {
         }),
       );
     }
-    const message = await captureDiscordOperation("add-reaction", () =>
-      channel.messages.fetch({
-        message: discordRef.messageId,
-        cache: false,
-        force: true,
-      }),
-    );
-    const messageError = message.match({ ok: () => null, err: (error) => error });
-    if (messageError) return Result.err(messageError);
     const reacted = await captureDiscordOperation("add-reaction", () =>
-      selectResultValue(message).react(reaction),
+      channel.messages.react(discordRef.messageId, reaction),
     );
     return reacted.map(() => undefined);
   }
@@ -2178,20 +2176,22 @@ export class DiscordAdapter implements SurfaceAdapter {
       );
     }
     const message = await captureDiscordOperation("remove-reaction", () =>
-      channel.messages.fetch({
-        message: discordRef.messageId,
-        cache: false,
-        force: true,
-      }),
+      channel.messages.fetch({ message: discordRef.messageId }),
     );
     const messageError = message.match({ ok: () => null, err: (error) => error });
     if (messageError) return Result.err(messageError);
-    const resolvedReaction = selectResultValue(message).reactions.resolve(reaction);
-    if (!resolvedReaction) return Result.ok(undefined);
-    const removed = await captureDiscordOperation("remove-reaction", () =>
-      resolvedReaction.remove(),
+    const cachedReaction = selectResultValue(message).reactions.resolve(reaction);
+    if (cachedReaction) return removeDiscordReaction(cachedReaction);
+    // A REST reaction add leaves the cached message unchanged until the gateway event lands,
+    // so only a fresh read can show the reaction is really absent.
+    const refreshed = await captureDiscordOperation("remove-reaction", () =>
+      channel.messages.fetch({ message: discordRef.messageId, force: true }),
     );
-    return removed.map(() => undefined);
+    const refreshError = refreshed.match({ ok: () => null, err: (error) => error });
+    if (refreshError) return Result.err(refreshError);
+    const refreshedReaction = selectResultValue(refreshed).reactions.resolve(reaction);
+    if (!refreshedReaction) return Result.ok(undefined);
+    return removeDiscordReaction(refreshedReaction);
   }
 
   async listReactions(msgRef: MsgRef): Promise<SurfaceOperationResult<string[]>> {

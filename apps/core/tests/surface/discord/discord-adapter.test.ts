@@ -2,7 +2,9 @@ import { describe, expect, it, jest } from "bun:test";
 import {
   ActivityType,
   ApplicationCommandOptionType,
+  Client,
   Collection,
+  DMChannel,
   type GuildMember,
   MessageType,
   type Message,
@@ -1981,6 +1983,175 @@ describe("DiscordAdapter.deleteMsg", () => {
     expect(result.status).toBe("error");
     if (result.status === "ok") throw new Error("expected delete failure");
     expect(result.error).toBeInstanceOf(SurfaceMessageNotFound);
+  });
+});
+
+describe("DiscordAdapter reactions", () => {
+  it("adds a reaction by id without reading the message first", async () => {
+    const calls: string[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async () => {
+              calls.push("fetch");
+              throw new Error("unexpected message read");
+            },
+            react: async (messageId: string, emoji: string) => {
+              calls.push(`react:${messageId}:${emoji}`);
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.addReaction(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      "👀",
+    );
+
+    expect(result.status).toBe("ok");
+    expect(calls).toEqual(["react:m1:👀"]);
+  });
+
+  it("classifies a missing message when adding a reaction", async () => {
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            react: async () => {
+              throw Object.assign(new Error("Unknown Message"), { code: 10_008, status: 404 });
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await adapter.addReaction(
+      { platform: "discord", channelId: "c1", messageId: "m1" },
+      "👀",
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "ok") throw new Error("expected reaction failure");
+    expect(result.error).toBeInstanceOf(SurfaceMessageNotFound);
+  });
+
+  it("removes a reaction through a cache-backed message read", async () => {
+    const fetchCalls: unknown[] = [];
+    const removed: string[] = [];
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async (input: unknown) => {
+              fetchCalls.push(input);
+              return {
+                reactions: {
+                  resolve: (emoji: string) =>
+                    emoji === "👀" ? { remove: async () => void removed.push(emoji) } : null,
+                },
+              };
+            },
+          },
+        }),
+      },
+    };
+    const ref = { platform: "discord", channelId: "c1", messageId: "m1" } as const;
+
+    const present = await adapter.removeReaction(ref, "👀");
+    const absent = await adapter.removeReaction(ref, "✅");
+
+    expect(present.status).toBe("ok");
+    expect(absent.status).toBe("ok");
+    expect(fetchCalls).toEqual([
+      { message: "m1" },
+      { message: "m1" },
+      { message: "m1", force: true },
+    ]);
+    expect(removed).toEqual(["👀"]);
+  });
+
+  it("removes a reaction it added before the gateway updated the cached message", async () => {
+    const client = new Client({ intents: [] });
+    // discord.js keeps these constructors private; the test needs a real cached message.
+    const DMChannelConstructor = DMChannel as unknown as new (
+      client: Client,
+      data: { id: string; type: number },
+    ) => DMChannel;
+    const channel = new DMChannelConstructor(client, { id: "100000000000000001", type: 1 });
+    const messageCache = channel.messages as unknown as { _add(data: unknown): unknown };
+    const author = {
+      id: "100000000000000003",
+      username: "user",
+      discriminator: "0",
+      avatar: null,
+    };
+    const messageData = (reactions: unknown[]) => ({
+      id: "100000000000000002",
+      channel_id: channel.id,
+      type: 0,
+      content: "hello",
+      author,
+      timestamp: new Date(0).toISOString(),
+      edited_timestamp: null,
+      embeds: [],
+      attachments: [],
+      mentions: [],
+      mention_roles: [],
+      pinned: false,
+      tts: false,
+      reactions,
+    });
+    const userCache = client.users as unknown as { _add(data: unknown): typeof client.user };
+    client.user = userCache._add({
+      id: "100000000000000004",
+      username: "bot",
+      discriminator: "0",
+      avatar: null,
+      bot: true,
+    });
+    messageCache._add(messageData([]));
+    let reacted = false;
+    const deletes: string[] = [];
+    client.rest.put = async () => {
+      reacted = true;
+    };
+    client.rest.get = async () =>
+      messageData(
+        reacted
+          ? [
+              {
+                emoji: { id: null, name: "👀" },
+                count: 1,
+                count_details: { normal: 1, burst: 0 },
+                me: true,
+                me_burst: false,
+              },
+            ]
+          : [],
+      );
+    client.rest.delete = async (route: string) => {
+      deletes.push(route);
+    };
+    const adapter = createTestDiscordAdapter();
+    (adapter as unknown as { client: unknown }).client = {
+      channels: { fetch: async () => channel },
+    };
+    const ref = {
+      platform: "discord",
+      channelId: channel.id,
+      messageId: "100000000000000002",
+    } as const;
+
+    expect((await adapter.addReaction(ref, "👀")).status).toBe("ok");
+    expect((await adapter.removeReaction(ref, "👀")).status).toBe("ok");
+
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]).toContain("/reactions/");
   });
 });
 

@@ -714,6 +714,89 @@ describe("session queue admission", () => {
       await rm(dataDir, { recursive: true, force: true });
     }
   });
+  it("stops within the caller's deadline while the subscription stop hangs", async () => {
+    const baseBus = createLilacBus(createInMemoryRawBus());
+    const stopRequested = deferred<void>();
+    const bus: typeof baseBus = {
+      ...baseBus,
+      subscribeTopic: async (topic, opts, handler, deliveryPolicy) => {
+        const started = await baseBus.subscribeTopic(topic, opts, handler, deliveryPolicy);
+        return started.map((subscription) => ({
+          done: subscription.done,
+          stop: () => {
+            stopRequested.resolve(undefined);
+            return new Promise<never>(() => undefined);
+          },
+        }));
+      },
+    };
+    const pluginManager = corePrimaryTestPluginManager();
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "stop-subscription-deadline",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({ capability: "stop-subscription-deadline", principal: null }),
+      createAgent: () => {
+        throw new Error("no request is published");
+      },
+    });
+    try {
+      const startedAt = performance.now();
+      await runner.stop({ deadlineAtMs: Date.now() + 50 });
+      await stopRequested.promise;
+      expect(performance.now() - startedAt).toBeLessThan(2_000);
+    } finally {
+      await pluginManager.destroy();
+      await baseBus.close();
+    }
+  });
+  it("reports a subscription stop panic that lands after the deadline", async () => {
+    const baseBus = createLilacBus(createInMemoryRawBus());
+    const failStop = deferred<void>();
+    const panic = new Panic({ message: "subscription stop invariant failed" });
+    const bus: typeof baseBus = {
+      ...baseBus,
+      subscribeTopic: async (topic, opts, handler, deliveryPolicy) => {
+        const started = await baseBus.subscribeTopic(topic, opts, handler, deliveryPolicy);
+        return started.map((subscription) => ({
+          done: subscription.done,
+          stop: async () => {
+            await failStop.promise;
+            throw panic;
+          },
+        }));
+      },
+    };
+    const reported = deferred<unknown>();
+    const pluginManager = corePrimaryTestPluginManager();
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "stop-subscription-late-panic",
+      reportFatalPanic: (fatal) => reported.resolve(fatal),
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({
+        capability: "stop-subscription-late-panic",
+        principal: null,
+      }),
+      createAgent: () => {
+        throw new Error("no request is published");
+      },
+    });
+    try {
+      await runner.stop({ deadlineAtMs: Date.now() + 20 });
+      failStop.resolve(undefined);
+      await expect(reported.promise).resolves.toBe(panic);
+    } finally {
+      failStop.resolve(undefined);
+      await pluginManager.destroy();
+      await baseBus.close();
+    }
+  });
   it("evicts session state once its runs finish", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const pluginManager = corePrimaryTestPluginManager();
@@ -870,6 +953,121 @@ describe("session queue admission", () => {
       await bus.close();
     }
   });
+  it("runs a steer that its run ended without consuming as the next prompt", async () => {
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager();
+    const sessionId = "unconsumed-steer";
+    const requestId = "github:unconsumed-steer:request";
+    const first = acceptedRunnerDelivery({
+      requestDeliveryId: crypto.randomUUID(),
+      requestId,
+      sessionId,
+      queue: "prompt",
+      messages: [{ role: "user", content: "first request" }],
+    });
+    const steer = acceptedRunnerDelivery({
+      requestDeliveryId: crypto.randomUUID(),
+      requestId,
+      sessionId,
+      queue: "steer",
+      messages: [{ role: "user", content: "late steer" }],
+    });
+    const accepted = new Map([
+      [first.requestDeliveryId, first],
+      [steer.requestDeliveryId, steer],
+    ]);
+    const terminalized: Array<{ requestDeliveryId: string; kind: string; code?: string }> = [];
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const secondPrompt = deferred<string>();
+    let modelCalls = 0;
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "unconsumed-steer",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      requestDelivery: {
+        handleDelivery: async (requestDeliveryId: string) =>
+          Result.ok({
+            disposition: "accepted",
+            record: accepted.get(requestDeliveryId),
+            source: "new",
+          }),
+        replaceAcceptedWork: () => {
+          throw new Error("replaceAcceptedWork is not used by steering");
+        },
+        terminalize: async (input: {
+          requestDeliveryId: string;
+          outcome: { kind: string; code?: string };
+        }) => {
+          terminalized.push({
+            requestDeliveryId: input.requestDeliveryId,
+            kind: input.outcome.kind,
+            code: input.outcome.code,
+          });
+          return Result.ok(undefined);
+        },
+      } as unknown as BusAgentRunnerRequestDelivery,
+      issueControlCapability: () => ({ capability: "unconsumed-steer", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "unconsumed-steer",
+            doStream: async ({ prompt }) => {
+              modelCalls += 1;
+              if (modelCalls === 1) {
+                firstStarted.resolve(undefined);
+                await releaseFirst.promise;
+                throw new Error("provider rejected the request");
+              }
+              secondPrompt.resolve(JSON.stringify(prompt));
+              return level1TextStep("steer handled");
+            },
+          }),
+        }),
+    });
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestDeliveryId: first.requestDeliveryId,
+        requestId,
+        sessionId,
+        text: "first request",
+      });
+      await firstStarted.promise;
+      await publishRunnerRequest({
+        bus,
+        requestDeliveryId: steer.requestDeliveryId,
+        requestId,
+        sessionId,
+        queue: "steer",
+        text: "late steer",
+      });
+      releaseFirst.resolve(undefined);
+
+      await expect(secondPrompt.promise).resolves.toContain("late steer");
+      // The steer's delivery stays accepted until the run that applies it ends.
+      expect(terminalized.map(({ requestDeliveryId }) => requestDeliveryId)).toEqual([
+        first.requestDeliveryId,
+      ]);
+      await runner.waitForIdle();
+      expect(modelCalls).toBe(2);
+      // It ends as its own run's delivery, not as input the failed run applied.
+      expect(terminalized).toEqual([
+        { requestDeliveryId: first.requestDeliveryId, kind: "failed", code: undefined },
+        { requestDeliveryId: steer.requestDeliveryId, kind: "completed", code: undefined },
+      ]);
+    } finally {
+      releaseFirst.resolve(undefined);
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
   it("returns from an interrupt delivery before the agent settles", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const pluginManager = corePrimaryTestPluginManager();
@@ -951,6 +1149,270 @@ describe("session queue admission", () => {
       await runner.stop();
       await pluginManager.destroy();
       await bus.close();
+    }
+  });
+  /**
+   * Starts a runner whose first model call blocks until `releaseFirst`, then fails, so controls
+   * published meanwhile stay queued in the agent. Later calls record their last user message.
+   */
+  async function startUnconsumedControlRunner(hooks: {
+    readonly beforeTerminalize?: (requestDeliveryId: string) => Promise<void>;
+    readonly beforeQuestionCancel?: () => Promise<void>;
+  }) {
+    const baseBus = createLilacBus(createInMemoryRawBus());
+    const handled = new Map<string, ReturnType<typeof deferred<void>>>();
+    const handledDelivery = (requestDeliveryId: string) => {
+      const existing = handled.get(requestDeliveryId);
+      if (existing) return existing;
+      const created = deferred<void>();
+      handled.set(requestDeliveryId, created);
+      return created;
+    };
+    // Signals when the runner finishes handling a delivery, so a test can order its next step.
+    const bus: typeof baseBus = {
+      ...baseBus,
+      subscribeTopic: (topic, opts, handler, deliveryPolicy) =>
+        baseBus.subscribeTopic(
+          topic,
+          opts,
+          async (msg, ctx) => {
+            const result = await handler(msg, ctx);
+            const data = msg.data as { requestDeliveryId?: string };
+            if (data.requestDeliveryId) handledDelivery(data.requestDeliveryId).resolve(undefined);
+            return result;
+          },
+          deliveryPolicy,
+        ),
+    };
+    const pluginManager = corePrimaryTestPluginManager();
+    const sessionId = "unconsumed-controls";
+    const requestId = "github:unconsumed-controls:request";
+    const accepted = new Map<string, ReturnType<typeof acceptedRunnerDelivery>>();
+    const terminalized: Array<{ requestDeliveryId: string; kind: string; code?: string }> = [];
+    const prompts: string[][] = [];
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    let modelCalls = 0;
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "unconsumed-controls",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      ...(hooks.beforeQuestionCancel
+        ? {
+            questions: {
+              subscribe: () => () => {},
+              listDeferred: () => Result.ok([]),
+              cancelRequest: hooks.beforeQuestionCancel,
+            } as unknown as NonNullable<Parameters<typeof startBusAgentRunner>[0]["questions"]>,
+          }
+        : {}),
+      requestDelivery: {
+        handleDelivery: async (requestDeliveryId: string) =>
+          Result.ok({
+            disposition: "accepted",
+            record: accepted.get(requestDeliveryId),
+            source: "new",
+          }),
+        replaceAcceptedWork: () => {
+          throw new Error("replaceAcceptedWork is not used by these controls");
+        },
+        terminalize: async (input: {
+          requestDeliveryId: string;
+          outcome: { kind: string; code?: string };
+        }) => {
+          await hooks.beforeTerminalize?.(input.requestDeliveryId);
+          terminalized.push({
+            requestDeliveryId: input.requestDeliveryId,
+            kind: input.outcome.kind,
+            code: input.outcome.code,
+          });
+          return Result.ok(undefined);
+        },
+      } as unknown as BusAgentRunnerRequestDelivery,
+      issueControlCapability: () => ({ capability: "unconsumed-controls", principal: null }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "unconsumed-controls",
+            doStream: async ({ prompt }) => {
+              modelCalls += 1;
+              if (modelCalls === 1) {
+                firstStarted.resolve(undefined);
+                await releaseFirst.promise;
+                throw new Error("provider rejected the request");
+              }
+              prompts.push(userTexts(prompt));
+              return level1TextStep("handled");
+            },
+          }),
+        }),
+    });
+
+    const publish = async (input: {
+      readonly queue: "prompt" | "followUp" | "steer";
+      readonly text: string;
+      readonly requestId?: string;
+    }): Promise<string> => {
+      const delivery = acceptedRunnerDelivery({
+        requestDeliveryId: crypto.randomUUID(),
+        requestId: input.requestId ?? requestId,
+        sessionId,
+        queue: input.queue,
+        messages: [{ role: "user", content: input.text }],
+      });
+      accepted.set(delivery.requestDeliveryId, delivery);
+      return publishRunnerRequest({
+        bus,
+        requestDeliveryId: delivery.requestDeliveryId,
+        requestId: input.requestId ?? requestId,
+        sessionId,
+        queue: input.queue,
+        text: input.text,
+      });
+    };
+    /** Publishes a Cancel and resolves once the runner has handled it. */
+    const cancel = async (): Promise<void> => {
+      const requestDeliveryId = await publishRunnerRequest({
+        bus,
+        requestId,
+        sessionId,
+        queue: "interrupt",
+        text: "",
+        raw: { cancel: true },
+      });
+      await handledDelivery(requestDeliveryId).promise;
+    };
+
+    return {
+      runner,
+      publish,
+      cancel,
+      terminalized,
+      prompts,
+      firstStarted,
+      releaseFirst,
+      modelCalls: () => modelCalls,
+      close: async () => {
+        releaseFirst.resolve(undefined);
+        await runner.stop();
+        await pluginManager.destroy();
+        await baseBus.close();
+      },
+    };
+  }
+
+  function userTexts(prompt: readonly { role: string; content: unknown }[]): string[] {
+    return prompt.flatMap((message) =>
+      message.role === "user" && Array.isArray(message.content)
+        ? message.content.flatMap((part: { type?: string; text?: string }) =>
+            part.type === "text" && part.text ? [part.text] : [],
+          )
+        : [],
+    );
+  }
+
+  it("runs unconsumed steers and follow-ups in arrival order ahead of queued prompts", async () => {
+    const harness = await startUnconsumedControlRunner({});
+    try {
+      const first = await harness.publish({ queue: "prompt", text: "first request" });
+      await harness.firstStarted.promise;
+      const steer = await harness.publish({ queue: "steer", text: "early steer" });
+      const followUp = await harness.publish({ queue: "followUp", text: "follow-up" });
+      const queued = await harness.publish({
+        queue: "prompt",
+        text: "queued prompt",
+        requestId: "github:unconsumed-controls:queued",
+      });
+      const lateSteer = await harness.publish({ queue: "steer", text: "late steer" });
+      harness.releaseFirst.resolve(undefined);
+
+      await harness.runner.waitForIdle();
+
+      // The requeued controls share the request, so its next run coalesces them in arrival order.
+      expect(harness.prompts).toEqual([
+        ["early steer", "follow-up", "late steer"],
+        ["queued prompt"],
+      ]);
+      expect(harness.terminalized).toEqual([
+        { requestDeliveryId: first, kind: "failed", code: undefined },
+        { requestDeliveryId: steer, kind: "completed", code: undefined },
+        { requestDeliveryId: followUp, kind: "completed", code: "coalesced-into-active-run" },
+        { requestDeliveryId: lateSteer, kind: "completed", code: "coalesced-into-active-run" },
+        { requestDeliveryId: queued, kind: "completed", code: undefined },
+      ]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("drops unconsumed controls when a cancel lands during run cleanup", async () => {
+    const cleanupReached = deferred<void>();
+    const releaseCleanup = deferred<void>();
+    const harness = await startUnconsumedControlRunner({
+      beforeQuestionCancel: async () => {
+        cleanupReached.resolve(undefined);
+        await releaseCleanup.promise;
+      },
+    });
+    try {
+      const first = await harness.publish({ queue: "prompt", text: "first request" });
+      await harness.firstStarted.promise;
+      const steer = await harness.publish({ queue: "steer", text: "steer" });
+      const followUp = await harness.publish({ queue: "followUp", text: "follow-up" });
+      harness.releaseFirst.resolve(undefined);
+      await cleanupReached.promise;
+      await harness.cancel();
+      releaseCleanup.resolve(undefined);
+
+      await harness.runner.waitForIdle();
+
+      expect(harness.modelCalls()).toBe(1);
+      expect(harness.terminalized.map(({ requestDeliveryId }) => requestDeliveryId).sort()).toEqual(
+        [first, steer, followUp].sort(),
+      );
+    } finally {
+      releaseCleanup.resolve(undefined);
+      await harness.close();
+    }
+  });
+
+  it("cancels transferred controls when a cancel lands during run finalization", async () => {
+    let first = "";
+    const terminalizeReached = deferred<void>();
+    const releaseTerminalize = deferred<void>();
+    const harness = await startUnconsumedControlRunner({
+      beforeTerminalize: async (requestDeliveryId) => {
+        if (requestDeliveryId !== first) return;
+        terminalizeReached.resolve(undefined);
+        await releaseTerminalize.promise;
+      },
+    });
+    try {
+      first = await harness.publish({ queue: "prompt", text: "first request" });
+      await harness.firstStarted.promise;
+      const steer = await harness.publish({ queue: "steer", text: "steer" });
+      const followUp = await harness.publish({ queue: "followUp", text: "follow-up" });
+      harness.releaseFirst.resolve(undefined);
+      await terminalizeReached.promise;
+      await harness.cancel();
+      releaseTerminalize.resolve(undefined);
+
+      await harness.runner.waitForIdle();
+
+      expect(harness.modelCalls()).toBe(1);
+      expect(harness.terminalized).toEqual([
+        { requestDeliveryId: steer, kind: "cancelled", code: "cancelled-while-queued" },
+        { requestDeliveryId: followUp, kind: "cancelled", code: "cancelled-while-queued" },
+        { requestDeliveryId: first, kind: "failed", code: undefined },
+      ]);
+    } finally {
+      releaseTerminalize.resolve(undefined);
+      await harness.close();
     }
   });
 });

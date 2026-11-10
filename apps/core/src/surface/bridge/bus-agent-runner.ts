@@ -2143,7 +2143,11 @@ export async function startBusAgentRunner(params: {
                     readonly inputId: AgentInputQueueId;
                   }
                 | { readonly kind: "pending" } = { kind: "pending" },
+              appliedEntry: Enqueued = entry,
             ): void => {
+              if (checkpoint.kind === "queued") {
+                state.activeRun?.queuedControlEntries.set(checkpoint.inputId, appliedEntry);
+              }
               if (!entry.requestDeliveryId || !params.requestDelivery || !state.activeRun) return;
               if (!state.activeRun.retainedRequestDeliveries.has(entry.requestDeliveryId)) {
                 state.activeRun.retainedRequestDeliveries.set(entry.requestDeliveryId, {
@@ -2473,6 +2477,15 @@ export async function startBusAgentRunner(params: {
                     controlTargetFor(state.agent),
                   );
                 }
+                await cancelTransferredControls(
+                  {
+                    eventId: msg.id,
+                    controlRequestId: requestId,
+                    controlRequestClient: requestClient,
+                  },
+                  sessionId,
+                  state,
+                );
                 logQueueTransition({
                   action: "apply_to_active",
                   queueDepthBefore: state.queue.length,
@@ -2714,6 +2727,7 @@ export async function startBusAgentRunner(params: {
                             "completed",
                             "active-input-applied",
                             checkpoint,
+                            { ...mergedEntry, corePrimaryLineage: entry.corePrimaryLineage },
                           ),
                         (operation) => enqueueSessionControl(sessionId, operation),
                         controlTargetFor(runningAgent),
@@ -2758,6 +2772,17 @@ export async function startBusAgentRunner(params: {
                   if (applied === "target-ended") {
                     await routeAfterTargetEnded();
                     return;
+                  }
+                  if (requestControl.cancel) {
+                    await cancelTransferredControls(
+                      {
+                        eventId: msg.id,
+                        controlRequestId: requestId,
+                        controlRequestClient: requestClient,
+                      },
+                      sessionId,
+                      state,
+                    );
                   }
                 }
 
@@ -2867,6 +2892,14 @@ export async function startBusAgentRunner(params: {
   const ignoreDetachedFailure = async (operation: Promise<unknown>): Promise<void> => {
     await Result.tryPromise({ try: () => operation, catch: () => undefined });
   };
+  /** Logs a detached operation's failure, or forwards its Panic, once nobody awaits it. */
+  const superviseDetachedOperation = async (operation: Promise<unknown>): Promise<void> => {
+    const settled = await Result.tryPromise({ try: () => operation, catch: captureError });
+    settled.match({
+      ok: () => undefined,
+      err: ({ cause }) => superviseAgentRunnerBackgroundFailure(cause),
+    });
+  };
   const isRunnerAdmissionStop = (error: EventDeliveryStopped): boolean =>
     runnerAdmissionStopped && error.reason === "requested";
   const startSubscription = (): Promise<void> => {
@@ -2975,6 +3008,81 @@ export async function startBusAgentRunner(params: {
     const next = state.queue[0];
     if (!next || reservedQueueEntries.has(next)) return undefined;
     return next;
+  }
+
+  /**
+   * Collects controls the ended run queued but never consumed. Each gets its own identity owner
+   * now, while the run's owner still keeps the request's cache entry live.
+   */
+  function takeUnconsumedControls(state: SessionQueue): Enqueued[] {
+    const run = state.activeRun;
+    if (!run || !state.agent || run.queuedControlEntries.size === 0) return [];
+    const unconsumedInputIds = new Set<AgentInputQueueId>([
+      ...state.agent.getQueuedSteeringIds(),
+      ...state.agent.getQueuedFollowUpIds(),
+    ]);
+    // The map keeps arrival order across steers and follow-ups.
+    return [...run.queuedControlEntries].flatMap(([inputId, entry]) => {
+      if (!unconsumedInputIds.has(inputId)) return [];
+      const owner = requestMessageCache.acquireOwner(entry.requestId).match({
+        ok: (identityOwner) => identityOwner,
+        err: () => null,
+      });
+      return [{ ...entry, ...(owner ? { identityOwner: owner } : {}) }];
+    });
+  }
+
+  /**
+   * Runs unconsumed controls as the session's next prompts. Their deliveries leave the run's
+   * retained set, so each stays accepted until its own run ends.
+   */
+  function requeueUnconsumedControls(state: SessionQueue, controls: readonly Enqueued[]): void {
+    const run = state.activeRun;
+    if (!run || controls.length === 0) return;
+    for (const entry of controls) {
+      if (!entry.requestDeliveryId) continue;
+      run.retainedRequestDeliveries.delete(entry.requestDeliveryId);
+      run.checkpointedRetainedRequestDeliveryIds.delete(entry.requestDeliveryId);
+      logger.info("requeueing a control the ended run did not consume", {
+        requestId: entry.requestId,
+        sessionId: entry.sessionId,
+        requestDeliveryId: entry.requestDeliveryId,
+      });
+    }
+    run.transferredControls = [...controls];
+    state.queue.unshift(...controls);
+  }
+
+  function releaseControlOwners(controls: readonly Enqueued[]): void {
+    for (const control of controls) {
+      if (control.identityOwner) requestMessageCache.releaseOwner(control.identityOwner);
+    }
+  }
+
+  /**
+   * A cancel that reaches a run after it requeued its unconsumed controls cancels them as queued
+   * work, so they cannot start once the run finishes finalizing.
+   */
+  async function cancelTransferredControls(
+    control: Pick<QueueLifecycleAttempt, "eventId" | "controlRequestId" | "controlRequestClient">,
+    sessionId: string,
+    state: SessionQueue,
+  ): Promise<void> {
+    const transferred = (state.activeRun?.transferredControls ?? []).filter(
+      (entry) => state.queue.includes(entry) && !reservedQueueEntries.has(entry),
+    );
+    if (transferred.length === 0) return;
+    for (const entry of transferred) reservedQueueEntries.add(entry);
+    const attempt: QueueLifecycleAttempt = {
+      ...control,
+      sessionId,
+      kind: "queued-cancellation",
+      detail: "cancelled while queued",
+      pendingGroups: groupQueueCancellationEntries(transferred),
+      controlApplied: true,
+    };
+    queueLifecycleAttempts.set(control.eventId, attempt);
+    await resumeQueueLifecycleAttempt(attempt, state);
   }
 
   async function drainSessionQueue(sessionId: string, state: SessionQueue) {
@@ -3623,6 +3731,8 @@ export async function startBusAgentRunner(params: {
         next.retainedRequestDeliveries?.map(({ requestDeliveryId }) => requestDeliveryId),
       ),
       retainedRequestDeliveryByInputId: new Map(),
+      queuedControlEntries: new Map(),
+      transferredControls: [],
       journalHandle: null,
       nativeOutput,
       mcpImages,
@@ -7092,6 +7202,10 @@ export async function startBusAgentRunner(params: {
       const cleanupCoreNamedRuntime = getCoreNamedClaudeRuntime();
       const cleanupCorePrimaryRuntime = getCorePrimaryClaudeRuntime();
       const cleanupClaudeCodeRun = getClaudeCodeRun();
+      const unconsumedControls =
+        terminalPanic || cancelledByRequestId.has(headers.request_id)
+          ? []
+          : takeUnconsumedControls(state);
       if (next.identityOwner) requestMessageCache.releaseOwner(next.identityOwner);
       if (terminalPanic) {
         rejectPreAgentCancellation = null;
@@ -7264,6 +7378,17 @@ export async function startBusAgentRunner(params: {
       const finalReplayDeadline = outputPublisher.getFinalReplayDeadline();
       if (!terminalPanic && shouldTerminalizeRequest)
         await publishNativeTerminal(requestTerminalKind);
+      // A run left for recovery keeps its unconsumed controls, and recovery merges them back in.
+      // A cancel that landed during cleanup has cleared the agent queue they came from.
+      if (
+        !terminalPanic &&
+        shouldTerminalizeRequest &&
+        !cancelledByRequestId.has(headers.request_id)
+      ) {
+        requeueUnconsumedControls(state, unconsumedControls);
+      } else {
+        releaseControlOwners(unconsumedControls);
+      }
       const terminalSurfaceWriteSatisfied =
         !terminalSurfaceWriteAttempted || terminalSurfaceWriteInitiated;
       if (terminalSurfaceWriteSatisfied) markActiveRunTerminal();
@@ -7909,7 +8034,15 @@ export async function startBusAgentRunner(params: {
     stop: async (opts?: { readonly deadlineAtMs?: number }) => {
       const deadlineAtMs = opts?.deadlineAtMs ?? Date.now() + TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS;
       stopRunnerAdmission();
-      await stopSubscription();
+      // Subscription shutdown waits for in-flight bus handlers, so it must not outlive the caller's deadline.
+      const subscriptionStopped = stopSubscription();
+      void ignoreDetachedFailure(subscriptionStopped);
+      if (await settlesBefore([subscriptionStopped], deadlineAtMs)) {
+        await subscriptionStopped;
+      } else {
+        logger.warn("agent-runner subscription stop exceeded shutdown wait", { deadlineAtMs });
+        void ignoreDetachedFailure(superviseDetachedOperation(subscriptionStopped));
+      }
       await stopRunCheckpointWriters(deadlineAtMs);
       if (
         terminalCleanupCompletion &&
