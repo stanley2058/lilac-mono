@@ -7896,7 +7896,11 @@ export async function startBusAgentRunner(params: {
     stop: async (opts?: { readonly deadlineAtMs?: number }) => {
       const deadlineAtMs = opts?.deadlineAtMs ?? Date.now() + TERMINAL_CLEANUP_SHUTDOWN_WAIT_MS;
       stopRunnerAdmission();
-      await stopSubscription();
+      // Subscription shutdown waits for in-flight bus handlers, so it must not outlive the caller's deadline.
+      const subscriptionStopped = stopSubscription();
+      void ignoreDetachedFailure(subscriptionStopped);
+      if (await settlesBefore([subscriptionStopped], deadlineAtMs)) await subscriptionStopped;
+      else logger.warn("agent-runner subscription stop exceeded shutdown wait", { deadlineAtMs });
       await stopRunCheckpointWriters(deadlineAtMs);
       if (
         terminalCleanupCompletion &&

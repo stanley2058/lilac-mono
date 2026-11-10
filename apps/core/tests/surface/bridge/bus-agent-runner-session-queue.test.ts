@@ -714,6 +714,46 @@ describe("session queue admission", () => {
       await rm(dataDir, { recursive: true, force: true });
     }
   });
+  it("stops within the caller's deadline while the subscription stop hangs", async () => {
+    const baseBus = createLilacBus(createInMemoryRawBus());
+    const stopRequested = deferred<void>();
+    const bus: typeof baseBus = {
+      ...baseBus,
+      subscribeTopic: async (topic, opts, handler, deliveryPolicy) => {
+        const started = await baseBus.subscribeTopic(topic, opts, handler, deliveryPolicy);
+        return started.map((subscription) => ({
+          done: subscription.done,
+          stop: () => {
+            stopRequested.resolve(undefined);
+            return new Promise<never>(() => undefined);
+          },
+        }));
+      },
+    };
+    const pluginManager = corePrimaryTestPluginManager();
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "stop-subscription-deadline",
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      config: parseCoreConfigV2ToUniversal({}),
+      pluginManager,
+      issueControlCapability: () => ({ capability: "stop-subscription-deadline", principal: null }),
+      createAgent: () => {
+        throw new Error("no request is published");
+      },
+    });
+    try {
+      const startedAt = performance.now();
+      await runner.stop({ deadlineAtMs: Date.now() + 50 });
+      await stopRequested.promise;
+      expect(performance.now() - startedAt).toBeLessThan(2_000);
+    } finally {
+      await pluginManager.destroy();
+      await baseBus.close();
+    }
+  });
   it("evicts session state once its runs finish", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const pluginManager = corePrimaryTestPluginManager();
