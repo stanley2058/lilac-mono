@@ -958,6 +958,9 @@ export async function startDiscordRequestRouter(
     return undefined;
   };
   const buffers = new Map<string, DebounceBuffer>();
+  // Bumped when a direct trigger replaces the pending batch, so a flush already waiting on the
+  // gate does not publish a second request for the same context.
+  const debounceEpochs = new Map<string, number>();
   const pendingMentionReplyBatchBySession = new Map<string, PendingMentionReplyBatch>();
   const debounceDefect = Promise.withResolvers<ResultType<void, EventDeliveryDoneError>>();
   const evaluateRouterGate = (input: RouterGateInput): Promise<RouterGateDecision> => {
@@ -1805,6 +1808,11 @@ export async function startDiscordRequestRouter(
     },
   });
   if (adapterStartFailure) return adapterStartFailure;
+
+  function supersedeDebounceBuffer(sessionId: string) {
+    debounceEpochs.set(sessionId, (debounceEpochs.get(sessionId) ?? 0) + 1);
+    clearDebounceBuffer(sessionId);
+  }
 
   function clearDebounceBuffer(sessionId: string) {
     const b = buffers.get(sessionId);
@@ -2666,7 +2674,7 @@ export async function startDiscordRequestRouter(
 
     // No active request.
     if (continueCount !== undefined && !mentionsBot && !replyToBot && !hasReplyTarget) {
-      clearDebounceBuffer(sessionId);
+      supersedeDebounceBuffer(sessionId);
 
       return publishActiveChannelPrompt({
         adapter,
@@ -2694,7 +2702,7 @@ export async function startDiscordRequestRouter(
     if (mentionsBot || replyToBot) {
       // Mention/reply is a bypass trigger.
       // Discard any pending buffer to avoid a second gated request for the same context.
-      clearDebounceBuffer(sessionId);
+      supersedeDebounceBuffer(sessionId);
 
       const triggerType: "mention" | "reply" = replyToBot ? "reply" : "mention";
       const requestId = formatDiscordMessageRequestId({
@@ -2805,6 +2813,8 @@ export async function startDiscordRequestRouter(
     const b = buffers.get(sessionId);
     if (!b) return;
     clearDebounceBuffer(sessionId);
+    const epoch = debounceEpochs.get(sessionId);
+    const superseded = () => debounceEpochs.get(sessionId) !== epoch;
 
     // Gate is only for active channels with no running request.
     const gateEnabled = resolveSessionGateEnabled(cfg, b.sessionId, b.parentChannelId, b.guildId);
@@ -2838,6 +2848,21 @@ export async function startDiscordRequestRouter(
           return { forward: false, reason: "error" };
         },
       })();
+    }
+
+    if (superseded()) {
+      logger.info(
+        "router.route.decision",
+        formatBridgeLogContext({
+          sessionId,
+          mode: "active",
+          gateEnabled,
+          decision: "skip",
+          reason: "active_batch_superseded",
+          messageCount: b.messages.length,
+        }),
+      );
+      return;
     }
 
     if (!decision.forward) {
@@ -2891,6 +2916,7 @@ export async function startDiscordRequestRouter(
     const modelOverride =
       overrideCarrier?.model ?? b.messages[b.messages.length - 1]?.sessionModelOverride;
     const self = await adapter.getSelf();
+    if (superseded()) return;
     const newestBufferedMessage = b.messages[b.messages.length - 1];
 
     // Gate-forwarded prompt: do NOT reply-to a message.

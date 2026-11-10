@@ -2477,6 +2477,126 @@ describe("startBusRequestRouter", () => {
     await router.stop();
   });
 
+  it("drops a gated batch when a mention publishes while the gate is pending", async () => {
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const logger = new Logger({ module: "bus-request-router-supersede-test" });
+    const batchDecision = Promise.withResolvers<unknown>();
+    const info = spyOn(logger, "info").mockImplementation((message: unknown, context?: unknown) => {
+      if (message === "router.route.decision") batchDecision.resolve(context);
+    });
+
+    const sessionId = "chan";
+    const now = Date.now();
+    const adapter = new FakeAdapter({
+      [`${sessionId}:m1`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: "m1" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "hello there",
+        ts: now,
+        raw: { reference: {} },
+      },
+      [`${sessionId}:m2`]: {
+        ref: { platform: "discord", channelId: sessionId, messageId: "m2" },
+        session: { platform: "discord", channelId: sessionId },
+        userId: "u1",
+        userName: "user1",
+        text: "<@bot> hi",
+        ts: now + 1,
+        raw: { reference: {} },
+      },
+    });
+
+    const gateEntered = Promise.withResolvers<void>();
+    const gateDecision = Promise.withResolvers<{ forward: boolean; reason: string }>();
+    const router = await startBusRequestRouter({
+      adapter,
+      bus,
+      subscriptionId: "router-test",
+      logger,
+      routerGate: async () => {
+        gateEntered.resolve();
+        return await gateDecision.promise;
+      },
+      config: {
+        surface: {
+          discord: {
+            tokenEnv: "DISCORD_TOKEN",
+            allowedChannelIds: [],
+            allowedGuildIds: [],
+            botName: "lilac",
+            outputMode: "inline",
+            previewFinalOutputStyle: "embed",
+          },
+          router: {
+            defaultMode: "active",
+            sessionModes: {},
+            activeDebounceMs: 5,
+            activeGate: { enabled: true, timeoutMs: 2500 },
+          },
+        },
+        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
+        models: {
+          def: {},
+          main: { model: "openrouter/openai/gpt-4o" },
+          fast: { model: "openrouter/openai/gpt-4o-mini" },
+        },
+      },
+    });
+
+    const received: any[] = [];
+    const sub = await subscribeTopicForTest(
+      bus,
+      "cmd.request",
+      { mode: "fanout", subscriptionId: "test", consumerId: "c1" },
+      async (m) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) received.push(m);
+        return Result.ok(undefined);
+      },
+    );
+
+    await triggerRouterDebounce(
+      () =>
+        bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+          platform: "discord",
+          channelId: sessionId,
+          messageId: "m1",
+          userId: "u1",
+          userName: "user1",
+          text: "hello there",
+          ts: now,
+          raw: { discord: { isDMBased: false, mentionsBot: false, replyToBot: false } },
+        }),
+      gateEntered.promise,
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: "m2",
+      userId: "u1",
+      userName: "user1",
+      text: "<@bot> hi",
+      ts: now + 1,
+      raw: { discord: { isDMBased: false, mentionsBot: true, replyToBot: false } },
+    });
+    expect(received).toHaveLength(1);
+    expect(received[0].headers?.request_id).toBe(`discord:${sessionId}:m2`);
+
+    gateDecision.resolve({ forward: true, reason: "yes" });
+    expect(await batchDecision.promise).toMatchObject({
+      decision: "skip",
+      reason: "active_batch_superseded",
+    });
+    expect(received).toHaveLength(1);
+
+    info.mockRestore();
+    await sub.stop();
+    await router.stop();
+  });
+
   it("forwards active channel batch when gate is disabled", async () => {
     const raw = createInMemoryRawBus();
     const bus = createLilacBus(raw);
