@@ -92,7 +92,9 @@ export function FilePanelContent({
       <TooltipTrigger
         render={<div className="file-panel-heading flex items-center min-w-0 py-2 px-3 text-sm" />}
       >
-        <span>{file?.path ?? path}</span>
+        <span>
+          <bdi>{file?.path ?? path}</bdi>
+        </span>
       </TooltipTrigger>
       <TooltipContent>{file?.path ?? path}</TooltipContent>
     </Tooltip>

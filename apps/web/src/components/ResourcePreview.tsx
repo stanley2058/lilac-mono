@@ -1,3 +1,4 @@
+import { useEventCallback } from "../use-event-callback";
 import { FileIcon } from "./FileIcon";
 import { FileActions } from "./FileActions";
 import type { FileTarget } from "../file-target";
@@ -344,6 +345,25 @@ export function AttachmentPreviewBody({
     setDragging(false);
   }
   const previewImage = useRef<HTMLImageElement>(null);
+  const [fitScale, setFitScale] = useState(1);
+  const measureFit = useEventCallback(() => {
+    const image = previewImage.current;
+    const element = viewport.current;
+    if (!image?.naturalWidth || !element?.clientWidth) return;
+    setFitScale(
+      imageFitScale(
+        { width: image.naturalWidth, height: image.naturalHeight },
+        { width: element.clientWidth, height: element.clientHeight },
+      ),
+    );
+  });
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element || kind !== "image") return;
+    const observer = new ResizeObserver(() => measureFit());
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [kind, measureFit]);
   useEffect(() => {
     const element = viewport.current;
     if (!element || kind !== "image") return;
@@ -538,7 +558,7 @@ export function AttachmentPreviewBody({
         <div
           ref={content}
           className="media-preview-content min-w-0 [flex:0_0_auto] flex items-center justify-center m-auto"
-          style={{ width: `${zoom * 100}%`, height: `${zoom * 100}%` }}
+          style={{ width: `${zoom * fitScale * 100}%`, height: `${zoom * fitScale * 100}%` }}
         >
           {kind === "image" ? (
             <img
@@ -546,7 +566,10 @@ export function AttachmentPreviewBody({
               src={href}
               alt={name}
               draggable={false}
-              onLoad={() => setLoaded(true)}
+              onLoad={() => {
+                setLoaded(true);
+                measureFit();
+              }}
               onError={() => setFailed(true)}
             />
           ) : (
@@ -562,6 +585,19 @@ export function AttachmentPreviewBody({
       </div>
     </PreviewFrame>
   );
+}
+
+/**
+ * How much of the viewport the content box takes at 100% zoom. A small image shows at its natural
+ * size instead of stretching to fill the preview.
+ */
+export function imageFitScale(
+  image: { width: number; height: number },
+  viewport: { width: number; height: number },
+): number {
+  if (image.width <= 0 || image.height <= 0 || viewport.width <= 0 || viewport.height <= 0)
+    return 1;
+  return Math.min(1, Math.max(image.width / viewport.width, image.height / viewport.height));
 }
 
 export function isWithinContainedImage(

@@ -1,6 +1,6 @@
 import { FileIcon } from "./FileIcon";
 import { useState, type ReactNode } from "react";
-import { Copy, ScanEye, PanelRight } from "lucide-react";
+import { Copy, ImageOff, ScanEye, PanelRight } from "lucide-react";
 import { copyMessage, messageClipboardData } from "../message-clipboard";
 import { copyPreviewImage } from "../image-clipboard";
 import type { FileTarget } from "../file-target";
@@ -158,7 +158,20 @@ function ResolvedFileLink({ target }: { target: FileTarget }) {
 
 export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   const [preview, setPreview] = useState(false);
+  const [failed, setFailed] = useState<string>();
   if (!src) return <img alt={alt ?? ""} />;
+  if (failed === src)
+    return (
+      <span
+        className="inline-flex max-w-full items-center gap-2 rounded-md bg-surface px-3 py-2 align-middle text-xs text-muted-foreground [&_svg]:size-4 [&_svg]:flex-none"
+        role="img"
+        aria-label={alt ? `${alt}, image unavailable` : "Image unavailable"}
+        data-copy-content
+      >
+        <ImageOff aria-hidden />
+        <span className="min-w-0 truncate">{alt || "Image unavailable"}</span>
+      </span>
+    );
   const target: FileTarget = {
     type: "resource",
     href: src,
@@ -174,7 +187,13 @@ export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
         aria-label={`Preview ${target.name}`}
         onClick={() => setPreview(true)}
       >
-        <img src={src} alt={alt ?? ""} decoding="async" referrerPolicy="no-referrer" />
+        <img
+          src={src}
+          alt={alt ?? ""}
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(src)}
+        />
       </Button>
       {preview ? <FileTargetPreview target={target} onClose={() => setPreview(false)} /> : null}
     </FileActions>

@@ -5,6 +5,7 @@ import {
   loadHtmlFile,
   previewUrl,
 } from "../src/resource-preview";
+import { imageFitScale } from "../src/components/ResourcePreview";
 
 const originalFetch = globalThis.fetch;
 const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
@@ -91,4 +92,12 @@ test("HTML rendering does not display failed response bodies", async () => {
   expect(result.match({ ok: () => "unexpected", err: (error) => error.message })).toBe(
     "This file is unavailable.",
   );
+});
+
+test("a small image previews at its natural size and a large one fits the preview", () => {
+  const viewport = { width: 800, height: 600 };
+  expect(imageFitScale({ width: 200, height: 100 }, viewport)).toBe(0.25);
+  expect(imageFitScale({ width: 1600, height: 300 }, viewport)).toBe(1);
+  expect(imageFitScale({ width: 400, height: 1200 }, viewport)).toBe(1);
+  expect(imageFitScale({ width: 0, height: 0 }, viewport)).toBe(1);
 });
