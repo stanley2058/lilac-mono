@@ -244,8 +244,26 @@ function computeReplacements(
       );
     }
 
-    replacements.push([found, pattern.length, newSlice]);
     lineIndex = found + pattern.length;
+    let prefix = 0;
+    while (
+      prefix < pattern.length &&
+      prefix < newSlice.length &&
+      pattern[prefix] === newSlice[prefix]
+    )
+      prefix++;
+    let suffix = 0;
+    while (
+      suffix < pattern.length - prefix &&
+      suffix < newSlice.length - prefix &&
+      pattern[pattern.length - 1 - suffix] === newSlice[newSlice.length - 1 - suffix]
+    )
+      suffix++;
+    replacements.push([
+      found + prefix,
+      pattern.length - prefix - suffix,
+      newSlice.slice(prefix, newSlice.length - suffix),
+    ]);
   }
 
   replacements.sort((a, b) => a[0] - b[0]);
@@ -288,7 +306,9 @@ async function applyUpdateHunk(params: {
   const readError = originalContentResult.match({ ok: () => null, err: (error) => error });
   if (readError) return Result.err(readError);
   const originalContent = selectResultValue(originalContentResult);
-  const lineEnding = originalContent.includes("\r\n") ? "\r\n" : "\n";
+  const endings = originalContent.match(/\r?\n/g) ?? [];
+  const lineEnding =
+    endings.filter((ending) => ending === "\r\n").length > endings.length / 2 ? "\r\n" : "\n";
   let originalLines = originalContent.replace(/\r\n/g, "\n").split("\n");
   if (originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
     originalLines.pop();
@@ -296,9 +316,18 @@ async function applyUpdateHunk(params: {
   const replacementsResult = computeReplacements(originalLines, resolvedPath, chunks);
   const replacementsError = replacementsResult.match({ ok: () => null, err: (error) => error });
   if (replacementsError) return Result.err(replacementsError);
-  const newLines = applyReplacements(originalLines, selectResultValue(replacementsResult));
+  const replacements = selectResultValue(replacementsResult);
+  for (const [start, count, inserted] of [...replacements].reverse()) {
+    const previous = endings.slice(start, start + count);
+    endings.splice(start, count, ...inserted.map((_, index) => previous[index] ?? lineEnding));
+  }
+  const newLines = applyReplacements(originalLines, replacements);
   if (newLines.length === 0 || newLines[newLines.length - 1] !== "") newLines.push("");
-  const newContent = newLines.join(lineEnding);
+  const newContent = newLines
+    .map(
+      (line, index) => line + (index < newLines.length - 1 ? (endings[index] ?? lineEnding) : ""),
+    )
+    .join("");
   const target = moveToResolvedPath ?? resolvedPath;
   const directoryCancellation = checkApplyPatchCancellation(signal);
   const directoryCancellationError = directoryCancellation.match({

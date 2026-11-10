@@ -1,3 +1,4 @@
+import { lengthRecoveryContinueMessage } from "../agent-runtime-support";
 import { Result } from "better-result";
 import { AgentStateTransitionFailed } from "../agent-runtime-support";
 import { describe, expect, it, spyOn } from "bun:test";
@@ -2389,10 +2390,10 @@ it("compaction reserves system and tool tokens and summarizes an oversized answe
   let estimate = 0;
   let budget = 0;
   const agent = new AiSdkPiAgent({
-    system: "system instructions ".repeat(250),
+    system: "system instructions ".repeat(700),
     tools: {
       inspect: tool({
-        description: "tool description ".repeat(100),
+        description: "tool description ".repeat(400),
         inputSchema: jsonSchema({ type: "object" }),
         execute: async () => "ok",
       }),
@@ -2473,4 +2474,117 @@ it("rejects a failed transcript replacement before reporting compaction success"
     errors.mockRestore();
     detach();
   }
+});
+
+it("drops a reconstructed threshold trailer when a real user prompt supersedes it", async () => {
+  let modelInput = "";
+  const model = new MockLanguageModelV4({
+    doStream: async ({ prompt }) => {
+      modelInput = JSON.stringify(prompt);
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start" as const, id: "text" },
+            { type: "text-delta" as const, id: "text", delta: "new response" },
+            { type: "text-end" as const, id: "text" },
+            {
+              type: "finish" as const,
+              finishReason: { unified: "stop" as const, raw: "stop" },
+              usage: zeroUsage(),
+            },
+          ],
+        }),
+      };
+    },
+  });
+  let summaryCalls = 0;
+  const summaryModel = new MockLanguageModelV4({
+    doStream: async () => {
+      summaryCalls += 1;
+      throw new Error("stale small marker must not force compaction");
+    },
+  });
+  const agent = new AiSdkPiAgent({
+    system: "test",
+    model,
+    modelSpecifier: "test/main",
+    messages: [
+      { role: "user", content: "old request" },
+      { role: "assistant", content: "old response" },
+      lengthRecoveryContinueMessage(),
+    ],
+  });
+  const detach = await attachAutoCompaction(agent, {
+    model: "test/main",
+    modelCapability: new ModelCapability({ fetch: createRegistryFetch({}) }),
+    summaryModel,
+    resolveContextLimit: async () => ({ context: 10_000, output: 1_000 }),
+  });
+
+  try {
+    await agent.prompt("new actual request");
+  } finally {
+    detach();
+  }
+
+  expect(modelInput).not.toContain("autoCompactionContinue");
+  expect(modelInput).not.toContain("Continue if you have next steps");
+  expect(summaryCalls).toBe(0);
+  expect(agent.state.messages.map((message) => message.role)).toEqual([
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+  ]);
+  expect(agent.state.messages[2]?.content).toBe("new actual request");
+  expect(JSON.stringify(agent.state.messages)).not.toContain("autoCompactionContinue");
+});
+
+it("compacts an over-budget restored transcript after removing a superseded trailer", async () => {
+  let summaryCalls = 0;
+  const summaryModel = new MockLanguageModelV4({
+    doStream: async () => {
+      summaryCalls += 1;
+      return summaryResponse("Restored transcript summary.");
+    },
+  });
+  let providerInvokedBeforeCompaction = false;
+  const mainModel = new MockLanguageModelV4({
+    doStream: async () => {
+      providerInvokedBeforeCompaction = summaryCalls === 0;
+      return summaryResponse("new response");
+    },
+  });
+  const agent = new AiSdkPiAgent({
+    system: "test",
+    model: mainModel,
+    modelSpecifier: "test/main",
+    messages: [
+      { role: "user", content: `old request ${"a".repeat(20_000)}` },
+      { role: "assistant", content: `old response ${"b".repeat(20_000)}` },
+      lengthRecoveryContinueMessage(),
+    ],
+  });
+  const detach = await attachAutoCompaction(agent, {
+    model: "test/main",
+    modelCapability: new ModelCapability({ fetch: createRegistryFetch({}) }),
+    summaryModel,
+    thresholdInputSource: "transcript-estimate",
+    keepRecentTurns: 1,
+    keepRecentTokens: 500,
+    resolveContextLimit: async () => ({ context: 10_000, output: 1_000 }),
+  });
+
+  try {
+    await agent.prompt("new actual request");
+  } finally {
+    detach();
+  }
+
+  expect(summaryCalls).toBeGreaterThan(0);
+  expect(providerInvokedBeforeCompaction).toBe(false);
+  expect(mainModel.doStreamCalls).toHaveLength(1);
+  expect(agent.state.messages[0]?.content).toContain("Restored transcript summary.");
+  expect(agent.state.messages.at(-2)?.content).toBe("new actual request");
+  expect(JSON.stringify(agent.state.messages)).not.toContain("autoCompactionContinue");
 });

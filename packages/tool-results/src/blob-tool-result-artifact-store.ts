@@ -558,10 +558,8 @@ export function createBlobBackedToolResultArtifactStore(
       ),
     );
     if (!unlinked.ok) return Result.err(unlinked.error);
-    const deleted = await deleteBlob(metadata.blob);
-    return deleted.map(() => {
-      metadataIndex.delete(metadata.storageKey);
-    });
+    metadataIndex.delete(metadata.storageKey);
+    return deleteBlob(metadata.blob);
   }
 
   async function readContent(
@@ -921,10 +919,11 @@ export function createBlobBackedToolResultArtifactStore(
       () => {
         void exclusive(() => maintainUnlocked(Date.now())).then((result) => {
           result.match({
-            ok: () => scheduleMaintenance(),
+            ok: () => undefined,
             err: (error) =>
               logger.warn("tool.artifact.maintenance.failed", { message: error.message }),
           });
+          scheduleMaintenance();
         });
       },
       Math.max(1_000, Math.min(2_147_483_647, expiresAt - Date.now())),

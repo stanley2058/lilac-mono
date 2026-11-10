@@ -297,7 +297,9 @@ export function applyHashlineEdits(params: {
   content: string;
   edits: readonly HashlineEdit[];
 }): ResultType<AppliedHashlineEdits, HashlineEditFailed> {
-  const lineEnding = params.content.includes("\r\n") ? "\r\n" : "\n";
+  const endings = params.content.match(/\r?\n/g) ?? [];
+  const lineEnding =
+    endings.filter((ending) => ending === "\r\n").length > endings.length / 2 ? "\r\n" : "\n";
   const originalLines = params.content.replace(/\r\n/g, "\n").split("\n");
   const normalized: NormalizedHashlineEdit[] = [];
   for (let index = 0; index < params.edits.length; index++) {
@@ -332,18 +334,32 @@ export function applyHashlineEdits(params: {
 
   for (const edit of sorted) {
     if (edit.kind === "replace") {
+      const count = edit.endLine - edit.startLine + 1;
+      const previous = endings.slice(edit.startLine - 1, edit.endLine);
+      endings.splice(
+        edit.startLine - 1,
+        count,
+        ...edit.lines.map((_, index) => previous[index] ?? lineEnding),
+      );
       nextLines.splice(edit.startLine - 1, edit.endLine - edit.startLine + 1, ...edit.lines);
       continue;
     }
     if (edit.kind === "append") {
+      endings.splice(edit.line, 0, ...edit.lines.map(() => lineEnding));
       nextLines.splice(edit.line, 0, ...edit.lines);
       continue;
     }
+    endings.splice(edit.line - 1, 0, ...edit.lines.map(() => lineEnding));
     nextLines.splice(edit.line - 1, 0, ...edit.lines);
   }
 
   return Result.ok({
-    content: nextLines.join(lineEnding),
+    content: nextLines
+      .map(
+        (line, index) =>
+          line + (index < nextLines.length - 1 ? (endings[index] ?? lineEnding) : ""),
+      )
+      .join(""),
     appliedEditCount: normalized.length,
   });
 }

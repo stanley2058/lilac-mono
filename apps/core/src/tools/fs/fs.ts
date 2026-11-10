@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod/v4";
 import {
+  createStreamingTextWindow,
   EDIT_ERROR_CODES,
   FileSystem,
   READ_ERROR_CODES,
@@ -886,8 +887,6 @@ async function cancelVerifiedResource(read: VerifiedResourceRead): Promise<void>
   if (cancelled.kind === "defect") return adaptToolResultToHost(Result.err(cancelled.error));
   if (completion.kind === "defect") return adaptToolResultToHost(Result.err(completion.error));
 }
-
-import { createStreamingTextWindow } from "@stanley2058/lilac-fs";
 
 function createResourceTextWindow(params: {
   readonly uri: string;

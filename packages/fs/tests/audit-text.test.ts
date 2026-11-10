@@ -94,3 +94,47 @@ test("read preserves a standalone trailing carriage return", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+for (const [name, content, target, newText, expected] of [
+  ["mixed", "a\r\nb\nc\r\nd\n", "d", "D", "a\r\nb\nc\r\nD\n"],
+  ["CRLF target", "a\r\nb\r\n", "a\r\nb", "X", "X\r\n"],
+  ["many regex matches", "x = a;\n".repeat(150_000), "a", "b", "x = b;\n".repeat(150_000)],
+]) {
+  test(`snippet edits preserve endings: ${name}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "review-text-"));
+    try {
+      const file = join(root, "a");
+      await writeFile(file, content!);
+      const fs = new FileSystem(root);
+      const read = await fs.readFile({ path: file });
+      if (!read.success) throw new Error("fixture read failed");
+      expect(
+        await fs.editFile({
+          path: file,
+          expectedHash: read.fileHash,
+          edits: [
+            {
+              type: "replace_snippet",
+              target: target!,
+              newText: newText!,
+              matching: name === "many regex matches" ? "regex" : "exact",
+              occurrence: "all",
+              expectedMatches: "any",
+            },
+          ],
+        }),
+      ).toMatchObject({ success: true });
+      expect(await readFile(file, "utf8")).toBe(expected!);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+test("hashline preserves each mixed terminator", () => {
+  expect(
+    applyHashlineEdits({
+      content: "a\r\nb\nc\r\nd\n",
+      edits: [{ op: "replace", pos: formatHashlineLine(4, "d"), lines: "D" }],
+    }).unwrap().content,
+  ).toBe("a\r\nb\nc\r\nD\n");
+});

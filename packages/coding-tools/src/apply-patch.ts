@@ -61,7 +61,17 @@ function parseAddFileContent(
   let index = startIndex;
   while (index < lines.length && !lines[index]!.startsWith("***")) {
     const line = lines[index]!;
-    if (!line.startsWith("+")) return { contents: "", nextIndex: lines.length };
+    if (
+      line.trim() === "" &&
+      lines
+        .slice(index + 1)
+        .find((value) => value.trim() !== "")
+        ?.startsWith("***")
+    ) {
+      index++;
+      continue;
+    }
+    if (line !== "" && !line.startsWith("+")) return { contents: "", nextIndex: lines.length };
     contents += `${line.slice(1)}\n`;
     index++;
   }
@@ -76,6 +86,10 @@ function parseUpdateChunks(
   const chunks: UpdateFileChunk[] = [];
   let index = startIndex;
   while (index < lines.length && !lines[index]!.startsWith("***")) {
+    if (lines[index]!.trim() === "") {
+      index++;
+      continue;
+    }
     const header = lines[index]!;
     if (!header.startsWith("@@")) return { chunks: [], nextIndex: lines.length };
     const changeContext = header.slice(2).trim();
@@ -94,8 +108,18 @@ function parseUpdateChunks(
         index++;
         break;
       }
+      if (
+        line.trim() === "" &&
+        /^(?:@@|\*\*\*)/.test(lines.slice(index + 1).find((value) => value.trim() !== "") ?? "")
+      ) {
+        index++;
+        continue;
+      }
       const prefix = line[0];
-      if (prefix === " ") {
+      if (line === "") {
+        oldLines.push("");
+        newLines.push("");
+      } else if (prefix === " ") {
         oldLines.push(line.slice(1));
         newLines.push(line.slice(1));
       } else if (prefix === "-") {

@@ -1336,18 +1336,35 @@ export type AutoCompactionOptions = {
   onCompactionEnd?: (params: AutoCompactionEndEvent) => void;
 } & CompactionStreamHooks;
 
+function splitThresholdContinueTrailer(messages: readonly ModelMessage[]): {
+  messages: readonly ModelMessage[];
+  trailer: ModelMessage[];
+} {
+  if (!messages.some(isAutoContinueMessage)) return { messages, trailer: [] };
+
+  const retained: ModelMessage[] = [];
+  let trailer: ModelMessage[] = [];
+  for (const [index, message] of messages.entries()) {
+    if (!isAutoContinueMessage(message)) {
+      retained.push(cloneMessage(message));
+      continue;
+    }
+    if (index === messages.length - 1) trailer = [cloneMessage(message)];
+    else if (messages[index + 1]?.role === "assistant") retained.push(cloneMessage(message));
+  }
+  return { messages: retained, trailer };
+}
+
 type CompactRepairedMessagesOptions = {
   messages: readonly ModelMessage[];
   budget: InputCompactionBudget;
   summaryContextLimit: number;
   resolveModel: () => LanguageModel;
   providerOptions?: { [x: string]: JSONObject };
-  keepRecentTurns: number;
   keepRecentTokens: number;
   summarySystem: string;
   buildSummaryPrompt: (prefix: string) => string;
   buildSummaryUpdatePrompt: (previousSummary: string, nextTranscript: string) => string;
-  forceCompaction?: boolean;
   serverCompaction?: ServerCompactionFn;
   serverCompactionEnabled?: () => boolean;
   serverCompactionContext?: TransformMessagesContext;
@@ -1745,12 +1762,10 @@ async function compactCanonicalMessages(options: {
         summaryContextLimit: options.summaryContextLimit,
         resolveModel: options.resolveModel,
         providerOptions: options.providerOptions,
-        keepRecentTurns: 0,
         keepRecentTokens: 0,
         summarySystem: options.summarySystem,
         buildSummaryPrompt: options.buildSummaryPrompt,
         buildSummaryUpdatePrompt: options.buildSummaryUpdatePrompt,
-        forceCompaction: true,
         serverCompaction: options.serverCompaction,
         serverCompactionEnabled: options.serverCompactionEnabled,
         serverCompactionContext: options.context,
@@ -2106,7 +2121,17 @@ export async function attachAutoCompaction(
   };
 
   const canonicalModelCallPreflight: CanonicalModelCallPreflight = async (messages, context) => {
-    const canonicalMessages = messages;
+    const canonicalSeparated = splitThresholdContinueTrailer(messages);
+    const canonicalMessages = [...canonicalSeparated.messages, ...canonicalSeparated.trailer];
+    if (canonicalMessages.length !== messages.length) {
+      const replaced = resultOutcome(
+        agent.replaceMessages(canonicalMessages, {
+          reason: "replace",
+          preserveRecoveryCheckpoint: true,
+        }),
+      );
+      if (!replaced.ok) return signalAutoCompactionHost(autoCompactionFailure(replaced.error));
+    }
 
     const canonicalReference = agent.state.messages;
     const maybeTransformed = await preparePreparedModelView(canonicalMessages, context);
@@ -2181,7 +2206,8 @@ export async function attachAutoCompaction(
     // Be conservative: compact only when context ends with user/tool.
     if (lastMessage?.role === "assistant") return;
 
-    const compactableMessages = canonicalMessages;
+    const separated = canonicalSeparated;
+    const compactableMessages = separated.messages;
     if (compactableMessages.length === 0) return;
 
     const pendingReason = pendingCompactionReason;
@@ -2238,6 +2264,23 @@ export async function attachAutoCompaction(
       await captureAgentPromise(async () => {
         options.onCompactionStart?.(compactionEventBase);
 
+        const preparedTrailer = await prepareBudgetBase(separated.trailer, {
+          ...context,
+          canonicalStartIndex: separated.messages.length,
+        });
+        const trailerTokens = estimateMessagesTokens(preparedTrailer);
+        if (trailerTokens >= activeBudget.inputBudget) {
+          return signalAutoCompactionHost(
+            autoCompactionFailure(
+              new Error("Compaction continuation trailer exceeds the input budget."),
+            ),
+          );
+        }
+        const contentBudget = {
+          ...activeBudget,
+          inputBudget: activeBudget.inputBudget - trailerTokens,
+        };
+
         const summaryContextLimit = pickSummaryContextLimit({
           summaryContextLimit: await options.resolveSummaryContextLimit?.({
             abortSignal: context.abortSignal,
@@ -2251,7 +2294,7 @@ export async function attachAutoCompaction(
           prepareFullModelView: prepareBudgetBase,
           overlay,
           context,
-          budget: activeBudget,
+          budget: contentBudget,
           summaryContextLimit,
           resolveModel: () => resolveSummaryModel(summaryModel, agent.state.model),
           providerOptions: buildSummaryProviderOptions(agent.state.providerOptions),
@@ -2280,8 +2323,8 @@ export async function attachAutoCompaction(
               new Error("Compaction could not select transcript content for summarization."),
             ),
           );
-        const compacted = compactionOutcome.canonicalMessages;
-        const preparedCompacted = compactionOutcome.preparedMessages;
+        const compacted = [...compactionOutcome.canonicalMessages, ...separated.trailer];
+        const preparedCompacted = [...compactionOutcome.preparedMessages, ...preparedTrailer];
         nativeCompactionView = compactionOutcome.usesServerCompaction
           ? {
               canonicalPrefix: cloneMessages(compacted),
