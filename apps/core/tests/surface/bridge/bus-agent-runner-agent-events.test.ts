@@ -10,6 +10,7 @@ import {
   removeSilentAssistantTurnMessages,
   withBlankLineBetweenTextParts,
 } from "../../../src/surface/bridge/bus-agent-runner";
+import { clampReasoningDetail } from "../../../src/surface/bridge/relay-output-reducer";
 import { useTestBlobStore } from "./bus-agent-runner-test-support";
 
 useTestBlobStore();
@@ -71,8 +72,22 @@ describe("reasoning snapshot cap", () => {
       }).snapshot;
     }
     expect(state.chunks.get("r")).toHaveLength(10_000);
-    expect(snapshot?.delta).toHaveLength(4_001);
+    expect(snapshot?.delta).toHaveLength(4_000);
+    expect(snapshot?.delta.endsWith("…")).toBe(true);
     expect(snapshot?.seq).toBe(50);
+  });
+
+  it("keeps the relay truncation marker when the cut lands on whitespace", () => {
+    const state: ReasoningChunkState = { chunks: new Map(), seq: 0 };
+    const input = `${"a".repeat(4_000)} more reasoning`;
+    const snapshot = consumeReasoningChunkEvent(state, {
+      type: "delta",
+      chunkId: "r",
+      delta: input,
+    }).snapshot;
+    expect(state.chunks.get("r")).toBe(input);
+    expect(clampReasoningDetail(snapshot?.delta ?? "")).toBe(clampReasoningDetail(input));
+    expect(clampReasoningDetail(snapshot?.delta ?? "").endsWith("…")).toBe(true);
   });
 });
 

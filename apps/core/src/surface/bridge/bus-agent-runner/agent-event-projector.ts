@@ -1,5 +1,6 @@
 import { type ModelMessage } from "ai";
 import { openAIMessagePhase } from "@stanley2058/lilac-utils";
+import { clampReasoningDetail } from "../relay-output-reducer";
 import { resolveReplyDeliveryFromFinalText } from "../reply-directive";
 import { REASONING_DETAIL_MAX_CHARS } from "./output-publisher";
 
@@ -152,7 +153,11 @@ export function consumeReasoningChunkEvent(
   state.seq += 1;
   return {
     publishStart,
-    // One character past the relay limit is enough for the relay to mark the detail truncated.
-    snapshot: { delta: chunk.slice(0, REASONING_DETAIL_MAX_CHARS + 1), seq: state.seq },
+    // The relay trims before it measures, so a raw cut can lose its truncation marker; publish
+    // the relay's own clamped form once the chunk is past the limit.
+    snapshot: {
+      delta: chunk.length > REASONING_DETAIL_MAX_CHARS ? clampReasoningDetail(chunk) : chunk,
+      seq: state.seq,
+    },
   };
 }
