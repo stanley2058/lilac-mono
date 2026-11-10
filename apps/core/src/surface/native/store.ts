@@ -1725,11 +1725,14 @@ export class NativeStore {
           rows[0]?.revision === checkpoint.projectionRevision + 1 &&
           rows.at(-1)?.revision === thread.revision
         ) {
-          const decoded = yield* Result.all(rows.map((row) => decodeNativeRecord(row)));
+          // Older Core persisted changes without part-count bounds; an undecodable row falls back
+          // to a bounded window instead of failing every sync from this checkpoint.
+          const decodedResult = Result.all(rows.map((row) => decodeNativeRecord(row)));
+          const decoded = decodedResult.isOk() ? decodedResult.value : [];
           const changes = decoded.flatMap((record) =>
             record.value.kind === "replay" ? record.value.value.changes : [],
           );
-          const complete = rows.every((row) => row.kind !== "reset");
+          const complete = decodedResult.isOk() && rows.every((row) => row.kind !== "reset");
           if (
             complete &&
             changes.length <= 128 &&
@@ -2432,7 +2435,7 @@ export class NativeStore {
               WHERE json_extract(p.value,'$.type')='text') AS user_text,
             (SELECT substr(group_concat(substr(json_extract(p.value,'$.text'),1,8192),' '),1,8192)
               FROM json_each((SELECT m.value FROM json_each(r.data_json,'$.value.messages') m WHERE json_extract(m.value,'$.role')='assistant'
-                AND EXISTS(SELECT 1 FROM json_each(m.value,'$.parts') p WHERE json_extract(p.value,'$.type')='text' AND trim(json_extract(p.value,'$.text'), ' '||char(9,10,13))!='')
+                AND EXISTS(SELECT 1 FROM json_each(m.value,'$.parts') p WHERE json_extract(p.value,'$.type')='text' AND trim(json_extract(p.value,'$.text'), ' '||char(9,10,11,12,13,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))!='')
                 ORDER BY COALESCE(json_extract(m.value,'$.metadata.phase')='final',0) DESC, CAST(m.key AS INTEGER) DESC LIMIT 1),'$.parts') p
               WHERE json_extract(p.value,'$.type')='text') AS reply_text
           FROM native_records r INDEXED BY native_records_thread_position WHERE r.kind='turn' AND r.thread_id=? AND r.position IN (${positions.map(() => "?").join(",")}) ORDER BY r.position

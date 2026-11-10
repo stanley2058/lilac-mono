@@ -247,7 +247,7 @@ describe("native store adversarial regressions", () => {
     const receipt = submit("preview");
     for (const [id, text] of [
       ["reply", "Useful reply"],
-      ["blank", "\n\t\r"],
+      ["blank", "\n\t\r\u000b\f\u00a0\u2028\u3000\ufeff"],
     ]) {
       store
         .appendMessage(thread.id, 0, receipt.turnId!, {
@@ -265,6 +265,58 @@ describe("native store adversarial regressions", () => {
       })
       .unwrap();
     expect(previews[0]?.reply).toBe("Useful reply");
+    store.close();
+  });
+
+  test("syncs past an oversized change row written by older Core", () => {
+    const db = new Database(":memory:");
+    const store = new NativeStore(db);
+    store.initialize().unwrap();
+    store
+      .upsertUser({
+        id: "owner",
+        providerId: "owner",
+        displayName: "Owner",
+        role: "owner",
+        toolMode: "full",
+      })
+      .unwrap();
+    const thread = store.createThread("owner", { commandId: "create" }).unwrap();
+    const receipt = store
+      .acceptInput("owner", {
+        threadId: thread.id,
+        historyGeneration: 0,
+        commandId: "legacy",
+        text: "legacy",
+        mode: "prompt",
+        attachmentIds: [],
+        skillIds: [],
+      })
+      .unwrap();
+    const first = store.sync("owner", thread.id).unwrap();
+    const message = {
+      id: "big",
+      role: "assistant" as const,
+      parts: Array.from({ length: 129 }, (_, index) => ({
+        type: "text" as const,
+        text: `p${index}`,
+      })),
+    };
+    store.appendMessage(thread.id, 0, receipt.turnId!, message).unwrap();
+    const row = db
+      .query<{ revision: number; data_json: string }, [string]>(
+        "SELECT revision,data_json FROM native_changes WHERE thread_id=? ORDER BY revision DESC LIMIT 1",
+      )
+      .get(thread.id)!;
+    // Older Core stored the whole oversized message as one unbounded change.
+    const legacy = JSON.parse(row.data_json);
+    legacy.value.changes = [
+      { kind: "append-message", turnId: receipt.turnId, position: 0, message },
+    ];
+    db.query(
+      "UPDATE native_changes SET data_json=?, kind='turn' WHERE thread_id=? AND revision=?",
+    ).run(JSON.stringify(legacy), thread.id, row.revision);
+    expect(store.sync("owner", thread.id, first.checkpoint).unwrap().kind).toBe("window");
     store.close();
   });
 

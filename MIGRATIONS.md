@@ -766,8 +766,9 @@ accept after rollback. Four-segment cursors remain accepted by updated Core, inc
 Rollback clients and Core together; version 2 cache keys are separate from older bundles' version 1 keys.
 
 Replay changes containing messages over the 128-part wire limit now force a bounded replay window.
-The window exposes remaining parts through its parts cursor. Canonical stored turns remain complete;
-no database rewrite is required.
+The window exposes remaining parts through its parts cursor. Canonical stored turns remain complete.
+Change rows written by older Core may hold unbounded messages that fail to decode; a sync over such a
+row also falls back to the bounded window, so no database rewrite is required.
 
 The file editor now accepts UTF-8 documents up to 256 KiB. This leaves room for JSON escaping and RPC
 metadata inside the 2 MiB HTTP and WebSocket limits. Larger files remain readable through resource tools.
