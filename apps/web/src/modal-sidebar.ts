@@ -1,8 +1,8 @@
 import { useEffect, type RefObject } from "react";
 
 /**
- * While the sidebar overlays the conversation, everything behind it is inert, Escape closes it, and
- * focus returns to where it was when it opened.
+ * While the sidebar overlays the conversation, everything behind it is inert, Tab cycles through the
+ * toggle and the sidebar, Escape closes it, and focus returns to where it was when it opened.
  */
 export function useModalSidebar(
   shell: RefObject<HTMLElement | null>,
@@ -26,9 +26,24 @@ export function useModalSidebar(
       event.preventDefault();
       close();
     };
+    const cycleTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || event.defaultPrevented) return;
+      const focus = document.activeElement;
+      const escaped = !focus || focus === document.body;
+      const target = cycleTabStop<Element>(
+        tabStops([toggle, sidebar]),
+        escaped ? undefined : focus,
+        event.shiftKey,
+      );
+      if (!(target instanceof HTMLElement)) return;
+      event.preventDefault();
+      target.focus();
+    };
     window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("keydown", cycleTab);
     return () => {
       window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("keydown", cycleTab);
       for (const element of covered) element.inert = false;
       const focus = document.activeElement;
       const leftBehind =
@@ -36,6 +51,39 @@ export function useModalSidebar(
       if (leftBehind && restore?.isConnected && !restore.inert) restore.focus();
     };
   }, [shell, modal, close]);
+}
+
+/**
+ * The stop Tab moves to so focus cycles through `stops`, given in document order. Focus that has
+ * escaped to the page enters at the first or last stop. Focus elsewhere, such as an open menu,
+ * is left to the browser.
+ */
+export function cycleTabStop<T>(
+  stops: readonly T[],
+  active: T | undefined,
+  backward: boolean,
+): T | undefined {
+  const count = stops.length;
+  if (!count) return undefined;
+  if (active === undefined) return stops[backward ? count - 1 : 0];
+  const index = stops.indexOf(active);
+  if (index < 0) return undefined;
+  return stops[(index + (backward ? count - 1 : 1)) % count];
+}
+
+const tabbable = "a[href], button, input, select, textarea, [tabindex], [contenteditable=true]";
+
+/** Elements in `regions` that Tab can reach, in document order. */
+function tabStops(regions: readonly HTMLElement[]): HTMLElement[] {
+  return regions
+    .flatMap((region) => [...region.querySelectorAll<HTMLElement>(tabbable)])
+    .filter(
+      (element) =>
+        element.tabIndex >= 0 &&
+        !element.matches(":disabled") &&
+        !element.closest("[inert]") &&
+        element.checkVisibility({ visibilityProperty: true }),
+    );
 }
 
 /** Siblings of the sidebar and its toggle, up to the shell, except the click-away overlay. */
