@@ -2661,7 +2661,6 @@ describe("permanent architecture governance", () => {
     );
 
     for (const required of [
-      "apps/core:src/migration/frozen-graceful-restart-store.ts#decodeGracefulRestartSnapshot->src/migration/frozen-graceful-restart-store.ts#gracefulRestartSnapshotCodecCases",
       "apps/core:src/workflow/workflow-persistence-codec.ts#decodeWorkflowPersistenceRow->src/workflow/workflow-persistence-codec.ts#workflowPersistenceRowCodecCases",
       "packages/tool-results:src/blob-tool-result-artifact-metadata-codec.ts#decodeBlobToolResultArtifactMetadata->src/blob-tool-result-artifact-metadata-codec.ts#blobToolResultArtifactMetadataCodecCases",
       "packages/utils:codex-oauth.ts#decodeCodexTokens->codex-oauth.ts#codexTokensCodecCases",

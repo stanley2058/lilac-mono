@@ -677,3 +677,19 @@ describe("resident tools worker", () => {
     }
   });
 });
+
+it("bounds native health requests when the worker accepts but never replies", async () => {
+  const child = Bun.spawn(
+    ["go", "test", "native-launcher.go", "native-launcher_test.go", "-timeout=10s"],
+    { cwd: import.meta.dir, stdout: "pipe", stderr: "pipe" },
+  );
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect({ code, diagnostic: code === 0 ? "" : stdout + stderr }).toEqual({
+    code: 0,
+    diagnostic: "",
+  });
+}, 60_000);

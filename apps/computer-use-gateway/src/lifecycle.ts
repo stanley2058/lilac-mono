@@ -236,8 +236,8 @@ export class ComputerLifecycle {
     return Result.gen(async function* (this: ComputerLifecycle) {
       if (record.state !== "ready" || record.expiresAt <= this.now() || !record.containerId)
         return Result.ok(false);
-      const containers = yield* Result.await(this.docker.list());
-      if (!containers.some((item) => this.matches(record, item))) return Result.ok(false);
+      const container = yield* Result.await(this.docker.inspect(record.containerId));
+      if (!container || !this.matches(record, container)) return Result.ok(false);
       return await this.runtimeUsable(record, "info");
     }, this);
   }
@@ -248,7 +248,7 @@ export class ComputerLifecycle {
     const reply = probe.match({ ok: (value) => value, err: () => null });
     if (reply) return Result.ok(reply.ok && reply.generation === record.runtimeId);
     // A failed exec can mean a lost Python socket or a lost Docker daemon. Inspect before cleanup.
-    return (await this.docker.list()).map(() => false);
+    return (await this.docker.inspect(record.containerId)).map(() => false);
   }
 
   execute(session: string, code: string, signal?: AbortSignal) {

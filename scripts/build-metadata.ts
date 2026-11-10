@@ -28,11 +28,15 @@ function parseBooleanish(value: string | undefined): boolean | undefined {
 
 function readGitCommit(workspaceRoot: string): string {
   try {
-    const commit = execFileSync("git", ["rev-parse", `--short=${GIT_SHORT_COMMIT_LENGTH}`, "HEAD"], {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    const commit = execFileSync(
+      "git",
+      ["rev-parse", `--short=${GIT_SHORT_COMMIT_LENGTH}`, "HEAD"],
+      {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
     return commit.length > 0 ? commit : DEFAULT_COMMIT;
   } catch {
     return DEFAULT_COMMIT;
@@ -56,7 +60,9 @@ function readGitDirty(workspaceRoot: string): boolean | undefined {
   }
 }
 
-export function collectBuildMetadata(workspaceRoot = findWorkspaceRoot(process.cwd())): BuildMetadata {
+export function collectBuildMetadata(
+  workspaceRoot = findWorkspaceRoot(process.cwd()),
+): BuildMetadata {
   const version =
     readNonEmpty(process.env.LILAC_BUILD_VERSION) ??
     readNonEmpty(process.env.npm_package_version) ??

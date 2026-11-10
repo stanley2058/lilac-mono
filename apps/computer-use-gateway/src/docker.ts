@@ -23,6 +23,7 @@ export type Container = {
   bindAddress: string | null;
 };
 export interface RunnerDocker {
+  inspect(id: string): Promise<ResultType<Container | undefined, GatewayFailure>>;
   list(): Promise<ResultType<Container[], GatewayFailure>>;
   create(record: RunnerRecord): Promise<ResultType<string, GatewayFailure>>;
   start(id: string): Promise<ResultType<void, GatewayFailure>>;
@@ -178,6 +179,14 @@ export class DockerCli implements RunnerDocker {
     private readonly run: typeof dockerCommand = dockerCommand,
     private readonly template: RunnerTemplate = { environment: {}, mounts: [] },
   ) {}
+
+  async inspect(id: string) {
+    return (await this.run(["inspect", id], { missingId: id })).andThen((text) =>
+      text
+        ? decodeContainers(text, this.config.owner).map((items) => items[0])
+        : Result.ok(undefined),
+    );
+  }
 
   async list() {
     const owner = this.config.owner;

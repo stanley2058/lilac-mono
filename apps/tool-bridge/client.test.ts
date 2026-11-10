@@ -1040,7 +1040,7 @@ describe("tool-bridge positional input", () => {
     if (parsed.type !== "call") return;
 
     expect(expectOk(await buildToolInput(parsed, { field: "paths", variadic: true }))).toEqual({
-      paths: ["a.png", "b.png"],
+      paths: [path.resolve("a.png"), path.resolve("b.png")],
       filenames: ["renamed-a.png", "renamed-b.png"],
     });
   });
@@ -1092,4 +1092,51 @@ describe("tool-bridge positional input", () => {
       "Primary positional <url> conflicts with an existing 'url' value",
     );
   });
+});
+
+it("preserves path-like text in non-path fields", async () => {
+  const parsed = expectOk(
+    parseArgs(["fixture", "--text=/tmp/example", "--pattern=../source", "--path=./source"]),
+  );
+  if (parsed.type !== "call") throw new Error("expected call");
+  expect(expectOk(await buildToolInput(parsed))).toEqual({
+    text: "/tmp/example",
+    pattern: "../source",
+    path: path.resolve("source"),
+  });
+});
+
+it("runs --yes onboarding through a resident TTY invocation without opening prompts", async () => {
+  const { runCapturedCliInvocation } = await import("./client");
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      Response.json({
+        status: "error",
+        error: {
+          kind: "denied",
+          code: "fixture_denied",
+          message: "Reached onboarding",
+          retryable: false,
+        },
+      }),
+  });
+  try {
+    const response = await runCapturedCliInvocation(
+      {
+        buildId: "test",
+        args: ["onboard", "--yes", "--no-sign"],
+        cwd: process.cwd(),
+        env: { TOOL_SERVER_BACKEND_URL: `http://127.0.0.1:${server.port}` },
+        stdin: "",
+        stdinIsTTY: true,
+        stdoutIsTTY: false,
+      },
+      new AbortController().signal,
+    );
+    expect(response.stderr).toContain("Reached onboarding");
+    expect(response.stderr).not.toContain("Interactive onboarding");
+  } finally {
+    server.stop(true);
+  }
 });

@@ -42,6 +42,20 @@ jobs:
           fi
           echo "should-release=true" >> "$GITHUB_OUTPUT"
 
+      - name: Require successful CI for this exact commit
+        if: steps.check.outputs.should-release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          count=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" -f status=success -f event=push -f per_page=100 \
+            --jq '[.workflow_runs[] | select(.head_sha == env.GITHUB_SHA and .conclusion == "success")] | length')
+          if [ "$count" -eq 0 ]; then
+            echo "Release requires successful push CI for $GITHUB_SHA." >&2
+            exit 1
+          fi
+
       - name: Select one release identity
         id: info
         shell: bash

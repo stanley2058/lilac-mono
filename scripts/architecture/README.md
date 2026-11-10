@@ -102,21 +102,21 @@ separate syntax exception catalog.
 ### Unified blob storage
 
 `BLOB_STORAGE_ARCHITECTURE_POLICY` registers the storage workspace, adapter construction owners, Core
-close owner, materialization modules, current event schema, and offline migration modules. The syntax
+close owner, materialization modules, current event schema, and benchmark target modules. The syntax
 gate enforces these contracts:
 
 - only `packages/blob-storage` imports Bun S3 storage operations;
 - `packages/blob-storage` does not import another Lilac workspace domain;
-- only registered composition and migration modules construct adapters;
+- only registered composition and benchmark modules construct adapters;
 - current event schemas and Core databases do not store managed inline bytes;
-- only the Core runtime owner closes the runtime-composed `BlobStore`; the offline migration entrypoint
-  closes the separate store it constructs;
+- only the Core runtime owner closes the runtime-composed `BlobStore`; the benchmark closes its
+  separate store;
 - `BlobStore.open` stays in registered hydration or materialization modules; and
-- legacy blob decoder imports stay in the registered offline migration task.
+- legacy blob decoder imports are forbidden.
 
 The Core BLOB-column check has one registered structured-data exception: conversation-thread vector
-embeddings. Migration modules are exact registrations because their job is to read and remove legacy byte
-formats; runtime modules receive no compatibility exemption.
+embeddings. Legacy migration tools were removed after `f2c90667`. Older deployments must follow the cutoff
+in `MIGRATIONS.md` before upgrading.
 
 Semantic and syntax checks share the exclusions in `source-policy.ts`. Test modules, test-support
 trees, vendored source, generated output, and the Core remote-runner bundle are excluded. Generated
@@ -192,8 +192,7 @@ exits. The operating system then reclaims the Program, checker, source files, an
 Package-root, event-delivery, persistence, and approved-exception catalogs are still derived from the full
 manifest in every workspace analysis, so partitioning does not narrow cross-workspace rules.
 
-The default is one worker, preserving the lowest-memory serial path used by `lint` and CI. Local `check`
-uses two workers. Worker output is bounded, captured, and emitted in manifest order so diagnostics remain
+The default is one worker, preserving the lowest-memory serial path used by `lint` and CI. Local `check` runs two gates concurrently. Worker output is bounded, captured, and emitted in manifest order so diagnostics remain
 deterministic even when workers overlap. Exit status is aggregated so findings from any worker fail the
 parent command; an unexpected worker exit stops new scheduling and fails closed. Each worker constructs
 and validates its TypeScript Program, then reuses completed workspace diagnostics from a repository-scoped

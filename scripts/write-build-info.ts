@@ -21,10 +21,7 @@ function parseBooleanish(value: string | undefined): boolean | undefined {
 
 async function main() {
   const workspaceRoot = findWorkspaceRoot(process.cwd());
-  const outputPath = path.resolve(
-    workspaceRoot,
-    readArg("--output=") ?? DEFAULT_BUILD_INFO_PATH,
-  );
+  const outputPath = path.resolve(workspaceRoot, readArg("--output=") ?? DEFAULT_BUILD_INFO_PATH);
   const metadata = collectBuildMetadata(workspaceRoot);
   const overrideVersion = readArg("--version=");
   const overrideCommit = readArg("--commit=");

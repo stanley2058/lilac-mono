@@ -1857,7 +1857,7 @@ async function runOnboardingWizard(
   }
 
   let prompt: PromptInterface | null = null;
-  if (runtimeStdinIsTTY()) {
+  if (!parsed.yes && runtimeStdinIsTTY()) {
     const opened = resultOutcome(await openPromptInterface());
     if (!opened.ok) return Result.err(opened.error);
     prompt = opened.value;
@@ -1945,23 +1945,6 @@ async function readStdinText(): Promise<ResultType<string, BridgeExternalOperati
   );
 }
 
-function looksLikePath(value: string) {
-  if (value.includes("://")) return false;
-  if (value === "~" || value.startsWith("~/") || value.startsWith("~\\")) {
-    return true;
-  }
-  if (value.startsWith("./") || value.startsWith("../")) return true;
-  if (value.startsWith("/")) return true;
-  if (/^[a-zA-Z]:[\\/]/.test(value)) return true;
-  return false;
-}
-
-function looksLikeBase64(value: string) {
-  if (value.length < 32) return false;
-  if (value.length > 10_000) return true;
-  return /^[A-Za-z0-9+/]+={0,2}$/.test(value);
-}
-
 function expandTilde(value: string) {
   const home = runtimeEnv("HOME") || homedir();
   if (value === "~") return home;
@@ -1976,14 +1959,7 @@ function normalizeMaybePath(field: string, value: string) {
   const fieldLower = field.toLowerCase();
   const isPathField = fieldLower.endsWith("path");
 
-  // Avoid mis-detecting base64 (often starts with "/" e.g. "/9j/").
-  if (fieldLower.includes("base64") || looksLikeBase64(value)) return value;
-
-  // For unknown flags, only normalize *very* path-like values.
-  // This keeps the CLI generic while avoiding false positives.
-  const shouldNormalize = isPathField || (looksLikePath(value) && value.length <= 512);
-
-  if (!shouldNormalize) return value;
+  if (!isPathField && !fieldLower.endsWith("paths") && !fieldLower.endsWith("dir")) return value;
   return resolve(runtimeCwd(), expandTilde(value));
 }
 

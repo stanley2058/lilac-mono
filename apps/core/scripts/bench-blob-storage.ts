@@ -13,9 +13,9 @@ import {
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
 import {
-  createBlobMigrationTargetStore,
-  loadBlobMigrationTargetConfig,
-} from "./blob-migration-target";
+  createBlobBenchmarkTargetStore,
+  loadBlobBenchmarkTargetConfig,
+} from "./blob-benchmark-target";
 
 const IMAGE_WIDTH = 592;
 const IMAGE_HEIGHT = 590;
@@ -234,7 +234,7 @@ export async function runBlobStorageBenchmark(
   const setup = prepared.match({ ok: (value) => value, err: () => null });
   if (setup === null) return prepared.map(() => []);
 
-  const loaded = await loadBlobMigrationTargetConfig({
+  const loaded = await loadBlobBenchmarkTargetConfig({
     configPath: options.configPath,
     dataDir: options.dataDir,
   });
@@ -243,7 +243,7 @@ export async function runBlobStorageBenchmark(
     await removeBenchmarkDirectory(setup.directory);
     return Result.err(benchmarkFailure("Blob storage benchmark configuration failed"));
   }
-  const created = await createBlobMigrationTargetStore(target);
+  const created = await createBlobBenchmarkTargetStore(target);
   const store = created.match({ ok: (value) => value, err: () => null });
   if (store === null) {
     await removeBenchmarkDirectory(setup.directory);
