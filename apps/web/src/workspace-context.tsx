@@ -12,6 +12,11 @@ import { createDraftStore } from "./draft-store";
 import { createKeybindings } from "./keybindings";
 import { createPreferences } from "./preferences";
 import { releaseDraftAttachments } from "./draft-thread";
+import {
+  createThreadMetadataStore,
+  followClientThreads,
+  type ThreadMetadataStore,
+} from "./thread-metadata-store";
 
 type WorkspaceServices = Pick<
   AppProps,
@@ -25,6 +30,7 @@ type WorkspaceServices = Pick<
   notifications: ReturnType<typeof createNotificationPreferences>;
   backgroundPush: ReturnType<typeof createBackgroundPush>;
   presence: ReturnType<typeof createThreadPresence>;
+  threadMetadata: ThreadMetadataStore;
   preferences: ReturnType<typeof createPreferences>;
 };
 const WorkspaceContext = createContext<WorkspaceServices | undefined>(undefined);
@@ -57,6 +63,11 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
   const panels = useMemo(() => createPanelStore(scope), [scope.installationId, scope.principalId]);
   const pool = useMemo(() => new UploadPool(client, upload), [client, upload]);
   const drafts = useMemo(() => createDraftStore(), [client]);
+  const threadMetadata = useMemo(
+    () => createThreadMetadataStore(props.initial.threads.items),
+    [client],
+  );
+  useEffect(() => followClientThreads(threadMetadata, client), [threadMetadata, client]);
   const preferences = useMemo(
     () => createPreferences(scope),
     [scope.installationId, scope.principalId],
@@ -95,6 +106,7 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
       authProvider,
       pool,
       drafts,
+      threadMetadata,
       notifications,
       backgroundPush,
       presence,
@@ -114,6 +126,7 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
       authProvider,
       pool,
       drafts,
+      threadMetadata,
       notifications,
       backgroundPush,
       presence,

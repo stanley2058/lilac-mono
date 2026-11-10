@@ -161,6 +161,7 @@ function Workspace(props: AppProps) {
     notifications,
     backgroundPush,
     presence,
+    threadMetadata,
   } = useWorkspace();
   const draftIds = useStore(draftStore, (state) => state.ids);
   const setLocalDrafts = draftStore.getState().setLocalDrafts;
@@ -357,7 +358,10 @@ function Workspace(props: AppProps) {
     [],
   );
   const readTurns = useRef(new Map<string, string>());
-  const selected = threads.find((thread) => thread.id === selectedId);
+  // Metadata comes from the shared store, so a conversation found only in a sidebar page still has it.
+  const selected = useStore(threadMetadata, (state) =>
+    selectedId ? state.threads.get(selectedId) : undefined,
+  );
   const owner = viewer.role === "owner";
   const activeRef = useRef(active);
   activeRef.current = active;
@@ -544,8 +548,10 @@ function Workspace(props: AppProps) {
     enabled: online && !!selectedId && !selectedId.startsWith("draft:") && !selected,
   });
   useEffect(() => {
-    if (selectedMetadata.data && !selected) upsert(selectedMetadata.data);
-  }, [selectedMetadata.data, !!selected, upsert]);
+    if (!selectedMetadata.data) return;
+    threadMetadata.getState().put([selectedMetadata.data]);
+    upsert(selectedMetadata.data);
+  }, [selectedMetadata.data, threadMetadata, upsert]);
   function changeLocalDraft(id: string, update: (thread: DraftThread) => DraftThread) {
     const current = draftStore.getState().localDrafts.get(id);
     if (!current) return;
@@ -800,7 +806,7 @@ function Workspace(props: AppProps) {
     }
     if (!client.rpc) return;
     const target =
-      threads.find((thread) => thread.id === id) ??
+      threadMetadata.getState().threads.get(id) ??
       (await attempt(() => client.rpc!.threads.get({ threadId: id }), setError));
     if (!target) return;
     const revision = client.thread(id).checkpoint?.projectionRevision ?? target.revision;
@@ -1183,7 +1189,6 @@ function Workspace(props: AppProps) {
                                     viewer={viewer}
                                     external={external}
                                     models={catalog?.models}
-                                    onThread={upsert}
                                     onSelect={select}
                                     onRename={renameSidebarThread}
                                     onRegenerateTitle={regenerateSidebarTitle}

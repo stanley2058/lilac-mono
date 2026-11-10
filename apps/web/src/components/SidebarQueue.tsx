@@ -2,6 +2,7 @@ import { useThreadTargets } from "../shortcuts";
 import { SidebarEmptyState } from "./SidebarEmptyState";
 import { useEventCallback } from "../use-event-callback";
 import { memo, useEffect, useState } from "react";
+import { useStore } from "zustand";
 import {
   useInfiniteQuery,
   useQuery,
@@ -38,7 +39,6 @@ export const SidebarQueue = memo(function SidebarQueue({
   onArchive,
   onDelete,
   onDiscardDraft,
-  onThread,
 }: {
   fallbackThreads?: NativeThread[];
   draftIds: string[];
@@ -51,9 +51,9 @@ export const SidebarQueue = memo(function SidebarQueue({
   onArchive: (id: string, archived: boolean) => void;
   onDelete: (id: string) => void;
   onDiscardDraft: (id: string) => void;
-  onThread: (thread: NativeThread) => void;
 }) {
-  const { client } = useWorkspace();
+  const { client, threadMetadata } = useWorkspace();
+  const latest = useStore(threadMetadata, (state) => state.threads);
   const queries = useQueryClient();
   const online = useNativeOnline(client);
   const [settledOpen, setSettledOpen] = useState(false);
@@ -69,7 +69,17 @@ export const SidebarQueue = memo(function SidebarQueue({
       updatedAt: sections[section].dataUpdatedAt,
     })),
     online ? [] : (fallbackThreads ?? []),
+    (id) => latest.get(id),
   );
+  useEffect(() => {
+    threadMetadata
+      .getState()
+      .put(
+        [pinned.data, active.data, settled.data].flatMap(
+          (data) => data?.pages.flatMap((page) => page.items) ?? [],
+        ),
+      );
+  }, [threadMetadata, pinned.data, active.data, settled.data]);
   queues.active.unshift(...draftIds.map((id) => ({ id })));
   const totals = {
     pinned: pinned.data?.pages[0]?.total ?? 0,
@@ -84,31 +94,18 @@ export const SidebarQueue = memo(function SidebarQueue({
           return;
         }
         if (event.kind !== "thread") return;
+        // Rows read the new metadata from the shared store; only membership changes need a refetch.
         let known = false,
           needsRefresh = event.thread.archived;
         for (const section of sidebarSections) {
-          if (
-            !queries
-              .getQueryData<InfiniteData<Page>>(["sidebar", section])
-              ?.pages.some((page) => page.items.some((thread) => thread.id === event.thread.id))
-          )
-            continue;
-          queries.setQueryData<InfiniteData<Page>>(["sidebar", section], (data) => {
-            if (!data) return data;
-            return {
-              ...data,
-              pages: data.pages.map((page) => ({
-                ...page,
-                items: page.items.map((thread) => {
-                  if (thread.id !== event.thread.id) return thread;
-                  known = true;
-                  if (section === "settled" && event.thread.updatedAt > thread.updatedAt)
-                    needsRefresh = true;
-                  return event.thread;
-                }),
-              })),
-            };
-          });
+          const listed = queries
+            .getQueryData<InfiniteData<Page>>(["sidebar", section])
+            ?.pages.flatMap((page) => page.items)
+            .find((thread) => thread.id === event.thread.id);
+          if (!listed) continue;
+          known = true;
+          if (section === "settled" && event.thread.updatedAt > listed.updatedAt)
+            needsRefresh = true;
         }
         if (!known || needsRefresh) void refreshSidebar(queries);
       }),
@@ -131,30 +128,15 @@ export const SidebarQueue = memo(function SidebarQueue({
       !sections[section].isError,
   );
   const error = move.error ?? pinned.error ?? active.error ?? settledCount.error ?? settled.error;
-  function remember(id: string) {
-    const source = sidebarSections
-      .flatMap((section) => visible[section])
-      .find((entry) => entry.id === id)?.source;
-    if (source) onThread(source);
-  }
-  const select = useEventCallback((id: string) => {
-    remember(id);
-    onSelect(id);
-  });
+  const select = useEventCallback((id: string) => onSelect(id));
   useThreadTargets(
     [...visible.pinned, ...visible.active, ...(settledOpen ? visible.settled : [])].map(
       (entry) => entry.id,
     ),
     select,
   );
-  const rename = useEventCallback((id: string, title: string) => {
-    remember(id);
-    onRename(id, title);
-  });
-  const archive = useEventCallback((id: string, archived: boolean) => {
-    remember(id);
-    onArchive(id, archived);
-  });
+  const rename = useEventCallback((id: string, title: string) => onRename(id, title));
+  const archive = useEventCallback((id: string, archived: boolean) => onArchive(id, archived));
   const settle = useEventCallback((id: string, section: SidebarSection) =>
     move.mutate({
       threadId: id,
