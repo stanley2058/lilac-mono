@@ -122,7 +122,7 @@ function parseHashlineRef(input: string): HashlineRef | null {
 }
 
 function splitLinesPreserveBlank(input: string): string[] {
-  return input.split("\n");
+  return input.replace(/\r\n/g, "\n").split("\n");
 }
 
 function maybeStripHashlinePrefixes(lines: readonly string[]): string[] {
@@ -140,7 +140,7 @@ function maybeStripHashlinePrefixes(lines: readonly string[]): string[] {
 function normalizeReplacementLines(input: string | readonly string[] | null | undefined): string[] {
   if (input == null) return [];
   if (Array.isArray(input)) {
-    return maybeStripHashlinePrefixes(input.map((line) => String(line)));
+    return maybeStripHashlinePrefixes(input.map((line) => String(line).replace(/\r$/, "")));
   }
   return maybeStripHashlinePrefixes(splitLinesPreserveBlank(String(input)));
 }
@@ -297,7 +297,8 @@ export function applyHashlineEdits(params: {
   content: string;
   edits: readonly HashlineEdit[];
 }): ResultType<AppliedHashlineEdits, HashlineEditFailed> {
-  const originalLines = params.content.split("\n");
+  const lineEnding = params.content.includes("\r\n") ? "\r\n" : "\n";
+  const originalLines = params.content.replace(/\r\n/g, "\n").split("\n");
   const normalized: NormalizedHashlineEdit[] = [];
   for (let index = 0; index < params.edits.length; index++) {
     const edit = params.edits[index];
@@ -342,7 +343,7 @@ export function applyHashlineEdits(params: {
   }
 
   return Result.ok({
-    content: nextLines.join("\n"),
+    content: nextLines.join(lineEnding),
     appliedEditCount: normalized.length,
   });
 }

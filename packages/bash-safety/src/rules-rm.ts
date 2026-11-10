@@ -152,7 +152,7 @@ function classifyTarget(target: string, ctx: RmContext): TargetClassification {
 
   const anchoredCwd = ctx.anchoredCwd;
   if (anchoredCwd) {
-    if (isCwdSelfTarget(target, anchoredCwd)) {
+    if (isCwdSelfTarget(target, anchoredCwd, ctx.resolvedCwd)) {
       return { kind: "cwd_self_target" };
     }
   }
@@ -166,7 +166,7 @@ function classifyTarget(target: string, ctx: RmContext): TargetClassification {
       return { kind: "root_or_home_target" };
     }
 
-    if (isTargetWithinCwd(target, anchoredCwd, ctx.resolvedCwd ?? anchoredCwd)) {
+    if (ctx.resolvedCwd && isTargetWithinCwd(target, anchoredCwd, ctx.resolvedCwd)) {
       return { kind: "within_anchored_cwd" };
     }
   }
@@ -276,17 +276,19 @@ function isCwdHomeForRmPolicy(cwd: string, homeDir: string): boolean {
   return normalizedCwd === normalizedHome;
 }
 
-function isCwdSelfTarget(target: string, cwd: string): boolean {
+function isCwdSelfTarget(target: string, cwd: string, effectiveCwd: string | null): boolean {
   if (target === "." || target === "./") {
     return true;
   }
 
-  const resolvedPaths = resolveRmPaths(cwd, target);
+  if (!effectiveCwd) return false;
+  const resolvedTarget = resolve(effectiveCwd, target);
+  const resolvedPaths = resolveRmPaths(cwd, resolvedTarget);
   const compare = resolvedPaths.match<() => boolean>({
     ok: (paths) => () => paths.target === paths.cwd,
     err: () => () => {
       // Missing paths cannot be canonicalized, so preserve the lexical fallback.
-      const resolved = resolve(cwd, target);
+      const resolved = resolvedTarget;
       const normalizedCwd = normalize(cwd);
       return resolved === normalizedCwd;
     },

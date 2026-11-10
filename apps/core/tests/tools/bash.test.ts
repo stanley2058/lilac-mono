@@ -2082,17 +2082,15 @@ done`;
 
   it("distinguishes static and ambiguous cwd changes", () => {
     const options = { cwd: "/tmp/lilac-project" };
-    const allowed = [
+    const allowed = ["cd /tmp/lilac-project/symlink; bash -c 'rm -rf build'"];
+    const blocked = [
       "cd -P ..; bash -c 'rm -rf build'",
       "cd ~; bash -c 'rm -rf build'",
       "CDPATH=/tmp cd project; bash -c 'rm -rf build'",
-      "cd /tmp/lilac-project/symlink; bash -c 'rm -rf build'",
       "pushd /tmp/lilac-project/other; sh -c 'rm -rf build'",
       "popd; eval 'rm -rf build'",
       'env -C "$target" rm -rf build',
       'sudo -D "$target" rm -rf build',
-    ];
-    const blocked = [
       "cd -- ..; bash -c 'rm -rf build'",
       "env -C .. bash -c 'rm -rf build'",
       "env --chdir=.. sh -c 'rm -rf build'",
@@ -2122,7 +2120,7 @@ done`;
       expect(analyzeBashCommand(command), command).not.toBeNull();
     }
     expect(analyzeBashCommand("find . -exec printf '%s\\n' {} \\;")).toBeNull();
-    expect(analyzeBashCommand("find . -execdir rm -rf build \\;")).toBeNull();
+    expect(analyzeBashCommand("find . -execdir rm -rf build \\;")).not.toBeNull();
     expect(analyzeBashCommand("find . -exec rm -rf {} \\;")).not.toBeNull();
     expect(analyzeBashCommand("find . -exec sh -c 'rm -rf \"{}\"' \\;")).not.toBeNull();
     expect(analyzeBashCommand("find . -exec sh -c 'eval \"rm -rf {}\"' \\;")).not.toBeNull();

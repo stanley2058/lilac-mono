@@ -288,7 +288,8 @@ async function applyUpdateHunk(params: {
   const readError = originalContentResult.match({ ok: () => null, err: (error) => error });
   if (readError) return Result.err(readError);
   const originalContent = selectResultValue(originalContentResult);
-  let originalLines = originalContent.split("\n");
+  const lineEnding = originalContent.includes("\r\n") ? "\r\n" : "\n";
+  let originalLines = originalContent.replace(/\r\n/g, "\n").split("\n");
   if (originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
     originalLines.pop();
   }
@@ -297,7 +298,7 @@ async function applyUpdateHunk(params: {
   if (replacementsError) return Result.err(replacementsError);
   const newLines = applyReplacements(originalLines, selectResultValue(replacementsResult));
   if (newLines.length === 0 || newLines[newLines.length - 1] !== "") newLines.push("");
-  const newContent = newLines.join("\n");
+  const newContent = newLines.join(lineEnding);
   const target = moveToResolvedPath ?? resolvedPath;
   const directoryCancellation = checkApplyPatchCancellation(signal);
   const directoryCancellationError = directoryCancellation.match({

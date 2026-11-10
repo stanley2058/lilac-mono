@@ -360,6 +360,8 @@ export function createBlobBackedToolResultArtifactStore(
   const encryptionKey = randomBytes(32);
   const logger = createLogger({ module: "tool-result-artifacts" });
   let queue = Promise.resolve();
+  const metadataIndex = new Map<string, Metadata>();
+  let maintenanceTimer: ReturnType<typeof setTimeout> | undefined;
 
   function failure(operation: StorageOperation, cause?: Error): ToolResultArtifactStorageFailure {
     return new ToolResultArtifactStorageFailure({
@@ -493,7 +495,11 @@ export function createBlobBackedToolResultArtifactStore(
         await fs.chmod(destination, 0o600);
       }),
     );
-    if (written.ok) return Result.ok(undefined);
+    if (written.ok) {
+      metadataIndex.set(metadata.storageKey, metadata);
+      scheduleMaintenance();
+      return Result.ok(undefined);
+    }
     await captureFs("remove-artifact", () => fs.rm(temporary, { force: true }));
     return Result.err(written.error);
   }
@@ -532,17 +538,7 @@ export function createBlobBackedToolResultArtifactStore(
   async function listMetadata(
     ignored?: string,
   ): Promise<ResultType<Metadata[], ToolResultArtifactMetadataReadError>> {
-    const listed = outcome(await captureFs("list-metadata", () => fs.readdir(resolvedRoot)));
-    if (!listed.ok) return Result.err(listed.error);
-    const metadata: Metadata[] = [];
-    for (const entry of listed.value.filter((value) => value.endsWith(".meta"))) {
-      const storageKey = entry.slice(0, -5);
-      if (storageKey === ignored) continue;
-      const read = outcome(await readMetadata(storageKey));
-      if (!read.ok) return Result.err(read.error);
-      metadata.push(read.value.value);
-    }
-    return Result.ok(metadata);
+    return Result.ok([...metadataIndex.values()].filter((item) => item.storageKey !== ignored));
   }
 
   async function deleteBlob(
@@ -562,7 +558,10 @@ export function createBlobBackedToolResultArtifactStore(
       ),
     );
     if (!unlinked.ok) return Result.err(unlinked.error);
-    return deleteBlob(metadata.blob);
+    const deleted = await deleteBlob(metadata.blob);
+    return deleted.map(() => {
+      metadataIndex.delete(metadata.storageKey);
+    });
   }
 
   async function readContent(
@@ -862,6 +861,8 @@ export function createBlobBackedToolResultArtifactStore(
         }),
       );
     }
+    const validated = outcome(await readMetadata(metadata.storageKey));
+    if (!validated.ok) return Result.err(validated.error);
     return metadata.scopeId === owner
       ? Result.ok(metadata)
       : Result.err(
@@ -896,6 +897,7 @@ export function createBlobBackedToolResultArtifactStore(
               message: "Tool result artifact invalidation cleanup failed",
             }),
           );
+        metadataIndex.delete(storageKey);
         removedInvalid += 1;
         continue;
       }
@@ -906,27 +908,36 @@ export function createBlobBackedToolResultArtifactStore(
         removedExpired += 1;
         continue;
       }
-      const content = outcome(await readContent(metadata));
-      if (!content.ok) {
-        const removed = outcome(await removeArtifact(metadata));
-        if (!removed.ok)
-          return Result.err(
-            new ToolResultArtifactMaintenanceAndCleanupFailure({
-              primaryError: content.error,
-              cleanupError: removed.error,
-              message: "Tool result artifact invalidation cleanup failed",
-            }),
-          );
-        removedInvalid += 1;
-      }
     }
     return Result.ok({ removedInvalid, removedExpired });
+  }
+
+  function scheduleMaintenance(): void {
+    if (maintenanceTimer) clearTimeout(maintenanceTimer);
+    let expiresAt = Infinity;
+    for (const item of metadataIndex.values()) expiresAt = Math.min(expiresAt, item.expiresAt);
+    if (!Number.isFinite(expiresAt)) return;
+    maintenanceTimer = setTimeout(
+      () => {
+        void exclusive(() => maintainUnlocked(Date.now())).then((result) => {
+          result.match({
+            ok: () => scheduleMaintenance(),
+            err: (error) =>
+              logger.warn("tool.artifact.maintenance.failed", { message: error.message }),
+          });
+        });
+      },
+      Math.max(1_000, Math.min(2_147_483_647, expiresAt - Date.now())),
+    );
+    maintenanceTimer.unref();
   }
 
   return {
     rootDir: resolvedRoot,
     init: () =>
       captureFs("initialize", async () => {
+        if (maintenanceTimer) clearTimeout(maintenanceTimer);
+        metadataIndex.clear();
         await fs.mkdir(resolvedRoot, { recursive: true, mode: 0o700 });
         const entries = await fs.readdir(resolvedRoot);
         await Promise.all(

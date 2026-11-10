@@ -393,3 +393,42 @@ describe("analyzeBashCommand", () => {
     expect(result?.reason).toBe("access to a configured protected path");
   });
 });
+
+describe("audit deletion guard regressions", () => {
+  const cwd = "/workspace/project";
+  for (const command of ["cd ~", "cd", "cd -", "pushd /elsewhere", 'cd "$TARGET"']) {
+    it(`keeps recursive deletion guarded after ${command}`, () => {
+      expect(analyzeBashCommand(`${command}; rm -r child`, { cwd })).not.toBeNull();
+    });
+  }
+  it("resolves deletion of the original cwd after cd", () => {
+    expect(analyzeBashCommand("cd child; rm -r ..", { cwd })).not.toBeNull();
+  });
+  for (const target of [
+    ".",
+    "./",
+    "./src",
+    "/workspace/project/file",
+    ":(literal).",
+    "../file",
+    "src/*",
+    "-- .",
+    "HEAD -- src/file.ts",
+  ]) {
+    it(`blocks git checkout ${target}`, () => {
+      expect(analyzeBashCommand(`git checkout ${target}`, { cwd })).not.toBeNull();
+    });
+  }
+  for (const action of ["-exec", "-execdir", "-ok", "-okdir"]) {
+    for (const ending of ["\\;", "+"]) {
+      it(`guards find ${action} rm with ${ending}`, () => {
+        expect(analyzeBashCommand(`find . ${action} rm {} ${ending}`, { cwd })).not.toBeNull();
+      });
+    }
+  }
+  it("keeps fail-open behavior for unrecognized commands", () => {
+    expect(analyzeBashCommand("custom-cleanup --unknown", { cwd })).toBeNull();
+    expect(analyzeBashCommand("git checkout feature", { cwd })).toBeNull();
+    expect(analyzeBashCommand("git checkout feature/topic", { cwd })).toBeNull();
+  });
+});

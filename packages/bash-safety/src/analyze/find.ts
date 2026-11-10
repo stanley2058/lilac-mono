@@ -1,8 +1,6 @@
 import { getBasename, stripWrappers } from "../shell";
 import { bashSafetyViolation, type BashSafetyViolation } from "../types";
 
-import { hasRecursiveForceFlags } from "./rm-flags";
-
 const REASON_FIND_DELETE = "find -delete permanently removes files. Use -print first to preview.";
 
 export interface AnalyzeFindOptions {
@@ -24,31 +22,17 @@ export function analyzeFind(
     if (token && FIND_EXEC_ACTIONS.has(token)) {
       const terminatorIndex = findActionTerminator(tokens, i + 1);
       let execCommand = tokens.slice(i + 1, terminatorIndex);
+      const executable = stripWrappers([...execCommand]);
+      const head = getBasename(executable[0] ?? "");
+      if (head === "rm" || (head === "busybox" && executable[1] === "rm")) {
+        return bashSafetyViolation("find_delete", REASON_FIND_DELETE);
+      }
       if (options.analyzeCommand) {
         const reason = options.analyzeCommand(
           execCommand,
           token === "-execdir" || token === "-okdir",
         );
         if (reason) return reason;
-      } else {
-        execCommand = stripWrappers(execCommand);
-
-        if (execCommand.length > 0) {
-          let head = getBasename(execCommand[0] ?? "");
-
-          if (head === "busybox" && execCommand.length > 1) {
-            execCommand = execCommand.slice(1);
-            head = getBasename(execCommand[0] ?? "");
-          }
-
-          if (head === "rm" && hasRecursiveForceFlags(execCommand)) {
-            return bashSafetyViolation(
-              "dynamic_recursive_delete",
-              "find -exec rm -rf is dangerous. Use explicit file list instead.",
-              "Remove known literal child paths, then use rmdir for an empty directory.",
-            );
-          }
-        }
       }
       i = terminatorIndex;
     }

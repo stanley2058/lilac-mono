@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -79,6 +79,31 @@ describe("blob-backed tool result artifact store", () => {
       close: (input) => store.close(input),
     };
   }
+
+  it("indexes quota metadata and maintains expiry without opening artifact content", async () => {
+    const blobs = await memoryStore();
+    const open = spyOn(blobs, "open");
+    const timer = spyOn(globalThis, "setTimeout");
+    const artifacts = createBlobBackedToolResultArtifactStore(baseDir, blobs);
+    try {
+      expect((await artifacts.init()).isOk()).toBe(true);
+      expect((await artifacts.create(params("first"))).isOk()).toBe(true);
+      expect(timer.mock.calls.some((call) => typeof call[1] === "number" && call[1] >= 1_000)).toBe(
+        true,
+      );
+      await writeFile(path.join(baseDir, "unrelated.meta"), "invalid metadata");
+      expect((await artifacts.create(params("second"))).isOk()).toBe(true);
+      const maintained = await artifacts.maintain(Date.now() + 2_000);
+      expect(maintained).toMatchObject({
+        status: "ok",
+        value: { removedExpired: 2, removedInvalid: 1 },
+      });
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+      timer.mockRestore();
+    }
+  });
 
   it("stores only encrypted blob content and preserves exact domain expiry", async () => {
     setSystemTime(new Date("2026-01-01T00:00:00Z"));

@@ -34,20 +34,20 @@ function parsePatchHeader(
   if (line === undefined) return null;
 
   if (line.startsWith("*** Add File:")) {
-    const filePath = line.split(":", 2)[1]?.trim();
+    const filePath = line.slice(line.indexOf(":") + 1).trim();
     return filePath ? { kind: "add", filePath, nextIndex: startIndex + 1 } : null;
   }
   if (line.startsWith("*** Delete File:")) {
-    const filePath = line.split(":", 2)[1]?.trim();
+    const filePath = line.slice(line.indexOf(":") + 1).trim();
     return filePath ? { kind: "delete", filePath, nextIndex: startIndex + 1 } : null;
   }
   if (!line.startsWith("*** Update File:")) return null;
 
-  const filePath = line.split(":", 2)[1]?.trim();
+  const filePath = line.slice(line.indexOf(":") + 1).trim();
   let movePath: string | undefined;
   let nextIndex = startIndex + 1;
   if (lines[nextIndex]?.startsWith("*** Move to:")) {
-    movePath = lines[nextIndex]!.split(":", 2)[1]?.trim();
+    movePath = lines[nextIndex]!.slice("*** Move to:".length).trim();
     nextIndex++;
   }
   return filePath ? { kind: "update", filePath, movePath, nextIndex } : null;
@@ -61,7 +61,8 @@ function parseAddFileContent(
   let index = startIndex;
   while (index < lines.length && !lines[index]!.startsWith("***")) {
     const line = lines[index]!;
-    if (line.startsWith("+")) contents += `${line.slice(1)}\n`;
+    if (!line.startsWith("+")) return { contents: "", nextIndex: lines.length };
+    contents += `${line.slice(1)}\n`;
     index++;
   }
   if (contents.endsWith("\n")) contents = contents.slice(0, -1);
@@ -76,10 +77,7 @@ function parseUpdateChunks(
   let index = startIndex;
   while (index < lines.length && !lines[index]!.startsWith("***")) {
     const header = lines[index]!;
-    if (!header.startsWith("@@")) {
-      index++;
-      continue;
-    }
+    if (!header.startsWith("@@")) return { chunks: [], nextIndex: lines.length };
     const changeContext = header.slice(2).trim();
     index++;
     const oldLines: string[] = [];
@@ -88,7 +86,7 @@ function parseUpdateChunks(
     while (
       index < lines.length &&
       !lines[index]!.startsWith("@@") &&
-      !lines[index]!.startsWith("***")
+      (!lines[index]!.startsWith("***") || lines[index] === "*** End of File")
     ) {
       const line = lines[index]!;
       if (line === "*** End of File") {
@@ -104,6 +102,8 @@ function parseUpdateChunks(
         oldLines.push(line.slice(1));
       } else if (prefix === "+") {
         newLines.push(line.slice(1));
+      } else {
+        return { chunks: [], nextIndex: lines.length };
       }
       index++;
     }
@@ -118,7 +118,7 @@ function parseUpdateChunks(
 }
 
 export function parsePatchResult(patchText: string): ResultType<PatchHunk[], PatchRejected> {
-  const lines = stripHeredoc(patchText.trim()).split("\n");
+  const lines = stripHeredoc(patchText.trim().replace(/\r\n/g, "\n")).split("\n");
   const begin = lines.findIndex((line) => line.trim() === "*** Begin Patch");
   const end = lines.findIndex((line) => line.trim() === "*** End Patch");
   if (begin < 0 || end < 0 || begin >= end) {
@@ -138,6 +138,8 @@ export function parsePatchResult(patchText: string): ResultType<PatchHunk[], Pat
 
     if (header.kind === "add") {
       const parsed = parseAddFileContent(lines, header.nextIndex);
+      if (parsed.nextIndex === lines.length)
+        return Result.err(new PatchRejected({ message: "Invalid add line: expected + prefix" }));
       hunks.push({ type: "add", path: header.filePath, contents: parsed.contents });
       index = parsed.nextIndex;
       continue;
@@ -148,6 +150,10 @@ export function parsePatchResult(patchText: string): ResultType<PatchHunk[], Pat
       continue;
     }
     const parsed = parseUpdateChunks(lines, header.nextIndex);
+    if (parsed.chunks.length === 0)
+      return Result.err(
+        new PatchRejected({ message: "Invalid update chunk: expected prefixed lines" }),
+      );
     hunks.push({
       type: "update",
       path: header.filePath,
