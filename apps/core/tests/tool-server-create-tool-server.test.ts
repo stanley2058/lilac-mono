@@ -11,11 +11,7 @@ import {
   ToolPluginManager,
   type Level1ToolSpec,
 } from "@stanley2058/lilac-plugin-runtime";
-import {
-  createLogger,
-  parseCoreConfigV2ToUniversal,
-  parseCoreConfigV3ToUniversal,
-} from "@stanley2058/lilac-utils";
+import { createLogger, parseCoreConfigV3ToUniversal } from "@stanley2058/lilac-utils";
 import { Panic, Result, TaggedError } from "better-result";
 
 import {

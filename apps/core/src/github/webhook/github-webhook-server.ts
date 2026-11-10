@@ -522,7 +522,7 @@ export async function startGithubWebhookServer(options: GithubWebhookOptions): P
       handleEvent({ bus: options.bus, logger, event, projected, botLogins, deliveryId }),
   });
 
-  const server = app.listen({ port, maxRequestBodySize: 2 * 1024 * 1024 });
+  const server = app.listen({ port });
   logger.info("GitHub webhook server started", { port, path });
 
   return {
@@ -541,7 +541,7 @@ export function createGithubWebhookApp(options: {
     event: string,
     projected: ProjectedGithubWebhookEvent,
     deliveryId?: string,
-  ) => Promise<unknown>;
+  ) => Promise<Awaited<ReturnType<typeof handleEvent>> | void>;
 }) {
   const { secret, path, logger } = options;
   const seen = new Map<string, number>();
@@ -562,7 +562,7 @@ export function createGithubWebhookApp(options: {
     Request,
     { event: string; deliveryId?: string; projected: ProjectedGithubWebhookEvent }
   >();
-  const app = new Elysia();
+  const app = new Elysia({ serve: { maxRequestBodySize: 2 * 1024 * 1024 } });
 
   app.post(
     path,
@@ -630,11 +630,16 @@ export function createGithubWebhookApp(options: {
           run: () => options.handle(item.event, item.projected, item.deliveryId),
         });
         handled.match({
-          ok: () => {
+          ok: (result) => {
             if (item.deliveryId) seen.set(item.deliveryId, Date.now() + DEDUPE_TTL_MS);
             logger.info("github.webhook.handled", {
               event: item.event,
               deliveryId: item.deliveryId,
+              action: result?.action,
+              repo: result?.repoFullName,
+              handled: result?.handled,
+              reason: result?.reason,
+              requestId: result?.requestId,
             });
           },
           err: (error) => logger.error("webhook handler failed", formatTaggedErrorForLog(error)),
@@ -834,31 +839,8 @@ async function onIssueCommentCreated(input: {
   const htmlUrl = input.payload.comment.html_url;
   if (typeof body !== "string" || body.trim().length === 0) return null;
 
-  if (isMarkedGithubAgentComment(body)) {
-    input.logger.debug("github.webhook.ignored", {
-      event: "issue_comment",
-      action: "created",
-      repo: input.repoFullName,
-      issueNumber,
-      commentId,
-      author,
-      reason: "agent_comment_marker",
-    });
-    return null;
-  }
-
   const commandText = parseIssueCommentTrigger(body, input.botLogins);
-  if (commandText === null) {
-    input.logger.debug("github.webhook.ignored", {
-      event: "issue_comment",
-      action: "created",
-      repo: input.repoFullName,
-      issueNumber,
-      commentId,
-      reason: "not_a_trigger",
-    });
-    return null;
-  }
+  if (commandText === null) return null;
 
   const sessionId = `${input.repoFullName}#${issueNumber}`;
   const requestId = newGithubRequestId({
@@ -906,13 +888,23 @@ async function onIssueCommentCreated(input: {
     });
 
     const issueData = await input.api.getIssue({ owner, repo, number: issueNumber });
-    const recent = await input.api.listIssueComments({
-      owner,
-      repo,
-      number: issueNumber,
-      limit: 30,
-      page: Math.max(1, Math.ceil((issueData.comments ?? 0) / 30)),
-    });
+    const lastPage = Math.max(1, Math.ceil((issueData.comments ?? 0) / 30));
+    const pages = lastPage > 1 ? [lastPage - 1, lastPage] : [1];
+    const recent = (
+      await Promise.all(
+        pages.map((page) =>
+          input.api.listIssueComments({
+            owner,
+            repo,
+            number: issueNumber,
+            limit: 30,
+            page,
+          }),
+        ),
+      )
+    )
+      .flat()
+      .slice(-30);
 
     const triggerText = commandText.trim().length > 0 ? commandText : body;
 
@@ -943,7 +935,7 @@ async function onIssueCommentCreated(input: {
       actorLogin: author,
     });
 
-    adaptEventPublishResultToHost(
+    const publication = adaptEventPublishResultToHost(
       await input.bus.publish(
         lilacEventTypes.CmdRequestMessage,
         {
@@ -969,6 +961,7 @@ async function onIssueCommentCreated(input: {
       ),
     );
 
+    if (publication?.duplicate) restoreGithubLatestRequestForSession(latestTransition);
     published = true;
     return requestId;
   })().finally(async () => {
@@ -1080,7 +1073,7 @@ async function onReviewRequested(input: {
         pr: { prNumber, headSha: prData.head.sha, mode: "review" },
       });
 
-      adaptEventPublishResultToHost(
+      const publication = adaptEventPublishResultToHost(
         await input.bus.publish(
           lilacEventTypes.CmdRequestMessage,
           {
@@ -1110,6 +1103,10 @@ async function onReviewRequested(input: {
         ),
       );
 
+      if (publication?.duplicate) {
+        restoreGithubLatestRequestForSession(latestTransition);
+        rollbackGithubAcknowledgementClaim(acknowledgementClaim);
+      }
       startupCompleted = true;
       return requestId;
     })().finally(async () => {
@@ -1195,7 +1192,7 @@ async function onPullRequestSynchronize(input: {
         pr: { prNumber, headSha: prData.head.sha, mode: "review" },
       });
 
-      adaptEventPublishResultToHost(
+      const publication = adaptEventPublishResultToHost(
         await input.bus.publish(
           lilacEventTypes.CmdRequestMessage,
           {
@@ -1223,6 +1220,13 @@ async function onPullRequestSynchronize(input: {
           },
         ),
       );
+
+      if (publication?.duplicate) {
+        restoreGithubLatestRequestForSession(latestTransition);
+        rollbackGithubAcknowledgementClaim(acknowledgementClaim);
+        replacementPublished = true;
+        return requestId;
+      }
 
       // Once the replacement is durable, retaining its ownership is safer than reviving stale output.
       replacementPublished = true;

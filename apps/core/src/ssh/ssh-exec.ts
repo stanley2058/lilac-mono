@@ -790,7 +790,10 @@ if [ "$CWD" = "~" ]; then
 elif [[ "$CWD" == "~/"* ]]; then
   CWD="$HOME/\${CWD:2}"
 fi
-if [ -n "$CWD" ]; then cd -- "$CWD"; fi
+if [ -n "$CWD" ] && ! cd -- "$CWD"; then
+  echo "Remote cwd does not exist or is not a directory" >&2
+  exit 1
+fi
 if [ "$MODE" = "error" ]; then
   bash --noprofile --norc "$TMP_CMD" </dev/null
 else
@@ -1185,7 +1188,7 @@ export async function sshExecScriptJson<T, TDecodeError>(params: {
         run: () =>
           sshExecBash({
             host: params.host,
-            cmd: `test -f "\${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners/${runnerHash}.js"`,
+            cmd: `printf '%s  %s\\n' '${runnerHash}' "\${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners/${runnerHash}.js" | sha256sum -c --status 2>/dev/null`,
             timeoutMs: Math.max(1, deadline - Date.now()),
             signal: params.signal,
             maxOutputChars: 1000,
@@ -1209,7 +1212,7 @@ export async function sshExecScriptJson<T, TDecodeError>(params: {
       ? ""
       : `
 mkdir -p "$RUNNER_DIR"
-if [ ! -f "$TMP_JS" ]; then
+if ! test -f "$TMP_JS" || ! printf '%s  %s\\n' '${runnerHash}' "$TMP_JS" | sha256sum -c --status 2>/dev/null; then
   UPLOAD=$(mktemp "$RUNNER_DIR/upload.XXXXXX")
   trap 'rm -f "$UPLOAD"' EXIT
   printf '%s' '${source}' | base64 -d >"$UPLOAD"
@@ -1260,7 +1263,10 @@ fi
     const res = executionOutcome.value;
 
     const failure = sshJsonExecutionFailure(res, params.timeoutMs);
-    if (failure) return Result.err(failure);
+    if (failure) {
+      if (failure._tag === "SshSubprocessExitError") deployedRunners.delete(runnerKey);
+      return Result.err(failure);
+    }
 
     deployedRunners.add(runnerKey);
     return params.decodeResponse(res.stdout.trim());

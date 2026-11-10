@@ -1,3 +1,4 @@
+import { isMarkedGithubAgentComment } from "../../github/github-comment-marker";
 import type { DiscordSearchService } from "../../surface/store/discord-search-store";
 import { captureError } from "../../shared/error-capture";
 import { z } from "zod";
@@ -1862,7 +1863,12 @@ export class Surface implements ServerTool {
           ),
         );
         const self = await target.resolved.adapter.getSelf();
-        if (!message || message.userId !== self.userId)
+        if (
+          !message ||
+          !(target.resolved.platform === "github"
+            ? isMarkedGithubAgentComment(message.text)
+            : message.userId === self.userId)
+        )
           return surfaceOperationResult(
             Result.err(
               new SurfacePermissionDenied({
@@ -1907,7 +1913,12 @@ export class Surface implements ServerTool {
           ),
         );
         const self = await target.resolved.adapter.getSelf();
-        if (!message || message.userId !== self.userId)
+        if (
+          !message ||
+          !(target.resolved.platform === "github"
+            ? isMarkedGithubAgentComment(message.text)
+            : message.userId === self.userId)
+        )
           return surfaceOperationResult(
             Result.err(
               new SurfacePermissionDenied({

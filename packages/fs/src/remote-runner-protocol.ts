@@ -4,7 +4,8 @@ import { z } from "zod";
 const finiteNumberSchema = z.number();
 const effectiveSearchBackendSchema = z.enum(["fff", "node-rg", "node-fs"]);
 const effectiveFuzzySearchBackendSchema = z.enum(["fff", "fzf"]);
-const readErrorCodeSchema = z.enum(["NOT_FOUND", "PERMISSION", "MEDIA_TOO_LARGE", "UNKNOWN"]);
+const readErrorCodeSchema = z.enum(["NOT_FOUND", "PERMISSION", "UNKNOWN"]);
+const byteReadErrorCodeSchema = z.enum(["NOT_FOUND", "PERMISSION", "MEDIA_TOO_LARGE", "UNKNOWN"]);
 const editErrorCodeSchema = z.enum([
   "NOT_FOUND",
   "PERMISSION",
@@ -249,7 +250,7 @@ export const remoteReadBytesResponseSchema = z.discriminatedUnion("ok", [
     ok: z.literal(false),
     resolvedPath: z.string().optional(),
     error: z.string(),
-    errorCode: readErrorCodeSchema.optional(),
+    errorCode: byteReadErrorCodeSchema.optional(),
   }),
 ]);
 

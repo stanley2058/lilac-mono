@@ -28,6 +28,8 @@ import {
   remoteGrep,
   remoteReadTextFile,
 } from "../../src/tools/fs/remote-fs";
+import { SSH } from "../../src/tool-server/tools/ssh";
+import { createHash } from "node:crypto";
 import { fsTool } from "../../src/tools/fs/fs";
 import { remoteApplyPatch } from "../../src/tools/apply-patch/remote-apply-patch";
 
@@ -242,6 +244,102 @@ printf '%s' '{"ok":true,"value":{"variant":"future"}}'
       input: { patchText: "*** Begin Patch\n*** End Patch" },
     };
   }
+
+  it("keeps probe cwd failures in the capability report", async () => {
+    const ssh = new SSH();
+    for (const cwd of [tempDir, path.join(tempDir, "missing")]) {
+      const result = await ssh.call("ssh.probe", { host: "fakehost", cwd, timeoutMs: 30000 });
+      expect(result).toMatchObject({
+        status: "ok",
+        value: {
+          ok: true,
+          probe: { cwd: { attempted: cwd, used: cwd === tempDir ? tempDir : "" } },
+        },
+      });
+    }
+  }, 60000);
+
+  it("repairs a deleted or corrupt cached runner after a failed execution", async () => {
+    const js = `console.log('${crypto.randomUUID()}');`;
+    const runnerPath = path.join(
+      process.env.XDG_CACHE_HOME ?? path.join(process.env.HOME!, ".cache"),
+      "lilac/remote-runners",
+      `${createHash("sha256").update(js).digest("hex")}.js`,
+    );
+    const params = {
+      host: "fakehost",
+      cwd: tempDir,
+      js,
+      input: testRemoteRunnerRequest(),
+      timeoutMs: 5000,
+      maxOutputChars: 1000,
+      decodeResponse: () => Result.ok(null),
+    };
+    expect((await sshExecScriptJson(params)).isOk()).toBe(true);
+    for (const corrupt of [false, true]) {
+      if (corrupt) await writeFile(runnerPath, "syntax error !!!");
+      else await rm(runnerPath);
+      expect((await sshExecScriptJson(params)).isErr()).toBe(true);
+      expect((await sshExecScriptJson(params)).isOk()).toBe(true);
+    }
+    await rm(runnerPath);
+  });
+
+  it("reports missing remote cwd without retrying the bundled runner", async () => {
+    const callsPath = path.join(tempDir, "cwd-calls");
+    await writeFile(
+      sshPath,
+      (await readFile(sshPath, "utf8")).replace(
+        "set -euo pipefail",
+        `set -euo pipefail\nprintf 'call\\n' >> '${callsPath}'`,
+      ),
+    );
+    for (const run of [remoteGlob, remoteGrep] as const) {
+      const result = await run({
+        host: "fakehost",
+        cwd: path.join(tempDir, "missing", "child"),
+        patterns: ["*"],
+        input: { pattern: "x" },
+        denyPaths: [],
+        fsBackend: "fff",
+      });
+      expect(result).toMatchObject({
+        status: "error",
+        error: {
+          message: expect.stringContaining("Remote cwd does not exist or is not a directory"),
+        },
+      });
+    }
+    expect((await readFile(callsPath, "utf8")).trim().split("\n")).toHaveLength(2);
+    const result = await sshExecScriptJson({
+      host: "fakehost",
+      cwd: path.join(tempDir, "missing"),
+      js: `// ${crypto.randomUUID()}`,
+      input: testRemoteRunnerRequest(),
+      timeoutMs: 5000,
+      maxOutputChars: 1000,
+      decodeResponse: () => Result.ok(null),
+    });
+    expect(result).toMatchObject({
+      status: "error",
+      error: {
+        message: expect.stringContaining("Remote cwd does not exist or is not a directory"),
+      },
+    });
+  });
+
+  it("keeps oversized media codes compatible for local and remote reads", async () => {
+    await writeFile(path.join(tempDir, "oversized.png"), Buffer.alloc(32));
+    const tools = fsTool(tempDir, {
+      maxInlineMediaBytesPerPart: 16,
+      readFileDirectImageSupported: true,
+    });
+    for (const cwd of [tempDir, `fakehost:${tempDir}`]) {
+      const result = await executeTool(tools.read, { path: "oversized.png", cwd }, "oversized");
+      expect(result).toMatchObject({ success: false, error: { code: "UNKNOWN" } });
+      expect(JSON.stringify(result)).toContain("16");
+    }
+  });
 
   it("cancels a deployment waiter without cancelling the owner", async () => {
     const callsPath = path.join(tempDir, "deployment-calls");

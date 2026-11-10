@@ -656,12 +656,13 @@ Previously admitted requests keep their existing IDs. No stored records need rew
 Requests without that header keep generated IDs. A webhook HTTP acknowledgement now precedes
 GitHub API work. Handler failures are logged and remain eligible for redelivery.
 
-Filesystem read failures add `MEDIA_TOO_LARGE`. Remote byte-read failures may include an
-`errorCode` with that value, so Core can present size guidance without matching error text.
+Byte reads use an internal `MEDIA_TOO_LARGE` tag. Remote byte-read failures may include an
+internal `errorCode` with that value, so Core can present size guidance without matching error text.
+Model-facing read error codes are unchanged; oversized media returns `UNKNOWN`.
 Upgrade Core and the published remote filesystem runner together. Existing remote failures
 without `errorCode` remain readable and keep their original error text.
 
 SSH multiplexing uses private temporary control sockets with a 60-second idle lifetime.
 Bundled remote runners are cached under `${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners`
 by SHA-256 content hash. No database migration is required. Those runner files can be removed
-when no tool calls are active; restart Core afterward to clear its deployment cache.
+when no tool calls are active; a failed execution invalidates Core's deployment cache so the next call repairs the runner.

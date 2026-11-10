@@ -36,6 +36,68 @@ describe("onboarding default skills", () => {
     dataDir = undefined;
   });
 
+  it("configures, reads, and clears GitHub App credentials", async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-github-app-"));
+    const tool = onboardingWith();
+    expect(
+      value(await tool.call("onboarding.github_app", { dataDir, mode: "status" })),
+    ).toMatchObject({ configured: false });
+    expect(
+      value(
+        await tool.call("onboarding.github_app", {
+          dataDir,
+          mode: "configure",
+          appId: 123,
+          installationId: 456,
+          privateKeyPem: "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----",
+          host: "https://github.example.test/",
+        }),
+      ),
+    ).toMatchObject({
+      configured: true,
+      appId: 123,
+      installationId: 456,
+      host: "github.example.test",
+    });
+    expect(
+      value(await tool.call("onboarding.github_app", { dataDir, mode: "status" })),
+    ).toMatchObject({ configured: true, appId: 123 });
+    expect(
+      value(await tool.call("onboarding.github_app", { dataDir, mode: "clear" })),
+    ).toMatchObject({ cleared: true });
+    expect(
+      value(await tool.call("onboarding.github_app", { dataDir, mode: "status" })),
+    ).toMatchObject({ configured: false });
+  });
+
+  it("reads GnuPG status and clears only the isolated key home", async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-gnupg-"));
+    const bin = path.join(dataDir, "bin");
+    await fs.mkdir(bin);
+    const gpg = path.join(bin, "gpg");
+    await fs.writeFile(gpg, "#!/bin/sh\nprintf 'fpr:::::::::FIXTUREFINGERPRINT:\\n'\n", {
+      mode: 0o755,
+    });
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${bin}:${oldPath ?? ""}`;
+    try {
+      const tool = onboardingWith();
+      expect(value(await tool.call("onboarding.gnupg", { dataDir, mode: "status" }))).toMatchObject(
+        { hasSecretKey: true, fingerprint: "FIXTUREFINGERPRINT" },
+      );
+      expect(
+        value(await tool.call("onboarding.gnupg", { dataDir, mode: "generate" })),
+      ).toMatchObject({ generated: false, status: "already_present" });
+      expect(value(await tool.call("onboarding.gnupg", { dataDir, mode: "clear" }))).toMatchObject({
+        cleared: true,
+      });
+      expect(await fs.readdir(path.join(dataDir, "secret/gnupg"))).toEqual([]);
+      expect(await fs.readFile(gpg, "utf8")).toContain("FIXTUREFINGERPRINT");
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+
   it("seeds only setup-dependent skill templates without network access", async () => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-onboarding-skills-"));
     const result = z

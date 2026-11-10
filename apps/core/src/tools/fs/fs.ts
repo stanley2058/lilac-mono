@@ -1961,6 +1961,7 @@ export function fsTool(
                     ...bytesRes,
                     error: {
                       ...bytesRes.error,
+                      code: "UNKNOWN" as const,
                       message: buildInlineMediaLimitMessage({
                         filename,
                         mimeType,
@@ -1970,7 +1971,7 @@ export function fsTool(
                     },
                   };
                 }
-                return bytesRes;
+                return { ...bytesRes, error: { ...bytesRes.error, code: bytesRes.error.code } };
               }
 
               const resolvedPath = bytesRes.resolvedPath;

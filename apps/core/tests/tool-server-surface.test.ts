@@ -3610,3 +3610,53 @@ it("limits restricted message edits and deletes to the bot's messages", async ()
     ).toBe(true);
   }
 });
+
+it("allows restricted GitHub changes only to marked agent comments", async () => {
+  let marked = false;
+  const changed: string[] = [];
+  const githubAdapter = createGithubTestAdapter({
+    getIssue: async () => ({ title: "issue", body: null }),
+    listIssueComments: async () => [],
+    createIssueComment: async () => ({ id: 1 }),
+    getIssueComment: async () => ({
+      id: 345,
+      body: marked ? `${GITHUB_AGENT_COMMENT_MARKER}\nhello` : "human",
+      user: { id: 123, login: "bot" },
+    }),
+    editIssueComment: async () => {
+      changed.push("edit");
+    },
+    deleteIssueComment: async () => {
+      changed.push("delete");
+    },
+    createIssueReaction: async () => ({ id: 0 }),
+    createIssueCommentReaction: async () => ({ id: 0 }),
+    listIssueReactions: async () => [],
+    listIssueCommentReactions: async () => [],
+    deleteIssueReactionById: async () => undefined,
+    deleteIssueCommentReactionById: async () => undefined,
+    getGithubAppSlugOrNull: async () => null,
+  });
+  const tool = new Surface({
+    adapter: new FakeAdapter([], {}),
+    githubAdapter,
+    config: testConfig({}),
+  });
+  for (const callable of ["surface.messages.edit", "surface.messages.delete"]) {
+    const input = {
+      client: "github",
+      sessionId: "owner/repo#1",
+      messageId: "345",
+      ...(callable.endsWith("edit") ? { text: "changed" } : {}),
+    };
+    marked = false;
+    expect(
+      (await tool.callResult(callable, input, { context: { safetyMode: "restricted" } })).isErr(),
+    ).toBe(true);
+    marked = true;
+    expect(
+      (await tool.callResult(callable, input, { context: { safetyMode: "restricted" } })).isOk(),
+    ).toBe(true);
+  }
+  expect(changed).toEqual(["edit", "delete"]);
+});

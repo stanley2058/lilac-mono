@@ -9,6 +9,7 @@ import {
 } from "../../src/github/webhook/github-webhook-server";
 import {
   clearGithubRequest,
+  getGithubAck,
   getGithubLatestRequestForSession,
   getGithubRequestMeta,
 } from "../../src/github/github-state";
@@ -18,6 +19,7 @@ function fixture() {
     [];
   const pages: number[] = [];
   const deleted: number[] = [];
+  let duplicate = false;
   let sha = "head-1";
   const api: typeof githubWebhookApi = {
     ...githubWebhookApi,
@@ -49,7 +51,7 @@ function fixture() {
       options: { headers: Record<string, string> },
     ) => {
       publications.push({ payload, headers: options.headers });
-      return Result.ok(undefined);
+      return Result.ok({ duplicate });
     },
   } as unknown as LilacBus;
   const repo = `webhook-test/${crypto.randomUUID()}`;
@@ -82,6 +84,9 @@ function fixture() {
     sender: { login: "stanley" },
   };
   return {
+    setDuplicate: () => {
+      duplicate = true;
+    },
     api,
     pages,
     deleted,
@@ -100,12 +105,40 @@ describe("GitHub webhook dispatch", () => {
   it("selects the recent comment page and owns the latest issue request", async () => {
     const f = fixture();
     const result = await f.run("issue_comment", f.comment, "delivery-one");
-    expect(f.pages).toEqual([4]);
+    expect(f.pages).toEqual([3, 4]);
     expect(getGithubLatestRequestForSession(f.session)).toBe(result.requestId);
     expect(f.publications[0]?.payload.raw).toMatchObject({
       authenticatedActor: { platform: "github", userId: "stanley" },
     });
     clearGithubRequest(result.requestId!);
+  });
+  it("includes context when the trigger starts a new page", async () => {
+    const f = fixture();
+    f.api.getIssue = async () => ({ title: "issue", body: null, comments: 31 });
+    f.api.listIssueComments = async ({ page }) => [
+      { id: page ?? 1, body: page === 1 ? "previous context" : "/lilac hello" },
+    ];
+    const result = await f.run("issue_comment", f.comment);
+    expect(JSON.stringify(f.publications)).toContain("previous context");
+    clearGithubRequest(result.requestId!);
+  });
+  it("restores newer request ownership on delayed durable duplicate", async () => {
+    const f = fixture();
+    const old = await f.run("issue_comment", f.comment, "old");
+    const newer = await f.run(
+      "issue_comment",
+      { ...f.comment, comment: { ...f.comment.comment, id: 456 } },
+      "newer",
+    );
+    const ack = getGithubAck(newer.requestId!);
+    f.setDuplicate();
+    await f.run("issue_comment", f.comment, "old");
+    expect(getGithubLatestRequestForSession(f.session)).toBe(newer.requestId);
+    expect(getGithubRequestMeta(newer.requestId!)?.superseded).not.toBe(true);
+    expect(getGithubAck(newer.requestId!)).toEqual(ack);
+    expect(f.deleted).toEqual([]);
+    clearGithubRequest(old.requestId!);
+    clearGithubRequest(newer.requestId!);
   });
   it("removes the acknowledgement when issue setup fails", async () => {
     const f = fixture();

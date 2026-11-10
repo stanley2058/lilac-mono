@@ -20,7 +20,10 @@ function request(body: string, signature = true, delivery = "delivery-1") {
     },
   });
 }
-function app(handle: () => Promise<unknown>, logger = createLogger({ module: "webhook-test" })) {
+function app(
+  handle: Parameters<typeof createGithubWebhookApp>[0]["handle"],
+  logger = createLogger({ module: "webhook-test" }),
+) {
   return createGithubWebhookApp({
     secret: "test-secret",
     path: "/webhook",
@@ -32,6 +35,48 @@ function app(handle: () => Promise<unknown>, logger = createLogger({ module: "we
   }).compile();
 }
 describe("webhook ingress", () => {
+  it("rejects oversized HTTP bodies before invoking the handler", async () => {
+    let calls = 0;
+    const server = app(async () => {
+      calls++;
+    }).listen({ port: 0, hostname: "127.0.0.1" });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.server!.port}/webhook`, {
+        method: "POST",
+        body: "x".repeat(2 * 1024 * 1024 + 1),
+      });
+      expect(response.status).toBe(413);
+      expect(calls).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+  it("keeps dispatch details in the handled log", async () => {
+    const logged = Promise.withResolvers<unknown>();
+    const logger = createLogger({ module: "webhook-test" });
+    const result = {
+      action: "created",
+      repoFullName: "owner/repo",
+      handled: true,
+      reason: "accepted",
+      requestId: "request-1",
+    };
+    const log = spyOn(logger, "info").mockImplementation((message, fields) => {
+      if (message === "github.webhook.handled") logged.resolve(fields);
+    });
+    try {
+      expect((await app(async () => result, logger).handle(request("{}"))).status).toBe(200);
+      expect(await logged.promise).toMatchObject({
+        action: "created",
+        repo: "owner/repo",
+        handled: true,
+        reason: "accepted",
+        requestId: "request-1",
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
   it("rejects invalid signatures and signed invalid JSON before handling", async () => {
     let calls = 0;
     const server = app(async () => {

@@ -444,6 +444,8 @@ export async function remoteGlob(params: {
     const runnerError = runnerRes.match({ ok: () => null, err: (error) => error });
     if (
       !runnerError ||
+      (runnerError._tag === "SshSubprocessExitError" &&
+        runnerError.stderr.includes("Remote cwd does not exist or is not a directory")) ||
       [
         "SshExecutionCancelledError",
         "SshExecutionTimedOutError",
@@ -514,6 +516,8 @@ export async function remoteGrep(params: {
     const runnerError = runnerRes.match({ ok: () => null, err: (error) => error });
     if (
       !runnerError ||
+      (runnerError._tag === "SshSubprocessExitError" &&
+        runnerError.stderr.includes("Remote cwd does not exist or is not a directory")) ||
       [
         "SshExecutionCancelledError",
         "SshExecutionTimedOutError",

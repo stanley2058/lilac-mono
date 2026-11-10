@@ -263,11 +263,13 @@ export class SSH implements ServerTool {
     const required = await requireSshHost(input.host);
     const failure = required.match({ ok: () => undefined, err: (error) => error });
     if (failure) return Result.err(failure);
-    const script = await loadProbeScript();
+    const script = (await loadProbeScript()).replace(
+      'CWD=""',
+      `CWD=$(printf '%s' '${Buffer.from(input.cwd ?? "").toString("base64")}' | base64 -d)`,
+    );
     const result = await sshExecBash({
       host: input.host,
       cmd: script,
-      cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? DEFAULT_SSH_TIMEOUT_MS,
       signal,
       maxOutputChars: MAX_OUTPUT_CHARS,

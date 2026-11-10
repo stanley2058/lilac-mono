@@ -151,8 +151,9 @@ function getGlobSearchRoots(patterns: readonly string[]): string[] {
   return deduped.length > 0 ? deduped : [""];
 }
 
-export const READ_ERROR_CODES = ["NOT_FOUND", "PERMISSION", "MEDIA_TOO_LARGE", "UNKNOWN"] as const;
+export const READ_ERROR_CODES = ["NOT_FOUND", "PERMISSION", "UNKNOWN"] as const;
 export type ReadErrorCode = (typeof READ_ERROR_CODES)[number];
+type ReadFileBytesErrorCode = ReadErrorCode | "MEDIA_TOO_LARGE";
 
 export const WRITE_ERROR_CODES = [
   "NOT_FOUND",
@@ -190,7 +191,7 @@ type FileSystemFailureDetails = {
   readonly message: string;
 };
 
-function toBasicFsErrorCode(code: string | undefined): Exclude<ReadErrorCode, "MEDIA_TOO_LARGE"> {
+function toBasicFsErrorCode(code: string | undefined): ReadErrorCode {
   if (code === "ENOENT") return "NOT_FOUND";
   if (code === "EACCES" || code === "EPERM") return "PERMISSION";
   return "UNKNOWN";
@@ -242,7 +243,7 @@ export type ReadFileBytesResult =
       success: false;
       resolvedPath: string;
       error: {
-        code: ReadErrorCode;
+        code: ReadFileBytesErrorCode;
         message: string;
       };
     };
@@ -264,7 +265,7 @@ export type ReadFileResult =
       success: false;
       resolvedPath: string;
       error: {
-        code: Exclude<ReadErrorCode, "MEDIA_TOO_LARGE">;
+        code: ReadErrorCode;
         message: string;
       };
     };
