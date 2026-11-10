@@ -835,6 +835,18 @@ function estimateTokensFromValue(value: unknown): number {
   return Math.max(0, Math.round(chars / TOOL_OUTPUT_CHARS_PER_TOKEN));
 }
 
+// Tool results are immutable once produced, so each one is stringified for its estimate once.
+const toolOutputTokenEstimates = new WeakMap<object, number>();
+
+function estimateToolOutputTokens(output: unknown): number {
+  if (typeof output !== "object" || output === null) return estimateTokensFromValue(output);
+  const cached = toolOutputTokenEstimates.get(output);
+  if (cached !== undefined) return cached;
+  const estimate = estimateTokensFromValue(output);
+  toolOutputTokenEstimates.set(output, estimate);
+  return estimate;
+}
+
 export function maybeMarkOldToolOutputsCompacted(params: {
   messages: readonly ModelMessage[];
   compactedToolCallIds: Set<string>;
@@ -869,7 +881,7 @@ export function maybeMarkOldToolOutputsCompacted(params: {
       if (params.compactedToolCallIds.has(toolCallId)) break outer;
 
       const output = part.output;
-      const estimate = estimateTokensFromValue(output);
+      const estimate = estimateToolOutputTokens(output);
       total += estimate;
 
       if (total > params.protectTokens) {

@@ -22,6 +22,36 @@ function toolResult(toolCallId: string, toolName: string, value: string): ModelM
 }
 
 describe("tool output model-view policy", () => {
+  it("estimates each tool result's size once across pruning passes", () => {
+    let serializations = 0;
+    const output = {
+      type: "text" as const,
+      value: "x".repeat(400),
+      toJSON() {
+        serializations += 1;
+        return { type: this.type, value: this.value };
+      },
+    };
+    const messages: ModelMessage[] = [
+      { role: "user", content: "old" },
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "a", toolName: "bash", output }],
+      },
+      { role: "user", content: "middle" },
+      { role: "user", content: "new" },
+    ];
+    for (let pass = 0; pass < 3; pass += 1) {
+      maybeMarkOldToolOutputsCompacted({
+        messages,
+        compactedToolCallIds: new Set(),
+        protectTokens: 1_000,
+        minimumTokens: 1,
+      });
+    }
+    expect(serializations).toBe(1);
+  });
+
   it("uses configured historical pruning thresholds and protects durable tool output", () => {
     const compacted = new Set<string>();
     const messages: ModelMessage[] = [
