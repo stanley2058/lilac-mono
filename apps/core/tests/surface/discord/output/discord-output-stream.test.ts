@@ -1533,6 +1533,28 @@ describe("styled message send", () => {
     ]);
     expect(operations.some((op) => contentFromOptions(op.options) === "hello")).toBe(false);
   });
+
+  it("sends embed style directly without a streaming edit", async () => {
+    const { client, operations } = createFakeDiscordClient();
+
+    const last = resultValue(
+      await sendDiscordStyledMessage({
+        client,
+        sessionRef,
+        content: { text: "x".repeat(5000), attachments: [makeAttachment(1)] },
+        opts: { replyTo: { platform: "discord", channelId: "chan", messageId: "origin" } },
+        useSmartSplitting: false,
+      }),
+    );
+
+    expect(operations.map((op) => op.kind)).toEqual(["send", "reply"]);
+    expect(operations[0]?.options).toMatchObject({ reply: { messageReference: "origin" } });
+    expect(operations.flatMap((op) => embedDescriptionsFromOptions(op.options)).join("")).toBe(
+      "x".repeat(5000),
+    );
+    expect(uploadedFileNames(operations[1]?.options)).toEqual(["image-1.png"]);
+    expect(last.messageId).toBe(operations[1]!.messageId);
+  });
 });
 
 describe("preview final output style", () => {

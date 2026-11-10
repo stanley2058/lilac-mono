@@ -1607,6 +1607,18 @@ export class DiscordOutputStream implements SurfaceOutputStream {
     );
   }
 
+  /** Posts complete text as final embeds without streaming edits. */
+  async sendEmbeds(
+    text: string,
+    attachments: readonly SurfaceAttachment[],
+  ): Promise<SurfaceOperationResult<SurfaceOutputResult>> {
+    this.textAcc = text;
+    this.pendingAttachments = [...attachments];
+    return await this.captureFinishOutput(async () =>
+      this.completeFinalReply(await this.postFinalReplyEmbeds()),
+    );
+  }
+
   private async captureFinishOutput(
     effect: () => Promise<SurfaceOutputResult>,
   ): Promise<SurfaceOperationResult<SurfaceOutputResult>> {
@@ -1794,34 +1806,9 @@ export async function sendDiscordStyledMessage(params: {
     workingIndicators: ["Working"],
   });
 
-  if (params.content.style === "plain") {
-    const sent = await out.sendPlain(text, attachments);
-    return sent.map((value) => value.last);
-  }
-
-  const pushAttachmentAt = async (index: number): Promise<SurfaceOperationResult<MsgRef>> => {
-    const attachment = attachments[index];
-    if (attachment) {
-      const pushed = await out.push({ type: "attachment.add", attachment });
-      const continuePushed = pushed.match<() => Promise<SurfaceOperationResult<MsgRef>>>({
-        err: (error) => async () => Result.err(error),
-        ok: () => async () => await pushAttachmentAt(index + 1),
-      });
-      return await continuePushed();
-    }
-    const textPushed = await out.push({ type: "text.set", text });
-    const continueText = textPushed.match<() => Promise<SurfaceOperationResult<MsgRef>>>({
-      err: (error) => async () => Result.err(error),
-      ok: () => async () => {
-        const finished = await out.finish();
-        const continueFinished = finished.match<() => SurfaceOperationResult<MsgRef>>({
-          err: (error) => () => Result.err(error),
-          ok: (value) => () => Result.ok(value.last),
-        });
-        return continueFinished();
-      },
-    });
-    return await continueText();
-  };
-  return await pushAttachmentAt(0);
+  const sent =
+    params.content.style === "plain"
+      ? await out.sendPlain(text, attachments)
+      : await out.sendEmbeds(text, attachments);
+  return sent.map((value) => value.last);
 }
