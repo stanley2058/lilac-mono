@@ -176,6 +176,30 @@ export function groupQueueCancellationEntries(
   return [...groups.values()];
 }
 
+export type UnconsumedControlDisposition = "requeue" | "abandon" | "release";
+
+/**
+ * Decides what happens to steers and follow-ups an ended run never consumed. They normally run as
+ * the session's next prompts. A run left for recovery keeps them, and a cancel that landed during
+ * cleanup has cleared them. A workflow request runs only under its dispatch authority, so its
+ * controls cannot start another run and end with it instead.
+ */
+export function unconsumedControlDisposition(input: {
+  readonly terminalPanic: boolean;
+  readonly terminalized: boolean;
+  readonly cancelled: boolean;
+  readonly workflowRequest: boolean;
+}): UnconsumedControlDisposition {
+  switch (true) {
+    case input.terminalPanic || !input.terminalized || input.cancelled:
+      return "release";
+    case input.workflowRequest:
+      return "abandon";
+    default:
+      return "requeue";
+  }
+}
+
 export function shouldCancelIdleOnlyGlobalRequest(params: {
   runPolicy: RequestRunPolicy;
   sessionId: string;

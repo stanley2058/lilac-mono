@@ -9,6 +9,7 @@ import {
 
 const EMPTY_REQUEST_CONTROL = {
   requiresActive: false,
+  autoFollowUp: null,
   cancel: false,
   cancelQueued: false,
   targetMessageId: null,
@@ -28,6 +29,7 @@ describe("request control raw projection", () => {
     expect(
       parseRequestControlFromRaw({
         requiresActive: true,
+        autoFollowUp: { parentRequestId: "parent", parentToolCallId: "call" },
         cancel: true,
         cancelQueued: true,
         messageId: "message-1",
@@ -35,6 +37,7 @@ describe("request control raw projection", () => {
       }),
     ).toEqual({
       requiresActive: true,
+      autoFollowUp: { parentRequestId: "parent", parentToolCallId: "call" },
       cancel: true,
       cancelQueued: true,
       targetMessageId: "message-1",

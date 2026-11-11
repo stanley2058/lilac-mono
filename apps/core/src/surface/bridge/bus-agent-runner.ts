@@ -299,13 +299,16 @@ import {
   removeQueuedEntriesByReference,
   settlesBefore,
   shouldCancelRunPolicyRequest,
+  unconsumedControlDisposition,
 } from "./bus-agent-runner/session-queue";
 import { applyToRunningAgent, type RunningAgentControlTarget } from "./bus-agent-runner/controls";
+import { subagentFollowUpRegistration } from "../../workflow/subagent-follow-up";
 export { mergeToSingleUserMessage } from "./bus-agent-runner/controls";
 export {
   type AgentRunnerRetainedRequestDelivery,
   shouldCancelIdleOnlyGlobalRequest,
   shouldCancelRunPolicyRequest,
+  unconsumedControlDisposition,
 } from "./bus-agent-runner/session-queue";
 export {
   appendAutoInjectedThreadSearchLineage,
@@ -2113,10 +2116,16 @@ export async function startBusAgentRunner(params: {
               kind: "completed" | "cancelled" | "abandoned",
               code: string,
             ): Promise<boolean> => {
+              // An automatic subagent steer that missed its run continues as a follow-up.
+              const followUp =
+                kind === "abandoned" && requestControl.autoFollowUp
+                  ? await followUpMissedSteer(entry)
+                  : "skipped";
+              const outcome = followUpOutcome(followUp, { kind, code });
               if (!entry.requestDeliveryId || !params.requestDelivery) return true;
               const terminalized = await params.requestDelivery.terminalize({
                 requestDeliveryId: entry.requestDeliveryId,
-                outcome: { kind, code },
+                outcome,
                 transportCommitRequired: true,
               });
               const terminalError = terminalized.match({
@@ -3051,6 +3060,113 @@ export async function startBusAgentRunner(params: {
     }
     run.transferredControls = [...controls];
     state.queue.unshift(...controls);
+  }
+
+  /**
+   * Sends an automatic subagent steer that missed the child's run as a deferred follow-up on the
+   * same child session, reporting to the same parent. Returns whether a follow-up started.
+   */
+  async function followUpMissedSteer(entry: Enqueued): Promise<"started" | "skipped" | "failed"> {
+    const store = params.durableWorkflowStore;
+    const dispatcher = params.workflowSubagentDispatcher;
+    const sender = parseRequestControlFromRaw(entry.raw).autoFollowUp;
+    if (!store || !dispatcher || !sender) return "skipped";
+    const task = entry.messages
+      .flatMap((message) => {
+        if (typeof message.content === "string") return [message.content];
+        return message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
+      })
+      .join("\n\n");
+    const registration = Result.gen(function* () {
+      const operation = yield* store.getOperationByRequestId(entry.requestId);
+      const run = operation ? yield* store.getRun(operation.runId) : null;
+      const revision = run ? yield* store.getRevision(run.revisionId) : null;
+      if (!run || !revision || !task.trim()) return Result.ok(null);
+      const policy = yield* store.getWorkflowRequestDispatchPolicy(entry.requestId);
+      return Result.ok(
+        subagentFollowUpRegistration({
+          run,
+          revision,
+          policy,
+          task,
+          idleTimeoutMs: deriveSubagentIdleTimeoutMs(cfg.agent.idleTimeoutMs),
+          sender,
+        }),
+      );
+    }).match({
+      ok: (value) => value,
+      err: (error) => {
+        logger.error(
+          "could not read a subagent to continue a missed automatic steer",
+          formatBridgeTaggedErrorForLog(error, {
+            requestId: entry.requestId,
+            sessionId: entry.sessionId,
+          }),
+        );
+        return null;
+      },
+    });
+    if (!registration) return "failed";
+    const started = await Result.tryPromise({
+      try: () => dispatcher.delegate(registration),
+      catch: captureError,
+    });
+    return started.match({
+      ok: (handle) => {
+        logger.info("sent a missed automatic subagent steer as a follow-up", {
+          requestId: entry.requestId,
+          sessionId: entry.sessionId,
+          followUpRunId: handle.runId,
+        });
+        return "started" as const;
+      },
+      err: ({ cause }) => {
+        // Keeping the delivery would replay it under the ended child request, which lacks
+        // dispatch authority, so the message is recorded as lost instead.
+        logger.error("could not send a missed automatic subagent steer as a follow-up", {
+          requestId: entry.requestId,
+          sessionId: entry.sessionId,
+          error: cause.message,
+        });
+        return "failed" as const;
+      },
+    });
+  }
+
+  /** The delivery outcome of a control after an attempt to continue it as a follow-up. */
+  function followUpOutcome<Kind extends string>(
+    followUp: "started" | "skipped" | "failed",
+    fallback: { readonly kind: Kind; readonly code: string },
+  ): { readonly kind: Kind | "completed" | "abandoned"; readonly code: string } {
+    switch (followUp) {
+      case "started":
+        return { kind: "completed", code: "continued-as-follow-up" };
+      case "failed":
+        return { kind: "abandoned", code: "follow-up-failed" };
+      case "skipped":
+        return fallback;
+    }
+  }
+
+  /**
+   * Ends controls the workflow request never consumed: automatic steers continue as follow-ups,
+   * and the rest are recorded as abandoned instead of delivered.
+   */
+  async function abandonUnconsumedControls(
+    state: SessionQueue,
+    controls: readonly Enqueued[],
+  ): Promise<void> {
+    const run = state.activeRun;
+    if (!run) return;
+    for (const entry of controls) {
+      if (!entry.requestDeliveryId) continue;
+      if (!run.retainedRequestDeliveries.has(entry.requestDeliveryId)) continue;
+      const followUp = await followUpMissedSteer(entry);
+      run.retainedRequestDeliveries.set(
+        entry.requestDeliveryId,
+        followUpOutcome(followUp, { kind: "abandoned", code: "control-unconsumed" }),
+      );
+    }
   }
 
   function releaseControlOwners(controls: readonly Enqueued[]): void {
@@ -7378,16 +7494,24 @@ export async function startBusAgentRunner(params: {
       const finalReplayDeadline = outputPublisher.getFinalReplayDeadline();
       if (!terminalPanic && shouldTerminalizeRequest)
         await publishNativeTerminal(requestTerminalKind);
-      // A run left for recovery keeps its unconsumed controls, and recovery merges them back in.
-      // A cancel that landed during cleanup has cleared the agent queue they came from.
-      if (
-        !terminalPanic &&
-        shouldTerminalizeRequest &&
-        !cancelledByRequestId.has(headers.request_id)
+      switch (
+        unconsumedControlDisposition({
+          terminalPanic: terminalPanic !== null,
+          terminalized: shouldTerminalizeRequest,
+          cancelled: cancelledByRequestId.has(headers.request_id),
+          workflowRequest: workflowHint !== null,
+        })
       ) {
-        requeueUnconsumedControls(state, unconsumedControls);
-      } else {
-        releaseControlOwners(unconsumedControls);
+        case "requeue":
+          requeueUnconsumedControls(state, unconsumedControls);
+          break;
+        case "abandon":
+          await abandonUnconsumedControls(state, unconsumedControls);
+          releaseControlOwners(unconsumedControls);
+          break;
+        case "release":
+          releaseControlOwners(unconsumedControls);
+          break;
       }
       const terminalSurfaceWriteSatisfied =
         !terminalSurfaceWriteAttempted || terminalSurfaceWriteInitiated;

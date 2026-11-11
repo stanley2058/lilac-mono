@@ -14,6 +14,7 @@ import {
   shouldCancelRunPolicyRequest,
   shouldCancelIdleOnlyGlobalRequest,
   type BusAgentRunnerRequestDelivery,
+  unconsumedControlDisposition,
 } from "../../../src/surface/bridge/bus-agent-runner";
 import { CustomCommandManager } from "../../../src/custom-commands/manager";
 import type { JobService } from "../../../src/jobs/job-service";
@@ -1413,6 +1414,32 @@ describe("session queue admission", () => {
     } finally {
       releaseTerminalize.resolve(undefined);
       await harness.close();
+    }
+  });
+});
+
+describe("unconsumedControlDisposition", () => {
+  const ended = { terminalPanic: false, terminalized: true, cancelled: false };
+
+  it("runs a primary run's unconsumed controls as the next prompts", () => {
+    expect(unconsumedControlDisposition({ ...ended, workflowRequest: false })).toBe("requeue");
+  });
+
+  it("ends a workflow request's unconsumed controls with it", () => {
+    expect(unconsumedControlDisposition({ ...ended, workflowRequest: true })).toBe("abandon");
+  });
+
+  it("releases controls after a panic, a cancel, or a run left for recovery", () => {
+    for (const workflowRequest of [false, true]) {
+      expect(unconsumedControlDisposition({ ...ended, terminalPanic: true, workflowRequest })).toBe(
+        "release",
+      );
+      expect(unconsumedControlDisposition({ ...ended, cancelled: true, workflowRequest })).toBe(
+        "release",
+      );
+      expect(unconsumedControlDisposition({ ...ended, terminalized: false, workflowRequest })).toBe(
+        "release",
+      );
     }
   });
 });

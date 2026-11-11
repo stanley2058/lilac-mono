@@ -96,6 +96,12 @@ const routerRawSchema = z
 
 const requestControlRawSchema = z.strictObject({
   requiresActive: booleanTrueSchema,
+  autoFollowUp: z
+    .strictObject({
+      parentRequestId: z.string().min(1).max(512),
+      parentToolCallId: z.string().min(1).max(512),
+    })
+    .optional(),
   cancel: booleanTrueSchema,
   cancelQueued: booleanTrueSchema,
   messageId: optionalStringSchema,
@@ -174,6 +180,11 @@ export function parseRequestModelOverrideFromRaw(raw: unknown): string | null {
 
 export type RequestControl = {
   requiresActive: boolean;
+  /**
+   * For a subagent steer that becomes a follow-up when it misses the child's run: the request and
+   * tool call that sent it, which the follow-up reports to.
+   */
+  autoFollowUp: { readonly parentRequestId: string; readonly parentToolCallId: string } | null;
   cancel: boolean;
   cancelQueued: boolean;
   targetMessageId: string | null;
@@ -199,18 +210,22 @@ export function parseRequestControlFromRaw(raw: unknown): RequestControl {
   if (!isRecord(raw)) {
     return {
       requiresActive: false,
+      autoFollowUp: null,
       cancel: false,
       cancelQueued: false,
       targetMessageId: null,
     };
   }
 
-  const ownDataProperty = (key: "requiresActive" | "cancel" | "cancelQueued" | "messageId") => {
+  const ownDataProperty = (
+    key: "requiresActive" | "autoFollowUp" | "cancel" | "cancelQueued" | "messageId",
+  ) => {
     const descriptor = Object.getOwnPropertyDescriptor(raw, key);
     return descriptor && "value" in descriptor ? descriptor.value : undefined;
   };
   const parsed = requestControlRawSchema.safeParse({
     requiresActive: ownDataProperty("requiresActive"),
+    autoFollowUp: ownDataProperty("autoFollowUp"),
     cancel: ownDataProperty("cancel"),
     cancelQueued: ownDataProperty("cancelQueued"),
     messageId: ownDataProperty("messageId"),
@@ -218,6 +233,7 @@ export function parseRequestControlFromRaw(raw: unknown): RequestControl {
   if (!parsed.success) {
     return {
       requiresActive: false,
+      autoFollowUp: null,
       cancel: false,
       cancelQueued: false,
       targetMessageId: null,
@@ -227,6 +243,7 @@ export function parseRequestControlFromRaw(raw: unknown): RequestControl {
   const record = parsed.data;
   return {
     requiresActive: record.requiresActive === true,
+    autoFollowUp: record.autoFollowUp ?? null,
     cancel: record.cancel === true,
     cancelQueued: record.cancelQueued === true,
     targetMessageId: record.messageId ?? null,
