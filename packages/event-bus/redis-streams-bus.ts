@@ -2133,6 +2133,7 @@ export class RedisStreamsBus implements RawBus {
       return Result.ok(undefined);
     };
 
+    let shutdownTransportFailure: EventDeliveryTransportFailed | null = null;
     const runDurableLoop = async (): Promise<ResultType<void, EventDeliveryDoneError>> => {
       if (
         opts.mode === "tail" ||
@@ -2170,16 +2171,18 @@ export class RedisStreamsBus implements RawBus {
         const outcome = redisStreamsOutcome(captured);
         if (outcome.kind === "ok") return { status: "ok", value: outcome.value };
         if (outcome.error.kind === "panic") throw outcome.error.panic;
-        return {
-          status: "error",
-          error: new EventDeliveryTransportFailed({
-            cause: outcome.error.restoreCause(),
-            operation: operationName,
-            topic,
-            cursor,
-            message,
-          }),
-        };
+        const error = new EventDeliveryTransportFailed({
+          cause: outcome.error.restoreCause(),
+          operation: operationName,
+          topic,
+          cursor,
+          message,
+        });
+        // Stop disconnects the managed client to unblock commands. Only that closure is normal shutdown.
+        if (abortController.signal.aborted && isClosedRedisConnectionFailure(outcome.error)) {
+          shutdownTransportFailure = error;
+        }
+        return { status: "error", error };
       };
 
       type LeaseLoss =
@@ -2607,6 +2610,7 @@ export class RedisStreamsBus implements RawBus {
         entry: RedisReadEntry,
         claim: ManagedClaim,
       ): Promise<EntryHandlingResult> => {
+        if (abortController.signal.aborted) return { status: "advance" };
         const begun = await captureTransport(
           () => managed.beginInvocation(entry.id, claim),
           "read",
@@ -2620,6 +2624,7 @@ export class RedisStreamsBus implements RawBus {
             message: "Managed recovery attempted a sixth invocation",
           });
         }
+        if (abortController.signal.aborted) return { status: "advance" };
         return handleManagedEntry(entry, begun.value.lease);
       };
 
@@ -2754,6 +2759,7 @@ export class RedisStreamsBus implements RawBus {
           return Result.err(readFailure(new Error(decodedResponse.message)));
         }
         for (const entry of decodedResponse.value) {
+          if (abortController.signal.aborted) break;
           const begun = await captureTransport(
             () => managed.beginFresh(entry.id),
             "read",
@@ -2775,8 +2781,13 @@ export class RedisStreamsBus implements RawBus {
       return Result.ok(undefined);
     };
 
-    const runLoop = (): Promise<ResultType<void, EventDeliveryDoneError>> =>
-      opts.mode === "tail" ? runTailLoop() : runDurableLoop();
+    const runLoop = async (): Promise<ResultType<void, EventDeliveryDoneError>> => {
+      const result = await (opts.mode === "tail" ? runTailLoop() : runDurableLoop());
+      return result.tryRecover((error) => {
+        if (error === shutdownTransportFailure && !maintenanceFailure) return Result.ok(undefined);
+        return Result.err(error);
+      });
+    };
 
     type CleanupAttempt =
       | { readonly status: "ok" }

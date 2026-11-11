@@ -26,6 +26,7 @@ import type {
 } from "../../src/workflow/workflow-domain";
 import { workflowSourceArtifactReferenceForTest } from "../workflow/workflow-test-blob-store";
 import { workflowStoreValue } from "../workflow/workflow-store-test-helpers";
+import { createRealCoreBusFixture, requireBusOk, withBusDeadline } from "../helpers/real-core-bus";
 
 const CONFIG = parseCoreConfigV3ToUniversal({ configVersion: 3 });
 const PARENT_SESSION = "native:parent-thread";
@@ -332,6 +333,67 @@ describe("orchestrate tool", () => {
       },
       headers: { request_id: child.requestId, session_id: child.childSessionId },
     });
+  });
+
+  it("delivers keyed steering and cancellation through the real durable Redis bus", async () => {
+    const fixture = await createRealCoreBusFixture();
+    const child = seedRun({ id: "real-bus", subagent: { parentSessionId: PARENT_SESSION } });
+    const received: Array<{ queue: string; requestDeliveryId: string; requestId?: string }> = [];
+    const arrivals = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const subscription = requireBusOk(
+      await fixture.bus.subscribeTopic(
+        "cmd.request",
+        { mode: "fanout", subscriptionId: "orchestrate-controls" },
+        async (message) => {
+          received.push({
+            queue: message.data.queue,
+            requestDeliveryId: message.data.requestDeliveryId,
+            requestId: message.headers?.request_id,
+          });
+          arrivals[received.length - 1]?.resolve();
+          return Result.ok(undefined);
+        },
+        () => "commit",
+      ),
+    );
+    try {
+      const built = build({ bus: fixture.bus });
+      const command = {
+        action: "send",
+        id: child.runId,
+        message: "Focus on auth",
+        commandId: "stable-command",
+      };
+      expect(await call(built, command)).toMatchObject({ disposition: "steered" });
+      await withBusDeadline(arrivals[0]!.promise, "orchestrate steer");
+      expect(await call(built, command)).toMatchObject({ disposition: "steered" });
+      expect(
+        requireBusOk(
+          await fixture.bus.fetchTopic("cmd.request", {
+            offset: { type: "begin" },
+            limit: 10,
+          }),
+        ).messages,
+      ).toHaveLength(1);
+      expect(await call(built, { action: "interrupt", id: child.runId })).toMatchObject({
+        status: "cancelled",
+      });
+      await withBusDeadline(arrivals[1]!.promise, "orchestrate cancellation");
+      expect(received.map((message) => message.queue)).toEqual(["steer", "interrupt"]);
+      expect(received.map((message) => message.requestId)).toEqual([
+        child.requestId,
+        child.requestId,
+      ]);
+      expect(received[1]!.requestDeliveryId).not.toBe(received[0]!.requestDeliveryId);
+      for (const message of received) {
+        expect(
+          requireBusOk(fixture.store.load(message.requestDeliveryId)).publication?.streamId,
+        ).toBeString();
+      }
+    } finally {
+      requireBusOk(await subscription.stop());
+      await fixture.close();
+    }
   });
 
   it("continues a finished child in its own conversation with its previous model", async () => {

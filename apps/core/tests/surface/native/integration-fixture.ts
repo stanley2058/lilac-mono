@@ -14,6 +14,7 @@ import { AiSdkPiAgent } from "@stanley2058/lilac-agent";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { Result, type Result as ResultType } from "better-result";
 import { createInMemoryDeliveryBus } from "../../helpers/in-memory-delivery-bus";
+import { createRealCoreBusFixture } from "../../helpers/real-core-bus";
 import { CustomCommandManager } from "../../../src/custom-commands/manager";
 import { CoreResourceService, ResourceOriginAdapterRegistry } from "../../../src/resource";
 import { SqliteTranscriptStore } from "../../../src/transcript/transcript-store";
@@ -130,6 +131,7 @@ function fixtureQuestions(
 
 export async function createNativeIntegrationFixture(
   options: {
+    realBus?: boolean;
     mcpRegistry?: NativeRuntimeOptions["mcpRegistry"];
     port?: number;
     operatorTokenSha256?: string;
@@ -267,24 +269,31 @@ export async function createNativeIntegrationFixture(
     };
   }
 
-  const blobs = integrationValue(await createMemoryBlobStore());
+  const realBus = options.realBus ? await createRealCoreBusFixture() : undefined;
+  const blobs = realBus?.blobs ?? integrationValue(await createMemoryBlobStore());
   const transcript = new SqliteTranscriptStore(path.join(dataDir, "transcripts.db"));
   const resourceAccess = new CoreResourceService({
     store: transcript,
     blobStore: blobs,
     originAdapters: new ResourceOriginAdapterRegistry([]),
   });
-  const requestDb = path.join(dataDir, "request-delivery.db");
-  const deliveryStore = new SqliteRequestDeliveryStore({
-    dbPath: requestDb,
-    codecs: coreRequestDeliveryCodecs,
-  });
-  const coordinator = new RequestDeliveryCoordinator({
-    store: deliveryStore,
-    blobStore: blobs,
-    admission: createCoreRequestDeliveryAdmission(blobs),
-  });
-  const transportBus = createLilacBus(createInMemoryDeliveryBus());
+  const requestDb = realBus
+    ? path.join(realBus.directory, "request-delivery.sqlite")
+    : path.join(dataDir, "request-delivery.db");
+  const deliveryStore =
+    realBus?.store ??
+    new SqliteRequestDeliveryStore({
+      dbPath: requestDb,
+      codecs: coreRequestDeliveryCodecs,
+    });
+  const coordinator =
+    realBus?.coordinator ??
+    new RequestDeliveryCoordinator({
+      store: deliveryStore,
+      blobStore: blobs,
+      admission: createCoreRequestDeliveryAdmission(blobs),
+    });
+  const transportBus = realBus?.transportBus ?? createLilacBus(createInMemoryDeliveryBus());
   const claims = new Map<string, string>();
   const publicationReceipts = new Map<string, string>();
   const publisher: RequestDeliveryPublisher<CorePreparedRequestEnvelope> = {
@@ -320,7 +329,7 @@ export async function createNativeIntegrationFixture(
     },
     classifyFailure: (error) => ({ certainty: "ambiguous", code: error.name }),
   };
-  const bus = createDurableCoreRequestBus({ transportBus, coordinator, publisher });
+  const bus = realBus?.bus ?? createDurableCoreRequestBus({ transportBus, coordinator, publisher });
   const journal = new SqliteAgentRunJournal({ dbPath: requestDb });
   const customCommands = new CustomCommandManager(dataDir);
   integrationValue(await customCommands.init());
@@ -493,12 +502,15 @@ export async function createNativeIntegrationFixture(
     await runtime.stopOutput();
     await pluginManager.destroy();
     await resourceAccess.close();
-    await bus.close();
     journal.close();
-    deliveryStore.close();
+    if (realBus) await realBus.close();
+    else {
+      await bus.close();
+      deliveryStore.close();
+      await blobs.close({ deadlineAtMs: Date.now() + 1000 });
+    }
     transcript.close();
     installation.database.close();
-    await blobs.close({ deadlineAtMs: Date.now() + 1000 });
     await rm(root, { recursive: true, force: true });
   }
   return {

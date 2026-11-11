@@ -1,3 +1,4 @@
+import { createRealCoreBusFixture, requireBusOk, withBusDeadline } from "../helpers/real-core-bus";
 import { normalizeWorkflowResourcePolicy, workflowStoreValue } from "./workflow-store-test-helpers";
 import { Database } from "bun:sqlite";
 import { describe, expect, it, spyOn } from "bun:test";
@@ -2800,3 +2801,80 @@ describe.each(["discord", "github"] as const)("%s workflow progress port contrac
     }
   });
 });
+
+it("consumes real Redis actions and projects authorized pause, resume, and cancellation", async () => {
+  const f = await createRealCoreBusFixture();
+  const store = new DurableWorkflowStore(join(f.directory, "actions.sqlite"));
+  const adapter = new ProjectionAdapter();
+  let rendered = Promise.withResolvers<void>();
+  const edit = adapter.editMsg.bind(adapter);
+  adapter.editMsg = async (ref, content) => {
+    const result = await edit(ref, content);
+    rendered.resolve();
+    return result;
+  };
+  const projector = createWorkflowProgressProjectorForTest({
+    bus: f.bus,
+    store,
+    ports: projectionPorts(adapter),
+    subscriptionId: "real-action-projector",
+    now: () => 20,
+    coalesceMs: 1,
+    minEditIntervalMs: 0,
+  });
+  let resolver: Awaited<ReturnType<typeof startWorkflowActionResolver>> | null = null;
+  try {
+    createInvocation(store);
+    const messageRef = await projector.ensureInitialCard("run-1");
+    await projector.start();
+    resolver = await startWorkflowActionResolver({
+      bus: f.bus,
+      store,
+      subscriptionId: "real-action-resolver",
+      now: () => 21,
+    });
+    const publish = async (actionId: string, userId = "user-1") => {
+      const receipt = requireBusOk(
+        await f.bus.publish(lilacEventTypes.EvtAdapterActionInvoked, {
+          actionId,
+          platform: "discord",
+          userId,
+          messageRef,
+          ts: 21,
+        }),
+      );
+      await f.waitForCommit(receipt.cursor, "evt.adapter");
+    };
+    const initialPause = actionToken(adapter, "Pause");
+    await publish(initialPause, "other-user");
+    expect(workflowStoreValue(store.getRun("run-1"))?.state).toBe("queued");
+    expect(
+      workflowStoreValue(store.getSurfaceActionByTokenSha256(sha256(initialPause)))?.consumedAt,
+    ).toBeNull();
+    for (const [label, state] of [
+      ["Pause", "paused"],
+      ["Resume", "queued"],
+      ["Cancel", "cancelled"],
+    ] as const) {
+      rendered = Promise.withResolvers<void>();
+      const token = actionToken(adapter, label);
+      await publish(token);
+      await withBusDeadline(rendered.promise, `${label} progress projection`);
+      expect(workflowStoreValue(store.getRun("run-1"))?.state).toBe(state);
+      expect(
+        workflowStoreValue(store.getSurfaceActionByTokenSha256(sha256(token)))?.consumedAt,
+      ).toBe(21);
+    }
+    expect(adapter.contents.at(-1)?.actions).toEqual([]);
+    expect(workflowStoreValue(store.listPendingActionOutboxEvents(100))).toEqual([]);
+    const watermark = await f.raw.watermark!("evt.workflow");
+    await publish(initialPause);
+    expect(workflowStoreValue(store.getRun("run-1"))?.state).toBe("cancelled");
+    expect(await f.raw.watermark!("evt.workflow")).toBe(watermark);
+  } finally {
+    await resolver?.stop();
+    await projector.stop();
+    store.close();
+    await f.close();
+  }
+}, 15_000);

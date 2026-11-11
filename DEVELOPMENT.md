@@ -145,6 +145,37 @@ Use focused workspace tests and typechecks while iterating. Run `bun run check` 
 changes before every commit. Architecture-controlled changes also need the checks and registrations
 described in [the architecture gate guide](scripts/architecture/README.md).
 
+### Bus contract tests
+
+Bus integration tests use Redis through the production typed bus. Core tests also use the durable
+request coordinator and a temporary SQLite delivery store. Redis must be reachable through `REDIS_URL`
+or the default `redis://127.0.0.1:6379`; these tests fail when Redis is unavailable. They run in the
+normal workspace test scripts and CI.
+
+Each request producer needs coverage that invokes the real producer and observes its event through
+the production bus. A successful `publish` stub does not establish contract compatibility. Stub
+external GitHub, Discord, and model calls at their boundaries. Use
+`apps/core/tests/helpers/real-core-bus.ts` for isolated Core bus tests, await observable delivery or
+commit with a deadline, and close the fixture in cleanup. Restart tests retain and reopen their
+SQLite store. Tests must not synchronize with fixed sleeps.
+
+Coverage lives with the subsystem:
+
+| Contract | Tests |
+| --- | --- |
+| Every catalog event: publish, consume, fetch, reject invalid payloads, quarantine malformed entries | `packages/event-bus/tests/event-contract-redis.test.ts` |
+| Redis delivery leases, retries, acknowledgements, recovery, stream retention | `packages/event-bus/tests/redis-streams-bus.test.ts`, `event-delivery.test.ts` |
+| Durable request publication, ambiguous outcomes, restart, acceptance and commit races | `apps/core/tests/surface/bridge/request-delivery-real-bus.test.ts` |
+| GitHub webhook ingress, review replacement, duplicate delivery and failed publication retries | `apps/core/tests/github/github-webhook-real-bus.test.ts` |
+| Adapter events, Discord routing, control requests and output relay | `apps/core/tests/surface/bridge/surface-real-bus.test.ts` |
+| Agent prompt queues, steering, follow-up, cancellation, output and failure lifecycle | `apps/core/tests/surface/bridge/bus-agent-runner-redis.test.ts` |
+| Native RPC requests, controls, attachment admission, output and reconnect | `apps/core/tests/surface/native/integration.test.ts`, `output-failure.test.ts` |
+| Workflow dispatch, restart, cancellation, waits, actions, scheduling and parent/child convergence | `apps/core/tests/workflow/` |
+| Heartbeat lifecycle, orchestration controls and attachment output | `apps/core/tests/heartbeat/heartbeat-real-bus.test.ts`, `apps/core/tests/tools/` |
+
+The catalog test checks fixture completeness against the production event catalog. Add a fixture when
+adding an event, and add producer/consumer integration coverage when introducing a new bus path.
+
 Read [MIGRATIONS.md](MIGRATIONS.md) before changing stored data or versioned contracts. Active
 implementation plans are indexed in [plan/README.md](plan/README.md).
 For extension development, see [plugin authoring](PLUGIN_AUTHORING.md) and

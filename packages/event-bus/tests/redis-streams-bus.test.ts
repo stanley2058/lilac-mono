@@ -887,56 +887,62 @@ describe("RedisStreamsBus", () => {
     consumerRedis.disconnect();
   });
 
-  it("stop disconnects an unresolved managed operation without hanging", async () => {
-    const redis = new Redis(TEST_REDIS_URL, { lazyConnect: true });
-    const subscriberRedis = redis.duplicate();
-    const managedRedis = redis.duplicate();
-    const operation = Promise.withResolvers<unknown>();
-    const operationStarted = Promise.withResolvers<void>();
-    const rejection = new Error("Connection is closed.");
-    let duplicateCalls = 0;
-    let managedDisconnectCalls = 0;
-    Reflect.set(redis, "duplicate", () => {
-      duplicateCalls += 1;
-      return duplicateCalls === 1 ? subscriberRedis : managedRedis;
-    });
-    Reflect.set(subscriberRedis, "xgroup", async () => "OK");
-    Reflect.set(managedRedis, "eval", async () => {
-      operationStarted.resolve();
-      return await operation.promise;
-    });
-    Reflect.set(managedRedis, "disconnect", () => {
-      managedDisconnectCalls += 1;
-      if (managedDisconnectCalls === 1) operation.reject(rejection);
-    });
-    Reflect.set(redis, "xpending", async () => []);
-    Reflect.set(redis, "xgroup", async () => 0);
-    const raw = createRedisStreamsBus({ redis, subscriberPool: { max: 1 } });
-    const subscription = requireOk(
-      await raw.subscribe(
-        "topic",
-        {
-          mode: "work",
-          subscriptionId: "unresolved-managed-operation",
-          consumerId: "consumer",
-          batch: { maxWaitMs: 50 },
-        },
-        async () => ({ disposition: "commit" }),
-      ),
-    );
-    await operationStarted.promise;
+  it.each([true, false])(
+    "stop settles an unresolved managed operation without hiding unrelated failures (closed=%s)",
+    async (closed) => {
+      const redis = new Redis(TEST_REDIS_URL, { lazyConnect: true });
+      const subscriberRedis = redis.duplicate();
+      const managedRedis = redis.duplicate();
+      const operation = Promise.withResolvers<unknown>();
+      const operationStarted = Promise.withResolvers<void>();
+      const rejection = new Error(closed ? "Connection is closed." : "unrelated managed failure");
+      let duplicateCalls = 0;
+      let managedDisconnectCalls = 0;
+      Reflect.set(redis, "duplicate", () => {
+        duplicateCalls += 1;
+        return duplicateCalls === 1 ? subscriberRedis : managedRedis;
+      });
+      Reflect.set(subscriberRedis, "xgroup", async () => "OK");
+      Reflect.set(managedRedis, "eval", async () => {
+        operationStarted.resolve();
+        return await operation.promise;
+      });
+      Reflect.set(managedRedis, "disconnect", () => {
+        managedDisconnectCalls += 1;
+        if (managedDisconnectCalls === 1) operation.reject(rejection);
+      });
+      Reflect.set(redis, "xpending", async () => []);
+      Reflect.set(redis, "xgroup", async () => 0);
+      const raw = createRedisStreamsBus({ redis, subscriberPool: { max: 1 } });
+      const subscription = requireOk(
+        await raw.subscribe(
+          "topic",
+          {
+            mode: "work",
+            subscriptionId: "unresolved-managed-operation",
+            consumerId: "consumer",
+            batch: { maxWaitMs: 50 },
+          },
+          async () => ({ disposition: "commit" }),
+        ),
+      );
+      await operationStarted.promise;
 
-    const stopping = subscription.stop();
-    const done = await subscription.done;
-    expect(done.status).toBe("error");
-    if (done.status === "error" && done.error._tag === "EventDeliveryTransportFailed") {
-      expect(done.error.cause).toBe(rejection);
-    }
-    requireOk(await stopping);
-    expect(managedDisconnectCalls).toBe(2);
-    await raw.close();
-    redis.disconnect();
-  });
+      const stopping = subscription.stop();
+      const done = await subscription.done;
+      if (closed) requireOk(done);
+      else {
+        expect(done.status).toBe("error");
+        if (done.status === "error" && done.error._tag === "EventDeliveryTransportFailed") {
+          expect(done.error.cause).toBe(rejection);
+        }
+      }
+      requireOk(await stopping);
+      expect(managedDisconnectCalls).toBe(2);
+      await raw.close();
+      redis.disconnect();
+    },
+  );
 
   it("awaits an in-flight heartbeat failure before committing handler success", async () => {
     const redis = new Redis(TEST_REDIS_URL);
@@ -3389,4 +3395,79 @@ describe("RedisStreamsBus", () => {
     requireOk(await sub.stop());
     await bus.close();
   });
+});
+
+it("stops a durable read without invoking a newly returned entry after managed shutdown", async () => {
+  const redis = new Redis(TEST_REDIS_URL);
+  const keyPrefix = `test:lilac-event-bus:${randomId("stop-fresh-read")}`;
+  const buffered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const disconnected = Promise.withResolvers<void>();
+  const duplicate = redis.duplicate.bind(redis);
+  let duplicateCalls = 0;
+  let handlerCalls = 0;
+  Reflect.set(redis, "duplicate", () => {
+    const client = duplicate();
+    duplicateCalls += 1;
+    if (duplicateCalls === 1) {
+      const read = client.xreadgroup.bind(client);
+      Reflect.set(client, "xreadgroup", async (...args: Parameters<Redis["xreadgroup"]>) => {
+        const response = await read(...args);
+        if (response) {
+          buffered.resolve();
+          await release.promise;
+        }
+        return response;
+      });
+    } else {
+      const disconnect = client.disconnect.bind(client);
+      Reflect.set(client, "disconnect", () => {
+        disconnect();
+        disconnected.resolve();
+      });
+    }
+    return client;
+  });
+  const raw = createRedisStreamsBus({ redis, keyPrefix, subscriberPool: { max: 1 } });
+  const subscription = requireOk(
+    await raw.subscribe(
+      "topic",
+      {
+        mode: "work",
+        subscriptionId: "stop-fresh-read",
+        consumerId: "consumer",
+        batch: { maxWaitMs: 50 },
+      },
+      async () => {
+        handlerCalls += 1;
+        return { disposition: "commit" };
+      },
+    ),
+  );
+  try {
+    await raw.publish(
+      { topic: "topic", type: "test", data: null },
+      { topic: "topic", type: "test" },
+    );
+    await buffered.promise;
+    const stopping = subscription.stop();
+    await disconnected.promise;
+    release.resolve();
+    requireOk(await stopping);
+    requireOk(await subscription.done);
+    expect(handlerCalls).toBe(0);
+    expect(
+      await pendingCount(
+        redis,
+        `${keyPrefix}:topic`,
+        managedRedisPhysicalGroup("work", "stop-fresh-read"),
+      ),
+    ).toBe(1);
+  } finally {
+    release.resolve();
+    await subscription.stop();
+    await raw.close();
+    await redis.del(`${keyPrefix}:topic`);
+    await redis.quit();
+  }
 });

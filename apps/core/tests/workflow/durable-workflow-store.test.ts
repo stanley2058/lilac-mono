@@ -1,3 +1,5 @@
+import { createRealCoreBusFixture, requireBusOk, withBusDeadline } from "../helpers/real-core-bus";
+import { lilacEventTypes, type LilacMessageForTopic } from "@stanley2058/lilac-event-bus";
 import { normalizeWorkflowResourcePolicy, workflowStoreValue } from "./workflow-store-test-helpers";
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
@@ -1688,3 +1690,95 @@ it("uses claim, due-time and deadline indexes for maintenance scans", () => {
     rmSync(file, { force: true });
   }
 });
+
+it("delivers persisted cancellation intents through Redis and deduplicates replay after store reopen", async () => {
+  const f = await createRealCoreBusFixture();
+  const workflowPath = join(f.directory, "workflow.sqlite");
+  let store = new DurableWorkflowStore(workflowPath);
+  const legacyId = "workflow-cancel:request-a:epoch";
+  const existingId = crypto.randomUUID();
+  const insert = () => {
+    const db = new Database(workflowPath);
+    try {
+      db.run("INSERT INTO workflow_cancellation_outbox VALUES (?, 'session', ?)", [
+        "request-a",
+        legacyId,
+      ]);
+      db.run("INSERT INTO workflow_cancellation_outbox VALUES (?, 'session', ?)", [
+        "request-b",
+        existingId,
+      ]);
+    } finally {
+      db.close();
+    }
+  };
+  const messages: LilacMessageForTopic<"cmd.request">[] = [];
+  const received = Promise.withResolvers<void>();
+  const subscription = requireBusOk(
+    await f.bus.subscribeTopic(
+      "cmd.request",
+      { mode: "fanout", subscriptionId: "workflow-cancellations" },
+      async (message) => {
+        messages.push(message);
+        if (messages.length === 2) received.resolve();
+        return Result.ok(undefined);
+      },
+      () => "commit",
+    ),
+  );
+  const drain = async () => {
+    const engine = new WorkflowEngine({
+      bus: f.bus,
+      store,
+      blobStore: f.blobs,
+      dataDir: f.directory,
+      subscriptionId: "cancellation-real-bus",
+      pollMs: 60_000,
+    });
+    try {
+      await engine.start();
+    } finally {
+      await engine.stop();
+    }
+  };
+  try {
+    insert();
+    await drain();
+    await withBusDeadline(received.promise, "workflow cancellation delivery");
+    expect(store.pendingCancellations()).toEqual([]);
+    expect(messages.map((message) => message.type)).toEqual([
+      lilacEventTypes.CmdRequestMessage,
+      lilacEventTypes.CmdRequestMessage,
+    ]);
+    const first = messages.find((message) => message.headers?.request_id === "request-a")!;
+    const second = messages.find((message) => message.headers?.request_id === "request-b")!;
+    expect(first.data).toMatchObject({
+      queue: "interrupt",
+      messages: [],
+      raw: { cancel: true, cancelQueued: true },
+    });
+    expect(z.uuid().safeParse(first.data.requestDeliveryId).success).toBe(true);
+    expect(second.data.requestDeliveryId).toBe(existingId);
+    expect(first.headers).toMatchObject({ session_id: "session", request_client: "unknown" });
+    expect(requireBusOk(f.store.load(first.data.requestDeliveryId)).publication?.streamId).toBe(
+      first.id,
+    );
+    const watermark = await f.raw.watermark!("cmd.request");
+    store.close();
+    store = new DurableWorkflowStore(workflowPath);
+    insert();
+    await drain();
+    expect(store.pendingCancellations()).toEqual([]);
+    expect(await f.raw.watermark!("cmd.request")).toBe(watermark);
+    expect(requireBusOk(f.store.load(first.data.requestDeliveryId)).publication?.streamId).toBe(
+      first.id,
+    );
+    expect(requireBusOk(f.store.load(second.data.requestDeliveryId)).publication?.streamId).toBe(
+      second.id,
+    );
+  } finally {
+    requireBusOk(await subscription.stop());
+    store.close();
+    await f.close();
+  }
+}, 15_000);

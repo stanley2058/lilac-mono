@@ -22,6 +22,7 @@ test.each(["prompt", "followup"] as const)(
     const started = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const fixture = await createNativeIntegrationFixture({
+      realBus: true,
       model: new MockLanguageModelV4({
         modelId: "citation-fixture",
         doStream: async ({ prompt }) => {
@@ -149,7 +150,7 @@ describe("native runtime integration", () => {
         return nativeFixtureTextResponse("Attached report.");
       },
     });
-    fixture = await createNativeIntegrationFixture({ model });
+    fixture = await createNativeIntegrationFixture({ realBus: true, model });
     try {
       const { client } = fixture.connect();
       const viewer = (await client.bootstrap.get({})).viewer;
@@ -200,6 +201,7 @@ describe("native runtime integration", () => {
     let requestId = "";
     let projectedId = "";
     const fixture = await createNativeIntegrationFixture({
+      realBus: true,
       seed: (store, transcript) => {
         const thread = store.createThread("owner", { commandId: "legacy-thread" }).unwrap();
         const receipt = store
@@ -278,7 +280,7 @@ describe("native runtime integration", () => {
   });
 
   test("sidebar pagination crosses the RPC boundary with more than 100 conversations", async () => {
-    const fixture = await createNativeIntegrationFixture();
+    const fixture = await createNativeIntegrationFixture({ realBus: true });
     try {
       const { client } = fixture.connect();
       const bootstrap = await client.bootstrap.get({});
@@ -312,7 +314,7 @@ describe("native runtime integration", () => {
   });
 
   test("local login, socket prompt, durable output and unchanged two-device replay", async () => {
-    const fixture = await createNativeIntegrationFixture();
+    const fixture = await createNativeIntegrationFixture({ realBus: true });
     try {
       const first = fixture.connect();
       const bootstrap = await first.client.bootstrap.get({});
@@ -381,6 +383,7 @@ describe("native runtime integration", () => {
 test("rewind removes discarded model context and reconnect cannot restore its suffix", async () => {
   const prompts: string[] = [];
   const fixture = await createNativeIntegrationFixture({
+    realBus: true,
     model: new MockLanguageModelV4({
       modelId: "rewind-fixture",
       doStream: async ({ prompt }) => {
@@ -412,6 +415,17 @@ test("rewind removes discarded model context and reconnect cannot restore its su
       skillIds: [],
     });
     await completed(fixture.store, second.inputId);
+    await fixture.runner.waitForIdle();
+    await waitForStore(fixture.store, () => {
+      const snapshot = integrationValue(fixture.store.sync("owner", thread.id));
+      return (
+        snapshot.kind === "window" &&
+        snapshot.slots.some(
+          (slot) =>
+            slot.kind === "ready" && slot.turnId === second.turnId && slot.state === "complete",
+        )
+      );
+    });
     const before = await client.threads.sync({ threadId: thread.id });
     if (!second.turnId) throw new Error("Full turn missing stable identity");
     const rewind = await client.threads.rewind({
@@ -454,6 +468,7 @@ test("rewind removes discarded model context and reconnect cannot restore its su
 test("file input is acknowledged before upload and model admission waits for its resource URI", async () => {
   const prompts: string[] = [];
   const fixture = await createNativeIntegrationFixture({
+    realBus: true,
     model: new MockLanguageModelV4({
       modelId: "upload-fixture",
       doStream: async ({ prompt }) => {
@@ -508,6 +523,7 @@ test("two sockets steer the active turn, remove queued input and cancel the rema
   const started = Promise.withResolvers<void>();
   let modelCalls = 0;
   const fixture = await createNativeIntegrationFixture({
+    realBus: true,
     model: new MockLanguageModelV4({
       modelId: "cancel-fixture",
       doStream: async ({ abortSignal }) => {
@@ -568,6 +584,7 @@ test("a queued followup becomes a new full turn after the active turn settles", 
   const release = Promise.withResolvers<void>();
   const prompts: string[] = [];
   const fixture = await createNativeIntegrationFixture({
+    realBus: true,
     model: new MockLanguageModelV4({
       modelId: "followup-fixture",
       doStream: async ({ prompt }) => {
@@ -611,6 +628,7 @@ test("a queued followup becomes a new full turn after the active turn settles", 
 
 test("shared reader sees only shared threads and cannot mutate their owner history or configuration", async () => {
   const fixture = await createNativeIntegrationFixture({
+    realBus: true,
     additionalLocalUsers: [
       { userId: "reader", username: "reader", password: "reader-fixture-password" },
     ],
@@ -677,6 +695,7 @@ test.each(["success", "error", "cancel"] as const)(
     let commandModule: { release: { resolve: () => void } } | undefined;
     const modelPrompts: string[] = [];
     const fixture = await createNativeIntegrationFixture({
+      realBus: true,
       prepare: async ({ dataDir }) => {
         const directory = path.join(dataDir, "cmds", "activity-fixture");
         await mkdir(directory, { recursive: true });
@@ -773,6 +792,7 @@ export async function execute(_args, context) {
 
 test("custom command submissions with invalid arguments are rejected before admission", async () => {
   const fixture = await createNativeIntegrationFixture({
+    realBus: true,
     prepare: async ({ dataDir }) => {
       const directory = path.join(dataDir, "cmds", "typed-fixture");
       await mkdir(directory, { recursive: true });
@@ -823,6 +843,7 @@ test("a custom command submitted as steering queues and executes in its own full
   const modelPrompts: string[] = [];
   let commandModule: { calls: number } | undefined;
   const fixture = await createNativeIntegrationFixture({
+    realBus: true,
     prepare: async ({ dataDir }) => {
       const directory = path.join(dataDir, "cmds", "queued-fixture");
       await mkdir(directory, { recursive: true });
@@ -893,7 +914,7 @@ test("a custom command submitted as steering queues and executes in its own full
 });
 
 test("permanent DM compacts through the real runner without removing display history", async () => {
-  const fixture = await createNativeIntegrationFixture();
+  const fixture = await createNativeIntegrationFixture({ realBus: true });
   try {
     const { client } = fixture.connect();
     const bootstrap = await client.bootstrap.get({});

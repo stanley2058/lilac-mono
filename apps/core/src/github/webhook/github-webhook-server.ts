@@ -1122,6 +1122,38 @@ async function onReviewRequested(input: {
   });
 }
 
+async function publishGithubReviewInterrupt(input: {
+  bus: LilacBus;
+  sessionId: string;
+  requestId: string;
+  requestDeliveryId: string;
+}): Promise<void> {
+  adaptEventPublishResultToHost(
+    await input.bus.publish(
+      lilacEventTypes.CmdRequestMessage,
+      {
+        requestDeliveryId: input.requestDeliveryId,
+        queue: "interrupt",
+        messages: [
+          {
+            role: "user",
+            content:
+              "Branch updated (new commits pushed). Cancel the current review immediately and stop producing output.",
+          },
+        ],
+        raw: { cancel: true, requiresActive: true },
+      },
+      {
+        headers: {
+          request_id: input.requestId,
+          session_id: input.sessionId,
+          request_client: "github",
+        },
+      },
+    ),
+  );
+}
+
 async function onPullRequestSynchronize(input: {
   bus: LilacBus;
   logger: Logger;
@@ -1144,6 +1176,16 @@ async function onPullRequestSynchronize(input: {
     if (ageMs > 30 * 60 * 1000) {
       // Avoid surprise reruns long after a review completed.
       return null;
+    }
+
+    if (meta.pr.pendingInterrupt) {
+      await publishGithubReviewInterrupt({
+        bus: input.bus,
+        sessionId,
+        ...meta.pr.pendingInterrupt,
+      });
+      delete meta.pr.pendingInterrupt;
+      if (meta.pr.headSha === headSha) return meta.requestId;
     }
 
     if (meta.pr.headSha === headSha) return null;
@@ -1234,31 +1276,15 @@ async function onPullRequestSynchronize(input: {
       // Once the replacement is durable, retaining its ownership is safer than reviving stale output.
       replacementPublished = true;
 
-      // This interrupt is only applied if the old request is still active.
-      adaptEventPublishResultToHost(
-        await input.bus.publish(
-          lilacEventTypes.CmdRequestMessage,
-          {
-            requestDeliveryId: githubDeliveryId(input.deliveryId, "interrupt"),
-            queue: "interrupt",
-            messages: [
-              {
-                role: "user",
-                content:
-                  "Branch updated (new commits pushed). Cancel the current review immediately and stop producing output.",
-              },
-            ],
-            raw: { cancel: true, requiresActive: true },
-          },
-          {
-            headers: {
-              request_id: meta.requestId,
-              session_id: sessionId,
-              request_client: "github",
-            },
-          },
-        ),
-      );
+      const pendingInterrupt = {
+        requestId: meta.requestId,
+        requestDeliveryId: githubDeliveryId(input.deliveryId, "interrupt"),
+      };
+      const replacementMeta = getGithubRequestMeta(requestId);
+      // Retain the unfinished stage so webhook redelivery can pass the same-head guard.
+      if (replacementMeta?.pr) replacementMeta.pr.pendingInterrupt = pendingInterrupt;
+      await publishGithubReviewInterrupt({ bus: input.bus, sessionId, ...pendingInterrupt });
+      if (replacementMeta?.pr) delete replacementMeta.pr.pendingInterrupt;
 
       return requestId;
     })().finally(async () => {

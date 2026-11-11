@@ -7,6 +7,7 @@ import { createNativeIntegrationFixture, nativeFixtureTextResponse } from "./int
 test("a single output publication failure reaches runtime supervision and preserves recovery ownership", async () => {
   const started = Promise.withResolvers<void>();
   const fixture = await createNativeIntegrationFixture({
+    realBus: true,
     model: new MockLanguageModelV4({
       modelId: "output-failure",
       doStream: async () => {

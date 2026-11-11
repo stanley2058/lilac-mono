@@ -1,3 +1,4 @@
+import { createRealCoreBusFixture } from "../helpers/real-core-bus";
 import { workflowStoreValue } from "./workflow-store-test-helpers";
 import { createWorkflowTestBlobStore } from "./workflow-test-blob-store";
 import { afterEach, describe, expect, it } from "bun:test";
@@ -303,7 +304,8 @@ describe("unified workflow integration", () => {
     const dataDir = path.join(root, "data");
     await fs.mkdir(workspaceRoot);
     const store = new DurableWorkflowStore(path.join(root, "workflow.sqlite"));
-    const bus = createLilacBus(new LiveRawBus());
+    const busFixture = await createRealCoreBusFixture();
+    const { bus, blobs: blobStore } = busFixture;
     const requestMessageCache = createRequestMessageCache();
     const adapter = new WorkflowCardAdapter();
     const projector = createWorkflowProgressProjectorForTest({
@@ -421,6 +423,7 @@ describe("unified workflow integration", () => {
       durableWorkflowStore: store,
       surfaceProtocolResolver: TEST_SURFACE_PROTOCOL_RESOLVER,
       requestMessageCache,
+      requestDelivery: busFixture.coordinator,
       reportFatalPanic: (panic) => {
         throw panic;
       },
@@ -619,7 +622,7 @@ describe("unified workflow integration", () => {
       await actionResolver.stop();
       await projector.stop();
       await tool.destroy();
-      await bus.close();
+      await busFixture.close();
       store.close();
     }
   }, 20000);
@@ -631,7 +634,8 @@ describe("unified workflow integration", () => {
     const dbPath = path.join(root, "workflow.sqlite");
     await fs.mkdir(workspaceRoot);
     let store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new LiveRawBus());
+    const busFixture = await createRealCoreBusFixture();
+    const { bus, blobs: blobStore } = busFixture;
     const adapter = new WorkflowCardAdapter();
     const context = {
       requestId: "discord:channel-1:origin-1",
@@ -682,6 +686,7 @@ describe("unified workflow integration", () => {
     );
     const { runId } = z.object({ runId: z.string() }).parse(triggered);
     const firstBinding = workflowStoreValue(store.getSurfaceBinding(runId))?.messageRef;
+    const dispatchStarted = Promise.withResolvers<void>();
     const firstEngine = new WorkflowEngine({
       bus,
       store,
@@ -697,6 +702,7 @@ describe("unified workflow integration", () => {
             () => resolve({ state: "cancelled", output: "", detail: "core stopped", usage: null }),
             { once: true },
           );
+          dispatchStarted.resolve();
         });
       },
     });
@@ -707,6 +713,7 @@ describe("unified workflow integration", () => {
       await waitFor(
         () => workflowStoreValue(store.listOperations(runId, { state: "dispatched" })).length === 1,
       );
+      await dispatchStarted.promise;
       const persistedRequestId = workflowStoreValue(store.listOperations(runId)).find(
         (operation) => operation.kind === "agent",
       )?.requestId;
@@ -763,7 +770,7 @@ describe("unified workflow integration", () => {
       await firstEngine.stop();
       await firstProjector.stop();
       await tool.destroy();
-      await bus.close();
+      await busFixture.close();
       store.close();
     }
   }, 15000);

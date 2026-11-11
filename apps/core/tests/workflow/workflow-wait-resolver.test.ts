@@ -1,3 +1,5 @@
+import { createRealCoreBusFixture, requireBusOk, withBusDeadline } from "../helpers/real-core-bus";
+import { Result } from "better-result";
 import { normalizeWorkflowResourcePolicy, workflowStoreValue } from "./workflow-store-test-helpers";
 import { describe, expect, it, spyOn } from "bun:test";
 import { rmSync } from "node:fs";
@@ -1373,3 +1375,95 @@ describe("WorkflowWaitResolver", () => {
     }
   });
 });
+
+it("resolves a reply from Redis, publishes progress, and resumes its persisted cursor after restart", async () => {
+  const f = await createRealCoreBusFixture();
+  const file = join(f.directory, "waits.sqlite");
+  let store = new DurableWorkflowStore(file);
+  const makeResolver = () =>
+    new WorkflowWaitResolver({
+      bus: f.bus,
+      store,
+      subscriptionId: "real-reply-resolver",
+      now: () => 10,
+      pollMs: 60_000,
+    });
+  let resolver = makeResolver();
+  const wakeups: string[] = [];
+  let wakeup = Promise.withResolvers<void>();
+  const subscription = requireBusOk(
+    await f.bus.subscribeTopic(
+      "evt.workflow",
+      { mode: "fanout", subscriptionId: "reply-progress-observer" },
+      async (message) => {
+        if (message.type === lilacEventTypes.EvtWorkflowProgressRequested) {
+          wakeups.push(message.data.runId);
+          wakeup.resolve();
+        }
+        return Result.ok(undefined);
+      },
+      () => "commit",
+    ),
+  );
+  const createWait = (index: number) =>
+    createRunAndWait(store, {
+      runId: `real-reply-${index}`,
+      operationId: "reply",
+      wait: {
+        state: "pending",
+        match: {
+          kind: "reply",
+          platform: "discord",
+          channelId: "channel",
+          messageId: `anchor-${index}`,
+          fromUserId: "user-1",
+        },
+        matchKey: "discord:channel",
+        dueAt: null,
+        deadlineAt: 1000,
+        resolverCursor: null,
+        result: null,
+        resolvedBy: null,
+        claimedBy: null,
+        claimedAt: null,
+        createdAt: 3,
+        updatedAt: 3,
+        resolvedAt: null,
+      },
+    });
+  const publishReply = (index: number) =>
+    f.bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: "channel",
+      messageId: `reply-${index}`,
+      userId: "user-1",
+      text: `answer-${index}`,
+      ts: 10,
+      raw: { discord: { replyToMessageId: `anchor-${index}` } },
+    });
+  try {
+    createWait(1);
+    await resolver.start();
+    const first = requireBusOk(await publishReply(1));
+    await withBusDeadline(wakeup.promise, "first reply progress");
+    await waitFor(() => store.getWorkflowWaitResolverCheckpoint("evt.adapter") === first.cursor);
+    expect(workflowStoreValue(store.getWait("real-reply-1", "reply"))?.state).toBe("resolved");
+    await resolver.stop();
+    store.close();
+    store = new DurableWorkflowStore(file);
+    createWait(2);
+    wakeup = Promise.withResolvers<void>();
+    const second = requireBusOk(await publishReply(2));
+    resolver = makeResolver();
+    await resolver.start();
+    await withBusDeadline(wakeup.promise, "offline reply replay");
+    await waitFor(() => store.getWorkflowWaitResolverCheckpoint("evt.adapter") === second.cursor);
+    expect(workflowStoreValue(store.getWait("real-reply-2", "reply"))?.state).toBe("resolved");
+    expect(wakeups).toEqual(["real-reply-1", "real-reply-2"]);
+  } finally {
+    await resolver.stop();
+    requireBusOk(await subscription.stop());
+    store.close();
+    await f.close();
+  }
+}, 15_000);

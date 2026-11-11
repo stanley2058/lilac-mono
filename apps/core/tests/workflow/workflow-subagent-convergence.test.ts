@@ -41,6 +41,8 @@ import { readWorkflowSourceArtifact } from "../../src/workflow/workflow-artifact
 import { createToolResultArtifactStore } from "../../src/artifacts/tool-result-artifact-store";
 import { parseCoreConfigV3ToUniversal } from "@stanley2058/lilac-utils";
 import { createOrchestrateTool } from "../../src/tools/orchestrate";
+import { createRealCoreBusFixture, requireBusOk, withBusDeadline } from "../helpers/real-core-bus";
+
 const blobStore = await createWorkflowTestBlobStore();
 const roots: string[] = [];
 const AUTHENTICATED_PARENT = { platform: "discord", userId: "user-1" } as const;
@@ -1507,4 +1509,147 @@ describe("workflow subagent convergence", () => {
       }
     }
   });
+});
+
+it("replays child tools, forwards live updates and wakes the parent from Redis workflow completion", async () => {
+  const { store, run } = await createRun("parent:redis");
+  const f = await createRealCoreBusFixture();
+  const bridge = new WorkflowLiveParentBridge({
+    bus: f.bus,
+    blobStore,
+    store,
+    subscriptionId: "live-parent-redis",
+  });
+  const parentUpdates: string[] = [];
+  const replayed = Promise.withResolvers<void>();
+  const updated = Promise.withResolvers<void>();
+  const subscription = requireBusOk(
+    await f.bus.subscribeTopic(
+      outReqTopic("parent:redis"),
+      { mode: "tail", offset: { type: "begin" } },
+      async (message) => {
+        if (message.type === lilacEventTypes.EvtAgentOutputToolCall) {
+          parentUpdates.push(message.data.display);
+          if (message.data.display.includes("[read] before registration")) replayed.resolve();
+          if (message.data.display.includes("[read] complete")) updated.resolve();
+        }
+        return Result.ok(undefined);
+      },
+      () => "stop",
+    ),
+  );
+  const childHeaders = {
+    request_id: "sub:child:1",
+    session_id: "sub:channel:1:named:audit",
+    request_client: "unknown" as const,
+  };
+  requireBusOk(
+    await f.bus.publish(
+      lilacEventTypes.EvtAgentOutputToolCall,
+      { toolCallId: "child:read", status: "start", display: "[read] before registration" },
+      { headers: childHeaders },
+    ),
+  );
+  await bridge.start();
+  const parent = bridge.registerParent({ parentRequestId: "parent:redis" });
+  try {
+    await parent.ready;
+    await withBusDeadline(replayed.promise, "replayed child tool activity");
+    requireBusOk(
+      await f.bus.publish(
+        lilacEventTypes.EvtAgentOutputToolCall,
+        { toolCallId: "child:read", status: "end", display: "[read] complete", ok: true },
+        { headers: childHeaders },
+      ),
+    );
+    await withBusDeadline(updated.promise, "live child tool completion");
+    expect(parentUpdates.at(-1)).toContain("1/1 done");
+    expect(store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 })).toBe(
+      true,
+    );
+    expect(
+      store.transitionRun({
+        runId: run.runId,
+        from: "running",
+        to: "succeeded",
+        now: 20,
+        result: "audit complete",
+      }),
+    ).toBe(true);
+    const version = parent.snapshot().signalVersion;
+    const signalled = parent.waitForSignalSince(version);
+    const completion = requireBusOk(
+      await f.bus.publish(lilacEventTypes.EvtWorkflowResultReady, {
+        runId: run.runId,
+        revisionId: run.revisionId,
+        state: "succeeded",
+        summary: "audit complete",
+        ts: 20,
+      }),
+    );
+    await withBusDeadline(signalled, "parent workflow completion signal");
+    await f.waitForCommit(completion.cursor, "evt.workflow");
+    expect(parent.listPending()).toMatchObject([
+      { runId: run.runId, status: "resolved", finalText: "audit complete" },
+    ]);
+    await parent.acknowledge([run.runId]);
+    expect(parent.listPending()).toEqual([]);
+  } finally {
+    await parent.close();
+    await bridge.stop();
+    requireBusOk(await subscription.stop());
+    store.close();
+    await f.close();
+  }
+});
+
+it("publishes parent cancellation transitions through Redis", async () => {
+  const { store, run } = await createRun("parent:redis-cancel");
+  const f = await createRealCoreBusFixture();
+  const bridge = new WorkflowLiveParentBridge({
+    bus: f.bus,
+    blobStore,
+    store,
+    subscriptionId: "live-parent-redis-cancel",
+  });
+  const received: string[] = [];
+  const delivered = Promise.withResolvers<void>();
+  const subscription = requireBusOk(
+    await f.bus.subscribeTopic(
+      "evt.workflow",
+      { mode: "fanout", subscriptionId: "parent-cancel-observer", startFrom: "beginning" },
+      async (message) => {
+        if (
+          message.type === lilacEventTypes.EvtWorkflowRunChanged ||
+          message.type === lilacEventTypes.EvtWorkflowResultReady
+        ) {
+          expect(message.data).toMatchObject({ runId: run.runId, state: "cancelled" });
+          received.push(message.type);
+          if (received.length === 2) delivered.resolve();
+        }
+        return Result.ok(undefined);
+      },
+      () => "stop",
+    ),
+  );
+  const parent = bridge.registerParent({ parentRequestId: "parent:redis-cancel" });
+  try {
+    await parent.ready;
+    await parent.cancelAll("parent request cancelled");
+    await withBusDeadline(delivered.promise, "parent cancellation events");
+    expect(received).toEqual([
+      lilacEventTypes.EvtWorkflowRunChanged,
+      lilacEventTypes.EvtWorkflowResultReady,
+    ]);
+    expect(parent.snapshot()).toMatchObject({
+      hasPendingCompletions: false,
+      hasOutstandingRuns: false,
+    });
+  } finally {
+    await parent.close();
+    await bridge.stop();
+    requireBusOk(await subscription.stop());
+    store.close();
+    await f.close();
+  }
 });

@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { Panic, Result, TaggedError } from "better-result";
 import {
   createLilacBus,
+  lilacEventTypes,
+  type LilacMessageForTopic,
   type FetchOptions,
   type Message,
   type PublishOptions,
@@ -25,6 +27,8 @@ import type { WorkflowProgressCardService } from "../../src/workflow/workflow-pr
 import { formatWorkflowErrorForLog } from "../../src/workflow/workflow-error-log";
 import { WorkflowTriggerScheduler } from "../../src/workflow/workflow-trigger-scheduler";
 import { workflowArtifactReferenceForTest } from "./workflow-test-blob-store";
+
+import { createRealCoreBusFixture, requireBusOk, withBusDeadline } from "../helpers/real-core-bus";
 
 class SchedulerLogFailure extends TaggedError("SchedulerLogFailure")<{
   readonly cause: unknown;
@@ -193,6 +197,55 @@ describe("workflow trigger scheduler", () => {
       await bus.close();
       store.close();
       rmSync(file, { force: true });
+    }
+  });
+  it("delivers scheduled run and progress events through Redis exactly once across repeated ticks", async () => {
+    const f = await createRealCoreBusFixture();
+    const store = new DurableWorkflowStore(join(f.directory, "workflow.sqlite"));
+    const received: LilacMessageForTopic<"evt.workflow">[] = [];
+    const delivered = Promise.withResolvers<void>();
+    const subscription = requireBusOk(
+      await f.bus.subscribeTopic(
+        "evt.workflow",
+        { mode: "fanout", subscriptionId: "scheduler-contract", startFrom: "beginning" },
+        async (message) => {
+          received.push(message);
+          if (received.length === 2) delivered.resolve();
+          return Result.ok(undefined);
+        },
+        () => "stop",
+      ),
+    );
+    const scheduler = new WorkflowTriggerScheduler({ bus: f.bus, store, now: () => 100 });
+    try {
+      createRevision(store);
+      store.createTrigger(trigger());
+      await scheduler.tick();
+      await withBusDeadline(delivered.promise, "scheduled workflow events");
+      const storedTrigger = workflowStoreValue(store.getTrigger("trigger-1"));
+      expect(received.map((message) => message.type)).toEqual([
+        lilacEventTypes.EvtWorkflowRunChanged,
+        lilacEventTypes.EvtWorkflowProgressRequested,
+      ]);
+      expect(received[0]?.data).toMatchObject({
+        runId: storedTrigger?.lastRunId,
+        revisionId: "revision-1",
+        state: "queued",
+        ts: 100,
+      });
+      expect(received[1]?.data).toMatchObject({
+        runId: storedTrigger?.lastRunId,
+        reason: "created",
+      });
+      const watermark = requireBusOk(await f.bus.getTopicWatermark("evt.workflow"));
+      await scheduler.tick();
+      expect(requireBusOk(await f.bus.getTopicWatermark("evt.workflow"))).toBe(watermark);
+      expect(workflowStoreValue(store.listRuns())).toHaveLength(1);
+    } finally {
+      await scheduler.stop();
+      requireBusOk(await subscription.stop());
+      store.close();
+      await f.close();
     }
   });
   it("preserves scheduler Panic instead of logging and swallowing it", async () => {

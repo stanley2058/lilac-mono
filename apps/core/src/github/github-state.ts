@@ -15,6 +15,7 @@ export type GithubRequestMeta = {
     prNumber: number;
     headSha: string;
     mode: "review";
+    pendingInterrupt?: { requestId: string; requestDeliveryId: string };
   };
 };
 
