@@ -173,6 +173,23 @@ describe("WebNativeCache", () => {
     });
   });
 
+  test("retains the newest write when eviction timestamps share a millisecond", async () => {
+    const clock = spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    try {
+      const factory = new IDBFactory();
+      const first = cache(factory, { maxThreads: 1 });
+      await first.commit(scope, "one", patch());
+      await first.commit(scope, "two", patch());
+      await first.commit(scope, "one", { ...patch(2, "cached again"), replace: true });
+      first.close();
+      const reopened = cache(factory, { maxThreads: 1 });
+      expect((await reopened.read(scope, "one"))?.checkpoint.projectionRevision).toBe(2);
+      expect(await reopened.read(scope, "two")).toBeUndefined();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test("unsupported IndexedDB uses isolated memory cache", async () => {
     const first = cache(null);
     await first.commit(scope, "thread", patch());

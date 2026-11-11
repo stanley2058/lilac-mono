@@ -521,7 +521,9 @@ export class WebNativeCache implements NativeCache {
         ? all
             .map(decodeThreadUsage)
             .filter((row) => row !== undefined)
-            .sort((a, b) => a.updatedAt - b.updatedAt)
+            .sort(
+              (a, b) => a.updatedAt - b.updatedAt || Number(a.key === key) - Number(b.key === key),
+            )
         : [];
       let retainedBytes = metadata.reduce((sum, row) => sum + row.bytes, 0);
       let retainedCount = metadata.length;
