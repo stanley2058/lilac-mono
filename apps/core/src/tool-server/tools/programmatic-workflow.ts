@@ -28,6 +28,7 @@ import {
   WORKFLOW_RUNTIME_VERSION,
 } from "../../workflow/workflow-definition";
 import { WorkflowDefinitionStore } from "../../workflow/workflow-definition-store";
+import { cancelWorkflowRun } from "../../workflow/workflow-run-cancel";
 import type {
   ResolvedWorkflowDefinition,
   WorkflowDefinitionStoreFailed,
@@ -1386,72 +1387,21 @@ export class ProgrammaticWorkflow implements ServerTool {
         canonicalProjectId: projectScope.canonicalProjectId,
         revision,
       });
-      const terminal = ["succeeded", "failed", "cancelled"].includes(run.state);
-      if (terminal)
-        return Result.ok({ ok: true as const, run: yield* redactRun(run), changed: false });
-      const now = this.params.now?.() ?? Date.now();
-      const operations = store.listOperations(run.runId, { limit: 1_000 });
-      const operationValues = yield* durableWorkflowReadResult(operations);
-      const activeRequests = operationValues.flatMap((operation) =>
-        operation.requestId ? [operation.requestId] : [],
+      const { run: cancelled, changed } = yield* Result.await(
+        cancelWorkflowRun({
+          store,
+          ...(this.params.bus ? { bus: this.params.bus } : {}),
+          ...(this.params.progressCards ? { progressCards: this.params.progressCards } : {}),
+          run,
+          detail: input.reason ?? "Cancelled through workflow.run.cancel",
+          now: this.params.now?.() ?? Date.now(),
+        }).then((result) =>
+          result.mapError((error) => {
+            if (Panic.is(error)) return preserveToolPanic(error);
+            return workflowFailure("unavailable", error.message);
+          }),
+        ),
       );
-      const cancelled = store.cancelRunAndChildren({
-        runId: run.runId,
-        now,
-        detail: input.reason ?? "Cancelled through workflow.run.cancel",
-      });
-      const changed = cancelled?.state === "cancelled";
-      for (const requestId of activeRequests) {
-        if (this.params.bus) {
-          yield* Result.await(
-            this.params.bus
-              .publish(
-                lilacEventTypes.CmdRequestMessage,
-                {
-                  requestDeliveryId: crypto.randomUUID(),
-                  queue: "interrupt",
-                  messages: [],
-                  raw: { cancel: true, cancelQueued: true },
-                },
-                {
-                  headers: {
-                    request_id: requestId,
-                    session_id: `workflow:${run.runId}:cancel`,
-                    request_client: "unknown",
-                  },
-                },
-              )
-              .then((result) =>
-                result.mapError((error) => {
-                  if (Panic.is(error)) return preserveToolPanic(error);
-                  return workflowFailure("unavailable", error.message);
-                }),
-              ),
-          );
-        }
-      }
-      if (changed && cancelled) {
-        if (this.params.bus) {
-          yield* Result.await(
-            this.params.bus
-              .publish(lilacEventTypes.EvtWorkflowRunChanged, {
-                runId: cancelled.runId,
-                revisionId: cancelled.revisionId,
-                state: cancelled.state,
-                previousState: run.state,
-                detail: cancelled.terminalDetail ?? undefined,
-                ts: now,
-              })
-              .then((result) =>
-                result.mapError((error) => {
-                  if (Panic.is(error)) return preserveToolPanic(error);
-                  return workflowFailure("unavailable", error.message);
-                }),
-              ),
-          );
-        }
-        this.params.progressCards?.requestProjection(cancelled.runId);
-      }
       return Result.ok({
         ok: true as const,
         run: cancelled ? yield* redactRun(cancelled) : null,
