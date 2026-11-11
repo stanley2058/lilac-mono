@@ -40,7 +40,7 @@ export function ConversationWelcome({ existing = false }: { existing?: boolean }
       <h2 className="text-2xl font-semibold tracking-[-0.02em] text-foreground">
         {agent.displayName}
       </h2>
-      <p className="-mt-1.5 text-lg text-foreground/70">
+      <p className="-mt-1.5 text-lg text-balance text-foreground/70">
         {greeting(hour)}
         {name ? `, ${name}` : ""}. What's on your mind?
       </p>

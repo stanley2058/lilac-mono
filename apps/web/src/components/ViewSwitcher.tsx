@@ -16,7 +16,7 @@ export type OtherView = "workflows" | "others" | "archived";
 const views = [
   { id: "conversations", label: "Conversations", icon: MessagesSquare, ownerOnly: false },
   { id: "workflows", label: "Workflows", icon: Workflow, ownerOnly: false },
-  { id: "others", label: "Other conversations", icon: Globe, ownerOnly: true },
+  { id: "others", label: "External", icon: Globe, ownerOnly: true },
   { id: "archived", label: "Archived", icon: Archive, ownerOnly: false },
 ] as const;
 
@@ -55,7 +55,7 @@ export const ViewSwitcher = memo(function ViewSwitcher({
           </IconButton>
         }
       />
-      <DropdownMenuContent align="end" className="min-w-48">
+      <DropdownMenuContent align="end" className="w-auto min-w-48">
         <DropdownMenuRadioGroup value={currentId}>
           {available.map(({ id, label, icon: Icon }) => (
             <DropdownMenuRadioItem
