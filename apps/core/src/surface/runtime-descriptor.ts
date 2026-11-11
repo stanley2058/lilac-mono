@@ -11,6 +11,7 @@ import {
 } from "./produced-ref-guard";
 import type { SurfaceProtocolRouting } from "./protocol";
 import type { RegisteredSurfaceQuestionPort, SurfaceQuestionPort } from "./question";
+import type { SurfaceThreadControlPort } from "./thread-control";
 
 export {
   SurfaceRefInvalid,
@@ -310,6 +311,7 @@ export type SurfaceRuntimeDescriptor<P extends RegisteredSurfacePlatform> = {
     guardedAdapter: SurfaceAdapter,
   ) => SurfaceWorkflowProgressPort<P>;
   readonly createQuestion?: (guardedAdapter: SurfaceAdapter) => SurfaceQuestionPort<P>;
+  readonly createThreadControl?: (guardedAdapter: SurfaceAdapter) => SurfaceThreadControlPort;
 };
 
 export type RegisteredSurfaceRuntimeDescriptor = {
@@ -326,6 +328,7 @@ export type BoundSurfaceRuntimeDescriptor<P extends RegisteredSurfacePlatform> =
   readonly relay?: SurfaceRelayDescriptor<P>;
   readonly workflowProgress?: SurfaceWorkflowProgressPort<P>;
   readonly question?: SurfaceQuestionPort<P>;
+  readonly threadControl?: SurfaceThreadControlPort;
 };
 
 export type RegisteredBoundSurfaceRuntimeDescriptor = {
@@ -363,6 +366,11 @@ export type SurfaceAdapterResolver = {
   resolve(platform: AdapterPlatform): ResolvedSurfaceAdapter | null;
 };
 
+/** Resolves the thread-control port of the surface that started an agent run, when it has one. */
+export type SurfaceThreadControlResolver = {
+  resolve(platform: AdapterPlatform): SurfaceThreadControlPort | null;
+};
+
 export type SurfaceQuestionResolver = {
   entries(): readonly ResolvedSurfaceQuestion[];
   resolve(platform: AdapterPlatform): ResolvedSurfaceQuestion | null;
@@ -382,6 +390,7 @@ function bindRuntimeDescriptor(
   const adapter = createDescriptorBoundSurfaceAdapter(platform, descriptor.adapter);
   const workflowProgress = descriptor.createWorkflowProgress?.(adapter);
   const question = descriptor.createQuestion?.(adapter);
+  const threadControl = descriptor.createThreadControl?.(adapter);
   return {
     platform,
     protocol: descriptor.protocol,
@@ -399,6 +408,7 @@ function bindRuntimeDescriptor(
         }
       : {}),
     ...(question ? { question } : {}),
+    ...(threadControl ? { threadControl } : {}),
   } as RegisteredBoundSurfaceRuntimeDescriptor;
 }
 
@@ -462,6 +472,12 @@ export class SurfaceRuntimeRegistry {
           protocol: descriptor.protocol,
         } as ResolvedSurfaceProtocol;
       },
+    };
+  }
+
+  threadControlResolver(): SurfaceThreadControlResolver {
+    return {
+      resolve: (platform) => this.#byPlatform.get(platform)?.threadControl ?? null,
     };
   }
 

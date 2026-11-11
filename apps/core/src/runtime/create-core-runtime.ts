@@ -1907,7 +1907,8 @@ export async function createCoreRuntime(
                     .map((record) => {
                       if (record.state !== "terminal") return "owned" as const;
                       const kind = record.outcome.kind;
-                      if (kind === "completed" || kind === "cancelled") return kind;
+                      if (kind === "completed" || kind === "cancelled" || kind === "abandoned")
+                        return kind;
                       return "failed" as const;
                     })
                     .tryRecover((error) =>

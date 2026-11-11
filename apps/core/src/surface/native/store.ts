@@ -162,6 +162,11 @@ const TURN_COMPLETED_AT = turnCompletedAtSql();
 
 /** The user that authors messages Lilac posts or sends on an agent's behalf. */
 export const NATIVE_SERVICE_USER_ID = "lilac";
+/**
+ * An agent steer with this command ID prefix becomes a follow-up when its run ends before the
+ * steer lands, so the message still reaches the thread.
+ */
+export const NATIVE_AUTO_STEER_COMMAND_PREFIX = "agent-auto-";
 /** An input with this command ID prefix runs its turn without a visible message. */
 export const NATIVE_JOB_WAKE_COMMAND_PREFIX = "job-wake:";
 const TURN_VISIBLE = "json_array_length(data_json,'$.value.messages')>0";
@@ -2145,6 +2150,8 @@ export class NativeStore {
         )
           return Result.ok(null);
         if (input.mode === "steer" && input.runId !== thread.activeRunId) {
+          // A converted follow-up is admitted from fresh input and thread records.
+          if (yield* this.requeueAutoSteer(input.id)) return this.prepareInput(input.id);
           yield* this.settleInput(input.id, "target-ended");
           return Result.ok(null);
         }
@@ -2183,6 +2190,51 @@ export class NativeStore {
         input = { ...input, state: "queued", pinnedToolMode };
         this.writeRecord(input.id, { kind: "input", value: input }, thread.id, input.position);
         return Result.ok(input);
+      }, this),
+    );
+  }
+
+  /**
+   * Turns an agent's automatic steer whose run ended into a queued follow-up. The steer's message
+   * leaves the ended turn; the follow-up gets its own turn when it is admitted.
+   */
+  requeueAutoSteer(inputId: string): NativeStoreResult<NativeInputRecord | null> {
+    return nativeStoreTransaction(this.db, () =>
+      Result.gen(function* () {
+        const input = yield* this.getInput(inputId);
+        const thread = yield* this.getThreadRecord(input.threadId);
+        if (
+          input.mode !== "steer" ||
+          !input.commandId.startsWith(NATIVE_AUTO_STEER_COMMAND_PREFIX) ||
+          (input.state !== "queued" && input.state !== "admitted") ||
+          input.completedAt !== undefined ||
+          input.historyGeneration !== thread.historyGeneration ||
+          thread.deleted ||
+          thread.mutationPending
+        )
+          return Result.ok(null);
+        if (input.turnId) {
+          const turn = yield* this.readRecord("turn", input.turnId);
+          if (turn?.kind === "turn" && turn.value.messages.some((m) => m.id === input.messageId))
+            yield* this.updateSurfaceMessage(
+              input.initiatingUserId,
+              thread.id,
+              input.messageId,
+              null,
+            );
+        }
+        const followUp: NativeInputRecord = {
+          ...input,
+          mode: "followup",
+          runId: undefined,
+          turnId: undefined,
+          state: "queued",
+          // The steer's delivery already ended, so the follow-up needs its own.
+          deliveryId: randomUUID(),
+        };
+        this.writeRecord(input.id, { kind: "input", value: followUp }, thread.id, input.position);
+        this.bump(yield* this.getThreadRecord(thread.id), "input", input.id, []);
+        return Result.ok(followUp);
       }, this),
     );
   }

@@ -62,6 +62,7 @@ import { NativeResourceService } from "./resources";
 import { NativeLiveFileService, rewriteNativePublishedFileLinks } from "./resources-live";
 import { createNativeRpcServices, nativeViewer } from "./rpc-services";
 import { createNativeSurfaceRuntimeDescriptor } from "./runtime-descriptor";
+import { createNativeThreadControl } from "./thread-control";
 import { NativeSearchService } from "./search";
 import {
   NativeExternalThreads,
@@ -112,7 +113,7 @@ export type NativeRuntimeOptions = {
   externalHistory?: ExternalHistory;
   deliveryState: (
     id: string,
-  ) => ResultType<"missing" | "owned" | "completed" | "failed" | "cancelled", Error>;
+  ) => ResultType<"missing" | "owned" | "completed" | "failed" | "cancelled" | "abandoned", Error>;
   reportFatalError: (error: Error) => void;
   warn: (message: string, error: Error) => void;
   publishableKey?: string;
@@ -275,9 +276,19 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     notifyPostedMessage: (threadId) => push.posted(threadId),
   });
   const questions = new NativeQuestions(store);
+  const threadControl = createNativeThreadControl({
+    store,
+    surface,
+    resolveModel,
+    shouldTriggerRun: () => deployment().crossThreadSend.triggerRun,
+    kick,
+    notifyPostedMessage: (threadId) => push.posted(threadId),
+    cancel: (actorId, threadId, runId) => execution.cancel(actorId, threadId, runId),
+  });
   const descriptor = createNativeSurfaceRuntimeDescriptor({
     adapter,
     question: questions.port,
+    threadControl,
     resolveWorkflowAdapter: (threadId) =>
       store
         .getThreadRecord(nativeThreadId(threadId))

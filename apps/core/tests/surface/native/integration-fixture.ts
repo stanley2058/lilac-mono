@@ -360,6 +360,7 @@ export async function createNativeIntegrationFixture(
           if (record.state !== "terminal") return "owned" as const;
           if (record.outcome.kind === "completed") return "completed" as const;
           if (record.outcome.kind === "cancelled") return "cancelled" as const;
+          if (record.outcome.kind === "abandoned") return "abandoned" as const;
           return "failed" as const;
         }),
       operatorTokenSha256: options.operatorTokenSha256,

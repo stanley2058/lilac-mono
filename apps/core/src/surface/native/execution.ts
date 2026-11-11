@@ -56,7 +56,7 @@ export function createNativeExecution(options: {
   now?: () => number;
   deliveryState?: (
     deliveryId: string,
-  ) => ResultType<"missing" | "owned" | "completed" | "failed" | "cancelled", Error>;
+  ) => ResultType<"missing" | "owned" | "completed" | "failed" | "cancelled" | "abandoned", Error>;
   jobs?: Pick<JobService, "stopSession" | "stopSessionJobsSince">;
 }) {
   const { store } = options;
@@ -601,14 +601,23 @@ export function createNativeExecution(options: {
         pending.filter((input) => input.state === "queued").length,
         pending.filter((input) => input.state === "admitted").length,
       );
-      for (const candidate of pending) {
+      for (const listed of pending) {
         const thread = yield* store.getThreadRecord(threadId);
         if (thread.mutationPending || thread.deleted) return Result.ok(undefined);
-        if (candidate.state === "admitted" && options.deliveryState) {
-          const state = yield* options.deliveryState(candidate.deliveryId);
+        let candidate = listed;
+        if (listed.state === "admitted" && options.deliveryState) {
+          const state = yield* options.deliveryState(listed.deliveryId);
           if (state === "owned") continue;
-          if (state !== "missing") {
-            yield* completeInput(candidate, state);
+          // An automatic steer the runner abandoned is admitted below as a follow-up.
+          const requeued = state === "abandoned" ? yield* store.requeueAutoSteer(listed.id) : null;
+          if (requeued) candidate = requeued;
+          // Any other steer the runner dropped missed its run, which a reader sees as target-ended.
+          if (!requeued && state === "abandoned" && listed.mode === "steer") {
+            yield* store.settleInput(listed.id, "target-ended");
+            continue;
+          }
+          if (!requeued && state !== "missing") {
+            yield* completeInput(listed, state === "abandoned" ? "failed" : state);
             continue;
           }
         }

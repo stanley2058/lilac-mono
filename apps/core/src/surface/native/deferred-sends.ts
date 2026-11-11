@@ -37,7 +37,7 @@ export function reconcileNativeDeferredSends(
   store: NativeStore,
   deliveryState: (
     id: string,
-  ) => ResultType<"missing" | "owned" | "completed" | "failed" | "cancelled", Error>,
+  ) => ResultType<"missing" | "owned" | "completed" | "failed" | "cancelled" | "abandoned", Error>,
 ): NativeStoreResult<void> {
   return Result.gen(function* () {
     const groups = yield* store.listUnsettledSurfaceSends();

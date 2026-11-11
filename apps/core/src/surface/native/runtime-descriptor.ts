@@ -9,6 +9,7 @@ import {
   type SurfaceRuntimeHealthPort,
   type SurfaceWorkflowProgressPort,
 } from "../runtime-descriptor";
+import type { SurfaceThreadControlPort } from "../thread-control";
 import type { NativeSurfaceAdapter } from "./adapter";
 import { nativeSurfaceProtocol } from "./native-protocol";
 
@@ -104,6 +105,7 @@ export function createNativeWorkflowProgressPort(
 export function createNativeSurfaceRuntimeDescriptor(input: {
   readonly adapter: SurfaceAdapter;
   readonly question?: SurfaceQuestionPort<"native">;
+  readonly threadControl?: SurfaceThreadControlPort;
   readonly resolveWorkflowAdapter: NativeWorkflowAdapterResolver;
   readonly requestIngress?: SurfaceRequestIngress;
   readonly health?: SurfaceRuntimeHealthPort;
@@ -112,6 +114,7 @@ export function createNativeSurfaceRuntimeDescriptor(input: {
     protocol: nativeSurfaceProtocol,
     adapter: input.adapter,
     ...(input.question ? { createQuestion: () => input.question! } : {}),
+    ...(input.threadControl ? { createThreadControl: () => input.threadControl! } : {}),
     createWorkflowProgress: () => createNativeWorkflowProgressPort(input.resolveWorkflowAdapter),
     ...(input.requestIngress ? { requestIngress: input.requestIngress } : {}),
     ...(input.health ? { health: input.health } : {}),

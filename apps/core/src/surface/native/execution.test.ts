@@ -21,7 +21,9 @@ import {
 import { SqliteTranscriptStore } from "../../transcript/transcript-store";
 import { createNativeExecution } from "./execution";
 import { selectNativeRunMessages } from "./turn-transcript";
-import { NativeStore } from "./store";
+import { NATIVE_AUTO_STEER_COMMAND_PREFIX, NativeStore } from "./store";
+import { NativeSurfaceStore } from "./store-surface";
+import { createNativeThreadControl } from "./thread-control";
 import { parseNativeRequestMetadata } from "../authenticated-request";
 import {
   parseSurfaceMetadataLine,
@@ -37,12 +39,19 @@ function value<T, E>(result: ResultType<T, E>): T {
   });
 }
 
-function fixture(blobStore?: BlobStore, direct = false) {
+function fixture(
+  blobStore?: BlobStore,
+  direct = false,
+  deliveryState?: Parameters<typeof createNativeExecution>[0]["deliveryState"],
+) {
   let now = 1_000;
   let maxAgeMs: number | undefined;
   let dmGapMs: number | undefined;
-  const store = new NativeStore(new Database(":memory:"), () => now);
+  const database = new Database(":memory:");
+  const store = new NativeStore(database, () => now);
   value(store.initialize());
+  const surface = new NativeSurfaceStore(database, store);
+  value(surface.initialize());
   value(
     store.upsertUser({
       id: "owner",
@@ -101,6 +110,7 @@ function fixture(blobStore?: BlobStore, direct = false) {
     now: () => now,
     getOldMessageSelectionMaxAgeMs: () => maxAgeMs,
     getDmContextGapMs: () => dmGapMs ?? 7_200_000,
+    ...(deliveryState ? { deliveryState } : {}),
     runner: () => ({
       cancelNativeSession: async () => {
         cancellations += 1;
@@ -149,6 +159,7 @@ function fixture(blobStore?: BlobStore, direct = false) {
   };
   return {
     store,
+    surface,
     transcripts,
     thread,
     execution,
@@ -706,6 +717,158 @@ describe("native execution admission", () => {
       );
       value(await f.execution.runnerLifecycle.settled(firstRequest, "completed"));
       expect(value(f.store.getInput(delayed.inputId)).state).toBe("target-ended");
+    } finally {
+      f.close();
+    }
+  });
+
+  const pinnedModel = {
+    alias: "main",
+    spec: "openai/pinned-model",
+    provider: "openai",
+    modelId: "pinned-model",
+    reasoningDisplay: "simple",
+  } as const;
+
+  function agentSteer(f: ReturnType<typeof fixture>, text: string) {
+    return value(
+      f.store.acceptSurfaceInput(
+        "owner",
+        {
+          threadId: f.thread.id,
+          commandId: `${NATIVE_AUTO_STEER_COMMAND_PREFIX}${crypto.randomUUID()}`,
+          historyGeneration: value(f.store.getThreadRecord(f.thread.id)).historyGeneration,
+          text,
+          mode: "steer",
+          attachmentIds: [],
+          skillIds: [],
+        },
+        "lilac",
+        undefined,
+        pinnedModel,
+      ),
+    );
+  }
+
+  function finishFirstRun(f: ReturnType<typeof fixture>, request: ReturnType<typeof f.request>) {
+    value(
+      f.transcripts.saveRequestTranscript({
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        requestClient: "native",
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "done" },
+        ],
+      }),
+    );
+    return f.execution.runnerLifecycle.settled(request, "completed");
+  }
+
+  function expectFollowUpTurn(f: ReturnType<typeof fixture>, inputId: string, text: string) {
+    const input = value(f.store.getInput(inputId));
+    expect(input.mode).toBe("followup");
+    const published = f.published.findLast(
+      (item) => parseNativeRequestMetadata(item.data.raw)?.inputId === inputId,
+    );
+    expect(published?.data.queue).toBe("prompt");
+    expect(published?.headers.request_id).toBe(input.requestId);
+    // The steer's message left the ended turn and now opens the follow-up's turn as Lilac's.
+    const shown = value(f.surface.listMessages("owner", f.thread.id, { limit: 50 })).filter(
+      (row) => row.message.id === input.messageId,
+    );
+    expect(shown).toHaveLength(1);
+    expect(shown[0]!.message).toMatchObject({
+      role: "assistant",
+      metadata: { authorId: "lilac" },
+      parts: [{ type: "text", text }],
+    });
+  }
+
+  test("an agent's automatic steer that misses its run becomes a follow-up", async () => {
+    const f = fixture();
+    try {
+      f.submit("first");
+      value(await f.execution.kick(f.thread.id));
+      const first = f.request();
+      const steer = agentSteer(f, "Include the totals");
+      value(await finishFirstRun(f, first));
+      expectFollowUpTurn(f, steer.inputId, "Include the totals");
+    } finally {
+      f.close();
+    }
+  });
+
+  test("an agent's automatic steer the runner abandons becomes a follow-up", async () => {
+    const abandoned = new Set<string>();
+    const f = fixture(undefined, false, (deliveryId) =>
+      Result.ok(abandoned.has(deliveryId) ? "abandoned" : "owned"),
+    );
+    try {
+      f.submit("first");
+      value(await f.execution.kick(f.thread.id));
+      const first = f.request();
+      const steer = agentSteer(f, "Include the totals");
+      value(await f.execution.kick(f.thread.id));
+      const steered = value(f.store.getInput(steer.inputId));
+      expect(steered).toMatchObject({ mode: "steer", state: "admitted" });
+      abandoned.add(steered.deliveryId);
+      value(await finishFirstRun(f, first));
+      expectFollowUpTurn(f, steer.inputId, "Include the totals");
+      expect(value(f.store.getInput(steer.inputId)).deliveryId).not.toBe(steered.deliveryId);
+    } finally {
+      f.close();
+    }
+  });
+
+  test("a thread read shows a steer that missed its run as target-ended", async () => {
+    const f = fixture();
+    try {
+      f.submit("first");
+      value(await f.execution.kick(f.thread.id));
+      const first = f.request();
+      const steer = f.submit("now", "steer");
+      value(await finishFirstRun(f, first));
+      expect(value(f.store.getInput(steer.inputId)).state).toBe("target-ended");
+      const source = value(f.store.createThread("owner", { commandId: crypto.randomUUID() }));
+      const port = createNativeThreadControl({
+        store: f.store,
+        surface: f.surface,
+        shouldTriggerRun: () => true,
+        resolveModel: () => Result.ok(pinnedModel),
+        kick: () => {},
+        cancel: async () => Result.ok(undefined),
+      });
+      const read = value(
+        await port.read({ userId: "owner", sourceThreadId: source.id }, f.thread.id, {
+          view: "messages",
+          limit: 20,
+          maxCharsPerItem: 100,
+        }),
+      );
+      expect(read.items.find((item) => item.text === "now")).toMatchObject({
+        inputState: "target-ended",
+      });
+      expect(read.items.find((item) => item.text === "first")?.inputState).toBeUndefined();
+    } finally {
+      f.close();
+    }
+  });
+
+  test("a person's steer the runner abandons is target-ended", async () => {
+    const abandoned = new Set<string>();
+    const f = fixture(undefined, false, (deliveryId) =>
+      Result.ok(abandoned.has(deliveryId) ? "abandoned" : "owned"),
+    );
+    try {
+      f.submit("first");
+      value(await f.execution.kick(f.thread.id));
+      const first = f.request();
+      const steer = f.submit("now", "steer");
+      value(await f.execution.kick(f.thread.id));
+      abandoned.add(value(f.store.getInput(steer.inputId)).deliveryId);
+      value(await finishFirstRun(f, first));
+      expect(value(f.store.getInput(steer.inputId)).state).toBe("target-ended");
     } finally {
       f.close();
     }
