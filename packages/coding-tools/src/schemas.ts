@@ -329,11 +329,6 @@ export const subagentDelegateBaseInputSchema = z.object({
     .describe(
       "Delegation mode. Use deferred by default for parallelizable work; acceptance confirms that the child started, not that it finished. Continue independent work, then briefly say you are waiting if results are still outstanding. The runtime resumes you automatically; give the final answer after every deferred subagent has returned a terminal subagent_result. Use sync only when the child result is immediately required before any meaningful next step.",
     ),
-  sessionName: subagentSessionNameSchema
-    .optional()
-    .describe(
-      "Optional stable name for subagent continuation. Reuse starts a new invocation. If the session is active, the new invocation waits in the queue. Reuse does not check or join the active invocation. When omitted, a reusable name is generated and returned.",
-    ),
 });
 
 export const subagentTerminalStatusSchema = z.enum(["resolved", "failed", "cancelled", "timeout"]);

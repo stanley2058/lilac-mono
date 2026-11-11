@@ -269,7 +269,7 @@ function createAuthenticatedSurfaceOrigin<P extends RegisteredSurfacePlatform>(
   };
 }
 
-function parseDepth(ctx: RequestContextLike): number {
+export function parseSubagentDepth(ctx: RequestContextLike): number {
   const raw = ctx.subagentDepth;
   if (typeof raw === "number" && Number.isFinite(raw)) {
     return Math.max(0, Math.trunc(raw));
@@ -401,6 +401,73 @@ export type SubagentDelegationRegistration = {
   authenticatedOrigin?: AuthenticatedSurfaceOrigin;
 };
 
+export type SubagentRequestContext = RequestContextLike;
+
+/** Builds the child request, session, and headers for one subagent assignment. */
+export function buildSubagentDelegationRegistration(input: {
+  readonly ctx: SubagentRequestContext;
+  readonly toolCallId: string;
+  readonly mode: SubagentMode;
+  readonly profile: SubagentProfile;
+  readonly sessionName: string;
+  readonly task: string;
+  readonly title?: string;
+  readonly idleTimeoutMs: number;
+  /** The child's depth. */
+  readonly depth: number;
+  readonly modelOverride?: string;
+  readonly reasoningOverride?: ModelReasoningEffort;
+  /** A stable child request ID for a keyed follow-up; otherwise each assignment gets a new one. */
+  readonly childRequestId?: string;
+}): SubagentDelegationRegistration {
+  const { ctx, toolCallId, profile, sessionName } = input;
+  const childRequestId = input.childRequestId ?? `sub:${ctx.requestId}:${crypto.randomUUID()}`;
+  const childSessionId = `sub:${ctx.sessionId}:named:${sessionName}`;
+  let authenticatedOrigin: AuthenticatedSurfaceOrigin | undefined;
+  if (ctx.requestInitiator && ctx.requestInitiatorSessionId) {
+    const protocol = getBuiltinSurfaceProtocol(ctx.requestInitiator.platform);
+    authenticatedOrigin = createAuthenticatedSurfaceOrigin(
+      protocol,
+      ctx.requestInitiator.userId,
+      ctx.requestInitiatorSessionId,
+    );
+  }
+  return {
+    mode: input.mode,
+    profile,
+    sessionName,
+    stableNamedContinuation: true,
+    task: input.task,
+    title: input.title,
+    idleTimeoutMs: input.idleTimeoutMs,
+    depth: input.depth,
+    parentRequestId: ctx.requestId,
+    parentSessionId: ctx.sessionId,
+    parentRequestClient: ctx.requestClient,
+    parentToolCallId: toolCallId,
+    childRequestId,
+    childSessionId,
+    parentHeaders: {
+      request_id: ctx.requestId,
+      session_id: ctx.sessionId,
+      request_client: toAdapterPlatform(ctx.requestClient),
+    },
+    childHeaders: {
+      request_id: childRequestId,
+      session_id: childSessionId,
+      request_client: "unknown",
+      parent_request_id: ctx.requestId,
+      parent_tool_call_id: toolCallId,
+      subagent_profile: profile,
+      subagent_depth: String(input.depth),
+    },
+    initialMessages: [buildDelegatedTaskPrompt(input.task)],
+    ...(authenticatedOrigin ? { authenticatedOrigin } : {}),
+    modelOverride: input.modelOverride,
+    reasoningOverride: input.reasoningOverride,
+  };
+}
+
 export type TrustedSubagentDelegationRegistration = SubagentDelegationRegistration & {
   projectRoot: string;
   // Heartbeat has no surface principal; null preserves its authority through workflow recovery.
@@ -431,6 +498,8 @@ export function subagentTools(params: {
   config: CoreConfig;
   modelPresets?: Readonly<Record<string, AgentSelectableModelPreset>>;
   delegatePromptOverlay?: string;
+  /** The run also has the orchestrate tool for reading, messaging, and stopping children. */
+  orchestrateAvailable?: boolean;
   onDelegate?: (registration: SubagentDelegationRegistration) => Promise<SubagentDelegationHandle>;
 }) {
   const selectableModels = Object.entries(params.modelPresets ?? {}).filter(
@@ -459,7 +528,12 @@ export function subagentTools(params: {
     "Deferred acceptance means that the subagent started. It does not mean that the task is complete.",
     "After a deferred launch, do all work that does not need the subagent result.",
     "When no such work remains, reply with exactly NO_REPLY and end the turn.",
-    "Do not call tools only to wait or check the subagent status.",
+    ...(params.orchestrateAvailable
+      ? [
+          "The result's workflowRunId identifies this assignment. Pass it to orchestrate to read the subagent's progress, send it a message, or interrupt it.",
+          "To continue a finished subagent's conversation, use orchestrate send with that id; this tool always starts a new subagent.",
+        ]
+      : ["Do not call tools only to wait or check the subagent status."]),
     "The runtime keeps the request open. It resumes you when a subagent_result arrives.",
     "Wait for all deferred results before you send the final response to the user.",
     "Use all relevant subagent results in the final response.",
@@ -529,7 +603,7 @@ export function subagentTools(params: {
         const ctx = adaptToolResultToHost(decodedContext);
         const profile = parsed.permissions ?? defaultPermissionProfile;
         const mode = parsed.mode;
-        const depth = parseDepth(ctx);
+        const depth = parseSubagentDepth(ctx);
 
         if (!delegableProfileNames.has(profile)) {
           signalSubagentFailure(
@@ -546,35 +620,20 @@ export function subagentTools(params: {
         }
 
         const idleTimeoutMs = params.idleTimeoutMs;
-        const sessionName = parsed.sessionName ?? generateSessionName(profile);
-        const stableNamedContinuation = true as const;
-        const childRequestId = `sub:${ctx.requestId}:${crypto.randomUUID()}`;
-        const childSessionId = `sub:${ctx.sessionId}:named:${sessionName}`;
-
-        const childHeaders = {
-          request_id: childRequestId,
-          session_id: childSessionId,
-          request_client: "unknown" as const,
-          parent_request_id: ctx.requestId,
-          parent_tool_call_id: toolCallId,
-          subagent_profile: profile,
-          subagent_depth: String(depth + 1),
-        };
-
-        const parentHeaders = {
-          request_id: ctx.requestId,
-          session_id: ctx.sessionId,
-          request_client: toAdapterPlatform(ctx.requestClient),
-        };
-        let authenticatedOrigin: AuthenticatedSurfaceOrigin | undefined;
-        if (ctx.requestInitiator && ctx.requestInitiatorSessionId) {
-          const protocol = getBuiltinSurfaceProtocol(ctx.requestInitiator.platform);
-          authenticatedOrigin = createAuthenticatedSurfaceOrigin(
-            protocol,
-            ctx.requestInitiator.userId,
-            ctx.requestInitiatorSessionId,
-          );
-        }
+        const registration = buildSubagentDelegationRegistration({
+          ctx,
+          toolCallId,
+          mode,
+          profile,
+          sessionName: generateSessionName(profile),
+          task: parsed.task,
+          title: parsed.title,
+          idleTimeoutMs,
+          depth: depth + 1,
+          modelOverride: parsed.model,
+          reasoningOverride: parsed.reasoning,
+        });
+        const { sessionName, childRequestId, childSessionId } = registration;
         logger.info("subagent delegate start", {
           requestId: ctx.requestId,
           sessionId: ctx.sessionId,
@@ -584,7 +643,7 @@ export function subagentTools(params: {
           parentDepth: depth,
           childDepth: depth + 1,
           sessionName,
-          stableNamedContinuation,
+          stableNamedContinuation: registration.stableNamedContinuation,
           idleTimeoutMs,
           task: truncateEnd(parsed.task.replace(/\s+/g, " ").trim(), 240),
           modelOverride: parsed.model,
@@ -601,29 +660,7 @@ export function subagentTools(params: {
 
         const started = await captureSubagentOperation({
           operation: "start_delegation",
-          run: () =>
-            onDelegate({
-              mode,
-              profile,
-              sessionName,
-              stableNamedContinuation,
-              task: parsed.task,
-              title: parsed.title,
-              idleTimeoutMs,
-              depth: depth + 1,
-              parentRequestId: ctx.requestId,
-              parentSessionId: ctx.sessionId,
-              parentRequestClient: ctx.requestClient,
-              parentToolCallId: toolCallId,
-              childRequestId,
-              childSessionId,
-              parentHeaders,
-              childHeaders,
-              initialMessages: [buildDelegatedTaskPrompt(parsed.task)],
-              ...(authenticatedOrigin ? { authenticatedOrigin } : {}),
-              modelOverride: parsed.model,
-              reasoningOverride: parsed.reasoning,
-            }),
+          run: () => onDelegate(registration),
         });
         const handle = adaptToolResultToHost(started);
 

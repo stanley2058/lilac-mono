@@ -127,12 +127,7 @@ describe("subagent_delegate tool", () => {
     expect(schema.properties?.model?.enum).not.toContain("invalid/alias");
     expect(schema.properties?.model?.enum).not.toContain("invalidTarget");
     expect(schema.properties?.reasoning?.enum).toContain("xhigh");
-    expect(schema.properties?.sessionName?.description).toContain(
-      "If the session is active, the new invocation waits in the queue",
-    );
-    expect(schema.properties?.sessionName?.description).toContain(
-      "Reuse does not check or join the active invocation",
-    );
+    expect(schema.properties?.sessionName).toBeUndefined();
     expect(schema.properties?.mode?.description).toContain(
       "acceptance confirms that the child started, not that it finished",
     );
@@ -686,7 +681,9 @@ describe("subagent_delegate tool", () => {
     },
   );
 
-  it("derives child session id from sessionName for continuation", async () => {
+  it("derives the child session from a generated name", async () => {
+    let seenChildSessionId: string | null = null;
+    let seenStableNamedContinuation = false;
     const tools = subagentTools({
       runProfile: "primary",
       config: TEST_CONFIG,
@@ -696,31 +693,21 @@ describe("subagent_delegate tool", () => {
         seenChildSessionId = registration.childSessionId;
         seenStableNamedContinuation = registration.stableNamedContinuation;
         return {
-          runId: "run:continued-session",
-          completion: Promise.resolve({ status: "resolved", finalText: "continued" }),
+          runId: "run:generated-session",
+          completion: Promise.resolve({ status: "resolved", finalText: "done" }),
           cancel: async () => {},
         };
       },
     });
 
-    const sessionName = "session-1";
-    const expectedSessionId = `sub:s:parent:named:${sessionName}`;
-    let seenChildSessionId: string | null = null;
-    let seenStableNamedContinuation = false;
-
     const res = await resolveExecuteResult(
       tools.subagent_delegate.execute!(
+        { permissions: "restricted", task: "Inspect prior work", mode: "sync" },
         {
-          permissions: "restricted",
-          task: "Continue prior work",
-          mode: "sync",
-          sessionName,
-        },
-        {
-          toolCallId: "tool-continued-session",
+          toolCallId: "tool-generated-session",
           messages: [],
           context: {
-            requestId: "r:continued-session",
+            requestId: "r:generated-session",
             sessionId: "s:parent",
             requestClient: "discord",
             subagentDepth: 0,
@@ -730,111 +717,52 @@ describe("subagent_delegate tool", () => {
     );
 
     expect(res.status).toBe("resolved");
-    expect(res.sessionName).toBe(sessionName);
-    expect(seenChildSessionId === expectedSessionId).toBe(true);
+    expect(res.sessionName).toMatch(/^restricted-[0-9a-f]{8}$/u);
+    expect(seenChildSessionId === `sub:s:parent:named:${res.sessionName}`).toBe(true);
     expect(seenStableNamedContinuation).toBe(true);
   });
 
-  it("makes a generated child name reusable for stable continuation", async () => {
-    const launches: Array<{ sessionName: string; childSessionId: string; stable: true }> = [];
+  it("starts a new child session on every delegation, ignoring a supplied sessionName", async () => {
+    const launches: string[] = [];
     const tools = subagentTools({
       runProfile: "primary",
       config: TEST_CONFIG,
       idleTimeoutMs: 2_000,
       maxDepth: 1,
       onDelegate: async (registration) => {
-        launches.push({
-          sessionName: registration.sessionName,
-          childSessionId: registration.childSessionId,
-          stable: registration.stableNamedContinuation,
-        });
+        launches.push(registration.childSessionId);
         return {
-          runId: `run:generated-stable-${launches.length}`,
+          runId: `run:fresh-${launches.length}`,
           completion: Promise.resolve({ status: "resolved", finalText: "done" }),
           cancel: async () => {},
         };
       },
     });
-
-    const generated = await resolveExecuteResult(
-      tools.subagent_delegate.execute!(
-        { permissions: "restricted", task: "One-off utility run", mode: "deferred" },
-        {
-          toolCallId: "tool-generated-fresh-only",
-          messages: [],
-          context: {
-            requestId: "r:generated-fresh-only",
-            sessionId: "s:generated-fresh-only",
-            requestClient: "discord",
-            subagentDepth: 0,
+    const call = (task: string, extra: Record<string, unknown> = {}) =>
+      resolveExecuteResult(
+        tools.subagent_delegate.execute!(
+          { permissions: "restricted", task, mode: "deferred", ...extra } as never,
+          {
+            toolCallId: `tool-${task}`,
+            messages: [],
+            context: {
+              requestId: `r:${task}`,
+              sessionId: "s:fresh",
+              requestClient: "discord",
+              subagentDepth: 0,
+            },
           },
-        },
-      ),
-    );
+        ),
+      );
 
-    await resolveExecuteResult(
-      tools.subagent_delegate.execute!(
-        {
-          permissions: "restricted",
-          task: "Continue the utility run",
-          mode: "deferred",
-          sessionName: generated.sessionName,
-        },
-        {
-          toolCallId: "tool-generated-stable-continuation",
-          messages: [],
-          context: {
-            requestId: "r:generated-stable-continuation",
-            sessionId: "s:generated-fresh-only",
-            requestClient: "discord",
-            subagentDepth: 0,
-          },
-        },
-      ),
-    );
+    const first = await call("first");
+    const second = await call("second", { sessionName: first.sessionName });
 
+    expect(second.sessionName).not.toBe(first.sessionName);
     expect(launches).toEqual([
-      {
-        sessionName: generated.sessionName,
-        childSessionId: `sub:s:generated-fresh-only:named:${generated.sessionName}`,
-        stable: true,
-      },
-      {
-        sessionName: generated.sessionName,
-        childSessionId: `sub:s:generated-fresh-only:named:${generated.sessionName}`,
-        stable: true,
-      },
+      `sub:s:fresh:named:${first.sessionName}`,
+      `sub:s:fresh:named:${second.sessionName}`,
     ]);
-  });
-
-  it("rejects invalid continuation session names", async () => {
-    const tools = subagentTools({
-      runProfile: "primary",
-      config: TEST_CONFIG,
-      idleTimeoutMs: 2_000,
-      maxDepth: 1,
-    });
-
-    await expect(
-      tools.subagent_delegate.execute!(
-        {
-          permissions: "restricted",
-          task: "Continue prior work",
-          mode: "deferred",
-          sessionName: "../someone-else",
-        },
-        {
-          toolCallId: "tool-invalid-continued-session",
-          messages: [],
-          context: {
-            requestId: "r:invalid-continued-session",
-            sessionId: "s:parent",
-            requestClient: "discord",
-            subagentDepth: 0,
-          },
-        },
-      ),
-    ).rejects.toThrow(/sessionName must be a short slug/i);
   });
 
   it("rejects delegation when depth limit is reached", async () => {

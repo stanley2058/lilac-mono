@@ -493,7 +493,7 @@ export const BUILTIN_LEVEL1_TOOLS = {
       requestContext?.safetyMode !== "restricted",
     formatArgs: formatSubagentDelegateToolArgs,
     summarizeFailure: ({ result }) => summarizeSubagentFailure(result),
-    createTool: ({ runtime, subagentConfig, requestContext, runProfile }) => {
+    createTool: ({ runtime, subagentConfig, requestContext, runProfile, getLevel1ToolSpecs }) => {
       if (!runtime.bus) {
         return signalBuiltinToolHostError("subagent_delegate requires bus");
       }
@@ -507,6 +507,7 @@ export const BUILTIN_LEVEL1_TOOLS = {
         config: runtime.config,
         modelPresets: runtime.config.models.def,
         delegatePromptOverlay: runtime.config.agent.subagents.delegatePromptOverlay,
+        orchestrateAvailable: getLevel1ToolSpecs().has("orchestrate"),
         onDelegate: requestContext ? getDelegateHandler(requestContext) : undefined,
       }).subagent_delegate;
     },
