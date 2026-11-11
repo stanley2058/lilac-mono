@@ -8,6 +8,7 @@ import { parseCoreConfigV3ToUniversal } from "@stanley2058/lilac-utils";
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import type { Level1ExecutionRequestContext } from "@stanley2058/lilac-plugin-runtime";
 
+import { corePreparedRequestEnvelopeSchema } from "../../src/surface/bridge/request-delivery/core-integration";
 import type { SurfaceThreadControlPort } from "../../src/surface/thread-control";
 import type { RegisteredSurfacePlatform } from "../../src/surface/types";
 import { createOrchestrateTool, type OrchestrateToolOptions } from "../../src/tools/orchestrate";
@@ -582,6 +583,13 @@ describe("orchestrate tool", () => {
     await call(built, steer);
     expect(published).toHaveLength(2);
     expect(published[0]!.data.requestDeliveryId).toBe(published[1]!.data.requestDeliveryId);
+    // The durable request bus accepts the steer only if it meets the prepared-envelope contract.
+    expect(
+      corePreparedRequestEnvelopeSchema.safeParse({
+        headers: published[0]!.headers,
+        data: published[0]!.data,
+      }).success,
+    ).toBe(true);
 
     const finished = seedRun({
       id: "keyed-follow-up",

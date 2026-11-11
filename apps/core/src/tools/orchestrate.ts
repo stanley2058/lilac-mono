@@ -13,6 +13,7 @@ import type { Level1ExecutionRequestContext } from "@stanley2058/lilac-plugin-ru
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
 import { isAdapterPlatform } from "../shared/is-adapter-platform";
+import { deriveRequestDeliveryId } from "../shared/request-delivery-id";
 import type { SurfaceThreadControlResolver } from "../surface/runtime-descriptor";
 import type { RegisteredSurfacePlatform } from "../surface/types";
 import {
@@ -564,7 +565,12 @@ export function createOrchestrateTool(options: OrchestrateToolOptions) {
   }
 
   function keyedSteerDeliveryId(run: WorkflowRun, commandId: string): string {
-    return `orchestrate-${sha256(`${requestContext.sessionId}:${run.runId}:${commandId}`).slice(0, 48)}`;
+    return deriveRequestDeliveryId(
+      "orchestrate.subagent-steer",
+      requestContext.sessionId,
+      run.runId,
+      commandId,
+    );
   }
 
   /** A keyed follow-up's child request ID ends with this, so a retry finds the run it started. */
