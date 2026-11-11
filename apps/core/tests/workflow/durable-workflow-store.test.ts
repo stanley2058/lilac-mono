@@ -1,8 +1,8 @@
 import { normalizeWorkflowResourcePolicy, workflowStoreValue } from "./workflow-store-test-helpers";
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { Panic } from "better-result";
-import { rmSync } from "node:fs";
+import { Panic, Result } from "better-result";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DurableWorkflowStore } from "../../src/workflow/durable-workflow-store";
@@ -26,6 +26,20 @@ import {
 } from "../../src/workflow/workflow-migrations";
 import { workflowResolvedModelRequestSchema } from "../../src/workflow/workflow-request-authority";
 import { workflowSourceArtifactReferenceForTest } from "./workflow-test-blob-store";
+import { createMemoryBlobStore } from "@stanley2058/lilac-blob-storage";
+import { createLilacBus, type RawBus } from "@stanley2058/lilac-event-bus";
+import { z } from "zod";
+import { WorkflowEngine } from "../../src/workflow/workflow-engine";
+import {
+  RequestDeliveryCoordinator,
+  SqliteRequestDeliveryStore,
+  corePreparedRequestEnvelopeSchema,
+  coreRequestDeliveryCodecs,
+  createCoreRequestDeliveryAdmission,
+  createDurableCoreRequestBus,
+  createLilacBusRequestDeliveryPublisher,
+  type CorePreparedRequestEnvelope,
+} from "../../src/surface/bridge/request-delivery";
 function dbPath(label: string): string {
   return join(tmpdir(), `lilac-workflow-${label}-${crypto.randomUUID()}.sqlite`);
 }
@@ -1379,6 +1393,265 @@ describe("workflow audit recovery invariants", () => {
       db.close();
       store.close();
       rmSync(file, { force: true });
+    }
+  });
+});
+
+function cancellationDeliveryFixture(requestIds = ["request-a"]) {
+  const directory = mkdtempSync(join(tmpdir(), "workflow-cancellation-delivery-"));
+  const workflowPath = join(directory, "workflow.sqlite");
+  const deliveryPath = join(directory, "delivery.sqlite");
+  const seed = new DurableWorkflowStore(workflowPath);
+  const db = new Database(workflowPath);
+  workflowStoreValue(seed.createInvocation({ revision: revision(), run: run() }));
+  seed.tryClaimRun({ runId: "run-1", claimerId: "worker", now: 20 });
+  for (const requestId of requestIds) {
+    seed.createOperation(operation("run-1", requestId), "worker");
+    db.run(
+      `INSERT INTO workflow_request_dispatches
+       (request_id, run_id, operation_id, session_id, platform, policy_json, active, created_at, updated_at, dispatch_epoch)
+       VALUES (?, 'run-1', ?, 'session', 'discord', '{}', 1, 20, 20, 'epoch')`,
+      [requestId, requestId],
+    );
+  }
+  expect(
+    seed.terminalizeRun({
+      runId: "run-1",
+      from: "running",
+      to: "failed",
+      ownerId: "worker",
+      now: 30,
+      detail: "synthetic failure",
+      result: null,
+      resultArtifact: null,
+    }),
+  ).toBe(true);
+  db.close();
+  seed.close();
+
+  const publications: CorePreparedRequestEnvelope[] = [];
+  const claims: string[] = [];
+  const failedRequests = new Set<string>();
+  let failAt: "claim" | "publish" | "confirm" | undefined;
+  const fail = (stage: typeof failAt) => {
+    if (failAt === undefined || failAt !== stage) return;
+    failAt = undefined;
+    throw new Error(`Synthetic ${stage} transport failure`);
+  };
+  const raw: RawBus = {
+    publish: async () => {
+      throw new Error("Unexpected ordinary publication");
+    },
+    async acquireRequestPublicationClaim(requestDeliveryId) {
+      claims.push(requestDeliveryId);
+      fail("claim");
+      return { status: "acquired", claim: { requestDeliveryId, token: crypto.randomUUID() } };
+    },
+    async publishClaimedRequest(message, options) {
+      fail("publish");
+      if (failedRequests.has(options.headers?.request_id ?? ""))
+        throw new Error("Synthetic request failure");
+      publications.push(
+        corePreparedRequestEnvelopeSchema.parse({ headers: options.headers, data: message.data }),
+      );
+      const id = `${publications.length}-0`;
+      return { status: "published", receipt: { id, cursor: id } };
+    },
+    async confirmRequestPublication() {
+      fail("confirm");
+      return "confirmed";
+    },
+    async abandonRequestPublicationClaim() {
+      return "abandoned";
+    },
+    async subscribe() {
+      const done = Promise.withResolvers<Result<void, never>>();
+      return Result.ok({
+        done: done.promise,
+        stop: async () => {
+          done.resolve(Result.ok(undefined));
+          return Result.ok(undefined);
+        },
+      });
+    },
+    fetch: async () => ({ messages: [] }),
+    close: async () => {},
+  };
+  return {
+    publications,
+    claims,
+    failedRequests,
+    failOnce: (stage: typeof failAt) => {
+      failAt = stage;
+    },
+    pending() {
+      const store = new DurableWorkflowStore(workflowPath);
+      try {
+        return store.pendingCancellations();
+      } finally {
+        store.close();
+      }
+    },
+    insertIntent(requestId: string, deliveryId: string) {
+      const db = new Database(workflowPath);
+      try {
+        db.run("INSERT INTO workflow_cancellation_outbox VALUES (?, 'session', ?)", [
+          requestId,
+          deliveryId,
+        ]);
+      } finally {
+        db.close();
+      }
+    },
+    record(requestDeliveryId: string) {
+      const store = new SqliteRequestDeliveryStore({
+        dbPath: deliveryPath,
+        codecs: coreRequestDeliveryCodecs,
+      });
+      try {
+        return workflowStoreValue(store.load(requestDeliveryId));
+      } finally {
+        store.close();
+      }
+    },
+    async drain() {
+      const store = new DurableWorkflowStore(workflowPath);
+      const delivery = new SqliteRequestDeliveryStore({
+        dbPath: deliveryPath,
+        codecs: coreRequestDeliveryCodecs,
+      });
+      const blobs = workflowStoreValue(await createMemoryBlobStore());
+      const coordinator = new RequestDeliveryCoordinator({
+        store: delivery,
+        blobStore: blobs,
+        admission: createCoreRequestDeliveryAdmission(blobs),
+      });
+      const transportBus = createLilacBus(raw);
+      const bus = createDurableCoreRequestBus({
+        transportBus,
+        coordinator,
+        publisher: createLilacBusRequestDeliveryPublisher(transportBus),
+      });
+      const engine = new WorkflowEngine({
+        bus,
+        store,
+        blobStore: blobs,
+        dataDir: directory,
+        subscriptionId: "cancellation-test",
+        pollMs: 60_000,
+        now: () => 100,
+      });
+      try {
+        await engine.start();
+      } finally {
+        await engine.stop();
+        store.close();
+        delivery.close();
+        await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
+      }
+    },
+    close: () => rmSync(directory, { recursive: true, force: true }),
+  };
+}
+
+describe("workflow cancellation durable delivery", () => {
+  it("publishes an already-persisted trigger intent through the engine and deletes the original key", async () => {
+    const f = cancellationDeliveryFixture();
+    try {
+      expect(f.pending()).toEqual([
+        {
+          requestId: "request-a",
+          sessionId: "session",
+          deliveryId: "workflow-cancel:request-a:epoch",
+        },
+      ]);
+      await f.drain();
+      expect(f.publications).toHaveLength(1);
+      const envelope = f.publications[0]!;
+      expect(z.uuid().safeParse(envelope.data.requestDeliveryId).success).toBe(true);
+      expect(envelope.data.requestDeliveryId).toBe("a12dc6ce-c5c6-8e38-95b5-d4ffe3555dd3");
+      expect(envelope.data).toEqual({
+        requestDeliveryId: envelope.data.requestDeliveryId,
+        queue: "interrupt",
+        messages: [],
+        raw: { cancel: true, cancelQueued: true },
+      });
+      expect(envelope.headers).toEqual({
+        request_id: "request-a",
+        session_id: "session",
+        request_client: "unknown",
+      });
+      expect(f.pending()).toEqual([]);
+      expect(f.record(envelope.data.requestDeliveryId).publication?.streamId).toBe("1-0");
+    } finally {
+      f.close();
+    }
+  });
+
+  it("keeps distinct intents separate and completes only the successful original key", async () => {
+    const f = cancellationDeliveryFixture(["request-a", "request-b"]);
+    f.failedRequests.add("request-b");
+    try {
+      await f.drain();
+      expect(f.publications).toHaveLength(1);
+      expect(f.publications[0]?.headers.request_id).toBe("request-a");
+      expect(new Set(f.claims).size).toBe(2);
+      expect(f.pending()).toEqual([
+        {
+          requestId: "request-b",
+          sessionId: "session",
+          deliveryId: "workflow-cancel:request-b:epoch",
+        },
+      ]);
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each(["claim", "publish", "confirm"] as const)(
+    "retains the intent after %s failure and resumes stably after engine/store restart",
+    async (stage) => {
+      const f = cancellationDeliveryFixture();
+      f.failOnce(stage);
+      try {
+        await f.drain();
+        expect(f.pending()).toHaveLength(1);
+        const id = f.claims[0]!;
+        expect(z.uuid().safeParse(id).success).toBe(true);
+        expect(f.record(id).state).toBe("prepared");
+        expect(f.publications).toHaveLength(stage === "confirm" ? 1 : 0);
+        await f.drain();
+        expect(f.claims).toEqual([id, id]);
+        expect(f.pending()).toEqual([]);
+        expect(f.publications).toHaveLength(1);
+        expect(f.record(id).publication?.streamId).toBe("1-0");
+      } finally {
+        f.close();
+      }
+    },
+  );
+
+  it("preserves an existing UUID and distinguishes later epochs for the same request", async () => {
+    const f = cancellationDeliveryFixture();
+    const existingId = "00000000-0000-4000-8000-000000000001";
+    try {
+      f.insertIntent("existing-request", existingId);
+      await f.drain();
+      expect(
+        f.publications.find((entry) => entry.headers.request_id === "existing-request")?.data
+          .requestDeliveryId,
+      ).toBe(existingId);
+      const firstId = f.publications.find((entry) => entry.headers.request_id === "request-a")?.data
+        .requestDeliveryId;
+      expect(f.pending()).toEqual([]);
+      expect(firstId).toBeDefined();
+      f.insertIntent("request-a", "workflow-cancel:request-a:next-epoch");
+      await f.drain();
+      expect(f.publications).toHaveLength(3);
+      expect(f.publications[2]?.data.requestDeliveryId).not.toBe(firstId);
+      expect(f.pending()).toEqual([]);
+    } finally {
+      f.close();
     }
   });
 });

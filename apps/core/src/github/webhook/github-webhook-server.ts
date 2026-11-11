@@ -1,8 +1,9 @@
 import { captureError } from "../../shared/error-capture.js";
+import { deriveRequestDeliveryId } from "../../shared/request-delivery-id";
 import crypto from "node:crypto";
 import Elysia from "elysia";
 import type { BusMessageV2, LilacBus } from "@stanley2058/lilac-event-bus";
-import { lilacEventTypes } from "@stanley2058/lilac-event-bus";
+import { EventPublishContractInvalid, lilacEventTypes } from "@stanley2058/lilac-event-bus";
 import { createLogger, env, formatTaggedErrorForLog } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
@@ -188,7 +189,9 @@ async function captureGithubWebhookOperation<T>(
         new GithubWebhookOperationError({
           operation,
           cause,
-          message: `GitHub webhook ${operation} failed`,
+          message: EventPublishContractInvalid.is(cause)
+            ? `GitHub webhook ${operation} failed (${cause._tag}: ${cause.message})`
+            : `GitHub webhook ${operation} failed`,
         }),
       );
     }
@@ -432,7 +435,7 @@ function newGithubRequestId(input: {
 
 export function githubDeliveryId(deliveryId: string | undefined, operation: string): string {
   if (!deliveryId) return crypto.randomUUID();
-  return `github-delivery:${crypto.createHash("sha256").update(deliveryId).digest("hex")}:${operation}`;
+  return deriveRequestDeliveryId("github-delivery", deliveryId, operation);
 }
 
 async function cleanupFailedGithubRequest(
