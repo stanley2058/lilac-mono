@@ -2666,16 +2666,17 @@ export class DurableWorkflowStore {
 
   listOperations(
     runId: string,
-    options?: { state?: WorkflowOperationState; limit?: number },
+    options?: { state?: WorkflowOperationState; limit?: number; offset?: number },
   ): ResultType<WorkflowOperation[], DurableWorkflowReadError> {
     return captureWorkflowRead("list-operations", () => {
+      const offset = Math.max(0, Math.trunc(options?.offset ?? 0));
       const rows = options?.state
         ? this.persistedRows(
-            "SELECT * FROM workflow_operations WHERE run_id = ? AND state = ? ORDER BY created_at LIMIT ?",
-          ).all(runId, options.state, boundedLimit(options.limit))
+            "SELECT * FROM workflow_operations WHERE run_id = ? AND state = ? ORDER BY created_at, operation_id LIMIT ? OFFSET ?",
+          ).all(runId, options.state, boundedLimit(options.limit), offset)
         : this.persistedRows(
-            "SELECT * FROM workflow_operations WHERE run_id = ? ORDER BY created_at LIMIT ?",
-          ).all(runId, boundedLimit(options?.limit));
+            "SELECT * FROM workflow_operations WHERE run_id = ? ORDER BY created_at, operation_id LIMIT ? OFFSET ?",
+          ).all(runId, boundedLimit(options?.limit), offset);
       return this.decodeRows(rows, decodeWorkflowOperationRow);
     });
   }

@@ -2484,6 +2484,10 @@ export async function createCoreRuntime(
               blobStore: activeBlobStore,
               attachmentOutputLifecycle,
               surfaceAdapterResolver: registry.adapterResolver(),
+              threadControl: registry.threadControlResolver(),
+              subagentSnapshots: () => stopAgentRunner ?? undefined,
+              requestDeliveryKnown: (id) =>
+                requestDeliveryStore?.load(id).match({ ok: () => true, err: () => false }) ?? false,
               getConfig: () => getCoreConfig(),
               discovery: discoveryService ?? undefined,
               nativeSearch: nativeRuntime?.search,

@@ -1393,6 +1393,10 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "src/tools/job.ts", exportName },
         category: "request" as const,
       })),
+      {
+        identity: { module: "src/tools/orchestrate.ts", exportName: "formatOrchestrateToolArgs" },
+        category: "request",
+      },
       ...[
         ["src/transcript/transcript-persistence-codec.ts", "normalizeStoredMessagesV1"],
         ["src/surface/bridge/agent-run-journal/index.ts", "deserialize.andThen.<callback@1>"],

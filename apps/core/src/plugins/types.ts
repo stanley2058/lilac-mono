@@ -10,7 +10,11 @@ import type {
   ServerTool,
 } from "@stanley2058/lilac-plugin-runtime";
 
-import type { SurfaceAdapterResolver } from "../surface/runtime-descriptor";
+import type {
+  SurfaceAdapterResolver,
+  SurfaceThreadControlResolver,
+} from "../surface/runtime-descriptor";
+import type { SubagentReader } from "../surface/native/subagents";
 import type { NativeSearchService } from "../surface/native/search";
 import type { DiscoveryService } from "../discovery/discovery-service";
 import type { ConversationThreadToolService } from "../conversation/thread-service";
@@ -36,6 +40,12 @@ export type CoreToolPluginRuntime = {
   resourceAccess?: ResourceAccess;
   resourceAccessForContext?: (context: RequestContext | undefined) => ResourceAccess | undefined;
   surfaceAdapterResolver?: SurfaceAdapterResolver;
+  /** Thread-control ports of the surfaces that offer cross-thread control. */
+  threadControl?: SurfaceThreadControlResolver;
+  /** Whether a durable request delivery with this ID was already accepted. */
+  requestDeliveryKnown?: (requestDeliveryId: string) => boolean;
+  /** Live snapshots of running subagents, from the agent runner once it has started. */
+  subagentSnapshots?: () => SubagentReader | undefined;
   nativeAdapterForContext?: (context: RequestContext) => SurfaceOperationResult<SurfaceAdapter>;
   config?: CoreConfig;
   getConfig?: () => Promise<CoreConfig>;

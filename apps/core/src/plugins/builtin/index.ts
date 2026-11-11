@@ -1,6 +1,7 @@
 import type { CoreToolPlugin } from "../types";
 import { createBuiltinJobPlugin } from "./job";
 import { createBuiltinLocalToolsPlugin } from "./local-tools";
+import { createBuiltinOrchestratePlugin } from "./orchestrate";
 import { createBuiltinQuestionPlugin } from "./question";
 import {
   createBuiltinAttachmentPlugin,
@@ -25,6 +26,7 @@ export function createBuiltinCoreToolPlugins(
     createBuiltinLocalToolsPlugin(),
     createBuiltinQuestionPlugin(),
     createBuiltinJobPlugin(),
+    createBuiltinOrchestratePlugin(),
     createBuiltinWebPlugin(),
     createBuiltinSkillsPlugin(),
     createBuiltinMcpPlugin(),

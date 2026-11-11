@@ -39,6 +39,8 @@ import { WorkflowSubagentDispatcher } from "../../src/workflow/workflow-subagent
 import { WorkflowEngine } from "../../src/workflow/workflow-engine";
 import { readWorkflowSourceArtifact } from "../../src/workflow/workflow-artifact-store";
 import { createToolResultArtifactStore } from "../../src/artifacts/tool-result-artifact-store";
+import { parseCoreConfigV3ToUniversal } from "@stanley2058/lilac-utils";
+import { createOrchestrateTool } from "../../src/tools/orchestrate";
 const blobStore = await createWorkflowTestBlobStore();
 const roots: string[] = [];
 const AUTHENTICATED_PARENT = { platform: "discord", userId: "user-1" } as const;
@@ -353,6 +355,56 @@ describe("workflow subagent convergence", () => {
       workflowStoreValue(store.listActiveLiveParentRuns("parent:1")).map((item) => item.runId),
     ).toEqual([handle.runId]);
     expect(store.getLiveParentDeliverySnapshot("parent:1")).toEqual({
+      pendingCompletionCount: 0,
+      outstandingRunCount: 1,
+    });
+    store.close();
+  });
+  it("continues a finished child through orchestrate and parks the later parent turn", async () => {
+    const { projectRoot, store, dispatcher, handle } = await createRun("parent:first-turn");
+    store.cancelRunAndChildren({ runId: handle.runId, now: Date.now(), detail: "finished" });
+    const tool = createOrchestrateTool({
+      config: parseCoreConfigV3ToUniversal({ configVersion: 3 }),
+      cwd: projectRoot,
+      runProfile: "primary",
+      canControl: true,
+      idleTimeoutMs: 2000,
+      maxDepth: 1,
+      workflows: store,
+      requestContext: {
+        requestId: "parent:second-turn",
+        sessionId: "channel:1",
+        requestClient: "discord",
+        subagentDepth: 0,
+        subagentProfile: "primary",
+        requestInitiator: AUTHENTICATED_PARENT,
+        requestInitiatorSessionId: "channel:1",
+      },
+      delegate: (followUp) =>
+        dispatcher.delegate({
+          ...followUp,
+          projectRoot,
+          fallbackSurface: { ...AUTHENTICATED_PARENT, sessionId: "channel:1" },
+        }),
+    });
+
+    const sent = (await tool.execute!(
+      { action: "send", id: handle.runId, message: "Now check the session cookies" } as never,
+      { toolCallId: "tool:follow-up", messages: [] } as never,
+    )) as { disposition: string; runId: string };
+
+    expect(sent.disposition).toBe("started");
+    expect(sent.runId).not.toBe(handle.runId);
+    expect(workflowStoreValue(store.getRun(sent.runId))?.completionTarget).toMatchObject({
+      kind: "live_parent",
+      parentRequestId: "parent:second-turn",
+      parentToolCallId: "tool:follow-up",
+      childSessionId: "sub:channel:1:named:audit",
+      sessionName: "audit",
+      profile: "explore",
+    });
+    expect(workflowStoreValue(store.getRun(handle.runId))?.state).toBe("cancelled");
+    expect(store.getLiveParentDeliverySnapshot("parent:second-turn")).toEqual({
       pendingCompletionCount: 0,
       outstandingRunCount: 1,
     });
