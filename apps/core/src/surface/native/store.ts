@@ -160,6 +160,8 @@ function nullableAuthority<T>(result: NativeStoreResult<T>): NativeStoreResult<T
 const TURN_POSTED = "json_extract(t.data_json,'$.value.messages[0].id')=t.id";
 const TURN_COMPLETED_AT = turnCompletedAtSql();
 
+/** The user that authors messages Lilac posts or sends on an agent's behalf. */
+export const NATIVE_SERVICE_USER_ID = "lilac";
 /** An input with this command ID prefix runs its turn without a visible message. */
 export const NATIVE_JOB_WAKE_COMMAND_PREFIX = "job-wake:";
 const TURN_VISIBLE = "json_array_length(data_json,'$.value.messages')>0";
@@ -1873,10 +1875,14 @@ export class NativeStore {
     uploads: NativeUploadRecord[],
   ): NativeInputRecord {
     const turnId = input.turnId ?? randomUUID();
+    // An agent's message to another thread shows as Lilac's message, as acceptSurfaceInput
+    // displays it when the input gets its turn at once.
+    const fromService = input.authorId === NATIVE_SERVICE_USER_ID;
     const message: DisplayMessage = {
       id: input.messageId,
-      role: "user",
+      role: fromService ? "assistant" : "user",
       metadata: {
+        ...(fromService ? { phase: "final" as const } : {}),
         authorId: input.authorId,
         createdAt: input.createdAt,
         inputId: input.id,
@@ -3340,7 +3346,7 @@ export class NativeStore {
   acceptSurfaceInput(
     actorId: string,
     input: NativeInput,
-    authorId = "lilac",
+    authorId = NATIVE_SERVICE_USER_ID,
     message?: DisplayMessage,
     resolvedModelRequest?: DurableResolvedModelRequest,
   ): NativeStoreResult<NativeInputReceipt> {
@@ -3350,7 +3356,10 @@ export class NativeStore {
           authorId,
           resolvedModelRequest,
         });
-        if (message)
+        const accepted = yield* this.getInput(receipt.inputId);
+        // A queued input has no turn until it is admitted, and a steer joins the active turn as
+        // input; only an input that already opened its own turn takes the caller's display.
+        if (message && accepted.mode !== "steer" && accepted.turnId)
           yield* this.updateSurfaceMessage(actorId, input.threadId, receipt.messageId, {
             ...message,
             id: receipt.messageId,
