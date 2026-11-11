@@ -721,7 +721,9 @@ Deploy the tool-results package with Core. Rollback requires no data conversion.
 ### GitHub webhook delivery identity and bounded media failures
 
 GitHub webhook prompts and synchronize interrupts now derive `requestDeliveryId` from
-`X-GitHub-Delivery` and the operation name. Replays use the same durable admission identity.
+`X-GitHub-Delivery` and the operation name as a namespaced SHA-256 UUIDv8. Replays use the same
+durable admission identity. The earlier `github-delivery:<hash>:<operation>` form was rejected by
+the UUID contract before durable preparation, so it has no admitted records to rewrite.
 Previously admitted requests keep their existing IDs. No stored records need rewriting.
 Requests without that header keep generated IDs. A webhook HTTP acknowledgement now precedes
 GitHub API work. Handler failures are logged and remain eligible for redelivery.
