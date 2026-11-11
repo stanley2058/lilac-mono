@@ -58,6 +58,9 @@ jobs:
       - name: Run CI script
         run: bun run ci
 
+      - name: Test process and Redis resilience
+        run: bun run test:resilience
+
   docker-image:
     name: Docker image smoke
     runs-on: ubuntu-26.04

@@ -3061,6 +3061,8 @@ export async function createCoreRuntime(
       hasResidualRouter: residualRouter !== null,
     });
     if (stopPass === "none") return;
+    const wasFullyStarted = runtimeFullyStarted;
+    runtimeFullyStarted = false;
     started = false;
     conversationThreadSummarizationStopping = true;
     const cleanup = createCoreRuntimeCleanupSupervisor(priorPanic);
@@ -3072,7 +3074,7 @@ export async function createCoreRuntime(
     const gracefulSurfaceRegistry = surfaceRuntimeRegistry;
     const gracefulDrainRequired =
       stopPass === "full" &&
-      runtimeFullyStarted &&
+      wasFullyStarted &&
       gracefulAgentRunner !== null &&
       gracefulSurfaceRegistry !== null;
     const blobStoreClose = ownedBlobStore

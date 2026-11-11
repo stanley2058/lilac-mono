@@ -176,6 +176,38 @@ Coverage lives with the subsystem:
 The catalog test checks fixture completeness against the production event catalog. Add a fixture when
 adding an event, and add producer/consumer integration coverage when introducing a new bus path.
 
+### Recovery and resilience tests
+
+The ordinary workspace tests also exercise process death, competing consumers, bounded load, and
+retained-state upgrades:
+
+- `apps/core/tests/surface/bridge/request-process-crash.test.ts` kills a Bun worker at durable
+  request boundaries and recovers through a separate worker with the same Redis and disk state.
+- `packages/event-bus/tests/competing-consumers.test.ts` verifies that a replacement consumer fences
+  a stale handler after lease takeover.
+- `apps/core/tests/surface/bridge/bus-agent-runner-load.test.ts` and
+  `packages/event-bus/tests/redis-load.test.ts` exercise queued work, session independence, slow
+  consumers, retention, and connection bounds with finite workloads.
+- `apps/core/tests/surface/bridge/retained-state-upgrade.test.ts` and the workflow store tests
+  exercise supported retained-state upgrades through current recovery code. Documented clean breaks
+  remain rejection or non-replay cases.
+
+Run the Docker-dependent cases separately:
+
+```sh
+bun run test:resilience
+```
+
+This command requires a running Docker daemon and the `redis:7-alpine` image. It creates disposable
+Redis containers with AOF persistence and loopback-only ports. It never stops the Redis instance at
+`REDIS_URL`. The tests cut real TCP connections, restart Redis with retained data, and boot Core in
+child processes with temporary configuration and a local model endpoint. The `.case.ts` suffix keeps
+these cases out of default workspace discovery; the explicit command runs them without skipping when
+Docker is missing. CI runs this command after its ordinary checks.
+
+The load cases use finite workloads and assert ordering and resource bounds. Recovery retains the
+at-least-once semantics for model calls and external effects documented in `MIGRATIONS.md`.
+
 Read [MIGRATIONS.md](MIGRATIONS.md) before changing stored data or versioned contracts. Active
 implementation plans are indexed in [plan/README.md](plan/README.md).
 For extension development, see [plugin authoring](PLUGIN_AUTHORING.md) and
