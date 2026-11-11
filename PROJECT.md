@@ -218,6 +218,20 @@ Only the exact live token can create or observe the `requestDeliveryId` to strea
 records that stream ID, one Redis operation confirms the exact marker and removes it with the claim. An
 expired or superseded producer token cannot append a request.
 
+`cmd.request.message.requestDeliveryId` is a UUID admission/publication identity, distinct from the
+free-form `request_id` correlation header. Core's `shared/request-delivery-id.ts` derives deterministic
+UUIDv8 values from namespaced producer identities. GitHub hashes the delivery header with the operation
+name, so a replay retains its identity while prompt and interrupt remain separate. A missing header
+keeps the existing generated UUID behavior.
+
+Workflow cancellation keeps its original outbox key for ownership and deletion, and normalizes that key
+to a wire UUID at publication. Existing UUID keys pass through unchanged; legacy text keys map stably
+across engine/store reopen. Successful durable publication, including an already-published result,
+completes only the original intent. Publication failures retain it. Cancellation retries rebuild the
+same fixed control envelope; this does not relax the prepared-envelope conflict checks for producers
+whose context changes between attempts. See [delivery identity compatibility](MIGRATIONS.md#uuid-request-delivery-identities)
+for the mapping, persisted-key compatibility and remaining recovery limits.
+
 Durable consumers need stable `subscriptionId` values. The transport maps them to versioned physical groups created at the current stream end by default. `startFrom: "beginning"` replays retained events when a group is first created; it never resets an existing group's durable frontier. The transport leases each invocation, heartbeats live attempts, and reclaims expired attempts with token fencing. Delivery is at-least-once: handlers that perform external effects own their idempotency. The fixed policy allows five attempts before Redis-only dead-letter exhaustion. Managed dead-letter persistence, source acknowledgement, and delivery-metadata cleanup are atomic; ordinary commit atomically acknowledges and removes metadata. `consumerId` identifies one process within a group, and the Redis stream entry ID is the cursor/checkpoint. Tail delivery retains its cursor behavior and no lease.
 
 ## Tools, Plugins, And Skills
@@ -297,6 +311,7 @@ Core has one current programmatic workflow runtime, `lilac-workflow-js-v4`, unde
 - The deterministic program child is a plain `bun --smol` subprocess with deterministic-global lockdown and an NDJSON host protocol. It is not an OS security sandbox. The host owns cancellation, operation-idle, output-size, and protocol limits. A workflow has no total wall-time limit.
 - Current host operations are agent orchestration, phase/parallel/pipeline composition, Discord-only `waitForReply`, and `sleep`. Reply waits are limited to the authenticated originating Discord session and user.
 - Journals, dispatch epochs, owner fencing, pinned resolved-model identity, waits, triggers, cancellation, terminal receipts, generated subagent runs, and progress actions are durable. Replay reuses operation identity rather than rerunning completed effects.
+- Operation cancellation and its outbox intent commit together. The engine publishes the normalized delivery UUID through the same durable request bus as other producers, then deletes the original stored intent key after success. Pending legacy keys need no database rewrite.
 - Recurring reconciliation selects expired running claims before applying its page limit and takes them over through the same atomic claim fence used for startup recovery. Live owners renew their claims through heartbeats.
 - Primary-created runs, ordinary workflow children, durable triggers, and generated subagent runs share the global active-run cap. Shared filesystem or external operations may race.
 - Progress projection is durable and independent of request output relays. Live-parent completion delivery is durable; when the parent cannot be restored, terminal output remains available through workflow progress/result state.

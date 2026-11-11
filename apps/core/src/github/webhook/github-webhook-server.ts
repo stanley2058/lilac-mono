@@ -1,4 +1,5 @@
 import { captureError } from "../../shared/error-capture.js";
+import { deriveRequestDeliveryId } from "../../shared/request-delivery-id";
 import crypto from "node:crypto";
 import Elysia from "elysia";
 import type { BusMessageV2, LilacBus } from "@stanley2058/lilac-event-bus";
@@ -434,15 +435,7 @@ function newGithubRequestId(input: {
 
 export function githubDeliveryId(deliveryId: string | undefined, operation: string): string {
   if (!deliveryId) return crypto.randomUUID();
-  const hash = crypto
-    .createHash("sha256")
-    .update(JSON.stringify(["github-delivery", deliveryId, operation]))
-    .digest();
-  // UUIDv8 keeps the namespaced delivery/operation hash within the durable UUID contract.
-  hash[6] = (hash[6]! & 0x0f) | 0x80;
-  hash[8] = (hash[8]! & 0x3f) | 0x80;
-  const hex = hash.toString("hex").slice(0, 32);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return deriveRequestDeliveryId("github-delivery", deliveryId, operation);
 }
 
 async function cleanupFailedGithubRequest(

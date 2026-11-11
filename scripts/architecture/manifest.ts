@@ -3643,6 +3643,13 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
         ? [
             {
               identity: {
+                module: "src/shared/request-delivery-id.ts",
+                exportName: "normalizeRequestDeliveryId",
+              },
+              category: "persistence" as const,
+            },
+            {
+              identity: {
                 module: "src/surface/native/computer.ts",
                 exportName: "decodeComputerViewer",
               },

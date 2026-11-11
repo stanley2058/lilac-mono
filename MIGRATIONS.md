@@ -380,8 +380,9 @@ Core upgrades workflow schema 27 to 28 online. It adds the run-claim index on
 and deadline scans. Existing run and wait records retain their values.
 
 Cancelled operations retain an interrupt intent in `workflow_cancellation_outbox` in the
-same transaction as cancellation. The engine retries publication with the stored delivery
-identity and removes the intent after successful publication. Operations and their waits
+same transaction as cancellation. The engine retries publication with a UUID derived from the stored
+delivery key and removes the original key after successful publication; see
+[UUID delivery compatibility](#uuid-request-delivery-identities). Operations and their waits
 now commit together, so recovery cannot observe a newly journaled wait operation without
 its wait. Existing incomplete pairs are repaired during replay.
 
@@ -718,15 +719,58 @@ key is ephemeral. No metadata format or blob-reference version changes. Maintena
 and expiry without reading every artifact's content. Artifact reads still authenticate their content.
 Deploy the tool-results package with Core. Rollback requires no data conversion.
 
-### GitHub webhook delivery identity and bounded media failures
+<a id="github-webhook-delivery-identity-and-bounded-media-failures"></a>
 
-GitHub webhook prompts and synchronize interrupts now derive `requestDeliveryId` from
-`X-GitHub-Delivery` and the operation name as a namespaced SHA-256 UUIDv8. Replays use the same
-durable admission identity. The earlier `github-delivery:<hash>:<operation>` form was rejected by
-the UUID contract before durable preparation, so it has no admitted records to rewrite.
-Previously admitted requests keep their existing IDs. No stored records need rewriting.
-Requests without that header keep generated IDs. A webhook HTTP acknowledgement now precedes
-GitHub API work. Handler failures are logged and remain eligible for redelivery.
+### UUID request delivery identities
+
+The request payload's `requestDeliveryId` must remain a UUID. `request_id` is a separate correlation
+header and can contain strings such as `github:...` or workflow request names. Two Core producers had
+emitted text keys into the UUID field: GitHub's `github-delivery:<hash>:<operation>` and workflow
+cancellation's `workflow-cancel:<request_id>:<dispatch_epoch>`. The durable prepared-envelope validator
+rejected them before transport. A GitHub handler could recognize a trigger, add then remove its eyes
+acknowledgement, and publish no request. A cancellation intent remained pending and failed again on
+later engine ticks.
+
+Core now derives a UUIDv8 by hashing the UTF-8 JSON array `[namespace, ...identity]` with SHA-256,
+taking the first 128 bits, and setting the UUID version/variant bits. The exact mappings are:
+
+| Producer | Mapping |
+| --- | --- |
+| GitHub mention, review, replacement review | `["github-delivery", X-GitHub-Delivery, "prompt"]` |
+| GitHub replacement interrupt | `["github-delivery", X-GitHub-Delivery, "interrupt"]` |
+| Workflow cancellation with a non-UUID stored key | `["workflow-cancel", original delivery_id]` |
+| Workflow cancellation with an already-valid UUID key | Preserve that UUID exactly |
+
+GitHub requests without a nonempty delivery header retain generated UUIDs. Different delivery/operation
+tuples and cancellation keys, including different dispatch epochs, derive separate identities. UUID
+validation, actor permissions, correlation headers and transport fencing are unchanged.
+
+The workflow schema-28 trigger still stores its original text key. The engine normalizes at the wire
+boundary and calls completion/deletion with the **original stored key**, only after durable publication
+returns success. Existing persisted legacy intents therefore work without a new schema version, SQL
+migration or data rewrite. Already-admitted valid request records retain their identities. The rejected
+non-UUID producer envelopes never reached durable preparation, so they have no admitted records to
+convert. Deploy the updated Core normally. Rolling back the producer fix reintroduces rejection for
+pending legacy cancellation keys.
+
+Cancellation's request ID, session, queue, empty messages and cancel flags remain fixed across attempts.
+An acquisition/publication failure leaves the intent pending and its prepared envelope reusable across
+engine/store restart. If publication was recorded but confirmation/completion did not finish, retry
+uses the same UUID, observes the recorded publication, and completes the original key without appending
+another request. These are the existing coordinator/receipt semantics, within retained delivery state;
+this change adds no recovery worker or queue and does not promise retries after arbitrary corruption or
+terminal contract failures. Interrupt publication is not proof that an agent has already stopped.
+
+Prepared-envelope conflict checks remain strict. A GitHub redelivery rebuilding changed issue/review
+context after a failed claim can conflict with its unpublished prepared envelope. This repair leaves
+that recovery policy unchanged. Prompt/interrupt replacement publication also remains nontransactional;
+this repair does not add cross-command recovery guarantees.
+
+### GitHub acknowledgements and bounded media failures
+
+A webhook HTTP acknowledgement precedes GitHub API work. Handler failures are logged and remain
+eligible for redelivery. Known contract errors contribute diagnostic detail through the existing
+bounded redactor; payloads and arbitrary nested causes are not logged.
 
 Byte reads use an internal `MEDIA_TOO_LARGE` tag. Remote byte-read failures may include an
 internal `errorCode` with that value, so Core can present size guidance without matching error text.

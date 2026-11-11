@@ -1,5 +1,6 @@
 import { decodeWorkflowCallInput, type DecodedWorkflowCallInput } from "./workflow-call-input";
 import { Semaphore } from "./workflow-semaphore";
+import { normalizeRequestDeliveryId } from "../shared/request-delivery-id";
 import { captureError } from "../shared/error-capture";
 import path from "node:path";
 
@@ -637,7 +638,7 @@ export class WorkflowEngine {
       const published = await this.input.bus.publish(
         lilacEventTypes.CmdRequestMessage,
         {
-          requestDeliveryId: intent.deliveryId,
+          requestDeliveryId: normalizeRequestDeliveryId("workflow-cancel", intent.deliveryId),
           queue: "interrupt",
           messages: [],
           raw: { cancel: true, cancelQueued: true },
