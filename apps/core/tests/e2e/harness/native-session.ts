@@ -16,6 +16,7 @@ import {
   type TurnSlot,
 } from "@stanley2058/lilac-client-protocol";
 import { withinRedisDeadline } from "../../../../../packages/event-bus/tests/helpers/isolated-redis";
+import { observedHttpRPC, type PayloadObserver } from "./observe-rpc";
 import { OWNER } from "./core-process";
 
 type DisplayMessage = Extract<TurnSlot, { kind: "ready" }>["messages"][number];
@@ -87,6 +88,7 @@ export type SessionStyle =
 
 export type NativeSessionOptions = {
   style?: SessionStyle;
+  observePayload?: PayloadObserver;
   transport?: NativeTransport;
   cache?: NativeCache;
   /** The server is an older release whose receipts may predate command ID echoes. */
@@ -137,7 +139,10 @@ export class NativeSession {
       scope,
       transport: options.transport ?? initial.transport,
       cache: options.cache ?? new MemoryNativeCache(),
-      openHttp: () => createNativeHttpRPC({ url: new URL("/api/rpc", base), headers }),
+      openHttp: () =>
+        options.observePayload
+          ? observedHttpRPC(new URL("/api/rpc", base), headers, options.observePayload)
+          : createNativeHttpRPC({ url: new URL("/api/rpc", base), headers }),
       openSocket: () => {
         const url = new URL("/api/socket", base);
         url.protocol = "ws:";
@@ -153,7 +158,9 @@ export class NativeSession {
       bootstrap: async (input: { threadId?: string }, signal: AbortSignal) => {
         const reply = pending;
         pending = undefined;
-        return reply ?? fetchBootstrap(base, headers(), input.threadId, signal);
+        return (
+          reply ?? fetchBootstrap(base, headers(), input.threadId, signal, options.observePayload)
+        );
       },
       onEvent: (event: ClientEvent) => this.events.push(event),
     });
@@ -172,6 +179,8 @@ export class NativeSession {
       options.via ?? nativeUrl,
       sessionHeaders(options.style, credentials, nativeUrl),
       undefined,
+      undefined,
+      options.observePayload,
     );
     const session = new NativeSession(nativeUrl, credentials, initial, options);
     await session.client.start();
@@ -318,14 +327,18 @@ export async function fetchBootstrap(
   headers: Record<string, string>,
   threadId: string | undefined,
   signal?: AbortSignal,
+  observe?: PayloadObserver,
 ): Promise<BootstrapReply> {
   const url = new URL("/api/bootstrap", nativeUrl);
   if (threadId) url.searchParams.set("threadId", threadId);
   const response = await fetch(url, { headers, signal });
   // Map statuses the way apps/web/src/http.ts does, so NativeClient reacts as it would in a browser.
   switch (response.status) {
-    case 200:
-      return bootstrapReplySchema.parse(await response.json());
+    case 200: {
+      const payload = await response.json();
+      observe?.("bootstrap", payload);
+      return bootstrapReplySchema.parse(payload);
+    }
     case 401:
       throw new ORPCError("UNAUTHENTICATED", { message: "Sign in to continue" });
     case 403:
