@@ -1053,7 +1053,7 @@ if [ "\${1:-}" != "--no-install" ]; then
   printf '%s' '{"ok":false,"error":"unexpected bunx install invocation"}'
   exit 0
 fi
-if [ "\${2:-}" != "@stanley2058/lilac-remote-fs-runner@0.0.6" ]; then
+if [ "\${2:-}" != "@stanley2058/lilac-remote-fs-runner@0.0.7" ]; then
   printf '%s' '{"ok":false,"error":"unexpected remote fs runner package spec"}'
   exit 0
 fi
@@ -1130,7 +1130,7 @@ printf '%s' '{"ok":false,"error":"npx should not be used when bunx exists"}'
       bunxPath,
       `#!/usr/bin/env bash
 set -euo pipefail
-PACKAGE='@stanley2058/lilac-remote-fs-runner@0.0.6'
+PACKAGE='@stanley2058/lilac-remote-fs-runner@0.0.7'
 INSTALLED=${JSON.stringify(installedPath)}
 INSTALLER=${JSON.stringify(installerPath)}
 INSTALLER_STARTED=${JSON.stringify(installerStartedPath)}
