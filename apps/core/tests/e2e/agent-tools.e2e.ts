@@ -22,7 +22,11 @@ function editAlphaToBeta(model: ModelView) {
   };
 }
 
-const providers = ["chat-completions", "responses-sse", "responses-ws"] as const satisfies ModelProvider[];
+const providers = [
+  "chat-completions",
+  "responses-sse",
+  "responses-ws",
+] as const satisfies ModelProvider[];
 
 describe.each(providers)("over %s", (provider) => {
   let e2e: E2E;

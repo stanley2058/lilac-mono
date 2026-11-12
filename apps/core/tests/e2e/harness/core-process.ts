@@ -35,6 +35,8 @@ export type CoreConfigOptions = {
   modelUrl: string;
   /** Wire protocol Core uses for the main and fast models. Defaults to chat completions. */
   provider?: ModelProvider;
+  /** Servers written to mcp-config.yaml, keyed by server id. */
+  mcpServers?: Record<string, Record<string, unknown>>;
   /** Extra Core config merged over the defaults at the top level. */
   config?: Record<string, unknown>;
   env?: Record<string, string | undefined>;
@@ -81,7 +83,10 @@ export async function prepareCore(
       },
     }),
   );
-  await writeFile(path.join(dataDir, "mcp-config.yaml"), "configVersion: 1\nservers: {}\n");
+  await writeFile(
+    path.join(dataDir, "mcp-config.yaml"),
+    JSON.stringify({ configVersion: 1, servers: options.mcpServers ?? {} }),
+  );
   const env = {
     PATH: `${bin}:${process.env.PATH}`,
     HOME: directory,
