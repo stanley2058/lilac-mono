@@ -31,6 +31,7 @@
     "lint:oxlint": "oxlint --tsconfig tsconfig.json apps packages scripts examples __tests__",
     "test:all": "bun run test:non-architecture && bun run test:architecture",
     "test:s3": "test -n \"$LILAC_BLOB_S3_TEST_ENDPOINT\" || { echo 'Set the LILAC_BLOB_S3_TEST_* variables described in DEVELOPMENT.md' >&2; exit 1; }; bun --cwd=packages/blob-storage test ./tests/s3-real-server.test.ts",
+    "test:remote-fs-package": "bun test ./packages/remote-fs-runner/tests/published-package.case.ts",
     "test:resilience": "bun test ./packages/event-bus/tests/resilience/redis-outage.case.ts ./apps/core/tests/runtime/core-runtime-resilience.case.ts",
     "test:e2e": "bun test --timeout=120000 ./apps/core/tests/e2e/*.e2e.ts",
     "test:ci": "set -e; bun run test:root -- --only-failures; for dir in apps/* packages/*; do CORE_TEST_PARALLEL=4 bun --cwd=\"$dir\" run test -- --only-failures; done; bun test --only-failures ./scripts/oxlint-plugins/*.test.mts; node --experimental-strip-types scripts/oxlint-plugins/test-waits.rule-test.mts; bun run test:architecture -- --only-failures",
