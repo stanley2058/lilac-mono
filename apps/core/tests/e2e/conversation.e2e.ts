@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, open } from "node:fs/promises";
 import path from "node:path";
-import { startE2E, type E2E, type NativeSession } from "./harness";
+import { startE2E, type E2E, type NativeSession, type RenderedTurn } from "./harness";
 
 let e2e: E2E;
 let session: NativeSession;
@@ -30,65 +30,75 @@ async function barrier() {
   };
 }
 
-// Fails today: when the steer reaches the runner after the run's last model step, the agent answers
-// it in a further model call, but that answer never reaches the native transcript or the client.
-test.failing(
-  "a steer sent while a tool runs is answered, rendered and kept in history",
-  async () => {
-    const gate = await barrier();
-    const tag = e2e.model.script("steer", (_request, model) => {
-      if (model.lastUserText.includes("What did you say last?")) return { text: "Recalled." };
-      if (model.userTexts.some((text) => text.includes("Also mention penguins")))
-        return { text: "Steered reply about penguins." };
-      if (model.step === 0)
-        return { toolCalls: [{ name: "bash", args: { command: gate.command } }] };
-      return { text: "Unsteered reply." };
-    });
-    const threadId = await session.createThread("Steer");
-    const store = session.watch(threadId);
-    await session.send(threadId, `${tag} Run the long task.`);
-    await session.waitForTurns(
-      store,
-      (turns) =>
-        turns.some((turn) => turn.activities.some((activity) => activity.state === "running")),
-      "tool running",
+test("a steer sent while a tool runs is either answered and kept, or ends unseen by the model", async () => {
+  const gate = await barrier();
+  const tag = e2e.model.script("steer", (_request, model) => {
+    if (model.lastUserText.includes("What did you say last?")) return { text: "Recalled." };
+    if (model.userTexts.some((text) => text.includes("Also mention penguins")))
+      return { text: "Steered reply about penguins." };
+    if (model.step === 0) return { toolCalls: [{ name: "bash", args: { command: gate.command } }] };
+    return { text: "Unsteered reply." };
+  });
+  const threadId = await session.createThread("Steer");
+  const store = session.watch(threadId);
+  await session.send(threadId, `${tag} Run the long task.`);
+  await session.waitForTurns(
+    store,
+    (turns) =>
+      turns.some((turn) => turn.activities.some((activity) => activity.state === "running")),
+    "tool running",
+  );
+  await session.send(threadId, "Also mention penguins.", { mode: "steer" });
+  await session.waitForTurns(
+    store,
+    (turns) => JSON.stringify(turns).includes("Also mention penguins."),
+    "steer rendered",
+  );
+  await gate.release();
+  // The steer either reaches the run in time, so the model answers it, or misses the run and
+  // ends as target-ended. A model call that saw the steer must never have its answer dropped.
+  const steerState = (turns: RenderedTurn[]) => {
+    const steer = turns
+      .flatMap((turn) => turn.messages)
+      .find((message) => message.metadata?.inputMode === "steer");
+    return steer?.metadata?.inputId ? session.inputState(steer.metadata.inputId) : undefined;
+  };
+  const isAnswered = (turns: RenderedTurn[]) =>
+    turns.some((turn) => turn.assistant.includes("Steered reply about penguins."));
+  const turns = await session.waitForTurns(
+    store,
+    (rendered) =>
+      rendered.every((turn) => turn.state === "complete") &&
+      (isAnswered(rendered) || steerState(rendered) === "target-ended"),
+    "steer answered or ended",
+  );
+  expect(JSON.stringify(turns)).toContain("Also mention penguins.");
+  const answered = isAnswered(turns);
+  await session.send(threadId, "What did you say last?");
+  const next = await e2e.model.waitFor(
+    (entry) => entry.scenario === "steer" && entry.reply?.text === "Recalled.",
+    "next turn",
+  );
+  const sawSteer = e2e.model
+    .forScenario("steer")
+    .filter((entry) =>
+      entry.request.messages.some(
+        (message) => message.role === "user" && message.text.includes("Also mention penguins"),
+      ),
     );
-    await session.send(threadId, "Also mention penguins.", { mode: "steer" });
-    await session.waitForTurns(
-      store,
-      (turns) => JSON.stringify(turns).includes("Also mention penguins."),
-      "steer rendered",
-    );
-    await gate.release();
-    // Wherever the steer lands (this run's next step, a continuation, or a new run), the model must
-    // see it, and its answer must render and stay in the conversation history.
-    await e2e.model.waitFor(
-      (entry) =>
-        entry.scenario === "steer" && entry.reply?.text === "Steered reply about penguins.",
-      "steered model reply",
-    );
-    const turns = await session.waitForTurns(
-      store,
-      (rendered) =>
-        rendered.some((turn) => turn.assistant.includes("Steered reply about penguins.")) &&
-        rendered.every((turn) => turn.state === "complete"),
-      "steered reply rendered",
-    );
-    expect(JSON.stringify(turns)).toContain("Also mention penguins.");
-    await session.send(threadId, "What did you say last?");
-    const next = await e2e.model.waitFor(
-      (entry) => entry.scenario === "steer" && entry.reply?.text === "Recalled.",
-      "next turn",
-    );
+  if (answered) {
+    expect(steerState(turns)).not.toBe("target-ended");
     expect(
       next.request.messages.some(
         (message) =>
           message.role === "assistant" && message.text.includes("Steered reply about penguins."),
       ),
     ).toBe(true);
-  },
-  60_000,
-);
+    return;
+  }
+  expect(steerState(turns)).toBe("target-ended");
+  expect(sawSteer.map((entry) => entry.reply)).toEqual([]);
+}, 60_000);
 
 test("a follow-up queued during a run starts its own turn after the run ends", async () => {
   const gate = await barrier();

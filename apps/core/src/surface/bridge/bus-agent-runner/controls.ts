@@ -10,6 +10,8 @@ import { type Enqueued, type SessionQueue } from "./session-queue";
 export type RunningAgentControlTarget = {
   /** True while the captured run still owns its session and agent. */
   readonly isCurrent: () => boolean;
+  /** True until the captured run stops reading input and starts finalizing its output. */
+  readonly acceptsInput: () => boolean;
   /** Handles a deferred control whose run ended before it could be applied. */
   readonly dropEnded: () => Promise<void>;
 };
@@ -18,7 +20,8 @@ export type RunningAgentControlTarget = {
  * Applies a control to the running agent. Waits for the agent or its children to settle run
  * through `settle`, which orders them per session, so the caller never blocks on them.
  * Returns `target-ended` without touching the agent when the run ended while the control's
- * messages loaded; the caller then routes it as if it had arrived after the run.
+ * messages loaded, or when it carries input the finalizing run would never read; the caller
+ * then routes it as if it had arrived after the run.
  */
 export async function applyToRunningAgent(
   agent: AiSdkPiAgent<ToolSet>,
@@ -44,6 +47,8 @@ export async function applyToRunningAgent(
       : entry.messages;
   // An idle agent whose run already finalized would start a model run nobody owns.
   if (!target.isCurrent()) return "target-ended";
+  // A finalizing run can still be cancelled, but input would start a model call it never reads.
+  if (!cancel && !target.acceptsInput()) return "target-ended";
   const merged = mergeToSingleUserMessage(providerMessages);
   if (!cancel) {
     activeRun?.rememberStoredMessages(
@@ -128,7 +133,7 @@ export async function applyToRunningAgent(
         }
         settle(async () => {
           // Earlier controls in this session may have held the queue until the run ended.
-          if (!target.isCurrent()) return target.dropEnded();
+          if (!target.isCurrent() || !target.acceptsInput()) return target.dropEnded();
           retainAppliedControl({ kind: "canonical" });
           await agent.interrupt(merged);
           notifyWaiters?.();

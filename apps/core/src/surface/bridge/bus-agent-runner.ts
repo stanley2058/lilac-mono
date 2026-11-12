@@ -2388,6 +2388,7 @@ export async function startBusAgentRunner(params: {
               const targetRun = state.activeRun;
               return {
                 isCurrent: () => state.activeRun === targetRun && state.agent === runningAgent,
+                acceptsInput: () => targetRun?.acceptsInput === true,
                 dropEnded: dropControlForEndedRun,
               };
             };
@@ -3836,6 +3837,7 @@ export async function startBusAgentRunner(params: {
         rejectPreAgentCancellation = null;
       },
       started: false,
+      acceptsInput: true,
       startedAt: runStartedAt,
       activeTools: new Map(),
       retainedRequestDeliveries: new Map(
@@ -6574,10 +6576,11 @@ export async function startBusAgentRunner(params: {
               if (cancelledByRequestId.has(headers.request_id)) break;
               continue;
             }
-            if (!deferredWaitState?.hasOutstandingRuns) {
+            if (!deferredWaitState?.hasOutstandingRuns || !liveParentSession) {
+              // A control applied while the checks above awaited may have started another turn.
+              if (agent.state.isStreaming) continue;
               break;
             }
-            if (!liveParentSession) break;
 
             runWait.enterIdleWait();
             await waitForRunAtHost(
@@ -6587,6 +6590,9 @@ export async function startBusAgentRunner(params: {
               continue;
             }
           }
+          // Finalization reads the agent's messages as they are now, so a control that lands from
+          // here on misses this run instead of starting a model call whose answer nobody reads.
+          if (state.activeRun) state.activeRun.acceptsInput = false;
           runWait.resume();
           runIdleWatchdog?.stop();
 

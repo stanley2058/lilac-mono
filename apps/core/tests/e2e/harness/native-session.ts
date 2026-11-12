@@ -244,7 +244,16 @@ export class NativeSession {
     return input.commandId;
   }
 
-  /** Resolves once the rendered stream satisfies the predicate. */
+  /** The latest state the server reported for an input, if it reported one. */
+  inputState(inputId: string): string | undefined {
+    for (let index = this.events.length - 1; index >= 0; index--) {
+      const event = this.events[index]!;
+      if (event.kind === "input" && event.receipt.inputId === inputId) return event.receipt.state;
+    }
+    return undefined;
+  }
+
+  /** Resolves once the rendered stream satisfies the predicate, rechecking on client events too. */
   async waitForTurns(
     store: NativeThreadStore,
     predicate: (turns: RenderedTurn[]) => boolean,
@@ -259,7 +268,12 @@ export class NativeSession {
           resolve();
           return true;
         };
-        const stop = store.subscribe(() => void check());
+        const stopStore = store.subscribe(() => void check());
+        const stopClient = this.client.subscribe(() => void check());
+        const stop = () => {
+          stopStore();
+          stopClient();
+        };
         check();
       }),
       label,

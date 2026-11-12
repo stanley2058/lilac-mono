@@ -274,6 +274,8 @@ export type SessionQueue = {
     setCurrentTurnContext: (userId: string | undefined, messageRef: MsgRef | undefined) => void;
     cancel: () => void;
     started: boolean;
+    /** False once the run has stopped reading new input and is finalizing its output. */
+    acceptsInput: boolean;
     startedAt: number;
     activeTools: Map<string, { toolName: string; startedAt: number }>;
     retainedRequestDeliveries: Map<string, RequestDeliveryTerminalOutcome>;
