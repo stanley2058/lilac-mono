@@ -1180,7 +1180,7 @@ describe("createToolServer", () => {
       "x-lilac-control-capability": "unguessable-primary-token",
     };
     try {
-      expect((await server.app.handle(new Request("http://localhost/list"))).status).toBe(500);
+      expect((await server.app.handle(new Request("http://localhost/list"))).status).toBe(403);
       expect(
         (await server.app.handle(new Request("http://localhost/list", { headers }))).status,
       ).toBe(200);
@@ -1210,7 +1210,7 @@ describe("createToolServer", () => {
             }),
           )
         ).status,
-      ).toBe(500);
+      ).toBe(403);
     } finally {
       await server.stop();
     }
@@ -1264,7 +1264,7 @@ describe("createToolServer", () => {
           },
         }),
       );
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(403);
     } finally {
       await server.stop();
     }
@@ -1307,7 +1307,7 @@ describe("createToolServer", () => {
           },
         }),
       );
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(403);
     } finally {
       await server.stop();
     }
@@ -1547,7 +1547,7 @@ describe("createToolServer", () => {
             }),
           )
         ).status,
-      ).toBe(500);
+      ).toBe(403);
       expect(
         await (await server.app.handle(new Request("http://localhost/list", { headers }))).json(),
       ).toMatchObject({ tools: [{ callableId: "workflow.operator-test" }] });

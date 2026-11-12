@@ -496,7 +496,9 @@ function adaptToolServerOptionsResultToHost(
 function adaptToolAuthenticationResultToElysia(
   result: ResultType<AuthenticatedToolRequest, ToolRequestAuthenticationError>,
 ): AuthenticatedToolRequest {
-  return adaptResultToHost(result, (error) => new Error(error.message));
+  return adaptResultToHost(result, (error) =>
+    Object.assign(new Error(error.message), { status: 403 }),
+  );
 }
 
 function adaptToolRequestHeadersResultToElysia(
