@@ -25,8 +25,16 @@ export type CoreLayout = {
   env: Record<string, string | undefined>;
 };
 
+export type ModelProvider =
+  | "chat-completions"
+  | "responses-sse"
+  | "responses-ws"
+  | "responses-auto";
+
 export type CoreConfigOptions = {
   modelUrl: string;
+  /** Wire protocol Core uses for the main and fast models. Defaults to chat completions. */
+  provider?: ModelProvider;
   /** Extra Core config merged over the defaults at the top level. */
   config?: Record<string, unknown>;
   env?: Record<string, string | undefined>;
@@ -54,14 +62,16 @@ export async function prepareCore(
   );
   await chmod(path.join(bin, "tools"), 0o755);
   const { surface: surfaceOverride, ...configOverride } = options.config ?? {};
+  const provider = options.provider ?? "chat-completions";
+  const providerPrefix = provider === "chat-completions" ? "openai-compatible" : "openai";
   await writeFile(
     path.join(dataDir, "core-config.yaml"),
     JSON.stringify({
       configVersion: 3,
       basePrompt: "You are the e2e scenario agent.",
       models: {
-        main: { model: "openai-compatible/scripted-main" },
-        fast: { model: "openai-compatible/scripted-fast" },
+        main: { model: `${providerPrefix}/scripted-main` },
+        fast: { model: `${providerPrefix}/scripted-fast` },
       },
       ...configOverride,
       surface: {
@@ -90,6 +100,10 @@ export async function prepareCore(
     CLERK_TELEMETRY_DISABLED: "1",
     OPENAI_COMPATIBLE_BASE_URL: options.modelUrl,
     OPENAI_COMPATIBLE_API_KEY: "e2e",
+    OPENAI_BASE_URL: `${options.modelUrl}/v1`,
+    OPENAI_API_KEY: "e2e-openai-key",
+    OPENAI_RESPONSES_TRANSPORT:
+      provider === "responses-ws" ? "websocket" : provider === "responses-auto" ? "auto" : "sse",
     LILAC_NATIVE_LOCAL_USERNAME: OWNER.username,
     LILAC_NATIVE_LOCAL_PASSWORD_HASH: await Bun.password.hash(OWNER.password, {
       algorithm: "argon2id",

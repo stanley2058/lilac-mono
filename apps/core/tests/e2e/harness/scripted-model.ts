@@ -1,4 +1,11 @@
+import type { ServerWebSocket } from "bun";
 import { withinRedisDeadline } from "../../../../../packages/event-bus/tests/helpers/isolated-redis";
+import {
+  ResponsesStore,
+  encodeResponse,
+  normalizeResponses,
+  responsesError,
+} from "./responses-protocol";
 
 /**
  * A deterministic stand-in for model providers. Core talks to it over the real provider wire
@@ -12,8 +19,10 @@ export type ModelMessage =
   | { role: "assistant"; text: string; toolCalls: ModelToolCall[] }
   | { role: "tool"; callId: string; output: string };
 
+export type ModelProtocol = "chat-completions" | "responses-sse" | "responses-ws";
+
 export type ModelRequest = {
-  protocol: "chat-completions";
+  protocol: ModelProtocol;
   model: string;
   instructions: string;
   messages: ModelMessage[];
@@ -27,6 +36,11 @@ export type ModelRequest = {
 export type ModelReply = {
   text?: string;
   toolCalls?: { name: string; args: unknown; id?: string }[];
+  /** Answer with a provider failure instead of a completion. */
+  fault?:
+    | { kind: "error"; status: number; message: string; code?: string }
+    /** WebSocket transports only: close the connection with this code before answering. */
+    | { kind: "close"; code: number; reason?: string };
 };
 
 export type ScenarioScript = (
@@ -276,7 +290,12 @@ export class ScriptedModel {
   readonly requests: RecordedRequest[] = [];
   readonly unhandled: string[] = [];
   private readonly listeners = new Set<() => void>();
-  private server: ReturnType<typeof Bun.serve> | undefined;
+  private server: ReturnType<typeof Bun.serve<{ abort: AbortController }>> | undefined;
+  private readonly responses = new ResponsesStore();
+  /** When true, WebSocket upgrades get 426, like a proxy that does not pass them through. */
+  refuseUpgrades = false;
+  /** Request headers of every HTTP call and WebSocket upgrade, for auth and beta-header checks. */
+  readonly headers: Record<string, string>[] = [];
 
   get url(): string {
     if (!this.server) throw new Error("Scripted model is not started");
@@ -284,11 +303,24 @@ export class ScriptedModel {
   }
 
   start(): this {
-    this.server = Bun.serve({
+    this.server = Bun.serve<{ abort: AbortController }>({
       hostname: "127.0.0.1",
       port: 0,
       idleTimeout: 0,
-      fetch: (request) => this.handle(request),
+      fetch: (request, server) => {
+        const url = new URL(request.url);
+        if (url.pathname.endsWith("/responses") && request.headers.get("upgrade") === "websocket") {
+          this.headers.push(Object.fromEntries(request.headers));
+          if (this.refuseUpgrades) return new Response("WebSockets are disabled", { status: 426 });
+          if (server.upgrade(request, { data: { abort: new AbortController() } })) return undefined;
+          return new Response("Upgrade failed", { status: 400 });
+        }
+        return this.handle(request);
+      },
+      websocket: {
+        message: (socket, message) => void this.handleSocket(socket, String(message)),
+        close: (socket) => socket.data.abort.abort(),
+      },
     });
     return this;
   }
@@ -363,11 +395,89 @@ export class ScriptedModel {
 
   private async handle(request: Request): Promise<Response> {
     if (request.method !== "POST") return new Response("Not found", { status: 404 });
+    this.headers.push(Object.fromEntries(request.headers));
     const body = (await request.json()) as Record<string, unknown>;
+    if (new URL(request.url).pathname.endsWith("/responses"))
+      return this.handleResponses(body, request.signal);
     const normalized = normalizeChat(body);
     const reply = await this.reply(normalized, request.signal);
-    if (reply instanceof Response) return reply;
+    if (reply.fault?.kind === "error")
+      return Response.json(
+        { error: { message: reply.fault.message, code: reply.fault.code } },
+        { status: reply.fault.status },
+      );
     return chatResponse(reply, normalized.stream);
+  }
+
+  private async handleResponses(
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<Response> {
+    const normalized = normalizeResponses(body, "responses-sse", this.responses);
+    if ("error" in normalized)
+      return Response.json(
+        {
+          error: {
+            type: "invalid_request_error",
+            code: normalized.code,
+            message: normalized.error,
+            param: null,
+          },
+        },
+        { status: 400 },
+      );
+    const reply = await this.reply(normalized, signal);
+    if (reply.fault?.kind === "error")
+      return Response.json(
+        {
+          error: {
+            type: "invalid_request_error",
+            code: reply.fault.code ?? null,
+            message: reply.fault.message,
+            param: null,
+          },
+        },
+        { status: reply.fault.status },
+      );
+    const { response, events } = encodeResponse(normalized, reply, this.responses);
+    if (!normalized.stream) return Response.json(response);
+    return new Response(
+      events
+        .map((event) => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`)
+        .join(""),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  }
+
+  private async handleSocket(
+    socket: ServerWebSocket<{ abort: AbortController }>,
+    message: string,
+  ): Promise<void> {
+    const event = JSON.parse(message) as Record<string, unknown>;
+    if (event.type !== "response.create") {
+      socket.send(JSON.stringify(responsesError(`Unsupported client event ${String(event.type)}`)));
+      return;
+    }
+    const { type: _type, ...body } = event;
+    const normalized = normalizeResponses(body, "responses-ws", this.responses);
+    if ("error" in normalized) {
+      socket.send(JSON.stringify(responsesError(normalized.error, normalized.code)));
+      return;
+    }
+    const reply = await this.reply(normalized, socket.data.abort.signal);
+    if (socket.data.abort.signal.aborted) return;
+    if (reply.fault?.kind === "close") {
+      socket.close(reply.fault.code, reply.fault.reason);
+      return;
+    }
+    if (reply.fault?.kind === "error") {
+      socket.send(
+        JSON.stringify(responsesError(reply.fault.message, reply.fault.code, reply.fault.status)),
+      );
+      return;
+    }
+    for (const encoded of encodeResponse(normalized, reply, this.responses).events)
+      socket.send(JSON.stringify(encoded));
   }
 
   private scenarioOf(request: ModelRequest): string | undefined {
@@ -380,7 +490,7 @@ export class ScriptedModel {
     return SCENARIO_TAG.exec(request.instructions)?.[1];
   }
 
-  private async reply(request: ModelRequest, signal: AbortSignal): Promise<ModelReply | Response> {
+  private async reply(request: ModelRequest, signal: AbortSignal): Promise<ModelReply> {
     const scenario = this.scenarioOf(request);
     if (
       request.instructions.includes(TITLE_INSTRUCTION) ||
@@ -397,13 +507,9 @@ export class ScriptedModel {
       const summary = `${request.model}: ${JSON.stringify(request.messages.at(-1)).slice(0, 400)}`;
       this.unhandled.push(summary);
       this.record({ scenario, request });
-      return new Response(
-        JSON.stringify({ error: { message: `No scenario for request ${summary}` } }),
-        {
-          status: 400,
-          headers: { "content-type": "application/json" },
-        },
-      );
+      return {
+        fault: { kind: "error", status: 400, message: `No scenario for request ${summary}` },
+      };
     }
     const gate = this.gates.get(scenario)?.shift();
     if (gate) await gate.pass(signal);
@@ -413,8 +519,9 @@ export class ScriptedModel {
       entry.reply = await script(request, new ModelView(request));
       for (const listener of this.listeners) listener();
     } catch (error) {
-      this.unhandled.push(`${scenario}: ${error instanceof Error ? error.message : String(error)}`);
-      return new Response(JSON.stringify({ error: { message: String(error) } }), { status: 400 });
+      const message = error instanceof Error ? error.message : String(error);
+      this.unhandled.push(`${scenario}: ${message}`);
+      return { fault: { kind: "error", status: 400, message } };
     }
     return entry.reply;
   }
