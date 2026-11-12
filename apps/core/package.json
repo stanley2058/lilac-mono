@@ -23,8 +23,7 @@
     "@orpc/contract": "1.15.1",
     "@types/bun": "^1.4.1",
     "@types/mdast": "^4.0.4",
-    "@types/web-push": "^3.6.4",
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@types/web-push": "^3.6.4"
   },
   "peerDependencies": {
     "typescript": "^7.0.2"
