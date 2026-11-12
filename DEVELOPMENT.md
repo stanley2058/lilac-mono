@@ -261,6 +261,32 @@ docker stop lilac-rustfs-test
 `bun run test:s3` fails when the variables are unset instead of skipping. The bucket `PUT` is
 idempotent. Each test writes under its own random prefix, so reruns need no cleanup.
 
+### Remote filesystem runner
+
+Core runs remote `glob`, `grep`, and `fuzzy_search` through
+`@stanley2058/lilac-remote-fs-runner@<version>`, using the version in
+`packages/remote-fs-runner/package.json`. Remote hosts fetch that version from npm with `bunx` or
+`npx`, so a change to the runner, to the `packages/fs` code it bundles, or to its dependencies
+reaches them only under a new version.
+
+`packages/remote-fs-runner/published-fingerprint.json` records the last published version and a
+fingerprint of the bundle inputs. `packages/remote-fs-runner/tests/published-fingerprint.test.ts`
+fails when those inputs change while the version stays the same. To release a runner change:
+
+1. Bump `version` in `packages/remote-fs-runner/package.json`. The version tests in
+   `packages/remote-fs-runner/tests/version.test.ts` and `apps/core/tests/ssh/ssh-exec.test.ts`
+   name it too.
+2. Run `bun run build:remote-fs` and `bun run test:remote-fs-package`, then publish the package from
+   `packages/remote-fs-runner`.
+3. Run `bun run remote-fs:fingerprint` and commit the updated record. The script refuses to record
+   new inputs for a version that npm already has.
+
+`bun run test:remote-fs-package` packs the runner with `npm pack` and installs the tarball through
+`bunx` and `npx` outside the workspace. It needs npm and registry access, and CI runs it after the
+ordinary checks. `apps/core/tests/ssh/remote-fs-runner-boundary.test.ts` runs every protocol
+operation through the built runner over the SSH test shim and compares the results with the local
+filesystem.
+
 Read [MIGRATIONS.md](MIGRATIONS.md) before changing stored data or versioned contracts. Active
 implementation plans are indexed in [plan/README.md](plan/README.md).
 For extension development, see [plugin authoring](PLUGIN_AUTHORING.md) and
