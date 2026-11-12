@@ -405,7 +405,7 @@ describe("Core primary Claude continuation", () => {
         content: [
           {
             type: "text",
-            text: '[discord_attachment uri="resource://r1_00000000000000000000000000000001" filename="image.png" mime="image/png"]',
+            text: '[attachment uri="resource://r1_00000000000000000000000000000001" filename="image.png" mime="image/png"]',
           },
           {
             type: "file",

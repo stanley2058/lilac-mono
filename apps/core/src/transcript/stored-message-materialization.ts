@@ -669,7 +669,7 @@ export function formatStoredResourceMarkerV1(part: StoredResourcePartV1): string
     part.mediaType === undefined ? null : `mime="${markerValue(part.mediaType)}"`,
     part.size === undefined ? null : `size=${part.size}`,
   ].filter((field): field is string => field !== null);
-  return `[discord_attachment ${fields.join(" ")}]`;
+  return `[attachment ${fields.join(" ")}]`;
 }
 
 const RESOURCE_INLINE_GUIDANCE =

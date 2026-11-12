@@ -17,7 +17,9 @@ it("uses only bounded authored user context and preserves the current request", 
       role: "user",
       content: [
         { type: "text", text: "third" },
-        { type: "text", text: "[discord_attachment filename=unrelated.pdf]" },
+        { type: "text", text: "[attachment filename=unrelated.pdf]" },
+        // Transcripts from before the rename keep the Discord-specific prefix.
+        { type: "text", text: "[discord_attachment filename=legacy.pdf]" },
       ],
     },
   ]);
