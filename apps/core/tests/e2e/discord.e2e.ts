@@ -10,6 +10,7 @@ const CHANNELS = [
   "long",
   "blocked-probe",
   "deleted-preview",
+  "deleted-trigger",
   "steer",
   "follow-up",
 ] as const;
@@ -227,6 +228,32 @@ test("deleting the streaming preview mid-run moves output to a fresh message", a
     .callsTo("POST", new RegExp(`^/channels/${channelId}/messages$`, "u"))
     .filter((call) => (call.body as { embeds?: unknown[] }).embeds?.length);
   expect(previews).toHaveLength(2);
+}, 60_000);
+
+test("deleting the trigger mid-run still posts the final answer", async () => {
+  const channelId = discord.channel("deleted-trigger");
+  const gate = await barrier();
+  const tag = e2e.model.script("discord-deleted-trigger", (_request, model) => {
+    if (model.step === 0) return { toolCalls: [{ name: "bash", args: { command: gate.command } }] };
+    return { text: "Answer after the trigger was deleted." };
+  });
+  const trigger = discord.userMessage({
+    channelId,
+    content: `${tag} Run the long task.`,
+    mentionBot: true,
+  });
+  await previewShowing(channelId, "read line");
+  discord.deleteMessage(trigger.id);
+  await gate.release();
+  const reply = "Answer after the trigger was deleted.";
+
+  const final = await settledReply(channelId, reply);
+
+  // The reply target is gone, so Discord posts the answer as a plain message.
+  expect(final.map((message) => [message.content, message.message_reference])).toEqual([
+    [reply, undefined],
+  ]);
+  expect(postsContaining(channelId, reply).map((call) => call.status)).toEqual([200]);
 }, 60_000);
 
 /** The first user message text in a scenario's model requests that contains the needle. */

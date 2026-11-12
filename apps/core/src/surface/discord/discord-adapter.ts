@@ -826,6 +826,9 @@ export class DiscordAdapter implements SurfaceAdapter {
         Partials.ThreadMember,
       ],
       makeCache: Options.cacheWithLimits(DISCORD_CACHE_SETTINGS),
+      // A user may delete the message a reply targets mid-run. Discord then rejects the reply
+      // unless it may fall back to a plain message, and the output would be lost.
+      failIfNotExists: false,
       // discord.js also discovers the gateway URL through this REST origin.
       ...(env.discord.apiBaseUrl ? { rest: { api: env.discord.apiBaseUrl } } : {}),
     });
