@@ -61,6 +61,9 @@ jobs:
       - name: Test process and Redis resilience
         run: bun run test:resilience
 
+      - name: Run end-to-end agent scenarios
+        run: bun run test:e2e
+
   docker-image:
     name: Docker image smoke
     runs-on: ubuntu-26.04

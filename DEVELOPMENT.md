@@ -208,6 +208,30 @@ Docker is missing. CI runs this command after its ordinary checks.
 The load cases use finite workloads and assert ordering and resource bounds. Recovery retains the
 at-least-once semantics for model calls and external effects documented in `MIGRATIONS.md`.
 
+### End-to-end agent scenarios
+
+`apps/core/tests/e2e` boots the real Core runtime in a child process and drives it the way a person
+and a model would. Each file starts its own Core with a disposable Redis container, a temporary data
+directory, and a scripted model server. Core talks to that server over the real provider wire
+protocols: chat completions, OpenAI Responses over SSE, and Responses over WebSocket. Clients are the
+production `NativeClient`, wired like the web app (cookie-only socket) or the TUI (bearer header).
+Agents reach Level 2 tools through a `tools` command that runs the current tool-bridge client.
+
+```sh
+bun run test:e2e
+```
+
+A scenario script decides each model step from the conversation Core sent, so a test can assert what
+the agent saw (offered tools, tool results, history) and what clients rendered. Route a thread to a
+script by putting the tag that `model.script(name, …)` returns in the user's message; the newest tag
+in a conversation wins. Use these scenarios for behavior that crosses process or package boundaries.
+Keep single-module behavior in ordinary tests.
+
+To debug a failure, keep Core's output with `LILAC_E2E_LOG_DIR=<dir>` and raise its log level with
+`LILAC_E2E_LOG_LEVEL=debug`. Failure messages include every model request and reply. A known bug can
+land as `test.failing` with a comment that names it; its fix flips the test back. Like the resilience
+cases, these need Docker and the `redis:7-alpine` image. CI runs them after the resilience cases.
+
 Read [MIGRATIONS.md](MIGRATIONS.md) before changing stored data or versioned contracts. Active
 implementation plans are indexed in [plan/README.md](plan/README.md).
 For extension development, see [plugin authoring](PLUGIN_AUTHORING.md) and
