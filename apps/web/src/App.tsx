@@ -1178,11 +1178,7 @@ function Workspace(props: AppProps) {
                                     </div>
                                   ) : null}
                                   <SidebarQueue
-                                    fallbackThreads={
-                                      online
-                                        ? undefined
-                                        : threads.filter((thread) => thread.kind !== "dm")
-                                    }
+                                    fallbackThreads={threads}
                                     draftIds={draftIds}
                                     viewer={viewer}
                                     external={external}

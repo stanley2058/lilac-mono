@@ -40,6 +40,7 @@ export const SidebarQueue = memo(function SidebarQueue({
   onDelete,
   onDiscardDraft,
 }: {
+  /** Listed until the sidebar queries first load, so connecting does not empty the list. */
   fallbackThreads?: NativeThread[];
   draftIds: string[];
   viewer: NativeUser;
@@ -62,13 +63,19 @@ export const SidebarQueue = memo(function SidebarQueue({
   const settled = useInfiniteQuery(sidebarOptions(client, "settled", online && settledOpen));
   const settledCount = useQuery(settledCountOptions(client, online));
   const sections = { pinned, active, settled };
+  // The fallback list stays until both default sections settle, so neither response alone empties it.
+  const loaded = [pinned, active].every(
+    (query) => query.dataUpdatedAt > 0 || query.errorUpdatedAt > 0,
+  );
   const queues = sidebarSnapshot(
-    sidebarSections.map((section) => ({
-      section,
-      items: sections[section].data?.pages.flatMap((page) => page.items) ?? [],
-      updatedAt: sections[section].dataUpdatedAt,
-    })),
-    online ? [] : (fallbackThreads ?? []),
+    loaded
+      ? sidebarSections.map((section) => ({
+          section,
+          items: sections[section].data?.pages.flatMap((page) => page.items) ?? [],
+          updatedAt: sections[section].dataUpdatedAt,
+        }))
+      : [],
+    (fallbackThreads ?? []).filter((thread) => thread.kind !== "dm"),
     (id) => latest.get(id),
   );
   useEffect(() => {
@@ -167,6 +174,8 @@ export const SidebarQueue = memo(function SidebarQueue({
         totals={visibleTotals}
         disabled={!online || move.isPending}
         loading={sidebarSections.some((section) => sections[section].isFetching)}
+        // The first pages replace the fallback list in place instead of shuffling its rows.
+        animateChanges={loaded}
         hasMore={!!next}
         onEndReached={() => {
           if (next) void sections[next].fetchNextPage({ cancelRefetch: false });

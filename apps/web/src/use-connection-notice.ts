@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "./components/ui/toast";
 import { useEventCallback } from "./use-event-callback";
 
@@ -57,6 +57,38 @@ export function connectionNoticeDelay(now = performance.now()): number {
   return Math.max(1_000, resumedAt + 3_000 - now);
 }
 
+// The delay only counts visible time. Returning to the tab reconnects, which may first wait for
+// fresh Clerk credentials, so that reconnect gets a longer grace period.
+function waitWhileVisible(reset: () => void, due: () => void): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    clearTimeout(timer);
+    reset();
+    if (document.visibilityState !== "visible") return;
+    timer = setTimeout(due, connectionNoticeDelay());
+  };
+  arm();
+  document.addEventListener("visibilitychange", arm);
+  return () => {
+    document.removeEventListener("visibilitychange", arm);
+    clearTimeout(timer);
+    reset();
+  };
+}
+
+/** Reports offline only once the connection has been down as long as the notice waits. */
+export function useConfirmedOffline(online: boolean): boolean {
+  const [confirmed, setConfirmed] = useState(false);
+  useEffect(() => {
+    if (online) return;
+    return waitWhileVisible(
+      () => setConfirmed(false),
+      () => setConfirmed(true),
+    );
+  }, [online]);
+  return !online && confirmed;
+}
+
 export function useConnectionNotice({
   online,
   deviceOnline = true,
@@ -78,21 +110,9 @@ export function useConnectionNotice({
     const problem: ConnectionProblem = deviceOnline
       ? { reason: "Reconnecting…", retry: retryLatest }
       : { reason: "This device is offline." };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    // The delay only counts visible time. Returning to the tab reconnects, which may first wait
-    // for fresh Clerk credentials, so that reconnect gets a longer grace period.
-    const arm = () => {
-      clearTimeout(timer);
-      closeConnectionNotice(id);
-      if (document.visibilityState !== "visible") return;
-      timer = setTimeout(() => showConnectionNotice(problem, id), connectionNoticeDelay());
-    };
-    arm();
-    document.addEventListener("visibilitychange", arm);
-    return () => {
-      document.removeEventListener("visibilitychange", arm);
-      clearTimeout(timer);
-      closeConnectionNotice(id);
-    };
+    return waitWhileVisible(
+      () => closeConnectionNotice(id),
+      () => showConnectionNotice(problem, id),
+    );
   }, [online, deviceOnline, id, retryLatest]);
 }

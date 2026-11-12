@@ -22,6 +22,7 @@ import {
   useNativeOnline,
   queryNativeRPC,
 } from "../queries";
+import { useConfirmedOffline } from "../use-connection-notice";
 import { MessageIdentityContext } from "./message-identity";
 import { ConversationWelcome } from "./ConversationWelcome";
 import {
@@ -147,6 +148,7 @@ export function Chat(props: ChatProps) {
   const queries = useQueryClient();
   const identity = useContext(MessageIdentityContext);
   const online = useNativeOnline(client);
+  const offline = useConfirmedOffline(online);
   const hasThread = !!thread;
   const outline = useMemo<OutlineSource | undefined>(() => {
     if (local || !hasThread) return undefined;
@@ -1187,9 +1189,9 @@ export function Chat(props: ChatProps) {
     const retry = thread ? undefined : props.onRetryLoad;
     if (props.loadError)
       return <ConversationStatus state="error" detail={props.loadError} onRetry={retry} />;
-    if (!online && !thread) return <ConversationStatus state="offline" onRetry={retry} />;
+    if (offline && !thread) return <ConversationStatus state="offline" onRetry={retry} />;
     if (historyLoaded) return <ConversationWelcome existing />;
-    if (!online) return <ConversationStatus state="offline" />;
+    if (offline) return <ConversationStatus state="offline" />;
     return <ConversationStatus state={historyError ? "error" : "loading"} />;
   }
   return (
