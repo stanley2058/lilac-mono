@@ -28,31 +28,26 @@ describe("OpenAI Responses over WebSocket", () => {
     expect(e2e?.model.unhandled ?? []).toEqual([]);
   }, 60_000);
 
-  // Fails today: native Responses adapter failures reach the user as "Unknown operation failure".
-  test.failing(
-    "a socket closed for an oversized message fails the turn with the reason",
-    async () => {
-      // Forced WebSocket transport does not fall back after submission (PROJECT.md).
-      const tag = e2e.model.script("ws-close", (_request, model) => {
-        if (model.lastUserText.includes("smaller")) return { text: "Handled the smaller request." };
-        if (model.step === 0)
-          return { toolCalls: [{ name: "bash", args: { command: "echo before-close" } }] };
-        return { fault: { kind: "close", code: 1009, reason: "Message too big" } };
-      });
-      const threadId = await session.createThread("WebSocket close");
-      const store = session.watch(threadId);
-      await session.send(threadId, `${tag} Go.`);
-      const [turn] = await session.settled(store, 1);
-      expect(turn!.state).toBe("failed");
-      expect(JSON.stringify(turn!.messages)).toContain("too large");
-      expect(turn!.activities.filter((activity) => activity.state === "running")).toEqual([]);
-      await session.send(threadId, `${tag} Try something smaller.`);
-      const turns = await session.settled(store, 2);
-      expect(turns[1]!.assistant).toContain("Handled the smaller request.");
-      expectPairedToolCalls(e2e.model.forScenario("ws-close").at(-1)!.request.messages);
-    },
-    60_000,
-  );
+  test("a socket closed for an oversized message fails the turn with the reason", async () => {
+    // Forced WebSocket transport does not fall back after submission (PROJECT.md).
+    const tag = e2e.model.script("ws-close", (_request, model) => {
+      if (model.lastUserText.includes("smaller")) return { text: "Handled the smaller request." };
+      if (model.step === 0)
+        return { toolCalls: [{ name: "bash", args: { command: "echo before-close" } }] };
+      return { fault: { kind: "close", code: 1009, reason: "Message too big" } };
+    });
+    const threadId = await session.createThread("WebSocket close");
+    const store = session.watch(threadId);
+    await session.send(threadId, `${tag} Go.`);
+    const [turn] = await session.settled(store, 1);
+    expect(turn!.state).toBe("failed");
+    expect(JSON.stringify(turn!.messages)).toContain("too large");
+    expect(turn!.activities.filter((activity) => activity.state === "running")).toEqual([]);
+    await session.send(threadId, `${tag} Try something smaller.`);
+    const turns = await session.settled(store, 2);
+    expect(turns[1]!.assistant).toContain("Handled the smaller request.");
+    expectPairedToolCalls(e2e.model.forScenario("ws-close").at(-1)!.request.messages);
+  }, 60_000);
 
   test("an expired continuation is retried with the full conversation", async () => {
     const tag = e2e.model.script("continuation-expired", (request, model) => {
@@ -109,33 +104,28 @@ describe("OpenAI Responses over WebSocket", () => {
     expectPairedToolCalls(e2e.model.forScenario("transient").at(-1)!.request.messages);
   }, 60_000);
 
-  // Fails today: the provider's rejection message is replaced by "Unknown operation failure".
-  test.failing(
-    "a rejected request fails the turn visibly and the thread keeps working",
-    async () => {
-      const tag = e2e.model.script("rejected", (_request, model) => {
-        if (model.lastUserText.includes("try again")) return { text: "Working again." };
-        return {
-          fault: {
-            kind: "error",
-            status: 400,
-            code: "invalid_prompt",
-            message: "Invalid prompt: rejected by the scripted provider.",
-          },
-        };
-      });
-      const threadId = await session.createThread("Rejected");
-      const store = session.watch(threadId);
-      await session.send(threadId, `${tag} Go.`);
-      const [failedTurn] = await session.settled(store, 1);
-      expect(failedTurn!.state).toBe("failed");
-      expect(JSON.stringify(failedTurn!.messages)).toContain("rejected by the scripted provider");
-      await session.send(threadId, `${tag} try again`);
-      const turns = await session.settled(store, 2);
-      expect(turns[1]!.assistant).toContain("Working again.");
-    },
-    60_000,
-  );
+  test("a rejected request fails the turn visibly and the thread keeps working", async () => {
+    const tag = e2e.model.script("rejected", (_request, model) => {
+      if (model.lastUserText.includes("try again")) return { text: "Working again." };
+      return {
+        fault: {
+          kind: "error",
+          status: 400,
+          code: "invalid_prompt",
+          message: "Invalid prompt: rejected by the scripted provider.",
+        },
+      };
+    });
+    const threadId = await session.createThread("Rejected");
+    const store = session.watch(threadId);
+    await session.send(threadId, `${tag} Go.`);
+    const [failedTurn] = await session.settled(store, 1);
+    expect(failedTurn!.state).toBe("failed");
+    expect(JSON.stringify(failedTurn!.messages)).toContain("rejected by the scripted provider");
+    await session.send(threadId, `${tag} try again`);
+    const turns = await session.settled(store, 2);
+    expect(turns[1]!.assistant).toContain("Working again.");
+  }, 60_000);
 });
 
 describe("OpenAI Responses in auto transport", () => {

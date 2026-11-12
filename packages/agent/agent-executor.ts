@@ -1944,7 +1944,10 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     this.activeAdapterFailure = error;
     rethrowAgentPanic(error.cause);
     return signalExternalToolCallHost(
-      new AgentExternalHostFailed({ cause: error.cause ?? error, message: error.message }),
+      new AgentExternalHostFailed({
+        cause: error.cause instanceof Error ? error.cause : error,
+        message: error.message,
+      }),
     );
   }
   private rethrowExecutionPanic(error: OpaqueAgentValue): void {
