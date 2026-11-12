@@ -61,7 +61,8 @@ test("the agent finds and calls tools from stdio and HTTP MCP servers", async ()
         expect(model.result("mcp_fixture_echo")).toContain("mcp-echo:hello");
         return { toolCalls: [{ name: "mcp_fixture_weather", args: { city: "Taipei" } }] };
       case 3:
-        expect(model.result("mcp_fixture_weather")).toContain('\\"celsius\\":21');
+        // The fixture mirrors its structured output as JSON text, so the model gets it once.
+        expect(model.result("mcp_fixture_weather").split('\\"celsius\\":21')).toHaveLength(2);
         return { toolCalls: [{ name: "mcp_fixture_pixel", args: {} }] };
       case 4:
         expect(model.result("mcp_fixture_pixel")).toContain('"mediaType":"image/png"');
