@@ -40,6 +40,11 @@ jobs:
         with:
           bun-version-file: package.json
 
+      - name: Setup Go for tools CLI boundary tests
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
