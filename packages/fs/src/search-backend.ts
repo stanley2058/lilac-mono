@@ -2,13 +2,14 @@ import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import type { Dir, Stats } from "node:fs";
 import { spawn } from "node:child_process";
-import { basename, join, matchesGlob, relative, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 
 import type { FileFinderApi } from "@ff-labs/fff-node";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 import { AsyncFzf } from "fzf";
 
 import { captureFilesystemOperation, type FileSystemOperationFailed } from "./filesystem-operation";
+import { matchesGlobWithDotfiles } from "./glob-match";
 import {
   ripgrep,
   type GrepMatch,
@@ -532,7 +533,10 @@ function escapeFdGlobLiteral(value: string): string {
 }
 
 function matchesGlobContract(path: string, patterns: readonly string[]): boolean {
-  return patterns.some((pattern) => matchesGlob(path, pattern) || matchesGlob(`${path}/`, pattern));
+  return patterns.some(
+    (pattern) =>
+      matchesGlobWithDotfiles(path, pattern) || matchesGlobWithDotfiles(`${path}/`, pattern),
+  );
 }
 
 function isExcludedByGlobContract(path: string, patterns: readonly string[]): boolean {

@@ -13,6 +13,7 @@
     "test:web": "bun run --filter=@stanley2058/lilac-web test",
     "build:info": "bun scripts/write-build-info.ts",
     "build:remote-fs": "bun --cwd=apps/core run build:remote-runner && bun --cwd=packages/remote-fs-runner run build",
+    "remote-fs:fingerprint": "bun scripts/remote-fs-runner-fingerprint.ts",
     "bench:blob-storage": "bun apps/core/scripts/bench-blob-storage.ts",
     "codegen:model-options": "bun scripts/generate-provider-option-shapes.ts",
     "codegen:model-options:check": "bun scripts/generate-provider-option-shapes.ts --check",
@@ -21,6 +22,7 @@
     "docker:build": "bun scripts/docker-build.ts build",
     "docker:compose:build": "bun scripts/docker-build.ts compose-build",
     "docker:verify": "docker compose exec -T lilac /usr/local/bin/tools --operator --list",
+    "docker:verify-installation": "bun apps/installer/tests/integration/verify-installation.ts",
     "docker:verify-image": "bash docker/verify-image.sh",
     "check": "bun scripts/run-gates.ts check",
     "lint": "bun run lint:oxlint && bun run lint:architecture",
@@ -30,7 +32,10 @@
     "lint:architecture:syntax": "bun scripts/oxlint-plugins/check-production-syntax.mts",
     "lint:oxlint": "oxlint --tsconfig tsconfig.json apps packages scripts examples __tests__",
     "test:all": "bun run test:non-architecture && bun run test:architecture",
+    "test:s3": "test -n \"$LILAC_BLOB_S3_TEST_ENDPOINT\" || { echo 'Set the LILAC_BLOB_S3_TEST_* variables described in DEVELOPMENT.md' >&2; exit 1; }; bun --cwd=packages/blob-storage test ./tests/s3-real-server.test.ts",
+    "test:remote-fs-package": "bun test ./packages/remote-fs-runner/tests/published-package.case.ts",
     "test:resilience": "bun test ./packages/event-bus/tests/resilience/redis-outage.case.ts ./apps/core/tests/runtime/core-runtime-resilience.case.ts",
+    "test:e2e": "bun test --timeout=120000 ./apps/core/tests/e2e/*.e2e.ts",
     "test:ci": "set -e; bun run test:root -- --only-failures; for dir in apps/* packages/*; do CORE_TEST_PARALLEL=4 bun --cwd=\"$dir\" run test -- --only-failures; done; bun test --only-failures ./scripts/oxlint-plugins/*.test.mts; node --experimental-strip-types scripts/oxlint-plugins/test-waits.rule-test.mts; bun run test:architecture -- --only-failures",
     "test:architecture": "bun test ./scripts/architecture/*.test.ts",
     "test:core": "bun run --parallel --filter='@stanley2058/lilac-core' --filter='@stanley2058/lilac-client-protocol' --filter='@stanley2058/lilac-tool-bridge' --filter='@stanley2058/lilac-agent' --filter='@stanley2058/lilac-bash-safety' --filter='@stanley2058/lilac-blob-storage' --filter='@stanley2058/lilac-claude-code-bridge' --filter='@stanley2058/lilac-coding-tools' --filter='@stanley2058/lilac-event-bus' --filter='@stanley2058/lilac-fs' --filter='@stanley2058/lilac-plugin-runtime' --filter='@stanley2058/lilac-remote-fs-runner' --filter='@stanley2058/lilac-tool-results' --filter='@stanley2058/lilac-utils' test",
@@ -60,7 +65,9 @@
     "codegen:config-schemas": "bun apps/core/scripts/generate-config-schemas.ts",
     "codegen:config-schemas:check": "bun apps/core/scripts/generate-config-schemas.ts --check",
     "build:model-catalog": "bun run codegen:model-catalog",
-    "codegen:model-catalog": "bun scripts/build-model-catalog.ts"
+    "codegen:model-catalog": "bun scripts/build-model-catalog.ts",
+    "codegen:client-protocol-compat": "bun apps/core/scripts/generate-client-protocol-compat.ts",
+    "codegen:client-protocol-compat:check": "bun apps/core/scripts/generate-client-protocol-compat.ts --check"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.75.0",

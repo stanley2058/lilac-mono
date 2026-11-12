@@ -221,7 +221,7 @@ function escapeMetadataValue(value: string): string {
   return value.replace(/[\n\r"\\]/g, "_");
 }
 
-function formatDiscordAttachmentHeader(params: {
+function formatAttachmentHeader(params: {
   url: URL;
   filename?: string;
   mimeType?: string;
@@ -232,7 +232,7 @@ function formatDiscordAttachmentHeader(params: {
   if (params.mimeType) fields.push(`mime="${escapeMetadataValue(params.mimeType)}"`);
   if (typeof params.size === "number") fields.push(`size=${params.size}`);
   fields.push(`url="${escapeMetadataValue(params.url.toString())}"`);
-  return `[discord_attachment ${fields.join(" ")}]`;
+  return `[attachment ${fields.join(" ")}]`;
 }
 
 function decodeUtf8BestEffort(bytes: Uint8Array): {
@@ -440,7 +440,7 @@ export async function appendDiscordAttachmentsToUserContent(
       }
 
       if (!isTextExtractableMimeType(mimeType)) {
-        const header = formatDiscordAttachmentHeader({
+        const header = formatAttachmentHeader({
           url,
           filename: att.filename,
           mimeType,
@@ -455,7 +455,7 @@ export async function appendDiscordAttachmentsToUserContent(
 
       // Text-extractable: download and inline content.
       if (att.size !== undefined && att.size > DEFAULT_INBOUND_MAX_FILE_BYTES) {
-        const header = formatDiscordAttachmentHeader({
+        const header = formatAttachmentHeader({
           url,
           filename: att.filename,
           mimeType,
@@ -477,7 +477,7 @@ export async function appendDiscordAttachmentsToUserContent(
             const bytes = cached?.bytes ?? downloaded!.bytes;
 
             if (bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
-              const header = formatDiscordAttachmentHeader({
+              const header = formatAttachmentHeader({
                 url,
                 filename: att.filename,
                 mimeType,
@@ -493,7 +493,7 @@ export async function appendDiscordAttachmentsToUserContent(
             if (!cached) {
               const nextTotal = state.downloadedTotalBytes + bytes.byteLength;
               if (nextTotal > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
-                const header = formatDiscordAttachmentHeader({
+                const header = formatAttachmentHeader({
                   url,
                   filename: att.filename,
                   mimeType,
@@ -518,7 +518,7 @@ export async function appendDiscordAttachmentsToUserContent(
             });
 
             const decoded = decodeUtf8BestEffort(bytes);
-            const header = formatDiscordAttachmentHeader({
+            const header = formatAttachmentHeader({
               url,
               filename: att.filename,
               mimeType,
@@ -545,7 +545,7 @@ export async function appendDiscordAttachmentsToUserContent(
         if (attempt.isErr()) {
           const error = attempt.error.cause;
           if (state.ownBlob) throw error;
-          const header = formatDiscordAttachmentHeader({
+          const header = formatAttachmentHeader({
             url,
             filename: att.filename,
             mimeType,
@@ -595,7 +595,7 @@ export async function appendDiscordAttachmentsToUserContent(
 
     if (inferred && isTextExtractableMimeType(inferred)) {
       if (att.size !== undefined && att.size > DEFAULT_INBOUND_MAX_FILE_BYTES) {
-        const header = formatDiscordAttachmentHeader({
+        const header = formatAttachmentHeader({
           url,
           filename: att.filename,
           mimeType: inferred,
@@ -617,7 +617,7 @@ export async function appendDiscordAttachmentsToUserContent(
             const bytes = cached?.bytes ?? downloaded!.bytes;
 
             if (bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
-              const header = formatDiscordAttachmentHeader({
+              const header = formatAttachmentHeader({
                 url,
                 filename: att.filename,
                 mimeType: inferred,
@@ -633,7 +633,7 @@ export async function appendDiscordAttachmentsToUserContent(
             if (!cached) {
               const nextTotal = state.downloadedTotalBytes + bytes.byteLength;
               if (nextTotal > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
-                const header = formatDiscordAttachmentHeader({
+                const header = formatAttachmentHeader({
                   url,
                   filename: att.filename,
                   mimeType: inferred,
@@ -658,7 +658,7 @@ export async function appendDiscordAttachmentsToUserContent(
             });
 
             const decoded = decodeUtf8BestEffort(bytes);
-            const header = formatDiscordAttachmentHeader({
+            const header = formatAttachmentHeader({
               url,
               filename: att.filename,
               mimeType: inferred,
@@ -685,7 +685,7 @@ export async function appendDiscordAttachmentsToUserContent(
         if (attempt.isErr()) {
           const error = attempt.error.cause;
           if (state.ownBlob) throw error;
-          const header = formatDiscordAttachmentHeader({
+          const header = formatAttachmentHeader({
             url,
             filename: att.filename,
             mimeType: inferred,
@@ -704,7 +704,7 @@ export async function appendDiscordAttachmentsToUserContent(
     // If we can infer a non-text, non-pdf, non-image type from filename, treat as binary and
     // leave a URL for the agent to fetch (don't send file part upstream).
     if (inferred && inferred !== "application/octet-stream") {
-      const header = formatDiscordAttachmentHeader({
+      const header = formatAttachmentHeader({
         url,
         filename: att.filename,
         mimeType: inferred,
@@ -750,7 +750,7 @@ export async function appendDiscordAttachmentsToUserContent(
           continue;
         }
 
-        const header = formatDiscordAttachmentHeader({
+        const header = formatAttachmentHeader({
           url,
           filename: att.filename,
           mimeType: fallback,
@@ -792,7 +792,7 @@ export async function appendDiscordAttachmentsToUserContent(
                 return { status: "continue" } as const;
               }
 
-              const header = formatDiscordAttachmentHeader({
+              const header = formatAttachmentHeader({
                 url,
                 filename: att.filename,
                 mimeType: fallback,
@@ -830,7 +830,7 @@ export async function appendDiscordAttachmentsToUserContent(
                 return { status: "continue" } as const;
               }
 
-              const header = formatDiscordAttachmentHeader({
+              const header = formatAttachmentHeader({
                 url,
                 filename: att.filename,
                 mimeType: fallback,
@@ -875,7 +875,7 @@ export async function appendDiscordAttachmentsToUserContent(
           const error = attempt.error.cause;
           if (state.ownBlob) throw error;
           // Best-effort: fall back to URL-based attachment.
-          const header = formatDiscordAttachmentHeader({
+          const header = formatAttachmentHeader({
             url,
             filename: att.filename,
             mimeType: inferred,
@@ -893,7 +893,7 @@ export async function appendDiscordAttachmentsToUserContent(
 
     const mt = resolvedMimeType ?? "application/octet-stream";
     if (!bytes) {
-      const header = formatDiscordAttachmentHeader({
+      const header = formatAttachmentHeader({
         url,
         filename: att.filename,
         mimeType: mt,
@@ -928,7 +928,7 @@ export async function appendDiscordAttachmentsToUserContent(
 
     if (isTextExtractableMimeType(mt)) {
       const decoded = decodeUtf8BestEffort(bytes);
-      const header = formatDiscordAttachmentHeader({
+      const header = formatAttachmentHeader({
         url,
         filename: att.filename,
         mimeType: mt,
@@ -952,7 +952,7 @@ export async function appendDiscordAttachmentsToUserContent(
     }
 
     // Non-text binary: do not send as file part.
-    const header = formatDiscordAttachmentHeader({
+    const header = formatAttachmentHeader({
       url,
       filename: att.filename,
       mimeType: mt,
@@ -1541,7 +1541,7 @@ export async function appendDiscordAttachmentsToBusContent(
     }
 
     if (declaredMimeType && !isTextExtractableMimeType(declaredMimeType)) {
-      const header = formatDiscordAttachmentHeader({
+      const header = formatAttachmentHeader({
         url,
         filename: attachment.filename,
         mimeType: declaredMimeType,
@@ -1585,7 +1585,7 @@ export async function appendDiscordAttachmentsToBusContent(
       continue;
     }
 
-    const header = formatDiscordAttachmentHeader({
+    const header = formatAttachmentHeader({
       url,
       filename: attachment.filename,
       mimeType: mediaType,
@@ -1643,7 +1643,7 @@ export async function appendDiscordAttachmentsToStoredContent(
 
     if (declaredMimeType && !isTextExtractableMimeType(declaredMimeType)) {
       if (!isImageMimeType(declaredMimeType) && !isPdfMimeType(declaredMimeType)) {
-        const header = formatDiscordAttachmentHeader({
+        const header = formatAttachmentHeader({
           url,
           filename: attachment.filename,
           mimeType: declaredMimeType,
@@ -1695,7 +1695,7 @@ export async function appendDiscordAttachmentsToStoredContent(
       continue;
     }
 
-    const header = formatDiscordAttachmentHeader({
+    const header = formatAttachmentHeader({
       url,
       filename: attachment.filename,
       mimeType: mediaType,

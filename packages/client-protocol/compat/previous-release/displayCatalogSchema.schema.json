@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "discordUserId": { "type": "string", "pattern": "^[0-9]{1,20}$" },
+        "id": { "type": "string", "const": "lilac" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "avatarUrl": { "type": "string", "maxLength": 512 }
+      },
+      "required": ["id", "displayName"],
+      "additionalProperties": false
+    },
+    "models": {
+      "maxItems": 256,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "label": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "description": { "type": "string", "maxLength": 1024 }
+        },
+        "required": ["id", "label"],
+        "additionalProperties": false
+      }
+    },
+    "skills": {
+      "maxItems": 512,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "description": { "type": "string", "maxLength": 1024 },
+          "source": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "required": ["id", "name", "description", "source"],
+        "additionalProperties": false
+      }
+    },
+    "commands": {
+      "maxItems": 512,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "description": { "type": "string", "maxLength": 1024 },
+          "kind": { "type": "string", "enum": ["builtin", "custom"] },
+          "argumentHint": { "type": "string", "maxLength": 256 },
+          "arguments": {
+            "maxItems": 24,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": { "type": "string", "minLength": 1, "maxLength": 32 },
+                "type": { "type": "string", "enum": ["string", "number", "boolean"] },
+                "description": { "type": "string", "maxLength": 100 },
+                "required": { "type": "boolean" },
+                "choices": {
+                  "maxItems": 256,
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+                }
+              },
+              "required": ["key", "type", "required"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "name", "description", "kind"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["revision", "models", "skills", "commands"],
+  "additionalProperties": false
+}

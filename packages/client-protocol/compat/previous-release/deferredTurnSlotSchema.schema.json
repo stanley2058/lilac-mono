@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "kind": { "type": "string", "const": "deferred" },
+    "slotId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" },
+    "position": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "endPosition": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+  },
+  "required": ["kind", "slotId", "position", "endPosition"],
+  "additionalProperties": false
+}

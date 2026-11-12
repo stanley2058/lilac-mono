@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "answers": {
+      "maxItems": 3,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "header": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "answer": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": { "type": "string", "const": "option" },
+                  "label": { "type": "string", "minLength": 1, "maxLength": 100 }
+                },
+                "required": ["kind", "label"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": { "kind": { "type": "string", "const": "custom" } },
+                "required": ["kind"],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": ["header", "answer"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["answers"],
+  "additionalProperties": false
+}

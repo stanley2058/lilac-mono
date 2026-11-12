@@ -20,6 +20,10 @@ jobs:
     timeout-minutes: 20
     env:
       REDIS_URL: redis://127.0.0.1:6379
+      LILAC_BLOB_S3_TEST_ENDPOINT: http://127.0.0.1:9000
+      LILAC_BLOB_S3_TEST_BUCKET: lilac-blob-test
+      LILAC_BLOB_S3_TEST_ACCESS_KEY_ID: lilac-ci-access
+      LILAC_BLOB_S3_TEST_SECRET_ACCESS_KEY: lilac-ci-secret-key
     services:
       redis:
         image: redis:7-alpine
@@ -30,6 +34,19 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Production uses rustfs. Service env cannot read job env, so the credentials repeat.
+      rustfs:
+        image: rustfs/rustfs:1.0.4
+        ports:
+          - 9000:9000
+        env:
+          RUSTFS_ACCESS_KEY: lilac-ci-access
+          RUSTFS_SECRET_KEY: lilac-ci-secret-key
+        options: >-
+          --health-cmd "curl -fsS http://127.0.0.1:9000/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
 
     steps:
       - name: Checkout
@@ -39,6 +56,11 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
+
+      - name: Setup Go for tools CLI boundary tests
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
 
       - name: Install system dependencies
         run: |
@@ -55,11 +77,24 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Create the S3 test bucket
+        run: >-
+          curl --fail-with-body --silent --show-error
+          --aws-sigv4 "aws:amz:us-east-1:s3"
+          --user "$LILAC_BLOB_S3_TEST_ACCESS_KEY_ID:$LILAC_BLOB_S3_TEST_SECRET_ACCESS_KEY"
+          -X PUT "$LILAC_BLOB_S3_TEST_ENDPOINT/$LILAC_BLOB_S3_TEST_BUCKET"
+
       - name: Run CI script
         run: bun run ci
 
+      - name: Install the packed remote fs runner
+        run: bun run test:remote-fs-package
+
       - name: Test process and Redis resilience
         run: bun run test:resilience
+
+      - name: Run end-to-end agent scenarios
+        run: bun run test:e2e
 
   docker-image:
     name: Docker image smoke
@@ -84,6 +119,17 @@ jobs:
 
       - name: Verify image
         run: bash docker/verify-image.sh lilac:ci
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify installer-written deployment
+        run: bun run docker:verify-installation lilac:ci
 
   computer-use:
     name: Computer-use Docker integration

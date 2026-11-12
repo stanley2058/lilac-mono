@@ -3,6 +3,13 @@ import { TaggedError, type Result } from "better-result";
 
 export const REQUEST_DELIVERY_RESOLVE_TIMEOUT_MS = 60_000 as const;
 
+/**
+ * GitHub lets users redeliver a webhook delivery for 3 days after it was sent. Keeping receipts for
+ * 7 days covers that window with margin for clock skew and late maintenance, while bounding the
+ * table to one week of published request IDs.
+ */
+export const REQUEST_DELIVERY_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
 export type RequestDeliveryInputTarget =
   | { readonly kind: "handle"; readonly blob: BlobHandleV1 }
   | { readonly kind: "reference"; readonly blob: BlobRefV1 };
@@ -271,6 +278,7 @@ export type RequestDeliveryMaintenanceSummary = {
   readonly inputObjectsDeleted: number;
   readonly outputObjectsDeleted: number;
   readonly tombstonesDeleted: number;
+  readonly receiptsDeleted: number;
   readonly failures: readonly RequestDeliveryDeleteFailed[];
 };
 

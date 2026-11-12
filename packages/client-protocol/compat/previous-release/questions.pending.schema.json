@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "questionCallId": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "requestId": { "type": "string", "minLength": 1, "maxLength": 512 },
+      "respondentId": { "type": "string", "minLength": 1, "maxLength": 256 },
+      "historyGeneration": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+      "mode": { "type": "string", "enum": ["deferred", "sync"] },
+      "prompts": {
+        "minItems": 1,
+        "maxItems": 3,
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "ordinal": { "type": "integer", "minimum": 1, "maximum": 3 },
+            "total": { "type": "integer", "minimum": 1, "maximum": 3 },
+            "header": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
+            "options": {
+              "minItems": 2,
+              "maxItems": 3,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "index": { "type": "integer", "minimum": 1, "maximum": 3 },
+                  "label": { "type": "string", "minLength": 1, "maxLength": 100 },
+                  "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+                  "token": { "type": "string", "minLength": 1, "maxLength": 128 }
+                },
+                "required": ["index", "label", "description", "token"],
+                "additionalProperties": false
+              }
+            },
+            "customToken": { "type": "string", "minLength": 1, "maxLength": 128 }
+          },
+          "required": ["ordinal", "total", "header", "question", "options", "customToken"],
+          "additionalProperties": false
+        }
+      },
+      "view": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "state": { "type": "string", "const": "pending" },
+              "prompt": {
+                "type": "object",
+                "properties": {
+                  "ordinal": { "type": "integer", "minimum": 1, "maximum": 3 },
+                  "total": { "type": "integer", "minimum": 1, "maximum": 3 },
+                  "header": { "type": "string", "minLength": 1, "maxLength": 80 },
+                  "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
+                  "options": {
+                    "minItems": 2,
+                    "maxItems": 3,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "index": { "type": "integer", "minimum": 1, "maximum": 3 },
+                        "label": { "type": "string", "minLength": 1, "maxLength": 100 },
+                        "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+                        "token": { "type": "string", "minLength": 1, "maxLength": 128 }
+                      },
+                      "required": ["index", "label", "description", "token"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "customToken": { "type": "string", "minLength": 1, "maxLength": 128 }
+                },
+                "required": ["ordinal", "total", "header", "question", "options", "customToken"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["state", "prompt"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": { "type": "string", "const": "answered" },
+              "summary": {
+                "type": "object",
+                "properties": {
+                  "answers": {
+                    "maxItems": 3,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "header": { "type": "string", "minLength": 1, "maxLength": 80 },
+                        "answer": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": { "type": "string", "const": "option" },
+                                "label": { "type": "string", "minLength": 1, "maxLength": 100 }
+                              },
+                              "required": ["kind", "label"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": { "kind": { "type": "string", "const": "custom" } },
+                              "required": ["kind"],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": ["header", "answer"],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": ["answers"],
+                "additionalProperties": false
+              },
+              "replyMessageId": { "type": "string" },
+              "replyInputId": { "type": "string" }
+            },
+            "required": ["state", "summary"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": { "type": "string", "enum": ["cancelled", "expired", "interrupted"] }
+            },
+            "required": ["state"],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "required": [
+      "questionCallId",
+      "requestId",
+      "respondentId",
+      "historyGeneration",
+      "mode",
+      "view"
+    ],
+    "additionalProperties": false
+  }
+}

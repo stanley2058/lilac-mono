@@ -2151,7 +2151,9 @@ export class NativeStore {
           return Result.ok(null);
         if (input.mode === "steer" && input.runId !== thread.activeRunId) {
           // A converted follow-up is admitted from fresh input and thread records.
-          if (yield* this.requeueAutoSteer(input.id)) return this.prepareInput(input.id);
+          // Whether the runner read a person's steer is unknown here, so only automatic steers move.
+          if (yield* this.requeueMissedSteer(input.id, "automatic"))
+            return this.prepareInput(input.id);
           yield* this.settleInput(input.id, "target-ended");
           return Result.ok(null);
         }
@@ -2195,17 +2197,24 @@ export class NativeStore {
   }
 
   /**
-   * Turns an agent's automatic steer whose run ended into a queued follow-up. The steer's message
-   * leaves the ended turn; the follow-up gets its own turn when it is admitted.
+   * Turns a steer whose run ended before reading it into a queued follow-up, so the input is
+   * answered instead of dropped. The steer's message leaves the ended turn; the follow-up gets its
+   * own turn when it is admitted. Callers pass `"any"` only when the runner certainly never read
+   * the steer; otherwise only the agent's automatic steers move, as a consumed person's steer must
+   * not run twice.
    */
-  requeueAutoSteer(inputId: string): NativeStoreResult<NativeInputRecord | null> {
+  requeueMissedSteer(
+    inputId: string,
+    scope: "any" | "automatic",
+  ): NativeStoreResult<NativeInputRecord | null> {
     return nativeStoreTransaction(this.db, () =>
       Result.gen(function* () {
         const input = yield* this.getInput(inputId);
         const thread = yield* this.getThreadRecord(input.threadId);
         if (
           input.mode !== "steer" ||
-          !input.commandId.startsWith(NATIVE_AUTO_STEER_COMMAND_PREFIX) ||
+          (scope === "automatic" &&
+            !input.commandId.startsWith(NATIVE_AUTO_STEER_COMMAND_PREFIX)) ||
           (input.state !== "queued" && input.state !== "admitted") ||
           input.completedAt !== undefined ||
           input.historyGeneration !== thread.historyGeneration ||

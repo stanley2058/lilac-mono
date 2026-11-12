@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "items": {
+      "maxItems": 100,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "taskTitle": { "type": "string", "maxLength": 80 },
+          "model": { "type": "string", "maxLength": 512 },
+          "reasoning": {
+            "type": "string",
+            "enum": ["provider-default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_:-]+$"
+          },
+          "activityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "turnId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "profile": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "name": { "type": "string", "maxLength": 256 },
+          "title": { "type": "string", "maxLength": 256 },
+          "state": { "type": "string", "enum": ["running", "complete", "failed", "canceled"] },
+          "startedAt": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+        },
+        "required": [
+          "id",
+          "activityId",
+          "turnId",
+          "profile",
+          "name",
+          "title",
+          "state",
+          "startedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "nextCursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  },
+  "required": ["items"],
+  "additionalProperties": false
+}

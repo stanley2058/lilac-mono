@@ -174,7 +174,7 @@ describe("blob-backed agent run checkpoints", () => {
         content: [
           {
             type: "text",
-            text: `[discord_attachment uri="${uri}" filename="image.png" mime="image/png"]`,
+            text: `[attachment uri="${uri}" filename="image.png" mime="image/png"]`,
           },
           { type: "file", data: bytes, mediaType: "image/png", filename: "image.png" },
         ],
@@ -224,7 +224,7 @@ describe("blob-backed agent run checkpoints", () => {
         content: [
           {
             type: "text",
-            text: `[discord_attachment uri="${uri}" filename="image.png" mime="image/png"]`,
+            text: `[attachment uri="${uri}" filename="image.png" mime="image/png"]`,
           },
           { type: "file", data: ingressBytes, mediaType: "image/png", filename: "image.png" },
         ],

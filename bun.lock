@@ -84,6 +84,7 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "@orpc/client": "1.15.1",
         "@orpc/contract": "1.15.1",
         "@types/bun": "^1.4.1",
@@ -374,7 +375,7 @@
     },
     "packages/remote-fs-runner": {
       "name": "@stanley2058/lilac-remote-fs-runner",
-      "version": "0.0.6",
+      "version": "0.0.7",
       "bin": {
         "lilac-remote-fs": "dist/cli.js",
       },

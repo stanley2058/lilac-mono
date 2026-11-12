@@ -27,6 +27,6 @@ describe("remote fs runner version", () => {
 
     expect(exitCode).toBe(0);
     expect(stderr).toBe("");
-    expect(stdout.trim()).toBe("0.0.6");
+    expect(stdout.trim()).toBe("0.0.7");
   });
 });

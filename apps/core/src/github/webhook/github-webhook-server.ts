@@ -39,6 +39,7 @@ import { isMarkedGithubAgentComment, markGithubAgentComment } from "../github-co
 import { parseGithubWorkflowActionReply } from "../../surface/github/github-actions";
 import { adaptEventPublishResultToHost } from "../../shared/event-bus-result";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
+import type { RequestDeliveryStoreError } from "../../surface/bridge/request-delivery/types";
 
 export const githubWebhookApi = {
   addEyesReactionToIssue,
@@ -53,10 +54,16 @@ export const githubWebhookApi = {
 };
 type GithubWebhookApi = typeof githubWebhookApi;
 
+/** Reports whether a request with this delivery ID was published within the retention window. */
+export type GithubPublishedRequestLookup = (
+  requestDeliveryId: string,
+) => ResultType<boolean, RequestDeliveryStoreError>;
+
 type GithubWebhookOptions = {
   bus: LilacBus;
   subscriptionId: string;
   reportFatalError: (error: Error) => void;
+  hasPublishedRequest: GithubPublishedRequestLookup;
 };
 
 const githubRepositorySchema = z.object({ full_name: z.string().min(1) });
@@ -521,6 +528,7 @@ export async function startGithubWebhookServer(options: GithubWebhookOptions): P
     path,
     logger,
     reportFatalError: options.reportFatalError,
+    hasPublishedRequest: options.hasPublishedRequest,
     handle: (event, projected, deliveryId) =>
       handleEvent({ bus: options.bus, logger, event, projected, botLogins, deliveryId }),
   });
@@ -540,6 +548,7 @@ export function createGithubWebhookApp(options: {
   path: string;
   logger: Logger;
   reportFatalError: (error: Error) => void;
+  hasPublishedRequest?: GithubPublishedRequestLookup;
   handle: (
     event: string,
     projected: ProjectedGithubWebhookEvent,
@@ -547,6 +556,8 @@ export function createGithubWebhookApp(options: {
   ) => Promise<Awaited<ReturnType<typeof handleEvent>> | void>;
 }) {
   const { secret, path, logger } = options;
+  // Covers handled deliveries that publish no request, such as workflow action replies, within
+  // one process. Deliveries that publish a request are deduplicated across restarts below.
   const seen = new Map<string, number>();
   const DEDUPE_TTL_MS = 10 * 60 * 1000;
 
@@ -558,7 +569,21 @@ export function createGithubWebhookApp(options: {
     }
     const exp = seen.get(deliveryId);
     if (exp && exp > now) return true;
-    return false;
+    if (!options.hasPublishedRequest) return false;
+    // Every handler publishes its first request under the delivery's "prompt" identity, and the
+    // request-delivery store keeps a receipt for it after the request completes.
+    return options.hasPublishedRequest(githubDeliveryId(deliveryId, "prompt")).match({
+      ok: (published) => published,
+      err: (error) => {
+        // Handling the delivery keeps it at least once; the durable publisher still rejects a
+        // duplicate while its delivery record exists.
+        logger.warn("github.webhook.dedupe_unavailable", {
+          deliveryId,
+          ...formatTaggedErrorForLog(error),
+        });
+        return false;
+      },
+    });
   }
 
   const queued = new WeakMap<

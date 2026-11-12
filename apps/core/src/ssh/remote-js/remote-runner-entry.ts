@@ -82,6 +82,7 @@ async function opReadBytes(
   const result = await fsTool.readFileBytes({
     path: input.path,
     maxBytes: input.maxBytes ?? 10_000_000,
+    prefixBytes: input.prefixBytes,
   });
   if (!result.success) {
     return {
@@ -96,6 +97,7 @@ async function opReadBytes(
     resolvedPath: result.resolvedPath,
     fileHash: result.fileHash,
     bytesLength: result.bytesLength,
+    ...(result.totalBytes === undefined ? {} : { totalBytes: result.totalBytes }),
     base64: Buffer.from(result.bytes).toString("base64"),
   };
 }

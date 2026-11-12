@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "transport": { "default": "auto", "type": "string", "enum": ["auto", "websocket", "http-sse"] },
+    "titleModel": { "type": "string", "minLength": 1 },
+    "outputStreaming": { "type": "string", "enum": ["paragraph", "complete"] },
+    "dmContextGapMs": {
+      "default": 7200000,
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "dmTimestampGapMs": {
+      "default": 1800000,
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "oldMessageSelectionMaxAgeMs": {
+      "anyOf": [
+        { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        { "type": "null" }
+      ]
+    },
+    "storageRetentionMaxAgeMs": {
+      "anyOf": [
+        { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        { "type": "null" }
+      ]
+    },
+    "crossThreadSend": {
+      "type": "object",
+      "properties": { "triggerRun": { "type": "boolean" } },
+      "required": ["triggerRun"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "titleModel",
+    "outputStreaming",
+    "oldMessageSelectionMaxAgeMs",
+    "storageRetentionMaxAgeMs",
+    "crossThreadSend"
+  ],
+  "additionalProperties": false
+}

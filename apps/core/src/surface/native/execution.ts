@@ -97,7 +97,9 @@ export function createNativeExecution(options: {
           nativeFailure("stale", "Native request no longer matches its accepted intent"),
         );
       if (input.mode === "steer" && thread.activeRunId !== input.runId) {
-        yield* store.settleInput(input.id, "target-ended");
+        // The steer continues as a follow-up when it still can; this delivery is stale either way.
+        if (!(yield* store.requeueMissedSteer(input.id, "any")))
+          yield* store.settleInput(input.id, "target-ended");
         return Result.err(nativeFailure("stale", "The steering target has ended"));
       }
       const previousRequestId = yield* store.getLatestCanonicalRequestId(input.threadId);
@@ -608,10 +610,11 @@ export function createNativeExecution(options: {
         if (listed.state === "admitted" && options.deliveryState) {
           const state = yield* options.deliveryState(listed.deliveryId);
           if (state === "owned") continue;
-          // An automatic steer the runner abandoned is admitted below as a follow-up.
-          const requeued = state === "abandoned" ? yield* store.requeueAutoSteer(listed.id) : null;
+          // A steer the runner abandoned missed its run and is admitted below as a follow-up.
+          const requeued =
+            state === "abandoned" ? yield* store.requeueMissedSteer(listed.id, "any") : null;
           if (requeued) candidate = requeued;
-          // Any other steer the runner dropped missed its run, which a reader sees as target-ended.
+          // A steer that can no longer be requeued, such as after a rewind, ends as target-ended.
           if (!requeued && state === "abandoned" && listed.mode === "steer") {
             yield* store.settleInput(listed.id, "target-ended");
             continue;

@@ -8,6 +8,7 @@ import { Result, type Result as ResultType } from "better-result";
 
 import { SqliteRequestDeliveryStore, type AcceptedRecoveryRow } from "./sqlite-store";
 import {
+  REQUEST_DELIVERY_RECEIPT_RETENTION_MS,
   REQUEST_DELIVERY_RESOLVE_TIMEOUT_MS,
   RequestDeliveryAdmissionRejected,
   RequestDeliveryDeleteFailed,
@@ -687,12 +688,19 @@ export class RequestDeliveryCoordinator<
         });
         if (dueError) return Result.err(dueError);
 
-        return this.#store.deleteEligibleTombstones({ limit }).map((tombstonesDeleted) => ({
-          inputObjectsDeleted,
-          outputObjectsDeleted,
-          tombstonesDeleted,
-          failures,
-        }));
+        return this.#store.deleteEligibleTombstones({ limit }).andThen((tombstonesDeleted) =>
+          this.#store
+            .deleteExpiredReceipts({
+              publishedBefore: now - REQUEST_DELIVERY_RECEIPT_RETENTION_MS,
+            })
+            .map((receiptsDeleted) => ({
+              inputObjectsDeleted,
+              outputObjectsDeleted,
+              tombstonesDeleted,
+              receiptsDeleted,
+              failures,
+            })),
+        );
       },
     })();
   }

@@ -32,7 +32,9 @@ export function latestUserInput(messages: readonly ModelMessage[]): LatestUserIn
         if (!text) continue;
         content.push({ ...part, text });
         textParts.push(text);
-        if (text.startsWith("[discord_attachment ")) hasAttachment = true;
+        // Transcripts written before the marker was renamed still use the Discord prefix.
+        if (text.startsWith("[attachment ") || text.startsWith("[discord_attachment "))
+          hasAttachment = true;
         else authoredParts.push(text);
         continue;
       }

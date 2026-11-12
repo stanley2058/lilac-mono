@@ -26,6 +26,7 @@ import {
   remoteFuzzySearch,
   remoteGlob,
   remoteGrep,
+  remoteReadFileBytes,
   remoteReadTextFile,
 } from "../../src/tools/fs/remote-fs";
 import { SSH } from "../../src/tool-server/tools/ssh";
@@ -341,6 +342,26 @@ printf '%s' '{"ok":true,"value":{"variant":"future"}}'
     }
   });
 
+  it("returns a byte prefix and total size from the bundled runner like a local read", async () => {
+    await writeFile(path.join(tempDir, "preview.txt"), "0123456789abcdef");
+
+    const result = await remoteReadFileBytes({
+      host: "fakehost",
+      cwd: tempDir,
+      filePath: "preview.txt",
+      denyPaths: [],
+      maxBytes: 8,
+      prefixBytes: 4,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status === "error") throw new Error(result.error.message);
+    expect(result.value).toMatchObject({ ok: true, bytesLength: 4, totalBytes: 16 });
+    if (!result.value.ok) throw new Error(result.value.error);
+    expect(Buffer.from(result.value.base64, "base64").toString()).toBe("0123");
+  });
+
   it("cancels a deployment waiter without cancelling the owner", async () => {
     const callsPath = path.join(tempDir, "deployment-calls");
     const existing = await readFile(sshPath, "utf8");
@@ -593,7 +614,11 @@ witness_pid=$!
 
 cleanup() {
   trap '' TERM
-  wait "$witness_pid" >/dev/null 2>&1 || true
+  # A signal can end wait before the witness is reaped. An unreaped witness becomes a zombie of the
+  # subreaper, which still answers kill -0, so keep waiting until it is really gone.
+  while kill -0 "$witness_pid" 2>/dev/null; do
+    wait "$witness_pid" >/dev/null 2>&1 || true
+  done
   printf 'witness-reaped\\n' > "$GROUP_CLEANUP"
   exit 143
 }
@@ -1032,7 +1057,7 @@ if [ "\${1:-}" != "--no-install" ]; then
   printf '%s' '{"ok":false,"error":"unexpected bunx install invocation"}'
   exit 0
 fi
-if [ "\${2:-}" != "@stanley2058/lilac-remote-fs-runner@0.0.6" ]; then
+if [ "\${2:-}" != "@stanley2058/lilac-remote-fs-runner@0.0.7" ]; then
   printf '%s' '{"ok":false,"error":"unexpected remote fs runner package spec"}'
   exit 0
 fi
@@ -1109,7 +1134,7 @@ printf '%s' '{"ok":false,"error":"npx should not be used when bunx exists"}'
       bunxPath,
       `#!/usr/bin/env bash
 set -euo pipefail
-PACKAGE='@stanley2058/lilac-remote-fs-runner@0.0.6'
+PACKAGE='@stanley2058/lilac-remote-fs-runner@0.0.7'
 INSTALLED=${JSON.stringify(installedPath)}
 INSTALLER=${JSON.stringify(installerPath)}
 INSTALLER_STARTED=${JSON.stringify(installerStartedPath)}

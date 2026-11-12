@@ -1937,6 +1937,8 @@ export async function createCoreRuntime(
             subscriptionPrefix,
             webhookSecret: env.github.webhookSecret,
             githubAppCredentialsAvailable,
+            hasPublishedRequest: (requestDeliveryId) =>
+              requestDeliveryStore!.hasReceipt(requestDeliveryId),
             getTranscriptStore: () => activeTranscriptStore,
             logger,
             reportFatalError,

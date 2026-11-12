@@ -142,6 +142,44 @@ class ControlledAdapter implements AgentAdapter {
 }
 
 describe("provider-neutral agent executor", () => {
+  test.each([
+    {
+      message: "Invalid prompt: rejected by the scripted provider.",
+      cause: { code: "invalid_prompt", statusCode: 400 },
+    },
+    {
+      message:
+        "OpenAI WebSocket message was too large (code 1009). Retry with smaller image previews or fewer attachments.",
+      cause: { closeCode: 1009 },
+    },
+  ])(
+    "preserves adapter failure messages with metadata causes: $message",
+    async ({ message, cause }) => {
+      const adapter = new ControlledAdapter();
+      const agent = new AgentExecutor({ system: "test", adapter });
+      const failure = new AgentAdapterFailure({
+        reason: "unavailable",
+        message,
+        replaySafety: "reconcile",
+        cause,
+      });
+      const observed = agent.prompt("question").then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const execution = await adapter.created.promise;
+      await execution.started.promise;
+      execution.emit({ type: "terminal", outcome: { status: "failed", error: failure } });
+
+      const error = await observed;
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toBe(failure);
+      expect((error as Error).message).toBe(message);
+      expect((error as Error).cause).toBe(cause);
+      expect(execution.disposed).toBe(true);
+    },
+  );
+
   test.each(["inline-tool-result", "assistant-text"] as const)(
     "native recovery retry eligibility after %s",
     async (boundary) => {

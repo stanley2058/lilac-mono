@@ -352,6 +352,32 @@ describe("MCP tool compatibility through registry and executor", () => {
     });
   }
 
+  it("sends structured output once when a text block already mirrors it as JSON", async () => {
+    const structuredContent = { count: 42, tags: ["a", { b: null }] };
+    for (const [text, expected] of [
+      // The spec asks servers to mirror structured output in a text block.
+      [JSON.stringify(structuredContent), [JSON.stringify(structuredContent)]],
+      // Key order and whitespace do not make it different data.
+      [
+        '{ "tags": ["a", {"b": null}], "count": 42 }',
+        ['{ "tags": ["a", {"b": null}], "count": 42 }'],
+      ],
+      // Different JSON is not a mirror, so both reach the model.
+      [
+        '{"count":41,"tags":["a",{"b":null}]}',
+        ['{"count":41,"tags":["a",{"b":null}]}', JSON.stringify(structuredContent)],
+      ],
+    ] as const) {
+      const transport = new ToolTransport(true);
+      transport.result = { content: [{ type: "text", text }], structuredContent };
+      const { outcome } = await execute(await connect(transport));
+      expect(outcome.toolOutput).toEqual({
+        type: "content",
+        value: expected.map((value) => ({ type: "text", text: value })),
+      });
+    }
+  });
+
   it("preserves MCP errors in executor outcomes, events, and model output", async () => {
     const transport = new ToolTransport(true);
     transport.result = {

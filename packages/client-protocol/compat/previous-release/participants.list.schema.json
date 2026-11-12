@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "items": {
+      "maxItems": 256,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "avatarUrl": { "type": "string", "maxLength": 2048 },
+              "role": { "type": "string", "enum": ["owner", "participant", "service"] },
+              "toolMode": { "type": "string", "enum": ["restricted", "full"] }
+            },
+            "required": ["id", "displayName", "role", "toolMode"],
+            "additionalProperties": false
+          },
+          "role": { "type": "string", "enum": ["read", "edit"] }
+        },
+        "required": ["user", "role"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["items"],
+  "additionalProperties": false
+}

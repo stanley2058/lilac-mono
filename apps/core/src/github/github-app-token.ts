@@ -1,6 +1,7 @@
 import { captureError } from "../shared/error-capture.js";
 import { createAppAuth } from "@octokit/auth-app";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
+import { z } from "zod";
 
 import {
   deriveApiBaseUrl,
@@ -56,6 +57,53 @@ async function captureGithubAppAuth<T>(
       message: "Failed to mint GitHub App installation token",
     }),
   );
+}
+
+const githubInstallationTokenSchema = z.object({ token: z.string(), expires_at: z.string() });
+
+// `createAppAuth` has no `baseUrl` option and always mints installation tokens at api.github.com,
+// so only the app JWT comes from it and the exchange targets the configured API base URL.
+async function mintInstallationToken(input: {
+  apiBaseUrl: string;
+  appId: number;
+  installationId: number;
+  privateKey: string;
+}): Promise<ResultType<{ token: string; expiresAt: string }, GithubAppTokenMintFailed>> {
+  const path = `/app/installations/${input.installationId}/access_tokens`;
+  const failed = (message: string) =>
+    new GithubAppTokenMintFailed({ cause: new Error(message), message });
+  const response = await captureGithubAppAuth(async () => {
+    const jwt = await createAppAuth({ appId: input.appId, privateKey: input.privateKey })({
+      type: "app",
+    });
+    return await fetch(`${input.apiBaseUrl.replace(/\/$/u, "")}${path}`, {
+      method: "POST",
+      headers: {
+        "User-Agent": "lilac",
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        Authorization: `Bearer ${jwt.token}`,
+      },
+    });
+  });
+  const continueResponse = response.match<
+    () => Promise<ResultType<{ token: string; expiresAt: string }, GithubAppTokenMintFailed>>
+  >({
+    err: (error) => async () => Result.err(error),
+    ok: (res) => async () => {
+      if (!res.ok) {
+        return Result.err(failed(`GitHub API error (${res.status} ${res.statusText}) at ${path}`));
+      }
+      const body = await captureGithubAppAuth(async (): Promise<unknown> => await res.json());
+      return body.andThen((value) => {
+        const decoded = githubInstallationTokenSchema.safeParse(value);
+        return decoded.success
+          ? Result.ok({ token: decoded.data.token, expiresAt: decoded.data.expires_at })
+          : Result.err(failed(`GitHub API returned an invalid installation token at ${path}`));
+      });
+    },
+  });
+  return await continueResponse();
 }
 
 function fingerprintSecret(secret: GithubAppSecret): string {
@@ -153,13 +201,12 @@ export async function getGithubInstallationTokenResult(params: {
           err: (error) => async () =>
             Result.err(new GithubAppTokenMintFailed({ cause: error, message: error.message })),
           ok: (privateKey) => async () => {
-            const auth = createAppAuth({
+            const response = await mintInstallationToken({
+              apiBaseUrl,
               appId: secret.appId,
-              privateKey,
               installationId: secret.installationId,
-              baseUrl: apiBaseUrl,
+              privateKey,
             });
-            const response = await captureGithubAppAuth(() => auth({ type: "installation" }));
             const continueResponse = response.match<
               () => ResultType<InstallationToken, GithubAppTokenError>
             >({

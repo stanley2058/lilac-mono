@@ -1,5 +1,5 @@
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index ff29f87..2dc92bb 100644
+index ff29f87cca04f619bce54091849ab3d63b053874..2dc92bb0d48cfc0e1313799d1e7855572b99e9a0 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -227,6 +227,10 @@ declare const CallToolResultSchema: z.ZodUnion<[z.ZodUnion<[z.ZodObject<{
@@ -37,7 +37,7 @@ index ff29f87..2dc92bb 100644
      type: z.ZodLiteral<"resource">;
      resource: z.ZodUnion<readonly [z.ZodObject<{
 diff --git a/dist/index.js b/dist/index.js
-index 18b4e84..abe0660 100644
+index 18b4e84ac38f31b94fd77d43846437ebd5f9d1f3..beb29c8e8106290830888442c4bca7a4ec7be421 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -140,6 +140,7 @@ const CallToolResultWithContentSchema = ResultSchema.extend({
@@ -60,7 +60,32 @@ index 18b4e84..abe0660 100644
  })).pipe(CallToolResultWithContentSchema);
  const CallToolResultSchema = CallToolResultWithContentSchema.or(CallToolResultWithStructuredContentSchema).or(ResultSchema.extend({ toolResult: z.unknown().nonoptional() }));
  const ResourceTemplateSchema = z.object({
-@@ -2307,27 +2305,21 @@ function mcpToModelOutput({ output }) {
+@@ -2301,33 +2299,46 @@ function waitForAbort(promise, signal) {
+ 		});
+ 	});
+ }
++function sameJsonValue(left, right) {
++	if (left === right) return true;
++	if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
++	if (Array.isArray(left) !== Array.isArray(right)) return false;
++	const leftKeys = Object.keys(left);
++	if (leftKeys.length !== Object.keys(right).length) return false;
++	return leftKeys.every((key) => Object.hasOwn(right, key) && sameJsonValue(left[key], right[key]));
++}
++/** Servers that follow the spec's backwards-compatibility advice mirror structured output as JSON text. */
++function textMirrorsStructuredContent(content, structuredContent) {
++	return content.some((part) => {
++		if (part.type !== "text" || typeof part.text !== "string") return false;
++		try {
++			return sameJsonValue(JSON.parse(part.text), structuredContent);
++		} catch {
++			return false;
++		}
++	});
++}
+ function mcpToModelOutput({ output }) {
+ 	const result = output;
+ 	if (!("content" in result) || !Array.isArray(result.content)) return {
  		type: "json",
  		value: result
  	};
@@ -95,7 +120,7 @@ index 18b4e84..abe0660 100644
 +		if (part.type === "audio") return { type: "text", text: JSON.stringify({ type: "audio", mimeType: part.mimeType }) };
 +		return { type: "text", text: JSON.stringify(part) };
 +	});
-+	if ("structuredContent" in result && result.structuredContent !== undefined) {
++	if ("structuredContent" in result && result.structuredContent !== undefined && !textMirrorsStructuredContent(result.content, result.structuredContent)) {
 +		convertedContent.push({ type: "text", text: JSON.stringify(result.structuredContent) });
 +	}
 +	if (result.isError) return { type: "error-json", value: { content: convertedContent } };
@@ -103,7 +128,7 @@ index 18b4e84..abe0660 100644
  }
  async function createMCPClient(config) {
  	const client = new DefaultMCPClient(config);
-@@ -2388,7 +2380,6 @@ var DefaultMCPClient = class {
+@@ -2388,7 +2399,6 @@ var DefaultMCPClient = class {
  		this.transport.onmessage = (message) => {
  			if ("method" in message) {
  				if ("id" in message) this.onRequestMessage(message);
@@ -111,7 +136,7 @@ index 18b4e84..abe0660 100644
  				return;
  			}
  			this.onResponse(message);
-@@ -2510,7 +2501,7 @@ var DefaultMCPClient = class {
+@@ -2510,7 +2520,7 @@ var DefaultMCPClient = class {
  	applyInitializeResult(result) {
  		if (!SUPPORTED_PROTOCOL_VERSIONS.includes(result.protocolVersion)) throw new MCPClientError({ message: `Server's protocol version is not supported: ${result.protocolVersion}` });
  		this.serverCapabilities = result.capabilities;
@@ -120,7 +145,7 @@ index 18b4e84..abe0660 100644
  		this.protocolVersion = result.protocolVersion;
  		this._serverInfo = result.serverInfo;
  		this._initializeResult = result;
-@@ -2638,6 +2629,7 @@ var DefaultMCPClient = class {
+@@ -2638,6 +2648,7 @@ var DefaultMCPClient = class {
  		});
  	}
  	async listTools({ params, options } = {}) {
@@ -128,7 +153,7 @@ index 18b4e84..abe0660 100644
  		const result = await this.request({
  			request: {
  				method: "tools/list",
-@@ -2654,7 +2646,7 @@ var DefaultMCPClient = class {
+@@ -2654,7 +2665,7 @@ var DefaultMCPClient = class {
  		const tools = definitions.tools.filter((toolDefinition) => {
  			const result = getMCPToolHeaderBindings(toolDefinition.inputSchema);
  			if (!result.success) {
@@ -137,7 +162,7 @@ index 18b4e84..abe0660 100644
  				return false;
  			}
  			this.toolHeaderBindings.set(toolDefinition.name, result.bindings);
-@@ -2839,11 +2831,7 @@ var DefaultMCPClient = class {
+@@ -2839,11 +2850,7 @@ var DefaultMCPClient = class {
  					description,
  					title: resolvedTitle,
  					metadata,
@@ -150,7 +175,7 @@ index 18b4e84..abe0660 100644
  					execute,
  					toModelOutput: mcpToModelOutput
  				}) : tool({
-@@ -3014,7 +3002,7 @@ var DefaultMCPClient = class {
+@@ -3014,7 +3021,7 @@ var DefaultMCPClient = class {
  		}
  		const messageId = Number(response.id);
  		const handler = this.responseHandlers.get(messageId);
@@ -160,10 +185,47 @@ index 18b4e84..abe0660 100644
  		handler("result" in response ? response : new MCPClientError({
  			message: response.error.message,
 diff --git a/src/tool/mcp-client.ts b/src/tool/mcp-client.ts
-index 2c9de8d..3f68874 100644
+index 2c9de8d1ca4db92c7dae9ba32e44e4d33cc25c7f..4687eedddb8aa076009efd6ac5669ff1922ad377 100644
 --- a/src/tool/mcp-client.ts
 +++ b/src/tool/mcp-client.ts
-@@ -235,10 +235,19 @@ function mcpToModelOutput({
+@@ -210,6 +210,36 @@ function waitForAbort<T>(
+   });
+ }
+ 
++function sameJsonValue(left: unknown, right: unknown): boolean {
++  if (left === right) return true;
++  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) {
++    return false;
++  }
++  if (Array.isArray(left) !== Array.isArray(right)) return false;
++  const leftRecord = left as Record<string, unknown>;
++  const rightRecord = right as Record<string, unknown>;
++  const leftKeys = Object.keys(leftRecord);
++  if (leftKeys.length !== Object.keys(rightRecord).length) return false;
++  return leftKeys.every(
++    key => Object.hasOwn(rightRecord, key) && sameJsonValue(leftRecord[key], rightRecord[key]),
++  );
++}
++
++/** Servers that follow the spec's backwards-compatibility advice mirror structured output as JSON text. */
++function textMirrorsStructuredContent(
++  content: ReadonlyArray<{ type: string; text?: unknown }>,
++  structuredContent: unknown,
++): boolean {
++  return content.some(part => {
++    if (part.type !== 'text' || typeof part.text !== 'string') return false;
++    try {
++      return sameJsonValue(JSON.parse(part.text), structuredContent);
++    } catch {
++      return false;
++    }
++  });
++}
++
+ function mcpToModelOutput({
+   output,
+ }: {
+@@ -235,10 +265,23 @@ function mcpToModelOutput({
            data: { type: 'data' as const, data: part.data as string },
          };
        }
@@ -174,7 +236,11 @@ index 2c9de8d..3f68874 100644
      },
    );
  
-+  if ('structuredContent' in result && result.structuredContent !== undefined) {
++  if (
++    'structuredContent' in result &&
++    result.structuredContent !== undefined &&
++    !textMirrorsStructuredContent(result.content, result.structuredContent)
++  ) {
 +    convertedContent.push({ type: 'text', text: JSON.stringify(result.structuredContent) });
 +  }
 +  if (result.isError) {
@@ -183,7 +249,7 @@ index 2c9de8d..3f68874 100644
    return { type: 'content', value: convertedContent };
  }
  
-@@ -526,13 +535,9 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
+@@ -526,13 +569,9 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
        if ('method' in message) {
          if ('id' in message) {
            this.onRequestMessage(message);
@@ -199,7 +265,7 @@ index 2c9de8d..3f68874 100644
          return;
        }
  
-@@ -751,7 +756,7 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
+@@ -751,7 +790,7 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
      }
  
      this.serverCapabilities = result.capabilities;
@@ -208,7 +274,7 @@ index 2c9de8d..3f68874 100644
      this.protocolVersion = result.protocolVersion;
      this._serverInfo = result.serverInfo;
      this._initializeResult = result;
-@@ -989,6 +994,7 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
+@@ -989,6 +1028,7 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
      params?: PaginatedRequest['params'];
      options?: RequestOptions;
    } = {}): Promise<ListToolsResult> {
@@ -216,7 +282,7 @@ index 2c9de8d..3f68874 100644
      const result = await this.request({
        request: { method: 'tools/list', params },
        resultSchema: ListToolsResultSchema,
-@@ -1017,6 +1023,7 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
+@@ -1017,6 +1057,7 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
          this.onError(
            new MCPClientError({
              message: `Ignoring MCP tool "${toolDefinition.name}": ${result.error}`,
@@ -224,7 +290,7 @@ index 2c9de8d..3f68874 100644
            }),
          );
          return false;
-@@ -1330,11 +1337,7 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
+@@ -1330,11 +1371,7 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
                description,
                title: resolvedTitle,
                metadata,
@@ -237,7 +303,7 @@ index 2c9de8d..3f68874 100644
                execute,
                toModelOutput: mcpToModelOutput,
              })
-@@ -1597,13 +1600,8 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
+@@ -1597,13 +1634,8 @@ class DefaultMCPClient implements Omit<MCPClient, 'experimental_events'> {
      const messageId = Number(response.id);
      const handler = this.responseHandlers.get(messageId);
  
@@ -254,7 +320,7 @@ index 2c9de8d..3f68874 100644
      this.responseHandlers.delete(messageId);
  
 diff --git a/src/tool/types.ts b/src/tool/types.ts
-index 6dfda91..b684aa2 100644
+index 6dfda915804b39717c751f932876613f53bd45ea..b684aa29441705f4cc98cf2806c1b919b33bbcf2 100644
 --- a/src/tool/types.ts
 +++ b/src/tool/types.ts
 @@ -304,6 +304,7 @@ const CallToolResultWithContentSchema = ResultSchema.extend({

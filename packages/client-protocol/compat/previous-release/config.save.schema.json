@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "kind": { "type": "string", "enum": ["core", "mcp"] },
+    "revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "text": { "type": "string", "maxLength": 1048576 }
+  },
+  "required": ["kind", "revision", "text"],
+  "additionalProperties": false
+}

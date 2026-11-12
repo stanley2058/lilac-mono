@@ -30,6 +30,7 @@ export const CORE_FINAL_BOUNDARY_IDENTITIES = [
   ["src/github/github-app.ts", "decodeGithubAppSecret"],
   ["src/github/github-user-token.ts", "decodeGithubUserTokenSecret"],
   ["src/github/github-auth.ts", "fetchViewerLoginFromGithub"],
+  ["src/github/github-app-token.ts", "mintInstallationToken"],
   ["src/github/github-api.ts", "githubFetchJson"],
   ["src/github/github-api.ts", "captureGithubAppResponse"],
   ["src/surface/github/github-adapter.ts", "classifyGithubSurfaceError"],

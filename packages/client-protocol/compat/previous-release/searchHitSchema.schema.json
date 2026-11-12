@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "threadId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "turnId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" },
+    "title": { "type": "string", "maxLength": 512 },
+    "excerpt": { "type": "string", "maxLength": 2048 },
+    "surface": { "type": "string", "enum": ["native", "discord", "github"] }
+  },
+  "required": ["threadId", "title", "excerpt", "surface"],
+  "additionalProperties": false
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "surface": { "type": "string", "enum": ["native", "discord", "github"] },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\s?&]+$" },
+    "messageId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "range": {
+      "type": "object",
+      "properties": {
+        "startMessageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "endMessageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      },
+      "required": ["startMessageId", "endMessageId"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["surface", "sessionId"],
+  "additionalProperties": false
+}

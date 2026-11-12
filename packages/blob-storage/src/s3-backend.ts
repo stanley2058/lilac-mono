@@ -552,7 +552,6 @@ export class S3BlobBackend implements BlobBackend {
             headers: {
               "content-type": "application/json",
               "if-none-match": "*",
-              "x-amz-acl": "private",
             },
             body: serialized,
           },

@@ -206,7 +206,7 @@ describe("stored message materialization", () => {
           { type: "text", text: "inspect" },
           {
             type: "text",
-            text: '[discord_attachment uri="resource://r1_00000000000000000000000000000001" filename="unsafe_name.png" mime="image/png" size=321]',
+            text: '[attachment uri="resource://r1_00000000000000000000000000000001" filename="unsafe_name.png" mime="image/png" size=321]',
           },
         ],
       },
@@ -796,7 +796,7 @@ describe("stored message materialization", () => {
     expect(materialized[0]?.content).toEqual([
       {
         type: "text",
-        text: '[discord_attachment uri="resource://r1_00000000000000000000000000000001" filename="image.png" mime="image/png"]',
+        text: '[attachment uri="resource://r1_00000000000000000000000000000001" filename="image.png" mime="image/png"]',
       },
       {
         type: "file",
@@ -951,7 +951,7 @@ describe("stored message materialization", () => {
     expect(materialized[0]?.content).toEqual([
       {
         type: "text",
-        text: '[discord_attachment uri="resource://r1_00000000000000000000000000000001" filename="document.pdf" mime="application/pdf"]',
+        text: '[attachment uri="resource://r1_00000000000000000000000000000001" filename="document.pdf" mime="application/pdf"]',
       },
       {
         type: "text",
@@ -1413,7 +1413,7 @@ describe("stored message materialization", () => {
     expect(materialized[0]?.content).toEqual([
       {
         type: "text",
-        text: '[discord_attachment uri="resource://r1_00000000000000000000000000000001" filename="upload"]',
+        text: '[attachment uri="resource://r1_00000000000000000000000000000001" filename="upload"]',
       },
     ]);
 
@@ -1465,7 +1465,7 @@ describe("stored message materialization", () => {
       expect(materialized[0]?.content).toEqual([
         {
           type: "text",
-          text: `[discord_attachment uri="resource://r1_00000000000000000000000000000001" filename="${filename}"]`,
+          text: `[attachment uri="resource://r1_00000000000000000000000000000001" filename="${filename}"]`,
         },
       ]);
     }

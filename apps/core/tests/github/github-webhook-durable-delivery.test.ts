@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { createHmac } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createMemoryBlobStore } from "@stanley2058/lilac-blob-storage";
 import {
   createLilacBus,
@@ -49,9 +52,9 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function fixture() {
+async function fixture(dbPath = ":memory:") {
   const store = new SqliteRequestDeliveryStore({
-    dbPath: ":memory:",
+    dbPath,
     codecs: coreRequestDeliveryCodecs,
   });
   const blobs = value(await createMemoryBlobStore());
@@ -138,6 +141,7 @@ async function fixture() {
   cleanups.push(async () => {
     for (const requestId of requestIds) clearGithubRequest(requestId);
     store.close();
+    if (dbPath !== ":memory:") rmSync(path.dirname(dbPath), { recursive: true, force: true });
     await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
   });
   return {
@@ -303,6 +307,70 @@ describe("GitHub webhook durable delivery", () => {
     expect(prepare).not.toHaveBeenCalled();
     expect(f.publications).toHaveLength(0);
     prepare.mockRestore();
+  });
+
+  it("deduplicates a redelivery after its request completed and the store reopened", async () => {
+    const dbPath = path.join(mkdtempSync(path.join(tmpdir(), "github-redelivery-")), "rd.db");
+    const f = await fixture(dbPath);
+    const first = await f.run("issue_comment", f.comment, "completed-delivery");
+    const requestDeliveryId = f.publications[0]!.data.requestDeliveryId;
+    value(await f.coordinator.handleDelivery(requestDeliveryId));
+    value(
+      await f.coordinator.terminalize({
+        requestDeliveryId,
+        outcome: { kind: "completed" },
+        transportCommitRequired: false,
+      }),
+    );
+    expect(value(await f.coordinator.maintain()).tombstonesDeleted).toBe(1);
+    clearGithubRequest(first.requestId!);
+    f.store.close();
+
+    // Reopening the database stands in for a Core restart: process memory is gone.
+    const reopened = new SqliteRequestDeliveryStore({ dbPath, codecs: coreRequestDeliveryCodecs });
+    const handled: Array<string | undefined> = [];
+    const reached = Promise.withResolvers<void>();
+    const app = createGithubWebhookApp({
+      secret: "test-secret",
+      path: "/webhook",
+      logger: createLogger({ module: "github-redelivery-test" }),
+      hasPublishedRequest: (id) => reopened.hasReceipt(id),
+      handle: async (_event, _projected, deliveryId) => {
+        handled.push(deliveryId);
+        reached.resolve();
+      },
+      reportFatalError: (cause) => {
+        throw cause;
+      },
+    }).compile();
+    const deliver = async (deliveryId: string) => {
+      const body = JSON.stringify(f.comment);
+      const response = await app.handle(
+        new Request("http://localhost/webhook", {
+          method: "POST",
+          body,
+          headers: {
+            "content-type": "application/json",
+            "x-github-event": "issue_comment",
+            "x-github-delivery": deliveryId,
+            "x-hub-signature-256": `sha256=${createHmac("sha256", "test-secret").update(body).digest("hex")}`,
+          },
+        }),
+      );
+      return { status: response.status, body: await response.json() };
+    };
+    try {
+      expect(await deliver("completed-delivery")).toEqual({
+        status: 200,
+        body: { ok: true, deduped: true },
+      });
+      expect(handled).toEqual([]);
+      expect(await deliver("new-delivery")).toEqual({ status: 200, body: { ok: true } });
+      await reached.promise;
+      expect(handled).toEqual(["new-delivery"]);
+    } finally {
+      reopened.close();
+    }
   });
 
   it("logs a redacted nested contract error while retaining the handler error", async () => {
