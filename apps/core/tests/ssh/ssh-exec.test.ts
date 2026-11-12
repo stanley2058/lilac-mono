@@ -26,6 +26,7 @@ import {
   remoteFuzzySearch,
   remoteGlob,
   remoteGrep,
+  remoteReadFileBytes,
   remoteReadTextFile,
 } from "../../src/tools/fs/remote-fs";
 import { SSH } from "../../src/tool-server/tools/ssh";
@@ -339,6 +340,26 @@ printf '%s' '{"ok":true,"value":{"variant":"future"}}'
       expect(result).toMatchObject({ success: false, error: { code: "UNKNOWN" } });
       expect(JSON.stringify(result)).toContain("16");
     }
+  });
+
+  it("returns a byte prefix and total size from the bundled runner like a local read", async () => {
+    await writeFile(path.join(tempDir, "preview.txt"), "0123456789abcdef");
+
+    const result = await remoteReadFileBytes({
+      host: "fakehost",
+      cwd: tempDir,
+      filePath: "preview.txt",
+      denyPaths: [],
+      maxBytes: 8,
+      prefixBytes: 4,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status === "error") throw new Error(result.error.message);
+    expect(result.value).toMatchObject({ ok: true, bytesLength: 4, totalBytes: 16 });
+    if (!result.value.ok) throw new Error(result.value.error);
+    expect(Buffer.from(result.value.base64, "base64").toString()).toBe("0123");
   });
 
   it("cancels a deployment waiter without cancelling the owner", async () => {
