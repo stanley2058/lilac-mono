@@ -40,6 +40,8 @@ export type CoreConfigOptions = {
   /** Extra Core config merged over the defaults at the top level. */
   config?: Record<string, unknown>;
   env?: Record<string, string | undefined>;
+  /** Runs after the data directory is written, to add files such as credentials under it. */
+  prepare?: (layout: CoreLayout) => void | Promise<void>;
 };
 
 export const OWNER = { username: "owner", password: "e2e-owner-password" };
@@ -112,7 +114,9 @@ export async function prepareCore(
     LILAC_NATIVE_SESSION_SECRET: "e2e-native-session-secret-0123456789abcdef",
     ...options.env,
   };
-  return { directory, dataDir, workspace, nativeUrl, toolUrl, env };
+  const layout = { directory, dataDir, workspace, nativeUrl, toolUrl, env };
+  await options.prepare?.(layout);
+  return layout;
 }
 
 /**

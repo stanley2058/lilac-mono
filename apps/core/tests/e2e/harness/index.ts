@@ -15,6 +15,7 @@ import { ScriptedModel } from "./scripted-model";
 export * from "./core-process";
 export * from "./native-session";
 export * from "./scripted-model";
+export * from "./fake-github";
 
 export type E2E = {
   model: ScriptedModel;
