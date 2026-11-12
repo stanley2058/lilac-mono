@@ -120,6 +120,17 @@ jobs:
       - name: Verify image
         run: bash docker/verify-image.sh lilac:ci
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify installer-written deployment
+        run: bun run docker:verify-installation lilac:ci
+
   computer-use:
     name: Computer-use Docker integration
     runs-on: ubuntu-26.04

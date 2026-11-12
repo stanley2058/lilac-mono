@@ -22,6 +22,7 @@
     "docker:build": "bun scripts/docker-build.ts build",
     "docker:compose:build": "bun scripts/docker-build.ts compose-build",
     "docker:verify": "docker compose exec -T lilac /usr/local/bin/tools --operator --list",
+    "docker:verify-installation": "bun apps/installer/tests/integration/verify-installation.ts",
     "docker:verify-image": "bash docker/verify-image.sh",
     "check": "bun scripts/run-gates.ts check",
     "lint": "bun run lint:oxlint && bun run lint:architecture",

@@ -23,6 +23,18 @@ bun run docker:verify-image
 
 The image smoke starts a network-disabled container with the normal entrypoint and an inert command. It verifies that `tini` is the root PID 1, reaps an orphan probe, keeps its service child running as `lilac`, and forwards SIGTERM to that child. It also checks direct Docker logs, Bun and the installed `tools` CLI, immutable application and CLI paths, writable `/data`, and the root-only operator token with its hash propagated to the service process.
 
+Verify an installer-written deployment against a built image, with Docker Compose and Bun installed:
+
+```sh
+bun run docker:verify-installation lilac:dev
+```
+
+This check writes a temporary installation through the real installer, starts Core and Redis, and
+checks health, local authentication, operator tool access, and a completed native HTTP RPC request.
+A local fake OpenAI-compatible server supplies the streamed reply. No provider account or Discord
+credentials are needed. The check removes its Compose containers, volumes, and temporary files on exit.
+The image must use the installer's standard UID 1000. CI runs this check against `lilac:ci`.
+
 Start the Compose deployment and verify operator access against the running Core service:
 
 ```sh
