@@ -301,7 +301,12 @@ committed projection rows, against frozen JSON Schemas in
 `packages/client-protocol/compat/previous-release`. Docker is required. Payloads stay
 in memory and failures report the kind, JSON Pointer and upgrade guidance.
 
-The baseline was seeded from commit `034b1ae8` (protocol 1, cache projection 2).
+The baseline comes from the newest `build-*` release tag older than HEAD (currently
+`build-1bf249baeb8b-42575334640-1`): the codegen extracts that release, as the upgrade scenario
+does, and exports its schemas there. Released clients decode only the bootstrap reply and IndexedDB
+cache rows (which hold every display part) with their strict schemas, so those payloads must match
+the baseline exactly. Other oRPC results reach clients unvalidated; for them the gate allows added
+properties but fails on a removed, renamed or retyped field.
 It includes all exported protocol schemas and every oRPC output, including inline
 outputs and subscription yields. Cache envelopes mirror the TypeScript-only types
 in `packages/client/src/cache.ts`; update their test schema if those types change.
@@ -312,12 +317,12 @@ streams, failed turns and rewind. Workflow list replies are covered; creating a
 workflow card is left to the workflow tests. This gate checks old-client decoding;
 it does not freeze execution semantics or provide a historical payload corpus.
 
-At a release, run `bun run codegen:client-protocol-compat`, review and commit the
-snapshot with the release changes, and update the source commit above. Keep the
+After each release, run `bun run codegen:client-protocol-compat`, review and commit the
+snapshot, and update the release tag above. Keep the
 previous-release snapshot frozen during development. For an intentional breaking
 change, first bump the protocol or cache projection version so affected clients
 reload or discard old rows, document deployment/rollback in `MIGRATIONS.md`, then
-refresh the snapshot. Do not refresh merely to make an incompatible payload pass.
+refresh the snapshot from HEAD with `--from-head`. Do not refresh merely to make an incompatible payload pass.
 
 `bun run codegen:client-protocol-compat:check` validates the checked-in schemas and
 required payload kinds without comparing them with HEAD. The same integrity test

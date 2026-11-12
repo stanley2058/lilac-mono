@@ -21,6 +21,11 @@
       "maxLength": 1024
     }
   },
-  "required": ["threadId", "title", "body", "tag"],
+  "required": [
+    "threadId",
+    "title",
+    "body",
+    "tag"
+  ],
   "additionalProperties": false
 }

@@ -16,6 +16,8 @@
       "maxLength": 280
     }
   },
-  "required": ["position"],
+  "required": [
+    "position"
+  ],
   "additionalProperties": false
 }

@@ -18,7 +18,16 @@
           },
           "reasoning": {
             "type": "string",
-            "enum": ["provider-default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            "enum": [
+              "provider-default",
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
           },
           "id": {
             "type": "string",
@@ -53,7 +62,12 @@
           },
           "state": {
             "type": "string",
-            "enum": ["running", "complete", "failed", "canceled"]
+            "enum": [
+              "running",
+              "complete",
+              "failed",
+              "canceled"
+            ]
           },
           "startedAt": {
             "type": "integer",
@@ -81,6 +95,8 @@
       "pattern": "^[A-Za-z0-9_-]+$"
     }
   },
-  "required": ["items"],
+  "required": [
+    "items"
+  ],
   "additionalProperties": false
 }

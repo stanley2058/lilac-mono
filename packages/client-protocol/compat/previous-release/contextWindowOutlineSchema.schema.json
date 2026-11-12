@@ -27,6 +27,11 @@
       "const": true
     }
   },
-  "required": ["firstPosition", "endPosition", "startAt", "endAt"],
+  "required": [
+    "firstPosition",
+    "endPosition",
+    "startAt",
+    "endAt"
+  ],
   "additionalProperties": false
 }

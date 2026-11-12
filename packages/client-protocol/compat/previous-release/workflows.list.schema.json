@@ -173,7 +173,10 @@
                     },
                     "kind": {
                       "type": "string",
-                      "enum": ["agent", "wait"]
+                      "enum": [
+                        "agent",
+                        "wait"
+                      ]
                     },
                     "state": {
                       "type": "string",
@@ -189,7 +192,10 @@
                       ]
                     }
                   },
-                  "required": ["kind", "state"],
+                  "required": [
+                    "kind",
+                    "state"
+                  ],
                   "additionalProperties": false
                 }
               },
@@ -198,7 +204,10 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "enum": ["reply", "sleep"]
+                    "enum": [
+                      "reply",
+                      "sleep"
+                    ]
                   },
                   "prompt": {
                     "type": "string",
@@ -221,7 +230,12 @@
                     "type": "boolean"
                   }
                 },
-                "required": ["kind", "prompt", "replyToMessage", "elsewhere"],
+                "required": [
+                  "kind",
+                  "prompt",
+                  "replyToMessage",
+                  "elsewhere"
+                ],
                 "additionalProperties": false
               },
               "result": {
@@ -231,7 +245,10 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "enum": ["text", "json"]
+                        "enum": [
+                          "text",
+                          "json"
+                        ]
                       },
                       "text": {
                         "type": "string",
@@ -241,7 +258,11 @@
                         "type": "boolean"
                       }
                     },
-                    "required": ["kind", "text", "truncated"],
+                    "required": [
+                      "kind",
+                      "text",
+                      "truncated"
+                    ],
                     "additionalProperties": false
                   },
                   {
@@ -252,7 +273,9 @@
                         "const": "stored"
                       }
                     },
-                    "required": ["kind"],
+                    "required": [
+                      "kind"
+                    ],
                     "additionalProperties": false
                   }
                 ]
@@ -280,7 +303,11 @@
                     "maximum": 9007199254740991
                   }
                 },
-                "required": ["used", "active", "queued"],
+                "required": [
+                  "used",
+                  "active",
+                  "queued"
+                ],
                 "additionalProperties": false
               },
               "nextRunAt": {
@@ -376,30 +403,53 @@
                                 },
                                 "style": {
                                   "type": "string",
-                                  "enum": ["primary", "secondary", "danger", "success"]
+                                  "enum": [
+                                    "primary",
+                                    "secondary",
+                                    "danger",
+                                    "success"
+                                  ]
                                 },
                                 "disabled": {
                                   "type": "boolean"
                                 }
                               },
-                              "required": ["actionId", "label", "style"],
+                              "required": [
+                                "actionId",
+                                "label",
+                                "style"
+                              ],
                               "additionalProperties": false
                             }
                           }
                         },
-                        "required": ["requestId", "revision", "actions"],
+                        "required": [
+                          "requestId",
+                          "revision",
+                          "actions"
+                        ],
                         "additionalProperties": false
                       }
                     },
-                    "required": ["type", "id", "data"],
+                    "required": [
+                      "type",
+                      "id",
+                      "data"
+                    ],
                     "additionalProperties": false
                   }
                 },
-                "required": ["messageId", "position"],
+                "required": [
+                  "messageId",
+                  "position"
+                ],
                 "additionalProperties": false
               }
             },
-            "required": ["id", "title"],
+            "required": [
+              "id",
+              "title"
+            ],
             "additionalProperties": false
           },
           "platform": {
@@ -408,7 +458,10 @@
             "maxLength": 32
           }
         },
-        "required": ["id", "card"],
+        "required": [
+          "id",
+          "card"
+        ],
         "additionalProperties": false
       }
     },
@@ -419,6 +472,8 @@
       "pattern": "^[A-Za-z0-9_-]+$"
     }
   },
-  "required": ["items"],
+  "required": [
+    "items"
+  ],
   "additionalProperties": false
 }

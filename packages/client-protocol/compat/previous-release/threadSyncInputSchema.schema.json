@@ -32,10 +32,17 @@
           "pattern": "^[A-Za-z0-9_-]+$"
         }
       },
-      "required": ["protocolVersion", "historyGeneration", "projectionRevision", "cursor"],
+      "required": [
+        "protocolVersion",
+        "historyGeneration",
+        "projectionRevision",
+        "cursor"
+      ],
       "additionalProperties": false
     }
   },
-  "required": ["threadId"],
+  "required": [
+    "threadId"
+  ],
   "additionalProperties": false
 }

@@ -22,21 +22,39 @@
         },
         "role": {
           "type": "string",
-          "enum": ["owner", "participant", "service"]
+          "enum": [
+            "owner",
+            "participant",
+            "service"
+          ]
         },
         "toolMode": {
           "type": "string",
-          "enum": ["restricted", "full"]
+          "enum": [
+            "restricted",
+            "full"
+          ]
         }
       },
-      "required": ["id", "displayName", "role", "toolMode"],
+      "required": [
+        "id",
+        "displayName",
+        "role",
+        "toolMode"
+      ],
       "additionalProperties": false
     },
     "role": {
       "type": "string",
-      "enum": ["read", "edit"]
+      "enum": [
+        "read",
+        "edit"
+      ]
     }
   },
-  "required": ["user", "role"],
+  "required": [
+    "user",
+    "role"
+  ],
   "additionalProperties": false
 }

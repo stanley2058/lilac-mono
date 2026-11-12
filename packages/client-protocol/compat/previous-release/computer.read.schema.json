@@ -36,7 +36,12 @@
               "maxLength": 64
             }
           },
-          "required": ["generation", "url", "password", "expiresAt"],
+          "required": [
+            "generation",
+            "url",
+            "password",
+            "expiresAt"
+          ],
           "additionalProperties": false
         },
         {
@@ -45,6 +50,8 @@
       ]
     }
   },
-  "required": ["desktop"],
+  "required": [
+    "desktop"
+  ],
   "additionalProperties": false
 }

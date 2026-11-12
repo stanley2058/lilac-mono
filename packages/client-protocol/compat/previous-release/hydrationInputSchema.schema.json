@@ -30,6 +30,11 @@
       "maximum": 9007199254740991
     }
   },
-  "required": ["threadId", "historyGeneration", "projectionRevision", "slotId"],
+  "required": [
+    "threadId",
+    "historyGeneration",
+    "projectionRevision",
+    "slotId"
+  ],
   "additionalProperties": false
 }

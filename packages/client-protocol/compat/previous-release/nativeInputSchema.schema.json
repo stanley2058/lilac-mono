@@ -38,7 +38,10 @@
           "maxLength": 128
         }
       },
-      "required": ["messageId", "token"],
+      "required": [
+        "messageId",
+        "token"
+      ],
       "additionalProperties": false
     },
     "text": {
@@ -47,7 +50,11 @@
     },
     "mode": {
       "type": "string",
-      "enum": ["prompt", "steer", "followup"]
+      "enum": [
+        "prompt",
+        "steer",
+        "followup"
+      ]
     },
     "attachmentIds": {
       "maxItems": 32,
@@ -75,7 +82,16 @@
     },
     "reasoning": {
       "type": "string",
-      "enum": ["provider-default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+      "enum": [
+        "provider-default",
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
     },
     "command": {
       "type": "object",
@@ -90,7 +106,10 @@
           "maxLength": 65536
         }
       },
-      "required": ["id", "arguments"],
+      "required": [
+        "id",
+        "arguments"
+      ],
       "additionalProperties": false
     }
   },

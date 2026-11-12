@@ -28,7 +28,10 @@
                     "maxLength": 100
                   }
                 },
-                "required": ["kind", "label"],
+                "required": [
+                  "kind",
+                  "label"
+                ],
                 "additionalProperties": false
               },
               {
@@ -39,17 +42,24 @@
                     "const": "custom"
                   }
                 },
-                "required": ["kind"],
+                "required": [
+                  "kind"
+                ],
                 "additionalProperties": false
               }
             ]
           }
         },
-        "required": ["header", "answer"],
+        "required": [
+          "header",
+          "answer"
+        ],
         "additionalProperties": false
       }
     }
   },
-  "required": ["answers"],
+  "required": [
+    "answers"
+  ],
   "additionalProperties": false
 }

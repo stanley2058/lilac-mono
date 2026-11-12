@@ -2,12 +2,6 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "commandId": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_-]+$"
-    },
     "inputId": {
       "type": "string",
       "minLength": 1,
@@ -28,7 +22,14 @@
     },
     "state": {
       "type": "string",
-      "enum": ["uploading", "queued", "admitted", "target-ended", "canceled", "failed"]
+      "enum": [
+        "uploading",
+        "queued",
+        "admitted",
+        "target-ended",
+        "canceled",
+        "failed"
+      ]
     },
     "runId": {
       "type": "string",
@@ -48,7 +49,11 @@
     },
     "mode": {
       "type": "string",
-      "enum": ["prompt", "steer", "followup"]
+      "enum": [
+        "prompt",
+        "steer",
+        "followup"
+      ]
     },
     "createdAt": {
       "type": "integer",
@@ -56,6 +61,14 @@
       "maximum": 9007199254740991
     }
   },
-  "required": ["inputId", "messageId", "state", "authorId", "text", "mode", "createdAt"],
+  "required": [
+    "inputId",
+    "messageId",
+    "state",
+    "authorId",
+    "text",
+    "mode",
+    "createdAt"
+  ],
   "additionalProperties": false
 }

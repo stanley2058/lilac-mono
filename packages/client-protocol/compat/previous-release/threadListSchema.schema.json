@@ -38,11 +38,20 @@
           },
           "displayStatus": {
             "type": "string",
-            "enum": ["idle", "completed", "working", "error", "input"]
+            "enum": [
+              "idle",
+              "completed",
+              "working",
+              "error",
+              "input"
+            ]
           },
           "waitingOn": {
             "type": "string",
-            "enum": ["input", "other"]
+            "enum": [
+              "input",
+              "other"
+            ]
           },
           "hasActiveWorkflow": {
             "type": "boolean",
@@ -85,7 +94,11 @@
                 "type": "boolean"
               }
             },
-            "required": ["read", "edit", "share"],
+            "required": [
+              "read",
+              "edit",
+              "share"
+            ],
             "additionalProperties": false
           },
           "modelId": {
@@ -95,14 +108,26 @@
           },
           "reasoning": {
             "type": "string",
-            "enum": ["provider-default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            "enum": [
+              "provider-default",
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
           },
           "preview": {
             "type": "object",
             "properties": {
               "role": {
                 "type": "string",
-                "enum": ["user", "assistant"]
+                "enum": [
+                  "user",
+                  "assistant"
+                ]
               },
               "text": {
                 "type": "string",
@@ -110,7 +135,10 @@
                 "maxLength": 512
               }
             },
-            "required": ["role", "text"],
+            "required": [
+              "role",
+              "text"
+            ],
             "additionalProperties": false
           }
         },
@@ -133,6 +161,8 @@
       "pattern": "^[A-Za-z0-9_-]+$"
     }
   },
-  "required": ["items"],
+  "required": [
+    "items"
+  ],
   "additionalProperties": false
 }

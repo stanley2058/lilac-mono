@@ -23,6 +23,11 @@
       "maximum": 9007199254740991
     }
   },
-  "required": ["kind", "slotId", "position", "endPosition"],
+  "required": [
+    "kind",
+    "slotId",
+    "position",
+    "endPosition"
+  ],
   "additionalProperties": false
 }

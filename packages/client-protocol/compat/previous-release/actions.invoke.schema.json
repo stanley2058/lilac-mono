@@ -4,9 +4,15 @@
   "properties": {
     "outcome": {
       "type": "string",
-      "enum": ["accepted", "already-applied", "stale"]
+      "enum": [
+        "accepted",
+        "already-applied",
+        "stale"
+      ]
     }
   },
-  "required": ["outcome"],
+  "required": [
+    "outcome"
+  ],
   "additionalProperties": false
 }

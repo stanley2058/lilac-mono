@@ -25,13 +25,24 @@
     },
     "state": {
       "type": "string",
-      "enum": ["pending", "ready", "failed", "canceled"]
+      "enum": [
+        "pending",
+        "ready",
+        "failed",
+        "canceled"
+      ]
     },
     "error": {
       "type": "string",
       "maxLength": 512
     }
   },
-  "required": ["id", "name", "mediaType", "size", "state"],
+  "required": [
+    "id",
+    "name",
+    "mediaType",
+    "size",
+    "state"
+  ],
   "additionalProperties": false
 }

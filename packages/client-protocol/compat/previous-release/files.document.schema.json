@@ -12,6 +12,10 @@
       "type": "string"
     }
   },
-  "required": ["path", "text", "revision"],
+  "required": [
+    "path",
+    "text",
+    "revision"
+  ],
   "additionalProperties": false
 }

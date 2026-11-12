@@ -44,6 +44,15 @@
       "maxLength": 8000
     }
   },
-  "required": ["version", "threadId", "messageId", "text", "start", "end", "prefix", "suffix"],
+  "required": [
+    "version",
+    "threadId",
+    "messageId",
+    "text",
+    "start",
+    "end",
+    "prefix",
+    "suffix"
+  ],
   "additionalProperties": false
 }

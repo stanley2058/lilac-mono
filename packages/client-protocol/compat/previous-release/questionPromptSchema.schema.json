@@ -50,7 +50,12 @@
             "maxLength": 128
           }
         },
-        "required": ["index", "label", "description", "token"],
+        "required": [
+          "index",
+          "label",
+          "description",
+          "token"
+        ],
         "additionalProperties": false
       }
     },
@@ -60,6 +65,13 @@
       "maxLength": 128
     }
   },
-  "required": ["ordinal", "total", "header", "question", "options", "customToken"],
+  "required": [
+    "ordinal",
+    "total",
+    "header",
+    "question",
+    "options",
+    "customToken"
+  ],
   "additionalProperties": false
 }
