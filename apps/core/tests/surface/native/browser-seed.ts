@@ -5,6 +5,7 @@ import type { SqliteTranscriptStore } from "../../../src/transcript/transcript-s
 import { NativeStore } from "../../../src/surface/native/store";
 import {
   directMessageHistory,
+  longArticles,
   mediaReport,
   novelDraft,
   searchInvestigation,
@@ -232,6 +233,8 @@ function seedDirectMessages(
         ],
       ],
     },
+    // Long replies for comparing reading comfort with the normal-thread copy.
+    { startedAt: Date.now() - 12 * HOUR_MS, turns: longArticles },
     {
       startedAt: Date.now() - 3 * HOUR_MS,
       turns: [
@@ -495,6 +498,17 @@ export function seedNativeBrowserFixture(
       options.longTurns === undefined ? undefined : Math.ceil(options.longTurns / 5),
     ),
   );
+  const articles = seedScript(
+    store,
+    options.transcript,
+    "browser-articles",
+    "Long articles",
+    longArticles.map(([text, answer], index) => ({
+      text,
+      answer,
+      at: now - (longArticles.length - index) * 5 * 60_000,
+    })),
+  );
   const dm = seedDirectMessages(options.database, options.transcript, options.dmWindows);
   const questions = seedQuestionThread(store, options.transcript);
   return {
@@ -503,6 +517,7 @@ export function seedNativeBrowserFixture(
     novel,
     trip,
     media,
+    articles,
     questions,
     jobWake: jobWake.id,
     rich: rich.id,

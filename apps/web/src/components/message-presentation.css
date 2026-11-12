@@ -305,6 +305,17 @@
   border-radius: 0;
   overflow: visible;
 }
+/* Full-strength text glares on the page background over a long reply. Headings and bold keep full
+   strength so the hierarchy stays clear. DM bubbles already sit on a lighter surface. */
+.native-message.message-assistant .markdown {
+  color: color-mix(in srgb, var(--ui-foreground) 90%, var(--ui-background));
+}
+.native-message.message-assistant .markdown :is(h1, h2, h3, h4, h5, h6, strong, b) {
+  color: var(--ui-foreground);
+}
+.timeline[data-messaging] .native-message.message-assistant .markdown {
+  color: inherit;
+}
 .native-message.message-user .message-bubble > [data-slot="bubble-content"] {
   border-radius: var(--ui-radius-2xl);
 }

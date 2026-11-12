@@ -23,6 +23,7 @@ const snapshotSchema = z.strictObject({
     novel: z.string(),
     trip: z.string(),
     media: z.string(),
+    articles: z.string(),
     questions: z.string(),
     jobWake: z.string(),
     rich: z.string(),

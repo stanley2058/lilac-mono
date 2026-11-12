@@ -84,8 +84,8 @@ describe("native browser fixture seeding", () => {
     const outline = store
       .outline("owner", threads.dm, { dmContextGapMs: DEFAULT_DM_CONTEXT_GAP_MS })
       .unwrap();
-    // Six generated windows, then the Kyoto and release-checklist sessions.
-    expect(outline.windows).toHaveLength(8);
+    // Six generated windows, then the Kyoto, long-article, and release-checklist sessions.
+    expect(outline.windows).toHaveLength(9);
     const latest = store.selectSessionWindow(threads.dm, {
       ...options,
       at: now - 3 * 3_600_000 + 60_000,

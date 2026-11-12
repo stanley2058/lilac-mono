@@ -358,3 +358,226 @@ export function directMessageHistory(now: number, until: number, windows = 75): 
     ];
   });
 }
+
+/** Long-form replies for checking reading comfort in normal threads and DMs. */
+export const longArticles: [string, string][] = [
+  [
+    "Write me a long guide to running a blameless postmortem.",
+    `# Running a blameless postmortem
+
+A postmortem is the meeting and document a team produces after an incident. Its purpose is to understand how the system, including the people who operate it, produced an outcome nobody wanted. A blameless postmortem starts from the assumption that everyone involved acted reasonably given what they knew at the time. That assumption is not politeness. It is a practical choice: people who expect blame hide details, and the details are where the lessons live.
+
+This guide covers what to do before the meeting, how to run it, what the written record should contain, and how to make sure the follow-up work actually happens.
+
+## Before the meeting
+
+Start the document while memories are fresh. Ideally the incident commander or a designated scribe opens it within a day of resolution. The first draft does not need analysis. It needs a timeline.
+
+Build the timeline from evidence rather than recollection wherever you can. Chat logs, alert history, deploy records, dashboards, and pager acknowledgements all carry timestamps. Recollection fills the gaps between those records, and it is useful there, but it drifts quickly. Two engineers who were on the same call will remember the order of events differently within a week.
+
+For each entry, record three things:
+
+- **What happened**, in plain language.
+- **What the people involved knew** at that moment, including what they could see on their screens.
+- **What they decided to do**, and why that seemed sensible.
+
+The second item is the one most teams skip, and it is the most valuable. When an engineer restarted the wrong service, the useful question is not why they made a mistake. It is what the dashboard showed them that made the wrong service look like the right one.
+
+Invite the people who were involved, the owners of the affected systems, and anyone who will have to carry out follow-up work. Keep the group small enough that everyone can speak. Eight people is usually the upper limit for a productive discussion.
+
+## Running the meeting
+
+Open by restating the ground rules. The facilitator should say out loud that the goal is to understand the system, that nobody is being evaluated, and that hindsight makes every decision look more obvious than it was. Saying this feels redundant to experienced teams. Say it anyway, because new members are listening for whether it is true.
+
+Walk through the timeline in order. At each decision point, ask the person who made it to describe what they saw. Resist the urge to jump ahead to the root cause. Incidents rarely have a single root cause, and teams that hunt for one tend to stop at the first plausible answer, which is often a person.
+
+Useful questions keep the discussion on conditions rather than conduct:
+
+1. What information was available at this point, and where was it?
+2. What would have needed to be true for a different action to look correct?
+3. Has this situation happened before, and what did we do then?
+4. Which safeguards were expected to catch this, and why did they not?
+5. What surprised you?
+
+The last question is often the most productive. Surprise marks the gap between the system people believe they operate and the one they actually operate. Every surprise is a candidate for a fix, a document, or an alert.
+
+Watch for counterfactual language. Phrases like "should have" and "failed to" describe a world that did not happen and quietly assign fault. When they appear, the facilitator can redirect gently: "What made the other path harder to see?" This keeps the conversation honest without lecturing anyone.
+
+Keep track of time. A one-hour meeting is enough for most incidents. If the discussion runs long, schedule a second session rather than rushing the end, because the end is where action items are decided.
+
+## What the document should contain
+
+The finished document is read far more often than the meeting is remembered. Write it for an engineer who joins the team next year and wants to know why a strange-looking safeguard exists.
+
+A good structure looks like this:
+
+| Section | Contents |
+| --- | --- |
+| Summary | Two or three sentences on what happened and the impact |
+| Impact | Who was affected, for how long, and how badly |
+| Timeline | The evidence-based sequence of events |
+| Contributing factors | The conditions that made the incident possible |
+| What went well | Detection, response, and recovery that worked |
+| Action items | Owned, dated tasks with a clear definition of done |
+
+The "what went well" section is not decoration. Teams that only record failures gradually lose track of the practices that keep incidents short. If the on-call engineer found the problem in four minutes because a runbook was current, write that down, so the runbook stays current.
+
+Use specific numbers. "Some users saw errors" tells a future reader nothing. "About 4% of checkout requests returned 500 errors for 37 minutes" tells them the scale and lets them compare incidents over time.
+
+## Action items that survive
+
+The most common way postmortems fail is quiet: the meeting goes well, the document is thorough, and the action items never ship. Three habits prevent this.
+
+First, give every action item exactly one owner. Shared ownership means no ownership. The owner does not have to do the work personally, but they are responsible for it getting done or being explicitly dropped.
+
+Second, prefer fewer, sharper items. Ten vague tasks like "improve monitoring" will sit in the backlog for a year. Two concrete tasks like "alert when queue depth exceeds 10,000 for five minutes" will ship next sprint.
+
+Third, review open items on a schedule. A short monthly review of every postmortem action item older than thirty days keeps the list honest. Items that no longer make sense should be closed with a note explaining why. That note is useful history too.
+
+## A note on culture
+
+Blamelessness does not mean nobody is accountable. People are still responsible for doing their jobs well. The distinction is that accountability means explaining what happened and helping fix it, while blame means being punished for an outcome. Teams that confuse the two get shorter postmortems and longer incidents.
+
+The best signal that the practice is working is who volunteers information. When engineers start a postmortem by saying "I made the change that triggered this, and here is what I was thinking," the team has built enough trust to learn from its failures. That trust takes months to build and one careless meeting to lose, so protect it.`,
+  ],
+  [
+    "Explain how DNS resolution works, in depth.",
+    `# How DNS resolution works
+
+Every time you type a hostname into a browser, something has to turn that name into an address a network can route to. The Domain Name System does that job. It is one of the oldest pieces of internet infrastructure still in daily use, and it works well enough that most people never think about it until it breaks.
+
+This explanation follows a single lookup from start to finish, then covers caching, record types, and the failure modes that cause most real-world DNS trouble.
+
+## The players
+
+A lookup involves several kinds of servers, each with a narrow job.
+
+The **stub resolver** lives on your machine. It is usually part of the operating system, and it does very little on its own. It takes a question like "what is the address of \`docs.example.com\`?", sends it to a configured recursive resolver, and waits for an answer.
+
+The **recursive resolver** does the real work. Your internet provider runs one, and public ones are operated by several large companies. It accepts questions from stub resolvers, finds the answers by asking other servers, and caches what it learns.
+
+The **authoritative servers** hold the actual records. Each zone in the DNS hierarchy has authoritative servers that can answer definitively for names inside it. They do not go looking for answers elsewhere. They either know or they say the name does not exist.
+
+## Following one lookup
+
+Suppose the recursive resolver has just started and its cache is empty. A client asks for \`docs.example.com\`.
+
+The resolver begins at the top of the hierarchy. It ships with a list of root server addresses, called root hints, so it can always start somewhere. It asks a root server about \`docs.example.com\`. The root server does not know the answer, but it knows who handles \`.com\`, so it replies with a referral: a list of the \`.com\` name servers.
+
+The resolver asks one of the \`.com\` servers the same question. That server also does not know the final answer, but it knows which name servers are authoritative for \`example.com\`, so it returns another referral.
+
+The resolver then asks an \`example.com\` name server. This server is authoritative for the zone, so it returns the record the client wanted, or a definitive statement that the name does not exist.
+
+The resolver hands the answer back to the stub resolver, which hands it to the application. The browser can now open a connection.
+
+\`\`\`text
+client      -> recursive resolver : docs.example.com A?
+resolver    -> root server        : docs.example.com A?
+root        -> resolver           : ask the .com servers
+resolver    -> .com server        : docs.example.com A?
+.com        -> resolver           : ask ns1.example.com
+resolver    -> ns1.example.com    : docs.example.com A?
+ns1         -> resolver           : 203.0.113.42
+resolver    -> client             : 203.0.113.42
+\`\`\`
+
+That is a lot of round trips for one address. In practice almost nobody pays that cost, because of caching.
+
+## Caching and time to live
+
+Every DNS record carries a time to live, or TTL, measured in seconds. It tells resolvers how long they may keep the record before asking again. A TTL of 300 means a resolver can reuse the answer for five minutes.
+
+Caching happens at every layer. The recursive resolver caches the final answer, and it also caches the referrals it collected along the way. After one lookup for \`docs.example.com\`, it already knows the \`.com\` servers and the \`example.com\` servers. A later lookup for \`api.example.com\` can skip straight to the authoritative server. Operating systems and browsers keep small caches of their own, so a repeated lookup often never leaves your machine.
+
+Choosing a TTL is a tradeoff. Long TTLs reduce load and make lookups fast, but changes take a long time to reach everyone. Short TTLs let you move traffic quickly, but every expiration costs another query. A common approach is to keep TTLs moderate during normal operation and lower them a day or two before a planned migration, so the switch propagates quickly when it happens.
+
+## Common record types
+
+Most day-to-day DNS work involves a handful of record types.
+
+| Type | Holds | Typical use |
+| --- | --- | --- |
+| \`A\` | An IPv4 address | Pointing a name at a server |
+| \`AAAA\` | An IPv6 address | The same, for IPv6 |
+| \`CNAME\` | Another name | Aliasing one name to another |
+| \`MX\` | A mail server and priority | Routing email for a domain |
+| \`TXT\` | Arbitrary text | Domain verification, email policy |
+| \`NS\` | A name server | Delegating a zone |
+
+A \`CNAME\` deserves special mention because it causes frequent confusion. It says "this name is an alias; go look up that other name instead." The resolver follows the chain and returns the final address. A name with a \`CNAME\` cannot hold other records, which is why you usually cannot put one at the apex of a domain, where \`NS\` and other records must live.
+
+## When things go wrong
+
+Most DNS incidents fall into a few patterns.
+
+**Stale caches.** Someone changes a record, but clients keep using the old value until the TTL expires. If the old TTL was a day, the change takes up to a day to reach everyone, no matter how quickly the new record was published. The fix is planning: lower the TTL well before the change.
+
+**Negative caching.** When a name does not exist, resolvers cache that fact too, for a duration set by the zone. If a service queries a name before it is created, it may keep getting "does not exist" for a while after the record appears. This often surprises teams that create records and immediately test them.
+
+**Broken delegation.** The parent zone lists name servers for a child zone. If those name servers stop answering, or the parent lists servers that were decommissioned, lookups fail even though the records themselves are fine. Checking delegation with a tool like \`dig +trace\` shows each step of the walk and usually reveals where it breaks.
+
+**Resolver outages.** If the recursive resolver a machine depends on becomes unavailable, every lookup fails at once, and the symptoms look like a total network outage. Configuring more than one resolver reduces the risk, as long as both are not behind the same failure point.
+
+## Closing thoughts
+
+DNS is a distributed, cached, eventually consistent database that the entire internet depends on. Most of its surprises come from that last property. Once you think of every change as something that propagates over time rather than something that happens at once, DNS behavior becomes much easier to predict.`,
+  ],
+  [
+    "How should I take care of a cast-iron pan? Go into detail.",
+    `# Caring for a cast-iron pan
+
+A cast-iron pan is one of the few kitchen tools that improves with use. With reasonable care it will outlast the person who bought it. The care is not complicated, but it runs against habits most people learned from stainless steel and nonstick pans, so it helps to understand why each step matters.
+
+## What seasoning is
+
+Bare cast iron is porous and rusts easily. Seasoning is a thin layer of oil that has been heated until it polymerizes, turning from a liquid into a hard, slick coating bonded to the metal. That coating protects the iron from moisture and gives the pan its nonstick behavior.
+
+Seasoning is built up in layers. Each time you cook with oil at high heat, a little more polymerizes onto the surface. This is why a well-used pan looks dark and glossy while a new one can look dull and grey. The pan is not getting dirtier. It is getting better protected.
+
+## Cleaning after cooking
+
+The old rule that you must never use soap on cast iron comes from a time when soaps contained lye, which can strip seasoning. Modern dish soap is mild, and a small amount will not hurt a properly seasoned pan. What does hurt it is soaking.
+
+A good routine looks like this:
+
+1. Clean the pan while it is still warm, since food releases more easily.
+2. Rinse with hot water and scrub with a brush or a non-scratch sponge. Use a little soap if the pan is greasy.
+3. For stuck food, scrub with coarse salt and a splash of water, which acts as a gentle abrasive.
+4. Dry the pan immediately and completely with a towel.
+5. Set it on a burner over low heat for a minute or two to drive off remaining moisture.
+6. While it is warm, wipe a very thin layer of oil over the cooking surface with a paper towel.
+
+The final step is where people most often go wrong. The layer should be so thin that the pan looks almost dry. Excess oil does not polymerize properly. It turns sticky and can go rancid in storage.
+
+## What to avoid
+
+A few habits do real damage.
+
+- **Soaking.** Leaving the pan in a sink of water is the fastest way to get rust.
+- **The dishwasher.** The long hot cycle and harsh detergent will strip seasoning and leave the pan rusty.
+- **Storing it wet.** Even a thin film of water can cause rust spots overnight.
+- **Long simmers of acidic food early on.** Tomato sauce or wine simmered for an hour can wear away young seasoning. A well-established pan handles acidic food better, and a quick deglaze is fine at any stage.
+
+None of these mistakes are permanent. They just mean extra work to restore the surface.
+
+## Fixing rust and sticky spots
+
+If a pan develops rust, scrub the rusty area with steel wool until you reach bare metal, wash it, dry it thoroughly, and re-season it. Small spots can be fixed on the stovetop. A pan with widespread rust benefits from a full oven seasoning.
+
+To season in the oven, coat the entire pan, inside and out, with a very thin layer of a neutral oil with a high smoke point. Wipe it off as though you made a mistake, leaving only what clings to the surface. Place the pan upside down in an oven at around 230 to 260 °C for an hour, with a sheet of foil on a lower rack to catch drips. Let it cool in the oven. Repeating this three or four times builds a durable base layer.
+
+Sticky patches mean oil was applied too thickly and did not fully polymerize. Heating the pan in the oven at high temperature for an hour usually finishes the job. If not, scrub the sticky area and start that spot again with a thinner coat.
+
+## Cooking to build seasoning
+
+The easiest way to maintain a pan is to cook in it often. Searing, shallow frying, and roasting vegetables with oil all add to the seasoning. Eggs and delicate fish are harder on a young pan, so it can help to save them until the surface has had a few weeks of regular use.
+
+Preheat the pan gradually. Cast iron heats unevenly at first, and putting a cold pan on a high flame can create hot spots or, in rare cases, crack the iron. Five minutes over medium heat gives an even, steady surface that holds its temperature when food goes in.
+
+## Storage
+
+Store the pan in a dry place. If you stack other pans on top of it, put a paper towel between them to protect the surface and absorb any humidity. Leaving the lid on a stored pan can trap moisture, so keep lids off or slightly ajar.
+
+Taken together, the routine is short: cook with it, clean it while warm, dry it completely, and give it a light coat of oil. Done consistently, that is all a cast-iron pan needs to keep getting better for decades.`,
+  ],
+];

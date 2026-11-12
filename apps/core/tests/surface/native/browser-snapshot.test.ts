@@ -94,7 +94,7 @@ test("browser snapshots restore isolated history, canonical transcripts, and rel
     const outline = second
       .outline("owner", restored.dm, { dmContextGapMs: DEFAULT_DM_CONTEXT_GAP_MS })
       .unwrap();
-    expect(outline.windows).toHaveLength(8);
+    expect(outline.windows).toHaveLength(9);
     expect(
       second
         .selectSessionWindow(restored.dm, {
