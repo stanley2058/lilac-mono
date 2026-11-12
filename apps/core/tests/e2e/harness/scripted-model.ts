@@ -1,3 +1,5 @@
+import { withinRedisDeadline } from "../../../../../packages/event-bus/tests/helpers/isolated-redis";
+
 /**
  * A deterministic stand-in for model providers. Core talks to it over the real provider wire
  * protocols, and each scenario decides the next model action from the conversation Core sent.
@@ -316,15 +318,42 @@ export class ScriptedModel {
   }
 
   /** Resolves once a recorded request satisfies the predicate. */
-  async waitFor(predicate: (entry: RecordedRequest) => boolean): Promise<RecordedRequest> {
-    for (;;) {
-      const found = this.requests.find(predicate);
-      if (found) return found;
-      const changed = Promise.withResolvers<void>();
-      this.listeners.add(changed.resolve);
-      await changed.promise;
-      this.listeners.delete(changed.resolve);
-    }
+  async waitFor(
+    predicate: (entry: RecordedRequest) => boolean,
+    label = "model request",
+    timeoutMs = 30_000,
+  ): Promise<RecordedRequest> {
+    const found = new Promise<RecordedRequest>((resolve) => {
+      const check = () => {
+        const match = this.requests.find(predicate);
+        if (!match) return;
+        this.listeners.delete(check);
+        resolve(match);
+      };
+      this.listeners.add(check);
+      check();
+    });
+    return withinRedisDeadline(found, label, timeoutMs).catch((error: Error) => {
+      throw new Error(`${error.message}\nModel saw:\n${this.describe()}`);
+    });
+  }
+
+  /** A compact log of every request and reply, for failure messages. */
+  describe(): string {
+    return this.requests
+      .map((entry, index) => {
+        const messages = entry.request.messages
+          .filter((message) => message.role !== "system")
+          .map((message) => {
+            if (message.role === "tool") return `  tool: ${message.output.slice(0, 160)}`;
+            if (message.role === "assistant")
+              return `  assistant: ${message.text.slice(0, 160)}${message.toolCalls.map((call) => ` [${call.name}]`).join("")}`;
+            return `  user: ${message.text.replace(/<LILAC_META:v1>.*?<\/LILAC_META:v1>\s*/su, "").slice(0, 160)}`;
+          })
+          .join("\n");
+        return `#${index} ${entry.scenario ?? "-"} -> ${JSON.stringify(entry.reply ?? null).slice(0, 200)}\n${messages}`;
+      })
+      .join("\n");
   }
 
   private record(entry: RecordedRequest): void {
@@ -342,7 +371,8 @@ export class ScriptedModel {
   }
 
   private scenarioOf(request: ModelRequest): string | undefined {
-    for (const message of request.messages) {
+    // The newest tag wins, so a later message in a thread can hand off to another script.
+    for (const message of request.messages.toReversed()) {
       if (message.role !== "user" && message.role !== "system") continue;
       const match = SCENARIO_TAG.exec(message.text);
       if (match) return match[1];
@@ -381,6 +411,7 @@ export class ScriptedModel {
     this.record(entry);
     try {
       entry.reply = await script(request, new ModelView(request));
+      for (const listener of this.listeners) listener();
     } catch (error) {
       this.unhandled.push(`${scenario}: ${error instanceof Error ? error.message : String(error)}`);
       return new Response(JSON.stringify({ error: { message: String(error) } }), { status: 400 });

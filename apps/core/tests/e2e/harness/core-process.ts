@@ -1,4 +1,4 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { withinRedisDeadline } from "../../../../../packages/event-bus/tests/helpers/isolated-redis";
@@ -86,7 +86,7 @@ export async function prepareCore(
     LILAC_WORKSPACE_DIR: workspace,
     LL_TOOL_SERVER_PORT: String(toolPort),
     TOOL_SERVER_BACKEND_URL: toolUrl,
-    LOG_LEVEL: "error",
+    LOG_LEVEL: process.env.LILAC_E2E_LOG_LEVEL ?? "error",
     CLERK_TELEMETRY_DISABLED: "1",
     OPENAI_COMPATIBLE_BASE_URL: options.modelUrl,
     OPENAI_COMPATIBLE_API_KEY: "e2e",
@@ -129,9 +129,16 @@ export function startCore(layout: CoreLayout, redisUrl: string): CoreProcess {
       },
     },
   );
+  // LILAC_E2E_LOG_DIR keeps each Core process's output for debugging a failed scenario.
+  const logDir = process.env.LILAC_E2E_LOG_DIR;
+  const logFile = logDir ? path.join(logDir, `core-${child.pid}.log`) : undefined;
   const drain = async (stream: ReadableStream<Uint8Array>) => {
     const decoder = new TextDecoder();
-    for await (const chunk of stream) output += decoder.decode(chunk, { stream: true });
+    for await (const chunk of stream) {
+      const text = decoder.decode(chunk, { stream: true });
+      output += text;
+      if (logFile) await appendFile(logFile, text);
+    }
   };
   void drain(child.stdout);
   void drain(child.stderr);
