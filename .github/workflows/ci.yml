@@ -87,6 +87,9 @@ jobs:
       - name: Run CI script
         run: bun run ci
 
+      - name: Install the packed remote fs runner
+        run: bun run test:remote-fs-package
+
       - name: Test process and Redis resilience
         run: bun run test:resilience
 
