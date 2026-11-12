@@ -316,6 +316,7 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
     positionCitation();
     void jumpTo(messageTarget.position, messageTarget.messageId);
   }, [messageTarget, positionReady, positionCitation, jumpTo]);
+  const appliedJump = useRef<typeof jump>(undefined);
   useLayoutEffect(() => {
     if (!jump) return;
     // Timeline stays mounted across threads, so a jump must end with its thread and not restart.
@@ -323,6 +324,9 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
       setJump(undefined);
       return;
     }
+    // A hidden <Activity> reconnects this effect when the chat is shown again; do not replay the jump.
+    if (appliedJump.current === jump) return;
+    appliedJump.current = jump;
     const seek = () => {
       scroll.stopFollowing();
       const index = renderedRowIndex(store, jump.slotId);

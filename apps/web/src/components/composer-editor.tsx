@@ -334,7 +334,14 @@ export type ComposerEditorProps = {
   /** Renders the formatting buttons into this element, inline with the composer's controls. */
   formattingTarget?: HTMLElement | null;
 };
+// A hidden <Activity> runs effect cleanups, and TipTap then destroys its editor. The new key remounts
+// the editor from the current draft when the composer is revealed, before stale effects can run.
 const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) {
+  const [generation, setGeneration] = useState(0);
+  useLayoutEffect(() => () => setGeneration((value) => value + 1), []);
+  return <ComposerEditorInstance key={generation} {...props} />;
+});
+const ComposerEditorInstance = memo(function ComposerEditorInstance(props: ComposerEditorProps) {
   // TipTap builds the editor once, and its callbacks read the latest props through a ref.
   "use no memo";
   const [openCitation, setOpenCitation] = useState<OpenCitation>();
