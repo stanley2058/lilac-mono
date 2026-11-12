@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/client";
 import {
   MemoryNativeCache,
   NativeClient,
@@ -88,6 +89,8 @@ export type NativeSessionOptions = {
   style?: SessionStyle;
   transport?: NativeTransport;
   cache?: NativeCache;
+  /** Base URL for connections, such as a fault proxy in front of Core. Origin stays Core's URL. */
+  via?: string;
   /** Called for every socket the client opens; lets a test break the WebSocket lane. */
   interceptSocket?: (url: URL) => "allow" | "refuse";
 };
@@ -119,11 +122,8 @@ export class NativeSession {
     readonly initial: BootstrapReply,
     options: NativeSessionOptions,
   ) {
-    const style = options.style ?? "web";
-    const headers = (): Record<string, string> =>
-      style === "web"
-        ? { cookie: credentials.cookie, origin: nativeUrl }
-        : { authorization: `Bearer ${credentials.token}` };
+    const headers = () => sessionHeaders(options.style, credentials, nativeUrl);
+    const base = options.via ?? nativeUrl;
     const scope = {
       installationId: initial.installationId,
       principalId: initial.viewer.id,
@@ -135,9 +135,9 @@ export class NativeSession {
       scope,
       transport: options.transport ?? initial.transport,
       cache: options.cache ?? new MemoryNativeCache(),
-      openHttp: () => createNativeHttpRPC({ url: new URL("/api/rpc", nativeUrl), headers }),
+      openHttp: () => createNativeHttpRPC({ url: new URL("/api/rpc", base), headers }),
       openSocket: () => {
-        const url = new URL("/api/socket", nativeUrl);
+        const url = new URL("/api/socket", base);
         url.protocol = "ws:";
         this.sockets.push(url);
         if (options.interceptSocket?.(url) === "refuse") {
@@ -151,7 +151,7 @@ export class NativeSession {
       bootstrap: async (input: { threadId?: string }, signal: AbortSignal) => {
         const reply = pending;
         pending = undefined;
-        return reply ?? fetchBootstrap(nativeUrl, headers(), input.threadId, signal);
+        return reply ?? fetchBootstrap(base, headers(), input.threadId, signal);
       },
       onEvent: (event: ClientEvent) => this.events.push(event),
     });
@@ -161,12 +161,11 @@ export class NativeSession {
 
   static async open(nativeUrl: string, options: NativeSessionOptions = {}): Promise<NativeSession> {
     const credentials = await login(nativeUrl);
-    const style = options.style ?? "web";
-    const headers: Record<string, string> =
-      style === "web"
-        ? { cookie: credentials.cookie, origin: nativeUrl }
-        : { authorization: `Bearer ${credentials.token}` };
-    const initial = await fetchBootstrap(nativeUrl, headers, undefined);
+    const initial = await fetchBootstrap(
+      options.via ?? nativeUrl,
+      sessionHeaders(options.style, credentials, nativeUrl),
+      undefined,
+    );
     const session = new NativeSession(nativeUrl, credentials, initial, options);
     await session.client.start();
     await session.online();
@@ -178,6 +177,10 @@ export class NativeSession {
       () => this.client.connectionState === "online" && Boolean(this.client.rpc),
       "client online",
     );
+  }
+
+  async loggedOut(): Promise<void> {
+    await this.until(() => this.client.connectionState === "logged-out", "client logged out");
   }
 
   get rpc() {
@@ -292,6 +295,16 @@ export class NativeSession {
   }
 }
 
+function sessionHeaders(
+  style: SessionStyle | undefined,
+  credentials: { token: string; cookie: string },
+  nativeUrl: string,
+): Record<string, string> {
+  return (style ?? "web") === "web"
+    ? { cookie: credentials.cookie, origin: nativeUrl }
+    : { authorization: `Bearer ${credentials.token}` };
+}
+
 export async function fetchBootstrap(
   nativeUrl: string,
   headers: Record<string, string>,
@@ -301,7 +314,17 @@ export async function fetchBootstrap(
   const url = new URL("/api/bootstrap", nativeUrl);
   if (threadId) url.searchParams.set("threadId", threadId);
   const response = await fetch(url, { headers, signal });
-  if (!response.ok)
-    throw new Error(`Bootstrap failed: ${response.status} ${await response.text()}`);
-  return bootstrapReplySchema.parse(await response.json());
+  // Map statuses the way apps/web/src/http.ts does, so NativeClient reacts as it would in a browser.
+  switch (response.status) {
+    case 200:
+      return bootstrapReplySchema.parse(await response.json());
+    case 401:
+      throw new ORPCError("UNAUTHENTICATED", { message: "Sign in to continue" });
+    case 403:
+      throw new ORPCError("FORBIDDEN", { message: "Forbidden" });
+    default:
+      throw new ORPCError("SERVICE_UNAVAILABLE", {
+        message: `Bootstrap failed: ${response.status}`,
+      });
+  }
 }
