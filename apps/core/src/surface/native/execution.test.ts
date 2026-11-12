@@ -855,7 +855,7 @@ describe("native execution admission", () => {
     }
   });
 
-  test("a person's steer the runner abandons is target-ended", async () => {
+  test("a person's steer the runner abandons continues as a follow-up", async () => {
     const abandoned = new Set<string>();
     const f = fixture(undefined, false, (deliveryId) =>
       Result.ok(abandoned.has(deliveryId) ? "abandoned" : "owned"),
@@ -868,7 +868,16 @@ describe("native execution admission", () => {
       value(await f.execution.kick(f.thread.id));
       abandoned.add(value(f.store.getInput(steer.inputId)).deliveryId);
       value(await finishFirstRun(f, first));
-      expect(value(f.store.getInput(steer.inputId)).state).toBe("target-ended");
+      // The runner never read it, so the steer runs as the thread's next request.
+      const requeued = value(f.store.getInput(steer.inputId));
+      expect(requeued.mode).toBe("followup");
+      expect(requeued.state).not.toBe("target-ended");
+      expect(
+        f.published.some(
+          (item) => parseNativeRequestMetadata(item.data.raw)?.inputId === steer.inputId,
+        ),
+      ).toBe(true);
+      expect(f.request().requestId).not.toBe(first.requestId);
     } finally {
       f.close();
     }

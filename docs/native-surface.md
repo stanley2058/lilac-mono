@@ -170,7 +170,8 @@ With config v3, the picker searches the available provider catalog and configure
 belong to the user; reasoning belongs to the thread and resets to the new model's default on a model
 change. Favorites do not restrict models available to delegated agents. Subagent rows show the task,
 permission profile, and executing model, including changes after fallback.
-Sending while a run is active steers by default; follow-up mode queues a full turn. Cancel drops
+Sending while a run is active steers by default; follow-up mode queues a full turn. A steer that
+arrives after the run stopped reading input becomes a follow-up, so it is still answered. Cancel drops
 queued follow-ups. Users can remove queued entries but cannot reorder or edit them.
 Custom commands sent during an active run automatically queue as follow-ups, including when the
 composer was set to steering. They use the selected next-run model and execute at the start of that
