@@ -614,7 +614,11 @@ witness_pid=$!
 
 cleanup() {
   trap '' TERM
-  wait "$witness_pid" >/dev/null 2>&1 || true
+  # A signal can end wait before the witness is reaped. An unreaped witness becomes a zombie of the
+  # subreaper, which still answers kill -0, so keep waiting until it is really gone.
+  while kill -0 "$witness_pid" 2>/dev/null; do
+    wait "$witness_pid" >/dev/null 2>&1 || true
+  done
   printf 'witness-reaped\\n' > "$GROUP_CLEANUP"
   exit 143
 }
