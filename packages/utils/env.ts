@@ -139,6 +139,10 @@ export function parseEnv() {
         },
       },
     },
+    discord: {
+      /** Test-only REST origin for discord.js, such as `http://127.0.0.1:1234/api`. Unset in production. */
+      apiBaseUrl: env.DISCORD_API_BASE_URL || undefined,
+    },
     github: {
       webhookSecret: env.GITHUB_WEBHOOK_SECRET,
       webhookPort: env.GITHUB_WEBHOOK_PORT,
