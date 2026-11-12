@@ -388,6 +388,8 @@ checkpoints through a serialized, coalescing background worker, so model and too
 the latest checkpoint becomes durable. Startup joins both sources while the runner is paused,
 terminalizes terminal heads, restores active heads, and starts accepted work without a head from its
 original messages. Journal corruption resets only journal progress and never rewrites accepted work.
+Publication also writes a receipt that outlives the delivery record for 7 days; the GitHub webhook
+server checks it to drop redeliveries after a restart.
 
 Agent recovery is at-least-once. A crash can repeat model calls, tools, controls, external effects, or a
 terminal surface write. Ordinarily, a run becomes terminal when Core initiates its terminal output write.

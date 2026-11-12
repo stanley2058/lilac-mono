@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createLilacBus } from "@stanley2058/lilac-event-bus";
 import type { BlobStore } from "@stanley2058/lilac-blob-storage";
-import { Panic } from "better-result";
+import { Panic, Result } from "better-result";
 
 import { composeBuiltinSurfaceRuntimes } from "../../src/runtime/compose-builtin-surface-runtimes";
 import type {
@@ -54,6 +54,7 @@ function createComposition(input: {
     subscriptionPrefix: "focused",
     webhookSecret: input.webhookSecret,
     githubAppCredentialsAvailable: input.githubAppCredentialsAvailable,
+    hasPublishedRequest: () => Result.ok(false),
     getTranscriptStore: () => {
       transcriptStoreLookups += 1;
       return undefined;

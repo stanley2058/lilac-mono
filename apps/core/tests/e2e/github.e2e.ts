@@ -275,82 +275,77 @@ test("Core mints one installation token and reuses it for every repository call"
   expectInstallationToken(github.calls);
 });
 
-// Fails today: the webhook's delivery-id dedupe lives in process memory and the request-delivery
-// store deletes completed records, so a delivery GitHub resends after a restart (for example from
-// the "Redeliver" button) runs the agent again. Runs last because it restarts Core.
-test.failing(
-  "a webhook redelivered after Core restarts does not start a second run",
-  async () => {
-    github.addIssue({
-      repo: REPO,
-      number: 44,
-      title: "Redelivered after restart",
-      body: null,
-      author: "octo-reporter",
-    });
-    const tag = e2e.model.script("gh-restart", () => ({ text: "Answered before the restart." }));
-    const barrierTag = e2e.model.script("gh-restart-barrier", () => ({
-      text: "Barrier answered.",
-    }));
-    const first = github.issueCommentCreated({
-      repo: REPO,
-      number: 44,
-      author: "octo-maintainer",
-      association: "OWNER",
-      body: `@${github.botLogin} ${tag} answer once`,
-    });
-    const delivery = {
-      url: webhookUrl,
-      secret: SECRET,
-      event: "issue_comment",
-      payload: first.payload,
-      deliveryId: crypto.randomUUID(),
-    };
-    const start = github.calls.length;
-    expect(await github.deliver(delivery)).toEqual({ status: 200, body: { ok: true } });
-    const reactionPath = `/repos/${REPO}/issues/comments/${first.comment.id}/reactions`;
-    await answered({ issue: 44, reactionPath, after: start, label: "first delivery" });
+// GitHub's "Redeliver" button resends a delivery with the same id, after the request completed and
+// its delivery record was deleted. Runs last because it restarts Core.
+test("a webhook redelivered after Core restarts does not start a second run", async () => {
+  github.addIssue({
+    repo: REPO,
+    number: 44,
+    title: "Redelivered after restart",
+    body: null,
+    author: "octo-reporter",
+  });
+  const tag = e2e.model.script("gh-restart", () => ({ text: "Answered before the restart." }));
+  const barrierTag = e2e.model.script("gh-restart-barrier", () => ({
+    text: "Barrier answered.",
+  }));
+  const first = github.issueCommentCreated({
+    repo: REPO,
+    number: 44,
+    author: "octo-maintainer",
+    association: "OWNER",
+    body: `@${github.botLogin} ${tag} answer once`,
+  });
+  const delivery = {
+    url: webhookUrl,
+    secret: SECRET,
+    event: "issue_comment",
+    payload: first.payload,
+    deliveryId: crypto.randomUUID(),
+  };
+  const start = github.calls.length;
+  expect(await github.deliver(delivery)).toEqual({ status: 200, body: { ok: true } });
+  const reactionPath = `/repos/${REPO}/issues/comments/${first.comment.id}/reactions`;
+  await answered({ issue: 44, reactionPath, after: start, label: "first delivery" });
 
-    await e2e.restart();
-    const restarted = github.calls.length;
-    const redelivered = await github.deliver(delivery);
-    expect(redelivered.status).toBe(200);
-    // A handler that accepted the redelivery reads the thread before publishing its request.
-    if ((redelivered.body as { deduped?: boolean }).deduped !== true)
-      await github.waitFor(
-        (call) =>
-          github.calls.indexOf(call) >= restarted &&
-          call.method === "GET" &&
-          call.path === `/repos/${REPO}/issues/44/comments`,
-        "redelivery handled",
-      );
-    // Runs in one thread are serialized, so a duplicate run would reach the model before this one.
-    const barrier = github.issueCommentCreated({
-      repo: REPO,
-      number: 44,
-      author: "octo-maintainer",
-      association: "OWNER",
-      body: `@${github.botLogin} ${barrierTag} are you there?`,
-    });
-    const barrierStart = github.calls.length;
-    await github.deliver({
-      url: webhookUrl,
-      secret: SECRET,
-      event: "issue_comment",
-      payload: barrier.payload,
-    });
-    await answered({
-      issue: 44,
-      reactionPath: `/repos/${REPO}/issues/comments/${barrier.comment.id}/reactions`,
-      after: barrierStart,
-      label: "barrier",
-    });
-    expect(e2e.model.forScenario("gh-restart")).toHaveLength(1);
-    expect(
-      github
-        .commentsOn(REPO, 44)
-        .filter((stored) => stored.body.includes("Answered before the restart.")),
-    ).toHaveLength(1);
-  },
-  90_000,
-);
+  await e2e.restart();
+  const restarted = github.calls.length;
+  const redelivered = await github.deliver(delivery);
+  expect(redelivered.status).toBe(200);
+  // A handler that accepted the redelivery reads the thread before publishing its request.
+  if ((redelivered.body as { deduped?: boolean }).deduped !== true)
+    await github.waitFor(
+      (call) =>
+        github.calls.indexOf(call) >= restarted &&
+        call.method === "GET" &&
+        call.path === `/repos/${REPO}/issues/44/comments`,
+      "redelivery handled",
+    );
+  // Runs in one thread are serialized, so a duplicate run would reach the model before this one.
+  const barrier = github.issueCommentCreated({
+    repo: REPO,
+    number: 44,
+    author: "octo-maintainer",
+    association: "OWNER",
+    body: `@${github.botLogin} ${barrierTag} are you there?`,
+  });
+  const barrierStart = github.calls.length;
+  await github.deliver({
+    url: webhookUrl,
+    secret: SECRET,
+    event: "issue_comment",
+    payload: barrier.payload,
+  });
+  await answered({
+    issue: 44,
+    reactionPath: `/repos/${REPO}/issues/comments/${barrier.comment.id}/reactions`,
+    after: barrierStart,
+    label: "barrier",
+  });
+  expect(e2e.model.forScenario("gh-restart")).toHaveLength(1);
+  expect(
+    github
+      .commentsOn(REPO, 44)
+      .filter((stored) => stored.body.includes("Answered before the restart.")),
+  ).toHaveLength(1);
+}, 90_000);

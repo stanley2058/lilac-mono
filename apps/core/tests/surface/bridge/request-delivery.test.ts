@@ -26,6 +26,7 @@ import {
 import { Result, type Result as ResultType } from "better-result";
 
 import {
+  REQUEST_DELIVERY_RECEIPT_RETENTION_MS,
   REQUEST_DELIVERY_RESOLVE_TIMEOUT_MS,
   RequestDeliveryCoordinator,
   RequestDeliveryAdmissionRejected,
@@ -1239,6 +1240,87 @@ describe("durable request delivery", () => {
     const afterCommit = value(await delivery.maintain({ now: 10 }));
     expect(afterCommit.tombstonesDeleted).toBe(1);
     expect(store.load(requestDeliveryId).match({ ok: () => false, err: () => true })).toBe(true);
+    store.close();
+    await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
+  });
+
+  test("keeps a publication receipt after its record is deleted and the store reopens", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "request-delivery-receipts-"));
+    const dbPath = path.join(directory, "deliveries.db");
+    const open = () =>
+      new SqliteRequestDeliveryStore<
+        CorePreparedRequestEnvelope,
+        CoreAcceptedRequestWork,
+        CoreRequestOutputMetadata
+      >({ dbPath, codecs: coreRequestDeliveryCodecs });
+    const blobs = await memoryBlobStore();
+    const store = open();
+    const requestDeliveryId = crypto.randomUUID();
+    const requestId = "request-receipt";
+    value(
+      store.prepare({
+        requestDeliveryId,
+        requestId,
+        envelope: envelope({ requestDeliveryId, requestId }),
+        inputHandles: [],
+        createdAt: 1,
+      }),
+    );
+    expect(value(store.hasReceipt(requestDeliveryId))).toBe(false);
+    value(store.recordPublication({ requestDeliveryId, streamId: "1-0", recordedAt: 2 }));
+    expect(value(store.hasReceipt(requestDeliveryId))).toBe(true);
+
+    const delivery = coordinator({ store, blobStore: blobs, now: () => 3 });
+    value(await delivery.handleDelivery(requestDeliveryId));
+    value(
+      await delivery.terminalize({
+        requestDeliveryId,
+        outcome: { kind: "completed" },
+        transportCommitRequired: false,
+      }),
+    );
+    const completed = value(await delivery.maintain({ now: 10 }));
+    expect(completed).toMatchObject({ tombstonesDeleted: 1, receiptsDeleted: 0 });
+    expect(store.load(requestDeliveryId).match({ ok: () => false, err: () => true })).toBe(true);
+    store.close();
+
+    const reopened = open();
+    const restarted = coordinator({ store: reopened, blobStore: blobs });
+    expect(value(reopened.hasReceipt(requestDeliveryId))).toBe(true);
+    const retained = value(
+      await restarted.maintain({ now: 2 + REQUEST_DELIVERY_RECEIPT_RETENTION_MS }),
+    );
+    expect(retained.receiptsDeleted).toBe(0);
+    expect(value(reopened.hasReceipt(requestDeliveryId))).toBe(true);
+    const expired = value(
+      await restarted.maintain({ now: 3 + REQUEST_DELIVERY_RECEIPT_RETENTION_MS }),
+    );
+    expect(expired.receiptsDeleted).toBe(1);
+    expect(value(reopened.hasReceipt(requestDeliveryId))).toBe(false);
+    reopened.close();
+    await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  test("records a receipt when a request is accepted before its publication is recorded", async () => {
+    const store = createStore();
+    const blobs = await memoryBlobStore();
+    const requestDeliveryId = crypto.randomUUID();
+    value(
+      store.prepare({
+        requestDeliveryId,
+        requestId: "request-accepted-first",
+        envelope: envelope({ requestDeliveryId, requestId: "request-accepted-first" }),
+        inputHandles: [],
+        createdAt: 1,
+      }),
+    );
+    value(
+      await coordinator({ store, blobStore: blobs, now: () => 2 }).handleDelivery(
+        requestDeliveryId,
+      ),
+    );
+    expect(value(store.hasReceipt(requestDeliveryId))).toBe(true);
     store.close();
     await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
   });

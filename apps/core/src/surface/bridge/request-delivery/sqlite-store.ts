@@ -344,6 +344,12 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
         ON request_delivery_records(request_id, state, created_at, request_delivery_id);
       CREATE INDEX IF NOT EXISTS request_delivery_outputs_cleanup_idx
         ON request_delivery_outputs(delete_after, object_id);
+      CREATE TABLE IF NOT EXISTS request_delivery_receipts (
+        request_delivery_id TEXT PRIMARY KEY NOT NULL,
+        published_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS request_delivery_receipts_expiry_idx
+        ON request_delivery_receipts(published_at, request_delivery_id);
     `);
   }
 
@@ -483,6 +489,7 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
          WHERE request_delivery_id = ?`,
           [input.streamId, input.recordedAt, input.requestDeliveryId],
         );
+        this.#recordReceipt(input.requestDeliveryId, input.recordedAt);
         const updated = this.#selectRow(input.requestDeliveryId);
         return updated
           ? this.#decodeRow(updated)
@@ -536,6 +543,7 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
            WHERE request_delivery_id = ?`,
                 [workJson, referencesJson, input.acceptedAt, input.requestDeliveryId],
               );
+              this.#recordReceipt(input.requestDeliveryId, input.acceptedAt);
               const updated = this.#selectRow(input.requestDeliveryId);
               if (!updated) return Result.err(this.#missing(input.requestDeliveryId));
               return this.#decodeAccepted(updated).map((record) => ({
@@ -1091,6 +1099,55 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
         }
         return Result.ok(ids.length);
       },
+    );
+  }
+
+  /** Reports whether this ID was published within the receipt retention window. */
+  hasReceipt(requestDeliveryId: string): ResultType<boolean, RequestDeliveryStoreError> {
+    return transaction(
+      this.#database,
+      "has-receipt",
+      (): ResultType<boolean, RequestDeliveryStoreError> =>
+        Result.ok(
+          this.#database
+            .query<{ found: number }, [string]>(
+              "SELECT 1 AS found FROM request_delivery_receipts WHERE request_delivery_id = ?",
+            )
+            .get(requestDeliveryId) !== null,
+        ),
+    );
+  }
+
+  deleteExpiredReceipts(input: {
+    readonly publishedBefore: number;
+  }): ResultType<number, RequestDeliveryStoreError> {
+    return transaction(
+      this.#database,
+      "delete-expired-receipts",
+      (): ResultType<number, RequestDeliveryStoreError> =>
+        Result.ok(
+          this.#database.run(
+            `DELETE FROM request_delivery_receipts WHERE request_delivery_id IN (
+               SELECT request_delivery_id FROM request_delivery_receipts
+               WHERE published_at < ?
+               ORDER BY published_at, request_delivery_id LIMIT ?
+             )`,
+            [input.publishedBefore, 1_000],
+          ).changes,
+        ),
+    );
+  }
+
+  /**
+   * Receipts outlive the delivery record, which maintenance deletes once the request completes.
+   * Writing one in the transaction that records publication or acceptance leaves no gap in which
+   * a published request has neither a record nor a receipt.
+   */
+  #recordReceipt(requestDeliveryId: string, publishedAt: number): void {
+    this.#database.run(
+      `INSERT OR IGNORE INTO request_delivery_receipts (request_delivery_id, published_at)
+       VALUES (?, ?)`,
+      [requestDeliveryId, publishedAt],
     );
   }
 

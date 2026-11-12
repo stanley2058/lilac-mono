@@ -19,7 +19,10 @@ import {
   type SurfaceRuntimeHealthPort,
   type SurfaceRuntimeDescriptor,
 } from "../surface/runtime-descriptor";
-import { startGithubWebhookServer } from "../github/webhook/github-webhook-server";
+import {
+  startGithubWebhookServer,
+  type GithubPublishedRequestLookup,
+} from "../github/webhook/github-webhook-server";
 
 type BuiltinSurfaceRuntimeLogger = {
   debug(message: string, context: Readonly<Record<string, unknown>>): void;
@@ -40,6 +43,7 @@ export type ComposeBuiltinSurfaceRuntimesInput = {
   readonly subscriptionPrefix: string;
   readonly webhookSecret: string | undefined;
   readonly githubAppCredentialsAvailable: boolean;
+  readonly hasPublishedRequest: GithubPublishedRequestLookup;
   readonly getTranscriptStore: () => TranscriptStore | undefined;
   readonly logger: BuiltinSurfaceRuntimeLogger;
   readonly reportFatalError: (error: Error) => void;
@@ -113,6 +117,7 @@ export function composeBuiltinSurfaceRuntimes(input: ComposeBuiltinSurfaceRuntim
             bus: input.bus,
             subscriptionId: subscriptionId("github-webhook"),
             reportFatalError: input.reportFatalError,
+            hasPublishedRequest: input.hasPublishedRequest,
           }),
       },
       createRelay: (guardedAdapter) => {

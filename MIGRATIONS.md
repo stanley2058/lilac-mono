@@ -783,6 +783,34 @@ Bundled remote runners are cached under `${XDG_CACHE_HOME:-$HOME/.cache}/lilac/r
 by SHA-256 content hash. No database migration is required. Those runner files can be removed
 when no tool calls are active; a failed execution invalidates Core's deployment cache so the next call repairs the runner.
 
+### GitHub redelivery receipts
+
+Core adds `request_delivery_receipts` to `request-delivery.db`. Each row holds a published request's
+`request_delivery_id` and its publication time. The store writes the row in the transaction that
+records the request's publication or acceptance. Maintenance deletes rows older than 7 days.
+GitHub lets users redeliver a webhook for 3 days, and the extra days absorb clock skew and late
+maintenance.
+
+The webhook server previously deduplicated `X-GitHub-Delivery` in memory for 10 minutes, and
+maintenance deletes a delivery record once its request completes. A redelivery after a restart
+therefore ran the agent again. The server now also answers `{ ok: true, deduped: true }` without
+handling a delivery whose derived `prompt` request ID has a receipt. Deliveries that publish no
+request, such as workflow action replies, keep the in-memory check only.
+
+Delivery stays at least once. A crash before the request is prepared leaves no record and no
+receipt, so a redelivery runs it. A crash after the Redis append but before the local receipt leaves
+a prepared record; startup recovery or a redelivery republishes it under the same request ID, Redis
+returns the existing entry, and the receipt is written then. A crash after the receipt leaves both
+the record and the receipt, and the request runs once. The agent run itself keeps the
+at-least-once recovery contract described in
+[Accepted work and agent-run checkpoints](#accepted-work-and-agent-run-checkpoints).
+A pull-request replacement whose interrupt was not published before a crash is not resent, because
+its redelivery is deduplicated.
+
+Core creates the table and its index at startup. Existing records get no receipt, so a request
+published by an older build is still deduplicated only while its delivery record exists. Older
+builds ignore the table; it can be left in place on rollback.
+
 ## Redis subscription owner leases and reaping
 
 Managed Redis subscriptions now register an owner key per process and subscription incarnation under
