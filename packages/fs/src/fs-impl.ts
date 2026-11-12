@@ -3,16 +3,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
-import {
-  basename,
-  join,
-  dirname,
-  resolve,
-  isAbsolute,
-  sep,
-  relative,
-  matchesGlob,
-} from "node:path";
+import { basename, join, dirname, resolve, isAbsolute, sep, relative } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
@@ -22,6 +13,7 @@ import {
   captureFilesystemOperationSync,
   FileSystemOperationFailed,
 } from "./filesystem-operation";
+import { matchesGlobWithDotfiles } from "./glob-match";
 import {
   applyHashlineEdits,
   buildHashlineWarning,
@@ -105,7 +97,9 @@ function isSkippableTraversalError(error: FileSystemOperationFailed): boolean {
 
 function matchesAnyGlob(entryPath: string, patterns: readonly string[]): boolean {
   return patterns.some(
-    (pattern) => matchesGlob(entryPath, pattern) || matchesGlob(`${entryPath}/`, pattern),
+    (pattern) =>
+      matchesGlobWithDotfiles(entryPath, pattern) ||
+      matchesGlobWithDotfiles(`${entryPath}/`, pattern),
   );
 }
 
