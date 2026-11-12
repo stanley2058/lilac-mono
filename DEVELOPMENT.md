@@ -232,6 +232,35 @@ To debug a failure, keep Core's output with `LILAC_E2E_LOG_DIR=<dir>` and raise 
 land as `test.failing` with a comment that names it; its fix flips the test back. Like the resilience
 cases, these need Docker and the `redis:7-alpine` image. CI runs them after the resilience cases.
 
+### S3 blob storage against rustfs
+
+The S3 blob adapter tests in `packages/blob-storage/tests/s3-real-server.test.ts` run against a real
+S3-compatible server. They cover conditional creates under concurrent writers, server-side copy,
+private ACLs, ListObjectsV2 paging, multipart uploads, and aborted uploads. Without the
+`LILAC_BLOB_S3_TEST_*` variables they are skipped. CI runs them against the rustfs image pinned in
+[CI](.github/workflows/ci.yml), which matches production.
+
+Start rustfs, create a bucket with a SigV4-signed `PUT`, and run the tests:
+
+```sh
+docker run -d --rm --name lilac-rustfs-test -p 127.0.0.1:9000:9000 \
+  -e RUSTFS_ACCESS_KEY=lilac-test-access -e RUSTFS_SECRET_KEY=lilac-test-secret-key \
+  rustfs/rustfs:1.0.4
+curl -fsS http://127.0.0.1:9000/health
+export LILAC_BLOB_S3_TEST_ENDPOINT=http://127.0.0.1:9000
+export LILAC_BLOB_S3_TEST_BUCKET=lilac-blob-test
+export LILAC_BLOB_S3_TEST_ACCESS_KEY_ID=lilac-test-access
+export LILAC_BLOB_S3_TEST_SECRET_ACCESS_KEY=lilac-test-secret-key
+curl --fail-with-body -sS --aws-sigv4 "aws:amz:us-east-1:s3" \
+  --user "$LILAC_BLOB_S3_TEST_ACCESS_KEY_ID:$LILAC_BLOB_S3_TEST_SECRET_ACCESS_KEY" \
+  -X PUT "$LILAC_BLOB_S3_TEST_ENDPOINT/$LILAC_BLOB_S3_TEST_BUCKET"
+bun run test:s3
+docker stop lilac-rustfs-test
+```
+
+`bun run test:s3` fails when the variables are unset instead of skipping. The bucket `PUT` is
+idempotent. Each test writes under its own random prefix, so reruns need no cleanup.
+
 Read [MIGRATIONS.md](MIGRATIONS.md) before changing stored data or versioned contracts. Active
 implementation plans are indexed in [plan/README.md](plan/README.md).
 For extension development, see [plugin authoring](PLUGIN_AUTHORING.md) and
