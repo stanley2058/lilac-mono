@@ -9,7 +9,7 @@ import {
   type CoreLayout,
   type CoreProcess,
 } from "./core-process";
-import { NativeSession, type NativeSessionOptions } from "./native-session";
+import { NativeSession, login, type NativeSessionOptions } from "./native-session";
 import { ScriptedModel } from "./scripted-model";
 
 export * from "./core-process";
@@ -45,6 +45,7 @@ export async function startE2E(options: Omit<CoreConfigOptions, "modelUrl"> = {}
     const layout = await prepareCore(directory, { ...options, modelUrl: model.url });
     const sessions: NativeSession[] = [];
     let core = startCore(layout, redis.url);
+    let credentials: { token: string; cookie: string } | undefined;
     cleanup.defer(async () => {
       for (const session of sessions.splice(0)) await session.close().catch(() => undefined);
       await core.stop().catch(() => core.kill());
@@ -59,11 +60,14 @@ export async function startE2E(options: Omit<CoreConfigOptions, "modelUrl"> = {}
       },
       redisUrl: redis.url,
       async session(sessionOptions) {
-        const session = await NativeSession.open(layout.nativeUrl, sessionOptions);
+        credentials ??= await login(layout.nativeUrl);
+        const session = await NativeSession.open(layout.nativeUrl, sessionOptions, credentials);
         sessions.push(session);
         return session;
       },
       async restart(restartOptions = {}) {
+        // Local sessions do not survive a restart.
+        credentials = undefined;
         if (restartOptions.kill) await core.kill();
         else await core.stop();
         core = startCore(layout, redis.url);

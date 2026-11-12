@@ -159,8 +159,13 @@ export class NativeSession {
       this.client.catalogs.put(scope, initial.catalog.catalog);
   }
 
-  static async open(nativeUrl: string, options: NativeSessionOptions = {}): Promise<NativeSession> {
-    const credentials = await login(nativeUrl);
+  static async open(
+    nativeUrl: string,
+    options: NativeSessionOptions = {},
+    existing?: { token: string; cookie: string },
+  ): Promise<NativeSession> {
+    // Local login allows five attempts per client per minute, so sessions share one login.
+    const credentials = existing ?? (await login(nativeUrl));
     const initial = await fetchBootstrap(
       options.via ?? nativeUrl,
       sessionHeaders(options.style, credentials, nativeUrl),
@@ -211,7 +216,7 @@ export class NativeSession {
       threadId,
       text,
       mode: "prompt",
-      historyGeneration: 0,
+      historyGeneration: this.client.thread(threadId).checkpoint?.historyGeneration ?? 0,
       attachmentIds: [],
       skillIds: [],
       ...extra,
@@ -275,7 +280,7 @@ export class NativeSession {
     );
   }
 
-  private async until(predicate: () => boolean, label: string): Promise<void> {
+  async until(predicate: () => boolean, label: string): Promise<void> {
     await withinRedisDeadline(
       new Promise<void>((resolve) => {
         if (predicate()) return resolve();
