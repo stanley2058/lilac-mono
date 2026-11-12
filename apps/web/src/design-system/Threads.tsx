@@ -165,7 +165,7 @@ export function Threads() {
             </Modal>
           </MessageServicesContext>
         </Specimen>
-        <Specimen title="Other conversations">
+        <Specimen title="External">
           <ThreadCard
             title="Calendar Enums"
             starterName="Discord"

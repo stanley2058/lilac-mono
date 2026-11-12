@@ -60,7 +60,7 @@ export function ExternalSidebar({
         emptyState={list.data && threads.length === 0 ? <SidebarEmptyState view="others" /> : null}
         items={threads}
         itemKey={(thread) => thread.id}
-        label="Other conversations"
+        label="External conversations"
         className="thread-list flex-1"
         roving={{ primary: ".thread-card-select", selected: "[aria-current]" }}
         estimate={64}

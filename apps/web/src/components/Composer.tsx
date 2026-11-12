@@ -127,7 +127,11 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     documentKey?: string;
   }>();
   const plainText = editorValue?.plainText ?? "";
-  const editorReady = editorValue?.text === text && editorValue?.documentKey === props.documentKey;
+  // Text the editor emits reaches `text` a tick later for query-backed drafts. Waiting for it would
+  // disable Send on every keystroke, so validation reads the editor's text instead. External text
+  // changes reach the editor in a layout effect, before paint.
+  const editorReady = !!editorValue && editorValue.documentKey === props.documentKey;
+  const currentText = editorReady ? editorValue.text : text;
   const updatePlainText = useCallback(
     (plainText: string, text: string) =>
       setEditorValue((current) =>
@@ -259,7 +263,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   }
 
   const answer = props.answer;
-  const empty = !text.trim() && attachments.length === 0;
+  const empty = !currentText.trim() && attachments.length === 0;
   function submit() {
     if (disabled || props.offline || !editorReady || props.submitting) return;
     if (answer ? empty && !answer.ready : empty) return;
@@ -267,7 +271,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
       toast.add({ title: "Reattach or remove the missing files before sending.", type: "error" });
       return;
     }
-    if (text.length > 65_536) {
+    if (currentText.length > 65_536) {
       toast.add({ title: "Messages can contain up to 65,536 characters.", type: "error" });
       return;
     }
