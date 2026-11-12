@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "externalRunId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "reference": {
+      "type": "object",
+      "properties": {
+        "surface": {
+          "type": "string",
+          "enum": ["native", "discord", "github"]
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\s?&]+$"
+        },
+        "messageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "range": {
+          "type": "object",
+          "properties": {
+            "startMessageId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "endMessageId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          },
+          "required": ["startMessageId", "endMessageId"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["surface", "sessionId"],
+      "additionalProperties": false
+    },
+    "authorId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "authorDisplayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "position": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "createdAt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["commentary", "final"]
+    },
+    "incomplete": {
+      "type": "boolean"
+    },
+    "inputId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "replyToMessageId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "inputMode": {
+      "type": "string",
+      "enum": ["prompt", "steer", "followup"]
+    }
+  },
+  "additionalProperties": false
+}

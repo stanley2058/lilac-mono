@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "kind": {
+          "type": "string",
+          "const": "thread"
+        }
+      },
+      "required": ["threadId", "kind"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "kind": {
+          "type": "string",
+          "const": "subagent"
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_:-]+$"
+        }
+      },
+      "required": ["threadId", "kind", "agentId"],
+      "additionalProperties": false
+    }
+  ]
+}

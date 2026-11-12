@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "servers": {
+      "maxItems": 256,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "available",
+              "unavailable",
+              "authentication_required",
+              "removed",
+              "retained",
+              "not_found"
+            ]
+          },
+          "reconciliation": {
+            "type": "string",
+            "enum": ["new", "changed", "removed", "unchanged", "unavailable", "not_found"]
+          },
+          "error": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": ["name", "state"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["servers"],
+  "additionalProperties": false
+}

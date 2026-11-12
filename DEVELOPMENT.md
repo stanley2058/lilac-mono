@@ -291,3 +291,35 @@ Read [MIGRATIONS.md](MIGRATIONS.md) before changing stored data or versioned con
 implementation plans are indexed in [plan/README.md](plan/README.md).
 For extension development, see [plugin authoring](PLUGIN_AUTHORING.md) and
 [skill authoring](docs/skill-authoring.md).
+
+## Client wire compatibility
+
+`bun run test:e2e` includes `wire-compat.e2e.ts`. It starts real Core with the scripted
+model and the production NativeClient over HTTP/SSE, and checks bootstrap JSON, oRPC
+results and subscription events before client processing, plus cache patches and
+committed projection rows, against frozen JSON Schemas in
+`packages/client-protocol/compat/previous-release`. Docker is required. Payloads stay
+in memory and failures report the kind, JSON Pointer and upgrade guidance.
+
+The baseline was seeded from commit `034b1ae8` (protocol 1, cache projection 2).
+It includes all exported protocol schemas and every oRPC output, including inline
+outputs and subscription yields. Cache envelopes mirror the TypeScript-only types
+in `packages/client/src/cache.ts`; update their test schema if those types change.
+Zod's JSON Schema export preserves structural constraints, but cannot represent
+custom refinements such as replay byte budgets. Existing Zod tests still own those.
+The scenario covers tools, pending/answered questions, uploads, subagent replies and
+streams, failed turns and rewind. Workflow list replies are covered; creating a
+workflow card is left to the workflow tests. This gate checks old-client decoding;
+it does not freeze execution semantics or provide a historical payload corpus.
+
+At a release, run `bun run codegen:client-protocol-compat`, review and commit the
+snapshot with the release changes, and update the source commit above. Keep the
+previous-release snapshot frozen during development. For an intentional breaking
+change, first bump the protocol or cache projection version so affected clients
+reload or discard old rows, document deployment/rollback in `MIGRATIONS.md`, then
+refresh the snapshot. Do not refresh merely to make an incompatible payload pass.
+
+`bun run codegen:client-protocol-compat:check` validates the checked-in schemas and
+required payload kinds without comparing them with HEAD. The same integrity test
+runs in the normal, non-Docker test suite. Schema differences between releases are
+expected; the real payload validation decides compatibility.

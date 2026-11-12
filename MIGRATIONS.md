@@ -840,3 +840,11 @@ row also falls back to the bounded window, so no database rewrite is required.
 
 The file editor now accepts UTF-8 documents up to 256 KiB. This leaves room for JSON escaping and RPC
 metadata inside the 2 MiB HTTP and WebSocket limits. Larger files remain readable through resource tools.
+
+## Client compatibility release baseline
+
+The previous-release client decode and cache projection schemas are now frozen in
+`packages/client-protocol/compat/previous-release`. This adds tests only and requires
+no data migration. See [Client wire compatibility](DEVELOPMENT.md#client-wire-compatibility)
+for the release refresh process and the required protocol/projection bump and
+migration entry when deliberately breaking old clients or cached projections.

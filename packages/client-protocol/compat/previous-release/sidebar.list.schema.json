@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "items": {
+      "maxItems": 100,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "dm"
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "starterId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "starterAvatarUrl": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "starterDisplayName": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "displayStatus": {
+            "type": "string",
+            "enum": ["idle", "completed", "working", "error", "input"]
+          },
+          "waitingOn": {
+            "type": "string",
+            "enum": ["input", "other"]
+          },
+          "hasActiveWorkflow": {
+            "type": "boolean",
+            "const": true
+          },
+          "activeRunId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_:-]+$"
+          },
+          "workingSince": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "updatedAt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "read": {
+                "type": "boolean"
+              },
+              "edit": {
+                "type": "boolean"
+              },
+              "share": {
+                "type": "boolean"
+              }
+            },
+            "required": ["read", "edit", "share"],
+            "additionalProperties": false
+          },
+          "modelId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "reasoning": {
+            "type": "string",
+            "enum": ["provider-default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+          },
+          "preview": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "type": "string",
+                "enum": ["user", "assistant"]
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "required": ["role", "text"],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "starterId",
+          "archived",
+          "updatedAt",
+          "revision",
+          "capabilities"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "nextCursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": ["items", "total"],
+  "additionalProperties": false
+}

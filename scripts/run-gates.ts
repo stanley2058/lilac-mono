@@ -1,4 +1,5 @@
 export const CHECK_GATES = [
+  "codegen:client-protocol-compat:check",
   "codegen:config-schemas:check",
   "codegen:model-options:check",
   "codegen:design-tool-activities:check",

@@ -65,7 +65,9 @@
     "codegen:config-schemas": "bun apps/core/scripts/generate-config-schemas.ts",
     "codegen:config-schemas:check": "bun apps/core/scripts/generate-config-schemas.ts --check",
     "build:model-catalog": "bun run codegen:model-catalog",
-    "codegen:model-catalog": "bun scripts/build-model-catalog.ts"
+    "codegen:model-catalog": "bun scripts/build-model-catalog.ts",
+    "codegen:client-protocol-compat": "bun apps/core/scripts/generate-client-protocol-compat.ts",
+    "codegen:client-protocol-compat:check": "bun apps/core/scripts/generate-client-protocol-compat.ts --check"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.75.0",
