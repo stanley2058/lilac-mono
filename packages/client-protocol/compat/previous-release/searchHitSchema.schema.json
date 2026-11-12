@@ -24,18 +24,9 @@
     },
     "surface": {
       "type": "string",
-      "enum": [
-        "native",
-        "discord",
-        "github"
-      ]
+      "enum": ["native", "discord", "github"]
     }
   },
-  "required": [
-    "threadId",
-    "title",
-    "excerpt",
-    "surface"
-  ],
+  "required": ["threadId", "title", "excerpt", "surface"],
   "additionalProperties": false
 }

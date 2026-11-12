@@ -47,12 +47,7 @@
             "const": true
           }
         },
-        "required": [
-          "firstPosition",
-          "endPosition",
-          "startAt",
-          "endAt"
-        ],
+        "required": ["firstPosition", "endPosition", "startAt", "endAt"],
         "additionalProperties": false
       }
     },
@@ -62,9 +57,6 @@
       "maximum": 9007199254740991
     }
   },
-  "required": [
-    "historyGeneration",
-    "positions"
-  ],
+  "required": ["historyGeneration", "positions"],
   "additionalProperties": false
 }

@@ -29,10 +29,7 @@
           "maxLength": 512
         }
       },
-      "required": [
-        "id",
-        "displayName"
-      ],
+      "required": ["id", "displayName"],
       "additionalProperties": false
     },
     "models": {
@@ -56,10 +53,7 @@
             "maxLength": 1024
           }
         },
-        "required": [
-          "id",
-          "label"
-        ],
+        "required": ["id", "label"],
         "additionalProperties": false
       }
     },
@@ -89,12 +83,7 @@
             "maxLength": 128
           }
         },
-        "required": [
-          "id",
-          "name",
-          "description",
-          "source"
-        ],
+        "required": ["id", "name", "description", "source"],
         "additionalProperties": false
       }
     },
@@ -120,10 +109,7 @@
           },
           "kind": {
             "type": "string",
-            "enum": [
-              "builtin",
-              "custom"
-            ]
+            "enum": ["builtin", "custom"]
           },
           "argumentHint": {
             "type": "string",
@@ -142,11 +128,7 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": [
-                    "string",
-                    "number",
-                    "boolean"
-                  ]
+                  "enum": ["string", "number", "boolean"]
                 },
                 "description": {
                   "type": "string",
@@ -165,30 +147,16 @@
                   }
                 }
               },
-              "required": [
-                "key",
-                "type",
-                "required"
-              ],
+              "required": ["key", "type", "required"],
               "additionalProperties": false
             }
           }
         },
-        "required": [
-          "id",
-          "name",
-          "description",
-          "kind"
-        ],
+        "required": ["id", "name", "description", "kind"],
         "additionalProperties": false
       }
     }
   },
-  "required": [
-    "revision",
-    "models",
-    "skills",
-    "commands"
-  ],
+  "required": ["revision", "models", "skills", "commands"],
   "additionalProperties": false
 }

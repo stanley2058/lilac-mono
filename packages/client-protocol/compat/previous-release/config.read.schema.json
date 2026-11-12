@@ -4,10 +4,7 @@
   "properties": {
     "kind": {
       "type": "string",
-      "enum": [
-        "core",
-        "mcp"
-      ]
+      "enum": ["core", "mcp"]
     },
     "revision": {
       "type": "string",
@@ -20,10 +17,6 @@
       "maxLength": 1048576
     }
   },
-  "required": [
-    "kind",
-    "revision",
-    "text"
-  ],
+  "required": ["kind", "revision", "text"],
   "additionalProperties": false
 }

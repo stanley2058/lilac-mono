@@ -23,11 +23,15 @@ if (import.meta.main) {
     for (const name of await readdir(baselineDirectory)) {
       if (name.endsWith(".schema.json")) await rm(path.join(baselineDirectory, name));
     }
-    for (const [name, json] of Object.entries(schemas).sort(([a], [b]) => a.localeCompare(b)))
-      await Bun.write(
-        path.join(baselineDirectory, `${name}.schema.json`),
-        `${JSON.stringify(json, null, 2)}\n`,
-      );
+    for (const [name, json] of Object.entries(schemas).sort(([a], [b]) => a.localeCompare(b))) {
+      const outputPath = path.join(baselineDirectory, `${name}.schema.json`);
+      // Format like the repository so fmt:check accepts the generated files.
+      const formatted = Bun.spawnSync(["bunx", "oxfmt", "--stdin-filepath", outputPath], {
+        stdin: new TextEncoder().encode(`${JSON.stringify(json, null, 2)}\n`),
+      });
+      if (!formatted.success) throw new Error(formatted.stderr.toString());
+      await Bun.write(outputPath, formatted.stdout);
+    }
   }
 }
 

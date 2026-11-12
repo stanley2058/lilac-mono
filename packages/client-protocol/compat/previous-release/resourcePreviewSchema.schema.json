@@ -15,10 +15,6 @@
       "maximum": 9007199254740991
     }
   },
-  "required": [
-    "text",
-    "truncated",
-    "byteLength"
-  ],
+  "required": ["text", "truncated", "byteLength"],
   "additionalProperties": false
 }

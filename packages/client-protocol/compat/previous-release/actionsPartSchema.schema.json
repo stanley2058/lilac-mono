@@ -43,38 +43,21 @@
               },
               "style": {
                 "type": "string",
-                "enum": [
-                  "primary",
-                  "secondary",
-                  "danger",
-                  "success"
-                ]
+                "enum": ["primary", "secondary", "danger", "success"]
               },
               "disabled": {
                 "type": "boolean"
               }
             },
-            "required": [
-              "actionId",
-              "label",
-              "style"
-            ],
+            "required": ["actionId", "label", "style"],
             "additionalProperties": false
           }
         }
       },
-      "required": [
-        "requestId",
-        "revision",
-        "actions"
-      ],
+      "required": ["requestId", "revision", "actions"],
       "additionalProperties": false
     }
   },
-  "required": [
-    "type",
-    "id",
-    "data"
-  ],
+  "required": ["type", "id", "data"],
   "additionalProperties": false
 }

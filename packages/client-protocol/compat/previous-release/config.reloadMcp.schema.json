@@ -25,30 +25,18 @@
           },
           "reconciliation": {
             "type": "string",
-            "enum": [
-              "new",
-              "changed",
-              "removed",
-              "unchanged",
-              "unavailable",
-              "not_found"
-            ]
+            "enum": ["new", "changed", "removed", "unchanged", "unavailable", "not_found"]
           },
           "error": {
             "type": "string",
             "maxLength": 4096
           }
         },
-        "required": [
-          "name",
-          "state"
-        ],
+        "required": ["name", "state"],
         "additionalProperties": false
       }
     }
   },
-  "required": [
-    "servers"
-  ],
+  "required": ["servers"],
   "additionalProperties": false
 }

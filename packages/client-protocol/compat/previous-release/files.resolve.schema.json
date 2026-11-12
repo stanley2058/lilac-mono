@@ -15,11 +15,6 @@
       "type": "string"
     }
   },
-  "required": [
-    "path",
-    "name",
-    "mediaType",
-    "href"
-  ],
+  "required": ["path", "name", "mediaType", "href"],
   "additionalProperties": false
 }

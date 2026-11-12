@@ -30,18 +30,10 @@
           "pattern": "^[A-Za-z0-9_-]+$"
         }
       },
-      "required": [
-        "protocolVersion",
-        "historyGeneration",
-        "projectionRevision",
-        "cursor"
-      ],
+      "required": ["protocolVersion", "historyGeneration", "projectionRevision", "cursor"],
       "additionalProperties": false
     }
   },
-  "required": [
-    "text",
-    "checkpoint"
-  ],
+  "required": ["text", "checkpoint"],
   "additionalProperties": false
 }

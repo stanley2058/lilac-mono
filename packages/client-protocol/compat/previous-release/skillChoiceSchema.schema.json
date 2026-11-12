@@ -22,11 +22,6 @@
       "maxLength": 128
     }
   },
-  "required": [
-    "id",
-    "name",
-    "description",
-    "source"
-  ],
+  "required": ["id", "name", "description", "source"],
   "additionalProperties": false
 }

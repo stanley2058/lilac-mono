@@ -15,10 +15,6 @@
       "type": "boolean"
     }
   },
-  "required": [
-    "root",
-    "paths",
-    "truncated"
-  ],
+  "required": ["root", "paths", "truncated"],
   "additionalProperties": false
 }

@@ -41,20 +41,11 @@
             },
             "displayStatus": {
               "type": "string",
-              "enum": [
-                "idle",
-                "completed",
-                "working",
-                "error",
-                "input"
-              ]
+              "enum": ["idle", "completed", "working", "error", "input"]
             },
             "waitingOn": {
               "type": "string",
-              "enum": [
-                "input",
-                "other"
-              ]
+              "enum": ["input", "other"]
             },
             "hasActiveWorkflow": {
               "type": "boolean",
@@ -97,11 +88,7 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "read",
-                "edit",
-                "share"
-              ],
+              "required": ["read", "edit", "share"],
               "additionalProperties": false
             },
             "modelId": {
@@ -127,10 +114,7 @@
               "properties": {
                 "role": {
                   "type": "string",
-                  "enum": [
-                    "user",
-                    "assistant"
-                  ]
+                  "enum": ["user", "assistant"]
                 },
                 "text": {
                   "type": "string",
@@ -138,10 +122,7 @@
                   "maxLength": 512
                 }
               },
-              "required": [
-                "role",
-                "text"
-              ],
+              "required": ["role", "text"],
               "additionalProperties": false
             }
           },
@@ -163,11 +144,7 @@
           "pattern": "^[A-Za-z0-9_-]+$"
         }
       },
-      "required": [
-        "kind",
-        "thread",
-        "cursor"
-      ],
+      "required": ["kind", "thread", "cursor"],
       "additionalProperties": false
     },
     {
@@ -190,11 +167,7 @@
           "pattern": "^[A-Za-z0-9_-]+$"
         }
       },
-      "required": [
-        "kind",
-        "threadId",
-        "cursor"
-      ],
+      "required": ["kind", "threadId", "cursor"],
       "additionalProperties": false
     },
     {
@@ -217,11 +190,7 @@
           "pattern": "^[A-Za-z0-9_-]+$"
         }
       },
-      "required": [
-        "kind",
-        "revision",
-        "cursor"
-      ],
+      "required": ["kind", "revision", "cursor"],
       "additionalProperties": false
     },
     {
@@ -238,10 +207,7 @@
           "pattern": "^[A-Za-z0-9_-]+$"
         }
       },
-      "required": [
-        "kind",
-        "cursor"
-      ],
+      "required": ["kind", "cursor"],
       "additionalProperties": false
     }
   ]

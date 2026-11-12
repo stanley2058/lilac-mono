@@ -19,10 +19,7 @@
     },
     "surface": {
       "type": "string",
-      "enum": [
-        "discord",
-        "github"
-      ]
+      "enum": ["discord", "github"]
     },
     "updatedAt": {
       "type": "integer",
@@ -35,11 +32,6 @@
       "maximum": 9007199254740991
     }
   },
-  "required": [
-    "id",
-    "title",
-    "surface",
-    "retrievedAt"
-  ],
+  "required": ["id", "title", "surface", "retrievedAt"],
   "additionalProperties": false
 }

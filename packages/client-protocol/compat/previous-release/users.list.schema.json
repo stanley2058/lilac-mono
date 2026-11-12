@@ -25,26 +25,14 @@
           },
           "role": {
             "type": "string",
-            "enum": [
-              "owner",
-              "participant",
-              "service"
-            ]
+            "enum": ["owner", "participant", "service"]
           },
           "toolMode": {
             "type": "string",
-            "enum": [
-              "restricted",
-              "full"
-            ]
+            "enum": ["restricted", "full"]
           }
         },
-        "required": [
-          "id",
-          "displayName",
-          "role",
-          "toolMode"
-        ],
+        "required": ["id", "displayName", "role", "toolMode"],
         "additionalProperties": false
       }
     },
@@ -55,8 +43,6 @@
       "pattern": "^[A-Za-z0-9_-]+$"
     }
   },
-  "required": [
-    "items"
-  ],
+  "required": ["items"],
   "additionalProperties": false
 }

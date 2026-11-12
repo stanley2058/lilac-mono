@@ -30,19 +30,10 @@
           },
           "surface": {
             "type": "string",
-            "enum": [
-              "native",
-              "discord",
-              "github"
-            ]
+            "enum": ["native", "discord", "github"]
           }
         },
-        "required": [
-          "threadId",
-          "title",
-          "excerpt",
-          "surface"
-        ],
+        "required": ["threadId", "title", "excerpt", "surface"],
         "additionalProperties": false
       }
     },
@@ -53,8 +44,6 @@
       "pattern": "^[A-Za-z0-9_-]+$"
     }
   },
-  "required": [
-    "items"
-  ],
+  "required": ["items"],
   "additionalProperties": false
 }

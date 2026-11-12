@@ -32,13 +32,6 @@
       "const": true
     }
   },
-  "required": [
-    "kind",
-    "slotId",
-    "position",
-    "endPosition",
-    "message",
-    "retryable"
-  ],
+  "required": ["kind", "slotId", "position", "endPosition", "message", "retryable"],
   "additionalProperties": false
 }

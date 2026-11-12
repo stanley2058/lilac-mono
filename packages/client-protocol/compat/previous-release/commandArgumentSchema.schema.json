@@ -9,11 +9,7 @@
     },
     "type": {
       "type": "string",
-      "enum": [
-        "string",
-        "number",
-        "boolean"
-      ]
+      "enum": ["string", "number", "boolean"]
     },
     "description": {
       "type": "string",
@@ -32,10 +28,6 @@
       }
     }
   },
-  "required": [
-    "key",
-    "type",
-    "required"
-  ],
+  "required": ["key", "type", "required"],
   "additionalProperties": false
 }

@@ -13,11 +13,7 @@
       "properties": {
         "surface": {
           "type": "string",
-          "enum": [
-            "native",
-            "discord",
-            "github"
-          ]
+          "enum": ["native", "discord", "github"]
         },
         "sessionId": {
           "type": "string",
@@ -47,17 +43,11 @@
               "pattern": "^[A-Za-z0-9_-]+$"
             }
           },
-          "required": [
-            "startMessageId",
-            "endMessageId"
-          ],
+          "required": ["startMessageId", "endMessageId"],
           "additionalProperties": false
         }
       },
-      "required": [
-        "surface",
-        "sessionId"
-      ],
+      "required": ["surface", "sessionId"],
       "additionalProperties": false
     },
     "authorId": {
@@ -83,10 +73,7 @@
     },
     "phase": {
       "type": "string",
-      "enum": [
-        "commentary",
-        "final"
-      ]
+      "enum": ["commentary", "final"]
     },
     "incomplete": {
       "type": "boolean"
@@ -105,11 +92,7 @@
     },
     "inputMode": {
       "type": "string",
-      "enum": [
-        "prompt",
-        "steer",
-        "followup"
-      ]
+      "enum": ["prompt", "steer", "followup"]
     }
   },
   "additionalProperties": false

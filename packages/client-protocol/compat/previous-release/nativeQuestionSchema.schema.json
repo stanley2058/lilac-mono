@@ -24,10 +24,7 @@
     },
     "mode": {
       "type": "string",
-      "enum": [
-        "deferred",
-        "sync"
-      ]
+      "enum": ["deferred", "sync"]
     },
     "prompts": {
       "minItems": 1,
@@ -84,12 +81,7 @@
                   "maxLength": 128
                 }
               },
-              "required": [
-                "index",
-                "label",
-                "description",
-                "token"
-              ],
+              "required": ["index", "label", "description", "token"],
               "additionalProperties": false
             }
           },
@@ -99,14 +91,7 @@
             "maxLength": 128
           }
         },
-        "required": [
-          "ordinal",
-          "total",
-          "header",
-          "question",
-          "options",
-          "customToken"
-        ],
+        "required": ["ordinal", "total", "header", "question", "options", "customToken"],
         "additionalProperties": false
       }
     },
@@ -170,12 +155,7 @@
                         "maxLength": 128
                       }
                     },
-                    "required": [
-                      "index",
-                      "label",
-                      "description",
-                      "token"
-                    ],
+                    "required": ["index", "label", "description", "token"],
                     "additionalProperties": false
                   }
                 },
@@ -185,21 +165,11 @@
                   "maxLength": 128
                 }
               },
-              "required": [
-                "ordinal",
-                "total",
-                "header",
-                "question",
-                "options",
-                "customToken"
-              ],
+              "required": ["ordinal", "total", "header", "question", "options", "customToken"],
               "additionalProperties": false
             }
           },
-          "required": [
-            "state",
-            "prompt"
-          ],
+          "required": ["state", "prompt"],
           "additionalProperties": false
         },
         {
@@ -238,10 +208,7 @@
                                 "maxLength": 100
                               }
                             },
-                            "required": [
-                              "kind",
-                              "label"
-                            ],
+                            "required": ["kind", "label"],
                             "additionalProperties": false
                           },
                           {
@@ -252,25 +219,18 @@
                                 "const": "custom"
                               }
                             },
-                            "required": [
-                              "kind"
-                            ],
+                            "required": ["kind"],
                             "additionalProperties": false
                           }
                         ]
                       }
                     },
-                    "required": [
-                      "header",
-                      "answer"
-                    ],
+                    "required": ["header", "answer"],
                     "additionalProperties": false
                   }
                 }
               },
-              "required": [
-                "answers"
-              ],
+              "required": ["answers"],
               "additionalProperties": false
             },
             "replyMessageId": {
@@ -280,10 +240,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "state",
-            "summary"
-          ],
+          "required": ["state", "summary"],
           "additionalProperties": false
         },
         {
@@ -291,28 +248,15 @@
           "properties": {
             "state": {
               "type": "string",
-              "enum": [
-                "cancelled",
-                "expired",
-                "interrupted"
-              ]
+              "enum": ["cancelled", "expired", "interrupted"]
             }
           },
-          "required": [
-            "state"
-          ],
+          "required": ["state"],
           "additionalProperties": false
         }
       ]
     }
   },
-  "required": [
-    "questionCallId",
-    "requestId",
-    "respondentId",
-    "historyGeneration",
-    "mode",
-    "view"
-  ],
+  "required": ["questionCallId", "requestId", "respondentId", "historyGeneration", "mode", "view"],
   "additionalProperties": false
 }

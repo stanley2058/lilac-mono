@@ -7,8 +7,6 @@
       "const": true
     }
   },
-  "required": [
-    "ok"
-  ],
+  "required": ["ok"],
   "additionalProperties": false
 }

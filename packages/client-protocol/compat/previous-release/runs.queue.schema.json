@@ -28,14 +28,7 @@
           },
           "state": {
             "type": "string",
-            "enum": [
-              "uploading",
-              "queued",
-              "admitted",
-              "target-ended",
-              "canceled",
-              "failed"
-            ]
+            "enum": ["uploading", "queued", "admitted", "target-ended", "canceled", "failed"]
           },
           "runId": {
             "type": "string",
@@ -55,11 +48,7 @@
           },
           "mode": {
             "type": "string",
-            "enum": [
-              "prompt",
-              "steer",
-              "followup"
-            ]
+            "enum": ["prompt", "steer", "followup"]
           },
           "createdAt": {
             "type": "integer",
@@ -67,21 +56,11 @@
             "maximum": 9007199254740991
           }
         },
-        "required": [
-          "inputId",
-          "messageId",
-          "state",
-          "authorId",
-          "text",
-          "mode",
-          "createdAt"
-        ],
+        "required": ["inputId", "messageId", "state", "authorId", "text", "mode", "createdAt"],
         "additionalProperties": false
       }
     }
   },
-  "required": [
-    "items"
-  ],
+  "required": ["items"],
   "additionalProperties": false
 }

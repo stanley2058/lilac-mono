@@ -15,8 +15,6 @@
       "format": "uri"
     }
   },
-  "required": [
-    "title"
-  ],
+  "required": ["title"],
   "additionalProperties": false
 }

@@ -15,10 +15,7 @@
           "const": "thread"
         }
       },
-      "required": [
-        "threadId",
-        "kind"
-      ],
+      "required": ["threadId", "kind"],
       "additionalProperties": false
     },
     {
@@ -41,11 +38,7 @@
           "pattern": "^[A-Za-z0-9_:-]+$"
         }
       },
-      "required": [
-        "threadId",
-        "kind",
-        "agentId"
-      ],
+      "required": ["threadId", "kind", "agentId"],
       "additionalProperties": false
     }
   ]

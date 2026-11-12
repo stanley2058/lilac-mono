@@ -75,15 +75,7 @@
           "maximum": 9007199254740991
         }
       },
-      "required": [
-        "completed",
-        "queued",
-        "active",
-        "waiting",
-        "failed",
-        "cancelled",
-        "total"
-      ],
+      "required": ["completed", "queued", "active", "waiting", "failed", "cancelled", "total"],
       "additionalProperties": false
     },
     "phases": {
@@ -158,10 +150,7 @@
           },
           "kind": {
             "type": "string",
-            "enum": [
-              "agent",
-              "wait"
-            ]
+            "enum": ["agent", "wait"]
           },
           "state": {
             "type": "string",
@@ -177,10 +166,7 @@
             ]
           }
         },
-        "required": [
-          "kind",
-          "state"
-        ],
+        "required": ["kind", "state"],
         "additionalProperties": false
       }
     },
@@ -189,10 +175,7 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": [
-            "reply",
-            "sleep"
-          ]
+          "enum": ["reply", "sleep"]
         },
         "prompt": {
           "type": "string",
@@ -215,12 +198,7 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "kind",
-        "prompt",
-        "replyToMessage",
-        "elsewhere"
-      ],
+      "required": ["kind", "prompt", "replyToMessage", "elsewhere"],
       "additionalProperties": false
     },
     "result": {
@@ -230,10 +208,7 @@
           "properties": {
             "kind": {
               "type": "string",
-              "enum": [
-                "text",
-                "json"
-              ]
+              "enum": ["text", "json"]
             },
             "text": {
               "type": "string",
@@ -243,11 +218,7 @@
               "type": "boolean"
             }
           },
-          "required": [
-            "kind",
-            "text",
-            "truncated"
-          ],
+          "required": ["kind", "text", "truncated"],
           "additionalProperties": false
         },
         {
@@ -258,9 +229,7 @@
               "const": "stored"
             }
           },
-          "required": [
-            "kind"
-          ],
+          "required": ["kind"],
           "additionalProperties": false
         }
       ]
@@ -288,11 +257,7 @@
           "maximum": 9007199254740991
         }
       },
-      "required": [
-        "used",
-        "active",
-        "queued"
-      ],
+      "required": ["used", "active", "queued"],
       "additionalProperties": false
     },
     "nextRunAt": {

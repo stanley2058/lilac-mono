@@ -22,14 +22,7 @@
     },
     "state": {
       "type": "string",
-      "enum": [
-        "uploading",
-        "queued",
-        "admitted",
-        "target-ended",
-        "canceled",
-        "failed"
-      ]
+      "enum": ["uploading", "queued", "admitted", "target-ended", "canceled", "failed"]
     },
     "runId": {
       "type": "string",
@@ -38,10 +31,6 @@
       "pattern": "^[A-Za-z0-9_:-]+$"
     }
   },
-  "required": [
-    "inputId",
-    "messageId",
-    "state"
-  ],
+  "required": ["inputId", "messageId", "state"],
   "additionalProperties": false
 }

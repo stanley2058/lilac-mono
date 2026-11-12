@@ -19,10 +19,7 @@
           "pattern": "^[A-Za-z0-9_-]{22}$"
         }
       },
-      "required": [
-        "p256dh",
-        "auth"
-      ],
+      "required": ["p256dh", "auth"],
       "additionalProperties": false
     },
     "completion": {
@@ -32,11 +29,6 @@
       "type": "boolean"
     }
   },
-  "required": [
-    "endpoint",
-    "keys",
-    "completion",
-    "failure"
-  ],
+  "required": ["endpoint", "keys", "completion", "failure"],
   "additionalProperties": false
 }

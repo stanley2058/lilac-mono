@@ -18,10 +18,7 @@
     },
     "kind": {
       "type": "string",
-      "enum": [
-        "builtin",
-        "custom"
-      ]
+      "enum": ["builtin", "custom"]
     },
     "argumentHint": {
       "type": "string",
@@ -40,11 +37,7 @@
           },
           "type": {
             "type": "string",
-            "enum": [
-              "string",
-              "number",
-              "boolean"
-            ]
+            "enum": ["string", "number", "boolean"]
           },
           "description": {
             "type": "string",
@@ -63,20 +56,11 @@
             }
           }
         },
-        "required": [
-          "key",
-          "type",
-          "required"
-        ],
+        "required": ["key", "type", "required"],
         "additionalProperties": false
       }
     }
   },
-  "required": [
-    "id",
-    "name",
-    "description",
-    "kind"
-  ],
+  "required": ["id", "name", "description", "kind"],
   "additionalProperties": false
 }

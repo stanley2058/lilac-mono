@@ -17,9 +17,6 @@
       "maxLength": 1024
     }
   },
-  "required": [
-    "id",
-    "label"
-  ],
+  "required": ["id", "label"],
   "additionalProperties": false
 }

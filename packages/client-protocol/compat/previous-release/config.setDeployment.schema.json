@@ -8,11 +8,7 @@
         "transport": {
           "default": "auto",
           "type": "string",
-          "enum": [
-            "auto",
-            "websocket",
-            "http-sse"
-          ]
+          "enum": ["auto", "websocket", "http-sse"]
         },
         "titleModel": {
           "type": "string",
@@ -20,10 +16,7 @@
         },
         "outputStreaming": {
           "type": "string",
-          "enum": [
-            "paragraph",
-            "complete"
-          ]
+          "enum": ["paragraph", "complete"]
         },
         "dmContextGapMs": {
           "default": 7200000,
@@ -68,9 +61,7 @@
               "type": "boolean"
             }
           },
-          "required": [
-            "triggerRun"
-          ],
+          "required": ["triggerRun"],
           "additionalProperties": false
         }
       },
@@ -89,9 +80,6 @@
       "maximum": 9007199254740991
     }
   },
-  "required": [
-    "settings",
-    "revision"
-  ],
+  "required": ["settings", "revision"],
   "additionalProperties": false
 }

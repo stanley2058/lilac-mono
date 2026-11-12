@@ -27,8 +27,6 @@
       ]
     }
   },
-  "required": [
-    "autoSettleDays"
-  ],
+  "required": ["autoSettleDays"],
   "additionalProperties": false
 }

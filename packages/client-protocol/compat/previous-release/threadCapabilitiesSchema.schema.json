@@ -12,10 +12,6 @@
       "type": "boolean"
     }
   },
-  "required": [
-    "read",
-    "edit",
-    "share"
-  ],
+  "required": ["read", "edit", "share"],
   "additionalProperties": false
 }

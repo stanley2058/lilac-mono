@@ -24,10 +24,6 @@
       }
     }
   },
-  "required": [
-    "threadId",
-    "historyGeneration",
-    "positions"
-  ],
+  "required": ["threadId", "historyGeneration", "positions"],
   "additionalProperties": false
 }

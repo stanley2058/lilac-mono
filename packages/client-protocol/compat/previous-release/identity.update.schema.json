@@ -20,9 +20,6 @@
       "maxLength": 512
     }
   },
-  "required": [
-    "id",
-    "displayName"
-  ],
+  "required": ["id", "displayName"],
   "additionalProperties": false
 }

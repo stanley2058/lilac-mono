@@ -27,16 +27,11 @@
             "maxLength": 280
           }
         },
-        "required": [
-          "position"
-        ],
+        "required": ["position"],
         "additionalProperties": false
       }
     }
   },
-  "required": [
-    "historyGeneration",
-    "previews"
-  ],
+  "required": ["historyGeneration", "previews"],
   "additionalProperties": false
 }

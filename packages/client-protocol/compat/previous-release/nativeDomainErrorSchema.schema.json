@@ -27,8 +27,6 @@
       ]
     }
   },
-  "required": [
-    "message"
-  ],
+  "required": ["message"],
   "additionalProperties": false
 }
