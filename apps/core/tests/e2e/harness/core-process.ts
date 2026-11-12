@@ -1,4 +1,4 @@
-import { appendFile, chmod, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { withinRedisDeadline } from "../../../../../packages/event-bus/tests/helpers/isolated-redis";
@@ -55,12 +55,6 @@ export async function prepareCore(
   const toolPort = await unusedPort();
   const nativeUrl = `http://127.0.0.1:${nativePort}`;
   const toolUrl = `http://127.0.0.1:${toolPort}`;
-  // Agents reach Level 2 tools through the `tools` command; run the current client source.
-  await writeFile(
-    path.join(bin, "tools"),
-    `#!/bin/sh\nexec "${process.execPath}" "${path.join(REPO_ROOT, "apps/tool-bridge/client.ts")}" "$@"\n`,
-  );
-  await chmod(path.join(bin, "tools"), 0o755);
   const { surface: surfaceOverride, ...configOverride } = options.config ?? {};
   const provider = options.provider ?? "chat-completions";
   const providerPrefix = provider === "chat-completions" ? "openai-compatible" : "openai";
@@ -116,6 +110,32 @@ export async function prepareCore(
   return { directory, dataDir, workspace, nativeUrl, toolUrl, env };
 }
 
+/**
+ * Agents reach Level 2 tools through the `tools` command, so it runs the client source of the
+ * same checkout as Core, as the image ships them together.
+ */
+async function writeToolsShim(layout: CoreLayout, root: string): Promise<void> {
+  const shim = path.join(layout.directory, "bin", "tools");
+  await writeFile(
+    shim,
+    `#!/bin/sh\nexec "${process.execPath}" "${path.join(root, "apps/tool-bridge/client.ts")}" "$@"\n`,
+  );
+  await chmod(shim, 0o755);
+}
+
+/** The child entry for a checkout. Other checkouts get a copy that imports their own runtime. */
+async function childEntry(root: string): Promise<string> {
+  const current = path.join(import.meta.dir, "core-child.ts");
+  if (path.resolve(root) === REPO_ROOT) return current;
+  const entry = path.join(root, "apps/core/e2e-core-child.ts");
+  const source = (await readFile(current, "utf8")).replace(
+    "../../../src/runtime/create-core-runtime",
+    "./src/runtime/create-core-runtime",
+  );
+  await writeFile(entry, source);
+  return entry;
+}
+
 export type CoreProcess = {
   readonly child: Bun.Subprocess;
   readonly output: () => string;
@@ -124,25 +144,29 @@ export type CoreProcess = {
   kill(): Promise<void>;
 };
 
-export function startCore(layout: CoreLayout, redisUrl: string): CoreProcess {
+/** Starts Core from a checkout root (this repository by default) on the given data layout. */
+export async function startCore(
+  layout: CoreLayout,
+  redisUrl: string,
+  root: string = REPO_ROOT,
+): Promise<CoreProcess> {
+  await writeToolsShim(layout, root);
+  const entry = await childEntry(root);
   const phases = new Map<string, PromiseWithResolvers<void>>();
   const seen = new Set<string>();
   const fatal: string[] = [];
   let output = "";
-  const child = Bun.spawn(
-    [process.execPath, "--no-env-file", path.join(import.meta.dir, "core-child.ts")],
-    {
-      cwd: layout.directory,
-      env: { ...layout.env, REDIS_URL: redisUrl },
-      stdout: "pipe",
-      stderr: "pipe",
-      ipc(message: { phase: string; error?: string }) {
-        if (message.phase === "fatal") fatal.push(message.error ?? "Unknown runtime failure");
-        seen.add(message.phase);
-        phases.get(message.phase)?.resolve();
-      },
+  const child = Bun.spawn([process.execPath, "--no-env-file", entry], {
+    cwd: layout.directory,
+    env: { ...layout.env, REDIS_URL: redisUrl },
+    stdout: "pipe",
+    stderr: "pipe",
+    ipc(message: { phase: string; error?: string }) {
+      if (message.phase === "fatal") fatal.push(message.error ?? "Unknown runtime failure");
+      seen.add(message.phase);
+      phases.get(message.phase)?.resolve();
     },
-  );
+  });
   // LILAC_E2E_LOG_DIR keeps each Core process's output for debugging a failed scenario.
   const logDir = process.env.LILAC_E2E_LOG_DIR;
   const logFile = logDir ? path.join(logDir, `core-${child.pid}.log`) : undefined;

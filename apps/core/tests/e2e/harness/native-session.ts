@@ -89,6 +89,8 @@ export type NativeSessionOptions = {
   style?: SessionStyle;
   transport?: NativeTransport;
   cache?: NativeCache;
+  /** The server is an older release whose receipts may predate command ID echoes. */
+  olderServer?: boolean;
   /** Base URL for connections, such as a fault proxy in front of Core. Origin stays Core's URL. */
   via?: string;
   /** Called for every socket the client opens; lets a test break the WebSocket lane. */
@@ -120,7 +122,7 @@ export class NativeSession {
     readonly nativeUrl: string,
     readonly credentials: { token: string; cookie: string },
     readonly initial: BootstrapReply,
-    options: NativeSessionOptions,
+    private readonly options: NativeSessionOptions,
   ) {
     const headers = () => sessionHeaders(options.style, credentials, nativeUrl);
     const base = options.via ?? nativeUrl;
@@ -225,7 +227,8 @@ export class NativeSession {
     if (outcome.kind !== "accepted")
       throw new Error(`Native input was not accepted: ${JSON.stringify(outcome)}`);
     // Clients correlate receipts to their optimistic sends by command ID.
-    if (outcome.receipt.commandId !== input.commandId)
+    const echoed = outcome.receipt.commandId;
+    if (echoed !== input.commandId && !(this.options.olderServer && echoed === undefined))
       throw new Error(
         `Receipt ${JSON.stringify(outcome.receipt)} does not echo ${input.commandId}`,
       );

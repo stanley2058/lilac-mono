@@ -23,7 +23,7 @@ export type E2E = {
   redisUrl: string;
   session(options?: NativeSessionOptions): Promise<NativeSession>;
   /** Stops Core gracefully (or kills it) and boots a fresh process on the same data. */
-  restart(options?: { kill?: boolean }): Promise<CoreProcess>;
+  restart(options?: { kill?: boolean; root?: string }): Promise<CoreProcess>;
   stopRedis(): Promise<void>;
   startRedis(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
@@ -33,7 +33,12 @@ export type E2E = {
  * Boots one real Core process with isolated Redis, a scripted model, and its own data directory.
  * Every scenario shares one instance per file to keep the suite fast.
  */
-export async function startE2E(options: Omit<CoreConfigOptions, "modelUrl"> = {}): Promise<E2E> {
+export async function startE2E(
+  options: Omit<CoreConfigOptions, "modelUrl"> & {
+    /** Checkout whose Core boots first, such as a previous release. Defaults to this one. */
+    root?: string;
+  } = {},
+): Promise<E2E> {
   const cleanup = new AsyncDisposableStack();
   try {
     const redis = await createIsolatedRedis();
@@ -44,7 +49,7 @@ export async function startE2E(options: Omit<CoreConfigOptions, "modelUrl"> = {}
     cleanup.defer(() => model.stop());
     const layout = await prepareCore(directory, { ...options, modelUrl: model.url });
     const sessions: NativeSession[] = [];
-    let core = startCore(layout, redis.url);
+    let core = await startCore(layout, redis.url, options.root);
     let credentials: { token: string; cookie: string } | undefined;
     cleanup.defer(async () => {
       for (const session of sessions.splice(0)) await session.close().catch(() => undefined);
@@ -70,7 +75,7 @@ export async function startE2E(options: Omit<CoreConfigOptions, "modelUrl"> = {}
         credentials = undefined;
         if (restartOptions.kill) await core.kill();
         else await core.stop();
-        core = startCore(layout, redis.url);
+        core = await startCore(layout, redis.url, restartOptions.root);
         await core.ready();
         return core;
       },
