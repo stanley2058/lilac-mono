@@ -2,18 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "title": {
-      "type": "string",
-      "maxLength": 512
-    },
-    "conversationThreadId": {
-      "type": "string",
-      "maxLength": 512
-    },
-    "sourceUrl": {
-      "type": "string",
-      "format": "uri"
-    }
+    "title": { "type": "string", "maxLength": 512 },
+    "conversationThreadId": { "type": "string", "maxLength": 512 },
+    "sourceUrl": { "type": "string", "format": "uri" }
   },
   "required": ["title"],
   "additionalProperties": false

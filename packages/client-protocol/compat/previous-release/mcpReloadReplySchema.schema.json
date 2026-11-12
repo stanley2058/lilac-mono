@@ -8,10 +8,7 @@
       "items": {
         "type": "object",
         "properties": {
-          "name": {
-            "type": "string",
-            "maxLength": 256
-          },
+          "name": { "type": "string", "maxLength": 256 },
           "state": {
             "type": "string",
             "enum": [
@@ -27,10 +24,7 @@
             "type": "string",
             "enum": ["new", "changed", "removed", "unchanged", "unavailable", "not_found"]
           },
-          "error": {
-            "type": "string",
-            "maxLength": 4096
-          }
+          "error": { "type": "string", "maxLength": 4096 }
         },
         "required": ["name", "state"],
         "additionalProperties": false

@@ -8,18 +8,9 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
-    "title": {
-      "type": "string",
-      "maxLength": 600
-    },
-    "body": {
-      "type": "string",
-      "maxLength": 240
-    },
-    "tag": {
-      "type": "string",
-      "maxLength": 1024
-    }
+    "title": { "type": "string", "maxLength": 600 },
+    "body": { "type": "string", "maxLength": 240 },
+    "tag": { "type": "string", "maxLength": 1024 }
   },
   "required": ["threadId", "title", "body", "tag"],
   "additionalProperties": false

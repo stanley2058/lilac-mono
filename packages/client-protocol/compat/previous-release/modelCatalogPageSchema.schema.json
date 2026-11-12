@@ -2,47 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "providers": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
+    "providers": { "type": "array", "items": { "type": "string" } },
     "models": {
       "maxItems": 100,
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512
-          },
-          "label": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 1024
-          },
-          "provider": {
-            "type": "string"
-          },
-          "model": {
-            "type": "string"
-          },
-          "alias": {
-            "type": "string"
-          },
-          "family": {
-            "type": "string"
-          },
-          "legacy": {
-            "type": "boolean"
-          },
+          "id": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "label": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "description": { "type": "string", "maxLength": 1024 },
+          "provider": { "type": "string" },
+          "model": { "type": "string" },
+          "alias": { "type": "string" },
+          "family": { "type": "string" },
+          "legacy": { "type": "boolean" },
           "reasoning": {
             "type": "array",
             "items": {
@@ -68,9 +42,7 @@
         "additionalProperties": false
       }
     },
-    "nextCursor": {
-      "type": "string"
-    }
+    "nextCursor": { "type": "string" }
   },
   "required": ["providers", "models"],
   "additionalProperties": false

@@ -8,37 +8,21 @@
       "items": {
         "type": "object",
         "properties": {
-          "header": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 80
-          },
+          "header": { "type": "string", "minLength": 1, "maxLength": 80 },
           "answer": {
             "oneOf": [
               {
                 "type": "object",
                 "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "option"
-                  },
-                  "label": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 100
-                  }
+                  "kind": { "type": "string", "const": "option" },
+                  "label": { "type": "string", "minLength": 1, "maxLength": 100 }
                 },
                 "required": ["kind", "label"],
                 "additionalProperties": false
               },
               {
                 "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "custom"
-                  }
-                },
+                "properties": { "kind": { "type": "string", "const": "custom" } },
                 "required": ["kind"],
                 "additionalProperties": false
               }

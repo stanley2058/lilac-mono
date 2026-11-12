@@ -42,19 +42,9 @@
             "maxLength": 128,
             "pattern": "^[A-Za-z0-9_-]+$"
           },
-          "text": {
-            "type": "string",
-            "maxLength": 4096
-          },
-          "mode": {
-            "type": "string",
-            "enum": ["prompt", "steer", "followup"]
-          },
-          "createdAt": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          }
+          "text": { "type": "string", "maxLength": 4096 },
+          "mode": { "type": "string", "enum": ["prompt", "steer", "followup"] },
+          "createdAt": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
         },
         "required": ["inputId", "messageId", "state", "authorId", "text", "mode", "createdAt"],
         "additionalProperties": false

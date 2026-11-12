@@ -14,22 +14,12 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
-    "turnId": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_-]+$"
-    },
+    "turnId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" },
     "state": {
       "type": "string",
       "enum": ["uploading", "queued", "admitted", "target-ended", "canceled", "failed"]
     },
-    "runId": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_:-]+$"
-    }
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_:-]+$" }
   },
   "required": ["inputId", "messageId", "state"],
   "additionalProperties": false

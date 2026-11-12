@@ -11,10 +11,7 @@
     "reference": {
       "type": "object",
       "properties": {
-        "surface": {
-          "type": "string",
-          "enum": ["native", "discord", "github"]
-        },
+        "surface": { "type": "string", "enum": ["native", "discord", "github"] },
         "sessionId": {
           "type": "string",
           "minLength": 1,
@@ -56,28 +53,11 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
-    "authorDisplayName": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 256
-    },
-    "position": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9007199254740991
-    },
-    "createdAt": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9007199254740991
-    },
-    "phase": {
-      "type": "string",
-      "enum": ["commentary", "final"]
-    },
-    "incomplete": {
-      "type": "boolean"
-    },
+    "authorDisplayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "position": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "createdAt": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "phase": { "type": "string", "enum": ["commentary", "final"] },
+    "incomplete": { "type": "boolean" },
     "inputId": {
       "type": "string",
       "minLength": 1,
@@ -90,10 +70,7 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
-    "inputMode": {
-      "type": "string",
-      "enum": ["prompt", "steer", "followup"]
-    }
+    "inputMode": { "type": "string", "enum": ["prompt", "steer", "followup"] }
   },
   "additionalProperties": false
 }

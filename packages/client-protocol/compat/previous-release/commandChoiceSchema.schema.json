@@ -2,58 +2,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "id": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 512
-    },
-    "name": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 256
-    },
-    "description": {
-      "type": "string",
-      "maxLength": 1024
-    },
-    "kind": {
-      "type": "string",
-      "enum": ["builtin", "custom"]
-    },
-    "argumentHint": {
-      "type": "string",
-      "maxLength": 256
-    },
+    "id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "description": { "type": "string", "maxLength": 1024 },
+    "kind": { "type": "string", "enum": ["builtin", "custom"] },
+    "argumentHint": { "type": "string", "maxLength": 256 },
     "arguments": {
       "maxItems": 24,
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "key": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 32
-          },
-          "type": {
-            "type": "string",
-            "enum": ["string", "number", "boolean"]
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 100
-          },
-          "required": {
-            "type": "boolean"
-          },
+          "key": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "type": { "type": "string", "enum": ["string", "number", "boolean"] },
+          "description": { "type": "string", "maxLength": 100 },
+          "required": { "type": "boolean" },
           "choices": {
             "maxItems": 256,
             "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 100
-            }
+            "items": { "type": "string", "minLength": 1, "maxLength": 100 }
           }
         },
         "required": ["key", "type", "required"],

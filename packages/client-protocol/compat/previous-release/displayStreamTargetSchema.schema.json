@@ -10,10 +10,7 @@
           "maxLength": 128,
           "pattern": "^[A-Za-z0-9_-]+$"
         },
-        "kind": {
-          "type": "string",
-          "const": "thread"
-        }
+        "kind": { "type": "string", "const": "thread" }
       },
       "required": ["threadId", "kind"],
       "additionalProperties": false
@@ -27,10 +24,7 @@
           "maxLength": 128,
           "pattern": "^[A-Za-z0-9_-]+$"
         },
-        "kind": {
-          "type": "string",
-          "const": "subagent"
-        },
+        "kind": { "type": "string", "const": "subagent" },
         "agentId": {
           "type": "string",
           "minLength": 1,

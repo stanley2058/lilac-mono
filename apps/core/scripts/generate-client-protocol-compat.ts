@@ -8,6 +8,8 @@ export const baselineDirectory = path.resolve(
   "../../../packages/client-protocol/compat/previous-release",
 );
 
+const EXPORT_OPTIONS = { target: "draft-2020-12", io: "input" } as const;
+
 if (import.meta.main) {
   const check = process.argv.includes("--check");
   if (check) {
@@ -16,66 +18,74 @@ if (import.meta.main) {
     const validators = await loadCompatValidators();
     console.log(`Validated ${validators.size} previous-release schemas`);
   } else {
-    const schemas = process.argv.includes("--from-head")
-      ? exportSchemas(compatSchemas())
-      : await exportPreviousRelease();
     await mkdir(baselineDirectory, { recursive: true });
     for (const name of await readdir(baselineDirectory)) {
       if (name.endsWith(".schema.json")) await rm(path.join(baselineDirectory, name));
     }
-    for (const [name, json] of Object.entries(schemas).sort(([a], [b]) => a.localeCompare(b))) {
-      const outputPath = path.join(baselineDirectory, `${name}.schema.json`);
-      // Format like the repository so fmt:check accepts the generated files.
-      const formatted = Bun.spawnSync(["bunx", "oxfmt", "--stdin-filepath", outputPath], {
-        stdin: new TextEncoder().encode(`${JSON.stringify(json, null, 2)}\n`),
-      });
-      if (!formatted.success) throw new Error(formatted.stderr.toString());
-      await Bun.write(outputPath, formatted.stdout);
+    if (process.argv.includes("--from-head")) {
+      for (const [name, schema] of Object.entries(compatSchemas()))
+        await Bun.write(
+          path.join(baselineDirectory, `${name}.schema.json`),
+          JSON.stringify(z.toJSONSchema(schema, EXPORT_OPTIONS)),
+        );
+    } else if (!(await exportPreviousRelease())) {
+      process.exitCode = 1;
     }
+    if (!process.exitCode && !(await formatBaseline())) process.exitCode = 1;
   }
 }
 
-export function exportSchemas(schemas: Record<string, z.ZodType>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(schemas).map(([name, schema]) => [
-      name,
-      z.toJSONSchema(schema, { target: "draft-2020-12", io: "input" }),
-    ]),
-  );
+/** Formats every generated file like the repository so fmt:check accepts them. */
+async function formatBaseline(): Promise<boolean> {
+  for (const name of await readdir(baselineDirectory)) {
+    if (!name.endsWith(".schema.json")) continue;
+    const outputPath = path.join(baselineDirectory, name);
+    const formatted = Bun.spawnSync(["bunx", "oxfmt", "--stdin-filepath", outputPath], {
+      stdin: Bun.file(outputPath),
+    });
+    if (!formatted.success) {
+      console.error(formatted.stderr.toString());
+      return false;
+    }
+    await Bun.write(outputPath, formatted.stdout);
+  }
+  return true;
 }
 
 /**
- * Exports the schemas of the newest release older than HEAD, so the baseline is what deployed
+ * Writes the schemas of the newest release older than HEAD, so the baseline is what deployed
  * clients actually parse. The registry module only uses relative imports that releases share.
  */
-async function exportPreviousRelease(): Promise<Record<string, unknown>> {
+async function exportPreviousRelease(): Promise<boolean> {
   const { previousRelease } = await import("../tests/e2e/harness/previous-release");
   const { root, tag } = await previousRelease();
-  const helper = path.join(root, "apps/core/tests/helpers/client-compat-schemas.ts");
   await Bun.write(
-    helper,
+    path.join(root, "apps/core/tests/helpers/client-compat-schemas.ts"),
     Bun.file(path.join(import.meta.dir, "../tests/helpers/client-compat-schemas.ts")),
   );
   const exporter = path.join(root, "apps/core/compat-export.ts");
   await Bun.write(
     exporter,
-    `import { z } from "zod";
+    `import path from "node:path";
+import { z } from "zod";
 import { compatSchemas } from "./tests/helpers/client-compat-schemas";
-const out = Object.fromEntries(Object.entries(compatSchemas()).map(([name, schema]) => [name, z.toJSONSchema(schema, { target: "draft-2020-12", io: "input" })]));
-await Bun.write(Bun.stdout, JSON.stringify(out));
+for (const [name, schema] of Object.entries(compatSchemas()))
+  await Bun.write(
+    path.join(process.argv[2]!, name + ".schema.json"),
+    JSON.stringify(z.toJSONSchema(schema, ${JSON.stringify(EXPORT_OPTIONS)})),
+  );
 `,
   );
-  const child = Bun.spawn([process.execPath, exporter], {
+  const child = Bun.spawn([process.execPath, exporter, baselineDirectory], {
     cwd: path.dirname(exporter),
-    stdout: "pipe",
+    stdout: "ignore",
     stderr: "pipe",
   });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (code !== 0) throw new Error(`Could not export ${tag} schemas: ${stderr}`);
+  const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+  if (code !== 0) {
+    console.error(`Could not export ${tag} schemas: ${stderr}`);
+    return false;
+  }
   console.log(`Exported client schemas from ${tag}`);
-  return JSON.parse(stdout) as Record<string, unknown>;
+  return true;
 }

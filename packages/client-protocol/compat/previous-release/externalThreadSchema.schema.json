@@ -2,35 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "sourceUrl": {
-      "type": "string",
-      "maxLength": 2048,
-      "format": "uri"
-    },
-    "id": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_-]+$"
-    },
-    "title": {
-      "type": "string",
-      "maxLength": 512
-    },
-    "surface": {
-      "type": "string",
-      "enum": ["discord", "github"]
-    },
-    "updatedAt": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9007199254740991
-    },
-    "retrievedAt": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9007199254740991
-    }
+    "sourceUrl": { "type": "string", "maxLength": 2048, "format": "uri" },
+    "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" },
+    "title": { "type": "string", "maxLength": 512 },
+    "surface": { "type": "string", "enum": ["discord", "github"] },
+    "updatedAt": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "retrievedAt": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
   },
   "required": ["id", "title", "surface", "retrievedAt"],
   "additionalProperties": false

@@ -2,18 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "path": {
-      "type": "string"
-    },
-    "name": {
-      "type": "string"
-    },
-    "mediaType": {
-      "type": "string"
-    },
-    "href": {
-      "type": "string"
-    }
+    "path": { "type": "string" },
+    "name": { "type": "string" },
+    "mediaType": { "type": "string" },
+    "href": { "type": "string" }
   },
   "required": ["path", "name", "mediaType", "href"],
   "additionalProperties": false

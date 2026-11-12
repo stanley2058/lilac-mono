@@ -14,23 +14,10 @@
             "maxLength": 128,
             "pattern": "^[A-Za-z0-9_-]+$"
           },
-          "displayName": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256
-          },
-          "avatarUrl": {
-            "type": "string",
-            "maxLength": 2048
-          },
-          "role": {
-            "type": "string",
-            "enum": ["owner", "participant", "service"]
-          },
-          "toolMode": {
-            "type": "string",
-            "enum": ["restricted", "full"]
-          }
+          "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "avatarUrl": { "type": "string", "maxLength": 2048 },
+          "role": { "type": "string", "enum": ["owner", "participant", "service"] },
+          "toolMode": { "type": "string", "enum": ["restricted", "full"] }
         },
         "required": ["id", "displayName", "role", "toolMode"],
         "additionalProperties": false

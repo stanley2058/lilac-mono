@@ -2,18 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "root": {
-      "type": "string"
-    },
-    "paths": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "truncated": {
-      "type": "boolean"
-    }
+    "root": { "type": "string" },
+    "paths": { "type": "array", "items": { "type": "string" } },
+    "truncated": { "type": "boolean" }
   },
   "required": ["root", "paths", "truncated"],
   "additionalProperties": false

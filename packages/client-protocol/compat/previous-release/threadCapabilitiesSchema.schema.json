@@ -2,15 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "read": {
-      "type": "boolean"
-    },
-    "edit": {
-      "type": "boolean"
-    },
-    "share": {
-      "type": "boolean"
-    }
+    "read": { "type": "boolean" },
+    "edit": { "type": "boolean" },
+    "share": { "type": "boolean" }
   },
   "required": ["read", "edit", "share"],
   "additionalProperties": false

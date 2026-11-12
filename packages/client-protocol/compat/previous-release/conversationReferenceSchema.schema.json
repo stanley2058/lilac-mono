@@ -2,16 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "surface": {
-      "type": "string",
-      "enum": ["native", "discord", "github"]
-    },
-    "sessionId": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 512,
-      "pattern": "^[^\\s?&]+$"
-    },
+    "surface": { "type": "string", "enum": ["native", "discord", "github"] },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\s?&]+$" },
     "messageId": {
       "type": "string",
       "minLength": 1,
