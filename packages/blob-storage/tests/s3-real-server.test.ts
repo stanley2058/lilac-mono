@@ -604,10 +604,18 @@ realS3Test(
     const objectId = uniqueObjectId();
     const sink = success(await adapter.openSink(objectId, "g1"));
     const chunk = randomBytes(1024 * 1024);
-    for (let index = 0; index < 12; index += 1) success(await sink.write(chunk));
-    expect(await incompleteMultipartUploads(config, prefix)).toBeGreaterThan(0);
-
-    success(await sink.abort());
+    try {
+      for (let index = 0; index < 12; index += 1) success(await sink.write(chunk));
+      // Bun's writer buffers writes before the server creates the multipart upload.
+      const deadline = performance.now() + 10_000;
+      let uploads = await incompleteMultipartUploads(config, prefix);
+      while (uploads === 0 && performance.now() < deadline) {
+        uploads = await incompleteMultipartUploads(config, prefix);
+      }
+      expect(uploads).toBeGreaterThan(0);
+    } finally {
+      success(await sink.abort());
+    }
 
     expect(await listedKeys(client, prefix)).toEqual([]);
     expect(await incompleteMultipartUploads(config, prefix)).toBe(0);
