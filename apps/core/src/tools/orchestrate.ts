@@ -27,7 +27,11 @@ import { subagentMessages, type SubagentReader } from "../surface/native/subagen
 import type { TranscriptStore } from "../transcript/transcript-store";
 import type { DurableWorkflowStore } from "../workflow/durable-workflow-store";
 import { sha256 } from "../workflow/workflow-definition";
-import type { WorkflowOperation, WorkflowRun } from "../workflow/workflow-domain";
+import {
+  SUBAGENT_RUN_ID_PREFIX,
+  type WorkflowOperation,
+  type WorkflowRun,
+} from "../workflow/workflow-domain";
 import type { WorkflowProgressCardService } from "../workflow/workflow-progress-projector";
 import { cancelWorkflowRun } from "../workflow/workflow-run-cancel";
 import {
@@ -64,7 +68,6 @@ type OrchestrateError =
 const DEFAULT_LIMIT = 20;
 const DEFAULT_MAX_CHARS = 2_000;
 const TERMINAL_RUN_STATES = new Set<WorkflowRun["state"]>(["succeeded", "failed", "cancelled"]);
-const SUBAGENT_RUN_PREFIX = "wfrun:subagent:";
 const WORKFLOW_RUN_PREFIX = "wfrun:";
 
 export const orchestrateActions = ["read", "send", "interrupt"] as const;
@@ -817,7 +820,7 @@ export function createOrchestrateTool(options: OrchestrateToolOptions) {
     switch (true) {
       case input.action === "send" && !input.message:
         return invalid("send requires message");
-      case input.action === "send" && isRun && !input.id.startsWith(SUBAGENT_RUN_PREFIX):
+      case input.action === "send" && isRun && !input.id.startsWith(SUBAGENT_RUN_ID_PREFIX):
         return invalid("Workflow runs do not accept messages; read or interrupt them instead");
       case !isRun && input.action === "read":
         return await readThread(input);

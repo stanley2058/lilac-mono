@@ -1,3 +1,4 @@
+import type { CoreConfig } from "@stanley2058/lilac-utils";
 import { Result } from "better-result";
 
 import type { SurfaceAdapter, SurfaceOperationError } from "../adapter";
@@ -17,6 +18,7 @@ import {
   createDiscordQuestionPort,
   type DiscordQuestionAnswerSource,
 } from "./discord-question-port";
+import { createDiscordThreadControl } from "./discord-thread-control";
 
 type DiscordWorkflowProgressOperation = "check-message" | "send" | "edit";
 type DiscordCheckMessageResult = Awaited<
@@ -152,6 +154,7 @@ export function createDiscordSurfaceRuntimeDescriptor(input: {
   readonly adapterIngress: SurfaceAdapterIngress<"discord">;
   readonly health?: SurfaceRuntimeHealthPort;
   readonly createRelay: (guardedAdapter: SurfaceAdapter) => SurfaceRelayDescriptor<"discord">;
+  readonly getConfig: () => Promise<CoreConfig>;
 }): SurfaceRuntimeDescriptor<"discord"> {
   const questionAnswers = input.questionAnswers;
   return {
@@ -161,6 +164,8 @@ export function createDiscordSurfaceRuntimeDescriptor(input: {
     ...(input.health ? { health: input.health } : {}),
     createRelay: input.createRelay,
     createWorkflowProgress: createDiscordWorkflowProgressPort,
+    createThreadControl: (guardedAdapter: SurfaceAdapter) =>
+      createDiscordThreadControl({ adapter: guardedAdapter, getConfig: input.getConfig }),
     ...(questionAnswers
       ? {
           createQuestion: (guardedAdapter: SurfaceAdapter) =>

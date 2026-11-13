@@ -4,10 +4,14 @@ import {
   resolveSubagentPermissionProfile,
 } from "@stanley2058/lilac-utils";
 
+import { Result } from "better-result";
+
 import {
   buildSystemPromptForProfile,
+  resolveSubagentConversation,
   selectWorkspaceSystemPrompt,
 } from "../../../src/surface/bridge/bus-agent-runner/subagent-prompt";
+import { DurableWorkflowSqliteDriverFailure } from "../../../src/workflow/durable-workflow-store";
 
 describe("subagent permission profile prompts", () => {
   const config = parseCoreConfigV3ToUniversal({
@@ -95,5 +99,89 @@ describe("subagent permission profile prompts", () => {
         skillsSection: "skills",
       }),
     ).toBe("base\n\nskills");
+  });
+
+  it("names the conversation thread and a delegating subagent run", () => {
+    const profileConfig = resolveSubagentPermissionProfile(config, "full");
+    const direct = buildSystemPromptForProfile({
+      baseSystemPrompt: "base",
+      profile: "full",
+      profileConfig,
+      conversation: { threadId: "thread-1" },
+    });
+    expect(direct).toContain("The user's conversation thread id is thread-1.");
+    expect(direct).not.toContain("delegated this task");
+
+    const nested = buildSystemPromptForProfile({
+      baseSystemPrompt: "base",
+      profile: "full",
+      profileConfig,
+      conversation: { threadId: "thread-1", parentRunId: "wfrun:subagent:parent" },
+    });
+    expect(nested).toContain("The subagent run that delegated this task is wfrun:subagent:parent.");
+  });
+
+  it("finds the parent run only when another subagent delegated", () => {
+    const parentRequests: Record<string, string> = {
+      "wfrun:subagent:child": "req:subagent",
+      "wfrun:subagent:direct": "req:primary",
+      "wfrun:subagent:scripted-child": "req:scripted-step",
+    };
+    const operationRuns: Record<string, string> = {
+      "req:subagent": "wfrun:subagent:parent",
+      "req:scripted-step": "wfrun:scripted",
+    };
+    const workflows = {
+      getRun: (runId: string) => {
+        const parentRequestId = parentRequests[runId];
+        return Result.ok(
+          parentRequestId ? { completionTarget: { kind: "live_parent", parentRequestId } } : null,
+        );
+      },
+      getOperationByRequestId: (requestId: string) => {
+        const runId = operationRuns[requestId];
+        return Result.ok(runId ? { runId } : null);
+      },
+    } as unknown as Parameters<typeof resolveSubagentConversation>[0]["workflows"];
+    const errors: unknown[] = [];
+
+    const resolve = (runId: string) =>
+      resolveSubagentConversation({
+        workflows,
+        runId,
+        threadId: "thread-1",
+        onReadError: (error) => errors.push(error),
+      });
+
+    expect(resolve("wfrun:subagent:child")).toEqual({
+      threadId: "thread-1",
+      parentRunId: "wfrun:subagent:parent",
+    });
+    expect(resolve("wfrun:subagent:direct")).toEqual({ threadId: "thread-1" });
+    expect(resolve("wfrun:subagent:scripted-child")).toEqual({ threadId: "thread-1" });
+    expect(errors).toEqual([]);
+  });
+
+  it("keeps the thread id when the workflow store cannot be read", () => {
+    const failure = new DurableWorkflowSqliteDriverFailure({
+      operation: "get-run",
+      code: "SQLITE_BUSY",
+      message: "database is locked",
+    });
+    const workflows = {
+      getRun: () => Result.err(failure),
+      getOperationByRequestId: () => Result.ok(null),
+    } as unknown as Parameters<typeof resolveSubagentConversation>[0]["workflows"];
+    const errors: unknown[] = [];
+
+    expect(
+      resolveSubagentConversation({
+        workflows,
+        runId: "wfrun:subagent:child",
+        threadId: "thread-1",
+        onReadError: (error) => errors.push(error),
+      }),
+    ).toEqual({ threadId: "thread-1" });
+    expect(errors).toEqual([failure]);
   });
 });

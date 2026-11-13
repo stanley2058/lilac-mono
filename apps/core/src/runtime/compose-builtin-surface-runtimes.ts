@@ -1,5 +1,6 @@
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import type { BlobStore } from "@stanley2058/lilac-blob-storage";
+import type { CoreConfig } from "@stanley2058/lilac-utils";
 
 import type { TranscriptStore } from "../transcript/transcript-store";
 import type { SurfaceAdapter, SurfaceAdapterEventSource } from "../surface/adapter";
@@ -45,6 +46,7 @@ export type ComposeBuiltinSurfaceRuntimesInput = {
   readonly githubAppCredentialsAvailable: boolean;
   readonly hasPublishedRequest: GithubPublishedRequestLookup;
   readonly getTranscriptStore: () => TranscriptStore | undefined;
+  readonly getConfig: () => Promise<CoreConfig>;
   readonly logger: BuiltinSurfaceRuntimeLogger;
   readonly reportFatalError: (error: Error) => void;
 };
@@ -58,6 +60,7 @@ export function composeBuiltinSurfaceRuntimes(input: ComposeBuiltinSurfaceRuntim
       : [
           createDiscordSurfaceRuntimeDescriptor({
             adapter: input.discordAdapter,
+            getConfig: input.getConfig,
             ...(input.discordQuestionAnswers
               ? { questionAnswers: input.discordQuestionAnswers }
               : {}),

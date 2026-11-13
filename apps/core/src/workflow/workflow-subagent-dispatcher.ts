@@ -22,7 +22,12 @@ import {
   WORKFLOW_RUNTIME_VERSION,
 } from "./workflow-definition";
 import { WorkflowDefinitionStore } from "./workflow-definition-store";
-import type { WorkflowCompletionTarget, WorkflowRevision, WorkflowRun } from "./workflow-domain";
+import {
+  SUBAGENT_RUN_ID_PREFIX,
+  type WorkflowCompletionTarget,
+  type WorkflowRevision,
+  type WorkflowRun,
+} from "./workflow-domain";
 import { readWorkflowValueArtifact } from "./workflow-artifact-store";
 import { resolveWorkflowSubagentToolResult } from "./workflow-subagent-output";
 
@@ -306,7 +311,7 @@ export class WorkflowSubagentDispatcher {
         args: { task: registration.task, profile: registration.profile },
         maxInputBytes: revision.limits.maxInputBytes,
       }).mapError((error) => subagentDispatchFailure(error.message));
-      const runId = `wfrun:subagent:${crypto.randomUUID()}`;
+      const runId = `${SUBAGENT_RUN_ID_PREFIX}${crypto.randomUUID()}`;
       const completionTarget: WorkflowCompletionTarget = {
         kind: "live_parent",
         parentRequestId: registration.parentRequestId,

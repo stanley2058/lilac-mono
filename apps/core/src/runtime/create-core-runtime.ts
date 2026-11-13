@@ -1940,6 +1940,7 @@ export async function createCoreRuntime(
             hasPublishedRequest: (requestDeliveryId) =>
               requestDeliveryStore!.hasReceipt(requestDeliveryId),
             getTranscriptStore: () => activeTranscriptStore,
+            getConfig: () => getCoreConfig(),
             logger,
             reportFatalError,
           });

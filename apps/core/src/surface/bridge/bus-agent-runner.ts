@@ -50,6 +50,7 @@ import {
   CUSTOM_COMMAND_TOOL_NAME,
   deriveSubagentIdleTimeoutMs,
   env,
+  formatTaggedErrorForLog,
   getCoreConfig,
   isRecord,
   ModelCapability,
@@ -169,7 +170,11 @@ import { type AgentRunJournal, type AgentRunRecoveryHead } from "./agent-run-jou
 import { isPossibleNoReplyPrefix, resolveReplyDeliveryFromFinalText } from "./reply-directive";
 import { formatBridgeLogContext, formatBridgeTaggedErrorForLog } from "./bridge-log";
 import { recordRequestLatencyStage } from "./request-latency-trace";
-import { selectWorkspaceSystemPrompt } from "./bus-agent-runner/subagent-prompt";
+import {
+  resolveSubagentConversation,
+  selectWorkspaceSystemPrompt,
+  type SubagentConversation,
+} from "./bus-agent-runner/subagent-prompt";
 import {
   formatToolLogPreview,
   summarizeToolFailure,
@@ -3394,6 +3399,7 @@ export async function startBusAgentRunner(params: {
     let controlCapability: string | null = null;
     let trustedFallbackSurface: TrustedSubagentDelegationRegistration["fallbackSurface"] | null =
       null;
+    let subagentConversation: SubagentConversation | undefined;
     const subagents = cfg.agent.subagents;
 
     const routerSessionMode = parseRouterSessionModeFromRaw(next.raw);
@@ -4057,6 +4063,17 @@ export async function startBusAgentRunner(params: {
                     userId: authorized.policy.originSession.userId,
                   }
                 : null;
+            if (trustedFallbackSurface && runProfile !== "primary")
+              subagentConversation = resolveSubagentConversation({
+                workflows: params.durableWorkflowStore,
+                runId: authorized.policy.runId,
+                threadId: trustedFallbackSurface.sessionId,
+                onReadError: (error) =>
+                  logger.warn("subagent conversation ids unavailable", {
+                    requestId: next.requestId,
+                    ...formatTaggedErrorForLog(error),
+                  }),
+              });
             workflowClaimTimer = setInterval(() => {
               const refreshed = params.durableWorkflowStore?.refreshWorkflowRequestClaim(
                 next.requestId,
@@ -4503,6 +4520,7 @@ export async function startBusAgentRunner(params: {
               safetyMode,
               sessionId: next.sessionId,
               heartbeatOverlay,
+              ...(subagentConversation ? { subagentConversation } : {}),
             });
 
           const workspaceSystemPrompt = selectWorkspaceSystemPrompt({

@@ -21,7 +21,11 @@ import {
   buildNativeOutputOverlay,
   maybeAppendResponseCommentaryPrompt,
 } from "./prompt-overlays";
-import { buildSystemPromptForProfile, selectWorkspaceSystemPrompt } from "./subagent-prompt";
+import {
+  buildSystemPromptForProfile,
+  selectWorkspaceSystemPrompt,
+  type SubagentConversation,
+} from "./subagent-prompt";
 
 export function buildAgentRunSystemPrompt(params: {
   cfg: CoreConfig;
@@ -35,6 +39,7 @@ export function buildAgentRunSystemPrompt(params: {
   safetyMode: SessionSafetyMode;
   sessionId: string;
   heartbeatOverlay?: string | null;
+  subagentConversation?: SubagentConversation;
 }): string {
   const workspaceSystemPrompt = selectWorkspaceSystemPrompt({
     profile: params.runProfile,
@@ -56,7 +61,12 @@ export function buildAgentRunSystemPrompt(params: {
     skillsSection: params.skillsSection,
   };
   const baseSystemPrompt = profileConfig
-    ? buildSystemPromptForProfile({ ...profilePrompt, profile: profileConfig.name, profileConfig })
+    ? buildSystemPromptForProfile({
+        ...profilePrompt,
+        profile: profileConfig.name,
+        profileConfig,
+        ...(params.subagentConversation ? { conversation: params.subagentConversation } : {}),
+      })
     : buildSystemPromptForProfile({ ...profilePrompt, profile: "primary" });
 
   let prompt = appendConfiguredAliasPromptBlock({

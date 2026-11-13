@@ -1,3 +1,4 @@
+import { parseCoreConfigV2ToUniversal } from "@stanley2058/lilac-utils";
 import { describe, expect, expectTypeOf, it, spyOn } from "bun:test";
 import { Panic, Result } from "better-result";
 
@@ -220,6 +221,7 @@ function discordDescriptor(
     adapter,
     adapterIngress: discordAdapterIngress(),
     createRelay: () => discordRelay(),
+    getConfig: async () => parseCoreConfigV2ToUniversal({}),
   });
 }
 
@@ -315,6 +317,7 @@ describe("surface runtime descriptor factories", () => {
       adapter,
       adapterIngress,
       createRelay: () => relay,
+      getConfig: async () => parseCoreConfigV2ToUniversal({}),
     });
 
     expect(descriptor).toEqual({
@@ -323,6 +326,7 @@ describe("surface runtime descriptor factories", () => {
       adapterIngress,
       createRelay: descriptor.createRelay,
       createWorkflowProgress: createDiscordWorkflowProgressPort,
+      createThreadControl: descriptor.createThreadControl,
     });
     expect(descriptor.adapter).toBe(adapter);
     expect("requestIngress" in descriptor).toBe(false);

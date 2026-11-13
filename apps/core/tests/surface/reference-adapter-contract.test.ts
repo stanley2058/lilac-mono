@@ -257,6 +257,7 @@ const DISCORD_REFERENCE: ReferenceContract = {
   createDescriptor: (adapter) =>
     createDiscordSurfaceRuntimeDescriptor({
       adapter,
+      getConfig: async () => parseCoreConfigV1ToUniversal({}),
       adapterIngress: {
         start: async () => {
           throw new Error("Reference descriptor lifecycle is unused");

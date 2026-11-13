@@ -1,3 +1,4 @@
+import { parseCoreConfigV2ToUniversal } from "@stanley2058/lilac-utils";
 import { describe, expect, it } from "bun:test";
 import { Result } from "better-result";
 
@@ -183,6 +184,7 @@ function createRegistry(input: {
   const created = SurfaceRuntimeRegistry.create([
     createDiscordSurfaceRuntimeDescriptor({
       adapter: discordAdapter,
+      getConfig: async () => parseCoreConfigV2ToUniversal({}),
       adapterIngress: {
         start:
           input.adapterIngressStart ??

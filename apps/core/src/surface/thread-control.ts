@@ -17,6 +17,8 @@ export type ThreadTimelineItem = {
   readonly kind: "text" | "activity";
   readonly text: string;
   readonly truncated: boolean;
+  /** Who wrote a user message, on surfaces where several people share a thread. */
+  readonly author?: string;
   /**
    * The state of the input this message carries, when it is not simply admitted: queued, still
    * uploading, `target-ended` for a steer whose run ended first, canceled, or failed.
@@ -67,7 +69,8 @@ export type ThreadInterruptResult = {
 
 /**
  * Lets an agent read, message, and stop another thread on the surface that started its run.
- * A surface without this port does not support cross-thread control.
+ * A surface without this port does not support cross-thread control. A surface may support
+ * reads only and reject `send` and `interrupt`.
  */
 export type SurfaceThreadControlPort = {
   read(
@@ -87,7 +90,10 @@ export type SurfaceThreadControlPort = {
   ): Promise<Result<ThreadInterruptResult, SurfaceOperationError>>;
 };
 
-function bounded(text: string, maxChars: number): { text: string; truncated: boolean } {
+export function boundTimelineText(
+  text: string,
+  maxChars: number,
+): { text: string; truncated: boolean } {
   if (text.length <= maxChars) return { text, truncated: false };
   return { text: text.slice(0, maxChars), truncated: true };
 }
@@ -113,7 +119,7 @@ export function projectThreadTimeline(
         id: message.id,
         role: message.role,
         kind: "text",
-        ...bounded(text, maxCharsPerItem),
+        ...boundTimelineText(text, maxCharsPerItem),
         ...(state ? { inputState: state } : {}),
       });
     if (view !== "activity") continue;
@@ -126,7 +132,7 @@ export function projectThreadTimeline(
         id: `${message.id}:${part.id}`,
         role: message.role,
         kind: "activity",
-        ...bounded(body, maxCharsPerItem),
+        ...boundTimelineText(body, maxCharsPerItem),
         activity: {
           kind: part.data.kind,
           state: part.data.state,

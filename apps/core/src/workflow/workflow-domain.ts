@@ -3,6 +3,9 @@ import { blobRefV1Schema, type BlobRefV1 } from "@stanley2058/lilac-blob-storage
 import { isPermissionProfileName, MODEL_REASONING_EFFORTS } from "@stanley2058/lilac-utils";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
+/** Run ids of delegated subagents; other workflow runs use a bare `wfrun:` id. */
+export const SUBAGENT_RUN_ID_PREFIX = "wfrun:subagent:";
+
 export const WORKFLOW_MANUAL_RECONCILIATION_DETAIL =
   "Manual reconciliation required: terminal request outcome is ambiguous; cancel this run and create a new run";
 
