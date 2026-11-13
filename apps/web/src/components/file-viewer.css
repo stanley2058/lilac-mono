@@ -30,11 +30,22 @@
   width: 1.25rem;
   height: 1.25rem;
   opacity: 0;
+  pointer-events: none;
   background: var(--ui-surface);
 }
-.file-panel-tab:hover .file-tab-close,
-.file-panel-tab:focus-within .file-tab-close {
-  opacity: 1;
+@media (hover: hover) {
+  .file-panel-tab:hover .file-tab-close,
+  .file-panel-tab:focus-within .file-tab-close {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+/* Touch has no hover to reveal the close button, so the first tap must select the tab. */
+@media (hover: none) {
+  .file-panel-tab:has([role="tab"][data-active]) .file-tab-close {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .file-panel-tab-bar > button {
   flex: none;
