@@ -92,10 +92,7 @@ export function NextContextStartAfter({
     enabled: false,
     select: (context) => context.evaluatedAt,
   }).data;
-  // The turn's bottom padding already spaces it from the next row, so the divider overlaps part of it.
-  return (
-    <NextContextStart hidden={!show || !contextCoversTurn(evaluatedAt, turn)} className="-mt-8" />
-  );
+  return <NextContextStart hidden={!show || !contextCoversTurn(evaluatedAt, turn)} />;
 }
 
 export function ContextMessage({
@@ -154,12 +151,12 @@ export function TimestampSeparator({ at, contextStart }: { at: number; contextSt
   );
 }
 
-export function NextContextStart({ hidden, className }: { hidden?: boolean; className?: string }) {
+export function NextContextStart({ hidden }: { hidden?: boolean }) {
   return (
     <p
       data-ui="next-context-start"
       aria-hidden={hidden || undefined}
-      className={`flex items-center gap-3 px-6 py-4 text-xs text-muted-foreground ${hidden ? "invisible" : ""} ${className ?? ""}`}
+      className={`flex items-center gap-3 px-6 pt-3 pb-1 text-xs text-muted-foreground ${hidden ? "invisible" : ""}`}
     >
       <span className="flex-1 border-t border-border" aria-hidden />
       <span className="flex items-center gap-1.5">
