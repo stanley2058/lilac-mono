@@ -1,4 +1,5 @@
 import { FileIcon } from "./FileIcon";
+import { useImageFailure } from "../image-retry";
 import { FileActions } from "./FileActions";
 import { useState, type ReactNode } from "react";
 import type { MessageResource } from "./message-resources";
@@ -15,7 +16,7 @@ export function AttachmentReference({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const [imageFailed, setImageFailed] = useState(false);
+  const [imageFailed, failImage] = useImageFailure<true>();
   const ready = resource.state === "ready";
   const image = ready && resource.mediaType.startsWith("image/") && !imageFailed;
   return (
@@ -46,7 +47,7 @@ export function AttachmentReference({
               alt=""
               loading="lazy"
               decoding="async"
-              onError={() => setImageFailed(true)}
+              onError={() => failImage(true)}
             />
           ) : (
             <FileIcon name={resource.name} mediaType={resource.mediaType} />

@@ -10,7 +10,8 @@ import { createRoot } from "react-dom/client";
 import { Result } from "better-result";
 import { WebSessionController, webCache, type WebState } from "./bootstrap";
 import { LocalLogin } from "./auth";
-import { readAuthInfo, resourceUrl, uploadResource, type AuthInfo } from "./http";
+import { resourceUrl, uploadResource } from "./http";
+import { clerkPublishableKey, createAuthInfoLoader, providerTokenRequired } from "./auth-info";
 import { requireConnectionCredentials } from "./connection-credentials";
 import { isConnectionFailure } from "./connection-lifecycle";
 import { closeConnectionNotice, showConnectionNotice } from "./use-connection-notice";
@@ -32,33 +33,29 @@ const ClerkCredentials = lazy(() =>
   import("./clerk").then((module) => ({ default: module.ClerkCredentials })),
 );
 const sessions = new WebSessionController();
-let authInfo: ReturnType<typeof readAuthInfo> | undefined;
+const authInfo = createAuthInfoLoader();
 let sessionStarted = false;
-function clerkKey(result: Awaited<ReturnType<typeof readAuthInfo>>): string | undefined {
-  return result.match({
-    ok: (auth) => (auth.provider === "clerk" ? auth.publishableKey : undefined),
-    err: () => undefined,
-  });
-}
 function enterChat() {
-  authInfo ??= readAuthInfo();
+  void authInfo.load();
   if (sessionStarted) return;
   sessionStarted = true;
-  requireConnectionCredentials(authInfo.then((result) => !!clerkKey(result)));
+  requireConnectionCredentials(() => providerTokenRequired(authInfo));
   start();
 }
 const start = () => {
   return sessions.start();
 };
-// Auth settings are read once at startup, and the sign-in and credential flows all depend on them.
+// Retrying from the sign-in screen reloads so the sign-in and credential flows start over together.
 const reloadPage = () => {
   location.reload();
   return new Promise<void>(() => {});
 };
 const logout = async () => {
-  const auth = await authInfo;
-  if (!auth) return;
-  const provider = auth.match({ ok: (value) => value.provider, err: () => "local" });
+  if (!sessionStarted) return;
+  const provider = (await authInfo.load()).match({
+    ok: (value) => value.provider,
+    err: () => "local",
+  });
   if (provider !== "clerk") {
     await sessions.logout();
     return;
@@ -83,15 +80,18 @@ function signInMessage(state: WebState, authError: string): string {
 
 function Root() {
   const state = useSyncExternalStore(sessions.subscribe, sessions.getSnapshot);
-  const [auth, setAuth] = useState<AuthInfo>();
-  const [authError, setAuthError] = useState("");
+  const { auth, error: authError = "" } = useSyncExternalStore(
+    authInfo.subscribe,
+    authInfo.getSnapshot,
+  );
   const [update, setUpdate] = useState<AppUpdate>();
   const client = state.kind === "ready" ? state.session.client : undefined;
   useEffect(() => {
-    void authInfo?.then((result) =>
-      result.match({ ok: setAuth, err: (error) => setAuthError(error.message) }),
-    );
-  }, []);
+    if (!client) return;
+    return client.subscribe((event) => {
+      if (event.kind === "connection" && event.state === "online") void authInfo.load();
+    });
+  }, [client]);
   useEffect(() => {
     let stop: (() => void) | undefined;
     let disposed = false;
@@ -210,10 +210,8 @@ function Root() {
 }
 
 function ConnectionCredentials() {
-  const [publishableKey, setPublishableKey] = useState<string>();
-  useEffect(() => {
-    void authInfo?.then((result) => setPublishableKey(clerkKey(result)));
-  }, []);
+  const { auth } = useSyncExternalStore(authInfo.subscribe, authInfo.getSnapshot);
+  const publishableKey = clerkPublishableKey(auth);
   if (!publishableKey) return null;
   return (
     <AccountLoadBoundary>

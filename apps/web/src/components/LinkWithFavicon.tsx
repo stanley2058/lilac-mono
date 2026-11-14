@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useImageFailure } from "../image-retry";
 import { SkeletonLines } from "./ui/skeleton";
 import { Globe } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -86,15 +87,12 @@ function failedSources(src: string) {
 }
 
 function LinkIcon({ icon, fallback }: { icon?: string; fallback?: string }) {
-  const [failed, setFailed] = useState<string[]>([]);
+  const [failed = [], fail] = useImageFailure<string[]>();
   const src = [icon, fallback].find((candidate) => candidate && !failed.includes(candidate));
   return (
     <span className="link-favicon" aria-hidden="true">
       {src ? (
-        <SiteFavicon
-          src={src}
-          onError={() => setFailed((previous) => [...previous, ...failedSources(src)])}
-        />
+        <SiteFavicon src={src} onError={() => fail([...failed, ...failedSources(src)])} />
       ) : (
         <Globe />
       )}
@@ -111,7 +109,8 @@ export function LinkPreviewBody({
   preview?: LinkPreview;
   loading?: boolean;
 }) {
-  const [failedImage, setFailedImage] = useState<string>();
+  const [failedImage, failImage] = useImageFailure<string>();
+  const image = preview?.image;
   return (
     <div
       className="flex flex-col gap-2.5"
@@ -127,14 +126,14 @@ export function LinkPreviewBody({
           {preview.description}
         </p>
       ) : null}
-      {preview?.image && failedImage !== preview.image ? (
+      {image && failedImage !== image ? (
         <img
-          src={remoteImageUrl(preview.image)}
+          src={remoteImageUrl(image)}
           alt=""
           referrerPolicy="no-referrer"
           decoding="async"
           className="aspect-video w-full rounded-md bg-muted object-contain"
-          onError={() => setFailedImage(preview.image)}
+          onError={() => failImage(image)}
         />
       ) : null}
       <div className="truncate text-xs text-muted-foreground">{hostname}</div>

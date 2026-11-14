@@ -1,4 +1,5 @@
 import { useEventCallback } from "../use-event-callback";
+import { useImageFailure } from "../image-retry";
 import { FileIcon } from "./FileIcon";
 import { FileActions } from "./FileActions";
 import type { FileTarget } from "../file-target";
@@ -58,7 +59,8 @@ export function formatFileSize(bytes: number): string {
 }
 
 export function ReadyAttachment({ data, href }: { data: ResourceData; href: string }) {
-  const [failed, setFailed] = useState(data.state === "failed");
+  const [imageFailed, failImage] = useImageFailure<true>();
+  const failed = data.state === "failed" || !!imageFailed;
   const [preview, setPreview] = useState(false);
   const kind = attachmentKind(data.mediaType, data.name);
   return (
@@ -102,7 +104,7 @@ export function ReadyAttachment({ data, href }: { data: ResourceData; href: stri
                 alt={data.name}
                 loading="lazy"
                 decoding="async"
-                onError={() => setFailed(true)}
+                onError={() => failImage(true)}
               />
             )}
           </Button>
@@ -301,7 +303,7 @@ export function AttachmentPreviewBody({
   fill?: boolean;
 }) {
   const [zoom, setZoom] = useState(1);
-  const [failed, setFailed] = useState(false);
+  const [failed, fail] = useImageFailure<true>();
   const [loaded, setLoaded] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copying" | "copied">("idle");
   const [copyError, setCopyError] = useState<string>();
@@ -363,7 +365,7 @@ export function AttachmentPreviewBody({
     const observer = new ResizeObserver(() => measureFit());
     observer.observe(element);
     return () => observer.disconnect();
-  }, [kind, measureFit]);
+  }, [kind, measureFit, failed]);
   useEffect(() => {
     const element = viewport.current;
     if (!element || kind !== "image") return;
@@ -492,7 +494,7 @@ export function AttachmentPreviewBody({
             autoPlay={false}
             preload="metadata"
             aria-label={name}
-            onError={() => setFailed(true)}
+            onError={() => fail(true)}
           />
         </div>
       </PreviewFrame>
@@ -570,7 +572,7 @@ export function AttachmentPreviewBody({
                 setLoaded(true);
                 measureFit();
               }}
-              onError={() => setFailed(true)}
+              onError={() => fail(true)}
             />
           ) : (
             <video
@@ -578,7 +580,7 @@ export function AttachmentPreviewBody({
               controls
               preload="metadata"
               aria-label={name}
-              onError={() => setFailed(true)}
+              onError={() => fail(true)}
             />
           )}
         </div>

@@ -106,10 +106,11 @@ export function useConnectionNotice({
       closeConnectionNotice(id);
       return;
     }
-    // The browser reconnects by itself when the device returns, so Retry could only fail.
-    const problem: ConnectionProblem = deviceOnline
-      ? { reason: "Reconnecting…", retry: retryLatest }
-      : { reason: "This device is offline." };
+    // Retries pause while the device reports no network, and that report can be wrong.
+    const problem: ConnectionProblem = {
+      reason: deviceOnline ? "Reconnecting…" : "This device is offline.",
+      retry: retryLatest,
+    };
     return waitWhileVisible(
       () => closeConnectionNotice(id),
       () => showConnectionNotice(problem, id),

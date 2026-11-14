@@ -233,6 +233,7 @@ export class WebSessionController {
         return reply ?? this.connectionBootstrap(client, socket, input, signal);
       },
       prepareConnection: prepareWebConnection,
+      networkUnavailable: () => navigator.onLine === false,
     });
     if (initial.catalog.kind === "catalog") client.catalogs.put(scope, initial.catalog.catalog);
     if (initialThreadId && initial.selectedThread)

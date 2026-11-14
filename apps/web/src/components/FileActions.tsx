@@ -1,4 +1,5 @@
 import { FileIcon } from "./FileIcon";
+import { useImageFailure } from "../image-retry";
 import { useState, type ReactNode } from "react";
 import { Copy, ImageOff, ScanEye, PanelRight } from "lucide-react";
 import { copyMessage, messageClipboardData } from "../message-clipboard";
@@ -158,7 +159,7 @@ function ResolvedFileLink({ target }: { target: FileTarget }) {
 
 export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   const [preview, setPreview] = useState(false);
-  const [failed, setFailed] = useState<string>();
+  const [failed, fail] = useImageFailure<string>();
   if (!src) return <img alt={alt ?? ""} />;
   if (failed === src)
     return (
@@ -192,7 +193,7 @@ export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
           alt={alt ?? ""}
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={() => setFailed(src)}
+          onError={() => fail(src)}
         />
       </Button>
       {preview ? <FileTargetPreview target={target} onClose={() => setPreview(false)} /> : null}

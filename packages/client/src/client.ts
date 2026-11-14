@@ -51,7 +51,14 @@ export type NativeClientOptions = {
   cache?: NativeCache;
   catalogs?: DisplayCatalogCache;
   onEvent?: (event: ClientEvent) => void;
+  /**
+   * Reports that the device has no network. Retries then stop after a few attempts, and the host
+   * calls `reconnect()` when the network returns.
+   */
+  networkUnavailable?: () => boolean;
 };
+
+const OFFLINE_RETRY_LIMIT = 3;
 
 function captureFailure(error: unknown): ClientFailure {
   if (error instanceof ORPCError) {
@@ -118,6 +125,7 @@ export class NativeClient {
   private generation = 0;
   private readonly threadEpochs = new Map<string, number>();
   private attempt = 0;
+  private offlineRetries = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private bootstrapTimer: ReturnType<typeof setTimeout> | undefined;
   private selectedThreadId: string | undefined;
@@ -389,6 +397,10 @@ export class NativeClient {
     clearTimeout(this.connectionDeadline);
     this.connectionDeadline = setTimeout(() => {
       if (this.stopped || attempt !== this.connectionAttempt) return;
+      if (this.retryPaused()) {
+        this.emit({ kind: "connection", state: "offline" });
+        return;
+      }
       if (this.socket && !this.socketOpened && this.fallback()) return;
       this.reconnect();
     }, 10_000);
@@ -398,6 +410,7 @@ export class NativeClient {
     if (this.activeTransport === "websocket" && this.socket?.readyState !== WebSocket.OPEN) return;
     clearTimeout(this.connectionDeadline);
     this.attempt = 0;
+    this.offlineRetries = 0;
     this.emit({ kind: "connection", state: "online" });
   }
   private open(): void {
@@ -438,6 +451,7 @@ export class NativeClient {
     this.abortStreams();
     this.connection = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.retryPaused()) return;
     this.reconnectTimer = setTimeout(
       () => {
         void this.connect();
@@ -524,8 +538,17 @@ export class NativeClient {
     for (const observed of this.observedStreams.values())
       void this.startObservedStream(observed.target);
   }
+  // Automatic transport fallback restarts the connection and resets the backoff, so a separate
+  // count bounds retries while the device has no network.
+  private retryPaused(): boolean {
+    if (!this.options.networkUnavailable?.()) return false;
+    if (++this.offlineRetries <= OFFLINE_RETRY_LIMIT) return false;
+    clearTimeout(this.connectionDeadline);
+    return true;
+  }
   private retryBootstrap(): void {
     if (this.bootstrapTimer) clearTimeout(this.bootstrapTimer);
+    if (this.retryPaused()) return;
     this.bootstrapTimer = setTimeout(
       () => {
         if (this.stopped) return;

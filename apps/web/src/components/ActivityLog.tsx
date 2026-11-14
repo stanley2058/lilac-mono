@@ -1,4 +1,5 @@
 import { ProviderIcon } from "./ProviderIcon";
+import { useImageFailure } from "../image-retry";
 import {
   createContext,
   useCallback,
@@ -364,7 +365,7 @@ function hasDetails(part: ActivityPart): boolean {
 /** Resolved on expand so collapsed rows never fetch files. */
 function ActivityFile({ path, mediaType }: { path: string; mediaType: string }) {
   const viewer = useFileViewer();
-  const [failedHref, setFailedHref] = useState<string>();
+  const [failedHref, failHref] = useImageFailure<string>();
   const target = useMemo<FileTarget>(() => activityFileTarget(path, mediaType), [path, mediaType]);
   const { file, error } = useFileResolution(target, mediaType.startsWith("image/"));
   const open = viewer ? () => viewer.openFile(target) : undefined;
@@ -394,7 +395,7 @@ function ActivityFile({ path, mediaType }: { path: string; mediaType: string }) 
         src={file.href}
         alt={target.name}
         loading="lazy"
-        onError={() => setFailedHref(file.href)}
+        onError={() => failHref(file.href)}
         className="activity-image max-h-80 max-w-full rounded-md object-contain"
       />
     </button>

@@ -7,7 +7,7 @@ import {
 } from "../src/connection-credentials";
 
 afterEach(() => {
-  requireConnectionCredentials(Promise.resolve(false));
+  requireConnectionCredentials(async () => false);
 });
 
 test("connection preparation awaits the active credentials and ignores stale cleanup", async () => {
@@ -42,7 +42,7 @@ test("credential refresh errors reach connection retry without sending unauthent
 
 test("a rejected cookie retry waits for the provider instead of signing out", async () => {
   const auth = Promise.withResolvers<boolean>();
-  requireConnectionCredentials(auth.promise);
+  requireConnectionCredentials(() => auth.promise);
   await prepareWebConnection();
   expect(await readConnectionToken()).toBeUndefined();
   const requests: boolean[] = [];
@@ -60,13 +60,13 @@ test("a rejected cookie retry waits for the provider instead of signing out", as
 });
 
 test("password sessions retry immediately with their cookie", async () => {
-  requireConnectionCredentials(Promise.resolve(false));
+  requireConnectionCredentials(async () => false);
   await prepareWebConnection({ fresh: true });
   expect(await readConnectionToken()).toBeUndefined();
 });
 
 test("a superseded retry settles without fetching a token when the provider loads", async () => {
-  requireConnectionCredentials(Promise.resolve(true));
+  requireConnectionCredentials(async () => true);
   const requests: boolean[] = [];
   let superseded = false;
   const stale = prepareWebConnection({ fresh: true }).then(() => {

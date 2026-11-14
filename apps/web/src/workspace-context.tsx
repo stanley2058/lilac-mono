@@ -3,6 +3,7 @@ import { createThreadPresence } from "./thread-presence";
 import { createBackgroundPush } from "./background-push";
 import { createNotificationPreferences } from "./notifications";
 import { watchConnectionLifecycle } from "./connection-lifecycle";
+import { watchImageRetries } from "./image-retry";
 import { createPanelStore } from "./panel-store";
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -47,6 +48,7 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
   "use no memo";
   const { client, scope, upload, resourceUrl, draftCache, accountProfile, authProvider } = props;
   useEffect(() => watchConnectionLifecycle(client), [client]);
+  useEffect(() => watchImageRetries(client), [client]);
   const keybindings = useMemo(
     () => createKeybindings(scope),
     [scope.installationId, scope.principalId],

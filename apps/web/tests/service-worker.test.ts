@@ -171,6 +171,8 @@ describe("app shell service worker", () => {
     await f.dispatch("install");
     f.goOffline();
     for (const path of [
+      "/dm",
+      "/dm/",
       "/threads/thread-id",
       "/threads/thread-id/?search=value",
       "/design-system",
@@ -179,7 +181,7 @@ describe("app shell service worker", () => {
       const page = await f.dispatch("fetch", { request: request(path, "navigate") });
       expect(await page?.text()).toContain(buildId);
     }
-    expect(f.requests).toEqual(["/", "/assets/app-new.js", "/", "/", "/", "/"]);
+    expect(f.requests).toEqual(["/", "/assets/app-new.js", "/", "/", "/", "/", "/", "/"]);
     expect([...f.stores.get(`lilac-shell-${buildId}`)!.keys()].sort()).toEqual([
       "/",
       "/assets/app-new.js",

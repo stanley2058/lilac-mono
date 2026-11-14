@@ -1,4 +1,5 @@
 import { Cpu } from "lucide-react";
+import { useImageFailure } from "../image-retry";
 
 export function providerName(provider: string): string {
   return (
@@ -36,8 +37,10 @@ export function ProviderIcon({
   provider: string;
   className?: string;
 }) {
+  const [failed, fail] = useImageFailure<true>();
   const logo = logos[provider];
-  if (!logo && provider !== "vercel") return <Cpu aria-hidden="true" className={className} />;
+  if ((!logo && provider !== "vercel") || failed)
+    return <Cpu aria-hidden="true" className={className} />;
   return (
     <span
       aria-hidden="true"
@@ -48,6 +51,7 @@ export function ProviderIcon({
           src={`/providers/${logo}.svg`}
           alt=""
           className={`size-[84%] object-contain ${logo === "anthropic" ? "" : "dark:invert"}`}
+          onError={() => fail(true)}
         />
       ) : (
         <svg viewBox="0 0 24 21" className="size-[84%]" fill="currentColor">

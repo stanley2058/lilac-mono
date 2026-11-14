@@ -70,6 +70,7 @@ function harness(
     delayedCatalog?: Promise<void>;
     bootstrap?: () => Promise<BootstrapReply>;
     hydrate?: (input: NativeRpcInputs["streams"]["hydrate"]) => Promise<Hydration>;
+    networkUnavailable?: () => boolean;
   } = {},
 ) {
   const watches: unknown[] = [];
@@ -155,6 +156,7 @@ function harness(
     scope,
     cache,
     prepareConnection: options.prepareConnection,
+    networkUnavailable: options.networkUnavailable,
     openSocket: () => {
       socketCount++;
       options.beforeOpen?.();
@@ -641,6 +643,83 @@ test("a stalled bootstrap is replaced at the connection deadline", async () => {
   await starting;
   expect(state.client.connectionState).toBe("online");
   expect(state.socketCount()).toBe(2);
+});
+
+test("retries stop while the device reports no network until the host reconnects", async () => {
+  const originalTimeout = globalThis.setTimeout;
+  const retries: Array<() => void> = [];
+  // Backoff delays fall between 250 ms and 30 s; the 10-second connection deadline runs normally.
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(
+    Object.assign((...args: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...values] = args;
+      if (typeof delay !== "number" || delay < 250 || delay > 30_000 || delay === 10_000)
+        return originalTimeout(...args);
+      retries.push(() => callback(...values));
+      return originalTimeout(() => {}, 0);
+    }, originalTimeout),
+  );
+  disposers.push(() => timer.mockRestore());
+  let serverDown = true;
+  let bootstraps = 0;
+  const state = harness({
+    networkUnavailable: () => true,
+    bootstrap: async () => {
+      bootstraps++;
+      if (serverDown) throw new Error("Network unavailable");
+      return bootstrap;
+    },
+  });
+  const failed = () =>
+    new Promise<void>((resolve) => {
+      const stop = state.client.subscribe((event) => {
+        if (event.kind !== "connection" || event.state !== "offline") return;
+        stop();
+        resolve();
+      });
+    });
+  await state.client.start("thread");
+  while (retries.length) {
+    const next = failed();
+    retries.shift()!();
+    await next;
+  }
+  expect(bootstraps).toBe(4);
+  expect(state.client.connectionState).toBe("offline");
+  // The device can report no network while the server is reachable, so a manual retry still works.
+  serverDown = false;
+  const recovered = Promise.withResolvers<void>();
+  state.client.subscribe((event) => {
+    if (event.kind === "connection" && event.state === "online") recovered.resolve();
+  });
+  state.client.reconnect();
+  await recovered.promise;
+  expect(bootstraps).toBe(5);
+});
+
+test("stalled attempts stop at the connection deadline while the device has no network", async () => {
+  const originalTimeout = globalThis.setTimeout;
+  const deadlines: Array<() => void> = [];
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(
+    Object.assign((...args: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...values] = args;
+      if (delay !== 10_000) return originalTimeout(...args);
+      deadlines.push(() => callback(...values));
+      return originalTimeout(() => {}, 0);
+    }, originalTimeout),
+  );
+  disposers.push(() => timer.mockRestore());
+  let preparations = 0;
+  const state = harness({
+    networkUnavailable: () => true,
+    prepareConnection: () => {
+      preparations++;
+      return new Promise<void>(() => {});
+    },
+  });
+  void state.client.start("thread");
+  while (deadlines.length) deadlines.shift()!();
+  expect(preparations).toBe(4);
+  expect(state.client.connectionState).toBe("offline");
 });
 
 test("an old authentication error cannot log out a reconnect waiting for credentials", async () => {

@@ -131,6 +131,7 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET" || url.origin !== self.location.origin) return;
   const appRoute =
     url.pathname === "/" ||
+    /^\/dm\/?$/.test(url.pathname) ||
     /^\/threads\/[^/]+\/?$/.test(url.pathname) ||
     /^\/design-system\/?$/.test(url.pathname);
   const shell = request.mode === "navigate" && appRoute;
