@@ -73,13 +73,18 @@ export function contextCoversTurn(
   return changedAt === undefined || evaluatedAt >= changedAt;
 }
 
-/** Shows the divider only once a context read covers the latest turn. */
+/**
+ * Ends a DM timeline in the divider's space, so the divider appears and hides without moving the
+ * turns. It shows only once a context read covers the latest turn.
+ */
 export function NextContextStartAfter({
   threadId,
   turn,
+  show,
 }: {
   threadId: string;
   turn: { startedAt?: number; settledAt?: number };
+  show: boolean;
 }) {
   const { client } = useWorkspace();
   const evaluatedAt = useQuery({
@@ -87,7 +92,10 @@ export function NextContextStartAfter({
     enabled: false,
     select: (context) => context.evaluatedAt,
   }).data;
-  return contextCoversTurn(evaluatedAt, turn) ? <NextContextStart /> : null;
+  // The turn's bottom padding already spaces it from the next row, so the divider overlaps part of it.
+  return (
+    <NextContextStart hidden={!show || !contextCoversTurn(evaluatedAt, turn)} className="-mt-8" />
+  );
 }
 
 export function ContextMessage({
@@ -146,11 +154,12 @@ export function TimestampSeparator({ at, contextStart }: { at: number; contextSt
   );
 }
 
-export function NextContextStart() {
+export function NextContextStart({ hidden, className }: { hidden?: boolean; className?: string }) {
   return (
     <p
       data-ui="next-context-start"
-      className="flex items-center gap-3 px-6 pt-4 pb-1 text-xs text-muted-foreground"
+      aria-hidden={hidden || undefined}
+      className={`flex items-center gap-3 px-6 py-4 text-xs text-muted-foreground ${hidden ? "invisible" : ""} ${className ?? ""}`}
     >
       <span className="flex-1 border-t border-border" aria-hidden />
       <span className="flex items-center gap-1.5">

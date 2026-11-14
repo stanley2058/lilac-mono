@@ -566,8 +566,6 @@ const SlotRow = memo(function SlotRow(props: {
         (time - previousTime >= gapMs || startsNewDay(previousTime, time))));
   // An idle DM without a current window means the server will open a new context on the next send.
   const nextContextStart =
-    timestamps &&
-    nextSlotId === undefined &&
     !props.fallback &&
     slot.state !== "pending" &&
     slot.state !== "running" &&
@@ -598,8 +596,10 @@ const SlotRow = memo(function SlotRow(props: {
         onRewind={onRewind}
         onLoadMore={loadMore}
       />
-      {nextContextStart ? <NextContextStartAfter threadId={threadId} turn={slot} /> : null}
-      {nextSlotId === undefined && !nextContextStart ? (
+      {nextSlotId === undefined && timestamps ? (
+        <NextContextStartAfter threadId={threadId} turn={slot} show={nextContextStart} />
+      ) : null}
+      {nextSlotId === undefined && !timestamps ? (
         // Hover controls float in the turn's bottom padding, which leaves them touching the composer.
         <div className="hidden h-4 [@media(hover:hover)]:block" aria-hidden="true" />
       ) : null}
