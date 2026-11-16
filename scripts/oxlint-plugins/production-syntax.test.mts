@@ -906,18 +906,7 @@ describe("production exception syntax", () => {
       findExceptionFlowViolations(code, "apps/example/generated/output.js", policyWith()),
     ).toEqual([]);
     expect(
-      findExceptionFlowViolations(
-        code,
-        "apps/core/src/ssh/remote-js/remote-runner.cjs",
-        policyWith(),
-      ),
-    ).toEqual([]);
-    expect(
-      findExceptionFlowViolations(
-        code,
-        "apps/core/src/ssh/remote-js/remote-runner-entry.ts",
-        policyWith(),
-      ),
+      findExceptionFlowViolations(code, "apps/core/src/ssh/ssh-exec.ts", policyWith()),
     ).toHaveLength(1);
   });
 });
@@ -1240,12 +1229,7 @@ describe("Oxlint production syntax activation", () => {
     );
 
     expect(config.ignorePatterns).toEqual(
-      expect.arrayContaining([
-        "**/dist/**",
-        "**/generated/**",
-        "**/vendor/**",
-        "apps/core/src/ssh/remote-js/remote-runner.cjs",
-      ]),
+      expect.arrayContaining(["**/dist/**", "**/generated/**", "**/vendor/**"]),
     );
     expect(productionOverride).toMatchObject({
       files: expect.arrayContaining(["packages/**/*.{js,jsx,cjs,mjs,ts,tsx}"]),

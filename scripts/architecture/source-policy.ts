@@ -26,10 +26,6 @@ export const PRODUCTION_FILE_EXCLUSIONS = [
     pattern: "(?:^|/)vendor(?:/|$)",
     reason: "Vendored third-party source is enforced by its upstream project",
   },
-  {
-    pattern: "(?:^|/)apps/core/src/ssh/remote-js/remote-runner\\.cjs$",
-    reason: "Generated remote runner bundle is enforced at its TypeScript source",
-  },
 ] as const satisfies readonly ProductionExclusion[];
 
 export type ProductionFileExclusionMatcher = (filePath: string) => boolean;

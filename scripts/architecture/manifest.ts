@@ -357,6 +357,7 @@ export const ACTIVE_WORKSPACES = [
   ["apps/core", "@stanley2058/lilac-core"],
   ["apps/installer", "@stanley2058/lilac-installer"],
   ["apps/tool-bridge", "@stanley2058/lilac-tool-bridge"],
+  ["apps/remote-runner", "@stanley2058/lilac-remote-runner"],
   ["apps/tui", "@stanley2058/lilac-tui"],
   ["apps/web", "@stanley2058/lilac-web"],
   ["packages/agent", "@stanley2058/lilac-agent"],
@@ -369,7 +370,6 @@ export const ACTIVE_WORKSPACES = [
   ["packages/event-bus", "@stanley2058/lilac-event-bus"],
   ["packages/fs", "@stanley2058/lilac-fs"],
   ["packages/plugin-runtime", "@stanley2058/lilac-plugin-runtime"],
-  ["packages/remote-fs-runner", "@stanley2058/lilac-remote-fs-runner"],
   ["packages/tool-results", "@stanley2058/lilac-tool-results"],
   ["packages/utils", "@stanley2058/lilac-utils"],
 ] as const;
@@ -558,9 +558,6 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         exportName: "startHeartbeatServiceResult.stopHeartbeatLifecycleResult",
       },
       ...[
-        "decodeRemoteFsRunnerPackageSpec",
-        "buildRemoteFsRunnerCommand",
-        "sshExecRemoteFsRunnerJson",
         "remoteReadTextFile",
         "remoteReadFileBytes",
         "remoteGlob",
@@ -624,7 +621,6 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         "readBodyTextCapped",
         "readStreamTextCapped",
         "waitForSshExit",
-        "serializeRemoteRunnerRequestJson",
       ].map((exportName) => ({ module: "src/ssh/ssh-exec.ts", exportName })),
     ],
   ],
@@ -649,20 +645,6 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         module: "src/search-backend.ts",
         exportName: "captureFffSyncOperation",
       },
-      ...[
-        "decodeBundledRemoteRunnerRequest",
-        "decodeBundledRemoteRunnerRequestJson",
-        "decodeRemoteFsRequest",
-        "decodeRemoteFsRequestJson",
-        "decodeRemoteFsDaemonRequest",
-        "decodeRemoteFsDaemonRequestJson",
-        "decodeRemoteRunnerResponse",
-        "decodeRemoteRunnerResponseJson",
-        "decodeRemoteRunnerResponseValue",
-      ].map((exportName) => ({
-        module: "src/remote-runner-protocol.ts",
-        exportName,
-      })),
     ],
   ],
   [
@@ -889,26 +871,6 @@ const STAGE_3_OPERATIONAL_RESULT_APIS = new Map<string, readonly SymbolIdentity[
         exportName: `ToolPluginManager.${method}`,
       })),
     ],
-  ],
-  [
-    "packages/remote-fs-runner",
-    [
-      "captureRuntimeOperation",
-      "ensureRuntimeDir",
-      "readStdinText",
-      "readSocketResponse",
-      "decodeSocketResponse",
-      "connectOnce",
-      "spawnDaemon",
-      "tryConnectUntil",
-      "tryAcquireStartupLock",
-      "releaseStartupLock",
-      "applyStartupLockCleanup",
-      "runWithStartupLockCleanup",
-      "runRequest",
-      "executeDaemonRequest",
-      "runDaemon",
-    ].map((exportName) => ({ module: "src/cli.ts", exportName })),
   ],
 ]);
 
@@ -1788,55 +1750,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
     [
       {
         identity: {
-          module: "src/remote-runner-protocol.ts",
-          exportName: "decodeJson",
-        },
-        category: "wire",
-      },
-      {
-        identity: {
-          module: "src/remote-runner-protocol.ts",
-          exportName: "decodeRequest",
-        },
-        category: "wire",
-      },
-      {
-        identity: {
-          module: "src/remote-runner-protocol.ts",
-          exportName: "decodeBundledRemoteRunnerRequest",
-        },
-        category: "wire",
-      },
-      {
-        identity: {
-          module: "src/remote-runner-protocol.ts",
-          exportName: "decodeRemoteFsRequest",
-        },
-        category: "wire",
-      },
-      {
-        identity: {
-          module: "src/remote-runner-protocol.ts",
-          exportName: "decodeRemoteFsDaemonRequest",
-        },
-        category: "wire",
-      },
-      {
-        identity: {
-          module: "src/remote-runner-protocol.ts",
-          exportName: "decodeRemoteRunnerResponse",
-        },
-        category: "wire",
-      },
-      {
-        identity: {
-          module: "src/remote-runner-protocol.ts",
-          exportName: "decodeRemoteRunnerResponseValue",
-        },
-        category: "wire",
-      },
-      {
-        identity: {
           module: "src/filesystem-operation.ts",
           exportName: "decodeFilesystemFailure",
         },
@@ -1848,15 +1761,6 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
           exportName: "decodeRipgrepMatchLine",
         },
         category: "wire",
-      },
-    ],
-  ],
-  [
-    "packages/remote-fs-runner",
-    [
-      {
-        identity: { module: "src/cli.ts", exportName: "opaqueErrorCause" },
-        category: "projection",
       },
     ],
   ],
@@ -4195,10 +4099,10 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             },
             {
               identity: {
-                module: "src/tools/fs/remote-fs.ts",
-                exportName: "decodeRemoteFsRunnerPackageSpec",
+                module: "src/ssh/remote-filesystem-host.ts",
+                exportName: "decodeRemoteRunnerEnvelope",
               },
-              category: "projection",
+              category: "wire",
             },
             {
               identity: {
@@ -4357,7 +4261,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               reason: "Formats an opaque external exception without inspecting domain structure.",
             },
             ...[
-              ["build-remote-runner.ts", "captureBuildOperation.catch"],
               ["src/discovery/discovery-service.ts", "DiscoveryService.searchResult.catch"],
               ["src/discovery/discovery-service.ts", "DiscoveryService.closeResult.catch"],
               ["src/heartbeat/heartbeat-service.ts", "reloadHeartbeatCoreConfig"],
@@ -4371,13 +4274,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               identity: { module: module!, exportName: exportName! },
               reason:
                 "Carries one opaque external rejection only at its immediate adapter boundary.",
-            })),
-            ...["opaqueErrorCause", "opaqueErrorMessage"].map((exportName) => ({
-              identity: {
-                module: "src/ssh/remote-js/remote-runner-utils.ts",
-                exportName,
-              },
-              reason: "Carries or formats only an opaque bundled-runner exception value.",
             })),
           ]
         : []),
@@ -4407,13 +4303,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               },
               reason:
                 "Checks the exact optional Discord guild lookup capability preserved by the descriptor-bound facade.",
-            },
-            {
-              identity: {
-                module: "src/ssh/remote-js/remote-runner-utils.ts",
-                exportName: "isPanic",
-              },
-              reason: "Checks only the exact better-result Panic brand in the isolated bundle.",
             },
             ...["requiredString", "requiredTimestamp"].map((exportName) => ({
               identity: {
@@ -4840,10 +4729,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
                 exportName,
               }),
             ),
-            ...["captureBuildOperation", "buildRemoteRunner"].map((exportName) => ({
-              module: "build-remote-runner.ts",
-              exportName,
-            })),
             ...[
               "parsePositiveInt",
               "parseBackend",
@@ -5227,13 +5112,6 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             },
           ]
         : []),
-      ...(root === "packages/remote-fs-runner"
-        ? ["responseError", "responseSuccess"].map((exportName) => ({
-            kind: "local" as const,
-            module: "src/cli.ts",
-            exportName,
-          }))
-        : []),
     ],
     name: root,
     packageName,
@@ -5374,7 +5252,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "9f1f2b87f592eb8916bc5ca9935a2c3af1f9124e7331a80e0f0407e7ea02194c";
+  "7c183ef408922b5839589cc10eae83eab1e74caabcd1778fed8cf5664f0f504a";
 
 export const architectureManifest = {
   version: 1,

@@ -1358,14 +1358,9 @@ describe("Stage 2 union rules", () => {
     ).toThrow("reason must be nonempty");
   });
 
-  test("excludes the generated Core remote runner bundle but not its source", () => {
+  test("excludes tests and generated output but not sources", () => {
     const root = path.join(REPOSITORY_ROOT, "apps/core");
-    expect(
-      isProductionFileName(path.join(root, "src/ssh/remote-js/remote-runner.cjs"), root),
-    ).toBeFalse();
-    expect(
-      isProductionFileName(path.join(root, "src/ssh/remote-js/remote-runner-entry.ts"), root),
-    ).toBeTrue();
+    expect(isProductionFileName(path.join(root, "src/ssh/ssh-exec.ts"), root)).toBeTrue();
     expect(isProductionFileName(path.join(root, "test/support.ts"), root)).toBeFalse();
     expect(isProductionFileName(path.join(root, "tests/support.ts"), root)).toBeFalse();
     expect(isProductionFileName(path.join(root, "__tests__/support.ts"), root)).toBeFalse();
@@ -2685,7 +2680,6 @@ describe("permanent architecture governance", () => {
       "apps/core:src/surface/bridge/bus-agent-runner/raw.ts#parseRequestControlFromRaw:projection",
       "apps/core:src/workflow/workflow-action-resolver.ts#decodeWorkflowActionOutboxEvent:persistence",
       "apps/tool-bridge:client.ts#projectBridgeFailure:wire",
-      "packages/fs:src/remote-runner-protocol.ts#decodeJson:wire",
       "packages/plugin-runtime:server-tool-result.ts#decodeServerToolResult:plugin",
       "packages/plugin-runtime:server-tool-result.ts#transform.<callback@1>@2:plugin",
       "packages/utils:custom-commands.ts#decodeCustomCommandResult:plugin",

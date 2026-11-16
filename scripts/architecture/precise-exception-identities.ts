@@ -20,6 +20,7 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
   "apps/computer-use-gateway": [],
   "apps/installer": [],
   "apps/web": [],
+  "apps/remote-runner": [],
   "apps/tui": [],
   "packages/computer-use-runner": [],
   "packages/client": [],
@@ -568,15 +569,10 @@ export const PRECISE_EXCEPTION_IDENTITIES = {
     ["src/filesystem-operation.ts", "captureFilesystemOperation", "signal"],
     ["src/filesystem-operation.ts", "captureFilesystemOperationSync", "signal"],
     ["src/fs-impl.ts", "compileEditRegex", "signal"],
-    ["src/remote-runner-protocol.ts", "decodeJson", "signal"],
     ["src/ripgrep.ts", "decodeRipgrepMatchLine", "signal"],
     ["src/ripgrep.ts", "ripgrep", "signal"],
     ["src/search-backend.ts", "captureFffOperation", "signal"],
     ["src/search-backend.ts", "captureFffSyncOperation", "signal"],
-  ],
-  "packages/remote-fs-runner": [
-    ["src/cli.ts", "preservePanic", "signal"],
-    ["src/cli.ts", "runWithStartupLockCleanup", "signal"],
   ],
   "packages/plugin-runtime": [
     ["capabilities.ts", "capturePluginInspection", "signal"],

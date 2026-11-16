@@ -45,7 +45,7 @@
         "@stanley2058/lilac-event-bus": "workspace:*",
         "@stanley2058/lilac-fs": "workspace:*",
         "@stanley2058/lilac-plugin-runtime": "workspace:*",
-        "@stanley2058/lilac-remote-fs-runner": "workspace:*",
+        "@stanley2058/lilac-remote-runner": "workspace:*",
         "@stanley2058/lilac-tool-results": "workspace:*",
         "@stanley2058/lilac-utils": "workspace:*",
         "@stanley2058/simple-module-logger": "^0.0.4",
@@ -104,6 +104,13 @@
         "better-result": "catalog:",
         "yaml": "2.9.0",
         "zod": "^4.3.6",
+      },
+    },
+    "apps/remote-runner": {
+      "name": "@stanley2058/lilac-remote-runner",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.1",
       },
     },
     "apps/tool-bridge": {
@@ -368,25 +375,6 @@
       },
       "devDependencies": {
         "@types/bun": "^1.4.1",
-      },
-      "peerDependencies": {
-        "typescript": "^7.0.2",
-      },
-    },
-    "packages/remote-fs-runner": {
-      "name": "@stanley2058/lilac-remote-fs-runner",
-      "version": "0.0.7",
-      "bin": {
-        "lilac-remote-fs": "dist/cli.js",
-      },
-      "dependencies": {
-        "@ff-labs/fff-node": "^0.9.4",
-        "better-result": "^3.0.1",
-      },
-      "devDependencies": {
-        "@stanley2058/lilac-fs": "workspace:*",
-        "@types/bun": "^1.4.1",
-        "zod": "^4.3.6",
       },
       "peerDependencies": {
         "typescript": "^7.0.2",
@@ -1147,7 +1135,7 @@
 
     "@stanley2058/lilac-plugin-runtime": ["@stanley2058/lilac-plugin-runtime@workspace:packages/plugin-runtime"],
 
-    "@stanley2058/lilac-remote-fs-runner": ["@stanley2058/lilac-remote-fs-runner@workspace:packages/remote-fs-runner"],
+    "@stanley2058/lilac-remote-runner": ["@stanley2058/lilac-remote-runner@workspace:apps/remote-runner"],
 
     "@stanley2058/lilac-tool-bridge": ["@stanley2058/lilac-tool-bridge@workspace:apps/tool-bridge"],
 

@@ -437,7 +437,6 @@ export const CORE_FINAL_BOUNDARY_IDENTITIES = [
   ["src/tools/bash-impl.ts", "formatBashStreamFailureForLog"],
   ["src/transcript/heartbeat-handoff.ts", "safeStringify.catch"],
   ["src/workflow/workflow-sandbox.ts", "startWorkflowSandbox.then.<callback@2>"],
-  ["src/ssh/remote-js/remote-runner-utils.ts", "opaqueErrorCause"],
 ] as const;
 export const CORE_FINAL_CAPABILITY_IDENTITIES = [
   ["src/surface/adapter.ts", "hasCacheBurstProvider"],

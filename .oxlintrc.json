@@ -6,8 +6,7 @@
     "data/**",
     "**/dist/**",
     "**/generated/**",
-    "**/vendor/**",
-    "apps/core/src/ssh/remote-js/remote-runner.cjs"
+    "**/vendor/**"
   ],
   "jsPlugins": ["./scripts/oxlint-plugins/lilac.mts"],
   "globals": {

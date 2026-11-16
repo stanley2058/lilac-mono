@@ -1,2 +1,0 @@
-[test]
-preload = ["../../__tests__/test-data-dir-preload.ts"]

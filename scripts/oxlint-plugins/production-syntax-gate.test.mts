@@ -52,9 +52,6 @@ describe("repository syntax gate", () => {
     ["apps/example", "src/node_modules/dependency/index.ts", false],
     ["packages/example", "node_modules/dependency/index.ts", false],
     ["apps/example", "src/node_modules-helper.ts", true],
-    ["apps/core", "src/ssh/remote-js/remote-runner.cjs", false],
-    ["apps/core", "src/ssh/remote-js/remote-runner-entry.ts", true],
-    ["apps/example", "src/ssh/remote-js/remote-runner.cjs", true],
     ["packages/example", "src/fixtures/runtime.ts", true],
   ] as const)("shares production ownership for %s/%s", (workspace, module, expected) => {
     const root = path.resolve(import.meta.dir, "../..");

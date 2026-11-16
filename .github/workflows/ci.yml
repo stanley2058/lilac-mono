@@ -62,6 +62,16 @@ jobs:
         with:
           go-version: stable
 
+      # apps/remote-runner/rust-toolchain.toml pins the compiler, rustfmt and targets.
+      - name: Setup Rust for the remote runner
+        run: rustup toolchain install
+        working-directory: apps/remote-runner
+
+      - name: Cache the remote runner build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/remote-runner
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -86,9 +96,6 @@ jobs:
 
       - name: Run CI script
         run: bun run ci
-
-      - name: Install the packed remote fs runner
-        run: bun run test:remote-fs-package
 
       - name: Test process and Redis resilience
         run: bun run test:resilience

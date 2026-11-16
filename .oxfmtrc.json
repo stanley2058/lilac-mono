@@ -5,12 +5,5 @@
   "semi": true,
   "singleQuote": false,
   "experimentalSortPackageJson": false,
-  "ignorePatterns": [
-    "ref/**",
-    "node_modules/**",
-    "data/**",
-    "**/dist/**",
-    "**/vendor/**",
-    "apps/core/src/ssh/remote-js/remote-runner.cjs"
-  ]
+  "ignorePatterns": ["ref/**", "node_modules/**", "data/**", "**/dist/**", "**/vendor/**"]
 }

@@ -166,6 +166,7 @@ WORKDIR /app
 # Copy only dependency manifests for layer caching
 COPY package.json bun.lock ./
 COPY apps/core/package.json apps/core/package.json
+COPY apps/remote-runner/package.json apps/remote-runner/package.json
 COPY apps/tui/package.json apps/tui/package.json
 COPY packages/client/package.json packages/client/package.json
 COPY apps/tool-bridge/package.json apps/tool-bridge/package.json
@@ -178,7 +179,6 @@ COPY packages/coding-tools/package.json packages/coding-tools/package.json
 COPY packages/event-bus/package.json packages/event-bus/package.json
 COPY packages/fs/package.json packages/fs/package.json
 COPY packages/plugin-runtime/package.json packages/plugin-runtime/package.json
-COPY packages/remote-fs-runner/package.json packages/remote-fs-runner/package.json
 COPY packages/tool-results/package.json packages/tool-results/package.json
 COPY packages/utils/package.json packages/utils/package.json
 COPY patches patches
@@ -187,7 +187,6 @@ COPY patches patches
 RUN bun install --frozen-lockfile \
       --filter '@stanley2058/lilac-tool-bridge' \
       --filter '@stanley2058/lilac-tui' \
-      --filter '@stanley2058/lilac-remote-fs-runner' \
   && find /app ! -type l -perm /022 -exec chmod go-w {} +
 
 ############################
@@ -209,30 +208,35 @@ COPY packages/utils/build-info.ts packages/utils/find-root.ts packages/utils/run
      packages/utils/tsconfig.json packages/utils/
 RUN (cd apps/tool-bridge && bun build.ts --worker-only)
 
-FROM deps AS remote-runner
-WORKDIR /app
-COPY tsconfig.json ./
-COPY apps/core/build-remote-runner.ts apps/core/tsconfig.json apps/core/
-COPY apps/core/src/shared/error-capture.ts apps/core/src/shared/
-COPY apps/core/src/ssh/remote-js/*.ts apps/core/src/ssh/remote-js/
-COPY apps/core/src/tools/apply-patch/apply-patch-core.ts apps/core/src/tools/apply-patch/
-COPY apps/core/src/tools/tool-result-adapters.ts apps/core/src/tools/
-COPY packages/coding-tools/src/apply-patch.ts packages/coding-tools/src/
-COPY packages/coding-tools/tsconfig.json packages/coding-tools/
-COPY packages/fs/tsconfig.json packages/fs/
-COPY packages/fs/src packages/fs/src
-COPY packages/utils/*.ts packages/utils/tsconfig.json packages/utils/
-COPY packages/utils/core-config packages/utils/core-config
-RUN (cd apps/core && bun run build:remote-runner)
-
-FROM deps AS remote-fs-runner
-WORKDIR /app
-COPY tsconfig.json ./
-COPY packages/fs/tsconfig.json packages/fs/
-COPY packages/fs/src packages/fs/src
-COPY packages/remote-fs-runner/build.ts packages/remote-fs-runner/tsconfig.json packages/remote-fs-runner/
-COPY packages/remote-fs-runner/src packages/remote-fs-runner/src
-RUN (cd packages/remote-fs-runner && bun run build)
+# The native runner Core uploads to SSH hosts. Linux targets link with rust-lld and macOS targets
+# with zig, so one Linux builder produces all four binaries.
+FROM rust:1.94-slim-trixie AS remote-runner
+ARG ZIG_VERSION=0.17.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates \
+  curl \
+  jq \
+  xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+RUN ZIG_PLATFORM="$(uname -m)-linux" \
+  && INDEX="$(curl -fsSL https://ziglang.org/download/index.json)" \
+  && URL="$(printf '%s' "$INDEX" | jq -er --arg v "$ZIG_VERSION" --arg p "$ZIG_PLATFORM" '.[$v][$p].tarball')" \
+  && SHA="$(printf '%s' "$INDEX" | jq -er --arg v "$ZIG_VERSION" --arg p "$ZIG_PLATFORM" '.[$v][$p].shasum')" \
+  && curl -fsSL "$URL" -o /tmp/zig.tar.xz \
+  && echo "$SHA  /tmp/zig.tar.xz" | sha256sum -c - \
+  && mkdir -p /opt/zig \
+  && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 \
+  && ln -s /opt/zig/zig /usr/local/bin/zig \
+  && rm /tmp/zig.tar.xz
+COPY --from=tools /usr/local/bin/bun /usr/local/bin/bun
+WORKDIR /build
+COPY apps/remote-runner/Cargo.toml apps/remote-runner/Cargo.lock apps/remote-runner/index.ts \
+     apps/remote-runner/
+COPY apps/remote-runner/src apps/remote-runner/src
+COPY scripts/build-remote-runner.ts scripts/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/apps/remote-runner/target \
+    bun scripts/build-remote-runner.ts --all
 
 FROM deps AS web
 WORKDIR /app
@@ -267,15 +271,14 @@ COPY packages/coding-tools packages/coding-tools
 COPY packages/event-bus packages/event-bus
 COPY packages/fs packages/fs
 COPY packages/plugin-runtime packages/plugin-runtime
-COPY packages/remote-fs-runner packages/remote-fs-runner
+COPY apps/remote-runner/index.ts apps/remote-runner/package.json apps/remote-runner/
 COPY packages/tool-results packages/tool-results
 COPY packages/utils packages/utils
 RUN bun run codegen:config-schemas
 COPY --from=web /app/apps/web/dist /app/apps/web/dist
 COPY --from=native-launcher /build/tools /app/apps/tool-bridge/dist/tools
 COPY --from=tool-worker /app/apps/tool-bridge/dist/ /app/apps/tool-bridge/dist/
-COPY --from=remote-runner /app/apps/core/src/ssh/remote-js/remote-runner.cjs /app/apps/core/src/ssh/remote-js/
-COPY --from=remote-fs-runner /app/packages/remote-fs-runner/dist/ /app/packages/remote-fs-runner/dist/
+COPY --from=remote-runner /build/apps/remote-runner/dist/ /app/apps/remote-runner/dist/
 
 # Keep the launcher and resident worker outside the lilac-writable application build tree.
 COPY --from=native-launcher --chmod=0755 /build/tools /usr/local/bin/tools

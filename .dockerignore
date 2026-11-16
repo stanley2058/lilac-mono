@@ -38,6 +38,7 @@ home/
 
 # build artifacts
 **/dist
+**/target
 !apps/tool-bridge/dist/
 apps/tool-bridge/dist/*
 !apps/tool-bridge/dist/index.js
