@@ -569,7 +569,8 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
     checks.push({
       name: "tool-calls.overdue",
       ok: overdueCalls.length === 0,
-      impact: "live",
+      // The caller already received a timeout result, so a plugin that never settles must not restart Core.
+      impact: "ready",
       reason:
         overdueCalls.length === 0
           ? undefined

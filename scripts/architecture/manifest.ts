@@ -1536,7 +1536,7 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
       {
         identity: {
           module: "src/tool-server/create-tool-server.ts",
-          exportName: "projectFatalToolCallDefect",
+          exportName: "projectToolCallDefect",
         },
         category: "projection",
       },
