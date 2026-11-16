@@ -1,57 +1,20 @@
-import type {
-  BundledRemoteRunnerRequest,
-  FileEdit,
-  FsBackend,
-  HashlineEdit,
-  ReadFileStart,
-  RemoteFsRequest,
-  RemoteEditResponse as ProtocolRemoteEditResponse,
-  RemoteFuzzySearchResponse as ProtocolRemoteFuzzySearchResponse,
-  RemoteGlobResponse as ProtocolRemoteGlobResponse,
-  RemoteGrepResponse as ProtocolRemoteGrepResponse,
-  RemoteReadBytesResponse as ProtocolRemoteReadBytesResponse,
-  RemoteReadTextResponse as ProtocolRemoteReadTextResponse,
-  RemoteRunnerResponseDecodeError,
-} from "@stanley2058/lilac-fs";
 import {
-  decodeRemoteEditResponseJson,
-  decodeRemoteFuzzySearchResponseJson,
-  decodeRemoteGlobResponseJson,
-  decodeRemoteGrepResponseJson,
-  decodeRemoteReadBytesResponseJson,
-  decodeRemoteReadTextResponseJson,
+  FileSystem,
+  type EditFileResult,
+  type FileEdit,
+  type FuzzySearchResult,
+  type GlobResult,
+  type GrepResult,
+  type HashlineEdit,
+  type ReadFileResult,
+  type ReadFileStart,
 } from "@stanley2058/lilac-fs";
-import { createRequire } from "node:module";
-import path from "node:path";
+import { Result, type Result as ResultType } from "better-result";
 
-import { Result, TaggedError, type Result as ResultType } from "better-result";
-import { z } from "zod";
-
-import { captureRuntimeError, projectCapturedRuntimeError } from "../../runtime/error-format";
 import {
-  SshExecutionAdapterError,
-  SshExecutionCancelledError,
-  SshExecutionOutputCappedError,
-  SshExecutionTimedOutError,
-  SshExecutionTransportError,
-  type SshJsonExecutionError,
-  SshSubprocessExitError,
-  serializeRemoteRunnerRequestJson,
-  sshExecBash,
-  sshExecScriptJson,
-} from "../../ssh/ssh-exec";
-import { getRemoteRunnerJsText, type RemoteRunnerSourceReadError } from "../../ssh/remote-js";
-import { adaptToolResultToHost, preserveToolPanic } from "../tool-result-adapters";
-
-const requirePackageJson = createRequire(import.meta.url);
-
-function selectResultValue<T, E extends Error>(result: ResultType<T, E>): T {
-  const select = result.match<() => T>({
-    ok: (value) => () => value,
-    err: (error) => () => adaptToolResultToHost(Result.err(error)),
-  });
-  return select();
-}
+  createRemoteFileSystemHost,
+  type RemoteHostUnavailableError,
+} from "../../ssh/remote-filesystem-host";
 
 export type RemoteReadTextInput = {
   path: string;
@@ -62,19 +25,27 @@ export type RemoteReadTextInput = {
   format?: "raw" | "numbered" | "hashline";
 };
 
-export type RemoteReadTextOutput = ProtocolRemoteReadTextResponse;
-export type RemoteReadBytesResult = ProtocolRemoteReadBytesResponse;
-export type RemoteGlobEntry = Extract<
-  ProtocolRemoteGlobResponse,
-  { mode: "detailed" }
->["entries"][number];
-export type RemoteGlobOutput = ProtocolRemoteGlobResponse;
-export type RemoteGrepMatch = Extract<
-  ProtocolRemoteGrepResponse,
-  { mode: "detailed" }
->["results"][number];
-export type RemoteGrepOutput = ProtocolRemoteGrepResponse;
-export type RemoteFuzzySearchOutput = ProtocolRemoteFuzzySearchResponse;
+export type RemoteReadTextOutput = ReadFileResult;
+export type RemoteReadBytesResult =
+  | {
+      ok: true;
+      resolvedPath: string;
+      fileHash: string;
+      bytesLength: number;
+      totalBytes?: number;
+      base64: string;
+    }
+  | {
+      ok: false;
+      resolvedPath?: string;
+      error: string;
+      errorCode?: "NOT_FOUND" | "PERMISSION" | "MEDIA_TOO_LARGE" | "UNKNOWN";
+    };
+export type RemoteGlobOutput = GlobResult;
+export type RemoteGlobEntry = Extract<GlobResult, { mode: "detailed" }>["entries"][number];
+export type RemoteGrepOutput = GrepResult;
+export type RemoteGrepMatch = Extract<GrepResult, { mode: "detailed" }>["results"][number];
+export type RemoteFuzzySearchOutput = FuzzySearchResult;
 
 export type RemoteEditInput =
   | {
@@ -90,260 +61,59 @@ export type RemoteEditInput =
       expectedHash?: string;
     };
 
-export type RemoteEditOutput = ProtocolRemoteEditResponse;
-export class RemoteFsRunnerSetupError extends TaggedError("RemoteFsRunnerSetupError")<{
-  readonly cause: unknown;
-  readonly message: string;
-}> {}
+export type RemoteEditOutput = EditFileResult;
 
-export type RemoteFsExecutionError =
-  | SshJsonExecutionError
-  | RemoteRunnerResponseDecodeError
-  | RemoteRunnerSourceReadError
-  | RemoteFsRunnerSetupError;
+export type RemoteFsExecutionError = RemoteHostUnavailableError;
 
 const DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
-const DEFAULT_MAX_OUTPUT_CHARS = 500_000;
-const remoteFsRunnerPackageSchema = z.object({
-  name: z.string().min(1),
-  version: z.string().min(1),
-});
+/** Byte reads without an explicit limit keep the bundled runner's former cap. */
+const DEFAULT_MAX_READ_BYTES = 10_000_000;
 
-function toMutableHashlineLines(
-  lines: HashlineEdit["lines"],
-): string | string[] | null | undefined {
-  if (typeof lines === "string" || lines === null || lines === undefined) return lines;
-  return [...lines];
+/** Runs one filesystem call against an SSH host, through the same `FileSystem` Core uses locally. */
+async function withRemoteFileSystem<T>(
+  params: {
+    host: string;
+    cwd: string;
+    denyPaths: readonly string[];
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  },
+  run: (fileSystem: FileSystem) => Promise<T>,
+  search?: { readonly fsBackend: "fff"; readonly fuzzySearchFallback: "fzf" },
+): Promise<ResultType<T, RemoteFsExecutionError>> {
+  const created = await createRemoteFileSystemHost({
+    host: params.host,
+    denyPaths: params.denyPaths,
+    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    signal: params.signal,
+  });
+  return await created.match<Promise<ResultType<T, RemoteFsExecutionError>>>({
+    err: async (error) => Result.err(error),
+    ok: async (host) =>
+      Result.ok(
+        await run(new FileSystem(params.cwd, { ...search, denyPaths: params.denyPaths, host })),
+      ),
+  });
 }
 
-function toBundledRemoteEditRequest(
-  input: RemoteEditInput,
-  denyPaths: readonly string[],
-): Extract<BundledRemoteRunnerRequest, { op: "fs.edit" }> {
-  if (input.mode === "hashline") {
+/** Drops per-edit diagnostics, which the remote edit contract never carried. */
+function normalizeEditOutput(result: EditFileResult): EditFileResult {
+  if (result.success) {
     return {
-      op: "fs.edit",
-      denyPaths: [...denyPaths],
-      input: {
-        ...input,
-        edits: input.edits.map((edit) => ({
-          ...edit,
-          lines: toMutableHashlineLines(edit.lines),
-        })),
-      },
-    };
-  }
-  if (input.mode === "legacy") {
-    return {
-      op: "fs.edit",
-      denyPaths: [...denyPaths],
-      input: {
-        path: input.path,
-        edits: [...input.edits],
-        expectedHash: input.expectedHash,
-        mode: "legacy",
-      },
+      success: true,
+      resolvedPath: result.resolvedPath,
+      oldHash: result.oldHash,
+      newHash: result.newHash,
+      changesMade: result.changesMade,
+      replacementsMade: result.replacementsMade,
     };
   }
   return {
-    op: "fs.edit",
-    denyPaths: [...denyPaths],
-    input: {
-      path: input.path,
-      edits: [...input.edits],
-      expectedHash: input.expectedHash,
-    },
+    success: false,
+    resolvedPath: result.resolvedPath,
+    currentHash: result.currentHash,
+    error: result.error,
   };
-}
-
-function decodeRemoteFsRunnerPackageSpec(): ResultType<string, RemoteFsRunnerSetupError> {
-  const loaded = Result.try({
-    try: (): unknown => requirePackageJson("@stanley2058/lilac-remote-fs-runner/package.json"),
-    catch: captureRuntimeError,
-  }).mapError((captured) =>
-    projectCapturedRuntimeError(captured, "Opaque remote fs runner setup failure"),
-  );
-  return loaded.match<() => ResultType<string, RemoteFsRunnerSetupError>>({
-    err: (error) => () => {
-      const cause = preserveToolPanic(error);
-      return Result.err(
-        new RemoteFsRunnerSetupError({
-          cause,
-          message: "remote fs runner package.json could not be loaded",
-        }),
-      );
-    },
-    ok: (value) => () => {
-      const packageJson = remoteFsRunnerPackageSchema.safeParse(value);
-      return packageJson.success
-        ? Result.ok(`${packageJson.data.name}@${packageJson.data.version}`)
-        : Result.err(
-            new RemoteFsRunnerSetupError({
-              cause: packageJson.error,
-              message: "remote fs runner package.json is invalid",
-            }),
-          );
-    },
-  })();
-}
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-function splitRemoteGrepTarget(cwd: string): {
-  launchCwd: string;
-  baseDir: string;
-  reportedFilePath: string;
-} {
-  const target = cwd.length > 1 ? cwd.replace(/\/+$/u, "") : cwd;
-  return {
-    launchCwd: path.posix.dirname(target),
-    baseDir: path.posix.basename(target) || target,
-    reportedFilePath: cwd,
-  };
-}
-
-function buildRemoteFsRunnerCommand(): ResultType<string, RemoteFsRunnerSetupError> {
-  const override = process.env.LILAC_REMOTE_FS_RUNNER_COMMAND;
-  if (override && override.trim().length > 0) return Result.ok(override);
-
-  let packageSpecValue = process.env.LILAC_REMOTE_FS_RUNNER_PACKAGE;
-  if (!packageSpecValue) {
-    const decoded = decodeRemoteFsRunnerPackageSpec();
-    return decoded.map((value) => buildRemoteFsRunnerCommandForPackage(value));
-  }
-  return Result.ok(buildRemoteFsRunnerCommandForPackage(packageSpecValue));
-}
-
-function buildRemoteFsRunnerCommandForPackage(packageSpecValue: string): string {
-  const packageSpec = shellSingleQuote(packageSpecValue);
-  return `if command -v bunx >/dev/null 2>&1; then
-  LILAC_RUNNER_CACHE_DIR="\${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-fs-runner"
-  LILAC_BUNX_TMPDIR="$LILAC_RUNNER_CACHE_DIR/bunx"
-  LILAC_RUNNER_INSTALL_LOCK="$LILAC_RUNNER_CACHE_DIR/package-launch.lock"
-  mkdir -p "$LILAC_BUNX_TMPDIR"
-
-  run_lilac_bunx() {
-    TMPDIR="$LILAC_BUNX_TMPDIR" bunx "$@"
-  }
-
-  if command -v flock >/dev/null 2>&1; then
-    if ! run_lilac_bunx --no-install ${packageSpec} --version >/dev/null 2>&1; then
-      (
-        flock -x 9
-        if ! run_lilac_bunx --no-install ${packageSpec} --version >/dev/null 2>&1; then
-          run_lilac_bunx ${packageSpec} --version >/dev/null
-        fi
-      ) 9> "$LILAC_RUNNER_INSTALL_LOCK"
-    fi
-    run_lilac_bunx --no-install ${packageSpec} request
-  else
-    if command -v mktemp >/dev/null 2>&1; then
-      LILAC_BUNX_ISOLATED_TMPDIR=$(mktemp -d "\${TMPDIR:-/tmp}/lilac-bunx.XXXXXX")
-    else
-      LILAC_BUNX_ISOLATED_TMPDIR="\${TMPDIR:-/tmp}/lilac-bunx.$$.$RANDOM"
-      mkdir "$LILAC_BUNX_ISOLATED_TMPDIR"
-    fi
-    trap 'rm -rf "$LILAC_BUNX_ISOLATED_TMPDIR" >/dev/null 2>&1 || true' EXIT
-    TMPDIR="$LILAC_BUNX_ISOLATED_TMPDIR" bunx ${packageSpec} request
-  fi
-elif command -v npx >/dev/null 2>&1; then
-  npx --no-workspaces -y ${packageSpec} request
-else
-  echo '{"ok":false,"error":"Remote host has neither npx nor bunx in PATH"}'
-fi`;
-}
-
-async function sshExecRemoteFsRunnerJson<T>(params: {
-  host: string;
-  cwd: string;
-  input: RemoteFsRequest;
-  timeoutMs: number;
-  maxOutputChars: number;
-  signal?: AbortSignal;
-  decodeResponse: (text: string) => ResultType<T, RemoteRunnerResponseDecodeError>;
-}): Promise<ResultType<T, RemoteFsExecutionError>> {
-  const serializedInput = serializeRemoteRunnerRequestJson(params.input);
-  const serializationError = serializedInput.match({ ok: () => null, err: (error) => error });
-  if (serializationError) return Result.err(serializationError);
-  const inputJson = selectResultValue(serializedInput);
-  const runnerCommandResult = buildRemoteFsRunnerCommand();
-  const runnerCommandError = runnerCommandResult.match({ ok: () => null, err: (error) => error });
-  if (runnerCommandError) return Result.err(runnerCommandError);
-  const runnerCommand = selectResultValue(runnerCommandResult);
-
-  const encodedInput = Buffer.from(inputJson).toString("base64");
-  const script = `set -euo pipefail
-run_remote_fs_runner() {
-${runnerCommand}
-}
-printf '%s' '${encodedInput}' | base64 -d | run_remote_fs_runner
-`;
-
-  const executed = (
-    await Result.tryPromise({
-      try: () =>
-        sshExecBash({
-          host: params.host,
-          cmd: script,
-          cwd: params.cwd,
-          timeoutMs: params.timeoutMs,
-          signal: params.signal,
-          maxOutputChars: params.maxOutputChars,
-        }),
-      catch: captureRuntimeError,
-    })
-  ).mapError((captured) =>
-    projectCapturedRuntimeError(captured, "Opaque remote fs SSH adapter failure"),
-  );
-  const executionError = executed.match({ ok: () => null, err: (error) => error });
-  if (executionError) {
-    const cause = preserveToolPanic(executionError);
-    return Result.err(
-      new SshExecutionAdapterError({
-        cause,
-        message: "remote fs runner SSH execution adapter failed",
-      }),
-    );
-  }
-  const res = selectResultValue(executed);
-
-  if (res.aborted) return Result.err(new SshExecutionCancelledError({ message: "aborted" }));
-  if (res.timedOut) {
-    return Result.err(
-      new SshExecutionTimedOutError({
-        timeoutMs: params.timeoutMs,
-        message: `timeout:${params.timeoutMs}`,
-      }),
-    );
-  }
-  if (res.capped.stdout || res.capped.stderr) {
-    return Result.err(
-      new SshExecutionOutputCappedError({
-        message: "remote fs runner output capped (response too large)",
-      }),
-    );
-  }
-  if (res.transportError) {
-    return Result.err(
-      new SshExecutionTransportError({
-        transportType: res.transportError.type,
-        message: res.transportError.message,
-      }),
-    );
-  }
-  if (res.exitCode !== 0) {
-    const detail = res.stderr.trim().length > 0 ? `: ${res.stderr.trim()}` : "";
-    return Result.err(
-      new SshSubprocessExitError({
-        exitCode: res.exitCode,
-        stderr: res.stderr,
-        message: `remote fs runner exited with code ${res.exitCode}${detail}`,
-      }),
-    );
-  }
-  return params.decodeResponse(res.stdout.trim());
 }
 
 export async function remoteReadTextFile(params: {
@@ -354,23 +124,16 @@ export async function remoteReadTextFile(params: {
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<ResultType<RemoteReadTextOutput, RemoteFsExecutionError>> {
-  const source = await getRemoteRunnerJsText();
-  const sourceError = source.match({ ok: () => null, err: (error) => error });
-  if (sourceError) return Result.err(sourceError);
-  return await sshExecScriptJson({
-    host: params.host,
-    cwd: params.cwd,
-    js: selectResultValue(source),
-    input: {
-      op: "fs.read_text",
-      denyPaths: [...params.denyPaths],
-      input: params.input,
-    },
-    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    signal: params.signal,
-    maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
-    decodeResponse: decodeRemoteReadTextResponseJson,
-  });
+  return await withRemoteFileSystem(params, (fileSystem) =>
+    fileSystem.readFile({
+      path: params.input.path,
+      start: params.input.start,
+      maxLines: params.input.maxLines,
+      maxCharacters: params.input.maxCharacters,
+      maxBytes: params.input.maxBytes,
+      format: params.input.format ?? "raw",
+    }),
+  );
 }
 
 export async function remoteReadFileBytes(params: {
@@ -383,29 +146,28 @@ export async function remoteReadFileBytes(params: {
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<ResultType<RemoteReadBytesResult, RemoteFsExecutionError>> {
-  // Base64 output can be large (1.33x bytes). Keep a generous cap.
-  const maxOutputChars = Math.max(500_000, Math.ceil(params.maxBytes * 1.5) + 10_000);
-
-  const source = await getRemoteRunnerJsText();
-  const sourceError = source.match({ ok: () => null, err: (error) => error });
-  if (sourceError) return Result.err(sourceError);
-  return await sshExecScriptJson({
-    host: params.host,
-    cwd: params.cwd,
-    js: selectResultValue(source),
-    input: {
-      op: "fs.read_bytes",
-      denyPaths: [...params.denyPaths],
-      input: {
-        path: params.filePath,
-        maxBytes: params.maxBytes,
-        ...(params.prefixBytes === undefined ? {} : { prefixBytes: params.prefixBytes }),
-      },
-    },
-    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    signal: params.signal,
-    maxOutputChars,
-    decodeResponse: decodeRemoteReadBytesResponseJson,
+  return await withRemoteFileSystem(params, async (fileSystem) => {
+    const result = await fileSystem.readFileBytes({
+      path: params.filePath,
+      maxBytes: params.maxBytes ?? DEFAULT_MAX_READ_BYTES,
+      prefixBytes: params.prefixBytes,
+    });
+    if (!result.success) {
+      return {
+        ok: false,
+        resolvedPath: result.resolvedPath,
+        error: result.error.message,
+        errorCode: result.error.code,
+      } satisfies RemoteReadBytesResult;
+    }
+    return {
+      ok: true,
+      resolvedPath: result.resolvedPath,
+      fileHash: result.fileHash,
+      bytesLength: result.bytesLength,
+      ...(result.totalBytes === undefined ? {} : { totalBytes: result.totalBytes }),
+      base64: Buffer.from(result.bytes).toString("base64"),
+    } satisfies RemoteReadBytesResult;
   });
 }
 
@@ -416,58 +178,16 @@ export async function remoteGlob(params: {
   maxEntries?: number;
   mode?: "default" | "detailed";
   denyPaths: readonly string[];
-  fsBackend?: FsBackend;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<ResultType<RemoteGlobOutput, RemoteFsExecutionError>> {
-  const mode = params.mode ?? "default";
-  const input: RemoteFsRequest = {
-    op: "fs.glob",
-    denyPaths: [...params.denyPaths],
-    input: {
+  return await withRemoteFileSystem(params, (fileSystem) =>
+    fileSystem.glob({
       patterns: [...params.patterns],
       maxEntries: params.maxEntries,
-      mode,
-    },
-  };
-
-  if (params.fsBackend === "fff") {
-    const runnerRes = await sshExecRemoteFsRunnerJson({
-      host: params.host,
-      cwd: params.cwd,
-      input,
-      timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
-      signal: params.signal,
-      decodeResponse: decodeRemoteGlobResponseJson,
-    });
-    const runnerError = runnerRes.match({ ok: () => null, err: (error) => error });
-    if (
-      !runnerError ||
-      (runnerError._tag === "SshSubprocessExitError" &&
-        runnerError.stderr.includes("Remote cwd does not exist or is not a directory")) ||
-      [
-        "SshExecutionCancelledError",
-        "SshExecutionTimedOutError",
-        "SshExecutionOutputCappedError",
-      ].includes(runnerError._tag)
-    )
-      return runnerRes;
-  }
-
-  const source = await getRemoteRunnerJsText();
-  const sourceError = source.match({ ok: () => null, err: (error) => error });
-  if (sourceError) return Result.err(sourceError);
-  return await sshExecScriptJson({
-    host: params.host,
-    cwd: params.cwd,
-    js: selectResultValue(source),
-    input,
-    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    signal: params.signal,
-    maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
-    decodeResponse: decodeRemoteGlobResponseJson,
-  });
+      mode: params.mode ?? "default",
+    }),
+  );
 }
 
 export async function remoteGrep(params: {
@@ -482,64 +202,21 @@ export async function remoteGrep(params: {
     mode?: "default" | "detailed" | "hashline";
   };
   denyPaths: readonly string[];
-  fsBackend?: FsBackend;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<ResultType<RemoteGrepOutput, RemoteFsExecutionError>> {
-  const mode = params.input.mode ?? "default";
-  const target = splitRemoteGrepTarget(params.cwd);
-  const input: RemoteFsRequest = {
-    op: "fs.grep",
-    denyPaths: [...params.denyPaths],
-    input: {
+  return await withRemoteFileSystem(params, (fileSystem) =>
+    fileSystem.grep({
       pattern: params.input.pattern,
+      baseDir: params.cwd,
+      reportedFilePath: params.cwd,
       regex: params.input.regex,
       maxResults: params.input.maxResults,
-      fileExtensions: params.input.fileExtensions ? [...params.input.fileExtensions] : undefined,
+      fileExtensions: params.input.fileExtensions?.map((extension) => extension.replace(/^\./, "")),
       includeContextLines: params.input.includeContextLines,
-      mode,
-      baseDir: target.baseDir,
-      reportedFilePath: target.reportedFilePath,
-    },
-  };
-
-  if (params.fsBackend === "fff") {
-    const runnerRes = await sshExecRemoteFsRunnerJson({
-      host: params.host,
-      cwd: target.launchCwd,
-      input,
-      timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
-      signal: params.signal,
-      decodeResponse: decodeRemoteGrepResponseJson,
-    });
-    const runnerError = runnerRes.match({ ok: () => null, err: (error) => error });
-    if (
-      !runnerError ||
-      (runnerError._tag === "SshSubprocessExitError" &&
-        runnerError.stderr.includes("Remote cwd does not exist or is not a directory")) ||
-      [
-        "SshExecutionCancelledError",
-        "SshExecutionTimedOutError",
-        "SshExecutionOutputCappedError",
-      ].includes(runnerError._tag)
-    )
-      return runnerRes;
-  }
-
-  const source = await getRemoteRunnerJsText();
-  const sourceError = source.match({ ok: () => null, err: (error) => error });
-  if (sourceError) return Result.err(sourceError);
-  return await sshExecScriptJson({
-    host: params.host,
-    cwd: target.launchCwd,
-    js: selectResultValue(source),
-    input,
-    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    signal: params.signal,
-    maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
-    decodeResponse: decodeRemoteGrepResponseJson,
-  });
+      mode: params.input.mode ?? "default",
+    }),
+  );
 }
 
 export async function remoteFuzzySearch(params: {
@@ -553,25 +230,16 @@ export async function remoteFuzzySearch(params: {
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<ResultType<RemoteFuzzySearchOutput, RemoteFsExecutionError>> {
-  const input: RemoteFsRequest = {
-    op: "fs.fuzzy_search",
-    denyPaths: [...params.denyPaths],
-    input: {
-      query: params.input.query,
-      maxResults: params.input.maxResults,
-    },
-  };
-
-  const runnerRes = await sshExecRemoteFsRunnerJson({
-    host: params.host,
-    cwd: params.cwd,
-    input,
-    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
-    signal: params.signal,
-    decodeResponse: decodeRemoteFuzzySearchResponseJson,
-  });
-  return runnerRes;
+  // Remote hosts have no fff index, so fuzzy search walks and ranks with fzf.
+  return await withRemoteFileSystem(
+    params,
+    (fileSystem) =>
+      fileSystem.fuzzySearchFiles({
+        query: params.input.query,
+        maxResults: params.input.maxResults,
+      }),
+    { fsBackend: "fff", fuzzySearchFallback: "fzf" },
+  );
 }
 
 export async function remoteEditFile(params: {
@@ -582,18 +250,36 @@ export async function remoteEditFile(params: {
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<ResultType<RemoteEditOutput, RemoteFsExecutionError>> {
-  const source = await getRemoteRunnerJsText();
-  const sourceError = source.match({ ok: () => null, err: (error) => error });
-  if (sourceError) return Result.err(sourceError);
-  return await sshExecScriptJson({
-    host: params.host,
-    cwd: params.cwd,
-    js: selectResultValue(source),
-    input: toBundledRemoteEditRequest(params.input, params.denyPaths),
-    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    signal: params.signal,
-    maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
-    decodeResponse: decodeRemoteEditResponseJson,
+  return await withRemoteFileSystem(params, async (fileSystem) => {
+    const input = params.input;
+    const expectedHash =
+      input.expectedHash && input.expectedHash.length > 0 ? input.expectedHash : undefined;
+    if (input.mode === "hashline") {
+      return normalizeEditOutput(
+        await fileSystem.hashlineEditFile({ path: input.path, edits: input.edits, expectedHash }),
+      );
+    }
+    if (expectedHash) {
+      return normalizeEditOutput(
+        await fileSystem.editFile({ path: input.path, edits: [...input.edits], expectedHash }),
+      );
+    }
+    // Each call builds a new FileSystem, so it has no read record; read first to get the hash.
+    const read = await fileSystem.readFile({
+      path: input.path,
+      start: { type: "line", line: 1 },
+      maxLines: 1,
+      maxCharacters: 1,
+      format: "raw",
+    });
+    if (!read.success) return read;
+    return normalizeEditOutput(
+      await fileSystem.editFile({
+        path: input.path,
+        edits: [...input.edits],
+        expectedHash: read.fileHash,
+      }),
+    );
   });
 }
 

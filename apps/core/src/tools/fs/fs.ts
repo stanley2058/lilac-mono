@@ -2031,7 +2031,6 @@ export function fsTool(
             maxEntries: input.maxEntries,
             mode,
             denyPaths: remoteDenyPaths,
-            fsBackend,
             signal: options.abortSignal,
           });
           const res = remoteResult.match({
@@ -2270,7 +2269,6 @@ export function fsTool(
               mode,
             },
             denyPaths: remoteDenyPaths,
-            fsBackend,
             signal: options.abortSignal,
           });
           const res = remoteResult.match({

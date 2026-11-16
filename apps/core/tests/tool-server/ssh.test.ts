@@ -1,9 +1,10 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Panic } from "better-result";
 
+import { invalidateRemoteRunner } from "../../src/ssh/remote-runner-deploy";
 import { parseSshHostsFromConfigText } from "../../src/ssh/ssh-config";
 import { SSH } from "../../src/tool-server/tools/ssh";
 
@@ -41,6 +42,21 @@ function mockSshProcess(input: {
     exited: input.exited ?? Promise.resolve(0),
   } as unknown as Bun.Subprocess<Blob, "pipe", "pipe">;
 }
+
+/**
+ * Answers Core's runner deployment probe with an unsupported platform, so the call takes the shell
+ * path and the mocked `child` stands in for the command's own SSH process.
+ */
+function spawnCommandAs(child: Bun.Subprocess<Blob, "pipe", "pipe">) {
+  return (command: string[] | object) =>
+    Array.isArray(command) && command.some((part) => String(part).includes("lilac-probe"))
+      ? mockSshProcess({ stdout: textStream("platform Plan9 x86_64\nbase /tmp/lilac\n") })
+      : child;
+}
+
+// Runner deployments are cached per host for the whole process, and these tests answer the probe
+// for "fakehost" with an unsupported platform. Forget it so later test files can deploy there.
+afterEach(() => invalidateRemoteRunner("fakehost"));
 
 async function withConfiguredSshHost<T>(run: () => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(tmpdir(), "lilac-level2-ssh-config-"));
@@ -119,11 +135,7 @@ Host alpha # trailing comment
     try {
       await mkdir(binDir);
       await writeFile(configPath, "Host fakehost\n  HostName localhost\n", "utf8");
-      await writeFile(
-        sshPath,
-        "#!/usr/bin/env bash\ncat >/dev/null\nprintf 'remote failed' >&2\nexit 7\n",
-        "utf8",
-      );
+      await writeFile(sshPath, "#!/usr/bin/env bash\nprintf 'remote failed' >&2\nexit 7\n", "utf8");
       await chmod(sshPath, 0o755);
       process.env.PATH = `${binDir}:${previousPath ?? ""}`;
       process.env.LILAC_SSH_CONFIG_PATH = configPath;
@@ -205,7 +217,9 @@ Host alpha # trailing comment
           stdout: source === "stream" ? rejectedStream(panic) : textStream(),
           exited: source === "exit" ? rejectedPromise(panic) : Promise.resolve(0),
         });
-        const spawn = spyOn(Bun, "spawn").mockImplementation(() => child);
+        const spawn = spyOn(Bun, "spawn").mockImplementation(
+          spawnCommandAs(child) as typeof Bun.spawn,
+        );
         try {
           const [settled] = await Promise.allSettled([
             new SSH().call("ssh.run", { host: "fakehost", cmd: "true" }),
@@ -226,7 +240,9 @@ Host alpha # trailing comment
         stdout: rejectedStream(new Error("stdout unavailable")),
         exited: rejectedPromise(new Error("exit unavailable")),
       });
-      const spawn = spyOn(Bun, "spawn").mockImplementation(() => child);
+      const spawn = spyOn(Bun, "spawn").mockImplementation(
+        spawnCommandAs(child) as typeof Bun.spawn,
+      );
       try {
         expect(await new SSH().call("ssh.run", { host: "fakehost", cmd: "true" })).toMatchObject({
           status: "ok",
@@ -248,7 +264,9 @@ Host alpha # trailing comment
   it("keeps an ordinary probe stream failure in a successful report", async () => {
     await withConfiguredSshHost(async () => {
       const child = mockSshProcess({ stdout: rejectedStream(new Error("stdout unavailable")) });
-      const spawn = spyOn(Bun, "spawn").mockImplementation(() => child);
+      const spawn = spyOn(Bun, "spawn").mockImplementation(
+        spawnCommandAs(child) as typeof Bun.spawn,
+      );
       try {
         expect(await new SSH().call("ssh.probe", { host: "fakehost" })).toMatchObject({
           status: "ok",
@@ -276,7 +294,7 @@ Host alpha # trailing comment
       await writeFile(configPath, "Host fakehost\n  HostName localhost\n", "utf8");
       await writeFile(
         sshPath,
-        "#!/usr/bin/env bash\ncat >/dev/null\nprintf 'Permission denied' >&2\nexit 255\n",
+        "#!/usr/bin/env bash\nprintf 'Permission denied' >&2\nexit 255\n",
         "utf8",
       );
       await chmod(sshPath, 0o755);
@@ -309,7 +327,16 @@ Host alpha # trailing comment
     try {
       await mkdir(binDir);
       await writeFile(configPath, "Host fakehost\n  HostName localhost\n", "utf8");
-      await writeFile(sshPath, "#!/usr/bin/env bash\ncat >/dev/null\nexec sleep 10\n", "utf8");
+      // Like the shell fallback, the fake host stops the command when Core closes stdin.
+      await writeFile(
+        sshPath,
+        `#!/usr/bin/env bash
+case "$*" in *lilac-probe*) echo "platform Plan9 x86_64"; echo "base /tmp/lilac"; exit 0 ;; esac
+cat >/dev/null
+exit 143
+`,
+        "utf8",
+      );
       await chmod(sshPath, 0o755);
       process.env.PATH = `${binDir}:${previousPath ?? ""}`;
       process.env.LILAC_SSH_CONFIG_PATH = configPath;
