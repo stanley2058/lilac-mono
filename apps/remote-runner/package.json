@@ -1,0 +1,24 @@
+{
+  "name": "@stanley2058/lilac-remote-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native runner that Lilac Core uploads to SSH hosts.",
+  "license": "MIT",
+  "type": "module",
+  "module": "index.ts",
+  "types": "index.ts",
+  "exports": {
+    ".": {
+      "import": "./index.ts",
+      "types": "./index.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../scripts/build-remote-runner.ts",
+    "test": "sh -c 'cargo fmt --check && cargo test --locked' --",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.1"
+  }
+}
