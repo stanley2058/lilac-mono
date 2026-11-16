@@ -9,6 +9,7 @@ import { Panic, Result, TaggedError, type Result as ResultType } from "better-re
 import { AsyncFzf } from "fzf";
 
 import { captureFilesystemOperation, type FileSystemOperationFailed } from "./filesystem-operation";
+import type { HostGlobEntry } from "./filesystem-host";
 import { matchesGlobWithDotfiles } from "./glob-match";
 import {
   ripgrep,
@@ -20,13 +21,16 @@ import {
 
 export const FS_BACKENDS = ["fff", "node-rg"] as const;
 export type FsBackend = (typeof FS_BACKENDS)[number];
-export type EffectiveSearchBackend = FsBackend | "node-fs";
+/** `native` is the runner Core uploads to SSH hosts. */
+export type EffectiveSearchBackend = FsBackend | "node-fs" | "native";
 export type EffectiveFuzzySearchBackend = "fff" | "fzf";
 
 export type GlobSearchResult = {
   paths: string[];
+  /** Entry types and sizes, when the backend already has them. */
+  entries?: HostGlobEntry[];
   truncated: boolean;
-  effectiveBackend: "fff" | "node-rg";
+  effectiveBackend: "fff" | "node-rg" | "native";
 };
 
 export type FuzzyFileSearchResult = {
@@ -450,27 +454,49 @@ export async function fzfFileSearch(params: {
     pendingDirectories.push(...childDirectories);
   }
 
+  return await rankFuzzyCandidates({
+    files,
+    query: params.query,
+    maxResults: params.maxResults,
+    scanTruncated,
+    sizeOf: async (path) => {
+      const stats = await captureFilesystemOperation("inspect fzf search result", () =>
+        fs.lstat(join(params.cwd, path)),
+      );
+      return stats.match<number | null | false>({
+        ok: (value) => (value.isFile() ? value.size : null),
+        err: (error) => (isSkippableTraversalError(error) ? null : false),
+      });
+    },
+  });
+}
+
+/**
+ * Ranks walked file paths with `fzf`. `sizeOf` returns the file's size, `null` to skip a path that
+ * is no longer a file, or `false` to abandon the search.
+ */
+export async function rankFuzzyCandidates(params: {
+  readonly files: string[];
+  readonly query: string;
+  readonly maxResults: number;
+  readonly scanTruncated: boolean;
+  readonly sizeOf: (path: string) => Promise<number | null | false>;
+}): Promise<FuzzyFileSearchResult | null> {
   const limit = Math.max(1, params.maxResults);
-  files.sort();
+  const files = [...params.files].sort();
   const matches = await new AsyncFzf(files).find(params.query);
   const results: FuzzyFileSearchResult["results"] = [];
 
   for (const match of matches) {
     if (results.length >= limit) break;
-    const stats = await captureFilesystemOperation("inspect fzf search result", () =>
-      fs.lstat(join(params.cwd, match.item)),
-    );
-    const fileStats = stats.match<Stats | null | false>({
-      ok: (value) => value,
-      err: (error) => (isSkippableTraversalError(error) ? null : false),
-    });
-    if (fileStats === false) return null;
-    if (fileStats === null || !fileStats.isFile()) continue;
+    const size = await params.sizeOf(match.item);
+    if (size === false) return null;
+    if (size === null) continue;
 
     results.push({
       path: match.item,
       fileName: basename(match.item),
-      size: fileStats.size,
+      size,
       gitStatus: "unknown",
       score: match.score,
       matchType: "fuzzy",
@@ -481,7 +507,7 @@ export async function fzfFileSearch(params: {
     results,
     totalMatched: matches.length,
     totalFiles: files.length,
-    truncated: scanTruncated || matches.length > results.length,
+    truncated: params.scanTruncated || matches.length > results.length,
     effectiveBackend: "fzf",
   };
 }

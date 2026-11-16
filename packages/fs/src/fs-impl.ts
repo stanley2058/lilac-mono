@@ -1,19 +1,12 @@
-import type { Stats } from "node:fs";
 import { createHash } from "node:crypto";
-import { createReadStream, realpathSync } from "node:fs";
-import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, dirname, resolve, isAbsolute, sep, relative } from "node:path";
-import { StringDecoder } from "node:string_decoder";
 
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 
-import {
-  captureFilesystemOperation,
-  captureFilesystemOperationSync,
-  FileSystemOperationFailed,
-} from "./filesystem-operation";
-import { matchesGlobWithDotfiles } from "./glob-match";
+import { FileSystemOperationFailed } from "./filesystem-operation";
+import type { FileSystemHost, HostStats } from "./filesystem-host";
+import { isSkippableTraversalError } from "./glob-walk";
 import {
   applyHashlineEdits,
   buildHashlineWarning,
@@ -23,22 +16,17 @@ import {
   formatHashlineWindow,
 } from "./hashline";
 
+import { canonicalizeLocalPathAsFarAsExists, nodeFileSystemHost } from "./node-host";
 import {
-  fuzzyFileSearch,
-  fzfFileSearch,
-  getSearchBackend,
   type EffectiveSearchBackend,
   type EffectiveFuzzySearchBackend,
   type FsBackend,
   type FuzzyFileSearchResult,
 } from "./search-backend";
 
-const BUFFERED_LINE_READ_MAX_BYTES = 16 * 1024 * 1024;
-const BUFFERED_LINE_ARRAY_MAX_UTF16 = 64 * 1024;
-
-export function expandTilde(input: string) {
-  if (input === "~") return homedir();
-  if (input.startsWith("~/")) return join(homedir(), input.slice(2));
+export function expandTilde(input: string, home: string = homedir()) {
+  if (input === "~") return home;
+  if (input.startsWith("~/")) return join(home, input.slice(2));
   return input;
 }
 
@@ -51,98 +39,28 @@ function resultOutcome<T, E>(
   });
 }
 
-export async function canonicalizePathAsFarAsExists(
+function asBuffer(bytes: Uint8Array): Buffer {
+  return Buffer.isBuffer(bytes)
+    ? bytes
+    : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+export function canonicalizePathAsFarAsExists(
   inputPath: string,
 ): Promise<ResultType<string, FileSystemOperationFailed>> {
-  let current = resolve(inputPath);
-  const missingSegments: string[] = [];
-
-  while (true) {
-    const canonical = resultOutcome(
-      await captureFilesystemOperation("canonicalize path", () => fs.realpath(current)),
-    );
-    if (canonical.ok) return Result.ok(resolve(canonical.value, ...missingSegments));
-    if (canonical.error.code !== "ENOENT" && canonical.error.code !== "ENOTDIR") {
-      return Result.err(canonical.error);
-    }
-
-    const stats = resultOutcome(
-      await captureFilesystemOperation("inspect canonical path segment", () => fs.lstat(current)),
-    );
-    if (!stats.ok && stats.error.code !== "ENOENT" && stats.error.code !== "ENOTDIR") {
-      return Result.err(stats.error);
-    }
-    if (stats.ok && stats.value.isSymbolicLink()) {
-      const target = resultOutcome(
-        await captureFilesystemOperation("read canonical path symlink", () => fs.readlink(current)),
-      );
-      if (!target.ok) return Result.err(target.error);
-      current = isAbsolute(target.value)
-        ? resolve(target.value)
-        : resolve(dirname(current), target.value);
-      continue;
-    }
-
-    const parent = dirname(current);
-    if (parent === current) return Result.ok(resolve(current, ...missingSegments));
-    missingSegments.unshift(basename(current));
-    current = parent;
-  }
+  return canonicalizeLocalPathAsFarAsExists(inputPath);
 }
 
-function isSkippableTraversalError(error: FileSystemOperationFailed): boolean {
-  const code = error.code;
-  return code === "EACCES" || code === "EPERM" || code === "ENOENT" || code === "ENOTDIR";
-}
-
-function matchesAnyGlob(entryPath: string, patterns: readonly string[]): boolean {
-  return patterns.some(
-    (pattern) =>
-      matchesGlobWithDotfiles(entryPath, pattern) ||
-      matchesGlobWithDotfiles(`${entryPath}/`, pattern),
-  );
-}
-
-function normalizeGlobPatternForBase(pattern: string, resolvedBaseDir: string): string {
-  const expanded = expandTilde(pattern);
+function normalizeGlobPatternForBase(
+  pattern: string,
+  resolvedBaseDir: string,
+  home: string,
+): string {
+  const expanded = expandTilde(pattern, home);
   if (!isAbsolute(expanded)) return expanded.split(sep).join("/");
 
   const rel = relative(resolvedBaseDir, expanded);
   return (rel.length === 0 ? "." : rel).split(sep).join("/");
-}
-
-function hasGlobMeta(segment: string): boolean {
-  return /[*?[\]{}()!+@]/.test(segment);
-}
-
-function getLiteralSearchRoot(pattern: string): string {
-  const segments = pattern.split("/").filter((segment) => segment.length > 0);
-  const prefix: string[] = [];
-
-  for (const segment of segments) {
-    if (segment === "." || segment === "..") return "";
-    if (hasGlobMeta(segment)) return prefix.join("/");
-    prefix.push(segment);
-  }
-
-  return prefix.slice(0, -1).join("/");
-}
-
-function isSameOrChildPath(path: string, parent: string): boolean {
-  return path === parent || path.startsWith(`${parent}/`);
-}
-
-function getGlobSearchRoots(patterns: readonly string[]): string[] {
-  const roots = patterns.map(getLiteralSearchRoot).sort((a, b) => a.length - b.length);
-  const deduped: string[] = [];
-
-  for (const root of roots) {
-    if (root.length === 0) return [""];
-    if (deduped.some((existing) => isSameOrChildPath(root, existing))) continue;
-    deduped.push(root);
-  }
-
-  return deduped.length > 0 ? deduped : [""];
 }
 
 export const READ_ERROR_CODES = ["NOT_FOUND", "PERMISSION", "UNKNOWN"] as const;
@@ -661,6 +579,7 @@ export class FileSystem {
   private readonly fsBackend: FsBackend;
   private readonly fffCacheDir: string | undefined;
   private readonly fuzzySearchFallback: "fzf" | undefined;
+  private readonly host: FileSystemHost;
 
   constructor(
     private root: string,
@@ -670,19 +589,15 @@ export class FileSystem {
       fsBackend?: FsBackend;
       fffCacheDir?: string;
       fuzzySearchFallback?: "fzf";
+      /** Where the I/O runs; defaults to this machine. */
+      host?: FileSystemHost;
     },
   ) {
-    this.denyPaths = (opts?.denyPaths ?? []).flatMap((p) => {
-      const resolvedPath = resolve(expandTilde(p));
-      const canonical = captureFilesystemOperationSync("canonicalize deny path", () =>
-        realpathSync(resolvedPath),
-      );
-      return canonical.match({
-        ok: (canonicalPath) =>
-          canonicalPath === resolvedPath ? [resolvedPath] : [resolvedPath, canonicalPath],
-        err: () => [resolvedPath],
-      });
-    });
+    this.host = opts?.host ?? nodeFileSystemHost;
+    const home = this.host.homeDir;
+    this.denyPaths = (opts?.denyPaths ?? []).flatMap((p) =>
+      this.host.canonicalizeDenyPath(resolve(expandTilde(p, home))),
+    );
     this.fsBackend = opts?.fsBackend ?? "node-rg";
     this.fffCacheDir = opts?.fffCacheDir ? resolve(expandTilde(opts.fffCacheDir)) : undefined;
     this.fuzzySearchFallback = opts?.fuzzySearchFallback;
@@ -713,11 +628,12 @@ export class FileSystem {
   }
 
   private resolvePath(inputPath: string, cwd?: string) {
-    const expandedInput = expandTilde(inputPath);
+    const home = this.host.homeDir;
+    const expandedInput = expandTilde(inputPath, home);
     if (isAbsolute(expandedInput)) return resolve(expandedInput);
 
     const base = cwd ?? this.root;
-    const expandedBase = resolve(expandTilde(base));
+    const expandedBase = resolve(expandTilde(base, home));
     return resolve(expandedBase, expandedInput);
   }
 
@@ -753,11 +669,7 @@ export class FileSystem {
         this.assertAllowed(resolvedPath, "readFile", dangerouslyAllow),
       );
       if (!allowedPath.ok) return Result.err(allowedPath.error);
-      const canonical = resultOutcome(
-        await captureFilesystemOperation("resolve file for reading", () =>
-          fs.realpath(resolvedPath),
-        ),
-      );
+      const canonical = resultOutcome(await this.host.realpath(resolvedPath));
       if (!canonical.ok) return Result.err(canonical.error);
       const canonicalPath = canonical.value;
       const allowedCanonical = resultOutcome(
@@ -790,226 +702,35 @@ export class FileSystem {
           },
         });
       }
-      const storedLineLimit = requestedMaxCharacters + 2;
-      const storedCharacterLimit = requestedMaxCharacters + 1;
-      const windowLines: string[] = [];
-      const decoder = new StringDecoder("utf8");
-      const hasher = createHash("sha256");
-      let lineNumber = 1;
-      let selectedLineCount = 0;
-      let storedCharacters = 0;
-      let currentLine = "";
-      let currentLineCharacters = 0;
-      let currentLineUtf16Length = 0;
-      let firstSelectedLineCharacters = 0;
-      let sourceOffset = 0;
-      let offsetStartLine: number | undefined;
-      let offsetStartColumn: number | undefined;
-      let normalizedStartOffset: number | undefined;
-      let selectedNextLineOffset: number | undefined;
-      let hashlineOverflow: HashlineWarning | undefined;
-
-      const resolveOffsetStart = () => {
-        if (
-          requestedStartOffset === undefined ||
-          offsetStartLine !== undefined ||
-          sourceOffset < requestedStartOffset
-        ) {
-          return;
-        }
-        offsetStartLine = lineNumber;
-        offsetStartColumn = currentLineCharacters;
-        normalizedStartOffset = sourceOffset;
-      };
-
-      const isCurrentLineSelected = () => {
-        if (start.type === "line") {
-          return (
-            lineNumber >= requestedStartLine && lineNumber < requestedStartLine + requestedMaxLines
-          );
-        }
-        return (
-          offsetStartLine !== undefined &&
-          lineNumber >= offsetStartLine &&
-          lineNumber < offsetStartLine + requestedMaxLines
-        );
-      };
-
-      const finishLine = (hasNewline: boolean) => {
-        resolveOffsetStart();
-        if (isCurrentLineSelected()) {
-          if (selectedLineCount === 0) firstSelectedLineCharacters = currentLineCharacters;
-          if (!hashlineOverflow && currentLineUtf16Length > HASHLINE_MAX_LINE_CHARS) {
-            hashlineOverflow = buildHashlineWarning(lineNumber, currentLineUtf16Length);
-          }
-          if (windowLines.length < storedLineLimit) windowLines.push(currentLine);
-          selectedLineCount++;
-          if (hasNewline) selectedNextLineOffset = sourceOffset + 1;
-        }
-        currentLine = "";
-        currentLineCharacters = 0;
-        currentLineUtf16Length = 0;
-      };
-
-      let pendingCR = false;
-      const consumeText = (input: string, final = false) => {
-        const combined = (pendingCR ? "\r" : "") + input;
-        pendingCR = !final && combined.endsWith("\r");
-        const text = (pendingCR ? combined.slice(0, -1) : combined).replace(/\r\n/g, "\n");
-        for (const character of text) {
-          if (character === "\n") {
-            finishLine(true);
-            sourceOffset++;
-            lineNumber++;
-            continue;
-          }
-
-          resolveOffsetStart();
-          currentLineCharacters++;
-          currentLineUtf16Length += character.length;
-          if (
-            isCurrentLineSelected() &&
-            (start.type === "offset" ||
-              lineNumber !== requestedStartLine ||
-              currentLineCharacters > requestedStartColumn) &&
-            storedCharacters < storedCharacterLimit
-          ) {
-            currentLine += character;
-            storedCharacters++;
-          }
-          sourceOffset++;
-        }
-      };
-
-      const consumeBufferedLine = (bytes: Buffer, hasNewline = false) => {
-        if (!isCurrentLineSelected()) return;
-
-        const decoded = bytes.toString("utf8");
-        const text = hasNewline ? decoded.replace(/\r$/, "") : decoded;
-        currentLineUtf16Length = text.length;
-        const remainingCharacters = Math.max(0, storedCharacterLimit - storedCharacters);
-        const contentStart = lineNumber === requestedStartLine ? requestedStartColumn : 0;
-        if (text.length <= BUFFERED_LINE_ARRAY_MAX_UTF16) {
-          const characters = Array.from(text);
-          currentLineCharacters = characters.length;
-          const stored = characters.slice(contentStart, contentStart + remainingCharacters);
-          currentLine = stored.join("");
-          storedCharacters += stored.length;
-          return;
-        }
-
-        const stored: string[] = [];
-        for (const character of text) {
-          if (currentLineCharacters >= contentStart && stored.length < remainingCharacters) {
-            stored.push(character);
-          }
-          currentLineCharacters++;
-        }
-        currentLine = stored.join("");
-        storedCharacters += stored.length;
-      };
-
-      const consumeBufferedFile = (bytes: Buffer) => {
-        hasher.update(bytes);
-        let lineStart = 0;
-        // UTF-8 never uses LF inside a multibyte code point, so line boundaries
-        // can be found before decoding the selected window.
-        while (true) {
-          const newline = bytes.indexOf(0x0a, lineStart);
-          if (newline === -1) {
-            consumeBufferedLine(bytes.subarray(lineStart));
-            finishLine(false);
-            return;
-          }
-
-          consumeBufferedLine(bytes.subarray(lineStart, newline), true);
-          finishLine(true);
-          lineNumber++;
-          lineStart = newline + 1;
-        }
-      };
-
-      const consumeLineBytes = (bytes: Buffer) => {
-        let offset = 0;
-        while (offset < bytes.length) {
-          const newline = bytes.indexOf(0x0a, offset);
-          const end = newline === -1 ? bytes.length : newline + 1;
-          if (isCurrentLineSelected()) {
-            consumeText(decoder.write(bytes.subarray(offset, end)));
-          } else if (newline !== -1) {
-            finishLine(true);
-            lineNumber++;
-          }
-          offset = end;
-        }
-      };
-      const consumeStreamBytes = (bytes: Buffer) => {
-        if (start.type === "line") return consumeLineBytes(bytes);
-        consumeText(decoder.write(bytes));
-      };
-      const bufferedChunks: Buffer[] = [];
-      let bufferedBytes = 0;
-      let streamHighWaterMark: number | undefined;
-      let streamingText = start.type === "offset";
-      if (start.type === "line") {
-        const stats = resultOutcome(
-          await captureFilesystemOperation("stat file for line reading", () =>
-            fs.stat(canonicalPath),
-          ),
-        );
-        if (!stats.ok) return Result.err(stats.error);
-        if (stats.value.isFile() && stats.value.size > BUFFERED_LINE_READ_MAX_BYTES) {
-          streamingText = true;
-        } else if (stats.value.isFile() && stats.value.size > 0) {
-          streamHighWaterMark = stats.value.size + 1;
-        }
-      }
-      const streamed = resultOutcome(
-        await captureFilesystemOperation("stream file for reading", async () => {
-          for await (const chunk of createReadStream(canonicalPath, {
-            highWaterMark: streamHighWaterMark,
-          })) {
-            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-            if (!streamingText && bufferedBytes + bytes.length <= BUFFERED_LINE_READ_MAX_BYTES) {
-              bufferedChunks.push(bytes);
-              bufferedBytes += bytes.length;
-              continue;
-            }
-
-            if (!streamingText) {
-              streamingText = true;
-              for (const buffered of bufferedChunks) {
-                hasher.update(buffered);
-                consumeStreamBytes(buffered);
-              }
-              bufferedChunks.length = 0;
-            }
-
-            hasher.update(bytes);
-            consumeStreamBytes(bytes);
-          }
+      const scanned = resultOutcome(
+        await this.host.scanText(canonicalPath, {
+          start:
+            start.type === "line"
+              ? { type: "line", line: requestedStartLine, column: requestedStartColumn }
+              : { type: "offset", offset: requestedStartOffset ?? 0 },
+          maxLines: requestedMaxLines,
+          maxCharacters: requestedMaxCharacters,
         }),
       );
-      if (!streamed.ok) return Result.err(streamed.error);
-
-      if (!streamingText) {
-        const bytes =
-          bufferedChunks.length === 1
-            ? bufferedChunks[0]!
-            : Buffer.concat(bufferedChunks, bufferedBytes);
-        consumeBufferedFile(bytes);
-      } else {
-        consumeText(decoder.end(), true);
-        if (start.type === "offset" && offsetStartLine === undefined) {
-          offsetStartLine = lineNumber;
-          offsetStartColumn = currentLineCharacters;
-          normalizedStartOffset = sourceOffset;
-        }
-        finishLine(false);
-      }
-
-      const fileHash = hasher.digest("hex");
-      const totalLines = lineNumber;
+      if (!scanned.ok) return Result.err(scanned.error);
+      const {
+        fileHash,
+        windowLines,
+        totalLines,
+        selectedLineCount,
+        firstSelectedLineCharacters,
+        offsetStartLine,
+        offsetStartColumn,
+        normalizedStartOffset,
+        selectedNextLineOffset,
+        sourceOffset,
+      } = scanned.value;
+      const hashlineOverflow = scanned.value.hashlineOverflow
+        ? buildHashlineWarning(
+            scanned.value.hashlineOverflow.line,
+            scanned.value.hashlineOverflow.length,
+          )
+        : undefined;
       const normalizedStartLine =
         start.type === "line"
           ? Math.min(requestedStartLine, totalLines + 1)
@@ -1161,26 +882,13 @@ export class FileSystem {
         resolvedPath,
         error: { code: "UNKNOWN", message: "Prefix size must be between 1 and 65536 bytes" },
       });
-    const prefix = resultOutcome(
-      await captureFilesystemOperation("read byte prefix", async () => {
-        await using handle = await fs.open(canonicalPath, "r");
-        const stats = await handle.stat();
-        const buffer = Buffer.alloc(Math.min(limit, stats.size));
-        let size = 0;
-        while (size < buffer.length) {
-          const read = await handle.read(buffer, size, buffer.length - size, size);
-          if (read.bytesRead === 0) break;
-          size += read.bytesRead;
-        }
-        return { bytes: buffer.subarray(0, size), totalBytes: stats.size };
-      }),
-    );
+    const prefix = resultOutcome(await this.host.readBytePrefix(canonicalPath, limit));
     if (!prefix.ok) return Result.err(prefix.error);
     return Result.ok<ReadFileBytesResult>({
       success: true,
       resolvedPath,
       fileHash: this.hash(prefix.value.bytes),
-      bytes: prefix.value.bytes,
+      bytes: asBuffer(prefix.value.bytes),
       bytesLength: prefix.value.bytes.length,
       totalBytes: prefix.value.totalBytes,
     });
@@ -1214,11 +922,7 @@ export class FileSystem {
         this.assertAllowed(resolvedPath, "readFile", dangerouslyAllow),
       );
       if (!allowedPath.ok) return Result.err(allowedPath.error);
-      const canonical = resultOutcome(
-        await captureFilesystemOperation("resolve byte file for reading", () =>
-          fs.realpath(resolvedPath),
-        ),
-      );
+      const canonical = resultOutcome(await this.host.realpath(resolvedPath));
       if (!canonical.ok) return Result.err(canonical.error);
       const canonicalPath = canonical.value;
       const allowedCanonical = resultOutcome(
@@ -1230,9 +934,7 @@ export class FileSystem {
         return this.readFileBytePrefix(canonicalPath, resolvedPath, prefixBytes);
 
       if (maxBytes !== undefined) {
-        const stats = resultOutcome(
-          await captureFilesystemOperation("stat byte file", () => fs.stat(canonicalPath)),
-        );
+        const stats = resultOutcome(await this.host.stat(canonicalPath));
         if (!stats.ok) return Result.err(stats.error);
         if (stats.value.size > maxBytes) {
           return Result.ok<ReadFileBytesResult>({
@@ -1246,9 +948,7 @@ export class FileSystem {
         }
       }
 
-      const read = resultOutcome(
-        await captureFilesystemOperation("read byte file", () => fs.readFile(canonicalPath)),
-      );
+      const read = resultOutcome(await this.host.readBytes(canonicalPath));
       if (!read.ok) return Result.err(read.error);
       const bytes = read.value;
       const fileHash = this.hash(bytes);
@@ -1268,7 +968,7 @@ export class FileSystem {
         success: true,
         resolvedPath,
         fileHash,
-        bytes,
+        bytes: asBuffer(bytes),
         bytesLength: bytes.byteLength,
       });
     })();
@@ -1298,17 +998,13 @@ export class FileSystem {
     > => {
       const allowedPath = resultOutcome(this.assertAllowed(resolvedPath, "writeFile"));
       if (!allowedPath.ok) return Result.err(allowedPath.error);
-      const canonical = resultOutcome(await canonicalizePathAsFarAsExists(resolvedPath));
+      const canonical = resultOutcome(await this.host.canonicalizeAsFarAsExists(resolvedPath));
       if (!canonical.ok) return Result.err(canonical.error);
       const canonicalPath = canonical.value;
       const allowedCanonical = resultOutcome(this.assertAllowed(canonicalPath, "writeFile"));
       if (!allowedCanonical.ok) return Result.err(allowedCanonical.error);
 
-      const inspected = resultOutcome(
-        await captureFilesystemOperation("read file before writing", () =>
-          fs.readFile(canonicalPath, "utf-8"),
-        ),
-      );
+      const inspected = resultOutcome(await this.host.readText(canonicalPath));
       if (!inspected.ok && inspected.error.code !== "ENOENT") return Result.err(inspected.error);
       const existing = inspected.ok ? inspected.value : null;
       const existed = existing !== null;
@@ -1350,17 +1046,8 @@ export class FileSystem {
         }
       }
 
-      if (createParents) {
-        const created = resultOutcome(
-          await captureFilesystemOperation("create parent directories", () =>
-            fs.mkdir(dirname(canonicalPath), { recursive: true }),
-          ),
-        );
-        if (!created.ok) return Result.err(created.error);
-      }
-
       const written = resultOutcome(
-        await captureFilesystemOperation("write file", () => fs.writeFile(canonicalPath, content)),
+        await this.host.writeText(canonicalPath, content, { createParents }),
       );
       if (!written.ok) return Result.err(written.error);
       const fileHash = this.hash(content);
@@ -1401,20 +1088,14 @@ export class FileSystem {
     > => {
       const allowedPath = resultOutcome(this.assertAllowed(resolvedPath, "deleteFile"));
       if (!allowedPath.ok) return Result.err(allowedPath.error);
-      const resolvedParent = resultOutcome(
-        await captureFilesystemOperation("resolve deleted file parent", () =>
-          fs.realpath(dirname(resolvedPath)),
-        ),
-      );
+      const resolvedParent = resultOutcome(await this.host.realpath(dirname(resolvedPath)));
       if (!resolvedParent.ok) return Result.err(resolvedParent.error);
       const allowedCanonical = resultOutcome(
         this.assertAllowed(resolve(resolvedParent.value, basename(resolvedPath)), "deleteFile"),
       );
       if (!allowedCanonical.ok) return Result.err(allowedCanonical.error);
 
-      const deleted = resultOutcome(
-        await captureFilesystemOperation("delete file", () => fs.unlink(resolvedPath)),
-      );
+      const deleted = resultOutcome(await this.host.unlink(resolvedPath));
       if (!deleted.ok) return Result.err(deleted.error);
       this.fileAccessRecord.delete(resolvedPath);
 
@@ -1458,22 +1139,14 @@ export class FileSystem {
         this.assertAllowed(resolvedPath, "editFile", dangerouslyAllow),
       );
       if (!allowedPath.ok) return Result.err(allowedPath.error);
-      const canonical = resultOutcome(
-        await captureFilesystemOperation("resolve file for editing", () =>
-          fs.realpath(resolvedPath),
-        ),
-      );
+      const canonical = resultOutcome(await this.host.realpath(resolvedPath));
       if (!canonical.ok) return Result.err(canonical.error);
       const canonicalPath = canonical.value;
       const allowedCanonical = resultOutcome(
         this.assertAllowed(canonicalPath, "editFile", dangerouslyAllow),
       );
       if (!allowedCanonical.ok) return Result.err(allowedCanonical.error);
-      const read = resultOutcome(
-        await captureFilesystemOperation("read file for editing", () =>
-          fs.readFile(canonicalPath, "utf-8"),
-        ),
-      );
+      const read = resultOutcome(await this.host.readText(canonicalPath));
       if (!read.ok) return Result.err(read.error);
       return Result.ok({ canonicalPath, file: read.value });
     })();
@@ -1951,9 +1624,9 @@ export class FileSystem {
     const changesMade = newHash !== oldHash;
 
     if (changesMade) {
-      const written = await captureFilesystemOperation("write edited file", () =>
-        fs.writeFile(canonicalPath, nextContent),
-      );
+      const written = await this.host.writeText(canonicalPath, nextContent, {
+        createParents: false,
+      });
       const writeOutcome = resultOutcome(written);
       if (!writeOutcome.ok) return this.editFilesystemFailure(resolvedPath, writeOutcome.error);
     }
@@ -2003,22 +1676,14 @@ export class FileSystem {
         this.assertAllowed(resolvedPath, "editFile", dangerouslyAllow),
       );
       if (!allowedPath.ok) return Result.err(allowedPath.error);
-      const canonical = resultOutcome(
-        await captureFilesystemOperation("resolve file for hashline editing", () =>
-          fs.realpath(resolvedPath),
-        ),
-      );
+      const canonical = resultOutcome(await this.host.realpath(resolvedPath));
       if (!canonical.ok) return Result.err(canonical.error);
       const canonicalPath = canonical.value;
       const allowedCanonical = resultOutcome(
         this.assertAllowed(canonicalPath, "editFile", dangerouslyAllow),
       );
       if (!allowedCanonical.ok) return Result.err(allowedCanonical.error);
-      const read = resultOutcome(
-        await captureFilesystemOperation("read file for hashline editing", () =>
-          fs.readFile(canonicalPath, "utf-8"),
-        ),
-      );
+      const read = resultOutcome(await this.host.readText(canonicalPath));
       if (!read.ok) return Result.err(read.error);
       return Result.ok({ canonicalPath, file: read.value });
     })();
@@ -2079,9 +1744,9 @@ export class FileSystem {
     const changesMade = newHash !== oldHash;
 
     if (changesMade) {
-      const written = await captureFilesystemOperation("write hashline-edited file", () =>
-        fs.writeFile(canonicalPath, appliedEdit.content),
-      );
+      const written = await this.host.writeText(canonicalPath, appliedEdit.content, {
+        createParents: false,
+      });
       const writeOutcome = resultOutcome(written);
       if (!writeOutcome.ok) {
         return this.editFilesystemFailure(resolvedPath, writeOutcome.error);
@@ -2128,9 +1793,7 @@ export class FileSystem {
         this.assertAllowed(resolvedBaseDir, "glob", dangerouslyAllow),
       );
       if (!allowedPath.ok) return Result.err(allowedPath.error);
-      const canonical = resultOutcome(
-        await captureFilesystemOperation("resolve glob root", () => fs.realpath(resolvedBaseDir)),
-      );
+      const canonical = resultOutcome(await this.host.realpath(resolvedBaseDir));
       if (!canonical.ok) return Result.err(canonical.error);
       const canonicalBaseDir = canonical.value;
       const allowedCanonical = resultOutcome(
@@ -2147,13 +1810,17 @@ export class FileSystem {
     for (const pattern of patterns) {
       if (!pattern) continue;
       if (pattern.startsWith("!")) {
-        const negated = normalizeGlobPatternForBase(pattern.slice(1), resolvedBaseDir);
+        const negated = normalizeGlobPatternForBase(
+          pattern.slice(1),
+          resolvedBaseDir,
+          this.host.homeDir,
+        );
         if (negated.length > 0) {
           excludes.push(negated);
         }
         continue;
       }
-      includes.push(normalizeGlobPatternForBase(pattern, resolvedBaseDir));
+      includes.push(normalizeGlobPatternForBase(pattern, resolvedBaseDir, this.host.homeDir));
     }
 
     if (includes.length === 0) {
@@ -2172,7 +1839,7 @@ export class FileSystem {
     }
 
     const normalizedPatterns = [...includes, ...excludes.map((pattern) => `!${pattern}`)];
-    const selectedBackend = getSearchBackend(this.fsBackend);
+    const selectedBackend = this.host.searchBackend(this.fsBackend);
     let backendResult = await selectedBackend.glob({
       cwd: canonicalBaseDir,
       patterns: normalizedPatterns,
@@ -2182,7 +1849,7 @@ export class FileSystem {
       cacheDir: this.fffCacheDir,
     });
     if (!backendResult && this.fsBackend === "fff") {
-      backendResult = await getSearchBackend("node-rg").glob({
+      backendResult = await this.host.searchBackend("node-rg").glob({
         cwd: canonicalBaseDir,
         patterns: normalizedPatterns,
         maxEntries,
@@ -2201,22 +1868,14 @@ export class FileSystem {
         };
       }
 
-      const values: GlobEntry[] = [];
-      for (const entry of backendResult.paths) {
-        const stats = resultOutcome(
-          await captureFilesystemOperation("stat native glob result", () =>
-            fs.stat(join(canonicalBaseDir, entry)),
-          ),
-        );
+      const values: GlobEntry[] = backendResult.entries ? [...backendResult.entries] : [];
+      for (const entry of backendResult.entries ? [] : backendResult.paths) {
+        const stats = resultOutcome(await this.host.stat(join(canonicalBaseDir, entry)));
         if (!stats.ok) {
           if (isSkippableTraversalError(stats.error)) continue;
           return this.globFailure(mode, stats.error);
         }
-        values.push({
-          path: entry,
-          type: this.getFileTypeFromStats(stats.value),
-          size: stats.value.size,
-        });
+        values.push({ path: entry, type: stats.value.type, size: stats.value.size });
       }
       return {
         mode,
@@ -2227,12 +1886,13 @@ export class FileSystem {
     }
 
     const collected = resultOutcome(
-      await this.collectGlobMatches({
+      await this.host.globWalk({
         resolvedBaseDir: canonicalBaseDir,
         includes,
         excludes,
         maxEntries,
-        mode,
+        withStats: mode !== "default",
+        denyPaths: this.denyPaths,
         dangerouslyAllow,
       }),
     );
@@ -2271,11 +1931,7 @@ export class FileSystem {
         this.assertAllowed(resolvedBaseDir, "fuzzySearch", dangerouslyAllow),
       );
       if (!allowedPath.ok) return Result.err(allowedPath.error);
-      const canonical = resultOutcome(
-        await captureFilesystemOperation("resolve fuzzy search root", () =>
-          fs.realpath(resolvedBaseDir),
-        ),
-      );
+      const canonical = resultOutcome(await this.host.realpath(resolvedBaseDir));
       if (!canonical.ok) return Result.err(canonical.error);
       const canonicalBaseDir = canonical.value;
       const allowedCanonical = resultOutcome(
@@ -2297,7 +1953,7 @@ export class FileSystem {
       };
     }
 
-    let result = await fuzzyFileSearch({
+    let result = await this.host.fffSearch({
       cwd: canonicalBaseDir,
       query,
       maxResults,
@@ -2307,7 +1963,7 @@ export class FileSystem {
     });
 
     if (!result && this.fuzzySearchFallback === "fzf") {
-      result = await fzfFileSearch({
+      result = await this.host.fzfSearch({
         cwd: canonicalBaseDir,
         query,
         maxResults,
@@ -2342,38 +1998,34 @@ export class FileSystem {
 
     const resolvedBaseDir = this.resolvePath(baseDir);
     const prepared = await (async (): Promise<
-      ResultType<{ canonicalBaseDir: string; targetStats: Stats }, FileSystemOperationFailed>
+      ResultType<{ canonicalBaseDir: string; targetStats: HostStats }, FileSystemOperationFailed>
     > => {
       const allowedPath = resultOutcome(
         this.assertAllowed(resolvedBaseDir, "grep", dangerouslyAllow),
       );
       if (!allowedPath.ok) return Result.err(allowedPath.error);
-      const canonical = resultOutcome(
-        await captureFilesystemOperation("resolve grep target", () => fs.realpath(resolvedBaseDir)),
-      );
+      const canonical = resultOutcome(await this.host.realpath(resolvedBaseDir));
       if (!canonical.ok) return Result.err(canonical.error);
       const canonicalBaseDir = canonical.value;
       const allowedCanonical = resultOutcome(
         this.assertAllowed(canonicalBaseDir, "grep", dangerouslyAllow),
       );
       if (!allowedCanonical.ok) return Result.err(allowedCanonical.error);
-      const stats = resultOutcome(
-        await captureFilesystemOperation("stat grep target", () => fs.stat(canonicalBaseDir)),
-      );
+      const stats = resultOutcome(await this.host.stat(canonicalBaseDir));
       if (!stats.ok) return Result.err(stats.error);
       return Result.ok({ canonicalBaseDir, targetStats: stats.value });
     })();
     const preparedOutcome = resultOutcome(prepared);
     if (!preparedOutcome.ok) return this.grepFailure(mode, preparedOutcome.error.message);
     const { canonicalBaseDir, targetStats } = preparedOutcome.value;
-    if (!targetStats.isDirectory() && !targetStats.isFile()) {
+    if (targetStats.type !== "directory" && targetStats.type !== "file") {
       return this.grepFailure(
         mode,
         `Grep target '${resolvedBaseDir}' must be a regular file or directory`,
       );
     }
 
-    const isFileTarget = targetStats.isFile();
+    const isFileTarget = targetStats.type === "file";
     const searchCwd = isFileTarget ? dirname(canonicalBaseDir) : canonicalBaseDir;
     const searchPath = isFileTarget ? basename(canonicalBaseDir) : undefined;
     const reportedFilePath = opts.reportedFilePath ?? baseDir;
@@ -2397,7 +2049,7 @@ export class FileSystem {
     }
 
     const searched = resultOutcome(
-      await getSearchBackend(this.fsBackend).grep({
+      await this.host.searchBackend(this.fsBackend).grep({
         pattern,
         regex,
         cwd: searchCwd,
@@ -2442,7 +2094,15 @@ export class FileSystem {
         line: number;
         text: string;
       }[] = [];
-      const fileHashCache = new Map<string, string>();
+      const hashTargets = matches
+        .filter((match) => match.text.replace(/\r?\n$/, "").length <= HASHLINE_MAX_LINE_CHARS)
+        .map((match) =>
+          isFileTarget ? canonicalBaseDir : this.resolvePath(match.file, resolvedBaseDir),
+        );
+      const hashed = resultOutcome(await this.host.hashTextFiles([...new Set(hashTargets)]));
+      if (!hashed.ok) return this.grepFailure(mode, hashed.error.message);
+      const fileHashes = hashed.value;
+      const recordedHashes = new Set<string>();
 
       for (const match of matches) {
         const normalizedMatchText = match.text.replace(/\r?\n$/, "");
@@ -2455,16 +2115,9 @@ export class FileSystem {
         const resolvedMatchPath = isFileTarget
           ? canonicalBaseDir
           : this.resolvePath(match.file, resolvedBaseDir);
-        let fileHash = fileHashCache.get(resolvedMatchPath);
-        if (!fileHash) {
-          const read = resultOutcome(
-            await captureFilesystemOperation("read hashline grep result", () =>
-              fs.readFile(resolvedMatchPath, "utf-8"),
-            ),
-          );
-          if (!read.ok) return this.grepFailure(mode, read.error.message);
-          fileHash = this.hash(read.value);
-          fileHashCache.set(resolvedMatchPath, fileHash);
+        const fileHash = fileHashes.get(resolvedMatchPath) ?? "";
+        if (!recordedHashes.has(resolvedMatchPath)) {
+          recordedHashes.add(resolvedMatchPath);
           const access = { lastAccess: Date.now(), fileHash };
           this.fileAccessRecord.set(resolvedMatchPath, access);
           if (isFileTarget) this.fileAccessRecord.set(resolvedBaseDir, access);
@@ -2606,155 +2259,6 @@ export class FileSystem {
       case "hashline":
         return { mode, truncated: false, results: [], error: message };
     }
-  }
-
-  private getFileTypeFromStats(stats: Stats) {
-    switch (true) {
-      case stats.isSymbolicLink(): {
-        return "symlink";
-      }
-      case stats.isFile(): {
-        return "file";
-      }
-      case stats.isDirectory(): {
-        return "directory";
-      }
-      case stats.isSocket(): {
-        return "socket";
-      }
-      case stats.isBlockDevice(): {
-        return "block_device";
-      }
-      case stats.isCharacterDevice(): {
-        return "character_device";
-      }
-      case stats.isFIFO(): {
-        return "fifo";
-      }
-      default: {
-        return "unknown";
-      }
-    }
-  }
-
-  private async collectGlobMatches(params: {
-    resolvedBaseDir: string;
-    includes: readonly string[];
-    excludes: readonly string[];
-    maxEntries: number;
-    mode: SearchMode;
-    dangerouslyAllow: boolean;
-  }): Promise<
-    ResultType<
-      { paths: string[]; entries: GlobEntry[]; truncated: boolean },
-      FileSystemOperationFailed
-    >
-  > {
-    const paths: string[] = [];
-    const entries: GlobEntry[] = [];
-    const seen = new Set<string>();
-    let truncated = false;
-
-    const addMatch = async (
-      entry: string,
-      abs: string,
-    ): Promise<ResultType<void, FileSystemOperationFailed>> => {
-      if (seen.has(entry)) return Result.ok(undefined);
-      seen.add(entry);
-
-      const count = params.mode === "default" ? paths.length : entries.length;
-      if (count >= params.maxEntries) {
-        truncated = true;
-        return Result.ok(undefined);
-      }
-
-      if (params.mode === "default") {
-        paths.push(entry);
-        return Result.ok(undefined);
-      }
-
-      const stats = resultOutcome(
-        await captureFilesystemOperation("stat glob match", () => fs.stat(abs)),
-      );
-      if (!stats.ok) {
-        return isSkippableTraversalError(stats.error)
-          ? Result.ok(undefined)
-          : Result.err(stats.error);
-      }
-      entries.push({
-        path: entry,
-        type: this.getFileTypeFromStats(stats.value),
-        size: stats.value.size,
-      });
-      return Result.ok(undefined);
-    };
-
-    const walk = async (relDir: string): Promise<ResultType<void, FileSystemOperationFailed>> => {
-      if (truncated) return Result.ok(undefined);
-
-      const absDir = relDir ? join(params.resolvedBaseDir, relDir) : params.resolvedBaseDir;
-      if (!params.dangerouslyAllow && this.isDeniedPath(absDir)) return Result.ok(undefined);
-      if (relDir && matchesAnyGlob(relDir, params.excludes)) return Result.ok(undefined);
-      if (relDir && matchesAnyGlob(relDir, params.includes)) {
-        const added = resultOutcome(await addMatch(relDir, absDir));
-        if (!added.ok) return Result.err(added.error);
-        if (truncated) return Result.ok(undefined);
-      }
-
-      const opened = resultOutcome(
-        await captureFilesystemOperation("open glob directory", () => fs.opendir(absDir)),
-      );
-      if (!opened.ok) {
-        return isSkippableTraversalError(opened.error)
-          ? Result.ok(undefined)
-          : Result.err(opened.error);
-      }
-
-      let iterationError: FileSystemOperationFailed | undefined;
-      const iterated = resultOutcome(
-        await captureFilesystemOperation("iterate glob directory", async () => {
-          for await (const dirent of opened.value) {
-            if (truncated) break;
-
-            const relPath = relDir ? `${relDir}/${dirent.name}` : dirent.name;
-            const abs = join(params.resolvedBaseDir, relPath);
-
-            if (!params.dangerouslyAllow && this.isDeniedPath(abs)) continue;
-            if (matchesAnyGlob(relPath, params.excludes)) continue;
-
-            if (matchesAnyGlob(relPath, params.includes)) {
-              const added = resultOutcome(await addMatch(relPath, abs));
-              if (!added.ok) {
-                iterationError = added.error;
-                break;
-              }
-            }
-
-            if (dirent.isDirectory()) {
-              const walked = resultOutcome(await walk(relPath));
-              if (!walked.ok) {
-                iterationError = walked.error;
-                break;
-              }
-            }
-          }
-        }),
-      );
-      if (!iterated.ok) {
-        return isSkippableTraversalError(iterated.error)
-          ? Result.ok(undefined)
-          : Result.err(iterated.error);
-      }
-      if (iterationError) return Result.err(iterationError);
-      return Result.ok(undefined);
-    };
-
-    for (const root of getGlobSearchRoots(params.includes)) {
-      const walked = resultOutcome(await walk(root));
-      if (!walked.ok) return Result.err(walked.error);
-    }
-
-    return Result.ok({ paths, entries, truncated });
   }
 
   private fireEvent(event: FileSystemEvent) {
