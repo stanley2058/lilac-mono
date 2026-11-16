@@ -400,9 +400,8 @@ function createLayeredDiscordMessageResolver(input: {
       run: (ref) => input.adapter.readMsg(ref),
     });
     const fetchedResult = Result.all(fetched);
-    const fetchedError = fetchedResult.match({ ok: () => null, err: (error) => error });
-    if (fetchedError) return Result.err(fetchedError);
-    const fetchedMessages = fetchedResult.match({ ok: (messages) => messages, err: () => [] });
+    if (fetchedResult.isErr()) return Result.err(fetchedResult.error);
+    const fetchedMessages = fetchedResult.value;
     for (const message of fetchedMessages) {
       if (message) resolvedByMessageId.set(message.ref.messageId, message);
     }
@@ -705,15 +704,9 @@ async function composeSelectedDiscordChain(input: {
       adapter: input.adapter,
       refs: unknownUserRefs,
     });
-    const reactionsError = reactionsByMessageId.match({
-      ok: () => null,
-      err: (error) => error,
-    });
-    if (reactionsError) return { status: "return", value: Result.err(reactionsError) } as const;
-    const reactionValues = reactionsByMessageId.match({
-      ok: (value) => value,
-      err: () => new Map<string, readonly string[]>(),
-    });
+    if (reactionsByMessageId.isErr())
+      return { status: "return", value: Result.err(reactionsByMessageId.error) } as const;
+    const reactionValues = reactionsByMessageId.value;
     const projectedByMessageId = new Map<string, readonly StoredMessageV1[]>();
     const candidateOwnedBlobsByMessageId = new Map<string, readonly CoreOwnedBlobReference[]>();
     let lineageComplete = Boolean(projectionStore);
@@ -759,23 +752,13 @@ async function composeSelectedDiscordChain(input: {
           discordUserAliasById: input.discordUserAliasById,
           resourceRegistry: input.resourceRegistry,
         });
-        const candidateError = candidateResult.match({
-          ok: () => null,
-          err: (error) => error,
-        });
-        if (candidateError) {
+        if (candidateResult.isErr()) {
           return {
             status: "return",
-            value: Result.err(candidateError),
+            value: Result.err(candidateResult.error),
           } as const;
         }
-        const candidate = candidateResult.match<{
-          messages: StoredMessageV1[];
-          ownedBlobs: CoreOwnedBlobReference[];
-        }>({
-          ok: (value) => value,
-          err: () => ({ messages: [], ownedBlobs: [] }),
-        });
+        const candidate = candidateResult.value;
         const candidateOwnershipError = getDiscordAttachmentOwnershipError(attachmentState);
         if (candidateOwnershipError) {
           return {
@@ -822,20 +805,13 @@ async function composeSelectedDiscordChain(input: {
           segmentMessageIds.flatMap((id) => projectedByMessageId.get(id) ?? []),
         );
         const segmentDigestResult = hashCanonicalStoredMessagesV2(segmentMessages);
-        const segmentDigestError = segmentDigestResult.match({
-          ok: () => null,
-          err: (error) => error,
-        });
-        if (segmentDigestError) {
+        if (segmentDigestResult.isErr()) {
           return {
             status: "return",
-            value: Result.err(segmentDigestError),
+            value: Result.err(segmentDigestResult.error),
           } as const;
         }
-        const segmentDigest = segmentDigestResult.match({
-          ok: (value) => value.hash,
-          err: () => "",
-        });
+        const segmentDigest = segmentDigestResult.value.hash;
         const admitted = projectionStore.admitCoreSurfaceProjection({
           ...surfaceProjectionKey(input.sessionId, messageId),
           canonicalMessages: projectedByMessageId.get(messageId) ?? [],
@@ -864,23 +840,16 @@ async function composeSelectedDiscordChain(input: {
     const segmentInputs: StoredLineageSegmentInputV2[] = [];
     if (input.checkpointSelection.checkpoint) {
       const checkpoint = input.checkpointSelection.checkpoint;
-      const checkpointDigestResult = hashCanonicalStoredMessagesV2(checkpoint.messages);
-      const checkpointDigestError = checkpointDigestResult.match({
-        ok: () => null,
-        err: (error) => error,
-      });
-      if (!checkpoint.transcriptDigest && checkpointDigestError) {
+      const checkpointDigest = checkpoint.transcriptDigest
+        ? Result.ok(checkpoint.transcriptDigest)
+        : hashCanonicalStoredMessagesV2(checkpoint.messages).map((value) => value.hash);
+      if (checkpointDigest.isErr()) {
         return {
           status: "return",
-          value: Result.err(checkpointDigestError),
+          value: Result.err(checkpointDigest.error),
         } as const;
       }
-      const digest =
-        checkpoint.transcriptDigest ??
-        checkpointDigestResult.match({
-          ok: (value) => value.hash,
-          err: () => "",
-        });
+      const digest = checkpointDigest.value;
       segmentInputs.push({
         atoms: [
           {
@@ -941,27 +910,20 @@ async function composeSelectedDiscordChain(input: {
         });
         const metadataValue = metadata?.match({ ok: (value) => value, err: () => null }) ?? null;
         if (!metadataValue) lineageComplete = false;
-        const snapshotDigestResult = hashCanonicalStoredMessagesV2(snapshot.messages);
-        const snapshotDigestError = snapshotDigestResult.match({
-          ok: () => null,
-          err: (error) => error,
-        });
-        if (!metadataValue?.transcriptDigest && !snapshot.transcriptDigest && snapshotDigestError) {
+        const knownDigest = metadataValue?.transcriptDigest ?? snapshot.transcriptDigest;
+        const snapshotDigest = knownDigest
+          ? Result.ok(knownDigest)
+          : hashCanonicalStoredMessagesV2(snapshot.messages).map((value) => value.hash);
+        if (snapshotDigest.isErr()) {
           return {
             status: "return",
-            value: Result.err(snapshotDigestError),
+            value: Result.err(snapshotDigest.error),
           } as const;
         }
         const requestAtom: CoreLineageAtomV2 = {
           kind: "request",
           requestId: snapshot.requestId,
-          transcriptDigest:
-            metadataValue?.transcriptDigest ??
-            snapshot.transcriptDigest ??
-            snapshotDigestResult.match({
-              ok: (value) => value.hash,
-              err: () => "",
-            }),
+          transcriptDigest: snapshotDigest.value,
           providerFamily:
             metadataValue?.providerFamily ?? snapshot.providerState?.lastFamily ?? "ai-sdk",
           containsCrossFamilyTurns:
@@ -1037,23 +999,14 @@ async function composeSelectedDiscordChain(input: {
         blobStore: input.blobStore,
         messages: segment.canonicalMessages,
       });
-      const preparationError = prepared.match({
-        ok: () => null,
-        err: (error) => error,
-      });
-      if (preparationError) {
+      if (prepared.isErr()) {
         return {
           status: "return",
-          value: Result.err(preparationError),
+          value: Result.err(prepared.error),
         } as const;
       }
-      prepared.match({
-        ok: (value) => {
-          rememberDiscordRequestBlobHandles(attachmentState, value.inputHandles);
-          preparedMessages.push(...value.messages);
-        },
-        err: () => undefined,
-      });
+      rememberDiscordRequestBlobHandles(attachmentState, prepared.value.inputHandles);
+      preparedMessages.push(...prepared.value.messages);
     }
     return {
       status: "return",
@@ -1301,9 +1254,8 @@ async function listRecentMessagesEndingAt(params: {
         limit: Math.min(100, remaining, target - fetchedPreviousMessages),
         beforeMessageId: cursor,
       });
-      const pageError = page.match({ ok: () => null, err: (error) => error });
-      if (pageError) return Result.err(pageError);
-      const pageValues = page.match({ ok: (value) => value, err: () => [] });
+      if (page.isErr()) return Result.err(page.error);
+      const pageValues = page.value;
       if (pageValues.length === 0) {
         exhausted = true;
         cursor = undefined;
@@ -1641,9 +1593,8 @@ async function findLastDiscordSessionDividerBefore(params: {
       limit: Math.min(pageSize, maxMessages - scanned),
       beforeMessageId: cursor,
     });
-    const pageError = page.match({ ok: () => null, err: (error) => error });
-    if (pageError) return Result.err(pageError);
-    const pageValues = page.match({ ok: (value) => value, err: () => [] });
+    if (page.isErr()) return Result.err(page.error);
+    const pageValues = page.value;
     if (pageValues.length === 0) return Result.ok(null);
     scanned += pageValues.length;
 
@@ -1758,15 +1709,8 @@ export async function composeRequestMessages(
   const triggerMsg = await layered
     .resolveMessagesByRefs([opts.trigger.msgRef])
     .then((resolved) => resolved.map((messages) => messages[0] ?? null));
-  const triggerError = triggerMsg.match({
-    ok: () => null,
-    err: (error) => error,
-  });
-  if (triggerError) return Result.err(triggerError);
-  const triggerValue = triggerMsg.match({
-    ok: (value) => value,
-    err: () => null,
-  });
+  if (triggerMsg.isErr()) return Result.err(triggerMsg.error);
+  const triggerValue = triggerMsg.value;
   if (!triggerValue) {
     return Result.ok({
       messages: [],
@@ -1796,12 +1740,8 @@ export async function composeRequestMessages(
           maxDepth: opts.maxDepth,
           resolveMessagesByRefs: layered.resolveMessagesByRefs,
         });
-  const chainError = chainResult.match({
-    ok: () => null,
-    err: (error) => error,
-  });
-  if (chainError) return Result.err(chainError);
-  const chain = chainResult.match({ ok: (value) => value, err: () => [] });
+  if (chainResult.isErr()) return Result.err(chainResult.error);
+  const chain = chainResult.value;
 
   const filteredChain = chain.filter((m) => {
     const isChat = m.isChat;
@@ -1893,15 +1833,8 @@ export async function composeRecentChannelMessages(
     const triggerMsgResult = await layered
       .resolveMessagesByRefs([opts.triggerMsgRef])
       .then((resolved) => resolved.map((messages) => messages[0] ?? null));
-    const triggerError = triggerMsgResult.match({
-      ok: () => null,
-      err: (error) => error,
-    });
-    if (triggerError) return Result.err(triggerError);
-    const triggerMsg = triggerMsgResult.match({
-      ok: (value) => value,
-      err: () => null,
-    });
+    if (triggerMsgResult.isErr()) return Result.err(triggerMsgResult.error);
+    const triggerMsg = triggerMsgResult.value;
     if (triggerMsg) {
       let anchor: SurfaceMessage | null;
       if (opts.triggerType === undefined) {
@@ -1913,9 +1846,8 @@ export async function composeRecentChannelMessages(
         const blockResult = await resolveMergeBlockEndingAt(adapter, triggerMsg, {
           resolveMessagesByRefs: layered.resolveMessagesByRefs,
         });
-        const blockError = blockResult.match({ ok: () => null, err: (error) => error });
-        if (blockError) return Result.err(blockError);
-        const block = blockResult.match({ ok: (value) => value, err: () => [] });
+        if (blockResult.isErr()) return Result.err(blockResult.error);
+        const block = blockResult.value;
         anchor = await findEarliestEffectiveReplyAnchor(adapter, block);
       }
       if (anchor) {
@@ -1926,15 +1858,8 @@ export async function composeRecentChannelMessages(
           triggerMsg,
           resolveMessagesByRefs: layered.resolveMessagesByRefs,
         });
-        const anchoredError = anchoredResult.match({
-          ok: () => null,
-          err: (error) => error,
-        });
-        if (anchoredError) return Result.err(anchoredError);
-        const anchored = anchoredResult.match({
-          ok: (value) => value,
-          err: () => [],
-        });
+        if (anchoredResult.isErr()) return Result.err(anchoredResult.error);
+        const anchored = anchoredResult.value;
 
         const oldestAnchoredMessageId = anchored[0]?.messageId;
         const dividerResult = oldestAnchoredMessageId
@@ -2035,15 +1960,8 @@ export async function composeRecentChannelMessages(
     const triggerMsgResult = await layered
       .resolveMessagesByRefs([opts.triggerMsgRef])
       .then((resolved) => resolved.map((messages) => messages[0] ?? null));
-    const triggerError = triggerMsgResult.match({
-      ok: () => null,
-      err: (error) => error,
-    });
-    if (triggerError) return Result.err(triggerError);
-    const triggerMsg = triggerMsgResult.match({
-      ok: (value) => value,
-      err: () => null,
-    });
+    if (triggerMsgResult.isErr()) return Result.err(triggerMsgResult.error);
+    const triggerMsg = triggerMsgResult.value;
     if (triggerMsg) {
       const recent = await listRecentMessagesEndingAt({
         adapter,
@@ -2078,20 +1996,15 @@ export async function composeRecentChannelMessages(
           });
         },
       });
-      const recentError = recent.match({
-        ok: () => null,
-        err: (error) => error,
-      });
-      if (recentError) return Result.err(recentError);
-      orderedList = recent.match({ ok: (value) => value, err: () => [] });
+      if (recent.isErr()) return Result.err(recent.error);
+      orderedList = recent.value;
     } else {
       orderedList = [];
     }
   } else {
     const listed = await adapter.listMsg(sessionRef, { limit: opts.limit });
-    const listError = listed.match({ ok: () => null, err: (error) => error });
-    if (listError) return Result.err(listError);
-    orderedList = [...listed.match({ ok: (value) => value, err: () => [] })];
+    if (listed.isErr()) return Result.err(listed.error);
+    orderedList = [...listed.value];
 
     if (opts.triggerMsgRef) {
       const exists = orderedList.some((m) => m.ref.messageId === opts.triggerMsgRef!.messageId);
@@ -2099,15 +2012,8 @@ export async function composeRecentChannelMessages(
         const fetchedTrigger = await layered
           .resolveMessagesByRefs([opts.triggerMsgRef])
           .then((resolved) => resolved.map((messages) => messages[0] ?? null));
-        const fetchError = fetchedTrigger.match({
-          ok: () => null,
-          err: (error) => error,
-        });
-        if (fetchError) return Result.err(fetchError);
-        const fetchedValue = fetchedTrigger.match({
-          ok: (value) => value,
-          err: () => null,
-        });
+        if (fetchedTrigger.isErr()) return Result.err(fetchedTrigger.error);
+        const fetchedValue = fetchedTrigger.value;
         if (fetchedValue) orderedList.push(fetchedValue);
       }
     }
@@ -2259,9 +2165,8 @@ export async function composeSingleMessageWithLineage(
   const m = await layered
     .resolveMessagesByRefs([opts.msgRef])
     .then((resolved) => resolved.map((messages) => messages[0] ?? null));
-  const readError = m.match({ ok: () => null, err: (error) => error });
-  if (readError) return Result.err(readError);
-  const message = m.match({ ok: (value) => value, err: () => null });
+  if (m.isErr()) return Result.err(m.error);
+  const message = m.value;
   if (!message) return Result.ok(null);
 
   if (!shouldIncludeInModelContext(message)) return Result.ok(null);

@@ -70,7 +70,7 @@ describe("conversation thread summarization worker cleanup", () => {
       expect(cleanupFailures[0]).toMatchObject({
         cleanup: { label: failingLabel },
         kind: "ordinary",
-        message: "Conversation thread summarization worker cleanup failed",
+        message: `Conversation thread summarization worker cleanup failed: ${failingLabel} close failed`,
       });
       expect(continued).toBe(true);
     });
@@ -111,7 +111,7 @@ describe("conversation thread summarization worker cleanup", () => {
       {
         cleanup: expect.objectContaining({ label: "thread-store" }),
         kind: "ordinary",
-        message: "Conversation thread summarization worker cleanup failed",
+        message: "Conversation thread summarization worker cleanup failed: unknown cause",
       },
     ]);
   });

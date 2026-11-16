@@ -180,9 +180,8 @@ export async function startHeartbeatServiceResult(params: {
     cfg = params.config;
   } else {
     const loaded = await reloadHeartbeatCoreConfig();
-    const loadError = loaded.match({ err: (error) => error, ok: () => null });
-    if (loadError) return Result.err(loadError);
-    const loadedConfig = loaded.match({ ok: (value) => value, err: () => null });
+    if (loaded.isErr()) return Result.err(loaded.error);
+    const loadedConfig = loaded.value;
     if (!loadedConfig) {
       return Result.err(
         new HeartbeatConfigReloadError({
@@ -247,29 +246,23 @@ export async function startHeartbeatServiceResult(params: {
     const currentMs = Math.min(Number.MAX_SAFE_INTEGER, baseNowMs + 1);
     const configuredCron = cfg.surface.heartbeat.cron;
     const scheduled = computeHeartbeatCronAtMs(configuredCron, currentMs);
-    const resolveScheduled = scheduled.match<() => number>({
-      ok: (value) => () => value,
-      err: (error) => () => {
-        logger.warn("invalid heartbeat cron; falling back to */30 * * * *", {
-          cron: configuredCron,
-          ...formatTaggedErrorForLog(error),
-          outcome: "using-default-cron",
+    if (scheduled.isErr()) {
+      logger.warn("invalid heartbeat cron; falling back to */30 * * * *", {
+        cron: configuredCron,
+        ...formatTaggedErrorForLog(scheduled.error),
+        outcome: "using-default-cron",
+      });
+      const fallback = computeHeartbeatCronAtMs(DEFAULT_HEARTBEAT_CRON, currentMs);
+      if (fallback.isErr()) {
+        logger.error("default heartbeat cron unexpectedly failed; using a 30-minute delay", {
+          cron: DEFAULT_HEARTBEAT_CRON,
+          outcome: "using-fixed-delay",
         });
-        const fallback = computeHeartbeatCronAtMs(DEFAULT_HEARTBEAT_CRON, currentMs);
-        const resolveFallback = fallback.match<() => number>({
-          ok: (value) => () => value,
-          err: () => () => {
-            logger.error("default heartbeat cron unexpectedly failed; using a 30-minute delay", {
-              cron: DEFAULT_HEARTBEAT_CRON,
-              outcome: "using-fixed-delay",
-            });
-            return Math.min(Number.MAX_SAFE_INTEGER, currentMs + 30 * 60 * 1000);
-          },
-        });
-        return resolveFallback();
-      },
-    });
-    return resolveScheduled();
+        return Math.min(Number.MAX_SAFE_INTEGER, currentMs + 30 * 60 * 1000);
+      }
+      return fallback.value;
+    }
+    return scheduled.value;
   }
 
   function clearScheduledWakeTimer(): void {
@@ -483,12 +476,8 @@ export async function startHeartbeatServiceResult(params: {
   }
 
   const lifecycleStarted = await startHeartbeatLifecycleResult();
-  const lifecycleStartError = lifecycleStarted.match({ err: (error) => error, ok: () => null });
-  if (lifecycleStartError) return Result.err(lifecycleStartError);
-  const lifecycleSub: HeartbeatLifecycleSubscription | null = lifecycleStarted.match({
-    ok: (value) => value,
-    err: () => null,
-  });
+  if (lifecycleStarted.isErr()) return Result.err(lifecycleStarted.error);
+  const lifecycleSub: HeartbeatLifecycleSubscription | null = lifecycleStarted.value;
   if (!lifecycleSub) {
     return Result.err(
       new HeartbeatConfigReloadError({

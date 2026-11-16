@@ -354,40 +354,32 @@ export async function fetchReplyChainFrom(
     const groupResult = await resolveMergeBlockEndingAt(adapter, cursor, {
       resolveMessagesByRefs: opts.resolveMessagesByRefs,
     });
-    const continueGroup = groupResult.match<
-      () => Promise<SurfaceOperationResult<ReplyChainMessage[]>>
-    >({
+    if (groupResult.isErr()) return Result.err(groupResult.error);
+    const group = groupResult.value;
+    const first = group[0];
+    if (!first) return finish();
+    for (const message of group) seenMessageIds.add(message.ref.messageId);
+    groupsNewestToOldest.push(group.map((message) => toReplyChainMessage(message)));
+
+    const ref = toReplyChainMessage(first).replyReference;
+    if (!ref.messageId) return finish();
+    if (ref.channelId && ref.channelId !== opts.trigger.msgRef.channelId) return finish();
+
+    const nextRef = {
+      platform: opts.platform,
+      channelId: opts.trigger.msgRef.channelId,
+      messageId: ref.messageId,
+    } as const;
+    const next = opts.resolveMessagesByRefs
+      ? await opts
+          .resolveMessagesByRefs([nextRef])
+          .then((resolved) => resolved.map((messages) => messages[0] ?? null))
+      : await adapter.readMsg(nextRef);
+    const continueNext = next.match<() => Promise<SurfaceOperationResult<ReplyChainMessage[]>>>({
       err: (error) => async () => Result.err(error),
-      ok: (group) => async () => {
-        const first = group[0];
-        if (!first) return finish();
-        for (const message of group) seenMessageIds.add(message.ref.messageId);
-        groupsNewestToOldest.push(group.map((message) => toReplyChainMessage(message)));
-
-        const ref = toReplyChainMessage(first).replyReference;
-        if (!ref.messageId) return finish();
-        if (ref.channelId && ref.channelId !== opts.trigger.msgRef.channelId) return finish();
-
-        const nextRef = {
-          platform: opts.platform,
-          channelId: opts.trigger.msgRef.channelId,
-          messageId: ref.messageId,
-        } as const;
-        const next = opts.resolveMessagesByRefs
-          ? await opts
-              .resolveMessagesByRefs([nextRef])
-              .then((resolved) => resolved.map((messages) => messages[0] ?? null))
-          : await adapter.readMsg(nextRef);
-        const continueNext = next.match<() => Promise<SurfaceOperationResult<ReplyChainMessage[]>>>(
-          {
-            err: (error) => async () => Result.err(error),
-            ok: (value) => () => (value ? walk(value, depth + 1) : Promise.resolve(finish())),
-          },
-        );
-        return continueNext();
-      },
+      ok: (value) => () => (value ? walk(value, depth + 1) : Promise.resolve(finish())),
     });
-    return continueGroup();
+    return continueNext();
   };
 
   const start = opts.resolveMessagesByRefs
@@ -416,37 +408,31 @@ export async function fetchMentionThreadContext(
   const blockResult = await resolveMergeBlockEndingAt(adapter, params.triggerMsg, {
     resolveMessagesByRefs: params.resolveMessagesByRefs,
   });
-  const continueBlock = blockResult.match<
-    () => Promise<SurfaceOperationResult<ReplyChainMessage[]>>
-  >({
-    err: (error) => async () => Result.err(error),
-    ok: (block) => async () => {
-      const anchor = await findEarliestEffectiveReplyAnchor(adapter, block);
-      const startMsgRef = anchor?.ref ?? params.triggerMsg.ref;
-      const chainResult = await fetchReplyChainFrom(adapter, {
-        platform: params.platform,
-        botUserId: params.botUserId,
-        botName: params.botName,
-        trigger: { type: "mention", msgRef: params.triggerMsg.ref },
-        startMsgRef,
-        maxDepth: params.maxDepth,
-        resolveMessagesByRefs: params.resolveMessagesByRefs,
+  if (blockResult.isErr()) return Result.err(blockResult.error);
+  const block = blockResult.value;
+  const anchor = await findEarliestEffectiveReplyAnchor(adapter, block);
+  const startMsgRef = anchor?.ref ?? params.triggerMsg.ref;
+  const chainResult = await fetchReplyChainFrom(adapter, {
+    platform: params.platform,
+    botUserId: params.botUserId,
+    botName: params.botName,
+    trigger: { type: "mention", msgRef: params.triggerMsg.ref },
+    startMsgRef,
+    maxDepth: params.maxDepth,
+    resolveMessagesByRefs: params.resolveMessagesByRefs,
+  });
+  return continueResult(chainResult, {
+    err: (error) => Result.err(error),
+    ok: (chain) => {
+      const blockMessages = block.map((message) => toReplyChainMessage(message));
+      const combined = dedupeByMessageId([...chain, ...blockMessages]);
+      combined.sort((a, b) => {
+        if (a.ts !== b.ts) return a.ts - b.ts;
+        return a.messageId.localeCompare(b.messageId);
       });
-      return continueResult(chainResult, {
-        err: (error) => Result.err(error),
-        ok: (chain) => {
-          const blockMessages = block.map((message) => toReplyChainMessage(message));
-          const combined = dedupeByMessageId([...chain, ...blockMessages]);
-          combined.sort((a, b) => {
-            if (a.ts !== b.ts) return a.ts - b.ts;
-            return a.messageId.localeCompare(b.messageId);
-          });
-          return Result.ok(combined);
-        },
-      });
+      return Result.ok(combined);
     },
   });
-  return continueBlock();
 }
 
 export function mergeChainByDiscordWindow(

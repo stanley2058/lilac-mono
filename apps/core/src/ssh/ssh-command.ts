@@ -260,10 +260,8 @@ export async function runSshCommand(params: {
 }): Promise<ResultType<SshCommandOutcome, SshCommandError>> {
   const args = await buildSshArgs(params.host, params.remoteArgs);
   const spawned = spawnSshCommand(args, params.stdin);
-  const spawnFailure = spawned.match({ ok: () => null, err: (error) => error });
-  if (spawnFailure) return Result.err(spawnFailure);
-  const child = spawned.match({ ok: (value) => value, err: () => null });
-  if (!child) return Result.err(spawnFailure ?? new SshCommandError(missingChild()));
+  if (spawned.isErr()) return Result.err(spawned.error);
+  const child = spawned.value;
 
   let termination: "timeout" | "aborted" | undefined;
   let hardKill: ReturnType<typeof setTimeout> | undefined;
@@ -314,12 +312,4 @@ export async function runSshCommand(params: {
     timedOut: termination === "timeout",
     aborted: termination === "aborted",
   }));
-}
-
-function missingChild() {
-  return {
-    operation: "spawn" as const,
-    cause: new Error("ssh child process missing after spawn"),
-    message: "Failed to start ssh",
-  };
 }

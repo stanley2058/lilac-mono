@@ -20,7 +20,12 @@
         "lilac/no-else-after-terminal": "error",
         "lilac/prefer-switch-true-chain": "error",
         "no-nested-ternary": "error",
-        "lilac/no-local-is-record": "error"
+        "lilac/no-local-is-record": "error",
+        "lilac/no-redundant-branch": "error",
+        "max-depth": ["error", { "max": 4 }],
+        "max-nested-callbacks": ["error", { "max": 4 }],
+        "no-lone-blocks": "error",
+        "no-dupe-else-if": "error"
       }
     },
     {
@@ -35,7 +40,9 @@
         "@typescript-eslint/no-explicit-any": "off",
         "lilac/no-fixed-test-wait": "error",
         "no-nested-ternary": "off",
-        "lilac/no-local-is-record": "off"
+        "lilac/no-local-is-record": "off",
+        "max-depth": "off",
+        "max-nested-callbacks": "off"
       }
     }
   ]

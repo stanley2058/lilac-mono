@@ -432,101 +432,63 @@ export async function setupCoreEventBusResources(params: {
         const redisCreated = (
           params.dependencies?.captureRedisConstruction ?? captureCoreRedisConstruction
         )(params.redisUrl);
-        return redisCreated.match({
-          err: (error) => async () => Result.err(error),
-          ok: (ownedRedis) => async () => {
-            redis = ownedRedis;
+        if (redisCreated.isErr()) return Result.err(redisCreated.error);
+        const ownedRedis = redisCreated.value;
+        redis = ownedRedis;
 
-            const workspacePrepared = await captureCoreWorkspacePreparation(params.cwd);
-            const workspaceResult = await setupWithCleanup(workspacePrepared, ownedRedis);
-            const workspaceFailure = workspaceResult.match({
-              ok: () => null,
-              err: (error) => Result.err(error),
-            });
-            if (workspaceFailure) return workspaceFailure;
-            const canonicalWorkspaceRoot = workspaceResult.match({
-              ok: (value) => value,
-              err: () => "",
-            });
+        const workspacePrepared = await captureCoreWorkspacePreparation(params.cwd);
+        const workspaceResult = await setupWithCleanup(workspacePrepared, ownedRedis);
+        if (workspaceResult.isErr()) return Result.err(workspaceResult.error);
+        const canonicalWorkspaceRoot = workspaceResult.value;
 
-            const deadLetterKeyResult = await (
-              params.dependencies?.loadDeadLetterKey ?? loadOrCreateCoreDeadLetterKey
-            )({ dataDir: params.dataDir });
-            const deadLetterKeyResultWithCleanup = await setupWithCleanup(
-              deadLetterKeyResult.mapError(
-                (error) =>
-                  new CoreEventBusSetupFailed({
-                    operation: "load-dead-letter-key",
-                    cause: error,
-                    message: "Core event bus setup failed during load-dead-letter-key",
-                  }),
-              ),
-              ownedRedis,
-            );
-            const deadLetterKeyFailure = deadLetterKeyResultWithCleanup.match({
-              ok: () => null,
-              err: (error) => Result.err(error),
-            });
-            if (deadLetterKeyFailure) return deadLetterKeyFailure;
-            const deadLetterKey = deadLetterKeyResultWithCleanup.match({
-              ok: (value) => value,
-              err: () => new Uint8Array(),
-            });
+        const deadLetterKeyResult = await (
+          params.dependencies?.loadDeadLetterKey ?? loadOrCreateCoreDeadLetterKey
+        )({ dataDir: params.dataDir });
+        const deadLetterKeyResultWithCleanup = await setupWithCleanup(
+          deadLetterKeyResult.mapError(
+            (error) =>
+              new CoreEventBusSetupFailed({
+                operation: "load-dead-letter-key",
+                cause: error,
+                message: "Core event bus setup failed during load-dead-letter-key",
+              }),
+          ),
+          ownedRedis,
+        );
+        if (deadLetterKeyResultWithCleanup.isErr()) {
+          return Result.err(deadLetterKeyResultWithCleanup.error);
+        }
+        const deadLetterKey = deadLetterKeyResultWithCleanup.value;
 
-            const redisConnected = await captureCoreRedisConnection(ownedRedis);
-            const connectionResult = await setupWithCleanup(redisConnected, ownedRedis);
-            const connectionFailure = connectionResult.match({
-              ok: () => null,
-              err: (error) => Result.err(error),
-            });
-            if (connectionFailure) return connectionFailure;
+        const redisConnected = await captureCoreRedisConnection(ownedRedis);
+        const connectionResult = await setupWithCleanup(redisConnected, ownedRedis);
+        if (connectionResult.isErr()) return Result.err(connectionResult.error);
 
-            const rawCreated = captureCoreRawBusConstruction(ownedRedis);
-            const rawResult = await setupWithCleanup(rawCreated, ownedRedis);
-            const rawFailure = rawResult.match({
-              ok: () => null,
-              err: (error) => Result.err(error),
-            });
-            if (rawFailure) return rawFailure;
-            raw = rawResult.match({
-              ok: (value) => () => value,
-              err: (error) => () => {
-                throw error;
-              },
-            })();
+        const rawCreated = captureCoreRawBusConstruction(ownedRedis);
+        const rawResult = await setupWithCleanup(rawCreated, ownedRedis);
+        if (rawResult.isErr()) return Result.err(rawResult.error);
+        const ownedRaw = rawResult.value;
+        raw = ownedRaw;
 
-            const busCreated = captureCoreLilacBusConstruction({
-              redis: ownedRedis,
-              raw,
-              deadLetterEncryptionKey: deadLetterKey,
-              evidenceBlobStore: params.evidenceBlobStore,
-              logger: params.logger,
-              reportFatalError: params.reportFatalError,
-              ...(params.postCommitObserver
-                ? { postCommitObserver: params.postCommitObserver }
-                : {}),
-            });
-            const busResult = await setupWithCleanup(busCreated, ownedRedis);
-            const busFailure = busResult.match({
-              ok: () => null,
-              err: (error) => Result.err(error),
-            });
-            if (busFailure) return busFailure;
-            bus = busResult.match({
-              ok: (value) => () => value,
-              err: (error) => () => {
-                throw error;
-              },
-            })();
+        const busCreated = captureCoreLilacBusConstruction({
+          redis: ownedRedis,
+          raw: ownedRaw,
+          deadLetterEncryptionKey: deadLetterKey,
+          evidenceBlobStore: params.evidenceBlobStore,
+          logger: params.logger,
+          reportFatalError: params.reportFatalError,
+          ...(params.postCommitObserver ? { postCommitObserver: params.postCommitObserver } : {}),
+        });
+        const busResult = await setupWithCleanup(busCreated, ownedRedis);
+        if (busResult.isErr()) return Result.err(busResult.error);
+        bus = busResult.value;
 
-            return Result.ok({
-              redis: ownedRedis,
-              raw,
-              bus,
-              canonicalWorkspaceRoot,
-            });
-          },
-        })();
+        return Result.ok({
+          redis: ownedRedis,
+          raw: ownedRaw,
+          bus: busResult.value,
+          canonicalWorkspaceRoot,
+        });
       },
       catch: captureRuntimeError,
     })

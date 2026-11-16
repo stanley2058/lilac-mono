@@ -430,35 +430,33 @@ export function createCoreNamedClaudeRuntime(input: {
             reason: selectionReason,
           });
           if (binding) {
-            {
-              const attempt = await Result.tryPromise({
-                try: async () => {
-                  const materialized = await materializeAttempt(persistedAttemptIndex, binding);
-                  return {
-                    status: "return",
-                    value: adaptContinuationResultToHost(materialized),
-                  } as const;
-                },
-                catch: captureError,
+            const attempt = await Result.tryPromise({
+              try: async () => {
+                const materialized = await materializeAttempt(persistedAttemptIndex, binding);
+                return {
+                  status: "return",
+                  value: adaptContinuationResultToHost(materialized),
+                } as const;
+              },
+              catch: captureError,
+            });
+            if (attempt.isErr()) {
+              const error = attempt.error.cause;
+              if (!(error instanceof ClaudeNativeSessionPreflightError)) {
+                return adaptContinuationResultToHost(
+                  Result.err(
+                    error instanceof Error
+                      ? error
+                      : new Error("Claude continuation candidate creation failed"),
+                  ),
+                );
+              }
+              diagnostic("native-source-invalid", {
+                issues: error.issues.map((issue) => issue.code).join(","),
+                mode: "fresh",
+                reason: "native-source-invalid",
               });
-              if (attempt.isErr()) {
-                const error = attempt.error.cause;
-                if (!(error instanceof ClaudeNativeSessionPreflightError)) {
-                  return adaptContinuationResultToHost(
-                    Result.err(
-                      error instanceof Error
-                        ? error
-                        : new Error("Claude continuation candidate creation failed"),
-                    ),
-                  );
-                }
-                diagnostic("native-source-invalid", {
-                  issues: error.issues.map((issue) => issue.code).join(","),
-                  mode: "fresh",
-                  reason: "native-source-invalid",
-                });
-              } else if (attempt.value.status === "return") return attempt.value.value;
-            }
+            } else if (attempt.value.status === "return") return attempt.value.value;
           }
           const materialized = await materializeAttempt(
             persistedAttemptIndex + (binding ? 1 : 0),
@@ -614,20 +612,16 @@ export function createCoreNamedClaudeRuntime(input: {
             return false;
           }
           const finalizedResult = await candidate.run.nativeSession.finalizeResult();
-          const finalizationError = finalizedResult.match({
-            ok: () => null,
-            err: (error) => error,
-          });
-          if (finalizationError) {
+          if (finalizedResult.isErr()) {
             recordAttemptOutcome(isCancellationRequested() ? "cancelled" : "failed");
             diagnostic(
               "candidate-finalization-failed",
               { reason: "native-finalization-failed" },
-              finalizationError,
+              finalizedResult.error,
             );
             return false;
           }
-          const finalized = finalizedResult.match({ ok: (value) => value, err: () => null });
+          const finalized = finalizedResult.value;
           if (!finalized) return false;
           if (isCancellationRequested()) {
             recordAttemptOutcome("cancelled");
@@ -754,19 +748,18 @@ export function createCoreNamedClaudeRuntime(input: {
             requestId: input.requestId,
             attemptIndex: attempt.attemptIndex,
           });
-          const promotionError = promotion.match({ ok: () => null, err: (error) => error });
-          if (promotionError) {
+          if (promotion.isErr()) {
             diagnostic(
               "promotion-failed",
               {
                 mode: "cas",
                 reason: "promotion-failed",
               },
-              promotionError,
+              promotion.error,
             );
             return false;
           }
-          const promoted = promotion.match({ ok: (value) => value, err: () => false });
+          const promoted = promotion.value;
           if (!promoted) {
             diagnostic("promotion-rejected", {
               mode: "cas",

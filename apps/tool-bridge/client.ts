@@ -1425,6 +1425,18 @@ export function parseArgs(args = runtimeArgs()): ResultType<ParsedArgs, BridgeAr
 
       let stdinConsumer: string | undefined;
 
+      function parseClaimedJsonSource(
+        value: string,
+        consumer: string,
+      ): ResultType<JsonSource, BridgeArgumentInvalid> {
+        const parsed = resultOutcome(parseJsonSource(value));
+        if (!parsed.ok) return Result.err(parsed.error);
+        if (parsed.value.kind !== "stdin") return Result.ok(parsed.value);
+        const claimed = resultOutcome(claimStdin(consumer));
+        if (!claimed.ok) return Result.err(claimed.error);
+        return Result.ok(parsed.value);
+      }
+
       function claimStdin(consumer: string): ResultType<void, BridgeArgumentInvalid> {
         if (stdinConsumer && stdinConsumer !== consumer) {
           return argumentError(
@@ -1501,14 +1513,9 @@ export function parseArgs(args = runtimeArgs()): ResultType<ParsedArgs, BridgeAr
             return argumentError("Only one of --stdin/--input may be provided");
           }
 
-          const parsedSource = resultOutcome(parseJsonSource(v));
-          if (!parsedSource.ok) return Result.err(parsedSource.error);
-          const source = parsedSource.value;
-          if (source.kind === "stdin") {
-            const claimed = resultOutcome(claimStdin("--input=@-"));
-            if (!claimed.ok) return Result.err(claimed.error);
-          }
-          baseInput = source;
+          const source = resultOutcome(parseClaimedJsonSource(v, "--input=@-"));
+          if (!source.ok) return Result.err(source.error);
+          baseInput = source.value;
           continue;
         }
 
@@ -1536,15 +1543,9 @@ export function parseArgs(args = runtimeArgs()): ResultType<ParsedArgs, BridgeAr
             );
           }
 
-          const parsedSource = resultOutcome(parseJsonSource(v));
-          if (!parsedSource.ok) return Result.err(parsedSource.error);
-          const source = parsedSource.value;
-          if (source.kind === "stdin") {
-            const claimed = resultOutcome(claimStdin(`--${field}:json=@-`));
-            if (!claimed.ok) return Result.err(claimed.error);
-          }
-
-          jsonFieldInputs.push({ field, source });
+          const source = resultOutcome(parseClaimedJsonSource(v, `--${field}:json=@-`));
+          if (!source.ok) return Result.err(source.error);
+          jsonFieldInputs.push({ field, source: source.value });
           continue;
         }
 

@@ -2704,18 +2704,11 @@ export class ConversationThreadService {
           }
           const summaryIsStale = item.summaryIsStale;
           const previousEntries = this.params.store.listSummaryEntries(thread.thread_id);
-          const previousEntriesError = previousEntries.match({
-            ok: () => null,
-            err: (error) => error,
-          });
-          if (previousEntriesError) {
-            recordFailure(previousEntriesError.message);
+          if (previousEntries.isErr()) {
+            recordFailure(previousEntries.error.message);
             return;
           }
-          const previousEntryValues = previousEntries.match({
-            ok: (value) => value,
-            err: () => [],
-          });
+          const previousEntryValues = previousEntries.value;
           if (summaryRead.omittedMessages > 0) {
             this.logger.debug("thread summarization transcript truncated", {
               jobId,
@@ -2733,9 +2726,8 @@ export class ConversationThreadService {
                 >
               > => {
                 const hydrated = await this.hydrateMessagesForSummarization(summaryRead.messages);
-                const hydrationError = hydrated.match({ ok: () => null, err: (error) => error });
-                if (hydrationError) return Result.err(hydrationError);
-                const hydratedMessages = hydrated.match({ ok: (value) => value, err: () => [] });
+                if (hydrated.isErr()) return Result.err(hydrated.error);
+                const hydratedMessages = hydrated.value;
                 const summaryMessages =
                   thread.kind === "native_thread"
                     ? hydratedMessages
@@ -2774,18 +2766,11 @@ export class ConversationThreadService {
                 embeddingInputHash:
                   this.params.store.computeEmbeddingInputHash(thread.thread_id) ?? "",
               });
-          const summaryWriteError = summaryWriteResult.match({
-            ok: () => null,
-            err: (error) => error,
-          });
-          if (summaryWriteError) {
-            recordFailure(summaryWriteError.message);
+          if (summaryWriteResult.isErr()) {
+            recordFailure(summaryWriteResult.error.message);
             return;
           }
-          const writtenSummary = summaryWriteResult.match({
-            ok: (value) => value,
-            err: () => null,
-          });
+          const writtenSummary = summaryWriteResult.value;
           if (!writtenSummary) {
             this.logger.debug("thread summary generation discarded after concurrent update", {
               jobId,

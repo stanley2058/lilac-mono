@@ -510,6 +510,25 @@ type WorkflowHelperInfo = {
   body: ts.ConciseBody;
 };
 
+/** Whether the nearest enclosing callback below `body` is anything other than a pipeline or phase step. */
+function insideUnscopedCallback(node: ts.Node, body: ts.Node): boolean {
+  let current: ts.Node = node;
+  while (current.parent && current.parent !== body) {
+    current = current.parent;
+    if (!typescript.isFunctionLike(current)) continue;
+    if ("body" in current && current.body === body) return false;
+    const callback = current;
+    const parentCall = callback.parent;
+    return !(
+      typescript.isCallExpression(parentCall) &&
+      typescript.isIdentifier(parentCall.expression) &&
+      (parentCall.expression.text === "pipeline" || parentCall.expression.text === "phase") &&
+      parentCall.arguments.some((argument) => argument === callback)
+    );
+  }
+  return false;
+}
+
 function assertBindingSafeHostCalls(
   sourceFile: ts.SourceFile,
   definition: ts.ObjectLiteralExpression,
@@ -588,29 +607,12 @@ function assertBindingSafeHostCalls(
           );
           return;
         }
-        if (directHost) {
-          let current: ts.Node = node;
-          while (current.parent && current.parent !== body) {
-            current = current.parent;
-            if (typescript.isFunctionLike(current)) {
-              if ("body" in current && current.body === body) break;
-              const parentCall = current.parent;
-              const deterministicallyScoped =
-                typescript.isCallExpression(parentCall) &&
-                typescript.isIdentifier(parentCall.expression) &&
-                (parentCall.expression.text === "pipeline" ||
-                  parentCall.expression.text === "phase") &&
-                parentCall.arguments.some((argument) => argument === current);
-              if (!deterministicallyScoped) {
-                failValidation(
-                  state,
-                  `Workflow host API ${node.expression.text} cannot be called from an unscoped callback`,
-                );
-                return;
-              }
-              break;
-            }
-          }
+        if (directHost && insideUnscopedCallback(node, body)) {
+          failValidation(
+            state,
+            `Workflow host API ${node.expression.text} cannot be called from an unscoped callback`,
+          );
+          return;
         }
         const helper = typescript.isIdentifier(node.expression)
           ? helpers.get(node.expression.text)

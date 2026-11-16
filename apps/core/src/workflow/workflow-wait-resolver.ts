@@ -240,9 +240,6 @@ export class WorkflowWaitResolver {
             });
             if (resolutionError) return Result.err(resolutionError);
           } else if (message.type === lilacEventTypes.EvtWorkflowWaitResolverBarrier) {
-            if (!this.ensureLeaseOwnership(this.now())) {
-              return Result.err(this.leaseLost(context.cursor));
-            }
             this.input.store.markWaitExpiryBarrierProcessed(
               message.data.barrierId,
               context.cursor,

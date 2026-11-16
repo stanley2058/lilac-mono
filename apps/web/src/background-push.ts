@@ -108,13 +108,13 @@ export function createBackgroundPush(
       );
       return Result.ok(true);
     });
-    captured.match({
-      ok: (background) => preferences.update({ ...changes, background }),
-      err: () => {},
-    });
-    const error = captured.match({ ok: () => undefined, err: (value) => value });
-    store.setState({ busy: false, error });
-    return !error;
+    if (captured.isErr()) {
+      store.setState({ busy: false, error: captured.error });
+      return false;
+    }
+    preferences.update({ ...changes, background: captured.value });
+    store.setState({ busy: false, error: undefined });
+    return true;
   }
   async function sync() {
     if (backgroundPushSupport()) return;

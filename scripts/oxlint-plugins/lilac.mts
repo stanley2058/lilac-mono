@@ -8,6 +8,7 @@ import {
   noInlineAsyncResultCallbackRule,
   noLocalIsRecordRule,
   noPresentationDecoderImportRule,
+  noRedundantBranchRule,
   noStoreInlineDecodingRule,
   preferSwitchTrueChainRule,
 } from "./production-syntax.mts";
@@ -24,6 +25,7 @@ export default definePlugin({
     "no-inline-async-result-callback": noInlineAsyncResultCallbackRule,
     "no-local-is-record": noLocalIsRecordRule,
     "no-presentation-decoder-import": noPresentationDecoderImportRule,
+    "no-redundant-branch": noRedundantBranchRule,
     "no-store-inline-decoding": noStoreInlineDecodingRule,
     "prefer-switch-true-chain": preferSwitchTrueChainRule,
   },

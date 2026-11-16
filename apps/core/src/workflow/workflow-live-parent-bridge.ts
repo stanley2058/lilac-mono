@@ -1093,33 +1093,7 @@ export class WorkflowLiveParentBridge {
           return { status: "return", value: Result.err(watermarkOutcome.error) } as const;
         const { watermark } = watermarkOutcome;
         if (!watermark) continue;
-        let cursor: string | undefined;
-        let reachedWatermark = false;
-        while (!reachedWatermark) {
-          const batch = requireChildOutputBatch(
-            await this.input.bus.fetchTopic(topic, {
-              offset: cursor ? { type: "cursor", cursor } : { type: "begin" },
-              limit: 1_000,
-            }),
-          );
-          for (const entry of batch.messages) {
-            if (
-              entry.msg.headers?.request_id === childRequestId &&
-              entry.msg.type === lilacEventTypes.EvtAgentOutputToolCall
-            ) {
-              this.recordChildTool(forwarding, entry.msg);
-            }
-            if (entry.cursor === watermark) {
-              reachedWatermark = true;
-              break;
-            }
-          }
-          const previous = cursor;
-          cursor = batch.next;
-          if (reachedWatermark || batch.messages.length === 0 || !cursor || cursor === previous) {
-            break;
-          }
-        }
+        await this.replayChildToolCalls(forwarding, childRequestId, topic, watermark);
       }
 
       const terminalState = run.state === "succeeded" ? "resolved" : run.state;
@@ -1135,6 +1109,35 @@ export class WorkflowLiveParentBridge {
       }
     });
     return outcome.value;
+  }
+
+  private async replayChildToolCalls(
+    forwarding: ChildActivityForwarding,
+    childRequestId: string,
+    topic: ReturnType<typeof outReqTopic>,
+    watermark: string,
+  ): Promise<void> {
+    let cursor: string | undefined;
+    while (true) {
+      const batch = requireChildOutputBatch(
+        await this.input.bus.fetchTopic(topic, {
+          offset: cursor ? { type: "cursor", cursor } : { type: "begin" },
+          limit: 1_000,
+        }),
+      );
+      for (const entry of batch.messages) {
+        if (
+          entry.msg.headers?.request_id === childRequestId &&
+          entry.msg.type === lilacEventTypes.EvtAgentOutputToolCall
+        ) {
+          this.recordChildTool(forwarding, entry.msg);
+        }
+        if (entry.cursor === watermark) return;
+      }
+      const previous = cursor;
+      cursor = batch.next;
+      if (batch.messages.length === 0 || !cursor || cursor === previous) return;
+    }
   }
 
   private async stopChildActivity(forwarding: ChildActivityForwarding): Promise<void> {

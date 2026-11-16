@@ -73,19 +73,20 @@ export function extractHeartbeatSurfaceSendHandoffs(
 
     if (message.role === "assistant" && Array.isArray(message.content)) {
       for (const part of message.content) {
-        if (part.type === "tool-call") {
-          const sendTexts = extractSurfaceSendTexts(
-            part.toolName,
-            projectHeartbeatToolInput(part.input),
-          );
-          if (sendTexts.length === 0) continue;
-          pendingTexts.set(part.toolCallId, [
-            ...(pendingTexts.get(part.toolCallId) ?? []),
-            ...sendTexts,
-          ]);
-        } else if (part.type === "tool-result") {
+        if (part.type === "tool-result") {
           consumeResult(part.toolCallId, messageIndex);
+          continue;
         }
+        if (part.type !== "tool-call") continue;
+        const sendTexts = extractSurfaceSendTexts(
+          part.toolName,
+          projectHeartbeatToolInput(part.input),
+        );
+        if (sendTexts.length === 0) continue;
+        pendingTexts.set(part.toolCallId, [
+          ...(pendingTexts.get(part.toolCallId) ?? []),
+          ...sendTexts,
+        ]);
       }
     }
 

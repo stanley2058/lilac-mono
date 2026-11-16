@@ -887,8 +887,6 @@ export class NativeSurfaceAdapter implements SurfaceAdapter {
               message: "Output resume belongs to another thread",
             }),
           );
-      }
-      if (opts?.resumeAt) {
         const existing = yield* this.dependencies.surface
           .readMessage(request.principalId, ref.channelId, opts.resumeAt.messageId)
           .mapError((error) => nativeSurfaceError("start-output", error));

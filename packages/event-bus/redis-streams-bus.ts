@@ -2,7 +2,7 @@ import type Redis from "ioredis";
 import SuperJSON from "superjson";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
-import { createLogger, errorMessage } from "@stanley2058/lilac-utils";
+import { createLogger, errorMessage, formatTaggedErrorForLog } from "@stanley2058/lilac-utils";
 import type { Logger } from "@stanley2058/simple-module-logger";
 
 import type { RawBus } from "./raw-bus";
@@ -608,9 +608,11 @@ async function captureRedisPendingSummary(
   );
   const outcome = redisStreamsOutcome(inspected);
   if (outcome.kind === "ok") return outcome.value;
+  const cause =
+    outcome.error.kind === "ordinary" ? outcome.error.error.message : outcome.error.panic.message;
   return Result.err(
     new RedisPendingInspectionFailed({
-      message: "Redis pending inspection failed",
+      message: `Redis pending inspection failed: ${cause}`,
     }),
   );
 }
@@ -1192,11 +1194,12 @@ export class RedisStreamsBus implements RawBus {
   ): Promise<void> {
     const inspected = await captureRedisPendingSummary(this.redis, streamKey, group);
     const report = inspected.match<() => void>({
-      err: () => () => {
+      err: (error) => () => {
         this.logger.warn("event_bus.pending_inspection_failed", {
           topic,
           group,
           trigger,
+          ...formatTaggedErrorForLog(error),
         });
       },
       ok:
@@ -1858,11 +1861,8 @@ export class RedisStreamsBus implements RawBus {
         catch: captureRedisStreamsFailure,
       }),
     );
-    const capturedInitializeFailure = initialized.match({
-      ok: () => undefined,
-      err: (failure) => failure,
-    });
-    if (capturedInitializeFailure) {
+    if (initialized.isErr()) {
+      const capturedInitializeFailure = initialized.error;
       const cleanupFailure = await cleanupFailedInitialization();
       if (capturedInitializeFailure.kind === "panic") {
         return signalEventBusPanic(capturedInitializeFailure.panic);
@@ -1876,14 +1876,11 @@ export class RedisStreamsBus implements RawBus {
         }),
       );
     }
-    const setupError = initialized.match({
-      ok: (result) => result.match({ ok: () => undefined, err: (error) => error }),
-      err: () => undefined,
-    });
-    if (setupError) {
+    const setup = initialized.value;
+    if (setup.isErr()) {
       const cleanupFailure = await cleanupFailedInitialization();
       if (cleanupFailure?.kind === "panic") return signalEventBusPanic(cleanupFailure.panic);
-      return Result.err(setupError);
+      return Result.err(setup.error);
     }
 
     const reportFatal = async (
@@ -2092,11 +2089,8 @@ export class RedisStreamsBus implements RawBus {
             catch: captureRedisStreamsFailure,
           }),
         );
-        const readError = read.match({
-          ok: () => undefined,
-          err: (failure) => failure,
-        });
-        if (readError) {
+        if (read.isErr()) {
+          const readError = read.error;
           if (readError.kind === "panic") throw readError.panic;
           if (
             disconnectOnStop &&
@@ -2108,10 +2102,7 @@ export class RedisStreamsBus implements RawBus {
           releaseUnhealthy = true;
           return Result.err(readFailure(readError.restoreCause(), cursor));
         }
-        const response: unknown = read.match({
-          ok: (value) => value,
-          err: () => undefined,
-        });
+        const response: unknown = read.value;
 
         const decodedResponse = decodeRedisReadResponse(response, topic, streamKey, this.logger);
         if (decodedResponse.status === "error") {
@@ -2516,41 +2507,31 @@ export class RedisStreamsBus implements RawBus {
             if (committed.status === "error") {
               return { status: "transport-error", error: committed.error };
             }
-            if (committed.value.status === "committed") {
-              this.scheduleAcknowledgedTrim(topic, streamKey);
-              if (action.observePostCommit !== undefined) {
-                const observed = settleRedisStreamsCapture(
-                  await Result.tryPromise({
-                    try: action.observePostCommit,
-                    catch: captureRedisStreamsFailure,
-                  }),
-                );
-                const observationOutcome = redisStreamsOutcome(observed);
-                if (observationOutcome.kind === "error") {
-                  const failure = observationOutcome.error;
-                  if (failure.kind === "panic") throw failure.panic;
-                  return {
-                    status: "post-commit-error",
-                    error: new EventPostCommitObservationFailed({
-                      cause: failure.restoreCause(),
-                      topic,
-                      cursor: entry.id,
-                      message: "Post-commit observation failed",
-                    }),
-                  };
-                }
-                const result = observationOutcome.value;
-                const observationError = result.match({
-                  ok: () => undefined,
-                  err: (error) => error,
-                });
-                if (observationError !== undefined) {
-                  return {
-                    status: "post-commit-error",
-                    error: observationError,
-                  };
-                }
-              }
+            if (committed.value.status !== "committed") return { status: "advance" };
+            this.scheduleAcknowledgedTrim(topic, streamKey);
+            if (action.observePostCommit === undefined) return { status: "advance" };
+            const observed = settleRedisStreamsCapture(
+              await Result.tryPromise({
+                try: action.observePostCommit,
+                catch: captureRedisStreamsFailure,
+              }),
+            );
+            if (observed.isErr()) {
+              const failure = observed.error;
+              if (failure.kind === "panic") throw failure.panic;
+              return {
+                status: "post-commit-error",
+                error: new EventPostCommitObservationFailed({
+                  cause: failure.restoreCause(),
+                  topic,
+                  cursor: entry.id,
+                  message: "Post-commit observation failed",
+                }),
+              };
+            }
+            const observation = observed.value;
+            if (observation.isErr()) {
+              return { status: "post-commit-error", error: observation.error };
             }
             return { status: "advance" };
           }
@@ -2728,11 +2709,8 @@ export class RedisStreamsBus implements RawBus {
             catch: captureRedisStreamsFailure,
           }),
         );
-        const readError = read.match({
-          ok: () => undefined,
-          err: (failure) => failure,
-        });
-        if (readError) {
+        if (read.isErr()) {
+          const readError = read.error;
           if (maintenanceFailure) {
             if (maintenanceFailure.kind === "panic") throw maintenanceFailure.panic;
             return Result.err(readFailure(maintenanceFailure.restoreCause()));
@@ -2748,10 +2726,7 @@ export class RedisStreamsBus implements RawBus {
           releaseUnhealthy = true;
           return Result.err(readFailure(readError.restoreCause()));
         }
-        const response: unknown = read.match({
-          ok: (value) => value,
-          err: () => undefined,
-        });
+        const response: unknown = read.value;
 
         const decodedResponse = decodeRedisReadResponse(response, topic, streamKey, this.logger);
         if (decodedResponse.status === "error") {

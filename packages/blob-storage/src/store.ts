@@ -166,8 +166,6 @@ type ActiveUpload = {
   readyPublication?: Promise<ResultType<boolean, BlobAdapterFailure>>;
 };
 
-type ReadOutcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false };
-
 function deferred<T>(): Deferred<T> {
   const controls = Promise.withResolvers<T>();
   return {
@@ -398,32 +396,19 @@ export class SupervisedBlobStore implements BlobStore {
     });
 
     const created = await reservationCreated;
-    const outcome = created.match<ReadOutcome<void>>({
-      ok: (value) => ({ ok: true, value }),
-      err: () => ({ ok: false }),
-    });
-    if (!outcome.ok) {
+    if (created.isErr()) {
       this.#active.delete(objectId);
       this.#error("blob upload reservation failed", {
         objectId,
         durationMs: Date.now() - reservation.createdAt,
       });
-      return created.match<ResultType<BlobUpload, BlobUploadStartError>>({
-        ok: () =>
-          Result.err(
-            new BlobStoreClosed({
-              message: "Blob upload reservation was lost",
-            }),
-          ),
-        err: (failure) =>
-          Result.err(
-            new BlobUploadReservationFailed({
-              objectId,
-              failure,
-              message: `Could not reserve blob upload ${objectId}`,
-            }),
-          ),
-      });
+      return Result.err(
+        new BlobUploadReservationFailed({
+          objectId,
+          failure: created.error,
+          message: `Could not reserve blob upload ${objectId}`,
+        }),
+      );
     }
 
     if (active.phase === "reserving") {
@@ -1732,46 +1717,35 @@ export class SupervisedBlobStore implements BlobStore {
       serializeReservation(reservation),
       serializeReservation(interrupted),
     );
-    const fenceApplied = fenced.match<boolean | null>({
-      ok: (applied) => applied,
-      err: () => null,
-    });
-    if (fenceApplied === false) return this.#writeInterruptedFence(active);
-    return fenced.match<ResultType<void, BlobCloseError>>({
-      ok: () => {
-        active.completion.resolve(
-          Result.err(
-            new BlobUploadInterrupted({
-              objectId: reservation.objectId,
-              message: `Blob upload ${reservation.objectId} was interrupted during shutdown`,
-            }),
-          ),
-        );
-        if (reservation.state === "ready" || reservation.state === "staged") {
-          void this.#backend.deleteKeys([
-            reservation.contentKey,
-            metadataKey(reservation.contentKey),
-          ]);
-        }
-        return Result.ok(undefined);
-      },
-      err: (failure) => {
-        active.completion.resolve(
-          Result.err(
-            new BlobUploadInterrupted({
-              objectId: reservation.objectId,
-              message: `Blob upload ${reservation.objectId} was interrupted during shutdown`,
-            }),
-          ),
-        );
-        return Result.err(
-          new BlobCloseFailed({
-            failure,
-            message: `Could not fence blob upload ${reservation.objectId} during shutdown`,
+    if (fenced.isErr()) {
+      active.completion.resolve(
+        Result.err(
+          new BlobUploadInterrupted({
+            objectId: reservation.objectId,
+            message: `Blob upload ${reservation.objectId} was interrupted during shutdown`,
           }),
-        );
-      },
-    });
+        ),
+      );
+      return Result.err(
+        new BlobCloseFailed({
+          failure: fenced.error,
+          message: `Could not fence blob upload ${reservation.objectId} during shutdown`,
+        }),
+      );
+    }
+    if (fenced.value === false) return this.#writeInterruptedFence(active);
+    active.completion.resolve(
+      Result.err(
+        new BlobUploadInterrupted({
+          objectId: reservation.objectId,
+          message: `Blob upload ${reservation.objectId} was interrupted during shutdown`,
+        }),
+      ),
+    );
+    if (reservation.state === "ready" || reservation.state === "staged") {
+      void this.#backend.deleteKeys([reservation.contentKey, metadataKey(reservation.contentKey)]);
+    }
+    return Result.ok(undefined);
   }
 
   async #settleClose(

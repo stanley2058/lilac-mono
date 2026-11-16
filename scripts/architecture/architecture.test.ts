@@ -2874,7 +2874,7 @@ describe("real declaration integration", () => {
     );
   });
 
-  test("permits positive isErr guards only for direct local object-form captures", () => {
+  test("permits positive isErr guards on immutable locals and unchanged parameters", () => {
     const workspace = {
       ...BASE_WORKSPACE,
       name: "real-libraries-result-capture-settlement",
@@ -2894,7 +2894,7 @@ describe("real declaration integration", () => {
     );
   });
 
-  test("rejects other guards and non-local or non-object-form capture provenance", () => {
+  test("rejects other guards, nested guards, and reassigned receivers", () => {
     const workspace = {
       ...BASE_WORKSPACE,
       name: "real-libraries-invalid-result-capture-settlement",
@@ -2910,10 +2910,39 @@ describe("real declaration integration", () => {
     const workspaceProgram = createWorkspaceProgram(REPOSITORY_ROOT, workspace);
     const findings = analyzeWorkspace(workspace, workspaceProgram.root, workspaceProgram.program);
 
-    expect(findings).toHaveLength(9);
+    expect(findings).toHaveLength(10);
     expect(findings.every(({ rule }) => rule === "architecture/no-manual-result-branching")).toBe(
       true,
     );
+  });
+
+  test("rejects repeated Result matches and continuations nested in match continuations", () => {
+    const workspace = {
+      ...BASE_WORKSPACE,
+      name: "real-libraries-result-continuation",
+      packageName: "architecture-real-libraries",
+      root: "scripts/architecture/fixtures/real-libraries",
+      tsconfig: "scripts/architecture/fixtures/real-libraries/tsconfig.json",
+      ruleZones: {
+        "architecture/no-repeated-result-match": [{ include: "result-continuation.ts" }],
+        "architecture/no-nested-result-continuation": [{ include: "result-continuation.ts" }],
+      },
+    } satisfies WorkspaceArchitecture;
+    const workspaceProgram = createWorkspaceProgram(REPOSITORY_ROOT, workspace);
+    const findings = analyzeWorkspace(workspace, workspaceProgram.root, workspaceProgram.program);
+
+    expect(
+      findings
+        .map(({ rule, location }) => [rule, location?.line ?? 0] as const)
+        .toSorted(([, left], [, right]) => left - right),
+    ).toEqual([
+      ["architecture/no-repeated-result-match", 11],
+      ["architecture/no-repeated-result-match", 16],
+      ["architecture/no-nested-result-continuation", 23],
+      ["architecture/no-repeated-result-match", 49],
+      ["architecture/no-nested-result-continuation", 63],
+      ["architecture/no-nested-result-continuation", 74],
+    ]);
   });
 
   test("recognizes real installed zod and better-result 3.0 declarations", () => {

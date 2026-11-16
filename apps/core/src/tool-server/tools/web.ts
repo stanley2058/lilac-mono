@@ -405,20 +405,13 @@ export class Web implements ServerTool {
     this.logger.logDebug("Web extension initialized");
   }
 
-  private async refreshWebConfig(): Promise<void> {
+  private async loadWebToolConfig(): Promise<WebToolConfig | undefined> {
     const loaded = await Result.tryPromise({
       try: this.dependencies.loadWebToolConfig,
       catch: captureWebFailure,
     });
-    const config = loaded.match<WebToolConfig>({
-      ok: (value) => value,
-      err: () => ({ extractProviders: [], fetchMode: "auto", firecrawlPolicy: undefined }),
-    });
-    const loadFailure = loaded.match<Error | Panic | null>({
-      ok: () => null,
-      err: ({ cause }) => cause,
-    });
-    if (loadFailure) {
+    if (loaded.isErr()) {
+      const loadFailure = loaded.error.cause;
       if (Panic.is(loadFailure)) preserveToolPanic(loadFailure);
       const failure = new WebProviderOperationFailed({
         cause: webFailure(loadFailure),
@@ -428,7 +421,18 @@ export class Web implements ServerTool {
         "Failed to read core-config.yaml for web tool config",
         formatTaggedErrorForLog(failure),
       );
+      return undefined;
     }
+    return loaded.value;
+  }
+
+  private async refreshWebConfig(): Promise<void> {
+    const loadedConfig = await this.loadWebToolConfig();
+    const config: WebToolConfig = loadedConfig ?? {
+      extractProviders: [],
+      fetchMode: "auto",
+      firecrawlPolicy: undefined,
+    };
 
     const normalizedRequested = config.extractProviders.map((providerId) =>
       providerId.trim().toLowerCase(),
@@ -447,7 +451,7 @@ export class Web implements ServerTool {
     });
     if (nextKey === this.webSearchProviderKey) return;
     this.webSearchProviderKey = nextKey;
-    if (!loadFailure) {
+    if (loadedConfig) {
       this.dependencies.firecrawlFetchPermits.configure(config.firecrawlPolicy);
       this.dependencies.firecrawlSearchPermits.configure(config.firecrawlPolicy);
     }

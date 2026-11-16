@@ -88,9 +88,8 @@ export class GithubOutputStream implements SurfaceOutputStream {
       if (end < text.length && lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end--;
       const chunk = text.slice(offset, end);
       const res = await this.api.createComment(`${markGithubAgentComment("")}\n${chunk}`);
-      const failure = res.match({ ok: () => null, err: (error) => error });
-      if (failure) return Result.err(failure);
-      const id = res.match({ ok: (value) => value.id, err: () => 0 });
+      if (res.isErr()) return Result.err(res.error);
+      const id = res.value.id;
       this.created.push({
         platform: "github",
         channelId: this.sessionRef.channelId,

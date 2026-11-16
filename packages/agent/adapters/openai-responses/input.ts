@@ -396,6 +396,27 @@ function assistantMessage(
   );
 }
 
+function toolSearchOutput(
+  part: ToolResultPart,
+  policy: EncodingPolicy,
+): Encoded<OpenAIInputItem | undefined> {
+  if (!policy.nativeToolSearch) return Result.ok(undefined);
+  const loaded = captureResultOutcome(
+    readToolLoadingDefinitions(part.providerOptions, "toolSearchTools"),
+  );
+  if (!loaded.ok) return Result.err(loaded.error);
+  if (!loaded.value) return Result.ok(undefined);
+  const definitions = captureResultOutcome(encodeToolDefinitions(loaded.value));
+  if (!definitions.ok) return Result.err(definitions.error);
+  return Result.ok({
+    type: "tool_search_output",
+    call_id: part.toolCallId,
+    execution: "client",
+    status: "completed",
+    tools: definitions.value.map((tool) => ({ ...tool, defer_loading: true })),
+  });
+}
+
 function encodeMessages(
   messages: readonly ModelMessage[],
   policy: EncodingPolicy,
@@ -454,23 +475,11 @@ function encodeMessages(
         for (const part of message.content) {
           if (part.type !== "tool-result")
             return unsupported("Provider approval messages require the AI SDK adapter");
-          if (policy.nativeToolSearch) {
-            const loaded = captureResultOutcome(
-              readToolLoadingDefinitions(part.providerOptions, "toolSearchTools"),
-            );
-            if (!loaded.ok) return Result.err(loaded.error);
-            if (loaded.value) {
-              const definitions = captureResultOutcome(encodeToolDefinitions(loaded.value));
-              if (!definitions.ok) return Result.err(definitions.error);
-              items.push({
-                type: "tool_search_output",
-                call_id: part.toolCallId,
-                execution: "client",
-                status: "completed",
-                tools: definitions.value.map((tool) => ({ ...tool, defer_loading: true })),
-              });
-              continue;
-            }
+          const searchOutput = captureResultOutcome(toolSearchOutput(part, policy));
+          if (!searchOutput.ok) return Result.err(searchOutput.error);
+          if (searchOutput.value) {
+            items.push(searchOutput.value);
+            continue;
           }
           const encodedOutput = captureResultOutcome(
             toolOutput(part.output, policy.outputSchemaToolNames?.includes(part.toolName) ?? false),

@@ -207,78 +207,58 @@ export function createRequestMessageCache(
     const projected = trustedProjection
       ? Result.ok(trustedProjection)
       : projectAuthenticatedRequest(msg);
-    const continueProjected = projected.match<
-      () => ResultType<AuthenticatedRequestOrigin | undefined, RequestMessageCacheAdmissionError>
-    >({
-      err: (error) => () => Result.err(error),
-      ok: (projection) => () => {
-        if (!projection) return Result.ok(undefined);
+    if (projected.isErr()) return Result.err(projected.error);
+    const projection = projected.value;
+    if (!projection) return Result.ok(undefined);
 
-        pruneExpired();
-        const at = now();
-        const existing = entries.get(requestId);
-        if (existing) {
-          const updateExisting = (
-            nextProjection: AuthenticatedRequestProjection,
-          ): ResultType<
-            AuthenticatedRequestOrigin | undefined,
-            RequestMessageCacheAdmissionError
-          > => {
-            existing.projection = nextProjection;
-            const alreadyPending =
-              existing.intakeEventIds.has(msg.id) || existing.parkedEventIds.has(msg.id);
-            existing.intakeEventIds.add(msg.id);
-            if (!alreadyPending) {
-              existing.messages = projectCachedRequestMessageLineage(
-                existing.messages,
-                msg.data.messages,
-                maxMessagesPerRequest,
-              );
-            }
-            existing.expiresAt = at + ttlMs;
-            existing.updatedAt = at;
-            return Result.ok(existing.projection);
-          };
-          const trustedDelegatedUpgrade =
-            trustedProjection?.source === "internal-delegated" &&
-            existing.projection.source === "external" &&
-            existing.projection.requestId === trustedProjection.requestId &&
-            existing.projection.requestClient === "unknown" &&
-            existing.projection.requestClient === trustedProjection.requestClient &&
-            existing.projection.sessionId === trustedProjection.sessionId;
-          if (trustedDelegatedUpgrade) return updateExisting(trustedProjection);
-          const latched = latchAuthenticatedRequest(existing.projection, projection, msg.type);
-          const continueLatched = latched.match<
-            () => ResultType<
-              AuthenticatedRequestOrigin | undefined,
-              RequestMessageCacheAdmissionError
-            >
-          >({
-            err: (error) => () => Result.err(error),
-            ok: (nextProjection) => () => updateExisting(nextProjection),
-          });
-          return continueLatched();
-        }
-
-        const entry: CacheEntry = {
-          messages: projectCachedRequestMessageLineage(
+    pruneExpired();
+    const at = now();
+    const existing = entries.get(requestId);
+    if (existing) {
+      const updateExisting = (
+        nextProjection: AuthenticatedRequestProjection,
+      ): ResultType<AuthenticatedRequestOrigin | undefined, RequestMessageCacheAdmissionError> => {
+        existing.projection = nextProjection;
+        const alreadyPending =
+          existing.intakeEventIds.has(msg.id) || existing.parkedEventIds.has(msg.id);
+        existing.intakeEventIds.add(msg.id);
+        if (!alreadyPending) {
+          existing.messages = projectCachedRequestMessageLineage(
+            existing.messages,
             msg.data.messages,
-            [],
             maxMessagesPerRequest,
-          ),
-          projection,
-          intakeEventIds: new Set([msg.id]),
-          parkedEventIds: new Set(),
-          owners: new Set(),
-          expiresAt: at + ttlMs,
-          updatedAt: at,
-        };
-        entries.set(requestId, entry);
-        pruneMax();
-        return Result.ok(entry.projection);
-      },
-    });
-    return continueProjected();
+          );
+        }
+        existing.expiresAt = at + ttlMs;
+        existing.updatedAt = at;
+        return Result.ok(existing.projection);
+      };
+      const trustedDelegatedUpgrade =
+        trustedProjection?.source === "internal-delegated" &&
+        existing.projection.source === "external" &&
+        existing.projection.requestId === trustedProjection.requestId &&
+        existing.projection.requestClient === "unknown" &&
+        existing.projection.requestClient === trustedProjection.requestClient &&
+        existing.projection.sessionId === trustedProjection.sessionId;
+      if (trustedDelegatedUpgrade) return updateExisting(trustedProjection);
+      const latched = latchAuthenticatedRequest(existing.projection, projection, msg.type);
+      if (latched.isErr()) return Result.err(latched.error);
+      const nextProjection = latched.value;
+      return updateExisting(nextProjection);
+    }
+
+    const entry: CacheEntry = {
+      messages: projectCachedRequestMessageLineage(msg.data.messages, [], maxMessagesPerRequest),
+      projection,
+      intakeEventIds: new Set([msg.id]),
+      parkedEventIds: new Set(),
+      owners: new Set(),
+      expiresAt: at + ttlMs,
+      updatedAt: at,
+    };
+    entries.set(requestId, entry);
+    pruneMax();
+    return Result.ok(entry.projection);
   }
 
   return {

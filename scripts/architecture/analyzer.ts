@@ -1804,12 +1804,22 @@ function mutatedSymbols(
       }
     }
     if (
+      (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+      !ts.isVariableDeclarationList(node.initializer)
+    ) {
+      addAssignmentTarget(node.initializer);
+    }
+    if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
       node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
     ) {
       addAssignmentTarget(node.left);
-    } else if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
+    } else if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken ||
+        node.operator === ts.SyntaxKind.MinusMinusToken)
+    ) {
       const operand = unwrapExpression(node.operand);
       add(ts.isIdentifier(operand) ? bindingMutated : objectMutated, operand);
     } else if (ts.isCallExpression(node)) {
@@ -2285,11 +2295,7 @@ function resolvesToDirectLocalResultCapture(
   );
 }
 
-function isDirectLocalResultCaptureErrGuard(
-  node: ts.CallExpression,
-  checker: ts.TypeChecker,
-  packageRoots: readonly WorkspacePackageRoot[],
-): boolean {
+function isImmutableLocalResultErrGuard(node: ts.CallExpression, checker: ts.TypeChecker): boolean {
   if (node.arguments.length !== 0) return false;
   const selected = selectedProperty(node.expression);
   if (selected?.name !== "isErr") return false;
@@ -2313,6 +2319,15 @@ function isDirectLocalResultCaptureErrGuard(
   if (!receiverSymbol || symbolIsMutated(receiverSymbol, receiver.getSourceFile(), checker)) {
     return false;
   }
+  const parameter = canonicalSymbol(receiverSymbol, checker).declarations?.find(ts.isParameter);
+  if (parameter) {
+    return (
+      ts.isIdentifier(parameter.name) &&
+      ts.isFunctionLike(parameter.parent) &&
+      "body" in parameter.parent &&
+      parameter.parent.body === branch.parent
+    );
+  }
   const declarations = canonicalSymbol(receiverSymbol, checker).declarations?.filter(
     ts.isVariableDeclaration,
   );
@@ -2326,7 +2341,6 @@ function isDirectLocalResultCaptureErrGuard(
   ) {
     return false;
   }
-  if (!directResultCaptureCall(declaration.initializer, checker, packageRoots)) return false;
 
   const variableStatement = declaration.parent.parent;
   if (!ts.isVariableStatement(variableStatement) || variableStatement.parent !== branch.parent) {
@@ -2602,6 +2616,144 @@ function reconstructsResultBranchEnvelopes(
   );
 }
 
+function handlerReturnsContinuation(
+  handler: ts.FunctionLikeDeclaration,
+  checker: ts.TypeChecker,
+): boolean {
+  const returns = handlerReturnExpressions(handler);
+  return (
+    returns.length > 0 &&
+    returns.every(
+      (expression) =>
+        checker.getTypeAtLocation(unwrapExpression(expression)).getCallSignatures().length > 0,
+    )
+  );
+}
+
+function selectsResultContinuation(
+  handlers: ts.Expression | undefined,
+  checker: ts.TypeChecker,
+): boolean {
+  if (!handlers) return false;
+  const ok = resultMatchHandler(handlers, "ok", checker);
+  const err = resultMatchHandler(handlers, "err", checker);
+  return Boolean(
+    ok &&
+    err &&
+    handlerReturnsContinuation(ok, checker) &&
+    handlerReturnsContinuation(err, checker),
+  );
+}
+
+function resultContinuationMatch(
+  call: ts.CallExpression,
+  checker: ts.TypeChecker,
+  packageRoots: readonly WorkspacePackageRoot[],
+): ts.Expression | undefined {
+  const handlers = resultMatchHandlersArgument(
+    call,
+    resolvedSignature(checker, call),
+    checker,
+    packageRoots,
+  );
+  return handlers && selectsResultContinuation(handlers, checker) ? handlers : undefined;
+}
+
+/** Result matches that consume `handlers`, either inline or through a named immutable binding. */
+function handlerObjectConsumers(
+  handlers: ts.ObjectLiteralExpression,
+  checker: ts.TypeChecker,
+  packageRoots: readonly WorkspacePackageRoot[],
+): ts.CallExpression[] {
+  const parent = handlers.parent;
+  if (ts.isCallExpression(parent)) {
+    return resultContinuationMatch(parent, checker, packageRoots) === handlers ? [parent] : [];
+  }
+  if (!ts.isVariableDeclaration(parent) || !ts.isIdentifier(parent.name)) return [];
+  const symbol = checker.getSymbolAtLocation(parent.name);
+  if (!symbol) return [];
+  const target = canonicalSymbol(symbol, checker);
+  const consumers: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const argument = resultContinuationMatch(node, checker, packageRoots);
+      const value = argument && unwrapExpression(argument);
+      const argumentSymbol = value && ts.isIdentifier(value) && checker.getSymbolAtLocation(value);
+      if (argumentSymbol && canonicalSymbol(argumentSymbol, checker) === target) {
+        consumers.push(node);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(handlers.getSourceFile());
+  return consumers;
+}
+
+function enclosingResultContinuationMatch(
+  node: ts.CallExpression,
+  checker: ts.TypeChecker,
+  packageRoots: readonly WorkspacePackageRoot[],
+): ts.CallExpression | undefined {
+  let child: ts.Node = node;
+  for (let current = node.parent; !ts.isSourceFile(current); current = current.parent) {
+    if (
+      ts.isCallExpression(current) &&
+      resultContinuationMatch(current, checker, packageRoots) === child
+    ) {
+      return current;
+    }
+    if (ts.isObjectLiteralExpression(current) && current.properties.some((p) => p === child)) {
+      const consumer = handlerObjectConsumers(current, checker, packageRoots)[0];
+      if (consumer) return consumer;
+    }
+    child = current;
+  }
+  return undefined;
+}
+
+function analyzeRepeatedResultMatches(
+  sourceFile: ts.SourceFile,
+  checker: ts.TypeChecker,
+  workspace: WorkspaceArchitecture,
+  workspaceRoot: string,
+  packageRoots: readonly WorkspacePackageRoot[],
+  diagnostics: ArchitectureDiagnostic[],
+): void {
+  const matched = new Set<ts.Symbol>();
+  const matchedInput = (node: ts.Node): ts.Identifier | undefined => {
+    if (!ts.isCallExpression(node)) return undefined;
+    const input = resultMatchInputExpression(
+      node,
+      resolvedSignature(checker, node),
+      checker,
+      packageRoots,
+    );
+    const value = input && unwrapExpression(input);
+    if (!value || !ts.isIdentifier(value)) return undefined;
+    return isDirectResultType(checker.getTypeAtLocation(value), packageRoots) ? value : undefined;
+  };
+  const visit = (node: ts.Node): void => {
+    const input = matchedInput(node);
+    const symbol = input && checker.getSymbolAtLocation(input);
+    const canonical = symbol && canonicalSymbol(symbol, checker);
+    if (input && canonical && matched.has(canonical)) {
+      diagnostics.push(
+        makeDiagnostic(
+          workspace,
+          workspaceRoot,
+          "architecture/no-repeated-result-match",
+          node,
+          `better-result ${input.text} is matched more than once.`,
+          "Settle the Result once with Result.gen, or with an `if (result.isErr())` guard on the immutable local followed by `result.value`.",
+        ),
+      );
+    }
+    if (canonical) matched.add(canonical);
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+}
+
 function analyzeManualResultStatusRead(
   node:
     | ts.PropertyAccessExpression
@@ -2766,10 +2918,7 @@ function analyzeCall(
   if (
     activeRules.has("architecture/no-manual-result-branching") &&
     manualResultBranchMember &&
-    !(
-      manualResultBranchMember === "isErr" &&
-      isDirectLocalResultCaptureErrGuard(node, checker, packageRoots)
-    )
+    !(manualResultBranchMember === "isErr" && isImmutableLocalResultErrGuard(node, checker))
   ) {
     diagnostics.push(
       makeDiagnostic(
@@ -2779,6 +2928,26 @@ function analyzeCall(
         node,
         `better-result ${manualResultBranchMember} manually discriminates a Result branch.`,
         "Compose with Result.match, Result.gen, map, mapError, andThen, or tryRecover instead.",
+      ),
+    );
+  }
+
+  if (
+    activeRules.has("architecture/no-nested-result-continuation") &&
+    selectsResultContinuation(
+      resultMatchHandlersArgument(node, signature, checker, packageRoots),
+      checker,
+    ) &&
+    enclosingResultContinuationMatch(node, checker, packageRoots)
+  ) {
+    diagnostics.push(
+      makeDiagnostic(
+        workspace,
+        workspaceRoot,
+        "architecture/no-nested-result-continuation",
+        node,
+        "better-result match selects a continuation inside another match continuation.",
+        "Settle the outer Result first with Result.gen or an `if (result.isErr())` guard, then continue at the function's base indentation.",
       ),
     );
   }
@@ -8558,8 +8727,20 @@ export function analyzeWorkspace(
     if (activeRules.has("architecture/no-deprecated")) {
       analyzeDeprecatedReferences(program, sourceFile, workspace, workspaceRoot, diagnostics);
     }
+    if (activeRules.has("architecture/no-repeated-result-match")) {
+      analyzeRepeatedResultMatches(
+        sourceFile,
+        checker,
+        workspace,
+        workspaceRoot,
+        packageRoots,
+        diagnostics,
+      );
+    }
     const candidateNames = callCandidateNames(sourceFile, workspace, activeRules);
-    const analyzeEveryCall = activeRules.has("architecture/no-manual-result-branching");
+    const analyzeEveryCall =
+      activeRules.has("architecture/no-manual-result-branching") ||
+      activeRules.has("architecture/no-nested-result-continuation");
     const sourceExports = activeRules.has("architecture/no-unhandled-exception-contract")
       ? exportedSymbols(sourceFile, checker)
       : new Set<ts.Symbol>();

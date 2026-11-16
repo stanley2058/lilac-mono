@@ -886,23 +886,16 @@ export class McpRegistry implements McpRegistryApi {
     let resolvedTransport: ResolvedTransport | undefined;
     if (reconciliation === "unchanged" && current) {
       const resolution = await this.resolveTransport(definition);
-      const resolutionFailure = resolution.match<() => McpReloadOutcome | null>({
-        err: (error) => () =>
-          freezeOutcome({
-            serverId,
-            reconciliation,
-            result: "retained",
-            error: safeErrorText(error, current.sensitiveValues),
-          }),
-        ok: () => () => null,
-      })();
-      if (resolutionFailure) return resolutionFailure;
-      resolvedTransport = resolution.match({ ok: (value) => value, err: () => undefined });
-      const fingerprintChanged = resolution.match({
-        ok: (value) => current.transportFingerprint !== transportFingerprint(value.input),
-        err: () => false,
-      });
-      if (fingerprintChanged) {
+      if (resolution.isErr()) {
+        return freezeOutcome({
+          serverId,
+          reconciliation,
+          result: "retained",
+          error: safeErrorText(resolution.error, current.sensitiveValues),
+        });
+      }
+      resolvedTransport = resolution.value;
+      if (current.transportFingerprint !== transportFingerprint(resolution.value.input)) {
         reconciliation = "changed";
       }
     }
@@ -922,19 +915,15 @@ export class McpRegistry implements McpRegistryApi {
             const discovered = await this.withDeadline(definition.id, (signal) =>
               this.discoverTools(definition, retainedClient, signal),
             );
-            const discoveryFailure = discovered.match<() => McpReloadOutcome | null>({
-              err: (error) => () =>
-                freezeOutcome({
-                  serverId,
-                  reconciliation,
-                  result: "retained",
-                  error: error.message,
-                }),
-              ok: () => () => null,
-            });
-            const failed = discoveryFailure();
-            if (failed) return failed;
-            const tools = discovered.match({ ok: (value) => value, err: () => [] });
+            if (discovered.isErr()) {
+              return freezeOutcome({
+                serverId,
+                reconciliation,
+                result: "retained",
+                error: discovered.error.message,
+              });
+            }
+            const tools = discovered.value;
             if (this.entries.get(serverId) !== current || current.status.status !== "available") {
               return freezeOutcome({
                 serverId,
@@ -1165,29 +1154,20 @@ export class McpRegistry implements McpRegistryApi {
                   if (holder.terminalFailure) return Result.err(holder.terminalFailure);
 
                   phase = "discovery";
-                  return await decodeMcpServerInfo(createdClient.serverInfo).match<
-                    () => Promise<ResultType<InitializedCandidate, McpRegistryDiscoveryError>>
-                  >({
-                    err: (error) => async () => Result.err(error),
-                    ok: (serverInfo) => async () => {
-                      const tools = await this.discoverTools(
-                        definition,
-                        createdClient,
-                        signal,
-                        holder,
-                      );
-                      return tools.map(
-                        (value) =>
-                          ({
-                            client: createdClient,
-                            serverInfo,
-                            sensitiveValues: Object.freeze([...sensitiveValues]),
-                            transportFingerprint: transportFingerprint(resolved.input),
-                            tools: value,
-                          }) satisfies InitializedCandidate,
-                      );
-                    },
-                  })();
+                  const decodedServerInfo = decodeMcpServerInfo(createdClient.serverInfo);
+                  if (decodedServerInfo.isErr()) return Result.err(decodedServerInfo.error);
+                  const serverInfo = decodedServerInfo.value;
+                  const tools = await this.discoverTools(definition, createdClient, signal, holder);
+                  return tools.map(
+                    (value) =>
+                      ({
+                        client: createdClient,
+                        serverInfo,
+                        sensitiveValues: Object.freeze([...sensitiveValues]),
+                        transportFingerprint: transportFingerprint(resolved.input),
+                        tools: value,
+                      }) satisfies InitializedCandidate,
+                  );
                 },
                 () => {
                   if (isCustomTransport(transport)) this.closeTransportInBackground(transport);

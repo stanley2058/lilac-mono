@@ -363,14 +363,8 @@ export async function writeMcpConfigFileAtomic(
   dependencies: McpConfigFileDependencies = DEFAULT_FILE_DEPENDENCIES,
 ): Promise<ResultType<void, McpConfigWriteError>> {
   const serialized = serializeConfig(configPath, config);
-  const serializationFailure = serialized.match<() => ResultType<void, McpConfigWriteError> | null>(
-    {
-      ok: () => () => null,
-      err: (error) => () => Result.err(error),
-    },
-  )();
-  if (serializationFailure) return serializationFailure;
-  const source = serialized.match({ ok: (value) => value, err: () => "" });
+  if (serialized.isErr()) return Result.err(serialized.error);
+  const source = serialized.value;
 
   const parent = path.dirname(configPath);
   const parentResult = await captureFileOperation({
@@ -406,20 +400,14 @@ export async function writeMcpConfigFileAtomic(
       await removeTemporary();
     },
   );
-  const openFailure = await opened.match<
-    () => Promise<ResultType<void, McpConfigWriteError> | null>
-  >({
-    ok: () => async () => null,
-    err: (error) => async () =>
-      combineOperationAndCleanup(configPath, Result.err(error), await removeTemporary()),
-  })();
-  if (openFailure) return openFailure;
-  const handle = opened.match({
-    ok: (value) => () => value,
-    err: (error) => () => {
-      throw error;
-    },
-  })();
+  if (opened.isErr()) {
+    return combineOperationAndCleanup(
+      configPath,
+      Result.err(opened.error),
+      await removeTemporary(),
+    );
+  }
+  const handle = opened.value;
   const closeTemporary = () =>
     captureFileOperation({
       configPath,
@@ -536,22 +524,11 @@ export function mutateMcpConfigFile(options: {
               servers,
             };
             const previousSerialized = serializeConfig(options.configPath, previousConfig);
-            const previousFailure = previousSerialized.match({
-              ok: () => null,
-              err: (error) => Result.err(error),
-            });
-            if (previousFailure) return previousFailure;
-            const previousSource = previousSerialized.match({
-              ok: (value) => value,
-              err: () => "",
-            });
+            if (previousSerialized.isErr()) return Result.err(previousSerialized.error);
+            const previousSource = previousSerialized.value;
             const nextSerialized = serializeConfig(options.configPath, config);
-            const nextFailure = nextSerialized.match({
-              ok: () => null,
-              err: (error) => Result.err(error),
-            });
-            if (nextFailure) return nextFailure;
-            const nextSource = nextSerialized.match({ ok: (value) => value, err: () => "" });
+            if (nextSerialized.isErr()) return Result.err(nextSerialized.error);
+            const nextSource = nextSerialized.value;
             const changed = previousSource !== nextSource;
             if (changed) {
               const written = await writeMcpConfigFileAtomic(

@@ -846,12 +846,9 @@ export class NativeResourceService {
     if (resourceId === undefined || (request.method !== "GET" && request.method !== "HEAD"))
       return undefined;
     const result = await this.openHttpResource(actorId, resourceId, request.signal);
-    const read = result.match({ ok: (value) => value, err: () => null });
-    if (!read)
-      return result.match({
-        ok: () => new Response(null, { status: 404 }),
-        err: resourceFailureResponse,
-      });
+    if (result.isErr()) return resourceFailureResponse(result.error);
+    const read = result.value;
+    if (!read) return new Response(null, { status: 404 });
     if (resourceMatch?.[2]) {
       const preview = await readPreviewPrefix(read.stream);
       return preview

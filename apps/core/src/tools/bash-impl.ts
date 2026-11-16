@@ -527,12 +527,11 @@ async function overflowStreamBytes(captured: string, overflowPath?: string): Pro
   ).mapError((captured) =>
     projectCapturedRuntimeError(captured, "Opaque Bash overflow stat failure"),
   );
-  const inspectError = inspected.match({ ok: () => null, err: (error) => error });
-  if (inspectError) {
-    preserveToolPanic(inspectError);
+  if (inspected.isErr()) {
+    preserveToolPanic(inspected.error);
     return Buffer.byteLength(captured, "utf8");
   }
-  return inspected.match({ ok: (value) => value.size, err: () => 0 });
+  return inspected.value.size;
 }
 
 async function readOverflowTail(
@@ -574,12 +573,11 @@ async function readOverflowTail(
   ).mapError((captured) =>
     projectCapturedRuntimeError(captured, "Opaque Bash overflow close failure"),
   );
-  const readCause = read.match({ ok: () => null, err: (error) => error });
   const closeCause = closed.match({ ok: () => null, err: (error) => error });
-  if (readCause && isPanic(readCause)) preserveToolPanic(readCause);
-  if (closeCause && isPanic(closeCause)) preserveToolPanic(closeCause);
-
-  if (readCause) {
+  if (read.isErr()) {
+    const readCause = read.error;
+    if (isPanic(readCause)) preserveToolPanic(readCause);
+    if (closeCause && isPanic(closeCause)) preserveToolPanic(closeCause);
     const readError = new BashAdapterError({
       operation: "read_overflow",
       cause: readCause,
@@ -602,6 +600,7 @@ async function readOverflowTail(
       }),
     );
   }
+  if (closeCause && isPanic(closeCause)) preserveToolPanic(closeCause);
   if (closeCause) {
     return Result.err(
       new BashAdapterError({
@@ -611,7 +610,7 @@ async function readOverflowTail(
       }),
     );
   }
-  return Result.ok(read.match({ ok: (value) => value, err: () => Buffer.alloc(0) }));
+  return Result.ok(read.value);
 }
 
 async function buildOverflowStreamPreview(params: {
@@ -685,23 +684,13 @@ function limitBashOutput(
   }
 
   const available = Math.max(0, maxOutputBytes);
-  const bothStreams = input.stdout.length > 0 && input.stderr.length > 0;
-  let stdoutBudget = 0;
-  let stderrBudget = 0;
-  if (bothStreams) {
-    stdoutBudget = Math.min(stdoutBytes, Math.ceil(available / 2));
-    stderrBudget = Math.min(stderrBytes, Math.floor(available / 2));
-  } else if (input.stdout.length > 0) {
-    stdoutBudget = available;
-  } else if (input.stderr.length > 0) {
-    stderrBudget = available;
-  }
-  let remaining = Math.max(0, available - stdoutBudget - stderrBudget);
-  const stdoutNeed = Math.max(0, stdoutBytes - stdoutBudget);
-  const stdoutExtra = Math.min(stdoutNeed, remaining);
-  stdoutBudget += stdoutExtra;
-  remaining -= stdoutExtra;
-  stderrBudget += Math.min(Math.max(0, stderrBytes - stderrBudget), remaining);
+  const initialBudget = allocateStreamPreviewBytes({
+    stdoutBytes,
+    stderrBytes,
+    maxBytes: available,
+  });
+  let stdoutBudget = initialBudget.stdout;
+  let stderrBudget = initialBudget.stderr;
   let stdoutPart = previewStream(input.stdout, stdoutBudget);
   let stderrPart = previewStream(input.stderr, stderrBudget);
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -817,10 +806,8 @@ async function persistTruncatedOutput(params: {
   ).mapError((captured) =>
     projectCapturedRuntimeError(captured, "Opaque Bash artifact persistence failure"),
   );
-  let result: { uri?: string } = {};
-  const createError = created.match({ ok: () => null, err: (error) => error });
-  if (createError) {
-    const cause = preserveToolPanic(createError);
+  if (created.isErr()) {
+    const cause = preserveToolPanic(created.error);
     logger.warn("tool.artifact.write_failed", {
       toolName: "bash",
       ...formatTaggedErrorForLog(
@@ -831,19 +818,17 @@ async function persistTruncatedOutput(params: {
         }),
       ),
     });
-  } else {
-    const artifact = selectResultValue(created);
-    const artifactError = artifact.match({ ok: () => null, err: (error) => error });
-    if (artifactError) {
-      logger.warn("tool.artifact.write_failed", {
-        toolName: "bash",
-        ...formatTaggedErrorForLog(artifactError),
-      });
-    } else {
-      result = artifact.match({ ok: (value) => ({ uri: value.uri }), err: () => ({}) });
-    }
+    return {};
   }
-  return result;
+  const artifact = created.value;
+  if (artifact.isErr()) {
+    logger.warn("tool.artifact.write_failed", {
+      toolName: "bash",
+      ...formatTaggedErrorForLog(artifact.error),
+    });
+    return {};
+  }
+  return { uri: artifact.value.uri };
 }
 
 function buildBashChildEnv(params: {

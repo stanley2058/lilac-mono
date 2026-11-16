@@ -1026,16 +1026,15 @@ export async function startDiscordRequestRouter(
       discordUserAliasById,
       triggerMsgRef: input.msgRef,
     });
-    const compositionError = composed.match({ ok: () => null, err: (error) => error });
-    if (compositionError) {
-      logDiscordRequestCompositionFailure(logger, requestId, input.sessionId, compositionError);
+    if (composed.isErr()) {
+      logDiscordRequestCompositionFailure(logger, requestId, input.sessionId, composed.error);
       await sendContextCommandReply({
         ingressMessage: input.ingressMessage,
         text: "Unable to build the context snapshot.",
       });
       return;
     }
-    const composition = composed.match({ ok: (value) => value, err: () => null });
+    const composition = composed.value;
     if (!composition) return;
 
     const cleanup = await deleteDiscordRequestBlobHandles(
@@ -1071,12 +1070,11 @@ export async function startDiscordRequestRouter(
       messages: composition.messages,
       corePrimaryLineage: composition.corePrimaryLineage,
     });
-    const reportError = report.match({ ok: () => null, err: (error) => error });
-    if (reportError) {
+    if (report.isErr()) {
       logger.warn("context report failed", {
         source: "snapshot",
         sessionId: input.sessionId,
-        ...formatTaggedErrorForLog(reportError),
+        ...formatTaggedErrorForLog(report.error),
       });
       await sendContextCommandReply({
         ingressMessage: input.ingressMessage,
@@ -1084,7 +1082,7 @@ export async function startDiscordRequestRouter(
       });
       return;
     }
-    const presentation = report.match({ ok: (value) => value, err: () => null });
+    const presentation = report.value;
     if (!presentation) return;
     await sendContextCommandReply({
       ingressMessage: input.ingressMessage,
@@ -1587,63 +1585,37 @@ export async function startDiscordRequestRouter(
               channelId: sessionId,
               messageId: msgRef.messageId,
             });
+            const failedCustomCommand = (error: string) => ({
+              customCommand: {
+                name: customName,
+                args: [],
+                text: msg.data.text,
+                source: "text" as const,
+                error,
+              },
+            });
+            const unknownCustomCommand = failedCustomCommand(
+              `Unknown custom command '${customName}'.`,
+            );
             const raw = (() => {
-              const known = customCommands?.get(customName);
-              if (!known) {
-                return {
-                  customCommand: {
-                    name: customName,
-                    args: [],
-                    text: msg.data.text,
-                    source: "text",
-                    error: `Unknown custom command '${customName}'.`,
-                  },
-                };
+              const parsed = customCommands?.get(customName)
+                ? customCommands.parseText(msg.data.text)
+                : undefined;
+              if (!parsed) return unknownCustomCommand;
+              if (parsed.isErr()) {
+                return failedCustomCommand(customCommandInvocationErrorText(parsed.error));
               }
-
-              const parsed = customCommands?.parseText(msg.data.text);
-              if (!parsed) {
-                return {
-                  customCommand: {
-                    name: customName,
-                    args: [],
-                    text: msg.data.text,
-                    source: "text",
-                    error: `Unknown custom command '${customName}'.`,
-                  },
-                };
-              }
-              return parsed.match({
-                err: (error) => ({
-                  customCommand: {
-                    name: customName,
-                    args: [],
-                    text: msg.data.text,
-                    source: "text",
-                    error: customCommandInvocationErrorText(error),
-                  },
-                }),
-                ok: (value) =>
-                  value
-                    ? {
-                        customCommand: {
-                          name: value.command.def.name,
-                          args: value.args,
-                          ...(value.prompt ? { prompt: value.prompt } : {}),
-                          text: value.text,
-                          source: value.source,
-                        },
-                      }
-                    : {
-                        customCommand: {
-                          name: customName,
-                          args: [],
-                          text: msg.data.text,
-                          source: "text",
-                          error: `Unknown custom command '${customName}'.`,
-                        },
-                      },
-              });
+              const value = parsed.value;
+              if (!value) return unknownCustomCommand;
+              return {
+                customCommand: {
+                  name: value.command.def.name,
+                  args: value.args,
+                  ...(value.prompt ? { prompt: value.prompt } : {}),
+                  text: value.text,
+                  source: value.source,
+                },
+              };
             })();
 
             await publishSingleMessagePrompt({
@@ -2032,13 +2004,13 @@ export async function startDiscordRequestRouter(
         msgRef: last.msgRef,
       },
     });
-    const compositionError = composed.match({ ok: () => null, err: (error) => error });
-    if (compositionError) {
+    if (composed.isErr()) {
+      const compositionError = composed.error;
       logDiscordRequestCompositionFailure(logger, requestId, input.sessionId, compositionError);
       restoreBatch();
       return Result.err(requestPublishRoutingError(compositionError));
     }
-    const composition = composed.match({ ok: (value) => value, err: () => null });
+    const composition = composed.value;
     if (!composition) {
       restoreBatch();
       return Result.err(
@@ -2076,8 +2048,8 @@ export async function startDiscordRequestRouter(
         ingressMessages: item.ingressMessage ? [item.ingressMessage] : undefined,
         transformUserText: transformPendingUserText(item),
       });
-      const extraError = extra.match({ ok: () => null, err: (error) => error });
-      if (extraError) {
+      if (extra.isErr()) {
+        const extraError = extra.error;
         const cleanup = await deleteDiscordRequestBlobHandles(params.blobStore, [
           ...composition.inputHandles,
           ...extraCompositions.flatMap((value) => value.inputHandles),
@@ -2095,7 +2067,7 @@ export async function startDiscordRequestRouter(
         restoreBatch();
         return Result.err(requestPublishRoutingError(finalError));
       }
-      const extraValue = extra.match({ ok: (value) => value, err: () => null });
+      const extraValue = extra.value;
       if (!extraValue) continue;
       extraCompositions.push(extraValue);
       chainMessageIds.add(item.msgRef.messageId);

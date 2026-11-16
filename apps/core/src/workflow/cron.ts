@@ -59,19 +59,16 @@ export function computeNextCronAtMsResult(
       }).mapError((captured) =>
         projectCapturedRuntimeError(captured, "Opaque workflow cron failure"),
       );
-      const finish = parsed.match<() => ResultType<number, WorkflowCronInvalid>>({
-        ok: (value) => () => Result.ok(value),
-        err: (error) => () => {
-          const cause = preserveToolPanic(error);
-          return Result.err(
-            new WorkflowCronInvalid({
-              expression: input.expr,
-              message: opaqueErrorMessage(cause, "Invalid workflow cron expression"),
-            }),
-          );
-        },
-      });
-      return finish();
+      if (parsed.isErr()) {
+        const cause = preserveToolPanic(parsed.error);
+        return Result.err(
+          new WorkflowCronInvalid({
+            expression: input.expr,
+            message: opaqueErrorMessage(cause, "Invalid workflow cron expression"),
+          }),
+        );
+      }
+      return Result.ok(parsed.value);
     },
   });
   return compute();

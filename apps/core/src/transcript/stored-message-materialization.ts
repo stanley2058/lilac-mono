@@ -347,15 +347,9 @@ async function persistProviderToolResult(input: {
       continue;
     }
     const decision = await persistProviderFile({ ...input, part: output });
-    const failure = decision.match({ ok: () => null, err: (error) => error });
-    if (failure) return Result.err(failure);
-    decision.match({
-      ok: (file) => {
-        input.uploadedFiles.push(file);
-        value.push(file);
-      },
-      err: () => undefined,
-    });
+    if (decision.isErr()) return Result.err(decision.error);
+    input.uploadedFiles.push(decision.value);
+    value.push(decision.value);
   }
   return Result.ok({ ...input.part, output: { ...input.part.output, value } });
 }
@@ -401,9 +395,8 @@ async function persistProviderMessage(input: {
     return Result.ok(alreadyStored[0]);
   }
   const decoded = decodeProviderMessageForPersistence(input.message);
-  const decodeFailure = decoded.match({ ok: () => null, err: (error) => error });
-  if (decodeFailure) return Result.err(decodeFailure);
-  const providerMessage = decoded.match({ ok: (message) => message, err: () => null });
+  if (decoded.isErr()) return Result.err(decoded.error);
+  const providerMessage = decoded.value;
   if (providerMessage === null) {
     return Result.err(
       new StoredMessageProjectionError({ message: "Provider message decoding returned no value" }),
@@ -423,9 +416,8 @@ async function persistProviderMessage(input: {
       }
     }
     const persisted = await persistProviderPart({ ...input, part });
-    const failure = persisted.match({ ok: () => null, err: (error) => error });
-    if (failure) return Result.err(failure);
-    persisted.match({ ok: (value) => content.push(value), err: () => undefined });
+    if (persisted.isErr()) return Result.err(persisted.error);
+    content.push(persisted.value);
   }
   return projectStoredMessagesV1([{ ...providerMessage, content }]).map((messages) => messages[0]!);
 }
@@ -470,9 +462,8 @@ async function projectMessagesWithDurableProviderFiles(input: {
       pendingResourcesByToolCallId,
       uploadedFiles,
     });
-    const failure = persisted.match({ ok: () => null, err: (error) => error });
-    if (failure) return Result.err(failure);
-    persisted.match({ ok: (value) => candidates.push(value), err: () => undefined });
+    if (persisted.isErr()) return Result.err(persisted.error);
+    candidates.push(persisted.value);
   }
   return Result.ok({ messages: candidates, uploadedFiles });
 }
@@ -610,11 +601,10 @@ async function materializeBlobPart(input: {
   readonly blob: BlobRefV1;
 }): Promise<ResultType<Uint8Array, StoredMessageMaterializationError>> {
   const opened = await input.blobStore.open(input.blob);
-  const openFailure = opened.match({ ok: () => null, err: (error) => error });
-  if (openFailure) {
-    return Result.err(materializationFailure("open", openFailure.message));
+  if (opened.isErr()) {
+    return Result.err(materializationFailure("open", opened.error.message));
   }
-  const read = opened.match({ ok: (value) => value, err: () => null });
+  const read = opened.value;
   if (read === null) {
     return Result.err(materializationFailure("open", "Blob storage returned no readable object"));
   }
@@ -943,15 +933,8 @@ async function materializeToolResult(input: {
       continue;
     }
     const materialized = await materializeStoredFile({ ...input, part, toolResult: true });
-    const failure = materialized.match({
-      ok: () => null,
-      err: (error) => error,
-    });
-    if (failure) return Result.err(failure);
-    materialized.match({
-      ok: (file) => value.push(file),
-      err: () => undefined,
-    });
+    if (materialized.isErr()) return Result.err(materialized.error);
+    value.push(materialized.value);
   }
   return Result.ok({ ...input.part, output: { ...input.part.output, value } });
 }
@@ -1033,12 +1016,8 @@ export async function materializeStoredMessagesV1(input: {
   readonly resourceTarget?: StoredResourceProviderTarget;
 }): Promise<ResultType<ModelMessage[], StoredMessageMaterializationFailure>> {
   const projected = projectStoredMessagesV1(input.messages);
-  const projectionFailure = projected.match({
-    ok: () => null,
-    err: (error) => error,
-  });
-  if (projectionFailure) return Result.err(projectionFailure);
-  const messages = projected.match({ ok: (value) => value, err: () => null });
+  if (projected.isErr()) return Result.err(projected.error);
+  const messages = projected.value;
   if (messages === null) {
     return Result.err(
       new StoredMessageProjectionError({
@@ -1060,15 +1039,8 @@ export async function materializeStoredMessagesV1(input: {
       resourceAccess: input.resourceAccess,
       resourceTarget: input.resourceTarget,
     });
-    const failure = materialized.match({
-      ok: () => null,
-      err: (error) => error,
-    });
-    if (failure) return Result.err(failure);
-    materialized.match({
-      ok: (value) => output.push(value),
-      err: () => undefined,
-    });
+    if (materialized.isErr()) return Result.err(materialized.error);
+    output.push(materialized.value);
   }
   const remembered = input.identityProjection?.remember(output, messages);
   const rememberFailure = remembered?.match({

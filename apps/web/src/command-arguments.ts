@@ -93,8 +93,10 @@ function parseTokens(args: readonly CommandArgument[], tokens: readonly string[]
     const named = namedToken(args, token);
     const error = named && namedError(args, named);
     if (error) return { values, error };
-    if (named) values[named.index] = named.raw;
-    if (named) continue;
+    if (named) {
+      values[named.index] = named.raw;
+      continue;
+    }
     while (position < args.length && values[position] !== undefined) position += 1;
     const arg = args[position];
     if (!arg) return { values, promptStart: tokenIndex };

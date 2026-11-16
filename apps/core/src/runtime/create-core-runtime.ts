@@ -1726,33 +1726,25 @@ export async function createCoreRuntime(
             };
           }
           const initialRequestDeliveryMaintenance = await requestDeliveryCoordinator.maintain();
-          const initialRequestDeliveryMaintenanceFailure =
-            initialRequestDeliveryMaintenance.match<Error | null>({
-              err: (error) => error,
-              ok: () => null,
-            });
-          if (initialRequestDeliveryMaintenanceFailure) {
+          if (initialRequestDeliveryMaintenance.isErr()) {
             return {
               kind: "result",
               result: Result.err(
                 new CoreRuntimeStartFailed({
                   operation: "startup",
-                  cause: initialRequestDeliveryMaintenanceFailure,
+                  cause: initialRequestDeliveryMaintenance.error,
                   message: "Core request delivery startup maintenance failed",
                 }),
               ),
             };
           }
-          initialRequestDeliveryMaintenance.match({
-            err: () => undefined,
-            ok: (summary) => {
-              if (summary.failures.length === 0) return;
-              logger.warn(
-                "Core request delivery startup maintenance completed with deletion failures",
-                formatTaggedErrorForLog(summary.failures[0]!),
-              );
-            },
-          });
+          const initialMaintenanceFailure = initialRequestDeliveryMaintenance.value.failures[0];
+          if (initialMaintenanceFailure) {
+            logger.warn(
+              "Core request delivery startup maintenance completed with deletion failures",
+              formatTaggedErrorForLog(initialMaintenanceFailure),
+            );
+          }
           const initialTranscriptBlobMaintenance =
             await activeTranscriptStore.maintainCoreOwnedBlobs({
               blobStore: activeBlobStore,
@@ -1944,11 +1936,8 @@ export async function createCoreRuntime(
             logger,
             reportFatalError,
           });
-          const registryError = registryCreated.match({
-            err: (error) => error,
-            ok: () => null,
-          });
-          if (registryError) {
+          if (registryCreated.isErr()) {
+            const registryError = registryCreated.error;
             return {
               kind: "result",
               result: Result.err(
@@ -1960,10 +1949,7 @@ export async function createCoreRuntime(
               ),
             };
           }
-          const registry = registryCreated.match({
-            ok: (value) => value,
-            err: () => null,
-          });
+          const registry = registryCreated.value;
           if (!registry) {
             return {
               kind: "result",
@@ -2193,49 +2179,40 @@ export async function createCoreRuntime(
                 input?.dryRun === true || !stopConversationThreadSummarizationWorker
                   ? runInProcessSummarization(input)
                   : stopConversationThreadSummarizationWorker.runSummarization(input);
-              const continueFlushed = flushed.match({
-                err: (error) => async () => Result.err(error),
-                ok: () => async () => {
-                  if (conversationThreadSummarizationStopping) {
-                    return Result.err(
-                      new ConversationThreadSummarizationTransportError({
-                        operation: "stopped",
-                        message: "conversation thread summarization is stopping",
-                      }),
-                    );
-                  }
-                  if (trigger !== "periodic") return continueRun();
-                  const config = await captureSummarizationRuntimeOperation("configuration", () =>
-                    getCoreConfig(),
-                  );
-                  const continueConfig = config.match({
-                    err: (error) => async () => Result.err(error),
-                    ok: (value) => async () => {
-                      if (value.conversation.thread.summarization.enabled === true) {
-                        return continueRun();
-                      }
-                      return Result.ok({
-                        dryRun: false,
-                        refreshed: { channels: 0, threads: 0, messages: 0 },
-                        eligible: 0,
-                        eligibleTotal: 0,
-                        eligibility: {
-                          summary: 0,
-                          embeddingOnly: 0,
-                          reasons: {},
-                        },
-                        cleared: 0,
-                        summarized: 0,
-                        failed: 0,
-                        failures: [],
-                        threadIds: [],
-                      });
-                    },
-                  });
-                  return await continueConfig();
+              if (flushed.isErr()) return Result.err(flushed.error);
+              if (conversationThreadSummarizationStopping) {
+                return Result.err(
+                  new ConversationThreadSummarizationTransportError({
+                    operation: "stopped",
+                    message: "conversation thread summarization is stopping",
+                  }),
+                );
+              }
+              if (trigger !== "periodic") return continueRun();
+              const config = await captureSummarizationRuntimeOperation("configuration", () =>
+                getCoreConfig(),
+              );
+              if (config.isErr()) return Result.err(config.error);
+              const value = config.value;
+              if (value.conversation.thread.summarization.enabled === true) {
+                return continueRun();
+              }
+              return Result.ok({
+                dryRun: false,
+                refreshed: { channels: 0, threads: 0, messages: 0 },
+                eligible: 0,
+                eligibleTotal: 0,
+                eligibility: {
+                  summary: 0,
+                  embeddingOnly: 0,
+                  reasons: {},
                 },
+                cleared: 0,
+                summarized: 0,
+                failed: 0,
+                failures: [],
+                threadIds: [],
               });
-              return await continueFlushed();
             },
           };
           stopDiscordSearchIndexer = await startDiscordSearchIndexer({
@@ -2974,24 +2951,19 @@ export async function createCoreRuntime(
             subscriptionId: subId(subscriptionPrefix, "heartbeat"),
             initialExternalState: initialHeartbeatExternalState,
           });
-          const heartbeatFailure = heartbeatStarted.match<() => CoreRuntimeStartOutcome | null>({
-            ok: () => () => null,
-            err: (error) => () => ({
+          if (heartbeatStarted.isErr()) {
+            return {
               kind: "result",
               result: Result.err(
                 new CoreRuntimeStartFailed({
                   operation: "heartbeat",
-                  cause: error,
+                  cause: heartbeatStarted.error,
                   message: "Core runtime heartbeat startup failed",
                 }),
               ),
-            }),
-          })();
-          if (heartbeatFailure) return heartbeatFailure;
-          stopHeartbeat = heartbeatStarted.match({
-            ok: (heartbeat) => heartbeat,
-            err: () => null,
-          });
+            };
+          }
+          stopHeartbeat = heartbeatStarted.value;
 
           logger.debug("Heartbeat service started", {
             subscriptionId: subId(subscriptionPrefix, "heartbeat"),

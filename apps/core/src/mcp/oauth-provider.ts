@@ -316,48 +316,38 @@ export class McpOAuthProvider implements OAuthClientProvider {
     ResultType<McpOAuthStartResult, McpOAuthProviderError>
   > {
     const pendingResult = this.createPendingAuthorization();
-    return pendingResult.match({
-      err: (error) => async () => Result.err(error),
-      ok: (pending) => async () => {
-        const authorized = await captureOAuthAttempt({
-          serverId: this.serverId,
-          operation: "start",
-          run: () =>
-            auth(this.providerForAttempt(pending), {
-              serverUrl: this.serverUrl,
-              ...(this.authConfig.scopes?.length
-                ? { scope: this.authConfig.scopes.join(" ") }
-                : {}),
-              ...(this.fetchFn ? { fetchFn: this.fetchFn } : {}),
-            }),
-        });
-        return authorized.match({
-          err: (error) => () => {
-            this.deletePending(pending);
-            return Result.err(error);
-          },
-          ok: (status) => () => {
-            if (status === "AUTHORIZED") {
-              this.deletePending(pending);
-              return Result.ok<McpOAuthStartResult>({ status: "authorized" });
-            }
+    if (pendingResult.isErr()) return Result.err(pendingResult.error);
+    const pending = pendingResult.value;
+    const authorized = await captureOAuthAttempt({
+      serverId: this.serverId,
+      operation: "start",
+      run: () =>
+        auth(this.providerForAttempt(pending), {
+          serverUrl: this.serverUrl,
+          ...(this.authConfig.scopes?.length ? { scope: this.authConfig.scopes.join(" ") } : {}),
+          ...(this.fetchFn ? { fetchFn: this.fetchFn } : {}),
+        }),
+    });
+    if (authorized.isErr()) {
+      this.deletePending(pending);
+      return Result.err(authorized.error);
+    }
+    if (authorized.value === "AUTHORIZED") {
+      this.deletePending(pending);
+      return Result.ok<McpOAuthStartResult>({ status: "authorized" });
+    }
 
-            const authorizationUrl = pending.authorizationUrl;
-            if (!authorizationUrl || !pending.codeVerifier || !this.isActive(pending)) {
-              this.deletePending(pending);
-              return Result.err(oauthProviderError(this.serverId, "start"));
-            }
-            pending.authorizationUrl = undefined;
-            pending.status = "pending";
-            return Result.ok<McpOAuthStartResult>({
-              status: "authorization_required",
-              authorizationUrl,
-              callbackUrl: this.redirectUrl,
-            });
-          },
-        })();
-      },
-    })();
+    const authorizationUrl = pending.authorizationUrl;
+    if (!authorizationUrl || !pending.codeVerifier || !this.isActive(pending)) {
+      this.deletePending(pending);
+      return Result.err(oauthProviderError(this.serverId, "start"));
+    }
+    this.awaitAuthorizationCallback(pending);
+    return Result.ok<McpOAuthStartResult>({
+      status: "authorization_required",
+      authorizationUrl,
+      callbackUrl: this.redirectUrl,
+    });
   }
 
   async startAuthorization(): Promise<McpOAuthStartResult> {
@@ -529,6 +519,11 @@ export class McpOAuthProvider implements OAuthClientProvider {
 
   private assertActive(pending: PendingAuthorization, operation: "start" | "complete"): void {
     if (!this.isActive(pending)) throw oauthProviderError(this.serverId, operation);
+  }
+
+  private awaitAuthorizationCallback(pending: PendingAuthorization): void {
+    pending.authorizationUrl = undefined;
+    pending.status = "pending";
   }
 
   private deletePending(pending: PendingAuthorization): void {

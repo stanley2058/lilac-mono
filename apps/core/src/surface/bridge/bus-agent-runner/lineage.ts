@@ -53,15 +53,12 @@ export function validateCorePrimaryLineageAtRunnerIntake(input: {
         sessionId: input.sessionId,
         surfaceId: `discord:${input.sessionId}`,
       });
-      const continueValidation = invalidReason.match<() => CorePrimaryLineageV2>({
-        err: () => () =>
-          createFreshOnlyLineage("lineage-store-unavailable", lineage.currentCanonicalStart),
-        ok: (storedInvalidReason) => () =>
-          storedInvalidReason
-            ? createFreshOnlyLineage(storedInvalidReason, lineage.currentCanonicalStart)
-            : lineage,
-      });
-      return continueValidation();
+      if (invalidReason.isErr()) {
+        return createFreshOnlyLineage("lineage-store-unavailable", lineage.currentCanonicalStart);
+      }
+      return invalidReason.value
+        ? createFreshOnlyLineage(invalidReason.value, lineage.currentCanonicalStart)
+        : lineage;
     },
   });
   return continueDecoded();
@@ -106,71 +103,56 @@ export function appendAutoInjectedThreadSearchLineage(input: {
     );
 
   const decoded = decodeCorePrimaryLineageV2(input.lineage, input.canonicalMessages);
-  const continueDecoded = decoded.match<() => CorePrimaryLineageV2>({
-    err: () => failClosed,
-    ok: (lineage) => () => {
-      if (lineage.state !== "complete" || input.injectedMessages.length === 0) {
-        return failClosed();
-      }
-      const previous = lineage.segments.at(-1);
-      if (!previous || previous.canonicalEnd !== input.canonicalMessages.length) {
-        return failClosed();
-      }
+  if (decoded.isErr()) return failClosed();
+  const lineage = decoded.value;
+  if (lineage.state !== "complete" || input.injectedMessages.length === 0) {
+    return failClosed();
+  }
+  const previous = lineage.segments.at(-1);
+  if (!previous || previous.canonicalEnd !== input.canonicalMessages.length) {
+    return failClosed();
+  }
 
-      const preparedInjected = projectStoredMessagesV1(input.injectedMessages).andThen((messages) =>
-        hashCanonicalStoredMessagesV2(messages).map((digest) => ({
-          messages,
-          messageDigest: digest.hash,
-        })),
-      );
-      const prepared = preparedInjected.match({
-        ok: (value) => value,
-        err: () => null,
-      });
-      if (!prepared) return failClosed();
-      const atom = {
-        kind: "synthetic" as const,
-        source: AUTO_INJECTED_THREAD_SEARCH_LINEAGE_SOURCE,
-        messageDigest: prepared.messageDigest,
-      };
-      const cumulativeAtomCount = previous.cumulativeAtomCount + 1;
-      const extended = extendCoreLineagePrefixDigestV2(
-        previous.cumulativePrefixDigest,
+  const preparedInjected = projectStoredMessagesV1(input.injectedMessages).andThen((messages) =>
+    hashCanonicalStoredMessagesV2(messages).map((digest) => ({
+      messages,
+      messageDigest: digest.hash,
+    })),
+  );
+  if (preparedInjected.isErr()) return failClosed();
+  const prepared = preparedInjected.value;
+  const atom = {
+    kind: "synthetic" as const,
+    source: AUTO_INJECTED_THREAD_SEARCH_LINEAGE_SOURCE,
+    messageDigest: prepared.messageDigest,
+  };
+  const cumulativeAtomCount = previous.cumulativeAtomCount + 1;
+  const extended = extendCoreLineagePrefixDigestV2(
+    previous.cumulativePrefixDigest,
+    cumulativeAtomCount,
+    atom,
+  );
+  if (extended.isErr()) return failClosed();
+  const candidate = {
+    ...lineage,
+    segments: [
+      ...lineage.segments,
+      {
+        atoms: [atom],
+        canonicalMessages: prepared.messages,
+        canonicalStart: previous.canonicalEnd,
+        canonicalEnd: previous.canonicalEnd + input.injectedMessages.length,
         cumulativeAtomCount,
-        atom,
-      );
-      const continueExtended = extended.match<() => CorePrimaryLineageV2>({
-        err: () => failClosed,
-        ok: (cumulativePrefixDigest) => () => {
-          const candidate = {
-            ...lineage,
-            segments: [
-              ...lineage.segments,
-              {
-                atoms: [atom],
-                canonicalMessages: prepared.messages,
-                canonicalStart: previous.canonicalEnd,
-                canonicalEnd: previous.canonicalEnd + input.injectedMessages.length,
-                cumulativeAtomCount,
-                cumulativePrefixDigest,
-              },
-            ],
-          };
-          const parsed = decodeCorePrimaryLineageV2(candidate, [
-            ...input.canonicalMessages,
-            ...prepared.messages,
-          ]);
-          const continueParsed = parsed.match<() => CorePrimaryLineageV2>({
-            ok: (value) => () => (value.state === "complete" ? value : failClosed()),
-            err: () => failClosed,
-          });
-          return continueParsed();
-        },
-      });
-      return continueExtended();
-    },
-  });
-  return continueDecoded();
+        cumulativePrefixDigest: extended.value,
+      },
+    ],
+  };
+  const parsed = decodeCorePrimaryLineageV2(candidate, [
+    ...input.canonicalMessages,
+    ...prepared.messages,
+  ]);
+  if (parsed.isErr()) return failClosed();
+  return parsed.value.state === "complete" ? parsed.value : failClosed();
 }
 
 export function mapCorePrimaryCompactionCurrentCanonicalStart(input: {

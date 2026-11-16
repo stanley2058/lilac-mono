@@ -116,6 +116,34 @@ export class DiscordRequestBlobCleanupFailed extends TaggedError(
   readonly message: string;
 }> {}
 
+function pushOversizedAttachmentFallback(params: {
+  readonly parts: Exclude<UserContent, string>;
+  readonly url: URL;
+  readonly filename: string | undefined;
+  readonly size: number | undefined;
+  readonly note: string;
+}): void {
+  const fallback =
+    bestEffortInferMimeType({ filename: params.filename, url: params.url }) ??
+    "application/octet-stream";
+  if (isImageMimeType(fallback) || isPdfMimeType(fallback)) {
+    params.parts.push({
+      type: "file",
+      data: params.url,
+      filename: params.filename,
+      mediaType: isImageMimeType(fallback) ? fallback : "application/pdf",
+    });
+    return;
+  }
+  const header = formatAttachmentHeader({
+    url: params.url,
+    filename: params.filename,
+    mimeType: fallback,
+    size: params.size,
+  });
+  params.parts.push({ type: "text", text: `${header}\n${params.note}` });
+}
+
 export async function deleteDiscordRequestBlobHandles(
   blobStore: Pick<BlobStore, "delete">,
   handles: readonly BlobHandleV1[],
@@ -729,36 +757,12 @@ export async function appendDiscordAttachmentsToUserContent(
     } else {
       // Size pre-check if available.
       if (att.size !== undefined && att.size > DEFAULT_INBOUND_MAX_FILE_BYTES) {
-        const fallback =
-          bestEffortInferMimeType({ filename: att.filename, url }) ?? "application/octet-stream";
-        if (isImageMimeType(fallback)) {
-          parts.push({
-            type: "file",
-            data: url,
-            filename: att.filename,
-            mediaType: fallback,
-          });
-          continue;
-        }
-        if (isPdfMimeType(fallback)) {
-          parts.push({
-            type: "file",
-            data: url,
-            filename: att.filename,
-            mediaType: "application/pdf",
-          });
-          continue;
-        }
-
-        const header = formatAttachmentHeader({
+        pushOversizedAttachmentFallback({
+          parts,
           url,
           filename: att.filename,
-          mimeType: fallback,
           size: att.size,
-        });
-        parts.push({
-          type: "text",
-          text: `${header}\n(attachment too large to download; fetch via URL)`,
+          note: "(attachment too large to download; fetch via URL)",
         });
         continue;
       }
@@ -770,37 +774,12 @@ export async function appendDiscordAttachmentsToUserContent(
             bytes = downloaded.bytes;
 
             if (bytes.byteLength > DEFAULT_INBOUND_MAX_FILE_BYTES) {
-              const fallback =
-                bestEffortInferMimeType({ filename: att.filename, url }) ??
-                "application/octet-stream";
-              if (isImageMimeType(fallback)) {
-                parts.push({
-                  type: "file",
-                  data: url,
-                  filename: att.filename,
-                  mediaType: fallback,
-                });
-                return { status: "continue" } as const;
-              }
-              if (isPdfMimeType(fallback)) {
-                parts.push({
-                  type: "file",
-                  data: url,
-                  filename: att.filename,
-                  mediaType: "application/pdf",
-                });
-                return { status: "continue" } as const;
-              }
-
-              const header = formatAttachmentHeader({
+              pushOversizedAttachmentFallback({
+                parts,
                 url,
                 filename: att.filename,
-                mimeType: fallback,
                 size: att.size,
-              });
-              parts.push({
-                type: "text",
-                text: `${header}\n(attachment too large to download; fetch via URL)`,
+                note: "(attachment too large to download; fetch via URL)",
               });
               return { status: "continue" } as const;
             }
@@ -808,37 +787,12 @@ export async function appendDiscordAttachmentsToUserContent(
             // Track only bytes we actually downloaded in this call.
             const nextTotal = state.downloadedTotalBytes + bytes.byteLength;
             if (nextTotal > DEFAULT_INBOUND_MAX_TOTAL_BYTES) {
-              const fallback =
-                bestEffortInferMimeType({ filename: att.filename, url }) ??
-                "application/octet-stream";
-              if (isImageMimeType(fallback)) {
-                parts.push({
-                  type: "file",
-                  data: url,
-                  filename: att.filename,
-                  mediaType: fallback,
-                });
-                return { status: "continue" } as const;
-              }
-              if (isPdfMimeType(fallback)) {
-                parts.push({
-                  type: "file",
-                  data: url,
-                  filename: att.filename,
-                  mediaType: "application/pdf",
-                });
-                return { status: "continue" } as const;
-              }
-
-              const header = formatAttachmentHeader({
+              pushOversizedAttachmentFallback({
+                parts,
                 url,
                 filename: att.filename,
-                mimeType: fallback,
                 size: att.size,
-              });
-              parts.push({
-                type: "text",
-                text: `${header}\n(attachment download skipped; total bytes too large; fetch via URL)`,
+                note: "(attachment download skipped; total bytes too large; fetch via URL)",
               });
               return { status: "continue" } as const;
             }
@@ -1224,23 +1178,16 @@ async function uploadDurableStoredBlob(input: {
       : {}),
     ...(input.expectedSha256 ? { expectedSha256: input.expectedSha256 } : {}),
   });
-  const upload = started.match({ ok: (value) => value, err: () => null });
-  if (!upload) {
+  if (started.isErr()) {
     if (input.source instanceof ReadableStream) void input.source.cancel();
-    const startError = started.match({
-      ok: () =>
-        attachmentPreparationError(
-          input.metadata,
-          "Durable attachment upload reservation returned no upload",
-        ),
-      err: (error) =>
-        attachmentPreparationError(
-          input.metadata,
-          `Failed to reserve durable attachment upload: ${error.message}`,
-        ),
-    });
-    return Result.err(startError);
+    return Result.err(
+      attachmentPreparationError(
+        input.metadata,
+        `Failed to reserve durable attachment upload: ${started.error.message}`,
+      ),
+    );
   }
+  const upload = started.value;
   const completed = await upload.completion;
   return completed.mapError((error) =>
     attachmentPreparationError(
@@ -1434,23 +1381,17 @@ async function appendKnownBlobAttachment(input: {
     },
     catch: captureError,
   });
-  const detectionError = detectedType.match({
-    ok: () => null,
-    err: (error) => error,
-  });
-  if (detectionError) {
+  if (detectedType.isErr()) {
     void downloadedStream.cancel();
     return Result.err(
       attachmentPreparationError(
         input.attachment,
-        `Failed to inspect downloaded attachment type: ${detectionError.cause.message}`,
+        `Failed to inspect downloaded attachment type: ${detectedType.error.cause.message}`,
       ),
     );
   }
   const downloadedMediaType = normalizeMimeType(
-    detectedType.match({ ok: (detected) => detected?.mime, err: () => undefined }) ??
-      responseAttempt.value.responseMimeType ??
-      input.mediaType,
+    detectedType.value?.mime ?? responseAttempt.value.responseMimeType ?? input.mediaType,
   );
   if (
     !downloadedMediaType ||
@@ -1555,10 +1496,8 @@ export async function appendDiscordAttachmentsToBusContent(
     }
 
     const loaded = await loadAttachmentBytes({ state, key, attachment, url });
-    const loadError = loaded.match({ ok: () => null, err: (value) => value });
-    if (loadError) return Result.err(loadError);
-    const value = loaded.match({ ok: (bytes) => bytes, err: () => null });
-    if (!value) continue;
+    if (loaded.isErr()) return Result.err(loaded.error);
+    const value = loaded.value;
     const detected = await fileTypeFromBuffer(Buffer.from(value.bytes));
     const mediaType =
       detected?.mime ??
@@ -1658,10 +1597,8 @@ export async function appendDiscordAttachmentsToStoredContent(
     }
 
     const loaded = await loadAttachmentBytes({ state, key, attachment, url });
-    const loadError = loaded.match({ ok: () => null, err: (value) => value });
-    if (loadError) return Result.err(loadError);
-    const value = loaded.match({ ok: (bytes) => bytes, err: () => null });
-    if (!value) continue;
+    if (loaded.isErr()) return Result.err(loaded.error);
+    const value = loaded.value;
     const detected = await fileTypeFromBuffer(Buffer.from(value.bytes));
     const mediaType =
       detected?.mime ??

@@ -137,11 +137,9 @@ function continueInvocation<T, U>(
   result: ResultType<T, CustomCommandInvocationError>,
   onOk: (value: T) => ResultType<U, CustomCommandInvocationError>,
 ): ResultType<U, CustomCommandInvocationError> {
-  const continuation = result.match<() => ResultType<U, CustomCommandInvocationError>>({
-    err: (error) => () => Result.err(error),
-    ok: (value) => () => onOk(value),
-  });
-  return continuation();
+  if (result.isErr()) return Result.err(result.error);
+  const value = result.value;
+  return onOk(value);
 }
 
 function decodeCustomCommandModule(value: unknown): CustomCommandModule | null {
@@ -566,24 +564,16 @@ export class CustomCommandManager {
     const commandName = params.command.def.name;
     const entrypointPath = params.command.entrypointPath;
     const imported = await importCustomCommandModule({ commandName, entrypointPath });
-    return imported.match<
-      () => Promise<ResultType<CustomCommandResult, CustomCommandExecutionError>>
-    >({
-      err: (error) => async () => Result.err(error),
-      ok: (commandModule) => async () => {
-        const invoked = invokeCustomCommand({
-          commandName,
-          entrypointPath,
-          run: () => commandModule.execute(params.args, params.context),
-        });
-        return invoked.match<
-          () => Promise<ResultType<CustomCommandResult, CustomCommandExecutionError>>
-        >({
-          err: (error) => async () => Result.err(error),
-          ok: (execution) => async () => execution,
-        })();
-      },
-    })();
+    if (imported.isErr()) return Result.err(imported.error);
+    const commandModule = imported.value;
+    const invoked = invokeCustomCommand({
+      commandName,
+      entrypointPath,
+      run: () => commandModule.execute(params.args, params.context),
+    });
+    if (invoked.isErr()) return Result.err(invoked.error);
+    const execution = invoked.value;
+    return execution;
   }
 
   formatPreview(invocation: ParsedCustomCommandInvocation): string {

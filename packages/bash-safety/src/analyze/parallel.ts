@@ -126,15 +126,8 @@ function parseParallelCommand(tokens: readonly string[]): ParallelParseResult | 
     }
 
     if (token.startsWith("-")) {
-      if (token.startsWith("-j") && token.length > 2 && /^\d+$/u.test(token.slice(2))) {
-        i++;
-      } else if (token.startsWith("--") && token.includes("=")) {
-        i++;
-      } else if (parallelOptsWithValue.has(token) || token === "-j" || token === "--jobs") {
-        i += 2;
-      } else {
-        i++;
-      }
+      const takesValue = parallelOptsWithValue.has(token) || token === "-j" || token === "--jobs";
+      i += takesValue ? 2 : 1;
       continue;
     }
 

@@ -17,8 +17,7 @@ export async function remoteApplyPatch(params: {
   const denyPaths =
     params.dangerouslyAllow === true ? REMOTE_ALLOW_ALL_PATHS : DEFAULT_FS_DENY_PATHS;
   const hunks = parsePatchResult(params.patchText);
-  const patchError = hunks.match({ ok: () => null, err: (error) => error });
-  if (patchError) return { ok: false, error: patchError.message };
+  if (hunks.isErr()) return { ok: false, error: hunks.error.message };
 
   const created = await createRemoteFileSystemHost({
     host: params.host,
@@ -26,10 +25,9 @@ export async function remoteApplyPatch(params: {
     timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     signal: params.signal,
   });
-  const hostError = created.match({ ok: () => null, err: (error) => error });
-  if (hostError) return { ok: false, error: hostError.message };
-  const host = created.match({ ok: (value) => value, err: () => null });
-  const parsed = hunks.match({ ok: (value) => value, err: () => [] });
+  if (created.isErr()) return { ok: false, error: created.error.message };
+  const host = created.value;
+  const parsed = hunks.value;
   if (!host) return { ok: false, error: "remote host unavailable" };
 
   const applied = await applyHunksResult(params.cwd, parsed, {

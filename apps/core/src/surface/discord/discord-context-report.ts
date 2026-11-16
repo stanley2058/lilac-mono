@@ -171,17 +171,16 @@ export function createDiscordContextReportProvider(params: {
       runProfile: "primary",
       requestModelOverride: request.modelOverride,
     });
-    const modelError = modelPlan.match({ ok: () => null, err: (error) => error });
-    if (modelError) {
+    if (modelPlan.isErr()) {
       return Result.err(
         new DiscordContextReportFailed({
           stage: "model",
-          cause: modelError,
-          message: modelError.message,
+          cause: modelPlan.error,
+          message: modelPlan.error.message,
         }),
       );
     }
-    const resolved = modelPlan.match({ ok: (value) => value.head, err: () => null });
+    const resolved = modelPlan.value.head;
     if (!resolved) {
       return Result.err(
         new DiscordContextReportFailed({
@@ -258,8 +257,8 @@ export function createDiscordContextReportProvider(params: {
           : {}),
       },
     });
-    const toolsetError = toolsetResult.match({ ok: () => null, err: (error) => error });
-    if (toolsetError) {
+    if (toolsetResult.isErr()) {
+      const toolsetError = toolsetResult.error;
       return Result.err(
         new DiscordContextReportFailed({
           stage: "tools",
@@ -268,7 +267,7 @@ export function createDiscordContextReportProvider(params: {
         }),
       );
     }
-    const toolset = toolsetResult.match({ ok: (value) => value, err: () => null });
+    const toolset = toolsetResult.value;
     if (!toolset) {
       return Result.err(
         new DiscordContextReportFailed({

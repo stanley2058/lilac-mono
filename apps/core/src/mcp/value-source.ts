@@ -361,9 +361,8 @@ export async function resolveMcpValueSourceMap(
     const source = sources[key];
     if (source === undefined) continue;
     const resolved = await resolveMcpValueSourceEntry(key, source, context);
-    const failure = resolved.match({ ok: () => null, err: (error) => Result.err(error) });
-    if (failure) return failure;
-    values[key] = resolved.match({ ok: (value) => value, err: () => "" });
+    if (resolved.isErr()) return Result.err(resolved.error);
+    values[key] = resolved.value;
   }
   return Result.ok(values);
 }

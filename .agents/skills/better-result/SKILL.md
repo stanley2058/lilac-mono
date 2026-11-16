@@ -22,7 +22,10 @@ remain defects.
 
 Apply the repository's flat-control-flow rule to fallible workflows.
 
-- Use `Result.gen` to keep sequential fallible steps linear.
+- Prefer `Result.gen` for sequential fallible steps. It keeps the workflow linear and in one expression.
+- When `Result.gen` does not fit, settle a Result with a positive `if (result.isErr())` guard and read
+  `result.value` after the terminal Err branch. Match or guard each Result once; never match it a second
+  time to extract the value with a placeholder in the impossible arm.
 - Settle terminal and loop-only branches immediately with `return`, `continue`, or `break` before the next
   step of the happy path.
 - When control flow must leave the Result abstraction before a final boundary, use `match` once to produce
@@ -48,21 +51,22 @@ Apply the repository's flat-control-flow rule to fallible workflows.
   must be retained. Use their async variants only with promises that resolve to Results.
 - Use object-form `Result.try` or `Result.tryPromise` at an external exception boundary. Its catch function
   must be total: return a closed captured value and never throw, reject, or signal a host. Classify or
-  re-signal retained defects only after leaving protected Better Result callbacks. A positive `isErr()`
-  `if` guard may settle the immutable local returned directly by that capture; keep the guard and capture in
-  the same lexical block and do not alias or transform the Result first. Forward cancellation signals when
-  the operation supports them.
+  re-signal retained defects only after leaving protected Better Result callbacks. Settle the captured
+  Result with `Result.gen` or a positive `isErr()` guard. Forward cancellation signals when the operation
+  supports them.
 - Use `match` at a final policy or host boundary, or to project one Result into a data-only domain decision
-  required by flat control flow. A `match` handler must not own the remaining workflow. Exhaustively match
+  required by flat control flow. A `match` handler must not own the remaining workflow, and a continuation
+  selected by `match` must not contain another one. Exhaustively match
   tagged error unions at the final boundary rather than spreading error policy through the workflow.
 - Use `Result.codec` with boundary-owned schemas for persisted, wire, or independently versioned Result
   data.
 
 ## Preserve Local Boundaries
 
-Lilac is stricter than upstream examples: except for the narrow direct-capture `isErr()` settlement above,
-production code composes Results declaratively rather than reading branch discriminants, calling Result
-guards, or extracting with `unwrap`. Follow diagnostics from `scripts/architecture` and read
+Lilac is stricter than upstream examples: apart from the positive `isErr()` guard on an immutable local or
+unchanged parameter, production code composes Results declaratively rather than reading branch
+discriminants, calling `isOk` or static guards, or extracting with `unwrap`. The guard must be the complete
+`if` condition in the block that declares the Result. Follow diagnostics from `scripts/architecture` and read
 `scripts/architecture/README.md` before changing a registered boundary.
 
 Better Result protects combinator and `match` callbacks by wrapping thrown values in a new `Panic`. Treat

@@ -276,6 +276,37 @@ function slashRunBefore(source: string, position: number): number {
   return position - start;
 }
 
+function renderedCandidateValue(
+  markdown: string,
+  candidate: MathCandidate,
+  rendered: string,
+): string | undefined {
+  if (candidate.kind !== "display" && !rendered.includes("\n")) return inlineCode(rendered);
+  if (candidate.kind !== "display" && !candidate.wholeDirectRootParagraph) return undefined;
+  const eol = candidateEol(markdown, candidate);
+  return fencedCode(rendered.replaceAll("\n", eol), "text", eol);
+}
+
+function eligibleTextContains(
+  paragraph: Nodes,
+  display: { readonly start: number; readonly end: number },
+): boolean {
+  const textPending: Array<{ node: Nodes; protected: boolean }> = [
+    { node: paragraph, protected: false },
+  ];
+  while (textPending.length > 0) {
+    const item = textPending.pop()!;
+    const protectedNode =
+      item.protected || item.node.type === "link" || item.node.type === "linkReference";
+    const textRange = item.node.type === "text" && !protectedNode ? nodeRange(item.node) : null;
+    if (textRange && textRange.start <= display.start && textRange.end >= display.end) return true;
+    for (const child of nodeChildren(item.node)) {
+      textPending.push({ node: child, protected: protectedNode });
+    }
+  }
+  return false;
+}
+
 function collectCandidates(markdown: string): MathCandidate[] | null {
   const tree = fromMarkdown(markdown, {
     extensions: [gfm()],
@@ -298,6 +329,47 @@ function collectCandidates(markdown: string): MathCandidate[] | null {
     exhausted = candidates.length >= MAX_CANDIDATES || candidateChars >= MAX_TOTAL_CANDIDATE_CHARS;
   };
 
+  /** Adds inline candidates from one text node; returns the offset that later text must skip. */
+  const scanInlineText = (
+    text: NonNullable<ReturnType<typeof nodeRange>>,
+    paragraph: ParagraphRange,
+    skipUntil: number,
+  ): number => {
+    const unclosedBacktick = firstUnclosedBacktick(markdown, text.start, text.end);
+    const scanEnd = unclosedBacktick ?? text.end;
+    let position = Math.max(text.start, skipUntil);
+    while (position < scanEnd && !exhausted) {
+      const token = slashTokenAt(markdown, position);
+      if (!token || token.token !== "(") {
+        position++;
+        continue;
+      }
+      const scanned = scanSlashCandidate(markdown, token.delimiterStart, token.end, scanEnd, "(");
+      if (!scanned.complete) {
+        const paragraphScan = scanSlashCandidate(
+          markdown,
+          token.delimiterStart,
+          token.end,
+          paragraph.end,
+          "(",
+        );
+        if (paragraphScan.complete) return paragraphScan.end;
+      }
+      addCandidate({
+        ...scanned,
+        kind: "inline",
+        wholeDirectRootParagraph: isWholeParagraphCandidate(
+          markdown,
+          scanned.start,
+          scanned.end,
+          paragraph,
+        ),
+      });
+      position = scanned.end;
+    }
+    return skipUntil;
+  };
+
   const pending: Array<{ node: Root | Nodes; parentType: string | null; depth: number }> = [
     { node: tree, parentType: null, depth: 0 },
   ];
@@ -315,26 +387,7 @@ function collectCandidates(markdown: string): MathCandidate[] | null {
       const display = paragraph.directRoot ? parseDisplayCandidate(markdown, paragraph) : null;
       if (display) {
         if (displayCloserExistsAfterParagraph(markdown, paragraph, display)) continue;
-        const textPending: Array<{ node: Nodes; protected: boolean }> = [
-          { node: current.node, protected: false },
-        ];
-        let containedByEligibleText = false;
-        while (textPending.length > 0) {
-          const item = textPending.pop()!;
-          const protectedNode =
-            item.protected || item.node.type === "link" || item.node.type === "linkReference";
-          if (item.node.type === "text" && !protectedNode) {
-            const textRange = nodeRange(item.node);
-            if (textRange && textRange.start <= display.start && textRange.end >= display.end) {
-              containedByEligibleText = true;
-              break;
-            }
-          }
-          for (const child of nodeChildren(item.node)) {
-            textPending.push({ node: child, protected: protectedNode });
-          }
-        }
-        if (containedByEligibleText) addCandidate(display);
+        if (eligibleTextContains(current.node, display)) addCandidate(display);
         continue;
       }
 
@@ -346,51 +399,8 @@ function collectCandidates(markdown: string): MathCandidate[] | null {
         const item = textPending.pop()!;
         const protectedNode =
           item.protected || item.node.type === "link" || item.node.type === "linkReference";
-        if (item.node.type === "text" && !protectedNode) {
-          const text = nodeRange(item.node);
-          if (!text || text.end <= skipUntil) continue;
-          const unclosedBacktick = firstUnclosedBacktick(markdown, text.start, text.end);
-          const scanEnd = unclosedBacktick ?? text.end;
-          let position = Math.max(text.start, skipUntil);
-          while (position < scanEnd && !exhausted) {
-            const token = slashTokenAt(markdown, position);
-            if (!token || token.token !== "(") {
-              position++;
-              continue;
-            }
-            const scanned = scanSlashCandidate(
-              markdown,
-              token.delimiterStart,
-              token.end,
-              scanEnd,
-              "(",
-            );
-            if (!scanned.complete) {
-              const paragraphScan = scanSlashCandidate(
-                markdown,
-                token.delimiterStart,
-                token.end,
-                paragraph.end,
-                "(",
-              );
-              if (paragraphScan.complete) {
-                skipUntil = paragraphScan.end;
-                break;
-              }
-            }
-            addCandidate({
-              ...scanned,
-              kind: "inline",
-              wholeDirectRootParagraph: isWholeParagraphCandidate(
-                markdown,
-                scanned.start,
-                scanned.end,
-                paragraph,
-              ),
-            });
-            position = scanned.end;
-          }
-        }
+        const text = item.node.type === "text" && !protectedNode ? nodeRange(item.node) : null;
+        if (text && text.end > skipUntil) skipUntil = scanInlineText(text, paragraph, skipUntil);
         const children = nodeChildren(item.node);
         for (let index = children.length - 1; index >= 0; index--) {
           textPending.push({ node: children[index]!, protected: protectedNode });
@@ -540,19 +550,11 @@ export function renderDiscordMarkdownMath(
       value = sourceFallback(markdown, candidate);
     }
 
-    if (candidate.complete && !candidate.malformed) {
-      const rendered = renderCandidate(body, candidate.kind, maxWidth);
-      if (rendered !== null) {
-        if (candidate.kind === "display" || rendered.includes("\n")) {
-          if (candidate.kind === "display" || candidate.wholeDirectRootParagraph) {
-            const eol = candidateEol(markdown, candidate);
-            value = fencedCode(rendered.replaceAll("\n", eol), "text", eol);
-          }
-        } else {
-          value = inlineCode(rendered);
-        }
-      }
-    }
+    const rendered =
+      candidate.complete && !candidate.malformed
+        ? renderCandidate(body, candidate.kind, maxWidth)
+        : null;
+    if (rendered !== null) value = renderedCandidateValue(markdown, candidate, rendered) ?? value;
 
     if (value !== source) {
       const previous = replacements.at(-1);

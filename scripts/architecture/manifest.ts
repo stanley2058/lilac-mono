@@ -311,6 +311,8 @@ export const FINAL_PACKAGE_WIDE_ARCHITECTURE_RULES = [
   "architecture/closed-union-map-exhaustiveness",
   "architecture/no-production-unwrap",
   "architecture/no-manual-result-branching",
+  "architecture/no-repeated-result-match",
+  "architecture/no-nested-result-continuation",
   "architecture/no-unmapped-result-capture",
   "architecture/no-unhandled-exception-contract",
   "architecture/registered-panic-site",
@@ -1246,6 +1248,8 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         "estimateMessageTokens",
         "repairTranscriptForCompaction",
         "renderMessageForSummary",
+        "renderAssistantPartForSummary",
+        "renderToolPartForSummary",
         "computeOverflowRecoveryDecision",
         "attachAutoCompaction.notifyUnknownCapability",
       ].map((exportName) => ({
@@ -3258,7 +3262,7 @@ const CORE_EVENT_DELIVERY_CONSUMERS = [
   {
     identity: {
       module: "src/workflow/workflow-live-parent-bridge.ts",
-      exportName: "WorkflowLiveParentBridge.reconcileTerminalChildActivity",
+      exportName: "WorkflowLiveParentBridge.replayChildToolCalls",
     },
     apiPackage: "@stanley2058/lilac-event-bus",
     operations: ["fetchTopic"],
@@ -5252,7 +5256,7 @@ function approvedExceptionAdapterCatalogSha256(
 }
 
 export const APPROVED_EXCEPTION_ADAPTER_CATALOG_SHA256 =
-  "7c183ef408922b5839589cc10eae83eab1e74caabcd1778fed8cf5664f0f504a";
+  "b751f428d40e3def4236b2cdbd98fb97066c11606ae80f423ae03da9f67a13be";
 
 export const architectureManifest = {
   version: 1,

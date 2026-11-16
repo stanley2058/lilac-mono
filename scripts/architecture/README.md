@@ -78,11 +78,18 @@ objects and serialized compatibility envelopes with their own `status` fields re
 Actual Result `match` calls also may not rebuild both `{ status: "ok", value }` and
 `{ status: "error", error }` branches; domain projections and `Result.codec` envelopes remain valid.
 
-One local settlement form is intrinsic: a positive instance `captured.isErr()` may be the complete
-condition of an `if` when `captured` is an immutable local initialized directly, and in the same lexical
-block, from object-form `Result.try` or an awaited object-form `Result.tryPromise`. The Err branch may
-return, throw, or record failure state before continuing. Aliases, transformed Results, negated or compound
-conditions, `isOk`, static guards, and all other manual Result discrimination remain invalid.
+One local settlement form is intrinsic: a positive instance `result.isErr()` may be the complete condition
+of an `if` when `result` is a `const` local declared earlier in the same lexical block, or a parameter that
+is never reassigned and the `if` sits directly in that function's body. The initializer can be any
+expression. The Err branch may return, throw, or record failure state before continuing; after a terminal
+Err branch, read `result.value`. Negated or compound conditions, ternaries, `isOk`, static guards, and all
+other manual Result discrimination remain invalid.
+
+`architecture/no-repeated-result-match` rejects a second `match` on the same Result binding, the
+match-the-error-then-match-the-value shape that needs a placeholder in the impossible arm.
+`architecture/no-nested-result-continuation` rejects a `match` whose arms both return continuation
+functions when it sits inside another such match's arms. Settle each Result once with `Result.gen` or the
+`isErr()` guard above and continue at the function's base indentation.
 
 Object-form `Result.try` and `Result.tryPromise` are intrinsic capture boundaries only through direct
 immutable `better-result` import bindings and need no exception registration. Catch mappers must be inline
@@ -94,9 +101,12 @@ remains invalid because it exposes `UnhandledException`.
 The syntax gate rejects every production `TryStatement` without a manifest exemption, as well as
 unregistered host exception flow, inline async Result callbacks, presentation decoder imports,
 store-owned inline decoding, direct SQLite transactions, `else` branches after terminal statements,
-ordered disjunctive `if`/`else if` chains that should use `switch (true)`, and violations of the unified
-managed-blob seam. Oxlint also applies the permanent package-wide nested-ternary and local-record-guard
-rules. Syntax registrations use the same exact manifest identities as semantic analysis; there is no
+ordered disjunctive `if`/`else if` chains that should use `switch (true)`, redundant branches (a chain arm
+that repeats an earlier arm's body, or an `if` that repeats the previous `if`'s condition when the first
+body writes nothing the condition reads), and violations of the unified managed-blob seam. Oxlint also
+applies the permanent package-wide nested-ternary, local-record-guard, `max-depth` (4),
+`max-nested-callbacks` (4; immediately invoked functions count), `no-lone-blocks`, and `no-dupe-else-if`
+rules to production code. Syntax registrations use the same exact manifest identities as semantic analysis; there is no
 separate syntax exception catalog.
 
 ### Unified blob storage

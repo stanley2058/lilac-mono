@@ -886,12 +886,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         this.presence.start();
         this.applyConfiguredPresence({ client, force: true });
 
-        // Register/refresh slash commands on boot.
-        // Strategy:
-        // 1) check existence
-        // 2) ALWAYS update if exists
-        // 3) register if not exist
-        // This avoids stale command definitions when iterating.
+        // commands.set() replaces the registered set, so stale definitions do not survive a restart.
         const registered = settleSurfaceFallback(
           await Result.tryPromise({
             try: () => this.registerSlashCommands(),
@@ -913,14 +908,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         });
 
         // Discord can clear custom presence over time; refresh periodically.
-        this.presenceTimer = setInterval(
-          () => {
-            this.superviseDiscordCallback("presence-refresh", () => {
-              this.applyConfiguredPresence({ client, force: true });
-            });
-          },
-          30 * 60 * 1000,
-        );
+        this.presenceTimer = setInterval(() => this.refreshPresence(client), 30 * 60 * 1000);
       });
     });
 
@@ -3261,6 +3249,12 @@ export class DiscordAdapter implements SurfaceAdapter {
     await tryReplyEphemeral(interaction, "Cancel requested.");
   }
 
+  private refreshPresence(client: Client): void {
+    this.superviseDiscordCallback("presence-refresh", () => {
+      this.applyConfiguredPresence({ client, force: true });
+    });
+  }
+
   private async registerSlashCommands(): Promise<void> {
     const client = this.client;
     if (!client) return;
@@ -3718,17 +3712,16 @@ export class DiscordAdapter implements SurfaceAdapter {
       }),
       messages: [],
     });
-    const reportError = report.match({ ok: () => null, err: (error) => error });
-    if (reportError) {
+    if (report.isErr()) {
       this.logger.warn("context report failed", {
         source: "rest",
         sessionId: channelId,
-        ...formatTaggedErrorForLog(reportError),
+        ...formatTaggedErrorForLog(report.error),
       });
       await tryEditOrReplyEphemeral(interaction, "Unable to build the context report.");
       return;
     }
-    const presentation = report.match({ ok: (value) => value, err: () => null });
+    const presentation = report.value;
     if (!presentation) {
       await tryEditOrReplyEphemeral(interaction, "Unable to build the context report.");
       return;

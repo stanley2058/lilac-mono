@@ -306,23 +306,42 @@ export class RequestDeliveryCoordinator<
           streamId: receipt.streamId,
           recordedAt: this.#now(),
         });
-        return recorded.match<
-          () => Promise<
-            ResultType<PrepareAndPublishOutcome<TEnvelope, TWork>, RequestDeliveryStoreError>
-          >
-        >({
-          err: (error) => async () => Result.err(error),
-          ok: (record) => async () =>
-            this.#confirmRecordedPublication({
-              claim: acquisition.claim,
-              publisher,
-              record,
-              status: "published",
-              streamId: receipt.streamId,
-            }),
-        })();
+        if (recorded.isErr()) return Result.err(recorded.error);
+        return this.#confirmRecordedPublication({
+          claim: acquisition.claim,
+          publisher,
+          record: recorded.value,
+          status: "published",
+          streamId: receipt.streamId,
+        });
       },
     })();
+  }
+
+  async #recoverTerminal(
+    record: AcceptedRequestDelivery<TWork>,
+    recovery: {
+      readonly outcome: RequestDeliveryTerminalOutcome;
+      readonly finalReplayDeadline?: number;
+    },
+    prepare:
+      | ((record: AcceptedRequestDelivery<TWork>) => Promise<ResultType<void, Error>>)
+      | undefined,
+  ): Promise<Error | undefined> {
+    if (prepare) {
+      const prepared = await prepare(record);
+      if (prepared.isErr()) return prepared.error;
+    }
+    const recovered = await this.terminalize({
+      requestDeliveryId: record.requestDeliveryId,
+      outcome: recovery.outcome,
+      ...(recovery.finalReplayDeadline === undefined
+        ? {}
+        : { finalReplayDeadline: recovery.finalReplayDeadline }),
+      transportCommitRequired: true,
+    });
+    if (recovered.isErr()) return recovered.error;
+    return undefined;
   }
 
   async #confirmRecordedPublication(input: {
@@ -568,34 +587,14 @@ export class RequestDeliveryCoordinator<
         const { record } = decoded;
         const terminalRecovery = input?.terminalRecovery?.(record);
         if (terminalRecovery) {
-          if (input?.prepareTerminalRecovery) {
-            const prepared = await input.prepareTerminalRecovery(record);
-            const prepareError = prepared.match({
-              ok: () => null,
-              err: (error) => error,
-            });
-            if (prepareError) {
-              failures.push({ requestDeliveryId: record.requestDeliveryId, error: prepareError });
-              continue;
-            }
-          }
-          const recoveredTerminal = await this.terminalize({
-            requestDeliveryId: record.requestDeliveryId,
-            outcome: terminalRecovery.outcome,
-            ...(terminalRecovery.finalReplayDeadline === undefined
-              ? {}
-              : { finalReplayDeadline: terminalRecovery.finalReplayDeadline }),
-            transportCommitRequired: true,
-          });
-          const terminalError = recoveredTerminal.match({
-            ok: () => null,
-            err: (error) => error,
-          });
-          if (terminalError) {
-            failures.push({ requestDeliveryId: record.requestDeliveryId, error: terminalError });
-          } else {
-            terminalized += 1;
-          }
+          const failure = await this.#recoverTerminal(
+            record,
+            terminalRecovery,
+            input?.prepareTerminalRecovery,
+          );
+          if (failure)
+            failures.push({ requestDeliveryId: record.requestDeliveryId, error: failure });
+          else terminalized += 1;
           continue;
         }
         this.#activity?.requestStarted(record.requestDeliveryId);
@@ -628,81 +627,51 @@ export class RequestDeliveryCoordinator<
     const now = input?.now ?? this.#now();
     const limit = input?.limit;
     const inputRecords = this.#store.listPendingInputCleanup({ limit });
-    return inputRecords.match<
-      () => Promise<ResultType<RequestDeliveryMaintenanceSummary, RequestDeliveryStoreError>>
-    >({
-      err: (error) => async () => Result.err(error),
-      ok: (records) => async () => {
-        let inputObjectsDeleted = 0;
-        let outputObjectsDeleted = 0;
-        const failures: RequestDeliveryDeleteFailed[] = [];
-        for (const record of records) {
-          const summary = await this.#deleteInputTargets(record);
-          inputObjectsDeleted += summary.deleted;
-          failures.push(...summary.failures);
-        }
+    if (inputRecords.isErr()) return Result.err(inputRecords.error);
+    let inputObjectsDeleted = 0;
+    let outputObjectsDeleted = 0;
+    const failures: RequestDeliveryDeleteFailed[] = [];
+    for (const record of inputRecords.value) {
+      const summary = await this.#deleteInputTargets(record);
+      inputObjectsDeleted += summary.deleted;
+      failures.push(...summary.failures);
+    }
 
-        const due = this.#store.listDueOutputs({ now, limit });
-        const continueDue = due.match<() => Promise<ResultType<void, RequestDeliveryStoreError>>>({
-          err: (error) => async () => Result.err(error),
-          ok: (outputs) => async () => {
-            for (const output of outputs) {
-              const deleted = await this.#blobStore.delete(output.target.blob);
-              const continueDeleted = deleted.match<
-                () => ResultType<void, RequestDeliveryStoreError>
-              >({
-                err: (error) => () => {
-                  failures.push(
-                    new RequestDeliveryDeleteFailed({
-                      requestDeliveryId: output.requestDeliveryId,
-                      objectId: output.target.blob.objectId,
-                      message: `Output blob deletion failed: ${taggedErrorName(error)}`,
-                    }),
-                  );
-                  return Result.ok(undefined);
-                },
-                ok: () => () =>
-                  this.#store
-                    .markOutputDeleted({
-                      requestDeliveryId: output.requestDeliveryId,
-                      objectId: output.target.blob.objectId,
-                    })
-                    .map(() => {
-                      outputObjectsDeleted += 1;
-                    }),
-              });
-              const marked = continueDeleted();
-              const storeError = marked.match({
-                err: (error) => error,
-                ok: () => undefined,
-              });
-              if (storeError) return Result.err(storeError);
-            }
-            return Result.ok(undefined);
-          },
-        });
-        const dueResult = await continueDue();
-        const dueError = dueResult.match({
-          err: (error) => error,
-          ok: () => undefined,
-        });
-        if (dueError) return Result.err(dueError);
-
-        return this.#store.deleteEligibleTombstones({ limit }).andThen((tombstonesDeleted) =>
-          this.#store
-            .deleteExpiredReceipts({
-              publishedBefore: now - REQUEST_DELIVERY_RECEIPT_RETENTION_MS,
-            })
-            .map((receiptsDeleted) => ({
-              inputObjectsDeleted,
-              outputObjectsDeleted,
-              tombstonesDeleted,
-              receiptsDeleted,
-              failures,
-            })),
+    const due = this.#store.listDueOutputs({ now, limit });
+    if (due.isErr()) return Result.err(due.error);
+    for (const output of due.value) {
+      const deleted = await this.#blobStore.delete(output.target.blob);
+      if (deleted.isErr()) {
+        failures.push(
+          new RequestDeliveryDeleteFailed({
+            requestDeliveryId: output.requestDeliveryId,
+            objectId: output.target.blob.objectId,
+            message: `Output blob deletion failed: ${taggedErrorName(deleted.error)}`,
+          }),
         );
-      },
-    })();
+        continue;
+      }
+      const marked = this.#store.markOutputDeleted({
+        requestDeliveryId: output.requestDeliveryId,
+        objectId: output.target.blob.objectId,
+      });
+      if (marked.isErr()) return Result.err(marked.error);
+      outputObjectsDeleted += 1;
+    }
+
+    return this.#store.deleteEligibleTombstones({ limit }).andThen((tombstonesDeleted) =>
+      this.#store
+        .deleteExpiredReceipts({
+          publishedBefore: now - REQUEST_DELIVERY_RECEIPT_RETENTION_MS,
+        })
+        .map((receiptsDeleted) => ({
+          inputObjectsDeleted,
+          outputObjectsDeleted,
+          tombstonesDeleted,
+          receiptsDeleted,
+          failures,
+        })),
+    );
   }
 
   async #handlePrepared(
@@ -764,49 +733,45 @@ export class RequestDeliveryCoordinator<
           envelope: record.envelope,
           inputReferences,
         });
-        return admitted.match<
-          () => Promise<ResultType<RequestDeliveryHandleOutcome<TWork>, never>>
-        >({
-          err: (rejection) => async () => {
-            if (rejection.disposition === "park") {
-              return Result.ok({ disposition: "park", error: rejection });
-            }
-            const terminalized = await this.terminalize({
-              requestDeliveryId: record.requestDeliveryId,
-              outcome: { kind: "failed", code: rejection.code },
-              transportCommitRequired: true,
-            });
-            return terminalized.match<ResultType<RequestDeliveryHandleOutcome<TWork>, never>>({
-              err: (terminalError) =>
-                Result.ok({
-                  disposition: "park",
-                  error: terminalError,
-                } as const),
-              ok: () =>
-                Result.ok({
-                  disposition: "commit",
-                  reason: "terminalized",
-                } as const),
-            });
-          },
-          ok: (work) => async () =>
-            this.#store
-              .accept({
-                requestDeliveryId: record.requestDeliveryId,
-                work,
-                inputReferences,
-                acceptedAt: this.#now(),
-              })
-              .match<ResultType<RequestDeliveryHandleOutcome<TWork>, never>>({
-                err: (error) => Result.ok({ disposition: "park", error } as const),
-                ok: ({ record: accepted }) =>
-                  Result.ok({
-                    disposition: "accepted",
-                    record: accepted,
-                    source: "new",
-                  } as const),
-              }),
-        })();
+        if (admitted.isErr()) {
+          const rejection = admitted.error;
+          if (rejection.disposition === "park") {
+            return Result.ok({ disposition: "park", error: rejection });
+          }
+          const terminalized = await this.terminalize({
+            requestDeliveryId: record.requestDeliveryId,
+            outcome: { kind: "failed", code: rejection.code },
+            transportCommitRequired: true,
+          });
+          return terminalized.match<ResultType<RequestDeliveryHandleOutcome<TWork>, never>>({
+            err: (terminalError) =>
+              Result.ok({
+                disposition: "park",
+                error: terminalError,
+              } as const),
+            ok: () =>
+              Result.ok({
+                disposition: "commit",
+                reason: "terminalized",
+              } as const),
+          });
+        }
+        return this.#store
+          .accept({
+            requestDeliveryId: record.requestDeliveryId,
+            work: admitted.value,
+            inputReferences,
+            acceptedAt: this.#now(),
+          })
+          .match<ResultType<RequestDeliveryHandleOutcome<TWork>, never>>({
+            err: (error) => Result.ok({ disposition: "park", error } as const),
+            ok: ({ record: accepted }) =>
+              Result.ok({
+                disposition: "accepted",
+                record: accepted,
+                source: "new",
+              } as const),
+          });
       },
     })();
   }

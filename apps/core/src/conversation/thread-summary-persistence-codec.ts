@@ -380,132 +380,78 @@ export function decodeConversationThreadSummaryRow(
   row: PersistedConversationThreadSummaryRow,
 ): ResultType<DecodedPersistedValue<DecodedConversationThreadSummaryRow>, PersistedDataError> {
   const recordId = typeof row.thread_id === "string" ? row.thread_id : "unknown-record";
-  const versionResult = decodeSummaryVersion(row.summary_format_version, recordId);
-  return continuePersisted(versionResult, (version) =>
-    continuePersisted(
-      requiredString({
-        raw: row.thread_id,
-        field: "thread_id",
-        version: version.version,
-        recordId,
-      }),
-      (threadId) =>
-        continuePersisted(
-          requiredString({
-            raw: row.title,
-            field: "title",
-            version: version.version,
-            recordId,
-          }),
-          (title) =>
-            continuePersisted(
-              requiredString({
-                raw: row.brief,
-                field: "brief",
-                version: version.version,
-                recordId,
-              }),
-              (brief) =>
-                continuePersisted(
-                  decodeConversationThreadStringArray({
-                    raw: row.topics_json,
-                    version: row.summary_format_version,
-                    field: "topics_json",
-                    recordId,
-                  }),
-                  (topics) =>
-                    continuePersisted(
-                      decodeConversationThreadStringArray({
-                        raw: row.retrieval_hints_json,
-                        version: row.summary_format_version,
-                        field: "retrieval_hints_json",
-                        recordId,
-                      }),
-                      (retrievalHints) =>
-                        continuePersisted(
-                          decodeConversationThreadAboutness({
-                            raw: row.aboutness_json,
-                            version: row.summary_format_version,
-                            recordId,
-                          }),
-                          (aboutness) =>
-                            continuePersisted(
-                              decodeConversationThreadImportance({
-                                raw: row.importance,
-                                version: row.summary_format_version,
-                                recordId,
-                              }),
-                              (importance) =>
-                                continuePersisted(
-                                  decodeConversationThreadStringArray({
-                                    raw: row.importance_reasons_json,
-                                    version: row.summary_format_version,
-                                    field: "importance_reasons_json",
-                                    recordId,
-                                  }),
-                                  (importanceReasons) =>
-                                    continuePersisted(
-                                      requiredTimestamp({
-                                        raw: row.created_at,
-                                        field: "created_at",
-                                        version: version.version,
-                                        recordId,
-                                      }),
-                                      (createdAt) =>
-                                        continuePersisted(
-                                          requiredTimestamp({
-                                            raw: row.updated_at,
-                                            field: "updated_at",
-                                            version: version.version,
-                                            recordId,
-                                          }),
-                                          (updatedAt) => {
-                                            const defaulted = [
-                                              topics,
-                                              retrievalHints,
-                                              aboutness,
-                                              importance,
-                                              importanceReasons,
-                                            ].some(
-                                              (decoded) =>
-                                                decoded.provenance === "missing-defaulted",
-                                            );
-                                            let provenance:
-                                              | "current"
-                                              | "migrated"
-                                              | "missing-defaulted" = "current";
-                                            if (version.provenance === "migrated") {
-                                              provenance = "migrated";
-                                            } else if (defaulted) {
-                                              provenance = "missing-defaulted";
-                                            }
-                                            return Result.ok({
-                                              value: {
-                                                threadId,
-                                                title,
-                                                brief,
-                                                topics: topics.value,
-                                                retrievalHints: retrievalHints.value,
-                                                aboutness: aboutness.value,
-                                                importance: importance.value,
-                                                importanceReasons: importanceReasons.value,
-                                                createdAt,
-                                                updatedAt,
-                                              },
-                                              provenance,
-                                            });
-                                          },
-                                        ),
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        ),
-    ),
-  );
+  return Result.gen(function* () {
+    const version = yield* decodeSummaryVersion(row.summary_format_version, recordId);
+    const required = (raw: PersistedSqliteValue, field: SummaryField) =>
+      requiredString({ raw, field, version: version.version, recordId });
+    const threadId = yield* required(row.thread_id, "thread_id");
+    const title = yield* required(row.title, "title");
+    const brief = yield* required(row.brief, "brief");
+    const topics = yield* decodeConversationThreadStringArray({
+      raw: row.topics_json,
+      version: row.summary_format_version,
+      field: "topics_json",
+      recordId,
+    });
+    const retrievalHints = yield* decodeConversationThreadStringArray({
+      raw: row.retrieval_hints_json,
+      version: row.summary_format_version,
+      field: "retrieval_hints_json",
+      recordId,
+    });
+    const aboutness = yield* decodeConversationThreadAboutness({
+      raw: row.aboutness_json,
+      version: row.summary_format_version,
+      recordId,
+    });
+    const importance = yield* decodeConversationThreadImportance({
+      raw: row.importance,
+      version: row.summary_format_version,
+      recordId,
+    });
+    const importanceReasons = yield* decodeConversationThreadStringArray({
+      raw: row.importance_reasons_json,
+      version: row.summary_format_version,
+      field: "importance_reasons_json",
+      recordId,
+    });
+    const createdAt = yield* requiredTimestamp({
+      raw: row.created_at,
+      field: "created_at",
+      version: version.version,
+      recordId,
+    });
+    const updatedAt = yield* requiredTimestamp({
+      raw: row.updated_at,
+      field: "updated_at",
+      version: version.version,
+      recordId,
+    });
+    const defaulted = [topics, retrievalHints, aboutness, importance, importanceReasons].some(
+      (decoded) => decoded.provenance === "missing-defaulted",
+    );
+    let provenance: "current" | "migrated" | "missing-defaulted" = "current";
+    if (version.provenance === "migrated") {
+      provenance = "migrated";
+    } else if (defaulted) {
+      provenance = "missing-defaulted";
+    }
+    return Result.ok({
+      value: {
+        threadId,
+        title,
+        brief,
+        topics: topics.value,
+        retrievalHints: retrievalHints.value,
+        aboutness: aboutness.value,
+        importance: importance.value,
+        importanceReasons: importanceReasons.value,
+        createdAt,
+        updatedAt,
+      },
+      provenance,
+    });
+  });
 }
 
 const fixtureCurrentRow = {

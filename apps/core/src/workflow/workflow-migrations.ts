@@ -1846,84 +1846,71 @@ export function applyWorkflowSchemaMigrations(
         },
         (cause) => classifyMigrationDriverFailure("inspect", cause),
       );
-      const continueAfterInspection = inspected.match<
-        () => ResultType<void, WorkflowMigrationError>
-      >({
-        err: (error) => () => Result.err(error),
-        ok:
-          ({ migrationTableExists, rows }) =>
+      if (inspected.isErr()) return Result.err(inspected.error);
+      const { migrationTableExists, rows } = inspected.value;
+      const applied = new Map(rows.map((row) => [row.version, row.name]));
+      const knownVersions = new Set(WORKFLOW_MIGRATION_VERSIONS);
+      for (const version of applied.keys()) {
+        if (!knownVersions.has(version)) {
+          return Result.err(
+            new WorkflowMigrationUnsupportedVersion({
+              version,
+              message: `Workflow database migration ${version} is newer than this runtime`,
+            }),
+          );
+        }
+      }
+      if (
+        throughVersion >= WORKFLOW_BLOB_SCHEMA_VERSION &&
+        migrationTableExists &&
+        !applied.has(WORKFLOW_BLOB_SCHEMA_VERSION)
+      ) {
+        const legacyVersion = Math.max(0, ...applied.keys());
+        return Result.err(
+          new WorkflowBlobStorageMigrationRequired({
+            version: legacyVersion,
+            command: WORKFLOW_BLOB_MIGRATION_COMMAND,
+            message:
+              `Workflow database schema ${legacyVersion} requires offline blob migration. ` +
+              `Run: ${WORKFLOW_BLOB_MIGRATION_COMMAND}`,
+          }),
+        );
+      }
+
+      const applyMigration = (index: number): ResultType<void, WorkflowMigrationError> => {
+        const migration = WORKFLOW_MIGRATIONS[index];
+        if (!migration || migration.version > throughVersion) return Result.ok(undefined);
+        const appliedName = applied.get(migration.version);
+        if (appliedName !== undefined) {
+          if (appliedName !== migration.name) {
+            return Result.err(
+              new WorkflowMigrationNameMismatch({
+                version: migration.version,
+                expectedName: migration.name,
+                storedName: appliedName,
+                message: `Workflow migration ${migration.version} name mismatch`,
+              }),
+            );
+          }
+          return applyMigration(index + 1);
+        }
+
+        const migrated = runBunSqliteTransaction(
+          db,
           () => {
-            const applied = new Map(rows.map((row) => [row.version, row.name]));
-            const knownVersions = new Set(WORKFLOW_MIGRATION_VERSIONS);
-            for (const version of applied.keys()) {
-              if (!knownVersions.has(version)) {
-                return Result.err(
-                  new WorkflowMigrationUnsupportedVersion({
-                    version,
-                    message: `Workflow database migration ${version} is newer than this runtime`,
-                  }),
-                );
-              }
-            }
-            if (
-              throughVersion >= WORKFLOW_BLOB_SCHEMA_VERSION &&
-              migrationTableExists &&
-              !applied.has(WORKFLOW_BLOB_SCHEMA_VERSION)
-            ) {
-              const legacyVersion = Math.max(0, ...applied.keys());
-              return Result.err(
-                new WorkflowBlobStorageMigrationRequired({
-                  version: legacyVersion,
-                  command: WORKFLOW_BLOB_MIGRATION_COMMAND,
-                  message:
-                    `Workflow database schema ${legacyVersion} requires offline blob migration. ` +
-                    `Run: ${WORKFLOW_BLOB_MIGRATION_COMMAND}`,
-                }),
-              );
-            }
-
-            const applyMigration = (index: number): ResultType<void, WorkflowMigrationError> => {
-              const migration = WORKFLOW_MIGRATIONS[index];
-              if (!migration || migration.version > throughVersion) return Result.ok(undefined);
-              const appliedName = applied.get(migration.version);
-              if (appliedName !== undefined) {
-                if (appliedName !== migration.name) {
-                  return Result.err(
-                    new WorkflowMigrationNameMismatch({
-                      version: migration.version,
-                      expectedName: migration.name,
-                      storedName: appliedName,
-                      message: `Workflow migration ${migration.version} name mismatch`,
-                    }),
-                  );
-                }
-                return applyMigration(index + 1);
-              }
-
-              const migrated = runBunSqliteTransaction(
-                db,
-                () => {
-                  for (const statement of migration.statements) db.run(statement);
-                  db.run(
-                    "INSERT INTO workflow_schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-                    [migration.version, migration.name, timestamp],
-                  );
-                  return Result.ok(undefined);
-                },
-                (cause) => classifyMigrationDriverFailure(`apply-v${migration.version}`, cause),
-              );
-              const continueAfterMigration = migrated.match<
-                () => ResultType<void, WorkflowMigrationError>
-              >({
-                err: (error) => () => Result.err(error),
-                ok: () => () => applyMigration(index + 1),
-              });
-              return continueAfterMigration();
-            };
-            return applyMigration(0);
+            for (const statement of migration.statements) db.run(statement);
+            db.run(
+              "INSERT INTO workflow_schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+              [migration.version, migration.name, timestamp],
+            );
+            return Result.ok(undefined);
           },
-      });
-      return continueAfterInspection();
+          (cause) => classifyMigrationDriverFailure(`apply-v${migration.version}`, cause),
+        );
+        if (migrated.isErr()) return Result.err(migrated.error);
+        return applyMigration(index + 1);
+      };
+      return applyMigration(0);
     },
   });
   return apply();

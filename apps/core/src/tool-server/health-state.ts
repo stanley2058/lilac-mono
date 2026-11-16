@@ -604,30 +604,28 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
     let externalInfo: Record<string, unknown> | undefined;
     let memoryDiagnostics: Record<string, unknown> | undefined;
     if (options.externalHealthProvider) {
-      {
-        const attempt = await Result.tryPromise({
-          try: async () => {
-            const external = await options.externalHealthProvider!({
-              includeMemoryDiagnostics:
-                memoryFailureReason !== undefined || memory.rss >= warnRssBytes,
-            });
-            if (external.checks) checks.push(...external.checks);
-            externalInfo = external.info;
-            memoryDiagnostics = external.memoryDiagnostics;
-          },
-          catch: captureError,
-        });
-
-        if (attempt.isErr()) {
-          const e = attempt.error.cause;
-          if (Panic.is(e)) throw e;
-          checks.push({
-            name: "health.external",
-            ok: false,
-            impact: "live",
-            reason: previewReason(e),
+      const attempt = await Result.tryPromise({
+        try: async () => {
+          const external = await options.externalHealthProvider!({
+            includeMemoryDiagnostics:
+              memoryFailureReason !== undefined || memory.rss >= warnRssBytes,
           });
-        }
+          if (external.checks) checks.push(...external.checks);
+          externalInfo = external.info;
+          memoryDiagnostics = external.memoryDiagnostics;
+        },
+        catch: captureError,
+      });
+
+      if (attempt.isErr()) {
+        const e = attempt.error.cause;
+        if (Panic.is(e)) throw e;
+        checks.push({
+          name: "health.external",
+          ok: false,
+          impact: "live",
+          reason: previewReason(e),
+        });
       }
     }
     if (memoryDiagnostics) {

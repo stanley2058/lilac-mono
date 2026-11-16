@@ -130,6 +130,25 @@ function getToolResultToolCallIds(message: ModelMessage): string[] {
   return ids;
 }
 
+/** Returns the assistant's tool calls left without an inline result, or null for an invalid inline result. */
+function unresolvedInlineToolCalls(
+  message: ModelMessage,
+  toolCallIds: readonly string[],
+): Set<string> | null {
+  const unresolved = new Set(toolCallIds);
+  if (!Array.isArray(message.content)) return unresolved;
+  const seenCalls = new Set<string>();
+  for (const part of message.content) {
+    if (part.type === "tool-call") {
+      seenCalls.add(part.toolCallId);
+      continue;
+    }
+    if (part.type !== "tool-result") continue;
+    if (!seenCalls.has(part.toolCallId) || !unresolved.delete(part.toolCallId)) return null;
+  }
+  return unresolved;
+}
+
 function isValidSuffix(messages: readonly ModelMessage[], startIndex: number): boolean {
   let openToolCallIds: Set<string> | null = null;
 
@@ -142,18 +161,8 @@ function isValidSuffix(messages: readonly ModelMessage[], startIndex: number): b
       const toolCallIds = getAssistantToolCallIds(message);
       if (getAssistantToolCallPartCount(message) !== toolCallIds.length) return false;
       if (new Set(toolCallIds).size !== toolCallIds.length) return false;
-      const unresolved = new Set(toolCallIds);
-      if (Array.isArray(message.content)) {
-        const seenCalls = new Set<string>();
-        for (const part of message.content) {
-          if (part.type === "tool-call") {
-            seenCalls.add(part.toolCallId);
-            continue;
-          }
-          if (part.type !== "tool-result") continue;
-          if (!seenCalls.has(part.toolCallId) || !unresolved.delete(part.toolCallId)) return false;
-        }
-      }
+      const unresolved = unresolvedInlineToolCalls(message, toolCallIds);
+      if (!unresolved) return false;
       if (unresolved.size > 0) openToolCallIds = unresolved;
       continue;
     }
@@ -339,6 +348,27 @@ type RepairTranscriptResult = {
   droppedEmptyToolMessages: number;
 };
 
+function matchedToolCallIdsForBlock(
+  message: ModelMessage,
+  toolMessages: readonly ModelMessage[],
+  toolCallIds: readonly string[],
+): Set<string> {
+  const uniqueToolCallIds = new Set(toolCallIds);
+  const matched = new Set<string>();
+  const seenInlineCallIds = new Set<string>();
+  for (const part of Array.isArray(message.content) ? message.content : []) {
+    if (part.type === "tool-call") {
+      seenInlineCallIds.add(part.toolCallId);
+    } else if (part.type === "tool-result" && seenInlineCallIds.has(part.toolCallId)) {
+      matched.add(part.toolCallId);
+    }
+  }
+  for (const resultId of toolMessages.flatMap(getToolResultToolCallIds)) {
+    if (uniqueToolCallIds.has(resultId)) matched.add(resultId);
+  }
+  return matched;
+}
+
 function repairTranscriptForCompaction(messages: readonly ModelMessage[]): RepairTranscriptResult {
   const repaired: ModelMessage[] = [];
   let droppedDanglingToolCallParts = 0;
@@ -355,22 +385,11 @@ function repairTranscriptForCompaction(messages: readonly ModelMessage[]): Repai
       let toolBlockEnd = messageIndex + 1;
       while (messages[toolBlockEnd]?.role === "tool") toolBlockEnd += 1;
 
-      const uniqueToolCallIds = new Set(toolCallIds);
-      const matchedToolCallIds = new Set<string>();
-      const seenInlineCallIds = new Set<string>();
-      for (const part of message.content) {
-        if (part.type === "tool-call") {
-          seenInlineCallIds.add(part.toolCallId);
-        } else if (part.type === "tool-result" && seenInlineCallIds.has(part.toolCallId)) {
-          matchedToolCallIds.add(part.toolCallId);
-        }
-      }
-      for (let toolIndex = messageIndex + 1; toolIndex < toolBlockEnd; toolIndex++) {
-        const toolMessage = messages[toolIndex]!;
-        for (const resultId of getToolResultToolCallIds(toolMessage)) {
-          if (uniqueToolCallIds.has(resultId)) matchedToolCallIds.add(resultId);
-        }
-      }
+      const matchedToolCallIds = matchedToolCallIdsForBlock(
+        message,
+        messages.slice(messageIndex + 1, toolBlockEnd),
+        toolCallIds,
+      );
 
       const retainedToolCallIds = new Set<string>();
       const retainedResultIds = new Set<string>();
@@ -567,6 +586,40 @@ function isContinuableTurnStart(messages: readonly ModelMessage[], index: number
   return hasCompletedAssistantToolTurn(messages, index);
 }
 
+type AssistantSummaryPart = Exclude<
+  Extract<ModelMessage, { role: "assistant" }>["content"],
+  string
+>[number];
+type ToolSummaryPart = Extract<ModelMessage, { role: "tool" }>["content"][number];
+
+function renderAssistantPartForSummary(part: AssistantSummaryPart): string | undefined {
+  const artifact = readOpenAIServerCompactionArtifact(part);
+  if (artifact) return `[OPENAI SERVER COMPACTION]\n${artifact.metadata.portableSummary}`;
+  if (isOpenAICompactionPart(part)) return undefined;
+  if (typeof part !== "object" || part === null) return stringifyTextOnly(part, 2);
+  const record = part as Record<string, unknown>;
+  const type = getString(record["type"]);
+  const text = getString(record["text"]);
+  if ((type === "text" || type === "reasoning") && text) return text;
+  const toolName = getString(record["toolName"]);
+  const toolCallId = getString(record["toolCallId"]);
+  if (type === "tool-call" && toolName && toolCallId) {
+    return `TOOL_CALL ${toolName} id=${toolCallId}: ${stringifyTextOnly(record["input"], 2)}`;
+  }
+  return stringifyTextOnly(part, 2);
+}
+
+function renderToolPartForSummary(part: ToolSummaryPart): string {
+  if (typeof part !== "object" || part === null) return stringifyTextOnly(part, 2);
+  const record = part as Record<string, unknown>;
+  const toolName = getString(record["toolName"]);
+  const toolCallId = getString(record["toolCallId"]);
+  if (getString(record["type"]) === "tool-result" && toolName && toolCallId) {
+    return `TOOL_RESULT ${toolName} id=${toolCallId}: ${stringifyTextOnly(record["output"], 2)}`;
+  }
+  return stringifyTextOnly(part, 2);
+}
+
 function renderMessageForSummary(message: ModelMessage): string {
   if (message.role === "user") {
     const content =
@@ -579,64 +632,15 @@ function renderMessageForSummary(message: ModelMessage): string {
       return `ASSISTANT:\n${message.content}`;
     }
 
-    const lines: string[] = [];
-    for (const part of message.content) {
-      const artifact = readOpenAIServerCompactionArtifact(part);
-      if (artifact) {
-        lines.push(`[OPENAI SERVER COMPACTION]\n${artifact.metadata.portableSummary}`);
-        continue;
-      }
-      if (isOpenAICompactionPart(part)) continue;
-      if (typeof part === "object" && part !== null) {
-        const record = part as Record<string, unknown>;
-        const type = getString(record["type"]);
-
-        if (type === "text" || type === "reasoning") {
-          const text = getString(record["text"]);
-          if (text) {
-            lines.push(text);
-            continue;
-          }
-        }
-
-        if (type === "tool-call") {
-          const toolName = getString(record["toolName"]);
-          const toolCallId = getString(record["toolCallId"]);
-          if (toolName && toolCallId) {
-            lines.push(
-              `TOOL_CALL ${toolName} id=${toolCallId}: ${stringifyTextOnly(record["input"], 2)}`,
-            );
-            continue;
-          }
-        }
-      }
-
-      lines.push(stringifyTextOnly(part, 2));
-    }
-
+    const lines = message.content.flatMap((part) => {
+      const line = renderAssistantPartForSummary(part);
+      return line === undefined ? [] : [line];
+    });
     return `ASSISTANT:\n${lines.join("\n")}`;
   }
 
   if (message.role === "tool") {
-    const lines: string[] = [];
-    for (const part of message.content) {
-      if (typeof part === "object" && part !== null) {
-        const record = part as Record<string, unknown>;
-        const type = getString(record["type"]);
-        if (type === "tool-result") {
-          const toolName = getString(record["toolName"]);
-          const toolCallId = getString(record["toolCallId"]);
-          if (toolName && toolCallId) {
-            lines.push(
-              `TOOL_RESULT ${toolName} id=${toolCallId}: ${stringifyTextOnly(record["output"], 2)}`,
-            );
-            continue;
-          }
-        }
-      }
-
-      lines.push(stringifyTextOnly(part, 2));
-    }
+    const lines = message.content.map(renderToolPartForSummary);
 
     return `TOOL:\n${lines.join("\n")}`;
   }

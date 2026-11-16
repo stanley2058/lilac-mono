@@ -29,6 +29,7 @@ export type LocalRecordGuardKind = "local-record-guard";
 export type ElseAfterTerminalKind = "else-after-terminal";
 export type PresentationDecoderImportKind = "presentation-decoder-import";
 export type PreferSwitchTrueChainKind = "prefer-switch-true-chain";
+export type RedundantBranchKind = "identical-branch" | "repeated-condition";
 export type ResultCallbackKind = "inline-async-result-callback";
 export type StoreInlineDecodingKind = "store-inline-json-decoding" | "store-inline-schema-decoding";
 export type DirectSqliteTransactionKind =
@@ -2435,6 +2436,241 @@ export function findElseAfterTerminalViolationsInSourceFile(
   return findings;
 }
 
+/** Token sequence of a node, so formatting and comments do not matter but literal contents do. */
+function normalizedNodeText(node: ts.Node, sourceFile: ts.SourceFile): string {
+  const tokens: string[] = [];
+  const visit = (current: ts.Node): void => {
+    const children = current.getChildren(sourceFile);
+    if (children.length === 0) {
+      tokens.push(current.getText(sourceFile));
+      return;
+    }
+    for (const child of children) visit(child);
+  };
+  visit(node);
+  return tokens.join("\u0000");
+}
+
+function chainBranches(root: ts.IfStatement): ts.Statement[] {
+  const branches: ts.Statement[] = [];
+  let current: ts.IfStatement | undefined = root;
+  while (current) {
+    branches.push(current.thenStatement);
+    const next: ts.Statement | undefined = current.elseStatement;
+    if (next && ts.isIfStatement(next)) {
+      current = next;
+      continue;
+    }
+    if (next) branches.push(next);
+    current = undefined;
+  }
+  return branches;
+}
+
+function accessRootName(expression: ts.Expression): string | undefined {
+  let current: ts.Expression = expression;
+  while (
+    ts.isPropertyAccessExpression(current) ||
+    ts.isElementAccessExpression(current) ||
+    ts.isParenthesizedExpression(current) ||
+    ts.isNonNullExpression(current)
+  ) {
+    current = current.expression;
+  }
+  if (ts.isIdentifier(current)) return current.text;
+  return current.kind === ts.SyntaxKind.ThisKeyword ? "this" : undefined;
+}
+
+function isUpdateExpression(
+  node: ts.Node,
+): node is ts.PrefixUnaryExpression | ts.PostfixUnaryExpression {
+  return (
+    (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+    (node.operator === ts.SyntaxKind.PlusPlusToken ||
+      node.operator === ts.SyntaxKind.MinusMinusToken)
+  );
+}
+
+function isAssignment(node: ts.Node): node is ts.BinaryExpression {
+  return (
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+  );
+}
+
+function hasEffect(node: ts.Node): boolean {
+  if (
+    ts.isCallExpression(node) ||
+    ts.isNewExpression(node) ||
+    ts.isTaggedTemplateExpression(node) ||
+    ts.isAwaitExpression(node) ||
+    ts.isYieldExpression(node) ||
+    ts.isDeleteExpression(node) ||
+    isUpdateExpression(node) ||
+    isAssignment(node)
+  ) {
+    return true;
+  }
+  return ts.forEachChild(node, hasEffect) ?? false;
+}
+
+function referencedRootNames(expression: ts.Expression): Set<string> {
+  const names = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) names.add(node.text);
+    if (node.kind === ts.SyntaxKind.ThisKeyword) names.add("this");
+    ts.forEachChild(node, visit);
+  };
+  visit(expression);
+  return names;
+}
+
+function writtenRootNames(statement: ts.Statement): Set<string> {
+  const names = new Set<string>();
+  const addTarget = (target: ts.Node): void => {
+    if (ts.isArrayLiteralExpression(target) || ts.isObjectLiteralExpression(target)) {
+      for (const name of referencedRootNames(target)) names.add(name);
+      return;
+    }
+    const name = ts.isExpression(target) ? accessRootName(target) : undefined;
+    if (name) names.add(name);
+  };
+  const visit = (node: ts.Node): void => {
+    if (isAssignment(node)) addTarget(node.left);
+    if (isUpdateExpression(node)) addTarget(node.operand);
+    if (ts.isDeleteExpression(node)) addTarget(node.expression);
+    if (
+      (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+      !ts.isVariableDeclarationList(node.initializer)
+    ) {
+      addTarget(node.initializer);
+    }
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      addTarget(node.expression.expression);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(statement);
+  return names;
+}
+
+/** Whether `name` resolves to a `const` binding in a scope enclosing `node`. */
+function isConstBinding(name: string, node: ts.Node): boolean {
+  for (let scope: ts.Node | undefined = node.parent; scope; scope = scope.parent) {
+    if (ts.isFunctionLike(scope) && scope.parameters.some((p) => p.name.getText() === name)) {
+      return false;
+    }
+    const statements =
+      ts.isBlock(scope) || ts.isSourceFile(scope) || ts.isModuleBlock(scope)
+        ? scope.statements
+        : undefined;
+    for (const statement of statements ?? []) {
+      if (!ts.isVariableStatement(statement)) continue;
+      const declared = statement.declarationList.declarations.some(
+        (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name,
+      );
+      if (declared) return (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether `next` re-tests `previous`'s condition with nothing in between able to change it: the condition
+ * has no side effects, the first body writes nothing the condition reads, and when the first body makes
+ * calls, the condition reads only `const` bindings.
+ */
+function repeatsUnchangedCondition(previous: ts.IfStatement, next: ts.IfStatement): boolean {
+  const sourceFile = previous.getSourceFile();
+  if (
+    normalizedNodeText(previous.expression, sourceFile) !==
+    normalizedNodeText(next.expression, sourceFile)
+  ) {
+    return false;
+  }
+  if (hasEffect(previous.expression)) return false;
+  const read = referencedRootNames(previous.expression);
+  if ([...writtenRootNames(previous.thenStatement)].some((name) => read.has(name))) return false;
+  if (!hasEffect(previous.thenStatement)) return true;
+  return (
+    !read.has("this") &&
+    !readsMember(previous.expression) &&
+    [...read].every((name) => isConstBinding(name, previous))
+  );
+}
+
+function readsMember(node: ts.Node): boolean {
+  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) return true;
+  return ts.forEachChild(node, readsMember) ?? false;
+}
+
+function adjacentStatementLists(node: ts.Node): ts.NodeArray<ts.Statement> | undefined {
+  if (ts.isBlock(node) || ts.isSourceFile(node) || ts.isModuleBlock(node)) return node.statements;
+  if (ts.isCaseClause(node) || ts.isDefaultClause(node)) return node.statements;
+  return undefined;
+}
+
+export function findRedundantBranchViolations(
+  sourceText: string,
+  filePath = "apps/example/src/service.ts",
+  policy: SyntacticPolicy = SYNTACTIC_POLICY,
+): SyntacticFinding<RedundantBranchKind>[] {
+  if (isExcludedProductionFile(filePath, policy.productionExclusions)) return [];
+  return findRedundantBranchViolationsInSourceFile(
+    parseProductionSyntaxSource(sourceText, filePath),
+    filePath,
+  );
+}
+
+export function findRedundantBranchViolationsInSourceFile(
+  sourceFile: ts.SourceFile,
+  filePath: string,
+): SyntacticFinding<RedundantBranchKind>[] {
+  const findings: SyntacticFinding<RedundantBranchKind>[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isIfStatement(node) && isConditionalChainRoot(node)) {
+      const seen = new Set<string>();
+      const duplicate = chainBranches(node).find((branch) => {
+        const text = normalizedNodeText(branch, sourceFile);
+        if (seen.has(text)) return true;
+        seen.add(text);
+        return false;
+      });
+      if (duplicate) {
+        findings.push(
+          createFinding(
+            sourceFile,
+            filePath,
+            duplicate,
+            "identical-branch",
+            "This branch repeats an earlier branch of the same if/else chain; merge their conditions",
+          ),
+        );
+      }
+    }
+    const statements = adjacentStatementLists(node) ?? [];
+    for (const [index, statement] of statements.entries()) {
+      const previous = statements[index - 1];
+      if (!previous || !ts.isIfStatement(previous) || !ts.isIfStatement(statement)) continue;
+      if (previous.elseStatement || statement.elseStatement) continue;
+      if (!repeatsUnchangedCondition(previous, statement)) continue;
+      findings.push(
+        createFinding(
+          sourceFile,
+          filePath,
+          statement,
+          "repeated-condition",
+          "This if repeats the condition of the if directly before it; merge the two bodies",
+        ),
+      );
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return findings;
+}
+
 function ruleFromFinder<Kind extends string>(
   description: string,
   finder: (sourceText: string, filePath: string) => readonly SyntacticFinding<Kind>[],
@@ -2483,6 +2719,10 @@ export const noPresentationDecoderImportRule = ruleFromFinder(
 export const preferSwitchTrueChainRule = ruleFromFinder(
   "Use switch (true) for ordered disjunctive branch chains",
   findPreferSwitchTrueChainViolations,
+);
+export const noRedundantBranchRule = ruleFromFinder(
+  "Disallow repeated branch bodies and repeated adjacent conditions",
+  findRedundantBranchViolations,
 );
 export const noStoreInlineDecodingRule = ruleFromFinder(
   "Disallow inline JSON and schema decoding in exact registered store scopes",

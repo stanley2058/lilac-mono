@@ -610,10 +610,9 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
               applyCheckpointDelta(runId, base, value),
             )
           : decodeAgentRunCheckpointPayload(event.payload_json, runId).map(({ value }) => value);
-      const failure = decoded.match({ ok: () => null, err: (error) => error });
-      if (failure) return Result.err(failure);
+      if (decoded.isErr()) return Result.err(decoded.error);
       previous = latest;
-      latest = decoded.match({ ok: (value) => value, err: () => undefined });
+      latest = decoded.value;
       deltasSinceSnapshot = event.delta === 1 ? deltasSinceSnapshot + 1 : 0;
     }
     return Result.ok({
@@ -733,9 +732,8 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
             );
           }
           const latestResult = this.#latestCheckpoint(current);
-          const latestFailure = latestResult.match({ ok: () => null, err: (error) => error });
-          if (latestFailure) return Result.err(latestFailure);
-          const latest = latestResult.match({ ok: (value) => value, err: () => null });
+          if (latestResult.isErr()) return Result.err(latestResult.error);
+          const latest = latestResult.value;
           const metadataHash = payloadHash(metadataPayload);
           const keep = latest ? sharedMessagePrefix(latest.messages, checkpoint.messages) : 0;
           const unchanged =
@@ -754,9 +752,8 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
                 append: checkpoint.messages.slice(keep),
               } satisfies AgentRunCheckpointDelta)
             : serialize(handle.runId, "checkpoint", checkpoint);
-          const payloadFailure = payload.match({ ok: () => null, err: (error) => error });
-          if (payloadFailure) return Result.err(payloadFailure);
-          const payloadJson = payload.match({ ok: (value) => value, err: () => "" });
+          if (payload.isErr()) return Result.err(payload.error);
+          const payloadJson = payload.value;
           const sequence = handle.sequence + 1;
           const observedNow = this.#now();
           if (!nonnegativeSafeInteger(observedNow)) {
@@ -833,9 +830,8 @@ export class SqliteAgentRunJournal implements AgentRunJournal {
             );
           }
           const chain = this.#decodeCheckpointChain(current);
-          const chainFailure = chain.match({ ok: () => null, err: (error) => error });
-          if (chainFailure) return Result.err(chainFailure);
-          const previous = chain.match({ ok: (value) => value.previous, err: () => undefined });
+          if (chain.isErr()) return Result.err(chain.error);
+          const previous = chain.value.previous;
           if (!previous || SuperJSON.stringify(previous) !== payload) {
             return Result.err(
               new AgentRunJournalConflict({

@@ -26,6 +26,7 @@ export const ACTIVE_SYNTAX_RULES = [
   "lilac/no-exception-flow",
   "lilac/no-inline-async-result-callback",
   "lilac/no-presentation-decoder-import",
+  "lilac/no-redundant-branch",
   "lilac/no-store-inline-decoding",
   "lilac/no-direct-sqlite-transaction",
   "lilac/prefer-switch-true-chain",
@@ -35,6 +36,10 @@ export type ActiveSyntaxRule = (typeof ACTIVE_SYNTAX_RULES)[number];
 
 export const FINAL_PACKAGE_WIDE_SYNTAX_RULES = [
   "no-nested-ternary",
+  "max-depth",
+  "max-nested-callbacks",
+  "no-lone-blocks",
+  "no-dupe-else-if",
   "lilac/no-local-is-record",
   ...ACTIVE_SYNTAX_RULES,
 ] as const;

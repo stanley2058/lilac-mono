@@ -342,10 +342,3 @@ function isTargetWithinCwd(target: string, originalCwd: string, effectiveCwd?: s
   const normalizedCwd = normalize(originalCwd);
   return resolved.startsWith(`${normalizedCwd}/`) || resolved === normalizedCwd;
 }
-
-export function isHomeDirectory(cwd: string): boolean {
-  const home = process.env.HOME ?? homedir();
-  const normalizedCwd = normalize(cwd);
-  const normalizedHome = normalize(home);
-  return normalizedCwd === normalizedHome;
-}

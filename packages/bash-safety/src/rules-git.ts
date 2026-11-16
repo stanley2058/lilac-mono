@@ -191,15 +191,7 @@ function extractGitSubcommandAndRest(tokens: readonly string[]): {
     }
 
     if (token.startsWith("-")) {
-      if (GIT_GLOBAL_OPTS_WITH_VALUE.has(token)) {
-        i += 2;
-      } else if (token.startsWith("-c") && token.length > 2) {
-        i++;
-      } else if (token.startsWith("-C") && token.length > 2) {
-        i++;
-      } else {
-        i++;
-      }
+      i += GIT_GLOBAL_OPTS_WITH_VALUE.has(token) ? 2 : 1;
     } else {
       return { subcommand: token, rest: tokens.slice(i + 1) };
     }
@@ -274,6 +266,14 @@ function analyzeGitSwitch(tokens: readonly string[]): string | null {
   return null;
 }
 
+function checkoutOptionalValueWidth(token: string, nextToken: string | undefined): 1 | 2 {
+  if (!nextToken || nextToken.startsWith("-")) return 1;
+  if (token !== "--recurse-submodules" && token !== "--track" && token !== "-t") return 1;
+  const validModes =
+    token === "--recurse-submodules" ? ["checkout", "on-demand"] : ["direct", "inherit"];
+  return validModes.includes(nextToken) ? 2 : 1;
+}
+
 function getCheckoutPositionalArgs(tokens: readonly string[]): string[] {
   const positional: string[] = [];
 
@@ -289,28 +289,11 @@ function getCheckoutPositionalArgs(tokens: readonly string[]): string[] {
     if (token.startsWith("-")) {
       if (CHECKOUT_OPTS_WITH_VALUE.has(token)) {
         i += 2;
-      } else if (token.startsWith("--") && token.includes("=")) {
-        i++;
       } else if (CHECKOUT_OPTS_WITH_OPTIONAL_VALUE.has(token)) {
-        const nextToken = tokens[i + 1];
-        if (
-          nextToken &&
-          !nextToken.startsWith("-") &&
-          (token === "--recurse-submodules" || token === "--track" || token === "-t")
-        ) {
-          const validModes =
-            token === "--recurse-submodules" ? ["checkout", "on-demand"] : ["direct", "inherit"];
-
-          if (validModes.includes(nextToken)) {
-            i += 2;
-          } else {
-            i++;
-          }
-        } else {
-          i++;
-        }
+        i += checkoutOptionalValueWidth(token, tokens[i + 1]);
       } else if (
         token.startsWith("--") &&
+        !token.includes("=") &&
         !CHECKOUT_KNOWN_OPTS_NO_VALUE.has(token) &&
         !CHECKOUT_OPTS_WITH_VALUE.has(token) &&
         !CHECKOUT_OPTS_WITH_OPTIONAL_VALUE.has(token)

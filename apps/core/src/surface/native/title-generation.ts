@@ -123,27 +123,27 @@ export function createNativeTitleGeneration(options: {
       config: options.getConfig(),
       signal: AbortSignal.any([abort.signal, AbortSignal.timeout(30_000)]),
     });
-    const failure = result.match({ ok: () => null, err: (error) => error });
-    if (failure && Panic.is(failure)) {
-      options.reportFatalError(failure);
+    const settle = (generated: Parameters<typeof options.store.settleTitleGeneration>[2]) =>
+      options.store.settleTitleGeneration(threadId, job, generated).match({
+        ok: () => true,
+        err: (error) => {
+          options.warn("Native title update failed", error);
+          return false;
+        },
+      });
+    if (result.isErr()) {
+      if (Panic.is(result.error)) {
+        options.reportFatalError(result.error);
+        return;
+      }
+      if (abort.signal.aborted) return;
+      options.warn("Native title generation failed", result.error);
+      settle(undefined);
       return;
     }
     if (abort.signal.aborted) return;
-    const generated = result.match({
-      ok: (value) => value,
-      err: (error) => {
-        options.warn("Native title generation failed", error);
-        return undefined;
-      },
-    });
-    const committed = options.store.settleTitleGeneration(threadId, job, generated).match({
-      ok: () => true,
-      err: (error) => {
-        options.warn("Native title update failed", error);
-        return false;
-      },
-    });
-    if (!committed) return;
+    const generated = result.value;
+    if (!settle(generated)) return;
     // The first turn may have finished while the initial title was being generated.
     if (job.phase === "initial" && generated?.needsRefinement) await run(threadId);
   }

@@ -71,60 +71,52 @@ async function fetchViewerLoginFromGithub(input: {
         },
       }),
   );
-  const continueResponse = response.match<() => Promise<ResultType<string, GithubAuthFailed>>>({
-    err: (error) => async () => Result.err(error),
-    ok: (res) => async () => {
-      if (!res.ok) {
-        const body = await captureGithubAuthExternal(
-          "viewer",
-          "GitHub authenticated user error response was unreadable",
-          () => res.text(),
-        );
-        const continueErrorBody = body.match<() => ResultType<string, GithubAuthFailed>>({
-          err: (error) => () =>
-            Result.err(
-              new GithubAuthFailed({
-                operation: "viewer",
-                cause: error,
-                message: `GitHub API error (${res.status} ${res.statusText}) at ${path}`,
-              }),
-            ),
-          ok: (value) => () =>
-            Result.err(
-              new GithubAuthFailed({
-                operation: "viewer",
-                message: `GitHub API error (${res.status} ${res.statusText}) at ${path}${value ? `: ${value}` : ""}`,
-              }),
-            ),
-        });
-        return continueErrorBody();
-      }
+  if (response.isErr()) return Result.err(response.error);
+  const res = response.value;
+  if (!res.ok) {
+    const body = await captureGithubAuthExternal(
+      "viewer",
+      "GitHub authenticated user error response was unreadable",
+      () => res.text(),
+    );
+    const continueErrorBody = body.match<() => ResultType<string, GithubAuthFailed>>({
+      err: (error) => () =>
+        Result.err(
+          new GithubAuthFailed({
+            operation: "viewer",
+            cause: error,
+            message: `GitHub API error (${res.status} ${res.statusText}) at ${path}`,
+          }),
+        ),
+      ok: (value) => () =>
+        Result.err(
+          new GithubAuthFailed({
+            operation: "viewer",
+            message: `GitHub API error (${res.status} ${res.statusText}) at ${path}${value ? `: ${value}` : ""}`,
+          }),
+        ),
+    });
+    return continueErrorBody();
+  }
 
-      const body = await captureGithubAuthExternal(
-        "viewer",
-        "GitHub authenticated user response was unreadable",
-        async (): Promise<unknown> => await res.json(),
-      );
-      const continueBody = body.match<() => ResultType<string, GithubAuthFailed>>({
-        err: (error) => () => Result.err(error),
-        ok: (value) => () => {
-          const parsed = githubViewerSchema.safeParse(value);
-          if (!parsed.success) {
-            return Result.err(
-              new GithubAuthFailed({
-                operation: "viewer",
-                cause: parsed.error,
-                message: "GitHub API returned an invalid authenticated user response at /user",
-              }),
-            );
-          }
-          return Result.ok(parsed.data.login);
-        },
-      });
-      return continueBody();
-    },
-  });
-  return await continueResponse();
+  const body = await captureGithubAuthExternal(
+    "viewer",
+    "GitHub authenticated user response was unreadable",
+    async (): Promise<unknown> => await res.json(),
+  );
+  if (body.isErr()) return Result.err(body.error);
+  const value = body.value;
+  const parsed = githubViewerSchema.safeParse(value);
+  if (!parsed.success) {
+    return Result.err(
+      new GithubAuthFailed({
+        operation: "viewer",
+        cause: parsed.error,
+        message: "GitHub API returned an invalid authenticated user response at /user",
+      }),
+    );
+  }
+  return Result.ok(parsed.data.login);
 }
 
 export async function getGithubViewerLoginResult(input: {
@@ -242,43 +234,37 @@ export async function getGithubAppAuthResult(params: {
   dataDir: string;
 }): Promise<ResultType<GithubResolvedAuth | null, GithubAuthFailed>> {
   const loaded = await readGithubAppSecretResult(params.dataDir);
-  const continueLoaded = loaded.match<
-    () => Promise<ResultType<GithubResolvedAuth | null, GithubAuthFailed>>
-  >({
-    err: (error) => async () =>
-      Result.err(
-        new GithubAuthFailed({ operation: "read-app", cause: error, message: error.message }),
-      ),
-    ok: (secret) => async () => {
-      if (!secret) return Result.ok(null);
-      const token = await getGithubInstallationTokenResult({ dataDir: params.dataDir });
-      const continueToken = token.match<
-        () => ResultType<GithubResolvedAuth | null, GithubAuthFailed>
-      >({
-        err: (error) => () =>
-          Result.err(
-            new GithubAuthFailed({
-              operation: "mint-app-token",
-              cause: error,
-              message: error.message,
-            }),
-          ),
-        ok: (value) => () => Result.ok(toAppAuth(secret, value.token)),
-      });
-      return continueToken();
-    },
-  });
-  return await continueLoaded();
+  if (loaded.isErr()) {
+    return Result.err(
+      new GithubAuthFailed({
+        operation: "read-app",
+        cause: loaded.error,
+        message: loaded.error.message,
+      }),
+    );
+  }
+  const secret = loaded.value;
+  if (!secret) return Result.ok(null);
+  const token = await getGithubInstallationTokenResult({ dataDir: params.dataDir });
+  if (token.isErr()) {
+    return Result.err(
+      new GithubAuthFailed({
+        operation: "mint-app-token",
+        cause: token.error,
+        message: token.error.message,
+      }),
+    );
+  }
+  return Result.ok(toAppAuth(secret, token.value.token));
 }
 
 export async function getPreferredGithubAuthResult(params: {
   dataDir: string;
 }): Promise<ResultType<GithubResolvedAuth | null, GithubAuthFailed>> {
   const user = await getGithubUserAuthResult(params);
-  return user.match({
-    err: (error) => async () => Result.err(error),
-    ok: (value) => async () => (value ? Result.ok(value) : await getGithubAppAuthResult(params)),
-  })();
+  if (user.isErr()) return Result.err(user.error);
+  const value = user.value;
+  return value ? Result.ok(value) : await getGithubAppAuthResult(params);
 }
 
 export async function getPreferredGithubAuthOrNull(params: {

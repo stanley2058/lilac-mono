@@ -11,6 +11,7 @@ import {
   QuestionService,
 } from "../../src/question/question-service";
 import { QuestionStoreFailed, SqliteQuestionStore } from "../../src/question/question-store";
+import { SurfaceUnavailable } from "../../src/surface/adapter";
 import { BUILTIN_SURFACE_PROTOCOLS } from "../../src/surface/builtin-surface-protocols";
 import type {
   SurfaceQuestionAnswerHandler,
@@ -83,6 +84,7 @@ class TestQuestionPort implements SurfaceQuestionPort<"discord"> {
   interactionUpdateStarted: (() => void) | null = null;
   finishGate: Promise<void> | null = null;
   finishStarted: (() => void) | null = null;
+  pendingUpdateFailure: SurfaceUnavailable | null = null;
 
   async present(input: {
     readonly sessionRef: SessionRefFor<"discord">;
@@ -187,6 +189,9 @@ class TestQuestionPort implements SurfaceQuestionPort<"discord"> {
   private async updateInteraction(update: SurfaceQuestionInteractionUpdate) {
     this.interactionUpdateStarted?.();
     if (this.interactionUpdateGate) await this.interactionUpdateGate;
+    if (update.state === "pending" && this.pendingUpdateFailure) {
+      return Result.err(this.pendingUpdateFailure);
+    }
     this.interactionUpdates.push(update);
     return Result.ok(undefined);
   }
@@ -695,6 +700,42 @@ describe("question service", () => {
     expect(await pending).toMatchObject({
       status: "error",
       error: { _tag: "QuestionStoreFailed" },
+    });
+    expect(port.finishes).toEqual([expect.objectContaining({ state: "cancelled" })]);
+
+    await service.stop();
+    store.close();
+  });
+
+  it("cancels the card and settles the tool call when the next-question card update fails", async () => {
+    const store = await createStore((dbPath) => new SqliteQuestionStore({ dbPath }));
+    const port = new TestQuestionPort();
+    port.pendingUpdateFailure = new SurfaceUnavailable({
+      platform: "discord",
+      operation: "edit-message",
+      message: "Discord is unavailable",
+    });
+    const service = createService(store, port);
+    expect((await service.start()).status).toBe("ok");
+    const pending = service.ask({
+      requestDeliveryId: "delivery-1",
+      requestId: "request-1",
+      toolCallId: "tool-call-update",
+      sessionId: "channel-1",
+      userId: "user-1",
+      questions: input,
+    });
+    await Promise.resolve();
+
+    const handled = await port.answerOption(1);
+
+    expect(handled).toMatchObject({
+      status: "error",
+      error: { _tag: "SurfaceQuestionAnswerHandlingFailed" },
+    });
+    expect(await pending).toMatchObject({
+      status: "error",
+      error: { _tag: "QuestionPresentationFailed", operation: "update" },
     });
     expect(port.finishes).toEqual([expect.objectContaining({ state: "cancelled" })]);
 

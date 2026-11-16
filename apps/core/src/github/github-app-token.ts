@@ -193,58 +193,43 @@ export async function getGithubInstallationTokenResult(params: {
         }));
       }
 
-      pending = (async () => {
-        const privateKeyResult = await readGithubAppPrivateKeyPemResult(secret);
-        const continuePrivateKey = privateKeyResult.match<
-          () => Promise<ResultType<InstallationToken, GithubAppTokenError>>
-        >({
-          err: (error) => async () =>
-            Result.err(new GithubAppTokenMintFailed({ cause: error, message: error.message })),
-          ok: (privateKey) => async () => {
-            const response = await mintInstallationToken({
-              apiBaseUrl,
-              appId: secret.appId,
-              installationId: secret.installationId,
-              privateKey,
-            });
-            const continueResponse = response.match<
-              () => ResultType<InstallationToken, GithubAppTokenError>
-            >({
-              err: (error) => () => Result.err(error),
-              ok: (res) => () => {
-                const token = res.token;
-                if (typeof token !== "string" || token.length === 0) {
-                  return Result.err(
-                    new GithubAppTokenMintFailed({
-                      cause: new Error("GitHub App installation token missing"),
-                      message: "Failed to mint GitHub App installation token",
-                    }),
-                  );
-                }
-                const expiresAt = parseExpiresAtMs(res.expiresAt);
-                const continueExpiresAt = expiresAt.match<
-                  () => ResultType<InstallationToken, GithubAppTokenError>
-                >({
-                  err: (error) => () => Result.err(error),
-                  ok: (expiresAtMs) => () => {
-                    const value: InstallationToken = {
-                      token,
-                      expiresAtMs,
-                      host: secret.host,
-                      apiBaseUrl,
-                      fingerprint: fp,
-                    };
-                    cached = value;
-                    return Result.ok(value);
-                  },
-                });
-                return continueExpiresAt();
-              },
-            });
-            return continueResponse();
-          },
+      pending = (async (): Promise<ResultType<InstallationToken, GithubAppTokenError>> => {
+        const privateKey = await readGithubAppPrivateKeyPemResult(secret);
+        if (privateKey.isErr()) {
+          return Result.err(
+            new GithubAppTokenMintFailed({
+              cause: privateKey.error,
+              message: privateKey.error.message,
+            }),
+          );
+        }
+        const response = await mintInstallationToken({
+          apiBaseUrl,
+          appId: secret.appId,
+          installationId: secret.installationId,
+          privateKey: privateKey.value,
         });
-        return await continuePrivateKey();
+        if (response.isErr()) return Result.err(response.error);
+        const token = response.value.token;
+        if (typeof token !== "string" || token.length === 0) {
+          return Result.err(
+            new GithubAppTokenMintFailed({
+              cause: new Error("GitHub App installation token missing"),
+              message: "Failed to mint GitHub App installation token",
+            }),
+          );
+        }
+        const expiresAt = parseExpiresAtMs(response.value.expiresAt);
+        if (expiresAt.isErr()) return Result.err(expiresAt.error);
+        const value: InstallationToken = {
+          token,
+          expiresAtMs: expiresAt.value,
+          host: secret.host,
+          apiBaseUrl,
+          fingerprint: fp,
+        };
+        cached = value;
+        return Result.ok(value);
       })();
 
       const pendingToken = pending;

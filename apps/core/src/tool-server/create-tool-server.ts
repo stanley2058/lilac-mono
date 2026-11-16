@@ -849,12 +849,11 @@ export function createToolServer(options: ToolServerOptions) {
     const contributionByTool = options.pluginManager?.getLevel2ContributionInfo?.();
     for (const tool of activeTools) {
       const listed = await listTool(tool);
-      const listError = listed.match({ ok: () => null, err: (error) => error });
-      if (listError) {
-        logPluginError("level2.list", listError, { toolId: toolId(tool) });
+      if (listed.isErr()) {
+        logPluginError("level2.list", listed.error, { toolId: toolId(tool) });
         continue;
       }
-      const entries = listed.match({ ok: (value) => value, err: () => [] });
+      const entries = listed.value;
       nextToolCatalog.push(...entries);
       for (const { callableId } of entries) {
         nextCallMapping.set(callableId, tool);
@@ -1084,9 +1083,8 @@ export function createToolServer(options: ToolServerOptions) {
     const cachedMessages = await captureAuthenticationOperation(() =>
       authenticateRequestContext(context, options.requestMessageCache),
     );
-    const cacheError = cachedMessages.match({ ok: () => null, err: (error) => error });
-    if (cacheError) return Result.err(cacheError);
-    const messages = cachedMessages.match({ ok: (value) => value, err: () => undefined });
+    if (cachedMessages.isErr()) return Result.err(cachedMessages.error);
+    const messages = cachedMessages.value;
     if (options.authorizeControlRequest) {
       const authorizeControlRequest = options.authorizeControlRequest;
       if (
@@ -1115,9 +1113,8 @@ export function createToolServer(options: ToolServerOptions) {
           now: Date.now(),
         }),
       );
-      const authorizationError = authorization.match({ ok: () => null, err: (error) => error });
-      if (authorizationError) return Result.err(authorizationError);
-      const authorized = authorization.match({ ok: (value) => value, err: () => null });
+      if (authorization.isErr()) return Result.err(authorization.error);
+      const authorized = authorization.value;
       if (!authorized) {
         return Result.err(
           new ToolRequestAuthenticationError({
@@ -1408,51 +1405,48 @@ export function createToolServer(options: ToolServerOptions) {
       }
 
       const decodedHeaders = decodeToolRequestHeaders(headers);
-      const headerError = decodedHeaders.match({ ok: () => null, err: (error) => error });
-      if (headerError) {
+      if (decodedHeaders.isErr()) {
         return {
           status: "error" as const,
           error: serverToolFailure({
             kind: "usage",
             code: "invalid_headers",
-            message: headerError.message,
+            message: decodedHeaders.error.message,
             retryable: false,
           }),
         };
       }
-      const decodedHeaderValues = decodedHeaders.match({ ok: (value) => value, err: () => null });
+      const decodedHeaderValues = decodedHeaders.value;
       const authenticated = await authenticateContext(decodedHeaderValues ?? {});
-      const authenticationError = authenticated.match({ ok: () => null, err: (error) => error });
-      if (authenticationError) {
+      if (authenticated.isErr()) {
         return {
           status: "error" as const,
           error: serverToolFailure({
             kind: "denied",
             code: "authentication_failed",
-            message: authenticationError.message,
+            message: authenticated.error.message,
             retryable: false,
           }),
         };
       }
-      const authenticatedRequest = authenticated.match({ ok: (value) => value, err: () => null });
+      const authenticatedRequest = authenticated.value;
       const { context: ctx, messages } = authenticatedRequest ?? {
         context: {},
         messages: undefined,
       };
       const decodedInput = decodeToolPayload(body.input);
-      const inputError = decodedInput.match({ ok: () => null, err: (error) => error });
-      if (inputError) {
+      if (decodedInput.isErr()) {
         return {
           status: "error" as const,
           error: serverToolFailure({
             kind: "usage",
             code: "invalid_input",
-            message: inputError.message,
+            message: decodedInput.error.message,
             retryable: false,
           }),
         };
       }
-      const input = decodedInput.match({ ok: (value) => value, err: () => null }) ?? {};
+      const input = decodedInput.value ?? {};
       const safetyModeResult = await resolveSafetyMode(ctx);
       const safetyModeOutcome = safetyModeResult.match<
         { readonly safetyMode: SafetyMode } | { readonly error: ToolSafetyModeResolutionError }
@@ -1743,8 +1737,7 @@ export function createToolServer(options: ToolServerOptions) {
         return toolFailureResponse(completedOutcome.failure);
       }
       const normalizedValue = normalizeSuccessfulToolValue(completedOutcome.value);
-      const outputDefect = normalizedValue.match({ ok: () => null, err: (error) => error });
-      if (outputDefect) {
+      if (normalizedValue.isErr()) {
         logger.error("tool plugin operation failed", {
           operation: "level2.call",
           toolId: capturedToolId,
@@ -1753,7 +1746,7 @@ export function createToolServer(options: ToolServerOptions) {
         });
         return toolFailureResponse(internalPluginCallFailure);
       }
-      const outputValue = normalizedValue.match({ ok: (value) => value, err: () => null });
+      const outputValue = normalizedValue.value;
       logger.info("tool.call.result", {
         callableId: body.callableId,
         requestId: ctx.requestId,

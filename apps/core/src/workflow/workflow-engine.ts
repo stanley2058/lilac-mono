@@ -809,82 +809,47 @@ export class WorkflowEngine {
     const loadedRevision = this.input.store
       .getRevision(run.revisionId)
       .mapError((error) => workflowExecutionFailure(error.message));
-    const continueWithRevision = loadedRevision.match<
-      () => Promise<WorkflowExecutionResult<WorkflowSandboxRun>>
-    >({
-      err: (error) => async () => Result.err(error),
-      ok: (revision) => async () => {
-        if (!revision) {
-          return Result.err(
-            workflowExecutionFailure(`Workflow revision not found: ${run.revisionId}`),
-          );
-        }
+    if (loadedRevision.isErr()) return Result.err(loadedRevision.error);
+    const revision = loadedRevision.value;
+    if (!revision) {
+      return Result.err(workflowExecutionFailure(`Workflow revision not found: ${run.revisionId}`));
+    }
+    const initialIntegrity = this.assertPersistedIntegrity(run, revision);
+    if (initialIntegrity.isErr()) return Result.err(initialIntegrity.error);
+    if (revision.runtimeVersion !== WORKFLOW_RUNTIME_VERSION) {
+      return Result.err(
+        workflowExecutionFailure(`Unsupported workflow runtime: ${revision.runtimeVersion}`),
+      );
+    }
 
-        const continueAfterInitialIntegrity = this.assertPersistedIntegrity(run, revision).match<
-          () => Promise<WorkflowExecutionResult<WorkflowSandboxRun>>
-        >({
-          err: (error) => async () => Result.err(error),
-          ok: () => async () => {
-            if (revision.runtimeVersion !== WORKFLOW_RUNTIME_VERSION) {
-              return Result.err(
-                workflowExecutionFailure(
-                  `Unsupported workflow runtime: ${revision.runtimeVersion}`,
-                ),
-              );
-            }
+    const loadedSource = await this.loadSnapshot(revision);
+    if (loadedSource.isErr()) return Result.err(loadedSource.error);
+    const source = loadedSource.value;
+    const finalIntegrity = this.assertPersistedIntegrity(run, revision);
+    if (finalIntegrity.isErr()) return Result.err(finalIntegrity.error);
 
-            const loadedSource = await this.loadSnapshot(revision);
-            const continueWithSource = loadedSource.match<
-              () => Promise<WorkflowExecutionResult<WorkflowSandboxRun>>
-            >({
-              err: (error) => async () => Result.err(error),
-              ok: (source) => async () => {
-                const continueAfterFinalIntegrity = this.assertPersistedIntegrity(
-                  run,
-                  revision,
-                ).match<() => Promise<WorkflowExecutionResult<WorkflowSandboxRun>>>({
-                  err: (error) => async () => Result.err(error),
-                  ok: () => async () => {
-                    const compilation = this.input.compileSource
-                      ? await captureWorkflowExternal(() =>
-                          Promise.resolve(this.input.compileSource!(source, revision.sourceSha256)),
-                        )
-                      : compileWorkflowSourceResult(source, revision.sourceSha256).mapError(
-                          (error) => workflowExecutionFailure(error.message),
-                        );
-                    const continueWithCompilation = compilation.match<
-                      () => Promise<WorkflowExecutionResult<WorkflowSandboxRun>>
-                    >({
-                      err: (error) => async () => Result.err(error),
-                      ok: (compiled) => async () => {
-                        const semaphore = new Semaphore(revision.resources.agents.maxConcurrent);
-                        return await captureWorkflowExternal(() =>
-                          Promise.resolve(
-                            startWorkflowSandbox({
-                              source: compiled,
-                              args: run.args,
-                              signal,
-                              reportFatalPanic: this.input.reportFatalPanic,
-                              onCall: async (call) =>
-                                await this.handleCall(run.runId, revision, call, semaphore, signal),
-                            }),
-                          ),
-                        );
-                      },
-                    });
-                    return await continueWithCompilation();
-                  },
-                });
-                return await continueAfterFinalIntegrity();
-              },
-            });
-            return await continueWithSource();
-          },
-        });
-        return await continueAfterInitialIntegrity();
-      },
-    });
-    return await continueWithRevision();
+    const compilation = this.input.compileSource
+      ? await captureWorkflowExternal(() =>
+          Promise.resolve(this.input.compileSource!(source, revision.sourceSha256)),
+        )
+      : compileWorkflowSourceResult(source, revision.sourceSha256).mapError((error) =>
+          workflowExecutionFailure(error.message),
+        );
+    if (compilation.isErr()) return Result.err(compilation.error);
+    const compiled = compilation.value;
+    const semaphore = new Semaphore(revision.resources.agents.maxConcurrent);
+    return await captureWorkflowExternal(() =>
+      Promise.resolve(
+        startWorkflowSandbox({
+          source: compiled,
+          args: run.args,
+          signal,
+          reportFatalPanic: this.input.reportFatalPanic,
+          onCall: async (call) =>
+            await this.handleCall(run.runId, revision, call, semaphore, signal),
+        }),
+      ),
+    );
   }
 
   private assertPersistedIntegrity(
@@ -1371,61 +1336,60 @@ export class WorkflowEngine {
       wait = waitOutcome.wait;
       if (!wait) return Result.err(workflowExecutionFailure("Durable workflow wait disappeared"));
       if (wait.state === "resolved" || wait.state === "expired" || wait.state === "cancelled") {
-        const latestResult = this.input.store.getOperation(run.runId, operation.operationId);
-        const latestOutcome = latestResult.match<
-          | { readonly kind: "ok"; readonly operation: WorkflowOperation | null }
-          | { readonly kind: "error"; readonly error: WorkflowExecutionFailed }
-        >({
-          ok: (value) => ({ kind: "ok", operation: value }),
-          err: (error) => ({ kind: "error", error: workflowExecutionFailure(error.message) }),
-        });
-        if (latestOutcome.kind === "error") return Result.err(latestOutcome.error);
-        const latest = latestOutcome.operation;
-        if (wait.state === "resolved") {
-          if (latest?.state === "blocked") {
-            this.input.store.transitionOperation({
-              runOwnerId: this.workerId,
-              runId: run.runId,
-              operationId: operation.operationId,
-              from: "blocked",
-              to: "succeeded",
-              now: this.now(),
-              output: wait.result,
-            });
-            const published = await captureWorkflowExternal(() =>
-              this.publishOperation(revision, operation, "succeeded", "blocked"),
-            );
-            const publicationError = published.match({ ok: () => null, err: (error) => error });
-            if (publicationError) return Result.err(publicationError);
-          }
-          return Result.ok(wait.result);
-        }
-        if (latest?.state === "blocked") {
-          const terminalState = wait.state === "expired" ? "timed_out" : "cancelled";
-          this.input.store.transitionOperation({
-            runOwnerId: this.workerId,
-            runId: run.runId,
-            operationId: operation.operationId,
-            from: "blocked",
-            to: terminalState,
-            now: this.now(),
-            error: wait.state === "expired" ? "Reply wait timed out" : "Wait cancelled",
-          });
-          const published = await captureWorkflowExternal(() =>
-            this.publishOperation(revision, operation, terminalState, "blocked"),
-          );
-          const publicationError = published.match({ ok: () => null, err: (error) => error });
-          if (publicationError) return Result.err(publicationError);
-        }
-        return Result.err(
-          workflowExecutionFailure(
-            wait.state === "expired" ? "Reply wait timed out" : "Wait cancelled",
-          ),
-        );
+        return await this.settleTerminalWait(run, revision, operation, wait);
       }
       await this.waitForWake(signal);
     }
     return Result.err(workflowExecutionFailure("Workflow wait interrupted"));
+  }
+
+  private async settleTerminalWait(
+    run: WorkflowRun,
+    revision: WorkflowRevision,
+    operation: WorkflowOperation,
+    wait: WorkflowWait,
+  ): Promise<WorkflowExecutionResult<JsonValue>> {
+    const latestResult = this.input.store.getOperation(run.runId, operation.operationId);
+    if (latestResult.isErr()) {
+      return Result.err(workflowExecutionFailure(latestResult.error.message));
+    }
+    const latest = latestResult.value;
+    if (wait.state === "resolved") {
+      if (latest?.state !== "blocked") return Result.ok(wait.result);
+      this.input.store.transitionOperation({
+        runOwnerId: this.workerId,
+        runId: run.runId,
+        operationId: operation.operationId,
+        from: "blocked",
+        to: "succeeded",
+        now: this.now(),
+        output: wait.result,
+      });
+      const published = await captureWorkflowExternal(() =>
+        this.publishOperation(revision, operation, "succeeded", "blocked"),
+      );
+      if (published.isErr()) return Result.err(published.error);
+      return Result.ok(wait.result);
+    }
+    const failure = workflowExecutionFailure(
+      wait.state === "expired" ? "Reply wait timed out" : "Wait cancelled",
+    );
+    if (latest?.state !== "blocked") return Result.err(failure);
+    const terminalState = wait.state === "expired" ? "timed_out" : "cancelled";
+    this.input.store.transitionOperation({
+      runOwnerId: this.workerId,
+      runId: run.runId,
+      operationId: operation.operationId,
+      from: "blocked",
+      to: terminalState,
+      now: this.now(),
+      error: wait.state === "expired" ? "Reply wait timed out" : "Wait cancelled",
+    });
+    const published = await captureWorkflowExternal(() =>
+      this.publishOperation(revision, operation, terminalState, "blocked"),
+    );
+    if (published.isErr()) return Result.err(published.error);
+    return Result.err(failure);
   }
 
   private async completeStructuralOperation(
@@ -2192,6 +2156,14 @@ export class WorkflowEngine {
         usage = message.data.usage ?? null;
       }
     };
+    const handleLifecycleMessages = async (
+      entries: readonly { readonly msg: DecodedLilacMessageForTopic<"evt.request"> }[],
+    ): Promise<void> => {
+      for (const entry of entries) {
+        const handled = await handleLifecycleMessage(entry.msg);
+        if (handled.isErr()) return;
+      }
+    };
     const handleLifecycleMessage = async (
       message: DecodedLilacMessageForTopic<"evt.request">,
     ): Promise<ResultType<void, WorkflowTerminalReceiptReconciliationFailed>> => {
@@ -2465,11 +2437,7 @@ export class WorkflowEngine {
                   finishResult(terminal);
                   break;
                 }
-                for (const entry of fetchOutcome.messages) {
-                  const handled = await handleLifecycleMessage(entry.msg);
-                  const handlingFailed = handled.match({ ok: () => false, err: () => true });
-                  if (handlingFailed) break;
-                }
+                await handleLifecycleMessages(fetchOutcome.messages);
                 const previous = lifecycleCursor;
                 lifecycleCursor = fetchOutcome.next;
                 if (

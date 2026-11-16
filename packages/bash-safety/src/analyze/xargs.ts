@@ -89,20 +89,7 @@ export function extractXargsChildCommandWithInfo(tokens: readonly string[]): Xar
         continue;
       }
 
-      if (xargsOptsWithValue.has(token)) {
-        i += 2;
-      } else if (token.startsWith("--") && token.includes("=")) {
-        i++;
-      } else if (
-        token.startsWith("-L") ||
-        token.startsWith("-n") ||
-        token.startsWith("-P") ||
-        token.startsWith("-s")
-      ) {
-        i++;
-      } else {
-        i++;
-      }
+      i += xargsOptsWithValue.has(token) ? 2 : 1;
     } else {
       return { childTokens: tokens.slice(i), replacementToken };
     }

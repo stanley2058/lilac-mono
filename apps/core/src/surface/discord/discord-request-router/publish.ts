@@ -280,60 +280,54 @@ export async function publishComposedRequest(
       msgRef: params.input.msgRef,
     },
   });
-  const continuePublish = composed.match<
+  if (composed.isErr()) return Result.err(composed.error);
+  const composition = composed.value;
+  const originMessageResult = await resolveCorrelatedOriginMessage({
+    adapter: params.adapter,
+    ref: params.input.msgRef,
+    ingressMessages: params.input.ingressMessages,
+  });
+  const continueOrigin = originMessageResult.match<
     () => Promise<ResultType<void, DiscordRequestPublishError>>
   >({
-    err: (error) => async () => Result.err(error),
-    ok: (composition) => async () => {
-      const originMessageResult = await resolveCorrelatedOriginMessage({
-        adapter: params.adapter,
-        ref: params.input.msgRef,
-        ingressMessages: params.input.ingressMessages,
-      });
-      const continueOrigin = originMessageResult.match<
-        () => Promise<ResultType<void, DiscordRequestPublishError>>
-      >({
-        err: (error) => async () =>
-          failDiscordRequestAfterHandleCleanup({
-            blobStore: params.blobStore,
-            handles: composition.inputHandles,
-            primary: error,
-          }),
-        ok: (originMessage) => async () =>
-          publishBusRequest({
-            logger: params.logger,
-            blobStore: params.blobStore,
-            requestDelivery: params.requestDelivery,
-            input: {
-              requestDeliveryId,
-              requestId: params.input.requestId,
-              sessionId: params.input.sessionId,
-              sessionConfigId: params.input.sessionConfigId,
-              parentChannelId: params.input.parentChannelId,
-              queue: params.input.queue,
-              triggerType: params.input.triggerType,
-              sessionMode: params.input.sessionMode,
-              modelOverride: params.input.modelOverride,
-              messages: composition.messages,
-              inputHandles: composition.inputHandles,
-              corePrimaryLineage: composition.corePrimaryLineage,
-              originMessage,
-              raw: {
-                triggerType: params.input.triggerType,
-                chainMessageIds: composition.chainMessageIds,
-                mergedGroups: composition.mergedGroups,
-                participantUserIds: uniqueNonEmptyStrings(
-                  composition.mergedGroups.map((group) => group.authorId),
-                  { exclude: self.userId },
-                ),
-              },
-            },
-          }),
-      });
-      return continueOrigin();
-    },
+    err: (error) => async () =>
+      failDiscordRequestAfterHandleCleanup({
+        blobStore: params.blobStore,
+        handles: composition.inputHandles,
+        primary: error,
+      }),
+    ok: (originMessage) => async () =>
+      publishBusRequest({
+        logger: params.logger,
+        blobStore: params.blobStore,
+        requestDelivery: params.requestDelivery,
+        input: {
+          requestDeliveryId,
+          requestId: params.input.requestId,
+          sessionId: params.input.sessionId,
+          sessionConfigId: params.input.sessionConfigId,
+          parentChannelId: params.input.parentChannelId,
+          queue: params.input.queue,
+          triggerType: params.input.triggerType,
+          sessionMode: params.input.sessionMode,
+          modelOverride: params.input.modelOverride,
+          messages: composition.messages,
+          inputHandles: composition.inputHandles,
+          corePrimaryLineage: composition.corePrimaryLineage,
+          originMessage,
+          raw: {
+            triggerType: params.input.triggerType,
+            chainMessageIds: composition.chainMessageIds,
+            mergedGroups: composition.mergedGroups,
+            participantUserIds: uniqueNonEmptyStrings(
+              composition.mergedGroups.map((group) => group.authorId),
+              { exclude: self.userId },
+            ),
+          },
+        },
+      }),
   });
-  return continuePublish();
+  return continueOrigin();
 }
 
 export async function publishActiveChannelPrompt(
@@ -412,65 +406,59 @@ export async function publishActiveChannelPrompt(
           triggerMsgRef: params.input.triggerMsgRef,
           triggerType: params.input.triggerType,
         });
-  const continueComposition = composed.match<
+  if (composed.isErr()) return Result.err(composed.error);
+  const composition = composed.value;
+  const originMessageResult: ResultType<SurfaceMessage | null, RequestCompositionError> = params
+    .input.triggerMsgRef
+    ? await resolveCorrelatedOriginMessage({
+        adapter: params.adapter,
+        ref: params.input.triggerMsgRef,
+        ingressMessages: params.input.ingressMessages,
+      })
+    : Result.ok<SurfaceMessage | null>(null);
+  const continueOrigin = originMessageResult.match<
     () => Promise<ResultType<void, DiscordRequestPublishError>>
   >({
-    err: (error) => async () => Result.err(error),
-    ok: (composition) => async () => {
-      const originMessageResult: ResultType<SurfaceMessage | null, RequestCompositionError> = params
-        .input.triggerMsgRef
-        ? await resolveCorrelatedOriginMessage({
-            adapter: params.adapter,
-            ref: params.input.triggerMsgRef,
-            ingressMessages: params.input.ingressMessages,
-          })
-        : Result.ok<SurfaceMessage | null>(null);
-      const continueOrigin = originMessageResult.match<
-        () => Promise<ResultType<void, DiscordRequestPublishError>>
-      >({
-        err: (error) => async () => {
-          return failDiscordRequestAfterHandleCleanup({
-            blobStore: params.blobStore,
-            handles: composition.inputHandles,
-            primary: error,
-          });
-        },
-        ok: (originMessage) => async () => {
-          return publishBusRequest({
-            logger: params.logger,
-            blobStore: params.blobStore,
-            requestDelivery: params.requestDelivery,
-            input: {
-              requestDeliveryId,
-              requestId: params.input.requestId,
-              sessionId: params.input.sessionId,
-              sessionConfigId: params.input.sessionConfigId,
-              parentChannelId: params.input.parentChannelId,
-              queue: "prompt",
-              triggerType: params.input.triggerType ?? "active",
-              sessionMode: params.input.sessionMode,
-              modelOverride: params.input.modelOverride,
-              messages: composition.messages,
-              inputHandles: composition.inputHandles,
-              corePrimaryLineage: composition.corePrimaryLineage,
-              originMessage,
-              raw: {
-                triggerType: params.input.triggerType ?? "active",
-                chainMessageIds: composition.chainMessageIds,
-                mergedGroups: composition.mergedGroups,
-                participantUserIds: uniqueNonEmptyStrings(
-                  composition.mergedGroups.map((group) => group.authorId),
-                  { exclude: self.userId },
-                ),
-              },
-            },
-          });
+    err: (error) => async () => {
+      return failDiscordRequestAfterHandleCleanup({
+        blobStore: params.blobStore,
+        handles: composition.inputHandles,
+        primary: error,
+      });
+    },
+    ok: (originMessage) => async () => {
+      return publishBusRequest({
+        logger: params.logger,
+        blobStore: params.blobStore,
+        requestDelivery: params.requestDelivery,
+        input: {
+          requestDeliveryId,
+          requestId: params.input.requestId,
+          sessionId: params.input.sessionId,
+          sessionConfigId: params.input.sessionConfigId,
+          parentChannelId: params.input.parentChannelId,
+          queue: "prompt",
+          triggerType: params.input.triggerType ?? "active",
+          sessionMode: params.input.sessionMode,
+          modelOverride: params.input.modelOverride,
+          messages: composition.messages,
+          inputHandles: composition.inputHandles,
+          corePrimaryLineage: composition.corePrimaryLineage,
+          originMessage,
+          raw: {
+            triggerType: params.input.triggerType ?? "active",
+            chainMessageIds: composition.chainMessageIds,
+            mergedGroups: composition.mergedGroups,
+            participantUserIds: uniqueNonEmptyStrings(
+              composition.mergedGroups.map((group) => group.authorId),
+              { exclude: self.userId },
+            ),
+          },
         },
       });
-      return continueOrigin();
     },
   });
-  return continueComposition();
+  return continueOrigin();
 }
 
 export async function publishSingleMessageToActiveRequest(
@@ -517,58 +505,52 @@ export async function publishSingleMessageToActiveRequest(
     ingressMessages: ingressMessage ? [ingressMessage] : undefined,
     transformUserText: params.input.transformUserText,
   });
-  const continueComposition = composed.match<
+  if (composed.isErr()) return Result.err(composed.error);
+  const composition = composed.value;
+  if (!composition) return Result.ok(undefined);
+  const surfaceMessageResult = ingressMessage
+    ? Result.ok(ingressMessage)
+    : await params.adapter.readMsg(params.input.msgRef);
+  const continueMessage = surfaceMessageResult.match<
     () => Promise<ResultType<void, DiscordRequestPublishError>>
   >({
-    err: (error) => async () => Result.err(error),
-    ok: (composition) => async () => {
-      if (!composition) return Result.ok(undefined);
-      const surfaceMessageResult = ingressMessage
-        ? Result.ok(ingressMessage)
-        : await params.adapter.readMsg(params.input.msgRef);
-      const continueMessage = surfaceMessageResult.match<
-        () => Promise<ResultType<void, DiscordRequestPublishError>>
-      >({
-        err: (error) => async () => {
-          return failDiscordRequestAfterHandleCleanup({
-            blobStore: params.blobStore,
-            handles: composition.inputHandles,
-            primary: error,
-          });
-        },
-        ok: (surfaceMessage) => async () => {
-          return publishBusRequest({
-            logger: params.logger,
-            blobStore: params.blobStore,
-            requestDelivery: params.requestDelivery,
-            input: {
-              requestDeliveryId,
-              requestId: params.input.requestId,
-              sessionId: params.input.sessionId,
-              sessionConfigId: params.input.sessionConfigId,
-              parentChannelId: params.input.parentChannelId,
-              queue: params.input.queue,
-              triggerType: "active",
-              sessionMode: params.input.sessionMode,
-              modelOverride: params.input.modelOverride,
-              messages: composition.messages,
-              inputHandles: composition.inputHandles,
-              corePrimaryLineage: composition.corePrimaryLineage,
-              originMessage: surfaceMessage,
-              raw: {
-                triggerType: "active",
-                participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {
-                  exclude: self.userId,
-                }),
-              },
-            },
-          });
+    err: (error) => async () => {
+      return failDiscordRequestAfterHandleCleanup({
+        blobStore: params.blobStore,
+        handles: composition.inputHandles,
+        primary: error,
+      });
+    },
+    ok: (surfaceMessage) => async () => {
+      return publishBusRequest({
+        logger: params.logger,
+        blobStore: params.blobStore,
+        requestDelivery: params.requestDelivery,
+        input: {
+          requestDeliveryId,
+          requestId: params.input.requestId,
+          sessionId: params.input.sessionId,
+          sessionConfigId: params.input.sessionConfigId,
+          parentChannelId: params.input.parentChannelId,
+          queue: params.input.queue,
+          triggerType: "active",
+          sessionMode: params.input.sessionMode,
+          modelOverride: params.input.modelOverride,
+          messages: composition.messages,
+          inputHandles: composition.inputHandles,
+          corePrimaryLineage: composition.corePrimaryLineage,
+          originMessage: surfaceMessage,
+          raw: {
+            triggerType: "active",
+            participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {
+              exclude: self.userId,
+            }),
+          },
         },
       });
-      return continueMessage();
     },
   });
-  return continueComposition();
+  return continueMessage();
 }
 
 export async function publishSingleMessagePrompt(
@@ -615,60 +597,54 @@ export async function publishSingleMessagePrompt(
     ingressMessages: ingressMessage ? [ingressMessage] : undefined,
     transformUserText: params.input.transformUserText,
   });
-  const continueComposition = composed.match<
+  if (composed.isErr()) return Result.err(composed.error);
+  const composition = composed.value;
+  if (!composition) return Result.ok(undefined);
+  const surfaceMessageResult = ingressMessage
+    ? Result.ok(ingressMessage)
+    : await params.adapter.readMsg(params.input.msgRef);
+  const continueMessage = surfaceMessageResult.match<
     () => Promise<ResultType<void, DiscordRequestPublishError>>
   >({
-    err: (error) => async () => Result.err(error),
-    ok: (composition) => async () => {
-      if (!composition) return Result.ok(undefined);
-      const surfaceMessageResult = ingressMessage
-        ? Result.ok(ingressMessage)
-        : await params.adapter.readMsg(params.input.msgRef);
-      const continueMessage = surfaceMessageResult.match<
-        () => Promise<ResultType<void, DiscordRequestPublishError>>
-      >({
-        err: (error) => async () => {
-          return failDiscordRequestAfterHandleCleanup({
-            blobStore: params.blobStore,
-            handles: composition.inputHandles,
-            primary: error,
-          });
-        },
-        ok: (surfaceMessage) => async () => {
-          return publishBusRequest({
-            logger: params.logger,
-            blobStore: params.blobStore,
-            requestDelivery: params.requestDelivery,
-            input: {
-              requestDeliveryId,
-              requestId: params.input.requestId,
-              sessionId: params.input.sessionId,
-              sessionConfigId: params.input.sessionConfigId,
-              parentChannelId: params.input.parentChannelId,
-              queue: "prompt",
-              triggerType: "active",
-              sessionMode: params.input.sessionMode,
-              modelOverride: params.input.modelOverride,
-              messages: composition.messages,
-              inputHandles: composition.inputHandles,
-              corePrimaryLineage: composition.corePrimaryLineage,
-              originMessage: surfaceMessage,
-              raw: {
-                triggerType: "active",
-                chainMessageIds: [params.input.msgRef.messageId],
-                participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {
-                  exclude: self.userId,
-                }),
-                ...params.input.raw,
-              },
-            },
-          });
+    err: (error) => async () => {
+      return failDiscordRequestAfterHandleCleanup({
+        blobStore: params.blobStore,
+        handles: composition.inputHandles,
+        primary: error,
+      });
+    },
+    ok: (surfaceMessage) => async () => {
+      return publishBusRequest({
+        logger: params.logger,
+        blobStore: params.blobStore,
+        requestDelivery: params.requestDelivery,
+        input: {
+          requestDeliveryId,
+          requestId: params.input.requestId,
+          sessionId: params.input.sessionId,
+          sessionConfigId: params.input.sessionConfigId,
+          parentChannelId: params.input.parentChannelId,
+          queue: "prompt",
+          triggerType: "active",
+          sessionMode: params.input.sessionMode,
+          modelOverride: params.input.modelOverride,
+          messages: composition.messages,
+          inputHandles: composition.inputHandles,
+          corePrimaryLineage: composition.corePrimaryLineage,
+          originMessage: surfaceMessage,
+          raw: {
+            triggerType: "active",
+            chainMessageIds: [params.input.msgRef.messageId],
+            participantUserIds: uniqueNonEmptyStrings([surfaceMessage?.userId], {
+              exclude: self.userId,
+            }),
+            ...params.input.raw,
+          },
         },
       });
-      return continueMessage();
     },
   });
-  return continueComposition();
+  return continueMessage();
 }
 
 export async function publishSurfaceOutputReanchor(input: {

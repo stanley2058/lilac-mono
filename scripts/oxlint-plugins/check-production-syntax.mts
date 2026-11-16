@@ -12,6 +12,7 @@ import {
   findInlineAsyncResultCallbackViolationsInSourceFile,
   findPresentationDecoderImportViolationsInSourceFile,
   findPreferSwitchTrueChainViolationsInSourceFile,
+  findRedundantBranchViolationsInSourceFile,
   findStoreInlineDecodingViolationsInSourceFile,
   parseProductionSyntaxSource,
 } from "./production-syntax.mts";
@@ -101,6 +102,10 @@ export async function scanSyntaxFindings(
         ...toSyntaxFindings(
           "lilac/no-presentation-decoder-import",
           findPresentationDecoderImportViolationsInSourceFile(sourceFile, filePath, manifest),
+        ),
+        ...toSyntaxFindings(
+          "lilac/no-redundant-branch",
+          findRedundantBranchViolationsInSourceFile(sourceFile, filePath),
         ),
         ...toSyntaxFindings(
           "lilac/no-store-inline-decoding",

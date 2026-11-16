@@ -381,58 +381,57 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
       );
     }
 
-    return encodeJson(input.envelope, this.#codecs.envelope, "envelope").andThen((envelopeJson) =>
-      encodeJson(input.inputHandles, arrayCodec(blobHandleCodec()), "inputHandles").andThen(
-        (handlesJson) =>
-          transaction(
-            this.#database,
-            "prepare",
-            (): ResultType<RequestDeliveryPrepareResult<TEnvelope>, RequestDeliveryStoreError> => {
-              const existing = this.#selectRow(input.requestDeliveryId);
-              if (existing) {
-                return this.#decodeRow(existing).andThen((record) => {
-                  if (
-                    record.state !== "prepared" ||
-                    record.requestId !== input.requestId ||
-                    !isDeepStrictEqual(record.envelope, input.envelope) ||
-                    !isDeepStrictEqual(record.inputHandles, input.inputHandles)
-                  ) {
-                    return Result.err(
-                      new RequestDeliveryConflict({
-                        requestDeliveryId: input.requestDeliveryId,
-                        message: "Request delivery ID is already bound to different durable work",
-                      }),
-                    );
-                  }
-                  return Result.ok({ status: "existing", record } as const);
-                });
-              }
-              this.#database.run(
-                `INSERT INTO request_delivery_records (
-            request_delivery_id, request_id, state, envelope_json, input_handles_json, created_at
-          ) VALUES (?, ?, 'prepared', ?, ?, ?)`,
-                [
-                  input.requestDeliveryId,
-                  input.requestId,
-                  envelopeJson,
-                  handlesJson,
-                  input.createdAt,
-                ],
-              );
-              return Result.ok({
-                status: "created",
-                record: {
-                  state: "prepared",
+    const envelopeJsonResult = encodeJson(input.envelope, this.#codecs.envelope, "envelope");
+    if (envelopeJsonResult.isErr()) return Result.err(envelopeJsonResult.error);
+    const envelopeJson = envelopeJsonResult.value;
+    const handlesJsonResult = encodeJson(
+      input.inputHandles,
+      arrayCodec(blobHandleCodec()),
+      "inputHandles",
+    );
+    if (handlesJsonResult.isErr()) return Result.err(handlesJsonResult.error);
+    const handlesJson = handlesJsonResult.value;
+    return transaction(
+      this.#database,
+      "prepare",
+      (): ResultType<RequestDeliveryPrepareResult<TEnvelope>, RequestDeliveryStoreError> => {
+        const existing = this.#selectRow(input.requestDeliveryId);
+        if (existing) {
+          return this.#decodeRow(existing).andThen((record) => {
+            if (
+              record.state !== "prepared" ||
+              record.requestId !== input.requestId ||
+              !isDeepStrictEqual(record.envelope, input.envelope) ||
+              !isDeepStrictEqual(record.inputHandles, input.inputHandles)
+            ) {
+              return Result.err(
+                new RequestDeliveryConflict({
                   requestDeliveryId: input.requestDeliveryId,
-                  requestId: input.requestId,
-                  envelope: input.envelope,
-                  inputHandles: input.inputHandles,
-                  createdAt: input.createdAt,
-                },
-              } as const);
-            },
-          ),
-      ),
+                  message: "Request delivery ID is already bound to different durable work",
+                }),
+              );
+            }
+            return Result.ok({ status: "existing", record } as const);
+          });
+        }
+        this.#database.run(
+          `INSERT INTO request_delivery_records (
+      request_delivery_id, request_id, state, envelope_json, input_handles_json, created_at
+    ) VALUES (?, ?, 'prepared', ?, ?, ?)`,
+          [input.requestDeliveryId, input.requestId, envelopeJson, handlesJson, input.createdAt],
+        );
+        return Result.ok({
+          status: "created",
+          record: {
+            state: "prepared",
+            requestDeliveryId: input.requestDeliveryId,
+            requestId: input.requestId,
+            envelope: input.envelope,
+            inputHandles: input.inputHandles,
+            createdAt: input.createdAt,
+          },
+        } as const);
+      },
     );
   }
 
@@ -504,55 +503,60 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
     readonly inputReferences: readonly BlobRefV1[];
     readonly acceptedAt: number;
   }): ResultType<RequestDeliveryAcceptanceResult<TWork>, RequestDeliveryStoreError> {
-    return encodeJson(input.work, this.#codecs.acceptedWork, "acceptedWork").andThen((workJson) =>
-      encodeJson(input.inputReferences, arrayCodec(blobRefCodec()), "inputReferences").andThen(
-        (referencesJson) =>
-          transaction(
-            this.#database,
-            "accept",
-            (): ResultType<RequestDeliveryAcceptanceResult<TWork>, RequestDeliveryStoreError> => {
-              const row = this.#selectRow(input.requestDeliveryId);
-              if (!row) return Result.err(this.#missing(input.requestDeliveryId));
-              if (row.state === "accepted") {
-                return this.#decodeAccepted(row).andThen((record) =>
-                  isDeepStrictEqual(record.work, input.work) &&
-                  isDeepStrictEqual(record.inputReferences, input.inputReferences)
-                    ? Result.ok({ status: "already-accepted", record } as const)
-                    : Result.err(
-                        new RequestDeliveryConflict({
-                          requestDeliveryId: input.requestDeliveryId,
-                          message: "Accepted request delivery is bound to different durable work",
-                        }),
-                      ),
-                );
-              }
-              if (row.state !== "prepared") {
-                return Result.err(
-                  new RequestDeliveryInvalidTransition({
+    const workJsonResult = encodeJson(input.work, this.#codecs.acceptedWork, "acceptedWork");
+    if (workJsonResult.isErr()) return Result.err(workJsonResult.error);
+    const workJson = workJsonResult.value;
+    const referencesJsonResult = encodeJson(
+      input.inputReferences,
+      arrayCodec(blobRefCodec()),
+      "inputReferences",
+    );
+    if (referencesJsonResult.isErr()) return Result.err(referencesJsonResult.error);
+    const referencesJson = referencesJsonResult.value;
+    return transaction(
+      this.#database,
+      "accept",
+      (): ResultType<RequestDeliveryAcceptanceResult<TWork>, RequestDeliveryStoreError> => {
+        const row = this.#selectRow(input.requestDeliveryId);
+        if (!row) return Result.err(this.#missing(input.requestDeliveryId));
+        if (row.state === "accepted") {
+          return this.#decodeAccepted(row).andThen((record) =>
+            isDeepStrictEqual(record.work, input.work) &&
+            isDeepStrictEqual(record.inputReferences, input.inputReferences)
+              ? Result.ok({ status: "already-accepted", record } as const)
+              : Result.err(
+                  new RequestDeliveryConflict({
                     requestDeliveryId: input.requestDeliveryId,
-                    from: row.state,
-                    to: "accepted",
-                    message: "Only a prepared request delivery can be accepted",
+                    message: "Accepted request delivery is bound to different durable work",
                   }),
-                );
-              }
-              this.#database.run(
-                `UPDATE request_delivery_records SET
-             state = 'accepted', envelope_json = NULL, input_handles_json = NULL,
-             accepted_work_json = ?, input_references_json = ?, accepted_at = ?
-           WHERE request_delivery_id = ?`,
-                [workJson, referencesJson, input.acceptedAt, input.requestDeliveryId],
-              );
-              this.#recordReceipt(input.requestDeliveryId, input.acceptedAt);
-              const updated = this.#selectRow(input.requestDeliveryId);
-              if (!updated) return Result.err(this.#missing(input.requestDeliveryId));
-              return this.#decodeAccepted(updated).map((record) => ({
-                status: "accepted",
-                record,
-              }));
-            },
-          ),
-      ),
+                ),
+          );
+        }
+        if (row.state !== "prepared") {
+          return Result.err(
+            new RequestDeliveryInvalidTransition({
+              requestDeliveryId: input.requestDeliveryId,
+              from: row.state,
+              to: "accepted",
+              message: "Only a prepared request delivery can be accepted",
+            }),
+          );
+        }
+        this.#database.run(
+          `UPDATE request_delivery_records SET
+       state = 'accepted', envelope_json = NULL, input_handles_json = NULL,
+       accepted_work_json = ?, input_references_json = ?, accepted_at = ?
+     WHERE request_delivery_id = ?`,
+          [workJson, referencesJson, input.acceptedAt, input.requestDeliveryId],
+        );
+        this.#recordReceipt(input.requestDeliveryId, input.acceptedAt);
+        const updated = this.#selectRow(input.requestDeliveryId);
+        if (!updated) return Result.err(this.#missing(input.requestDeliveryId));
+        return this.#decodeAccepted(updated).map((record) => ({
+          status: "accepted",
+          record,
+        }));
+      },
     );
   }
 
@@ -569,41 +573,42 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
         }),
       );
     }
-    return encodeJson(input.work, this.#codecs.acceptedWork, "acceptedWork").andThen((workJson) =>
-      transaction(
-        this.#database,
-        "replace-accepted-work",
-        (): ResultType<AcceptedRequestDelivery<TWork>, RequestDeliveryStoreError> => {
-          const row = this.#selectRow(input.requestDeliveryId);
-          if (!row) return Result.err(this.#missing(input.requestDeliveryId));
-          if (row.state !== "accepted") {
-            return Result.err(
-              new RequestDeliveryInvalidTransition({
-                requestDeliveryId: input.requestDeliveryId,
-                from: row.state,
-                to: "accepted-work-replaced",
-                message: "Only accepted durable work can record projected queue facts",
-              }),
-            );
-          }
-          this.#database.run(
-            `UPDATE request_delivery_records
-               SET request_id = ?, accepted_work_json = ?
-             WHERE request_delivery_id = ?`,
-            [input.requestId, workJson, input.requestDeliveryId],
+    const workJsonResult = encodeJson(input.work, this.#codecs.acceptedWork, "acceptedWork");
+    if (workJsonResult.isErr()) return Result.err(workJsonResult.error);
+    const workJson = workJsonResult.value;
+    return transaction(
+      this.#database,
+      "replace-accepted-work",
+      (): ResultType<AcceptedRequestDelivery<TWork>, RequestDeliveryStoreError> => {
+        const row = this.#selectRow(input.requestDeliveryId);
+        if (!row) return Result.err(this.#missing(input.requestDeliveryId));
+        if (row.state !== "accepted") {
+          return Result.err(
+            new RequestDeliveryInvalidTransition({
+              requestDeliveryId: input.requestDeliveryId,
+              from: row.state,
+              to: "accepted-work-replaced",
+              message: "Only accepted durable work can record projected queue facts",
+            }),
           );
-          this.#database.run(
-            `UPDATE request_delivery_outputs
-               SET request_id = ?
-             WHERE request_delivery_id = ?`,
-            [input.requestId, input.requestDeliveryId],
-          );
-          const updated = this.#selectRow(input.requestDeliveryId);
-          return updated
-            ? this.#decodeAccepted(updated)
-            : Result.err(this.#missing(input.requestDeliveryId));
-        },
-      ),
+        }
+        this.#database.run(
+          `UPDATE request_delivery_records
+             SET request_id = ?, accepted_work_json = ?
+           WHERE request_delivery_id = ?`,
+          [input.requestId, workJson, input.requestDeliveryId],
+        );
+        this.#database.run(
+          `UPDATE request_delivery_outputs
+             SET request_id = ?
+           WHERE request_delivery_id = ?`,
+          [input.requestId, input.requestDeliveryId],
+        );
+        const updated = this.#selectRow(input.requestDeliveryId);
+        return updated
+          ? this.#decodeAccepted(updated)
+          : Result.err(this.#missing(input.requestDeliveryId));
+      },
     );
   }
 
@@ -625,96 +630,92 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
         }),
       );
     }
-    return encodeJson(input.outcome, terminalOutcomeCodec, "terminalOutcome").andThen(
-      (outcomeJson) =>
-        transaction(
-          this.#database,
-          "terminalize",
-          (): ResultType<RequestDeliveryTerminalizeResult, RequestDeliveryStoreError> => {
-            const row = this.#selectRow(input.requestDeliveryId);
-            if (!row) return Result.err(this.#missing(input.requestDeliveryId));
-            if (row.state === "terminal") {
-              return this.#decodeTerminal(row).andThen((record) =>
-                isDeepStrictEqual(record.outcome, input.outcome) &&
-                record.finalReplayDeadline === input.finalReplayDeadline
-                  ? Result.ok({ status: "already-terminal", record } as const)
-                  : Result.err(
-                      new RequestDeliveryConflict({
-                        requestDeliveryId: input.requestDeliveryId,
-                        message:
-                          "Terminal request delivery has a different outcome or replay deadline",
-                      }),
-                    ),
-              );
-            }
-
-            const pendingTargets =
-              row.state === "prepared"
-                ? decodeJson(
-                    row.input_handles_json ?? "null",
-                    arrayCodec(blobHandleCodec()),
-                    "inputHandles",
-                  ).map((handles) => handles.map((blob) => ({ kind: "handle", blob }) as const))
-                : decodeJson(
-                    row.input_references_json ?? "null",
-                    arrayCodec(blobRefCodec()),
-                    "inputReferences",
-                  ).map((references) =>
-                    references.map((blob) => ({ kind: "reference", blob }) as const),
-                  );
-
-            return pendingTargets.andThen((targets) => {
-              const outputCount =
-                this.#database
-                  .query<{ count: number }, [string]>(
-                    "SELECT COUNT(*) AS count FROM request_delivery_outputs WHERE request_delivery_id = ?",
-                  )
-                  .get(input.requestDeliveryId)?.count ?? 0;
-              if (outputCount > 0 && input.finalReplayDeadline === undefined) {
-                return Result.err(
+    const outcomeJsonResult = encodeJson(input.outcome, terminalOutcomeCodec, "terminalOutcome");
+    if (outcomeJsonResult.isErr()) return Result.err(outcomeJsonResult.error);
+    const outcomeJson = outcomeJsonResult.value;
+    return transaction(
+      this.#database,
+      "terminalize",
+      (): ResultType<RequestDeliveryTerminalizeResult, RequestDeliveryStoreError> => {
+        const row = this.#selectRow(input.requestDeliveryId);
+        if (!row) return Result.err(this.#missing(input.requestDeliveryId));
+        if (row.state === "terminal") {
+          return this.#decodeTerminal(row).andThen((record) =>
+            isDeepStrictEqual(record.outcome, input.outcome) &&
+            record.finalReplayDeadline === input.finalReplayDeadline
+              ? Result.ok({ status: "already-terminal", record } as const)
+              : Result.err(
                   new RequestDeliveryConflict({
                     requestDeliveryId: input.requestDeliveryId,
-                    message:
-                      "A request with output blobs needs a Redis replay deadline before terminalization",
+                    message: "Terminal request delivery has a different outcome or replay deadline",
                   }),
-                );
-              }
-              return encodeJson(targets, arrayCodec(inputTargetCodec), "inputCleanup").andThen(
-                (cleanupJson) => {
-                  this.#database.run(
-                    `UPDATE request_delivery_records SET
+                ),
+          );
+        }
+
+        const pendingTargets =
+          row.state === "prepared"
+            ? decodeJson(
+                row.input_handles_json ?? "null",
+                arrayCodec(blobHandleCodec()),
+                "inputHandles",
+              ).map((handles) => handles.map((blob) => ({ kind: "handle", blob }) as const))
+            : decodeJson(
+                row.input_references_json ?? "null",
+                arrayCodec(blobRefCodec()),
+                "inputReferences",
+              ).map((references) =>
+                references.map((blob) => ({ kind: "reference", blob }) as const),
+              );
+        if (pendingTargets.isErr()) return Result.err(pendingTargets.error);
+        const targets = pendingTargets.value;
+        const outputCount =
+          this.#database
+            .query<{ count: number }, [string]>(
+              "SELECT COUNT(*) AS count FROM request_delivery_outputs WHERE request_delivery_id = ?",
+            )
+            .get(input.requestDeliveryId)?.count ?? 0;
+        if (outputCount > 0 && input.finalReplayDeadline === undefined) {
+          return Result.err(
+            new RequestDeliveryConflict({
+              requestDeliveryId: input.requestDeliveryId,
+              message:
+                "A request with output blobs needs a Redis replay deadline before terminalization",
+            }),
+          );
+        }
+        const cleanupJson = encodeJson(targets, arrayCodec(inputTargetCodec), "inputCleanup");
+        if (cleanupJson.isErr()) return Result.err(cleanupJson.error);
+        this.#database.run(
+          `UPDATE request_delivery_records SET
                    state = 'terminal', envelope_json = NULL, input_handles_json = NULL,
                    accepted_work_json = NULL, input_references_json = NULL,
                    terminal_at = ?, terminal_outcome_json = ?, transport_commit_required = ?,
                    input_cleanup_json = ?, final_replay_deadline = ?
                  WHERE request_delivery_id = ?`,
-                    [
-                      input.terminalAt,
-                      outcomeJson,
-                      input.transportCommitRequired ? 1 : 0,
-                      cleanupJson,
-                      input.finalReplayDeadline ?? null,
-                      input.requestDeliveryId,
-                    ],
-                  );
-                  if (input.finalReplayDeadline !== undefined) {
-                    this.#database.run(
-                      `UPDATE request_delivery_outputs SET delete_after = ?
+          [
+            input.terminalAt,
+            outcomeJson,
+            input.transportCommitRequired ? 1 : 0,
+            cleanupJson.value,
+            input.finalReplayDeadline ?? null,
+            input.requestDeliveryId,
+          ],
+        );
+        if (input.finalReplayDeadline !== undefined) {
+          this.#database.run(
+            `UPDATE request_delivery_outputs SET delete_after = ?
                    WHERE request_delivery_id = ?`,
-                      [input.finalReplayDeadline, input.requestDeliveryId],
-                    );
-                  }
-                  const updated = this.#selectRow(input.requestDeliveryId);
-                  if (!updated) return Result.err(this.#missing(input.requestDeliveryId));
-                  return this.#decodeTerminal(updated).map((record) => ({
-                    status: "terminalized" as const,
-                    record,
-                  }));
-                },
-              );
-            });
-          },
-        ),
+            [input.finalReplayDeadline, input.requestDeliveryId],
+          );
+        }
+        const updated = this.#selectRow(input.requestDeliveryId);
+        if (!updated) return Result.err(this.#missing(input.requestDeliveryId));
+        return this.#decodeTerminal(updated).map((record) => ({
+          status: "terminalized" as const,
+          record,
+        }));
+      },
     );
   }
 
@@ -769,70 +770,75 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
       kind: "handle",
       blob: input.handle,
     };
-    return encodeJson(target, inputTargetCodec, "outputTarget").andThen((targetJson) =>
-      encodeJson(input.metadata, this.#codecs.outputMetadata, "outputMetadata").andThen(
-        (metadataJson) =>
-          transaction(
-            this.#database,
-            "register-output",
-            (): ResultType<RequestOutputLifecycle<TOutputMetadata>, RequestDeliveryStoreError> => {
-              const owner = this.#selectRow(input.requestDeliveryId);
-              if (!owner) {
-                return Result.err(
-                  new RequestDeliveryNotFound({
-                    requestDeliveryId: input.requestDeliveryId,
-                    message: "No request delivery owns the output lifecycle registration",
-                  }),
-                );
-              }
-              if (owner.state !== "accepted") {
-                return Result.err(
-                  new RequestDeliveryInvalidTransition({
+    const targetJsonResult = encodeJson(target, inputTargetCodec, "outputTarget");
+    if (targetJsonResult.isErr()) return Result.err(targetJsonResult.error);
+    const targetJson = targetJsonResult.value;
+    const metadataJsonResult = encodeJson(
+      input.metadata,
+      this.#codecs.outputMetadata,
+      "outputMetadata",
+    );
+    if (metadataJsonResult.isErr()) return Result.err(metadataJsonResult.error);
+    const metadataJson = metadataJsonResult.value;
+    return transaction(
+      this.#database,
+      "register-output",
+      (): ResultType<RequestOutputLifecycle<TOutputMetadata>, RequestDeliveryStoreError> => {
+        const owner = this.#selectRow(input.requestDeliveryId);
+        if (!owner) {
+          return Result.err(
+            new RequestDeliveryNotFound({
+              requestDeliveryId: input.requestDeliveryId,
+              message: "No request delivery owns the output lifecycle registration",
+            }),
+          );
+        }
+        if (owner.state !== "accepted") {
+          return Result.err(
+            new RequestDeliveryInvalidTransition({
+              requestDeliveryId: owner.request_delivery_id,
+              from: owner.state,
+              to: "output-registered",
+              message: "Only an accepted request can register output",
+            }),
+          );
+        }
+        const existing = this.#selectOutput(input.handle.objectId);
+        if (existing) {
+          return this.#decodeOutput(existing).andThen((record) =>
+            record.requestDeliveryId === input.requestDeliveryId &&
+            isDeepStrictEqual(record.target, target) &&
+            isDeepStrictEqual(record.metadata, input.metadata)
+              ? Result.ok(record)
+              : Result.err(
+                  new RequestDeliveryConflict({
                     requestDeliveryId: owner.request_delivery_id,
-                    from: owner.state,
-                    to: "output-registered",
-                    message: "Only an accepted request can register output",
+                    message: "Output object is already owned by another lifecycle record",
                   }),
-                );
-              }
-              const existing = this.#selectOutput(input.handle.objectId);
-              if (existing) {
-                return this.#decodeOutput(existing).andThen((record) =>
-                  record.requestDeliveryId === input.requestDeliveryId &&
-                  isDeepStrictEqual(record.target, target) &&
-                  isDeepStrictEqual(record.metadata, input.metadata)
-                    ? Result.ok(record)
-                    : Result.err(
-                        new RequestDeliveryConflict({
-                          requestDeliveryId: owner.request_delivery_id,
-                          message: "Output object is already owned by another lifecycle record",
-                        }),
-                      ),
-                );
-              }
-              this.#database.run(
-                `INSERT INTO request_delivery_outputs (
-             request_delivery_id, request_id, object_id, target_json, metadata_json, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?)`,
-                [
-                  owner.request_delivery_id,
-                  owner.request_id,
-                  input.handle.objectId,
-                  targetJson,
-                  metadataJson,
-                  input.createdAt,
-                ],
-              );
-              return Result.ok({
-                requestDeliveryId: owner.request_delivery_id,
-                requestId: owner.request_id,
-                target,
-                metadata: input.metadata,
-                createdAt: input.createdAt,
-              });
-            },
-          ),
-      ),
+                ),
+          );
+        }
+        this.#database.run(
+          `INSERT INTO request_delivery_outputs (
+       request_delivery_id, request_id, object_id, target_json, metadata_json, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            owner.request_delivery_id,
+            owner.request_id,
+            input.handle.objectId,
+            targetJson,
+            metadataJson,
+            input.createdAt,
+          ],
+        );
+        return Result.ok({
+          requestDeliveryId: owner.request_delivery_id,
+          requestId: owner.request_id,
+          target,
+          metadata: input.metadata,
+          createdAt: input.createdAt,
+        });
+      },
     );
   }
 
@@ -844,38 +850,39 @@ export class SqliteRequestDeliveryStore<TEnvelope, TWork, TOutputMetadata> {
       kind: "reference",
       blob: input.reference,
     };
-    return encodeJson(target, inputTargetCodec, "outputTarget").andThen((targetJson) =>
-      transaction(
-        this.#database,
-        "record-output-reference",
-        (): ResultType<RequestOutputLifecycle<TOutputMetadata>, RequestDeliveryStoreError> => {
-          const row = this.#selectOutput(input.reference.objectId);
-          if (!row) {
-            return Result.err(
-              new RequestDeliveryNotFound({
-                requestDeliveryId: input.requestDeliveryId,
-                message: "Output lifecycle handle was not registered before publication",
-              }),
-            );
-          }
-          if (row.request_delivery_id !== input.requestDeliveryId) {
-            return Result.err(
-              new RequestDeliveryConflict({
-                requestDeliveryId: row.request_delivery_id,
-                message: "Output reference belongs to a different request",
-              }),
-            );
-          }
-          this.#database.run(
-            "UPDATE request_delivery_outputs SET target_json = ? WHERE object_id = ?",
-            [targetJson, input.reference.objectId],
+    const targetJsonResult = encodeJson(target, inputTargetCodec, "outputTarget");
+    if (targetJsonResult.isErr()) return Result.err(targetJsonResult.error);
+    const targetJson = targetJsonResult.value;
+    return transaction(
+      this.#database,
+      "record-output-reference",
+      (): ResultType<RequestOutputLifecycle<TOutputMetadata>, RequestDeliveryStoreError> => {
+        const row = this.#selectOutput(input.reference.objectId);
+        if (!row) {
+          return Result.err(
+            new RequestDeliveryNotFound({
+              requestDeliveryId: input.requestDeliveryId,
+              message: "Output lifecycle handle was not registered before publication",
+            }),
           );
-          const updated = this.#selectOutput(input.reference.objectId);
-          return updated
-            ? this.#decodeOutput(updated)
-            : Result.err(this.#missing(row.request_delivery_id));
-        },
-      ),
+        }
+        if (row.request_delivery_id !== input.requestDeliveryId) {
+          return Result.err(
+            new RequestDeliveryConflict({
+              requestDeliveryId: row.request_delivery_id,
+              message: "Output reference belongs to a different request",
+            }),
+          );
+        }
+        this.#database.run(
+          "UPDATE request_delivery_outputs SET target_json = ? WHERE object_id = ?",
+          [targetJson, input.reference.objectId],
+        );
+        const updated = this.#selectOutput(input.reference.objectId);
+        return updated
+          ? this.#decodeOutput(updated)
+          : Result.err(this.#missing(row.request_delivery_id));
+      },
     );
   }
 

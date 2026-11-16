@@ -147,27 +147,19 @@ export const discordToolTargetRouting = {
   resolveSession: async ({ selector, adapter, getConfig }) => {
     const config = await getConfig();
     const decoded = decodeDiscordSessionId({ sessionId: selector, cfg: config });
-    const continueDecoded = decoded.match({
-      err: (error) => async () => Result.err(error),
-      ok: (channelId) => async () => {
-        const guildId = await resolveGuildIdForChannel({ adapter, channelId });
-        const allowedResult = shouldAllowDiscordChannel({ cfg: config, channelId, guildId });
-        const continueAllowed = allowedResult.match({
-          err: (error) => () => Result.err(error),
-          ok: (allowed) => () => {
-            if (!allowed) return invalid(`Not allowed: channelId '${channelId}'`);
-            const sessionRef: SessionRefFor<"discord"> = {
-              platform: "discord",
-              channelId,
-              guildId: guildId ?? undefined,
-              parentChannelId: undefined,
-            };
-            return Result.ok({ sessionRef, config });
-          },
-        });
-        return continueAllowed();
-      },
-    });
-    return await continueDecoded();
+    if (decoded.isErr()) return Result.err(decoded.error);
+    const channelId = decoded.value;
+    const guildId = await resolveGuildIdForChannel({ adapter, channelId });
+    const allowedResult = shouldAllowDiscordChannel({ cfg: config, channelId, guildId });
+    if (allowedResult.isErr()) return Result.err(allowedResult.error);
+    const allowed = allowedResult.value;
+    if (!allowed) return invalid(`Not allowed: channelId '${channelId}'`);
+    const sessionRef: SessionRefFor<"discord"> = {
+      platform: "discord",
+      channelId,
+      guildId: guildId ?? undefined,
+      parentChannelId: undefined,
+    };
+    return Result.ok({ sessionRef, config });
   },
 } satisfies SurfaceToolTargetRouting<"discord">;

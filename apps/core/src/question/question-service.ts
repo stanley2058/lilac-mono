@@ -697,12 +697,7 @@ export class QuestionService {
       ok: () => null,
       err: (error) => error,
     });
-    if (replaceError) {
-      this.input.store.transitionPending(call.questionCallId, "cancelled");
-      await this.finishCall(call.questionCallId, "cancelled");
-      this.#waiters.get(call.questionCallId)?.resolve(Result.err(replaceError));
-      return Result.err(answerHandlingFailure(replaceError));
-    }
+    if (replaceError) return await this.cancelAcceptedAnswer(call, replaceError, replaceError);
     const updated = await updateInteraction({
       state: "pending",
       prompt: issued.prompt,
@@ -712,11 +707,22 @@ export class QuestionService {
       err: (error) => error,
     });
     if (!updateError) return Result.ok("accepted");
+    return await this.cancelAcceptedAnswer(
+      call,
+      presentationFailure("update", updateError),
+      updateError,
+    );
+  }
+
+  private async cancelAcceptedAnswer(
+    call: QuestionCall,
+    waiterError: QuestionServiceError,
+    failure: { readonly message: string },
+  ): Promise<ResultType<never, SurfaceQuestionAnswerHandlingFailed>> {
     this.input.store.transitionPending(call.questionCallId, "cancelled");
-    this.#waiters
-      .get(call.questionCallId)
-      ?.resolve(Result.err(presentationFailure("update", updateError)));
-    return Result.err(answerHandlingFailure(updateError));
+    await this.finishCall(call.questionCallId, "cancelled");
+    this.#waiters.get(call.questionCallId)?.resolve(Result.err(waiterError));
+    return Result.err(answerHandlingFailure(failure));
   }
 
   private async handleDismiss(

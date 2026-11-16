@@ -321,35 +321,31 @@ export async function writeMcpOAuthCredentialFileAtomicResult(options: {
 
       let renamed = false;
       if (!panic && !failure) {
-        {
-          const captured = await Result.tryPromise({
-            try: async () => {
-              await dependencies.rename(temporaryPath, credentialPath);
-              renamed = true;
-            },
-            catch: captureError,
-          });
+        const captured = await Result.tryPromise({
+          try: async () => {
+            await dependencies.rename(temporaryPath, credentialPath);
+            renamed = true;
+          },
+          catch: captureError,
+        });
 
-          if (captured.isErr()) {
-            const cause = captured.error.cause;
-            recordFailure(cause, "write");
-          }
+        if (captured.isErr()) {
+          const cause = captured.error.cause;
+          recordFailure(cause, "write");
         }
       }
 
       if (!renamed) {
-        {
-          const captured = await Result.tryPromise({
-            try: async () => {
-              await dependencies.rm(temporaryPath, { force: true });
-            },
-            catch: captureError,
-          });
+        const captured = await Result.tryPromise({
+          try: async () => {
+            await dependencies.rm(temporaryPath, { force: true });
+          },
+          catch: captureError,
+        });
 
-          if (captured.isErr()) {
-            const cause = captured.error.cause;
-            recordFailure(cause, "cleanup");
-          }
+        if (captured.isErr()) {
+          const cause = captured.error.cause;
+          recordFailure(cause, "cleanup");
         }
       }
 
@@ -386,45 +382,42 @@ export function updateMcpOAuthCredentialFileResult(options: {
       const previous = updateQueues.get(credentialPath) ?? Promise.resolve();
       const result = previous.then(async () => {
         const read = await readMcpOAuthCredentialFileResult(options);
-        return read.match({
-          err: (error) => async () => Result.err(error),
-          ok: (existing) => async () => {
-            const credential =
-              existing?.serverUrl === options.serverUrl
-                ? existing
-                : {
-                    version: MCP_OAUTH_CREDENTIAL_VERSION,
-                    serverUrl: options.serverUrl,
-                  };
-            const updated = Result.try({
-              try: () => options.update(credential),
-              catch: (cause) =>
-                Panic.is(cause)
-                  ? ({ kind: "panic", panic: cause } as const)
-                  : ({
-                      kind: "failure",
-                      cause,
-                    } as const),
-            }).match<
-              | { readonly kind: "success"; readonly credential: McpOAuthCredential }
-              | { readonly kind: "panic"; readonly panic: Panic }
-              | { readonly kind: "failure"; readonly cause: unknown }
-            >({
-              ok: (updatedCredential) => ({ kind: "success", credential: updatedCredential }),
-              err: (failure) => failure,
-            });
-            if (updated.kind === "panic") {
-              throw updated.panic;
-            }
-            if (updated.kind === "failure") {
-              return Result.err(credentialError(credentialPath, "update", updated.cause));
-            }
-            return writeMcpOAuthCredentialFileAtomicResult({
-              ...options,
-              credential: updated.credential,
-            });
-          },
-        })();
+        if (read.isErr()) return Result.err(read.error);
+        const existing = read.value;
+        const credential =
+          existing?.serverUrl === options.serverUrl
+            ? existing
+            : {
+                version: MCP_OAUTH_CREDENTIAL_VERSION,
+                serverUrl: options.serverUrl,
+              };
+        const updated = Result.try({
+          try: () => options.update(credential),
+          catch: (cause) =>
+            Panic.is(cause)
+              ? ({ kind: "panic", panic: cause } as const)
+              : ({
+                  kind: "failure",
+                  cause,
+                } as const),
+        }).match<
+          | { readonly kind: "success"; readonly credential: McpOAuthCredential }
+          | { readonly kind: "panic"; readonly panic: Panic }
+          | { readonly kind: "failure"; readonly cause: unknown }
+        >({
+          ok: (updatedCredential) => ({ kind: "success", credential: updatedCredential }),
+          err: (failure) => failure,
+        });
+        if (updated.kind === "panic") {
+          throw updated.panic;
+        }
+        if (updated.kind === "failure") {
+          return Result.err(credentialError(credentialPath, "update", updated.cause));
+        }
+        return writeMcpOAuthCredentialFileAtomicResult({
+          ...options,
+          credential: updated.credential,
+        });
       });
       const settled = settleUpdate().then(() => undefined);
       updateQueues.set(credentialPath, settled);

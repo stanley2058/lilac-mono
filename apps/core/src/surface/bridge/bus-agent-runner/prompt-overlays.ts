@@ -162,19 +162,15 @@ export async function resolveSessionAdditionalPrompts(params: {
       },
       catch: captureError,
     });
-    const filePath = parsedPath.match({ ok: (resolved) => resolved, err: () => null });
-    if (filePath === null) {
-      parsedPath.match({
-        ok: () => undefined,
-        err: (cause) =>
-          params.onWarn?.({
-            reason: "invalid_file_url",
-            value,
-            error: opaqueErrorMessage(cause, "Unknown prompt file failure"),
-          }),
+    if (parsedPath.isErr()) {
+      params.onWarn?.({
+        reason: "invalid_file_url",
+        value,
+        error: opaqueErrorMessage(parsedPath.error, "Unknown prompt file failure"),
       });
       continue;
     }
+    const filePath = parsedPath.value;
 
     const read = await Result.tryPromise({
       try: () => readFileText(filePath),

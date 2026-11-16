@@ -87,6 +87,68 @@ function restoreClaudeToolOutput(output: ToolResultOutput): ToolResultOutput {
   return decoded;
 }
 
+type HistoricalContentPart = Exclude<UserContent, string>[number];
+
+function attachmentContentPart(
+  data: Parameters<typeof attachmentData>[0],
+  mediaType: string,
+): HistoricalContentPart {
+  const source = attachmentData(data);
+  if (source === undefined) return { type: "text", text: `[Unavailable attachment: ${mediaType}]` };
+  if (typeof source === "string" && /^https?:/u.test(source)) {
+    return mediaType.startsWith("image/")
+      ? { type: "image", source: { type: "url", url: source } }
+      : { type: "text", text: `[Attachment: ${source}]` };
+  }
+  const base64 =
+    typeof source === "string"
+      ? source.replace(/^data:[^,]*,/u, "")
+      : Buffer.from(source instanceof ArrayBuffer ? new Uint8Array(source) : source).toString(
+          "base64",
+        );
+  if (
+    mediaType === "image/png" ||
+    mediaType === "image/jpeg" ||
+    mediaType === "image/gif" ||
+    mediaType === "image/webp"
+  ) {
+    return { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
+  }
+  if (mediaType === "application/pdf") {
+    return {
+      type: "document",
+      source: { type: "base64", media_type: "application/pdf", data: base64 },
+    };
+  }
+  return { type: "text", text: `[Attachment: ${mediaType}]` };
+}
+
+function historicalToolResultParts(output: ToolResultOutput): HistoricalContentPart[] {
+  const mapped = mapToolResultOutputToMcpResult(restoreClaudeToolOutput(output), false).match({
+    ok: (value) => value.content,
+    err: (error) => [{ type: "text" as const, text: error.message }],
+  });
+  return mapped.map((item): HistoricalContentPart => {
+    if (item.type === "text") return { type: "text", text: item.text };
+    if (
+      item.type === "image" &&
+      (item.mimeType === "image/png" ||
+        item.mimeType === "image/jpeg" ||
+        item.mimeType === "image/gif" ||
+        item.mimeType === "image/webp")
+    ) {
+      return {
+        type: "image",
+        source: { type: "base64", media_type: item.mimeType, data: item.data },
+      };
+    }
+    if (item.type === "resource" && "text" in item.resource) {
+      return { type: "text", text: item.resource.text };
+    }
+    return { type: "text", text: `[Historical attachment: ${item.type}]` };
+  });
+}
+
 function userContent(messages: readonly ModelMessage[]): UserContent {
   const content: UserContent = [];
   for (const message of messages) {
@@ -110,79 +172,19 @@ function userContent(messages: readonly ModelMessage[]): UserContent {
       }
       if (part.type === "reasoning") continue;
       if (part.type === "file" || part.type === "image") {
-        const data = part.type === "image" ? part.image : part.data;
-        const mediaType = part.mediaType ?? "image/png";
-        const source = attachmentData(data);
-        if (source === undefined) {
-          content.push({ type: "text", text: `[Unavailable attachment: ${mediaType}]` });
-          continue;
-        }
-        if (typeof source === "string" && /^https?:/u.test(source)) {
-          if (mediaType.startsWith("image/"))
-            content.push({ type: "image", source: { type: "url", url: source } });
-          else content.push({ type: "text", text: `[Attachment: ${source}]` });
-          continue;
-        }
-        const base64 =
-          typeof source === "string"
-            ? source.replace(/^data:[^,]*,/u, "")
-            : Buffer.from(source instanceof ArrayBuffer ? new Uint8Array(source) : source).toString(
-                "base64",
-              );
-        if (
-          mediaType === "image/png" ||
-          mediaType === "image/jpeg" ||
-          mediaType === "image/gif" ||
-          mediaType === "image/webp"
-        )
-          content.push({
-            type: "image",
-            source: { type: "base64", media_type: mediaType, data: base64 },
-          });
-        else if (mediaType === "application/pdf")
-          content.push({
-            type: "document",
-            source: { type: "base64", media_type: "application/pdf", data: base64 },
-          });
-        else content.push({ type: "text", text: `[Attachment: ${mediaType}]` });
+        content.push(
+          attachmentContentPart(
+            part.type === "image" ? part.image : part.data,
+            part.mediaType ?? "image/png",
+          ),
+        );
         continue;
       }
       if (part.type === "tool-result") {
-        content.push({
-          type: "text",
-          text: `[Historical result from ${part.toolName}, already completed]`,
-        });
-        const mapped = mapToolResultOutputToMcpResult(
-          restoreClaudeToolOutput(part.output),
-          false,
-        ).match({
-          ok: (value) => value.content,
-          err: (error) => [{ type: "text" as const, text: error.message }],
-        });
-        for (const item of mapped) {
-          if (item.type === "text") {
-            content.push({ type: "text", text: item.text });
-            continue;
-          }
-          if (
-            item.type === "image" &&
-            (item.mimeType === "image/png" ||
-              item.mimeType === "image/jpeg" ||
-              item.mimeType === "image/gif" ||
-              item.mimeType === "image/webp")
-          ) {
-            content.push({
-              type: "image",
-              source: { type: "base64", media_type: item.mimeType, data: item.data },
-            });
-            continue;
-          }
-          if (item.type === "resource" && "text" in item.resource) {
-            content.push({ type: "text", text: item.resource.text });
-            continue;
-          }
-          content.push({ type: "text", text: `[Historical attachment: ${item.type}]` });
-        }
+        content.push(
+          { type: "text", text: `[Historical result from ${part.toolName}, already completed]` },
+          ...historicalToolResultParts(part.output),
+        );
         continue;
       }
       content.push({

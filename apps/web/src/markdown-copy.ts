@@ -184,7 +184,6 @@ export function markdownClipboard(
     (soleCode && container.textContent?.trim() === soleCode.textContent?.trim());
   const text = codeOnly ? range.toString() : selectionMarkdown(range, roots, tables, unwrapped);
   if (!text) return;
-  for (const node of container.querySelectorAll(skipped)) node.remove();
   for (const node of container.querySelectorAll("*")) {
     for (const attribute of Array.from(node.attributes)) {
       if (

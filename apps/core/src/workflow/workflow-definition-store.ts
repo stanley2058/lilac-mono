@@ -310,55 +310,49 @@ export class WorkflowDefinitionStore {
         );
       }
       const locationResult = await this.definitionPath(scope, params.name, false, "get");
-      const continueWithLocation = locationResult.match<
+      if (locationResult.isErr()) return Result.err(locationResult.error);
+      const location = locationResult.value;
+      const rootStats = await lstatOrNull(location.root);
+      if (!rootStats) return resolveScope(index + 1);
+      if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+        return Result.err(
+          storeFailure("get", `Workflow scope root must be a real directory: ${location.root}`),
+        );
+      }
+      const root = await fs.realpath(location.root);
+      const fileStats = await lstatOrNull(location.candidate);
+      if (!fileStats) return resolveScope(index + 1);
+      const fileResult = await readBoundedRegularFile(location.candidate, "get");
+      const continueWithFile = fileResult.match<
         () => Promise<ResultType<ResolvedWorkflowDefinition, WorkflowDefinitionStoreFailed>>
       >({
         err: (error) => async () => Result.err(error),
-        ok: (location) => async () => {
-          const rootStats = await lstatOrNull(location.root);
-          if (!rootStats) return resolveScope(index + 1);
-          if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
-            return Result.err(
-              storeFailure("get", `Workflow scope root must be a real directory: ${location.root}`),
-            );
-          }
-          const root = await fs.realpath(location.root);
-          const fileStats = await lstatOrNull(location.candidate);
-          if (!fileStats) return resolveScope(index + 1);
-          const fileResult = await readBoundedRegularFile(location.candidate, "get");
-          const continueWithFile = fileResult.match<
-            () => Promise<ResultType<ResolvedWorkflowDefinition, WorkflowDefinitionStoreFailed>>
-          >({
-            err: (error) => async () => Result.err(error),
-            ok:
-              ({ source, canonicalPath }) =>
-              async () => {
-                if (!isContained(root, canonicalPath) || path.dirname(canonicalPath) !== root) {
-                  return Result.err(
-                    storeFailure(
-                      "get",
-                      `Workflow definition escapes canonical scope root: ${canonicalPath}`,
-                    ),
-                  );
-                }
-                const validationResult = await this.validateSource(
-                  { name: location.name, source },
+        ok:
+          ({ source, canonicalPath }) =>
+          async () => {
+            if (!isContained(root, canonicalPath) || path.dirname(canonicalPath) !== root) {
+              return Result.err(
+                storeFailure(
                   "get",
-                );
-                return validationResult.map((validation) => ({
-                  scope,
-                  name: location.name,
-                  normalizedPath: `${location.name}.js`,
-                  canonicalPath,
-                  source,
-                  validation,
-                }));
-              },
-          });
-          return continueWithFile();
-        },
+                  `Workflow definition escapes canonical scope root: ${canonicalPath}`,
+                ),
+              );
+            }
+            const validationResult = await this.validateSource(
+              { name: location.name, source },
+              "get",
+            );
+            return validationResult.map((validation) => ({
+              scope,
+              name: location.name,
+              normalizedPath: `${location.name}.js`,
+              canonicalPath,
+              source,
+              validation,
+            }));
+          },
       });
-      return continueWithLocation();
+      return continueWithFile();
     };
     return resolveScope(0);
   }

@@ -180,6 +180,61 @@ function notificationBody(thread: NativeThread, preview: string) {
   return preview || "Response finished";
 }
 
+function titleContextMessages(
+  turn: ReadyTurnSlot,
+): Array<{ readonly role: "user" | "assistant"; readonly text: string }> {
+  const user = turn.messages
+    .filter((message) => message.role === "user")
+    .map(messageText)
+    .join("\n")
+    .trim();
+  const assistant = finalAssistantText(turn.messages);
+  return [
+    ...(user ? [{ role: "user" as const, text: user.slice(0, 2000) }] : []),
+    ...(assistant ? [{ role: "assistant" as const, text: assistant.slice(0, 2000) }] : []),
+  ];
+}
+
+function withResourcePartState(
+  turn: ReadyTurnSlot,
+  resourceId: string,
+  state: NativeUploadRecord["state"],
+): { readonly messages: ReadyTurnSlot["messages"]; readonly changes: LiveUpdate["changes"] } {
+  const changes: LiveUpdate["changes"] = [];
+  const messages = turn.messages.map((message) => ({
+    ...message,
+    parts: message.parts.map((part, partIndex) => {
+      if (part.type !== "data-resource" || part.data.resourceId !== resourceId) return part;
+      const updated = { ...part, data: { ...part.data, state } };
+      changes.push({
+        kind: "set-part",
+        turnId: turn.turnId,
+        position: turn.position,
+        messageId: message.id,
+        partIndex,
+        part: updated,
+      });
+      return updated;
+    }),
+  }));
+  return { messages, changes };
+}
+
+function isLinkableServiceMessage(message: ReadyTurnSlot["messages"][number]): boolean {
+  return (
+    message.role === "assistant" &&
+    isNativeServiceMessage(message, "lilac") &&
+    message.parts.some((part) => part.type === "text" || part.type === "data-resource")
+  );
+}
+
+type NativeAcceptInputOptions = {
+  readonly resolvedModelId?: string;
+  readonly resolvedModelRequest?: DurableResolvedModelRequest;
+  readonly activeRunId?: string;
+  readonly authorId?: string;
+};
+
 export class NativeStore {
   private readonly listeners = new Set<(threadId: string) => void>();
   private readonly pendingNotifications = new Set<string>();
@@ -1480,18 +1535,7 @@ export class NativeStore {
         const turns = new Map<string, ReadyTurnSlot>();
         for (const record of [...first, ...recent.toReversed()])
           if (record.kind === "turn") turns.set(record.value.turnId, record.value);
-        const messages = [...turns.values()].flatMap((turn) => {
-          const user = turn.messages
-            .filter((message) => message.role === "user")
-            .map(messageText)
-            .join("\n")
-            .trim();
-          const assistant = finalAssistantText(turn.messages);
-          return [
-            ...(user ? [{ role: "user" as const, text: user.slice(0, 2000) }] : []),
-            ...(assistant ? [{ role: "assistant" as const, text: assistant.slice(0, 2000) }] : []),
-          ];
-        });
+        const messages = [...turns.values()].flatMap(titleContextMessages);
         return Result.ok({ title: thread.title, messages });
       }, this),
     );
@@ -1920,202 +1964,187 @@ export class NativeStore {
     return { ...input, turnId };
   }
 
+  private acceptInputCommand(
+    actorId: string,
+    input: NativeInput,
+    options: NativeAcceptInputOptions,
+    authorizedThread: NativeThreadRecord,
+  ): NativeStoreResult<NativeMutationResult> {
+    return Result.gen(function* () {
+      let thread = authorizedThread;
+      if (thread.historyGeneration !== input.historyGeneration || thread.mutationPending)
+        return Result.err(nativeFailure("stale", "Thread history is changing"));
+      const question = input.questionReply
+        ? yield* this.authorizeQuestionReply(
+            actorId,
+            input.threadId,
+            input.historyGeneration,
+            input.questionReply,
+          )
+        : undefined;
+      if (question && !input.text.trim() && input.attachmentIds.length === 0)
+        return Result.err(
+          nativeFailure("invalid", "A question reply requires text or an attachment"),
+        );
+      if (question && input.command)
+        return Result.err(nativeFailure("invalid", "Commands cannot answer a question"));
+      const answeringActiveSync =
+        question?.mode === "sync" && thread.activeRunId === question.requestId;
+      const effectiveMode = admittedInputMode(input, thread.activeRunId, answeringActiveSync);
+      const pendingCount =
+        this.db
+          .query<{ count: number }, [string]>(
+            "SELECT COUNT(*) AS count FROM native_records INDEXED BY native_pending_inputs WHERE kind='input' AND thread_id=? AND json_extract(data_json,'$.value.completedAt') IS NULL AND json_extract(data_json,'$.value.state') IN ('uploading','queued','admitted') AND json_extract(data_json,'$.value.state') IN ('uploading','queued')",
+          )
+          .get(thread.id)?.count ?? 0;
+      if (pendingCount >= 128)
+        return Result.err(nativeFailure("conflict", "Thread already has 128 pending inputs"));
+      const uploads = yield* Result.all(input.attachmentIds.map((id) => this.getUpload(id)));
+      for (const upload of uploads) {
+        if (upload.published && upload.state === "ready") {
+          yield* this.authorizeThread(actorId, upload.threadId);
+          continue;
+        }
+        if (
+          upload.threadId !== input.threadId ||
+          upload.ownerId !== actorId ||
+          upload.historyGeneration !== thread.historyGeneration ||
+          upload.state === "canceled"
+        )
+          return Result.err(nativeFailure("forbidden", "Attachment is unavailable to this input"));
+      }
+      if (question && uploads.some((upload) => upload.state !== "ready"))
+        return Result.err(
+          nativeFailure("conflict", "Wait for question attachments to finish uploading"),
+        );
+      const id = randomUUID();
+      const messageId = randomUUID();
+      let accepted: NativeInputRecord = {
+        id,
+        commandId: input.commandId,
+        threadId: input.threadId,
+        authorId: options.authorId ?? actorId,
+        initiatingUserId: actorId,
+        deviceId: input.deviceId,
+        requestId: `native:${thread.id}:${messageId}`,
+        deliveryId: randomUUID(),
+        messageId,
+        position: thread.nextPosition,
+        historyGeneration: thread.historyGeneration,
+        text: input.text,
+        questionReply: input.questionReply,
+        mode: effectiveMode,
+        runId: thread.activeRunId,
+        state: uploads.some((upload) => upload.state !== "ready") ? "uploading" : "queued",
+        attachmentIds: [...input.attachmentIds],
+        skillIds: [...input.skillIds],
+        modelId: options.resolvedModelId ?? input.modelId ?? thread.modelId,
+        reasoning:
+          input.reasoning ??
+          (input.modelId && input.modelId !== thread.modelId ? undefined : thread.reasoning),
+        resolvedModelRequest: options.resolvedModelRequest,
+        command: input.command,
+        createdAt: this.now(),
+      };
+      if (question) {
+        yield* this.updateQuestion(actorId, thread.id, {
+          ...question,
+          prompts:
+            question.prompts ??
+            (question.view.state === "pending" ? [question.view.prompt] : undefined),
+          view: {
+            state: "answered",
+            summary: { answers: [] },
+            replyMessageId: messageId,
+            replyInputId: id,
+          },
+        });
+        thread = yield* this.getThreadRecord(thread.id);
+      }
+      const earlierFull = this.db
+        .query(
+          "SELECT 1 FROM native_records INDEXED BY native_pending_inputs WHERE kind='input' AND thread_id=? AND json_extract(data_json,'$.value.mode')!='steer' AND json_extract(data_json,'$.value.state') IN ('uploading','queued','admitted') AND json_extract(data_json,'$.value.completedAt') IS NULL LIMIT 1",
+        )
+        .get(thread.id);
+      if (effectiveMode === "prompt" && !earlierFull)
+        accepted = this.createInputTurn(thread, accepted, uploads);
+      if (effectiveMode === "steer") {
+        const activeInput = yield* this.getInputByRequestId(thread.activeRunId ?? "");
+        accepted = {
+          ...accepted,
+          turnId: activeInput?.turnId,
+          resolvedModelRequest: activeInput?.resolvedModelRequest,
+        };
+        if (accepted.turnId) {
+          yield* this.appendMessage(thread.id, thread.historyGeneration, accepted.turnId, {
+            id: accepted.messageId,
+            role: "user",
+            metadata: {
+              authorId: accepted.authorId,
+              createdAt: accepted.createdAt,
+              inputId: accepted.id,
+              inputMode: "steer",
+            },
+            parts: [
+              ...nativeTextParts(accepted.text),
+              ...uploads.map((upload) => ({
+                type: "data-resource" as const,
+                id: upload.id,
+                data: {
+                  resourceId: upload.id,
+                  name: upload.filename,
+                  mediaType: upload.mediaType,
+                  size: upload.size,
+                  state: upload.state,
+                },
+              })),
+            ],
+          });
+          thread = yield* this.getThreadRecord(thread.id);
+        }
+      }
+      for (const upload of uploads)
+        this.writeRecord(
+          upload.id,
+          { kind: "upload", value: { ...upload, published: true } },
+          upload.threadId,
+        );
+      this.writeRecord(id, { kind: "input", value: accepted }, thread.id, accepted.position);
+      const visible = accepted.turnId ? yield* this.readRecord("turn", accepted.turnId) : null;
+      const changes: LiveUpdate["changes"] =
+        accepted.mode === "prompt" && visible?.kind === "turn"
+          ? [{ kind: "insert", slot: visible.value }]
+          : [];
+      this.bump(
+        {
+          ...thread,
+          nextPosition: thread.nextPosition + 1,
+          titleGeneration:
+            thread.nextPosition === 0 && thread.titleGeneration
+              ? { phase: "initial", inputId: id }
+              : thread.titleGeneration,
+        },
+        "input",
+        id,
+        changes,
+      );
+      return Result.ok({ threadId: input.threadId, inputId: id });
+    }, this);
+  }
+
   acceptInput(
     actorId: string,
     input: NativeInput,
-    options: {
-      resolvedModelId?: string;
-      resolvedModelRequest?: DurableResolvedModelRequest;
-      activeRunId?: string;
-      authorId?: string;
-    } = {},
+    options: NativeAcceptInputOptions = {},
   ): NativeStoreResult<NativeInputReceipt> {
     return nativeStoreTransaction(this.db, () =>
       Result.gen(function* () {
-        let thread = yield* this.authorizeThread(actorId, input.threadId, true);
+        const thread = yield* this.authorizeThread(actorId, input.threadId, true);
         const result = yield* this.command(
           actorId,
           input.commandId,
           { operation: "input", ...input },
-          () =>
-            Result.gen(function* () {
-              if (thread.historyGeneration !== input.historyGeneration || thread.mutationPending)
-                return Result.err(nativeFailure("stale", "Thread history is changing"));
-              const question = input.questionReply
-                ? yield* this.authorizeQuestionReply(
-                    actorId,
-                    input.threadId,
-                    input.historyGeneration,
-                    input.questionReply,
-                  )
-                : undefined;
-              if (question && !input.text.trim() && input.attachmentIds.length === 0)
-                return Result.err(
-                  nativeFailure("invalid", "A question reply requires text or an attachment"),
-                );
-              if (question && input.command)
-                return Result.err(nativeFailure("invalid", "Commands cannot answer a question"));
-              const answeringActiveSync =
-                question?.mode === "sync" && thread.activeRunId === question.requestId;
-              const effectiveMode = admittedInputMode(
-                input,
-                thread.activeRunId,
-                answeringActiveSync,
-              );
-              const pendingCount =
-                this.db
-                  .query<{ count: number }, [string]>(
-                    "SELECT COUNT(*) AS count FROM native_records INDEXED BY native_pending_inputs WHERE kind='input' AND thread_id=? AND json_extract(data_json,'$.value.completedAt') IS NULL AND json_extract(data_json,'$.value.state') IN ('uploading','queued','admitted') AND json_extract(data_json,'$.value.state') IN ('uploading','queued')",
-                  )
-                  .get(thread.id)?.count ?? 0;
-              if (pendingCount >= 128)
-                return Result.err(
-                  nativeFailure("conflict", "Thread already has 128 pending inputs"),
-                );
-              const uploads = yield* Result.all(
-                input.attachmentIds.map((id) => this.getUpload(id)),
-              );
-              for (const upload of uploads) {
-                if (upload.published && upload.state === "ready") {
-                  yield* this.authorizeThread(actorId, upload.threadId);
-                  continue;
-                }
-                if (
-                  upload.threadId !== input.threadId ||
-                  upload.ownerId !== actorId ||
-                  upload.historyGeneration !== thread.historyGeneration ||
-                  upload.state === "canceled"
-                )
-                  return Result.err(
-                    nativeFailure("forbidden", "Attachment is unavailable to this input"),
-                  );
-              }
-              if (question && uploads.some((upload) => upload.state !== "ready"))
-                return Result.err(
-                  nativeFailure("conflict", "Wait for question attachments to finish uploading"),
-                );
-              const id = randomUUID();
-              const messageId = randomUUID();
-              let accepted: NativeInputRecord = {
-                id,
-                commandId: input.commandId,
-                threadId: input.threadId,
-                authorId: options.authorId ?? actorId,
-                initiatingUserId: actorId,
-                deviceId: input.deviceId,
-                requestId: `native:${thread.id}:${messageId}`,
-                deliveryId: randomUUID(),
-                messageId,
-                position: thread.nextPosition,
-                historyGeneration: thread.historyGeneration,
-                text: input.text,
-                questionReply: input.questionReply,
-                mode: effectiveMode,
-                runId: thread.activeRunId,
-                state: uploads.some((upload) => upload.state !== "ready") ? "uploading" : "queued",
-                attachmentIds: [...input.attachmentIds],
-                skillIds: [...input.skillIds],
-                modelId: options.resolvedModelId ?? input.modelId ?? thread.modelId,
-                reasoning:
-                  input.reasoning ??
-                  (input.modelId && input.modelId !== thread.modelId
-                    ? undefined
-                    : thread.reasoning),
-                resolvedModelRequest: options.resolvedModelRequest,
-                command: input.command,
-                createdAt: this.now(),
-              };
-              if (question) {
-                yield* this.updateQuestion(actorId, thread.id, {
-                  ...question,
-                  prompts:
-                    question.prompts ??
-                    (question.view.state === "pending" ? [question.view.prompt] : undefined),
-                  view: {
-                    state: "answered",
-                    summary: { answers: [] },
-                    replyMessageId: messageId,
-                    replyInputId: id,
-                  },
-                });
-                thread = yield* this.getThreadRecord(thread.id);
-              }
-              const earlierFull = this.db
-                .query(
-                  "SELECT 1 FROM native_records INDEXED BY native_pending_inputs WHERE kind='input' AND thread_id=? AND json_extract(data_json,'$.value.mode')!='steer' AND json_extract(data_json,'$.value.state') IN ('uploading','queued','admitted') AND json_extract(data_json,'$.value.completedAt') IS NULL LIMIT 1",
-                )
-                .get(thread.id);
-              if (effectiveMode === "prompt" && !earlierFull)
-                accepted = this.createInputTurn(thread, accepted, uploads);
-              if (effectiveMode === "steer") {
-                const activeInput = yield* this.getInputByRequestId(thread.activeRunId ?? "");
-                accepted = {
-                  ...accepted,
-                  turnId: activeInput?.turnId,
-                  resolvedModelRequest: activeInput?.resolvedModelRequest,
-                };
-                if (accepted.turnId) {
-                  yield* this.appendMessage(thread.id, thread.historyGeneration, accepted.turnId, {
-                    id: accepted.messageId,
-                    role: "user",
-                    metadata: {
-                      authorId: accepted.authorId,
-                      createdAt: accepted.createdAt,
-                      inputId: accepted.id,
-                      inputMode: "steer",
-                    },
-                    parts: [
-                      ...nativeTextParts(accepted.text),
-                      ...uploads.map((upload) => ({
-                        type: "data-resource" as const,
-                        id: upload.id,
-                        data: {
-                          resourceId: upload.id,
-                          name: upload.filename,
-                          mediaType: upload.mediaType,
-                          size: upload.size,
-                          state: upload.state,
-                        },
-                      })),
-                    ],
-                  });
-                  thread = yield* this.getThreadRecord(thread.id);
-                }
-              }
-              for (const upload of uploads)
-                this.writeRecord(
-                  upload.id,
-                  { kind: "upload", value: { ...upload, published: true } },
-                  upload.threadId,
-                );
-              this.writeRecord(
-                id,
-                { kind: "input", value: accepted },
-                thread.id,
-                accepted.position,
-              );
-              const visible = accepted.turnId
-                ? yield* this.readRecord("turn", accepted.turnId)
-                : null;
-              const changes: LiveUpdate["changes"] =
-                accepted.mode === "prompt" && visible?.kind === "turn"
-                  ? [{ kind: "insert", slot: visible.value }]
-                  : [];
-              this.bump(
-                {
-                  ...thread,
-                  nextPosition: thread.nextPosition + 1,
-                  titleGeneration:
-                    thread.nextPosition === 0 && thread.titleGeneration
-                      ? { phase: "initial", inputId: id }
-                      : thread.titleGeneration,
-                },
-                "input",
-                id,
-                changes,
-              );
-              return Result.ok({ threadId: input.threadId, inputId: id });
-            }, this),
+          () => this.acceptInputCommand(actorId, input, options, thread),
         );
         if (!result.inputId)
           return Result.err(nativeFailure("invalid", "Input receipt is missing its identity"));
@@ -2754,23 +2783,7 @@ export class NativeStore {
         );
         for (const record of turns) {
           if (record.kind !== "turn") continue;
-          const changes: LiveUpdate["changes"] = [];
-          const messages = record.value.messages.map((message) => ({
-            ...message,
-            parts: message.parts.map((part, partIndex) => {
-              if (part.type !== "data-resource" || part.data.resourceId !== id) return part;
-              const updated = { ...part, data: { ...part.data, state: next.state } };
-              changes.push({
-                kind: "set-part",
-                turnId: record.value.turnId,
-                position: record.value.position,
-                messageId: message.id,
-                partIndex,
-                part: updated,
-              });
-              return updated;
-            }),
-          }));
+          const { messages, changes } = withResourcePartState(record.value, id, next.state);
           if (changes.length === 0) continue;
           this.writeRecord(
             record.value.turnId,
@@ -2848,6 +2861,68 @@ export class NativeStore {
     );
   }
 
+  private rewindCommand(
+    input: {
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly historyGeneration: number;
+      readonly revision: number;
+    },
+    thread: NativeThreadRecord,
+  ): NativeStoreResult<NativeMutationResult> {
+    return Result.gen(function* () {
+      if (
+        thread.mutationPending ||
+        thread.historyGeneration !== input.historyGeneration ||
+        thread.revision !== input.revision
+      )
+        return Result.err(nativeFailure("stale", "Thread changed before rewind"));
+      const target = yield* this.readRecord("turn", input.turnId);
+      if (target?.kind !== "turn")
+        return Result.err(nativeFailure("not-found", "Rewind target is unavailable"));
+      const targetInputs = yield* this.readRows(
+        "SELECT * FROM native_records WHERE kind='input' AND thread_id=? AND json_extract(data_json,'$.value.turnId')=? AND json_extract(data_json,'$.value.mode')!='steer' LIMIT 1",
+        [thread.id, input.turnId],
+      );
+      const fullInput = targetInputs[0];
+      const inputs = yield* this.readRows(
+        "SELECT i.* FROM native_records i WHERE i.kind='input' AND i.thread_id=? AND (json_extract(i.data_json,'$.value.state') IN ('queued','uploading') OR EXISTS(SELECT 1 FROM native_records t WHERE t.kind='turn' AND t.thread_id=i.thread_id AND t.position>=? AND t.id=json_extract(i.data_json,'$.value.turnId'))) ORDER BY i.position",
+        [thread.id, target.value.position],
+      );
+      if (fullInput?.kind !== "input")
+        return Result.err(nativeFailure("invalid", "Only full user turns can be rewound"));
+      for (const record of inputs) {
+        if (record.kind !== "input") continue;
+        this.writeRecord(
+          record.value.id,
+          { kind: "input", value: { ...record.value, state: "canceled" } },
+          thread.id,
+          record.value.position,
+        );
+      }
+      this.db
+        .query("DELETE FROM native_records WHERE kind='turn' AND thread_id=? AND position>=?")
+        .run(thread.id, target.value.position);
+      yield* this.cancelUnusedUploads(thread.id);
+      this.bump(
+        {
+          ...thread,
+          historyGeneration: thread.historyGeneration + 1,
+          activeRunId: undefined,
+          mutationPending: true,
+        },
+        "rewind",
+        input.turnId,
+      );
+      return Result.ok({
+        threadId: thread.id,
+        historyGeneration: thread.historyGeneration + 1,
+        turnId: input.turnId,
+        text: fullInput.value.text,
+      });
+    }, this);
+  }
+
   beginRewind(
     actorId: string,
     input: {
@@ -2864,60 +2939,45 @@ export class NativeStore {
         if (thread.kind === "dm")
           return Result.err(nativeFailure("forbidden", "The DM cannot be rewound"));
         return this.command(actorId, input.commandId, { operation: "rewind", ...input }, () =>
-          Result.gen(function* () {
-            if (
-              thread.mutationPending ||
-              thread.historyGeneration !== input.historyGeneration ||
-              thread.revision !== input.revision
-            )
-              return Result.err(nativeFailure("stale", "Thread changed before rewind"));
-            const target = yield* this.readRecord("turn", input.turnId);
-            if (target?.kind !== "turn")
-              return Result.err(nativeFailure("not-found", "Rewind target is unavailable"));
-            const targetInputs = yield* this.readRows(
-              "SELECT * FROM native_records WHERE kind='input' AND thread_id=? AND json_extract(data_json,'$.value.turnId')=? AND json_extract(data_json,'$.value.mode')!='steer' LIMIT 1",
-              [thread.id, input.turnId],
-            );
-            const fullInput = targetInputs[0];
-            const inputs = yield* this.readRows(
-              "SELECT i.* FROM native_records i WHERE i.kind='input' AND i.thread_id=? AND (json_extract(i.data_json,'$.value.state') IN ('queued','uploading') OR EXISTS(SELECT 1 FROM native_records t WHERE t.kind='turn' AND t.thread_id=i.thread_id AND t.position>=? AND t.id=json_extract(i.data_json,'$.value.turnId'))) ORDER BY i.position",
-              [thread.id, target.value.position],
-            );
-            if (fullInput?.kind !== "input")
-              return Result.err(nativeFailure("invalid", "Only full user turns can be rewound"));
-            for (const record of inputs) {
-              if (record.kind !== "input") continue;
-              this.writeRecord(
-                record.value.id,
-                { kind: "input", value: { ...record.value, state: "canceled" } },
-                thread.id,
-                record.value.position,
-              );
-            }
-            this.db
-              .query("DELETE FROM native_records WHERE kind='turn' AND thread_id=? AND position>=?")
-              .run(thread.id, target.value.position);
-            yield* this.cancelUnusedUploads(thread.id);
-            this.bump(
-              {
-                ...thread,
-                historyGeneration: thread.historyGeneration + 1,
-                activeRunId: undefined,
-                mutationPending: true,
-              },
-              "rewind",
-              input.turnId,
-            );
-            return Result.ok({
-              threadId: thread.id,
-              historyGeneration: thread.historyGeneration + 1,
-              turnId: input.turnId,
-              text: fullInput.value.text,
-            });
-          }, this),
+          this.rewindCommand(input, thread),
         );
       }, this),
     );
+  }
+
+  private deleteThreadCommand(
+    input: { readonly threadId: string },
+    thread: NativeThreadRecord,
+  ): NativeStoreResult<NativeMutationResult> {
+    return Result.gen(function* () {
+      this.db
+        .query("DELETE FROM native_records WHERE kind='send-group' AND thread_id=?")
+        .run(thread.id);
+      const pending = yield* this.listPendingInputs(thread.id);
+      for (const item of pending)
+        this.writeRecord(
+          item.id,
+          { kind: "input", value: { ...item, state: "canceled" } },
+          thread.id,
+          item.position,
+        );
+      yield* this.cancelUnusedUploads(thread.id);
+      this.bump(
+        {
+          ...thread,
+          deleted: true,
+          historyGeneration: thread.historyGeneration + 1,
+          mutationPending: true,
+          activeRunId: undefined,
+        },
+        "delete",
+        thread.id,
+      );
+      return Result.ok({
+        threadId: thread.id,
+        historyGeneration: thread.historyGeneration + 1,
+      });
+    }, this);
   }
 
   deleteThread(
@@ -2943,35 +3003,7 @@ export class NativeStore {
         if (!this.capabilities(user, thread).edit)
           return Result.err(nativeFailure("forbidden", "Thread access is denied"));
         return this.command(actorId, input.commandId, { operation: "delete", ...input }, () =>
-          Result.gen(function* () {
-            this.db
-              .query("DELETE FROM native_records WHERE kind='send-group' AND thread_id=?")
-              .run(thread.id);
-            const pending = yield* this.listPendingInputs(thread.id);
-            for (const item of pending)
-              this.writeRecord(
-                item.id,
-                { kind: "input", value: { ...item, state: "canceled" } },
-                thread.id,
-                item.position,
-              );
-            yield* this.cancelUnusedUploads(thread.id);
-            this.bump(
-              {
-                ...thread,
-                deleted: true,
-                historyGeneration: thread.historyGeneration + 1,
-                mutationPending: true,
-                activeRunId: undefined,
-              },
-              "delete",
-              thread.id,
-            );
-            return Result.ok({
-              threadId: thread.id,
-              historyGeneration: thread.historyGeneration + 1,
-            });
-          }, this),
+          this.deleteThreadCommand(input, thread),
         );
       }, this),
     );
@@ -4054,12 +4086,7 @@ export class NativeStore {
           const turn = yield* this.readRecord("turn", input.value.turnId);
           if (turn?.kind !== "turn") continue;
           const messageIds = turn.value.messages
-            .filter(
-              (message) =>
-                message.role === "assistant" &&
-                isNativeServiceMessage(message, "lilac") &&
-                message.parts.some((part) => part.type === "text" || part.type === "data-resource"),
-            )
+            .filter(isLinkableServiceMessage)
             .map((message) => message.id);
           links.push({
             requestId: input.value.requestId,

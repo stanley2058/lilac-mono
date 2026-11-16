@@ -182,33 +182,29 @@ export async function loadOrCreateCoreDeadLetterKey(options: {
       const cause = captured.error.cause;
       let cleanupCause: unknown;
       if (temporaryHandle) {
-        {
-          const captured = await Result.tryPromise({
-            try: async () => {
-              await temporaryHandle!.close();
-            },
-            catch: captureError,
-          });
+        const captured = await Result.tryPromise({
+          try: async () => {
+            await temporaryHandle!.close();
+          },
+          catch: captureError,
+        });
 
-          if (captured.isErr()) {
-            const closeCause = captured.error.cause;
-            cleanupCause = closeCause;
-          }
+        if (captured.isErr()) {
+          const closeCause = captured.error.cause;
+          cleanupCause = closeCause;
         }
       }
       if (temporaryPath) {
-        {
-          const captured = await Result.tryPromise({
-            try: async () => {
-              await fs.rm(temporaryPath!, { force: true });
-            },
-            catch: captureError,
-          });
+        const captured = await Result.tryPromise({
+          try: async () => {
+            await fs.rm(temporaryPath!, { force: true });
+          },
+          catch: captureError,
+        });
 
-          if (captured.isErr()) {
-            const removeCause = captured.error.cause;
-            cleanupCause ??= removeCause;
-          }
+        if (captured.isErr()) {
+          const removeCause = captured.error.cause;
+          cleanupCause ??= removeCause;
         }
       }
 

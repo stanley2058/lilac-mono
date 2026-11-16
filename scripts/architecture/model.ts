@@ -20,6 +20,8 @@ export const ARCHITECTURE_RULES = [
   "architecture/event-delivery-policy-exhaustiveness",
   "architecture/no-production-unwrap",
   "architecture/no-manual-result-branching",
+  "architecture/no-repeated-result-match",
+  "architecture/no-nested-result-continuation",
   "architecture/no-unmapped-result-capture",
   "architecture/no-unhandled-exception-contract",
   "architecture/registered-panic-site",

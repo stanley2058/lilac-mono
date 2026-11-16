@@ -107,6 +107,28 @@ function continueResult<T, E, ROk, RErr>(
   return continuation();
 }
 
+async function adaptPreservingIdentity<TItem, TAdapted>(params: {
+  readonly hook: "adaptLevel1Item" | "adaptLevel2Item";
+  readonly pluginId: string;
+  readonly item: TItem;
+  readonly adapt: (item: TItem) => Promise<TAdapted> | TAdapted;
+}): Promise<ResultType<TAdapted, ToolPluginManagerHookError>> {
+  const adapted = await captureManagerHook({
+    hook: params.hook,
+    pluginId: params.pluginId,
+    run: () => params.adapt(params.item),
+  });
+  if (adapted.isErr()) return Result.err(adapted.error);
+  if (Object.is(adapted.value, params.item)) return Result.ok(adapted.value);
+  return Result.err(
+    mapPluginManagerHookException({
+      hook: params.hook,
+      pluginId: params.pluginId,
+      cause: new Error("adapter must preserve the original object identity"),
+    }),
+  );
+}
+
 export function getLevel1ContributionSnapshot(
   spec: Level1ToolSpec<unknown>,
 ): Level1ContributionInfo | undefined {
@@ -822,33 +844,16 @@ export class ToolPluginManager<
       Level1ToolSpecCapabilitySnapshot<TRuntimeContext>
     >();
     for (const capability of instance.level1) {
-      const item = capability.spec;
-      const adapted = await captureManagerHook({
+      const adapted = await adaptPreservingIdentity({
         hook: "adaptLevel1Item",
         pluginId,
-        run: () => this.options.adaptLevel1Item(item, context),
+        item: capability.spec,
+        adapt: (item) => this.options.adaptLevel1Item(item, context),
       });
-      let adaptedItem!: TLevel1;
-      let adaptationError: ToolPluginManagerHookError | undefined;
-      continueResult(adapted, {
-        ok: (value) => {
-          adaptedItem = value;
-        },
-        err: (error) => {
-          adaptationError = error;
-        },
-      });
-      if (adaptationError !== undefined) {
-        return this.cleanupFailedInstance(adaptationError, pluginId, params.source, instance);
+      if (adapted.isErr()) {
+        return this.cleanupFailedInstance(adapted.error, pluginId, params.source, instance);
       }
-      if (!Object.is(adaptedItem, item)) {
-        const error = mapPluginManagerHookException({
-          hook: "adaptLevel1Item",
-          pluginId,
-          cause: new Error("adapter must preserve the original object identity"),
-        });
-        return this.cleanupFailedInstance(error, pluginId, params.source, instance);
-      }
+      const adaptedItem = adapted.value;
       adaptedLevel1.push(adaptedItem);
       level1Capabilities.set(adaptedItem, capability);
       level1ContributionSnapshots.set(adaptedItem, context);
@@ -857,33 +862,16 @@ export class ToolPluginManager<
     const adaptedLevel2: TLevel2[] = [];
     const level2Capabilities = new Map<TLevel2, ServerToolCapabilitySnapshot>();
     for (const capability of instance.level2) {
-      const item = capability.tool;
-      const adapted = await captureManagerHook({
+      const adapted = await adaptPreservingIdentity({
         hook: "adaptLevel2Item",
         pluginId,
-        run: () => this.options.adaptLevel2Item(item, context),
+        item: capability.tool,
+        adapt: (item) => this.options.adaptLevel2Item(item, context),
       });
-      let adaptedItem!: TLevel2;
-      let adaptationError: ToolPluginManagerHookError | undefined;
-      continueResult(adapted, {
-        ok: (value) => {
-          adaptedItem = value;
-        },
-        err: (error) => {
-          adaptationError = error;
-        },
-      });
-      if (adaptationError !== undefined) {
-        return this.cleanupFailedInstance(adaptationError, pluginId, params.source, instance);
+      if (adapted.isErr()) {
+        return this.cleanupFailedInstance(adapted.error, pluginId, params.source, instance);
       }
-      if (!Object.is(adaptedItem, item)) {
-        const error = mapPluginManagerHookException({
-          hook: "adaptLevel2Item",
-          pluginId,
-          cause: new Error("adapter must preserve the original object identity"),
-        });
-        return this.cleanupFailedInstance(error, pluginId, params.source, instance);
-      }
+      const adaptedItem = adapted.value;
       adaptedLevel2.push(adaptedItem);
       level2Capabilities.set(adaptedItem, capability);
     }

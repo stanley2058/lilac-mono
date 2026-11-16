@@ -3,10 +3,11 @@ import { fileURLToPath } from "node:url";
 
 import { noFixedTestWaitRule } from "./test-waits.mts";
 import {
-  noExceptionFlowRule,
   noElseAfterTerminalRule,
+  noExceptionFlowRule,
   noInlineAsyncResultCallbackRule,
   noLocalIsRecordRule,
+  noRedundantBranchRule,
   preferSwitchTrueChainRule,
 } from "./production-syntax.mts";
 
@@ -114,6 +115,22 @@ ruleTester.run("lilac/no-else-after-terminal", noElseAfterTerminalRule, {
       code: "function run() { if (ready) return value; else return fallback; }",
       filename: productionFile,
       errors: [{ message: /Remove this else/u, line: 1, column: 47 }],
+    },
+  ],
+});
+
+ruleTester.run("lilac/no-redundant-branch", noRedundantBranchRule, {
+  valid: [
+    {
+      code: "if (ready) first(); else second();",
+      filename: productionFile,
+    },
+  ],
+  invalid: [
+    {
+      code: "const ready = check();\nif (ready) first();\nif (ready) second();",
+      filename: productionFile,
+      errors: [{ message: /repeats the condition/u, line: 3, column: 0 }],
     },
   ],
 });

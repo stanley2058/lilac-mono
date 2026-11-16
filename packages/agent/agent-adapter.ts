@@ -254,22 +254,32 @@ function invalidState(message: string): ResultType<never, AgentAdapterFailure> {
   );
 }
 
+function recordAssistantToolParts(
+  content: Exclude<Extract<ModelMessage, { role: "assistant" }>["content"], string>,
+  pending: Set<string>,
+  seen: Set<string>,
+): string | undefined {
+  for (const part of content) {
+    if (part.type === "tool-result") {
+      if (!pending.delete(part.toolCallId))
+        return "Canonical history contains an orphan tool result";
+      continue;
+    }
+    if (part.type !== "tool-call") continue;
+    if (seen.has(part.toolCallId)) return "Canonical history repeats a tool call";
+    seen.add(part.toolCallId);
+    pending.add(part.toolCallId);
+  }
+  return undefined;
+}
+
 function validateToolExchange(messages: readonly ModelMessage[]): string | undefined {
   const pending = new Set<string>();
   const seen = new Set<string>();
   for (const message of messages) {
     if (message.role === "assistant" && typeof message.content !== "string") {
-      for (const part of message.content) {
-        if (part.type === "tool-result") {
-          if (!pending.delete(part.toolCallId))
-            return "Canonical history contains an orphan tool result";
-          continue;
-        }
-        if (part.type !== "tool-call") continue;
-        if (seen.has(part.toolCallId)) return "Canonical history repeats a tool call";
-        seen.add(part.toolCallId);
-        pending.add(part.toolCallId);
-      }
+      const invalid = recordAssistantToolParts(message.content, pending, seen);
+      if (invalid) return invalid;
       continue;
     }
     if (message.role === "tool") {

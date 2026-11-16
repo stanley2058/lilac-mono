@@ -3,6 +3,7 @@ import {
   formatTaggedErrorForLog,
   getCoreConfig,
   isPanic,
+  opaqueErrorMessage,
 } from "@stanley2058/lilac-utils";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 
@@ -63,7 +64,7 @@ export function captureThreadSummarizationWorkerCleanupFailure<Cause>(
 ): ThreadSummarizationWorkerOperationFailed | Panic {
   if (isPanic(cause)) return cause;
   return new ThreadSummarizationWorkerOperationFailed({
-    message: "Conversation thread summarization worker cleanup failed",
+    message: `Conversation thread summarization worker cleanup failed: ${opaqueErrorMessage(cause, "unknown cause")}`,
   });
 }
 
@@ -84,13 +85,7 @@ export async function runThreadSummarizationWorkerOperation(params: {
   for (const cleanup of params.cleanups) {
     const [cleanupSettled] = await Promise.allSettled([Promise.resolve().then(cleanup.close)]);
     if (cleanupSettled.status === "fulfilled") continue;
-    const failure = Result.try({
-      try: () => captureThreadSummarizationWorkerCleanupFailure(cleanupSettled.reason),
-      catch: () =>
-        new ThreadSummarizationWorkerOperationFailed({
-          message: "Conversation thread summarization worker cleanup failed",
-        }),
-    }).match({ ok: (value) => value, err: (value) => value });
+    const failure = captureThreadSummarizationWorkerCleanupFailure(cleanupSettled.reason);
     if (Panic.is(failure)) {
       cleanupPanic ??= failure;
       params.onCleanupFailure({ cleanup, kind: "panic", panic: failure });

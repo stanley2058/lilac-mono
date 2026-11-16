@@ -224,57 +224,39 @@ class RestrictedReadFs implements IFileSystem {
     if (this.denyOutsideMount && normalizeVirtualPath(pathName) !== "/") {
       signalRestrictedBashFailure("authorize_read", accessDenied(pathName).message);
     }
-    if (!this.hostRoot) return;
-    const virtual = normalizeVirtualPath(pathName);
-    const relative = virtual.startsWith(`${WORKSPACE_MOUNT}/`)
-      ? virtual.slice(WORKSPACE_MOUNT.length + 1)
-      : virtual.slice(1);
-    const candidate = path.resolve(this.hostRoot, relative);
-    if (candidate !== this.hostRoot && !candidate.startsWith(`${this.hostRoot}${path.sep}`)) {
-      signalRestrictedBashFailure("authorize_read", accessDenied(pathName).message);
-    }
-    const inspected = await captureRestrictedHostPromise(() => fs.lstat(candidate));
-    const inspectError = inspected.match({ ok: () => null, err: (error) => error });
-    if (inspectError) {
-      const cause = preserveToolPanic(inspectError);
-      if (restrictedHostErrorCode(cause) === "ENOENT") return;
-      signalRestrictedBashFailure(
-        "inspect_read_target",
-        opaqueErrorMessage(cause, "Failed to inspect restricted read target"),
-      );
-    }
-    const stat = inspected.match({ ok: (value) => value, err: () => null });
-    if (stat?.isFile() && stat.nlink > 1) {
-      signalRestrictedBashFailure("authorize_read", accessDenied(pathName).message);
-    }
+    await this.assertHostTarget(pathName, "read");
   }
 
   private async assertWritable(pathName: string): Promise<void> {
     if (this.denyOutsideMount || normalizeVirtualPath(pathName) === "/") {
       signalRestrictedBashFailure("authorize_write", accessDenied(pathName).message);
     }
+    await this.assertHostTarget(pathName, "write");
+  }
+
+  private async assertHostTarget(pathName: string, access: "read" | "write"): Promise<void> {
     if (!this.hostRoot) return;
+    const authorizeOperation = `authorize_${access}`;
     const virtual = normalizeVirtualPath(pathName);
     const relative = virtual.startsWith(`${WORKSPACE_MOUNT}/`)
       ? virtual.slice(WORKSPACE_MOUNT.length + 1)
       : virtual.slice(1);
     const candidate = path.resolve(this.hostRoot, relative);
     if (candidate !== this.hostRoot && !candidate.startsWith(`${this.hostRoot}${path.sep}`)) {
-      signalRestrictedBashFailure("authorize_write", accessDenied(pathName).message);
+      signalRestrictedBashFailure(authorizeOperation, accessDenied(pathName).message);
     }
     const inspected = await captureRestrictedHostPromise(() => fs.lstat(candidate));
-    const inspectError = inspected.match({ ok: () => null, err: (error) => error });
-    if (inspectError) {
-      const cause = preserveToolPanic(inspectError);
+    if (inspected.isErr()) {
+      const cause = preserveToolPanic(inspected.error);
       if (restrictedHostErrorCode(cause) === "ENOENT") return;
       signalRestrictedBashFailure(
-        "inspect_write_target",
-        opaqueErrorMessage(cause, "Failed to inspect restricted write target"),
+        `inspect_${access}_target`,
+        opaqueErrorMessage(cause, `Failed to inspect restricted ${access} target`),
       );
     }
-    const stat = inspected.match({ ok: (value) => value, err: () => null });
-    if (stat?.isFile() && stat.nlink > 1) {
-      signalRestrictedBashFailure("authorize_write", accessDenied(pathName).message);
+    const stat = inspected.value;
+    if (stat.isFile() && stat.nlink > 1) {
+      signalRestrictedBashFailure(authorizeOperation, accessDenied(pathName).message);
     }
   }
 
@@ -621,39 +603,27 @@ async function fetchNestedToolsJson(params: {
     operation: params.operation,
     run: () => fetch(params.url, { ...params.init, signal: params.signal }),
   });
-  const fetchError = fetched.match({ ok: () => null, err: (error) => error });
-  if (fetchError) {
+  if (fetched.isErr()) {
     const terminationFailure = nestedToolsTerminationFailure(
       params.classifyTermination(),
       params.operation,
     );
     if (terminationFailure) return signalNestedToolsFailure(terminationFailure);
-    signalNestedToolsFailure(
+    return signalNestedToolsFailure(
       createNestedToolsFailure({
         kind: "unavailable",
         code: "TOOL_SERVER_NETWORK_ERROR",
-        message: fetchError.message,
+        message: fetched.error.message,
         retryable: true,
       }),
     );
   }
-  const response = fetched.match({ ok: (value) => value, err: () => null });
-  if (!response) {
-    return signalNestedToolsFailure(
-      createNestedToolsFailure({
-        kind: "internal",
-        code: "TOOL_SERVER_FETCH_INVARIANT",
-        message: "Tool server request did not produce a response",
-        retryable: false,
-      }),
-    );
-  }
+  const response = fetched.value;
   const read = await captureRestrictedBashOperation({
     operation: `read_${params.operation}`,
     run: () => response.text(),
   });
-  const readError = read.match({ ok: () => null, err: (error) => error });
-  if (readError) {
+  if (read.isErr()) {
     const terminationFailure = nestedToolsTerminationFailure(
       params.classifyTermination(),
       params.operation,
@@ -663,12 +633,12 @@ async function fetchNestedToolsJson(params: {
       createNestedToolsFailure({
         kind: "unavailable",
         code: "TOOL_SERVER_RESPONSE_READ_ERROR",
-        message: readError.message,
+        message: read.error.message,
         retryable: true,
       }),
     );
   }
-  const text = read.match({ ok: (value) => value, err: () => "" });
+  const text = read.value;
   if (!response.ok) {
     const status = response.status;
     let projection: Pick<ServerToolFailure, "kind" | "retryable"> = {
@@ -719,13 +689,12 @@ async function fetchNestedToolsJson(params: {
   }).mapError((captured) =>
     projectCapturedRuntimeError(captured, "Tool server returned invalid JSON"),
   );
-  const parseError = parsed.match({ ok: () => null, err: (error) => error });
-  if (parseError) {
+  if (parsed.isErr()) {
     return signalNestedToolsFailure(
       createNestedToolsFailure({
         kind: "internal",
         code: "TOOL_SERVER_INVALID_JSON",
-        message: opaqueErrorMessage(parseError, "Tool server returned invalid JSON"),
+        message: opaqueErrorMessage(parsed.error, "Tool server returned invalid JSON"),
         retryable: false,
       }),
     );
@@ -740,7 +709,7 @@ async function fetchNestedToolsJson(params: {
       }),
     );
   }
-  return parsed.match({ ok: (value) => value, err: () => null });
+  return parsed.value;
 }
 
 async function fetchNestedToolCallResponse(params: {
@@ -875,11 +844,13 @@ async function buildNestedToolInput(params: {
       primary: help.primaryPositional,
       bareBooleanField: bareBooleanFlags[0],
     });
-    const positionalError = positionalInput.match({ ok: () => undefined, err: (error) => error });
-    if (positionalError !== undefined) {
-      return signalNestedToolsInputFailure(positionalError.code, positionalError.message);
+    if (positionalInput.isErr()) {
+      return signalNestedToolsInputFailure(
+        positionalInput.error.code,
+        positionalInput.error.message,
+      );
     }
-    return positionalInput.match({ ok: (value) => value, err: () => input });
+    return positionalInput.value;
   }
 
   return input;
@@ -1175,22 +1146,20 @@ export async function executeRestrictedBash(
     operation: "resolve_cwd",
     run: () => resolveRestrictedCwd({ cwd, workspaceRoot, sessionTmpDir }),
   });
-  const blockedCwd = resolvedCwd.match<BashToolOutput | null>({
-    ok: () => null,
-    err: (error) => ({
+  if (resolvedCwd.isErr()) {
+    return {
       stdout: "",
-      stderr: error.message,
+      stderr: resolvedCwd.error.message,
       exitCode: -1,
       executionError: {
         type: "blocked",
         code: "restricted_cwd",
-        reason: error.message,
+        reason: resolvedCwd.error.message,
         hint: "Choose a cwd inside the approved workspace or the restricted session /tmp.",
       },
-    }),
-  });
-  if (blockedCwd) return blockedCwd;
-  const restrictedCwd = resolvedCwd.match({ ok: (value) => value, err: () => WORKSPACE_MOUNT });
+    };
+  }
+  const restrictedCwd = resolvedCwd.value;
 
   const wallClockTimeoutMs = Math.min(
     timeoutMs ?? RESTRICTED_BASH_WALL_TIMEOUT_MS,
@@ -1282,23 +1251,14 @@ export async function executeRestrictedBash(
             maxBytesPerSession: outputConfig.artifactMaxBytesPerSession,
           }),
       });
-      const createError = created.match({ ok: () => null, err: (error) => error });
-      if (createError) {
+      const artifact = created.andThen((value) => value);
+      if (artifact.isErr()) {
         logger.warn("tool.artifact.write_failed", {
           toolName: "bash",
-          ...formatTaggedErrorForLog(createError),
+          ...formatTaggedErrorForLog(artifact.error),
         });
       } else {
-        const artifact = created.match({ ok: (value) => value, err: () => null });
-        const artifactError = artifact?.match({ ok: () => null, err: (error) => error });
-        if (artifactError) {
-          logger.warn("tool.artifact.write_failed", {
-            toolName: "bash",
-            ...formatTaggedErrorForLog(artifactError),
-          });
-        } else {
-          artifactUri = artifact?.match({ ok: (value) => value.uri, err: () => undefined });
-        }
+        artifactUri = artifact.value.uri;
       }
     }
     return withLimitedBashOutput(output, {

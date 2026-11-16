@@ -575,135 +575,109 @@ export class GithubAdapter implements SurfaceAdapter {
       },
       opts,
     );
-    const continueSend = prepared.match<() => Promise<SurfaceOperationResult<MsgRef>>>({
-      err: (error) => async () => Result.err(error),
-      ok: (preparedValue) => async () => {
-        const createdResult = await captureGithubOperation("send-message", () =>
-          this.api.createIssueComment({
-            owner: preparedValue.thread.owner,
-            repo: preparedValue.thread.repo,
-            issueNumber: preparedValue.thread.number,
-            body: markGithubAgentComment(preparedValue.text),
+    if (prepared.isErr()) return Result.err(prepared.error);
+    const preparedValue = prepared.value;
+    const createdResult = await captureGithubOperation("send-message", () =>
+      this.api.createIssueComment({
+        owner: preparedValue.thread.owner,
+        repo: preparedValue.thread.repo,
+        issueNumber: preparedValue.thread.number,
+        body: markGithubAgentComment(preparedValue.text),
+      }),
+    );
+    if (createdResult.isErr()) return Result.err(createdResult.error);
+    const created = createdResult.value;
+    const createdRef: GithubMsgRef = {
+      platform: "github",
+      channelId: preparedValue.ref.channelId,
+      messageId: String(created.id),
+    };
+    if (!content.actions || content.actions.length === 0) return Result.ok(createdRef);
+    const edited = await captureGithubOperation("send-message", () =>
+      this.api.editIssueComment({
+        owner: preparedValue.thread.owner,
+        repo: preparedValue.thread.repo,
+        commentId: created.id,
+        body: markGithubAgentComment(
+          renderGithubActionContent({
+            text: preparedValue.text,
+            messageId: createdRef.messageId,
+            actions: content.actions ?? [],
           }),
-        );
-        const continueCreated = createdResult.match<() => Promise<SurfaceOperationResult<MsgRef>>>({
-          err: (error) => async () => Result.err(error),
-          ok: (created) => async () => {
-            const createdRef: GithubMsgRef = {
-              platform: "github",
-              channelId: preparedValue.ref.channelId,
-              messageId: String(created.id),
-            };
-            if (!content.actions || content.actions.length === 0) return Result.ok(createdRef);
-            const edited = await captureGithubOperation("send-message", () =>
-              this.api.editIssueComment({
-                owner: preparedValue.thread.owner,
-                repo: preparedValue.thread.repo,
-                commentId: created.id,
-                body: markGithubAgentComment(
-                  renderGithubActionContent({
-                    text: preparedValue.text,
-                    messageId: createdRef.messageId,
-                    actions: content.actions ?? [],
-                  }),
-                ),
-              }),
-            );
-            return continueResult(edited, {
-              err: () =>
-                Result.err(
-                  new SurfaceOperationPartiallyCompleted({
-                    platform: "github",
-                    operation: "send-message",
-                    created: createdRef,
-                    message: `GitHub comment ${createdRef.messageId} was created but its action edit failed`,
-                  }),
-                ),
-              ok: () => Result.ok(createdRef),
-            });
-          },
-        });
-        return continueCreated();
-      },
+        ),
+      }),
+    );
+    return continueResult(edited, {
+      err: () =>
+        Result.err(
+          new SurfaceOperationPartiallyCompleted({
+            platform: "github",
+            operation: "send-message",
+            created: createdRef,
+            message: `GitHub comment ${createdRef.messageId} was created but its action edit failed`,
+          }),
+        ),
+      ok: () => Result.ok(createdRef),
     });
-    return continueSend();
   }
 
   async readMsg(msgRef: MsgRef): Promise<SurfaceOperationResult<SurfaceMessage | null>> {
     const refResult = githubMsgRefResult("read-message", msgRef);
-    const continueRead = refResult.match<
-      () => Promise<SurfaceOperationResult<SurfaceMessage | null>>
-    >({
-      err: (error) => async () => Result.err(error),
-      ok: (ref) => async () => {
-        const session: GithubSessionRef = { platform: "github", channelId: ref.channelId };
-        const threadResult = parseGithubThreadResult("read-message", session);
-        const continueThread = threadResult.match<
-          () => Promise<SurfaceOperationResult<SurfaceMessage | null>>
-        >({
-          err: (error) => async () => Result.err(error),
-          ok: (thread) => async () => {
-            if (isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })) {
-              const issueResult = await captureGithubOperation("read-message", () =>
-                this.api.getIssue({
-                  owner: thread.owner,
-                  repo: thread.repo,
-                  number: thread.number,
-                }),
-              );
-              return continueResult(issueResult, {
-                err: (error) => Result.err(error),
-                ok: (issue) =>
-                  Result.ok(
-                    toGithubMessage({
-                      ref: { ...ref, messageId: String(thread.number) },
-                      session,
-                      body: `Title: ${issue.title}\n\n${issue.body ?? ""}`.trim(),
-                      user: issue.user,
-                      createdAt: issue.created_at,
-                      updatedAt: issue.updated_at,
-                      raw: { title: issue.title, htmlUrl: issue.html_url },
-                    }),
-                  ),
-              });
-            }
-            const commentIdResult = githubCommentIdResult("read-message", ref.messageId);
-            const continueComment = commentIdResult.match<
-              () => Promise<SurfaceOperationResult<SurfaceMessage | null>>
-            >({
-              err: (error) => async () => Result.err(error),
-              ok: (commentId) => async () => {
-                const commentResult = await captureGithubOperation("read-message", () =>
-                  this.api.getIssueComment({
-                    owner: thread.owner,
-                    repo: thread.repo,
-                    commentId,
-                  }),
-                );
-                return continueResult(commentResult, {
-                  err: (error) => Result.err(error),
-                  ok: (comment) =>
-                    Result.ok(
-                      toGithubMessage({
-                        ref: { ...ref, messageId: String(comment.id) },
-                        session,
-                        body: comment.body ?? "",
-                        user: comment.user,
-                        createdAt: comment.created_at,
-                        updatedAt: comment.updated_at,
-                        raw: { htmlUrl: comment.html_url },
-                      }),
-                    ),
-                });
-              },
-            });
-            return continueComment();
-          },
-        });
-        return continueThread();
-      },
+    if (refResult.isErr()) return Result.err(refResult.error);
+    const ref = refResult.value;
+    const session: GithubSessionRef = { platform: "github", channelId: ref.channelId };
+    const threadResult = parseGithubThreadResult("read-message", session);
+    if (threadResult.isErr()) return Result.err(threadResult.error);
+    const thread = threadResult.value;
+    if (isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })) {
+      const issueResult = await captureGithubOperation("read-message", () =>
+        this.api.getIssue({
+          owner: thread.owner,
+          repo: thread.repo,
+          number: thread.number,
+        }),
+      );
+      return continueResult(issueResult, {
+        err: (error) => Result.err(error),
+        ok: (issue) =>
+          Result.ok(
+            toGithubMessage({
+              ref: { ...ref, messageId: String(thread.number) },
+              session,
+              body: `Title: ${issue.title}\n\n${issue.body ?? ""}`.trim(),
+              user: issue.user,
+              createdAt: issue.created_at,
+              updatedAt: issue.updated_at,
+              raw: { title: issue.title, htmlUrl: issue.html_url },
+            }),
+          ),
+      });
+    }
+    const commentIdResult = githubCommentIdResult("read-message", ref.messageId);
+    if (commentIdResult.isErr()) return Result.err(commentIdResult.error);
+    const commentId = commentIdResult.value;
+    const commentResult = await captureGithubOperation("read-message", () =>
+      this.api.getIssueComment({
+        owner: thread.owner,
+        repo: thread.repo,
+        commentId,
+      }),
+    );
+    return continueResult(commentResult, {
+      err: (error) => Result.err(error),
+      ok: (comment) =>
+        Result.ok(
+          toGithubMessage({
+            ref: { ...ref, messageId: String(comment.id) },
+            session,
+            body: comment.body ?? "",
+            user: comment.user,
+            createdAt: comment.created_at,
+            updatedAt: comment.updated_at,
+            raw: { htmlUrl: comment.html_url },
+          }),
+        ),
     });
-    return continueRead();
   }
 
   async listMsg(
@@ -711,11 +685,9 @@ export class GithubAdapter implements SurfaceAdapter {
     opts?: LimitOpts,
   ): Promise<SurfaceOperationResult<SurfaceMessage[]>> {
     const ref = githubSessionRefResult("list-messages", sessionRef);
-    const continueList = ref.match<() => Promise<SurfaceOperationResult<SurfaceMessage[]>>>({
-      err: (error) => async () => Result.err(error),
-      ok: (value) => () => this.listGithubMessages("list-messages", value, opts),
-    });
-    return continueList();
+    if (ref.isErr()) return Result.err(ref.error);
+    const value = ref.value;
+    return this.listGithubMessages("list-messages", value, opts);
   }
 
   private async listGithubMessages(
@@ -729,125 +701,111 @@ export class GithubAdapter implements SurfaceAdapter {
       );
     }
     const thread = parseGithubThreadResult(operation, sessionRef);
-    const continueList = thread.match<() => Promise<SurfaceOperationResult<SurfaceMessage[]>>>({
-      err: (error) => async () => Result.err(error),
-      ok: (threadValue) => async () => {
-        const comments = await captureGithubOperation(operation, () =>
-          this.api.listIssueComments({
-            owner: threadValue.owner,
-            repo: threadValue.repo,
-            number: threadValue.number,
-            limit: Math.min(Math.max(opts?.limit ?? 50, 1), 100),
-            page: opts?.page,
-          }),
-        );
-        return comments.map((values) =>
-          values.map((comment) =>
-            toGithubMessage({
-              ref: {
-                platform: "github",
-                channelId: sessionRef.channelId,
-                messageId: String(comment.id),
-              },
-              session: sessionRef,
-              body: comment.body ?? "",
-              user: comment.user,
-              createdAt: comment.created_at,
-              updatedAt: comment.updated_at,
-              raw: { htmlUrl: comment.html_url },
-            }),
-          ),
-        );
-      },
-    });
-    return continueList();
+    if (thread.isErr()) return Result.err(thread.error);
+    const threadValue = thread.value;
+    const comments = await captureGithubOperation(operation, () =>
+      this.api.listIssueComments({
+        owner: threadValue.owner,
+        repo: threadValue.repo,
+        number: threadValue.number,
+        limit: Math.min(Math.max(opts?.limit ?? 50, 1), 100),
+        page: opts?.page,
+      }),
+    );
+    return comments.map((values) =>
+      values.map((comment) =>
+        toGithubMessage({
+          ref: {
+            platform: "github",
+            channelId: sessionRef.channelId,
+            messageId: String(comment.id),
+          },
+          session: sessionRef,
+          body: comment.body ?? "",
+          user: comment.user,
+          createdAt: comment.created_at,
+          updatedAt: comment.updated_at,
+          raw: { htmlUrl: comment.html_url },
+        }),
+      ),
+    );
   }
 
   async editMsg(msgRef: MsgRef, content: ContentOpts): Promise<SurfaceOperationResult<void>> {
     const refResult = githubMsgRefResult("edit-message", msgRef);
-    const continueEdit = refResult.match<() => Promise<SurfaceOperationResult<void>>>({
+    if (refResult.isErr()) return Result.err(refResult.error);
+    const ref = refResult.value;
+    if ((content.attachments?.length ?? 0) > 0) {
+      return Result.err(
+        unsupported("edit-message", "GitHub comment attachment edits are not supported"),
+      );
+    }
+    if (isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })) {
+      return Result.err(
+        unsupported("edit-message", "Editing GitHub issue or PR bodies is not supported"),
+      );
+    }
+    const body = content.text ?? "";
+    if (!body.trim()) {
+      return Result.err(invalidInput("edit-message", "content.text", "Message text is required"));
+    }
+    const session: GithubSessionRef = { platform: "github", channelId: ref.channelId };
+    const validated = Result.all([
+      parseGithubThreadResult("edit-message", session),
+      githubCommentIdResult("edit-message", ref.messageId),
+    ]);
+    const rendered = content.actions
+      ? renderGithubActionContent({
+          text: body,
+          messageId: ref.messageId,
+          actions: content.actions,
+        })
+      : body;
+    const continueValidated = validated.match<() => Promise<SurfaceOperationResult<void>>>({
       err: (error) => async () => Result.err(error),
-      ok: (ref) => async () => {
-        if ((content.attachments?.length ?? 0) > 0) {
-          return Result.err(
-            unsupported("edit-message", "GitHub comment attachment edits are not supported"),
-          );
-        }
-        if (isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })) {
-          return Result.err(
-            unsupported("edit-message", "Editing GitHub issue or PR bodies is not supported"),
-          );
-        }
-        const body = content.text ?? "";
-        if (!body.trim()) {
-          return Result.err(
-            invalidInput("edit-message", "content.text", "Message text is required"),
-          );
-        }
-        const session: GithubSessionRef = { platform: "github", channelId: ref.channelId };
-        const validated = Result.all([
-          parseGithubThreadResult("edit-message", session),
-          githubCommentIdResult("edit-message", ref.messageId),
-        ]);
-        const rendered = content.actions
-          ? renderGithubActionContent({
-              text: body,
-              messageId: ref.messageId,
-              actions: content.actions,
-            })
-          : body;
-        const continueValidated = validated.match<() => Promise<SurfaceOperationResult<void>>>({
-          err: (error) => async () => Result.err(error),
-          ok:
-            ([thread, commentId]) =>
-            () =>
-              captureGithubOperation("edit-message", () =>
-                this.api.editIssueComment({
-                  owner: thread.owner,
-                  repo: thread.repo,
-                  commentId,
-                  body: rendered,
-                }),
-              ),
-        });
-        return continueValidated();
-      },
+      ok:
+        ([thread, commentId]) =>
+        () =>
+          captureGithubOperation("edit-message", () =>
+            this.api.editIssueComment({
+              owner: thread.owner,
+              repo: thread.repo,
+              commentId,
+              body: rendered,
+            }),
+          ),
     });
-    return continueEdit();
+    return continueValidated();
   }
 
   async deleteMsg(msgRef: MsgRef): Promise<SurfaceOperationResult<void>> {
     const refResult = githubMsgRefResult("delete-message", msgRef);
-    const continueDelete = refResult.match<() => Promise<SurfaceOperationResult<void>>>({
+    if (refResult.isErr()) return Result.err(refResult.error);
+    const ref = refResult.value;
+    if (isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })) {
+      return Result.err(
+        unsupported("delete-message", "Deleting GitHub issue or PR bodies is not supported"),
+      );
+    }
+    const session: GithubSessionRef = { platform: "github", channelId: ref.channelId };
+    const validated = Result.all([
+      parseGithubThreadResult("delete-message", session),
+      githubCommentIdResult("delete-message", ref.messageId),
+    ]);
+    const continueValidated = validated.match<() => Promise<SurfaceOperationResult<void>>>({
       err: (error) => async () => Result.err(error),
-      ok: (ref) => async () => {
-        if (isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })) {
-          return Result.err(
-            unsupported("delete-message", "Deleting GitHub issue or PR bodies is not supported"),
-          );
-        }
-        const session: GithubSessionRef = { platform: "github", channelId: ref.channelId };
-        const validated = Result.all([
-          parseGithubThreadResult("delete-message", session),
-          githubCommentIdResult("delete-message", ref.messageId),
-        ]);
-        const continueValidated = validated.match<() => Promise<SurfaceOperationResult<void>>>({
-          err: (error) => async () => Result.err(error),
-          ok:
-            ([thread, commentId]) =>
-            () =>
-              captureGithubOperation("delete-message", () =>
-                this.api.deleteIssueComment({
-                  owner: thread.owner,
-                  repo: thread.repo,
-                  commentId,
-                }),
-              ),
-        });
-        return continueValidated();
-      },
+      ok:
+        ([thread, commentId]) =>
+        () =>
+          captureGithubOperation("delete-message", () =>
+            this.api.deleteIssueComment({
+              owner: thread.owner,
+              repo: thread.repo,
+              commentId,
+            }),
+          ),
     });
-    return continueDelete();
+    return continueValidated();
   }
 
   async getReplyContext(
@@ -893,55 +851,43 @@ export class GithubAdapter implements SurfaceAdapter {
       reactions: GithubReaction[] = [],
     ): Promise<SurfaceOperationResult<GithubReaction[]>> => {
       const currentResult = await captureGithubOperation(operation, () => listPage(page));
-      const continuePage = currentResult.match<
-        () => Promise<SurfaceOperationResult<GithubReaction[]>>
-      >({
-        err: (error) => async () => Result.err(error),
-        ok: (current) => async () => {
-          reactions.push(...current);
-          return current.length < 100
-            ? Result.ok(reactions)
-            : collectPages(listPage, page + 1, reactions);
-        },
-      });
-      return continuePage();
+      if (currentResult.isErr()) return Result.err(currentResult.error);
+      const current = currentResult.value;
+      reactions.push(...current);
+      return current.length < 100
+        ? Result.ok(reactions)
+        : collectPages(listPage, page + 1, reactions);
     };
-    const continueThread = threadResult.match<
+    if (threadResult.isErr()) return Result.err(threadResult.error);
+    const thread = threadResult.value;
+    if (isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })) {
+      return collectPages((page) =>
+        this.api.listIssueReactions({
+          owner: thread.owner,
+          repo: thread.repo,
+          issueNumber: thread.number,
+          limit: 100,
+          page,
+        }),
+      );
+    }
+    const commentIdResult = githubCommentIdResult(operation, ref.messageId);
+    const continueComment = commentIdResult.match<
       () => Promise<SurfaceOperationResult<GithubReaction[]>>
     >({
       err: (error) => async () => Result.err(error),
-      ok: (thread) => async () => {
-        if (isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })) {
-          return collectPages((page) =>
-            this.api.listIssueReactions({
-              owner: thread.owner,
-              repo: thread.repo,
-              issueNumber: thread.number,
-              limit: 100,
-              page,
-            }),
-          );
-        }
-        const commentIdResult = githubCommentIdResult(operation, ref.messageId);
-        const continueComment = commentIdResult.match<
-          () => Promise<SurfaceOperationResult<GithubReaction[]>>
-        >({
-          err: (error) => async () => Result.err(error),
-          ok: (commentId) => () =>
-            collectPages((page) =>
-              this.api.listIssueCommentReactions({
-                owner: thread.owner,
-                repo: thread.repo,
-                commentId,
-                limit: 100,
-                page,
-              }),
-            ),
-        });
-        return continueComment();
-      },
+      ok: (commentId) => () =>
+        collectPages((page) =>
+          this.api.listIssueCommentReactions({
+            owner: thread.owner,
+            repo: thread.repo,
+            commentId,
+            limit: 100,
+            page,
+          }),
+        ),
     });
-    return continueThread();
+    return continueComment();
   }
 
   async addReaction(msgRef: MsgRef, reaction: string): Promise<SurfaceOperationResult<void>> {
@@ -974,23 +920,17 @@ export class GithubAdapter implements SurfaceAdapter {
             return created.map(() => undefined);
           }
           const commentIdResult = githubCommentIdResult("add-reaction", ref.messageId);
-          const continueComment = commentIdResult.match<
-            () => Promise<SurfaceOperationResult<void>>
-          >({
-            err: (error) => async () => Result.err(error),
-            ok: (commentId) => async () => {
-              const created = await captureGithubOperation("add-reaction", () =>
-                this.api.createIssueCommentReaction({
-                  owner: thread.owner,
-                  repo: thread.repo,
-                  commentId,
-                  content,
-                }),
-              );
-              return created.map(() => undefined);
-            },
-          });
-          return continueComment();
+          if (commentIdResult.isErr()) return Result.err(commentIdResult.error);
+          const commentId = commentIdResult.value;
+          const created = await captureGithubOperation("add-reaction", () =>
+            this.api.createIssueCommentReaction({
+              owner: thread.owner,
+              repo: thread.repo,
+              commentId,
+              content,
+            }),
+          );
+          return created.map(() => undefined);
         },
     });
     return continueAdd();
@@ -1017,11 +957,8 @@ export class GithubAdapter implements SurfaceAdapter {
       const item = reactions[index];
       if (!item) return Result.ok(undefined);
       const deleted = await captureGithubOperation("remove-reaction", () => remove(item));
-      const continueDelete = deleted.match<() => Promise<SurfaceOperationResult<void>>>({
-        err: (error) => async () => Result.err(error),
-        ok: () => () => deleteAll(reactions, remove, index + 1),
-      });
-      return continueDelete();
+      if (deleted.isErr()) return Result.err(deleted.error);
+      return deleteAll(reactions, remove, index + 1);
     };
     const continueRemove = validated.match<() => Promise<SurfaceOperationResult<void>>>({
       err: (error) => async () => Result.err(error),
@@ -1036,61 +973,44 @@ export class GithubAdapter implements SurfaceAdapter {
             const slug = await this.api.getGithubAppSlugOrNull();
             return slug ? `${slug}[bot]` : null;
           });
-          const continueActor = actorResult.match<() => Promise<SurfaceOperationResult<void>>>({
-            err: (error) => async () => Result.err(error),
-            ok: (actor) => async () => {
-              if (!actor) {
-                return Result.err(
-                  new SurfaceUnavailable({
-                    platform: "github",
-                    operation: "remove-reaction",
-                    message: "Unable to resolve the outbound GitHub actor login",
-                  }),
-                );
-              }
-              const reactionsResult = await this.listGithubReactions("remove-reaction", ref);
-              const continueReactions = reactionsResult.match<
-                () => Promise<SurfaceOperationResult<void>>
-              >({
-                err: (error) => async () => Result.err(error),
-                ok: (reactions) => async () => {
-                  const mine = reactions.filter(
-                    (item) => item.content === content && item.user?.login === actor,
-                  );
-                  if (
-                    isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })
-                  ) {
-                    return deleteAll(mine, (item) =>
-                      this.api.deleteIssueReactionById({
-                        owner: thread.owner,
-                        repo: thread.repo,
-                        issueNumber: thread.number,
-                        reactionId: item.id,
-                      }),
-                    );
-                  }
-                  const commentIdResult = githubCommentIdResult("remove-reaction", ref.messageId);
-                  const continueComment = commentIdResult.match<
-                    () => Promise<SurfaceOperationResult<void>>
-                  >({
-                    err: (error) => async () => Result.err(error),
-                    ok: (commentId) => () =>
-                      deleteAll(mine, (item) =>
-                        this.api.deleteIssueCommentReactionById({
-                          owner: thread.owner,
-                          repo: thread.repo,
-                          commentId,
-                          reactionId: item.id,
-                        }),
-                      ),
-                  });
-                  return continueComment();
-                },
-              });
-              return continueReactions();
-            },
-          });
-          return continueActor();
+          if (actorResult.isErr()) return Result.err(actorResult.error);
+          const actor = actorResult.value;
+          if (!actor) {
+            return Result.err(
+              new SurfaceUnavailable({
+                platform: "github",
+                operation: "remove-reaction",
+                message: "Unable to resolve the outbound GitHub actor login",
+              }),
+            );
+          }
+          const reactionsResult = await this.listGithubReactions("remove-reaction", ref);
+          if (reactionsResult.isErr()) return Result.err(reactionsResult.error);
+          const reactions = reactionsResult.value;
+          const mine = reactions.filter(
+            (item) => item.content === content && item.user?.login === actor,
+          );
+          if (isGithubIssueTriggerId({ sessionId: ref.channelId, triggerId: ref.messageId })) {
+            return deleteAll(mine, (item) =>
+              this.api.deleteIssueReactionById({
+                owner: thread.owner,
+                repo: thread.repo,
+                issueNumber: thread.number,
+                reactionId: item.id,
+              }),
+            );
+          }
+          const commentIdResult = githubCommentIdResult("remove-reaction", ref.messageId);
+          if (commentIdResult.isErr()) return Result.err(commentIdResult.error);
+          const commentId = commentIdResult.value;
+          return deleteAll(mine, (item) =>
+            this.api.deleteIssueCommentReactionById({
+              owner: thread.owner,
+              repo: thread.repo,
+              commentId,
+              reactionId: item.id,
+            }),
+          );
         },
     });
     return continueRemove();
@@ -1112,44 +1032,38 @@ export class GithubAdapter implements SurfaceAdapter {
     msgRef: MsgRef,
   ): Promise<SurfaceOperationResult<SurfaceReactionDetail[]>> {
     const refResult = githubMsgRefResult(operation, msgRef);
-    const continueDetails = refResult.match<
-      () => Promise<SurfaceOperationResult<SurfaceReactionDetail[]>>
-    >({
-      err: (error) => async () => Result.err(error),
-      ok: (ref) => async () => {
-        const reactionsResult = await this.listGithubReactions(operation, ref);
-        return continueResult(reactionsResult, {
-          err: (error) => Result.err(error),
-          ok: (reactions) => {
-            const byContent = new Map<
-              string,
-              { count: number; users: Array<{ userId: string; userName?: string }> }
-            >();
-            for (const reaction of reactions) {
-              const entry = byContent.get(reaction.content) ?? { count: 0, users: [] };
-              entry.count += 1;
-              const login = reaction.user?.login;
-              const id = reaction.user?.id;
-              if (login || id !== undefined) {
-                const userId = id !== undefined ? String(id) : login;
-                if (userId && !entry.users.some((user) => user.userId === userId)) {
-                  entry.users.push({ userId, ...(login ? { userName: login } : {}) });
-                }
-              }
-              byContent.set(reaction.content, entry);
+    if (refResult.isErr()) return Result.err(refResult.error);
+    const ref = refResult.value;
+    const reactionsResult = await this.listGithubReactions(operation, ref);
+    return continueResult(reactionsResult, {
+      err: (error) => Result.err(error),
+      ok: (reactions) => {
+        const byContent = new Map<
+          string,
+          { count: number; users: Array<{ userId: string; userName?: string }> }
+        >();
+        for (const reaction of reactions) {
+          const entry = byContent.get(reaction.content) ?? { count: 0, users: [] };
+          entry.count += 1;
+          const login = reaction.user?.login;
+          const id = reaction.user?.id;
+          if (login || id !== undefined) {
+            const userId = id !== undefined ? String(id) : login;
+            if (userId && !entry.users.some((user) => user.userId === userId)) {
+              entry.users.push({ userId, ...(login ? { userName: login } : {}) });
             }
-            return Result.ok(
-              Array.from(byContent.entries()).map(([content, entry]) => ({
-                emoji: githubReactionEmoji(content),
-                count: entry.count,
-                users: entry.users,
-              })),
-            );
-          },
-        });
+          }
+          byContent.set(reaction.content, entry);
+        }
+        return Result.ok(
+          Array.from(byContent.entries()).map(([content, entry]) => ({
+            emoji: githubReactionEmoji(content),
+            count: entry.count,
+            users: entry.users,
+          })),
+        );
       },
     });
-    return continueDetails();
   }
 
   async getUnRead(sessionRef: SessionRef): Promise<SurfaceOperationResult<SurfaceMessage[]>> {

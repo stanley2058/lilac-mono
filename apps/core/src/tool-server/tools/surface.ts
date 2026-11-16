@@ -202,6 +202,35 @@ function surfaceOperationResult<T>(
   });
 }
 
+async function requireRestrictedBotAuthoredMessage(params: {
+  readonly target: { readonly resolved: ResolvedSurfaceAdapter; readonly sessionRef: SessionRef };
+  readonly messageId: string;
+  readonly operation: "edit-message" | "delete-message";
+}): Promise<ResultType<void, ServerToolFailure>> {
+  const { resolved, sessionRef } = params.target;
+  const read = surfaceOperationResult(
+    await resolved.adapter.readMsg(createSurfaceMessageRef(sessionRef, params.messageId)),
+  );
+  if (read.isErr()) return Result.err(read.error);
+  const message = read.value;
+  const self = await resolved.adapter.getSelf();
+  const botAuthored =
+    message &&
+    (resolved.platform === "github"
+      ? isMarkedGithubAgentComment(message.text)
+      : message.userId === self.userId);
+  if (botAuthored) return Result.ok(undefined);
+  return surfaceOperationResult(
+    Result.err(
+      new SurfacePermissionDenied({
+        platform: resolved.platform,
+        operation: params.operation,
+        message: "Restricted requests can only change bot-authored messages",
+      }),
+    ),
+  );
+}
+
 function createSurfaceMessageRef<P extends RegisteredSurfacePlatform>(
   sessionRef: SessionRefFor<P>,
   messageId: string,
@@ -1857,27 +1886,13 @@ export class Surface implements ServerTool {
       const sessionId = yield* mustPresentString(input.sessionId, "sessionId");
       const target = yield* Result.await(resolveSessionTarget({ resolved, sessionId }));
       if (ctx?.safetyMode === "restricted") {
-        const message = yield* surfaceOperationResult(
-          await target.resolved.adapter.readMsg(
-            createSurfaceMessageRef(target.sessionRef, input.messageId),
-          ),
+        yield* Result.await(
+          requireRestrictedBotAuthoredMessage({
+            target,
+            messageId: input.messageId,
+            operation: "edit-message",
+          }),
         );
-        const self = await target.resolved.adapter.getSelf();
-        if (
-          !message ||
-          !(target.resolved.platform === "github"
-            ? isMarkedGithubAgentComment(message.text)
-            : message.userId === self.userId)
-        )
-          return surfaceOperationResult(
-            Result.err(
-              new SurfacePermissionDenied({
-                platform: target.resolved.platform,
-                operation: "edit-message",
-                message: "Restricted requests can only change bot-authored messages",
-              }),
-            ),
-          );
       }
       yield* surfaceOperationResult(
         await target.resolved.adapter.editMsg(
@@ -1907,27 +1922,13 @@ export class Surface implements ServerTool {
       const sessionId = yield* mustPresentString(input.sessionId, "sessionId");
       const target = yield* Result.await(resolveSessionTarget({ resolved, sessionId }));
       if (ctx?.safetyMode === "restricted") {
-        const message = yield* surfaceOperationResult(
-          await target.resolved.adapter.readMsg(
-            createSurfaceMessageRef(target.sessionRef, input.messageId),
-          ),
+        yield* Result.await(
+          requireRestrictedBotAuthoredMessage({
+            target,
+            messageId: input.messageId,
+            operation: "delete-message",
+          }),
         );
-        const self = await target.resolved.adapter.getSelf();
-        if (
-          !message ||
-          !(target.resolved.platform === "github"
-            ? isMarkedGithubAgentComment(message.text)
-            : message.userId === self.userId)
-        )
-          return surfaceOperationResult(
-            Result.err(
-              new SurfacePermissionDenied({
-                platform: target.resolved.platform,
-                operation: "delete-message",
-                message: "Restricted requests can only change bot-authored messages",
-              }),
-            ),
-          );
       }
       yield* surfaceOperationResult(
         await target.resolved.adapter.deleteMsg(

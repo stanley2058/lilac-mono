@@ -74,15 +74,24 @@ export class NativeLiveFileService {
     }, this);
   }
 
-  private editorPath(actorId: string, threadId: string, inputPath: string) {
-    return Result.gen(async function* () {
+  private threadFileRoot(
+    actorId: string,
+    threadId: string,
+  ): NativeFileResult<{ readonly restricted: boolean; readonly root: string }> {
+    return Result.gen(function* () {
       const thread = yield* this.dependencies.native.authorizeThread(actorId, threadId, true);
       const actor = yield* this.dependencies.native.getUser(actorId);
       const starter = yield* this.dependencies.native.getUser(thread.starterId);
       if (actor.toolMode === "restricted" && starter.toolMode !== "restricted")
         return Result.err(nativeFailure("forbidden", "File browsing is outside your tool access"));
       const restricted = starter.toolMode === "restricted";
-      const root = restricted ? "/tmp" : this.dependencies.toolRoot;
+      return Result.ok({ restricted, root: restricted ? "/tmp" : this.dependencies.toolRoot });
+    }, this);
+  }
+
+  private editorPath(actorId: string, threadId: string, inputPath: string) {
+    return Result.gen(async function* () {
+      const { restricted, root } = yield* this.threadFileRoot(actorId, threadId);
       const path = posix.resolve(root, inputPath);
       const sessionId = nativeSessionId(threadId);
       const resolved = yield* resolveToolPathForRequestContextResult({
@@ -212,13 +221,7 @@ export class NativeLiveFileService {
     inputPath: string,
   ): NativeFileResult<PublishedNativePath> {
     return Result.gen(function* () {
-      const thread = yield* this.dependencies.native.authorizeThread(actorId, threadId, true);
-      const actor = yield* this.dependencies.native.getUser(actorId);
-      const starter = yield* this.dependencies.native.getUser(thread.starterId);
-      if (actor.toolMode === "restricted" && starter.toolMode !== "restricted")
-        return Result.err(nativeFailure("forbidden", "File browsing is outside your tool access"));
-      const restricted = starter.toolMode === "restricted";
-      const cwd = restricted ? "/tmp" : this.dependencies.toolRoot;
+      const { restricted, root: cwd } = yield* this.threadFileRoot(actorId, threadId);
       const resolved = yield* resolveToolPathForRequestContextResult({
         cwd,
         inputPath,

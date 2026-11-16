@@ -225,32 +225,27 @@ export async function loadToolEnv(dataDir: string): Promise<Record<string, strin
   }).mapError((captured) =>
     projectCapturedRuntimeError(captured, "Opaque tool env JSONC parse failure"),
   );
-  const continueJson = json.match<() => Record<string, string>>({
-    ok: (value) => () =>
-      parseToolEnvResult(value).match<() => Record<string, string>>({
-        ok: (parsed) => () => parsed,
-        err: (error) => () => {
-          logger.warn("tool env ignored: failed to read or validate file", {
-            filePath,
-            ...formatTaggedErrorForLog(error),
-          });
-          return {};
-        },
-      })(),
-    err: (error) => () => {
-      const cause = preserveToolPanic(error);
-      const parseError = new ToolEnvFileOperationError({
-        filePath,
-        operation: "parse",
-        cause,
-        message: "Failed to parse tool environment file",
-      });
-      logger.warn("tool env ignored: failed to read or validate file", {
-        filePath,
-        ...formatTaggedErrorForLog(parseError),
-      });
-      return {};
-    },
-  });
-  return continueJson();
+  if (json.isErr()) {
+    const cause = preserveToolPanic(json.error);
+    const parseError = new ToolEnvFileOperationError({
+      filePath,
+      operation: "parse",
+      cause,
+      message: "Failed to parse tool environment file",
+    });
+    logger.warn("tool env ignored: failed to read or validate file", {
+      filePath,
+      ...formatTaggedErrorForLog(parseError),
+    });
+    return {};
+  }
+  const parsed = parseToolEnvResult(json.value);
+  if (parsed.isErr()) {
+    logger.warn("tool env ignored: failed to read or validate file", {
+      filePath,
+      ...formatTaggedErrorForLog(parsed.error),
+    });
+    return {};
+  }
+  return parsed.value;
 }

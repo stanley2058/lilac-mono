@@ -200,6 +200,40 @@ function collectAstUnsafeZones(
   }
 }
 
+function findFenceClose(
+  raw: string,
+  start: number,
+  opener: NonNullable<ReturnType<typeof parseFenceOpener>>,
+): { readonly start: number; readonly end: number } | null {
+  const markdownFence = isMarkdownFenceLanguage(opener.lang);
+  let nestedFence: { marker: "`" | "~"; markerLength: number } | null = null;
+  for (let scan = start; scan < raw.length; scan = lineEndIndex(raw, scan)) {
+    const end = lineEndIndex(raw, scan);
+    const line = raw.slice(scan, end);
+    if (markdownFence && nestedFence !== null) {
+      if (
+        opener.markerLength > nestedFence.markerLength &&
+        parseFenceCloser(line, opener.marker, opener.markerLength)
+      ) {
+        return { start: scan, end };
+      }
+      if (parseFenceCloser(line, nestedFence.marker, nestedFence.markerLength)) nestedFence = null;
+      continue;
+    }
+    const nestedOpener = markdownFence ? parseFenceOpener(line) : null;
+    if (
+      nestedOpener &&
+      nestedOpener.markerLength < opener.markerLength &&
+      line.trim() !== opener.marker.repeat(opener.markerLength)
+    ) {
+      nestedFence = { marker: nestedOpener.marker, markerLength: nestedOpener.markerLength };
+      continue;
+    }
+    if (parseFenceCloser(line, opener.marker, opener.markerLength)) return { start: scan, end };
+  }
+  return null;
+}
+
 function scanCodeFences(raw: string, zones: UnsafeZone[]): CodeFenceRange[] {
   const fences: CodeFenceRange[] = [];
   let pos = 0;
@@ -214,55 +248,9 @@ function scanCodeFences(raw: string, zones: UnsafeZone[]): CodeFenceRange[] {
       continue;
     }
 
-    let scan = openerEnd;
-    let closeStart: number | null = null;
-    let closeEnd: number | null = null;
-    let nestedFence: { marker: "`" | "~"; markerLength: number } | null = null;
-
-    while (scan < raw.length) {
-      const end = lineEndIndex(raw, scan);
-      const line = raw.slice(scan, end);
-
-      if (isMarkdownFenceLanguage(opener.lang)) {
-        if (nestedFence !== null) {
-          if (
-            opener.markerLength > nestedFence.markerLength &&
-            parseFenceCloser(line, opener.marker, opener.markerLength)
-          ) {
-            closeStart = scan;
-            closeEnd = end;
-            break;
-          }
-
-          if (parseFenceCloser(line, nestedFence.marker, nestedFence.markerLength)) {
-            nestedFence = null;
-          }
-          scan = end;
-          continue;
-        }
-
-        const nestedOpener = parseFenceOpener(line);
-        if (
-          nestedOpener &&
-          nestedOpener.markerLength < opener.markerLength &&
-          line.trim() !== opener.marker.repeat(opener.markerLength)
-        ) {
-          nestedFence = {
-            marker: nestedOpener.marker,
-            markerLength: nestedOpener.markerLength,
-          };
-          scan = end;
-          continue;
-        }
-      }
-
-      if (parseFenceCloser(line, opener.marker, opener.markerLength)) {
-        closeStart = scan;
-        closeEnd = end;
-        break;
-      }
-      scan = end;
-    }
+    const close = findFenceClose(raw, openerEnd, opener);
+    const closeStart = close?.start ?? null;
+    const closeEnd = close?.end ?? null;
 
     addZone(zones, pos, openerEnd, "fence-line");
     if (closeStart !== null && closeEnd !== null) {

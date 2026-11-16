@@ -779,6 +779,40 @@ export function createLilacBus(raw: RawBus, options: CreateLilacBusOptions = {})
           }),
         );
       }
+      const handlerFailureAction = (error: TError): RawDeliveryAction => {
+        const disposition = checkedDisposition(deliveryPolicy(error));
+        const formatted = formatTaggedErrorForLog(error);
+        if (disposition === "retry") {
+          return {
+            disposition,
+            failure: createHandlerErrorDeadLetterReason({
+              errorTag: formatted.errorTag,
+              errorMessage: formatted.errorMessage,
+            }),
+          };
+        }
+        if (disposition !== "dead-letter") return { disposition };
+        return {
+          disposition,
+          reason: createHandlerErrorDeadLetterReason({
+            errorTag: formatted.errorTag,
+            errorMessage: formatted.errorMessage,
+          }),
+        };
+      };
+      const deliverDecoded = async (
+        decoded: DecodedLilacMessageForTopic<TTopic>,
+        context: EventDeliveryContext,
+      ): Promise<RawDeliveryAction> => {
+        const handled = checkedHandlerResult(await handler(decoded, context));
+        if (handled.isErr()) return handlerFailureAction(handled.error);
+        return {
+          disposition: "commit",
+          ...(options.postCommitObserver !== undefined && context.mode !== "tail"
+            ? { observePostCommit: () => options.postCommitObserver!.observe(decoded, context) }
+            : {}),
+        };
+      };
       return await raw.subscribe(
         topic,
         opts,
@@ -789,52 +823,9 @@ export function createLilacBus(raw: RawBus, options: CreateLilacBusOptions = {})
             contractError = normalizeTransportInvalid(message);
           } else {
             eventType = message.type;
-            const continueDecoded = decodeLilacMessageForTopic(message, topic).match<
-              () => Promise<RawDeliveryAction | undefined>
-            >({
-              ok: (decoded) => async () => {
-                const handled = checkedHandlerResult(await handler(decoded, context));
-                const continueHandled = handled.match<() => RawDeliveryAction>({
-                  ok: () => () => ({
-                    disposition: "commit",
-                    ...(options.postCommitObserver !== undefined && context.mode !== "tail"
-                      ? {
-                          observePostCommit: () =>
-                            options.postCommitObserver!.observe(decoded, context),
-                        }
-                      : {}),
-                  }),
-                  err: (error) => () => {
-                    const disposition = checkedDisposition(deliveryPolicy(error));
-                    const formatted = formatTaggedErrorForLog(error);
-                    if (disposition === "retry") {
-                      return {
-                        disposition,
-                        failure: createHandlerErrorDeadLetterReason({
-                          errorTag: formatted.errorTag,
-                          errorMessage: formatted.errorMessage,
-                        }),
-                      };
-                    }
-                    if (disposition !== "dead-letter") return { disposition };
-                    return {
-                      disposition,
-                      reason: createHandlerErrorDeadLetterReason({
-                        errorTag: formatted.errorTag,
-                        errorMessage: formatted.errorMessage,
-                      }),
-                    };
-                  },
-                });
-                return continueHandled();
-              },
-              err: (error) => async () => {
-                contractError = normalizeContractInvalid(error);
-                return undefined;
-              },
-            });
-            const action = await continueDecoded();
-            if (action !== undefined) return action;
+            const decoded = decodeLilacMessageForTopic(message, topic);
+            if (decoded.isErr()) contractError = normalizeContractInvalid(decoded.error);
+            else return await deliverDecoded(decoded.value, context);
           }
 
           if (contractError === undefined) {

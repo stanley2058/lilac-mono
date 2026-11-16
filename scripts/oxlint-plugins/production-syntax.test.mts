@@ -24,6 +24,8 @@ import {
   findPresentationDecoderImportViolationsInSourceFile,
   findPreferSwitchTrueChainViolations,
   findPreferSwitchTrueChainViolationsInSourceFile,
+  findRedundantBranchViolations,
+  findRedundantBranchViolationsInSourceFile,
   findStoreInlineDecodingViolations,
   findStoreInlineDecodingViolationsInSourceFile,
   parseProductionSyntaxSource,
@@ -236,6 +238,9 @@ describe("parsed production syntax finders", () => {
     expect(
       findElseAfterTerminalViolationsInSourceFile(controlFlowSourceFile, controlFlowPath),
     ).toEqual(findElseAfterTerminalViolations(controlFlowSource, controlFlowPath));
+    expect(
+      findRedundantBranchViolationsInSourceFile(controlFlowSourceFile, controlFlowPath),
+    ).toEqual(findRedundantBranchViolations(controlFlowSource, controlFlowPath));
 
     const presentationSource = `import { z } from "zod"; z.string().parse("value");`;
     const presentationPath = "apps/example/src/render.ts";
@@ -311,6 +316,70 @@ describe("flat control flow syntax", () => {
       "prefer-switch-true-chain",
       "prefer-switch-true-chain",
     ]);
+  });
+
+  it("rejects repeated chain bodies and repeated unchanged adjacent conditions", () => {
+    const violations = findRedundantBranchViolations(
+      `
+        if (a) i += 2;
+        else if (b) i++;
+        else i++;
+
+        const ready = check();
+        if (ready) first();
+        if (ready) second();
+
+        if (this.pending.size > max) this.pending.clear();
+        if (this.pending.size > max) return fail();
+
+        if (state === "unchanged") state = "changed";
+        if (state === "unchanged") retain();
+
+        if (a) first();
+        else if (b) second();
+        else third();
+      `,
+      filePath,
+      policyWith(),
+    );
+
+    expect(violations.map(({ kind, line }) => [kind, line])).toEqual([
+      ["repeated-condition", 8],
+      ["identical-branch", 4],
+    ]);
+  });
+
+  it("keeps branches whose literals, condition effects, or writes make them differ", () => {
+    const violations = findRedundantBranchViolations(
+      `
+        function literals(kind: boolean) {
+          if (kind) return "a b";
+          else return "ab";
+        }
+        function effects(queue: boolean[]) {
+          if (queue.shift()) first();
+          if (queue.shift()) second();
+        }
+        function destructured(ready: boolean) {
+          if (ready) { [ready] = [false]; }
+          if (ready) second();
+        }
+        function calls() {
+          let ready = true;
+          if (ready) reset();
+          if (ready) second();
+        }
+        function constant() {
+          const ready = check();
+          if (ready) reset();
+          if (ready) second();
+        }
+      `,
+      filePath,
+      policyWith(),
+    );
+
+    expect(violations.map(({ kind, line }) => [kind, line])).toEqual([["repeated-condition", 22]]);
   });
 
   it("removes else branches after direct terminal statements", () => {
@@ -1239,6 +1308,11 @@ describe("Oxlint production syntax activation", () => {
         "lilac/prefer-switch-true-chain": "error",
         "no-nested-ternary": "error",
         "lilac/no-local-is-record": "error",
+        "lilac/no-redundant-branch": "error",
+        "max-depth": ["error", { max: 4 }],
+        "max-nested-callbacks": ["error", { max: 4 }],
+        "no-lone-blocks": "error",
+        "no-dupe-else-if": "error",
       },
     });
     expect(testOverride).toMatchObject({
@@ -1247,6 +1321,8 @@ describe("Oxlint production syntax activation", () => {
         "lilac/no-fixed-test-wait": "error",
         "no-nested-ternary": "off",
         "lilac/no-local-is-record": "off",
+        "max-depth": "off",
+        "max-nested-callbacks": "off",
       },
     });
   });

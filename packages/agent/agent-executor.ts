@@ -1325,8 +1325,10 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     this.activeExecutionFailurePhase = "before-step";
     request.onErrorPhase("before-step");
     const inherited = request.preparation === "continuation";
-    if (!inherited) await this.persistRecoveryCheckpoint();
-    if (!inherited) this.emit({ type: "turn_start" });
+    if (!inherited) {
+      await this.persistRecoveryCheckpoint();
+      this.emit({ type: "turn_start" });
+    }
     const turnIndex = inherited ? this.turnCounter + 1 : ++this.turnCounter;
 
     if (this.beforeStep) {
@@ -2416,41 +2418,40 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
                 replaySafety: "safe",
               }),
             );
+          const executeCall = async (call: (typeof context.calls)[number]) => {
+            const outcome = await this.toolHost.executeExternalToolCall(
+              {
+                toolCallId: call.callId,
+                toolName: call.name,
+                input: normalizeToolCallInputValue(call.inputJson),
+                abortSignal: context.signal,
+              },
+              snapshot,
+              context.calls.map((request) => request.name),
+            );
+            active();
+            const settled = {
+              callId: call.callId,
+              executedCallCount: 1,
+              message: {
+                role: "tool" as const,
+                content: [
+                  {
+                    type: "tool-result" as const,
+                    toolCallId: call.callId,
+                    toolName: call.name,
+                    output: outcome.toolOutput,
+                  },
+                ],
+              },
+            };
+            await context.onSettled?.(settled, outcome);
+            return settled;
+          };
           const results = [];
           for (const group of groupToolCalls(context.calls, (call) => call.name)) {
             const completed = await Promise.all(
-              group.map((call) =>
-                captureAgentPromise(async () => {
-                  const outcome = await this.toolHost.executeExternalToolCall(
-                    {
-                      toolCallId: call.callId,
-                      toolName: call.name,
-                      input: normalizeToolCallInputValue(call.inputJson),
-                      abortSignal: context.signal,
-                    },
-                    snapshot,
-                    context.calls.map((request) => request.name),
-                  );
-                  active();
-                  const settled = {
-                    callId: call.callId,
-                    executedCallCount: 1,
-                    message: {
-                      role: "tool" as const,
-                      content: [
-                        {
-                          type: "tool-result" as const,
-                          toolCallId: call.callId,
-                          toolName: call.name,
-                          output: outcome.toolOutput,
-                        },
-                      ],
-                    },
-                  };
-                  await context.onSettled?.(settled, outcome);
-                  return settled;
-                }),
-              ),
+              group.map((call) => captureAgentPromise(() => executeCall(call))),
             );
             for (const captured of completed) {
               const outcome = resultOutcome(captured);

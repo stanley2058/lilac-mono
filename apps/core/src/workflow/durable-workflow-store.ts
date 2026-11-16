@@ -1095,41 +1095,28 @@ export class DurableWorkflowStore {
             }),
           );
         }
-        const continueWithRun = this.decodeRow(existingRunRow, decodeWorkflowRunRow).match<
-          () => ResultType<CreateWorkflowInvocationResult, CreateWorkflowInvocationError>
-        >({
-          err: (error) => () => Result.err(error),
-          ok: (existingRun) => () => {
-            const existingRevisionRow = this.persistedRows(
-              "SELECT * FROM workflow_revisions WHERE revision_id = ?",
-            ).get(existingRun.revisionId);
-            if (existingRevisionRow === null) {
-              return Result.err(
-                new WorkflowInvocationConflict({
-                  recordId: idempotency.key,
-                  message: "Workflow invocation receipt references missing durable records",
-                }),
-              );
-            }
-            const continueWithExistingRevision = this.decodeRow(
-              existingRevisionRow,
-              decodeWorkflowRevisionRow,
-            ).match<
-              () => ResultType<CreateWorkflowInvocationResult, CreateWorkflowInvocationError>
-            >({
-              err: (error) => () => Result.err(error),
-              ok: (existingRevision) => () =>
-                Result.ok<CreateWorkflowInvocationResult>({
-                  status: "accepted",
-                  run: existingRun,
-                  revision: existingRevision,
-                  revisionCreated: false,
-                }),
-            });
-            return continueWithExistingRevision();
-          },
+        const existingRunResult = this.decodeRow(existingRunRow, decodeWorkflowRunRow);
+        if (existingRunResult.isErr()) return Result.err(existingRunResult.error);
+        const existingRun = existingRunResult.value;
+        const existingRevisionRow = this.persistedRows(
+          "SELECT * FROM workflow_revisions WHERE revision_id = ?",
+        ).get(existingRun.revisionId);
+        if (existingRevisionRow === null) {
+          return Result.err(
+            new WorkflowInvocationConflict({
+              recordId: idempotency.key,
+              message: "Workflow invocation receipt references missing durable records",
+            }),
+          );
+        }
+        const existingRevision = this.decodeRow(existingRevisionRow, decodeWorkflowRevisionRow);
+        if (existingRevision.isErr()) return Result.err(existingRevision.error);
+        return Result.ok<CreateWorkflowInvocationResult>({
+          status: "accepted",
+          run: existingRun,
+          revision: existingRevision.value,
+          revisionCreated: false,
         });
-        return continueWithRun();
       },
       (cause) => classifyWorkflowSqliteDriverFailure("create-invocation", cause),
     );
@@ -2439,55 +2426,37 @@ export class DurableWorkflowStore {
         ).get(dispatch.runId, dispatch.operationId);
         const runResult: ResultType<WorkflowRun | null, PersistedDataError> =
           runRow === null ? Result.ok(null) : this.decodeRow(runRow, decodeWorkflowRunRow);
-        const continueWithRun = runResult.match<
-          () => ResultType<
-            WorkflowRequestDispatchHandoff,
-            DurableWorkflowReadError | DurableWorkflowInvariantViolation
-          >
-        >({
-          err: (error) => () => Result.err(error),
-          ok: (run) => () => {
-            const operationResult: ResultType<WorkflowOperation | null, PersistedDataError> =
-              operationRow === null
-                ? Result.ok(null)
-                : this.decodeRow(operationRow, decodeWorkflowOperationRow);
-            const continueWithOperation = operationResult.match<
-              () => ResultType<
-                WorkflowRequestDispatchHandoff,
-                DurableWorkflowReadError | DurableWorkflowInvariantViolation
-              >
-            >({
-              err: (error) => () => Result.err(error),
-              ok: (operation) => () => {
-                if (
-                  dispatch.dispatchEpoch !== policy.dispatchEpoch ||
-                  run?.state !== "running" ||
-                  !operation ||
-                  !["dispatched", "running"].includes(operation.state) ||
-                  !this.matchesWorkflowRequestPolicyIdentity({ policy, run, operation })
-                ) {
-                  return Result.err(
-                    new DurableWorkflowInvariantViolation({
-                      message: "Live workflow dispatch has an invalid durable policy identity",
-                    }),
-                  );
-                }
-                return Result.ok<WorkflowRequestDispatchHandoff>({
-                  status:
-                    dispatch.ownerId !== null &&
-                    dispatch.ownerHeartbeatAt !== null &&
-                    dispatch.ownerHeartbeatAt > staleBefore
-                      ? "live"
-                      : "stale",
-                  dispatchEpoch: dispatch.dispatchEpoch,
-                  policy,
-                });
-              },
-            });
-            return continueWithOperation();
-          },
+        if (runResult.isErr()) return Result.err(runResult.error);
+        const run = runResult.value;
+        const operationResult: ResultType<WorkflowOperation | null, PersistedDataError> =
+          operationRow === null
+            ? Result.ok(null)
+            : this.decodeRow(operationRow, decodeWorkflowOperationRow);
+        if (operationResult.isErr()) return Result.err(operationResult.error);
+        const operation = operationResult.value;
+        if (
+          dispatch.dispatchEpoch !== policy.dispatchEpoch ||
+          run?.state !== "running" ||
+          !operation ||
+          !["dispatched", "running"].includes(operation.state) ||
+          !this.matchesWorkflowRequestPolicyIdentity({ policy, run, operation })
+        ) {
+          return Result.err(
+            new DurableWorkflowInvariantViolation({
+              message: "Live workflow dispatch has an invalid durable policy identity",
+            }),
+          );
+        }
+        return Result.ok<WorkflowRequestDispatchHandoff>({
+          status:
+            dispatch.ownerId !== null &&
+            dispatch.ownerHeartbeatAt !== null &&
+            dispatch.ownerHeartbeatAt > staleBefore
+              ? "live"
+              : "stale",
+          dispatchEpoch: dispatch.dispatchEpoch,
+          policy,
         });
-        return continueWithRun();
       };
 
       const receipt = this.persistedRows(
@@ -3680,23 +3649,18 @@ export class DurableWorkflowStore {
               );
             }
             const storedTrigger = readTriggerInTransaction(trigger.triggerId);
-            const finishSkipped = storedTrigger.match<
-              () => ResultType<
-                FireClaimedTriggerResult,
-                DurableWorkflowReadError | DurableWorkflowInvariantViolation
-              >
-            >({
-              err: (error) => () => Result.err(error),
-              ok: (stored) => () =>
-                stored
-                  ? Result.ok<FireClaimedTriggerResult>({ status: "skipped", trigger: stored })
-                  : Result.err(
-                      new DurableWorkflowInvariantViolation({
-                        message: `Workflow trigger disappeared: ${trigger.triggerId}`,
-                      }),
-                    ),
+            if (storedTrigger.isErr()) return Result.err(storedTrigger.error);
+            if (!storedTrigger.value) {
+              return Result.err(
+                new DurableWorkflowInvariantViolation({
+                  message: `Workflow trigger disappeared: ${trigger.triggerId}`,
+                }),
+              );
+            }
+            return Result.ok<FireClaimedTriggerResult>({
+              status: "skipped",
+              trigger: storedTrigger.value,
             });
-            return finishSkipped();
           }
 
           const run = requestedRun;
@@ -3735,23 +3699,19 @@ export class DurableWorkflowStore {
             );
           }
           const storedTrigger = readTriggerInTransaction(trigger.triggerId);
-          const finishFired = storedTrigger.match<
-            () => ResultType<
-              FireClaimedTriggerResult,
-              DurableWorkflowReadError | DurableWorkflowInvariantViolation
-            >
-          >({
-            err: (error) => () => Result.err(error),
-            ok: (stored) => () =>
-              stored
-                ? Result.ok<FireClaimedTriggerResult>({ status: "fired", trigger: stored, run })
-                : Result.err(
-                    new DurableWorkflowInvariantViolation({
-                      message: `Workflow trigger disappeared: ${trigger.triggerId}`,
-                    }),
-                  ),
+          if (storedTrigger.isErr()) return Result.err(storedTrigger.error);
+          if (!storedTrigger.value) {
+            return Result.err(
+              new DurableWorkflowInvariantViolation({
+                message: `Workflow trigger disappeared: ${trigger.triggerId}`,
+              }),
+            );
+          }
+          return Result.ok<FireClaimedTriggerResult>({
+            status: "fired",
+            trigger: storedTrigger.value,
+            run,
           });
-          return finishFired();
         },
       });
       return continueWithTrigger();
@@ -3984,20 +3944,8 @@ export class DurableWorkflowStore {
           row: actionRow,
           schemaVersion: WORKFLOW_SCHEMA_VERSION,
         });
-        const action = decodedAction.match({ ok: (value) => value.value, err: () => null });
-        if (!action) {
-          return decodedAction.match<ResultType<never, ApplyWorkflowSurfaceActionError>>({
-            err: (error) => Result.err(error),
-            ok: () =>
-              Result.err(
-                new WorkflowSurfaceActionAtomicityConflict({
-                  actionId: "unknown",
-                  stage: "load-updated-run",
-                  message: "Decoded workflow surface action is unexpectedly absent",
-                }),
-              ),
-          });
-        }
+        if (decodedAction.isErr()) return Result.err(decodedAction.error);
+        const action = decodedAction.value.value;
         if (action.consumedAt !== null)
           return Result.ok<ApplyWorkflowSurfaceActionResult>({ status: "consumed" });
         if (action.expiresAt <= input.now)
@@ -4025,20 +3973,8 @@ export class DurableWorkflowStore {
           row: runRow,
           schemaVersion: WORKFLOW_SCHEMA_VERSION,
         });
-        const run = decodedRun.match({ ok: (value) => value.value, err: () => null });
-        if (!run) {
-          return decodedRun.match<ResultType<never, ApplyWorkflowSurfaceActionError>>({
-            err: (error) => Result.err(error),
-            ok: () =>
-              Result.err(
-                new WorkflowSurfaceActionAtomicityConflict({
-                  actionId: action.actionId,
-                  stage: "load-updated-run",
-                  message: "Decoded workflow run is unexpectedly absent",
-                }),
-              ),
-          });
-        }
+        if (decodedRun.isErr()) return Result.err(decodedRun.error);
+        const run = decodedRun.value.value;
         const bindingRow = this.persistedRows(
           "SELECT * FROM workflow_surface_bindings WHERE run_id = ?",
         ).get(run.runId);
@@ -4048,20 +3984,8 @@ export class DurableWorkflowStore {
           row: bindingRow,
           schemaVersion: WORKFLOW_SCHEMA_VERSION,
         });
-        const binding = decodedBinding.match({ ok: (value) => value.value, err: () => null });
-        if (!binding) {
-          return decodedBinding.match<ResultType<never, ApplyWorkflowSurfaceActionError>>({
-            err: (error) => Result.err(error),
-            ok: () =>
-              Result.err(
-                new WorkflowSurfaceActionAtomicityConflict({
-                  actionId: action.actionId,
-                  stage: "load-updated-run",
-                  message: "Decoded workflow surface binding is unexpectedly absent",
-                }),
-              ),
-          });
-        }
+        if (decodedBinding.isErr()) return Result.err(decodedBinding.error);
+        const binding = decodedBinding.value.value;
         if (
           binding.permanentFailure !== null ||
           run.origin.client !== action.expectedPlatform ||
@@ -4172,20 +4096,8 @@ export class DurableWorkflowStore {
           row: updatedRunRow,
           schemaVersion: WORKFLOW_SCHEMA_VERSION,
         });
-        const updatedRun = decodedUpdatedRun.match({ ok: (value) => value.value, err: () => null });
-        if (!updatedRun) {
-          return decodedUpdatedRun.match<ResultType<never, ApplyWorkflowSurfaceActionError>>({
-            err: (error) => Result.err(error),
-            ok: () =>
-              Result.err(
-                new WorkflowSurfaceActionAtomicityConflict({
-                  actionId: action.actionId,
-                  stage: "load-updated-run",
-                  message: "Decoded updated workflow run is unexpectedly absent",
-                }),
-              ),
-          });
-        }
+        if (decodedUpdatedRun.isErr()) return Result.err(decodedUpdatedRun.error);
+        const updatedRun = decodedUpdatedRun.value.value;
         const runEventInserted = this.insertActionOutboxEntry({
           outboxId: `${action.actionId}:run:${run.runId}`,
           actionId: action.actionId,

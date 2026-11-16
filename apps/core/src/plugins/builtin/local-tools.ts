@@ -234,15 +234,12 @@ async function canonicalizeAsFarAsExists(
           }
           followedSymlinks.add(current);
           const target = await captureLocalApplyPatchFs(() => fs.readlink(current));
-          return target.match({
-            err: (error) => async () => Result.err(error),
-            ok: (value) => async () => {
-              current = path.isAbsolute(value)
-                ? path.resolve(value)
-                : path.resolve(path.dirname(current), value);
-              return resolveCurrent();
-            },
-          })();
+          if (target.isErr()) return Result.err(target.error);
+          const value = target.value;
+          current = path.isAbsolute(value)
+            ? path.resolve(value)
+            : path.resolve(path.dirname(current), value);
+          return resolveCurrent();
         }
 
         const parent = path.dirname(current);
@@ -273,45 +270,35 @@ async function assertLocalApplyPatchPathsAllowed(params: {
     err: () => denyResolved,
   });
   const parsed = parsePatchResult(params.input.patchText);
-  const continueParsed = parsed.match<() => Promise<ResultType<void, Error>>>({
-    err: (error) => async () => Result.err(error),
-    ok: (hunks) => async () => {
-      const targets = hunks.flatMap((hunk) => [
-        hunk.path,
-        ...(hunk.type === "update" && hunk.movePath ? [hunk.movePath] : []),
-      ]);
-      // This closes lexical and symlink aliases but cannot prevent another process racing resolution.
-      const checkAt = async (index: number): Promise<ResultType<void, Error>> => {
-        const target = targets[index];
-        if (!target) return Result.ok(undefined);
-        const resolved = path.isAbsolute(target)
-          ? path.resolve(target)
-          : path.resolve(baseDir, target);
-        const canonical = await canonicalizeAsFarAsExists(resolved);
-        const continueCanonical = canonical.match<() => Promise<ResultType<void, Error>>>({
-          err: (error) => async () => Result.err(error),
-          ok: (canonicalPath) => async () => {
-            if (
-              isPathWithin(resolved, denyResolved) ||
-              isPathWithin(resolved, denyCanonical) ||
-              isPathWithin(canonicalPath, denyResolved) ||
-              isPathWithin(canonicalPath, denyCanonical)
-            ) {
-              return Result.err(
-                new LocalApplyPatchGuardFailed({
-                  message: `Access denied: '${resolved}' is blocked for patch`,
-                }),
-              );
-            }
-            return await checkAt(index + 1);
-          },
-        });
-        return await continueCanonical();
-      };
-      return await checkAt(0);
-    },
-  });
-  return await continueParsed();
+  if (parsed.isErr()) return Result.err(parsed.error);
+  const hunks = parsed.value;
+  const targets = hunks.flatMap((hunk) => [
+    hunk.path,
+    ...(hunk.type === "update" && hunk.movePath ? [hunk.movePath] : []),
+  ]);
+  // This closes lexical and symlink aliases but cannot prevent another process racing resolution.
+  const checkAt = async (index: number): Promise<ResultType<void, Error>> => {
+    const target = targets[index];
+    if (!target) return Result.ok(undefined);
+    const resolved = path.isAbsolute(target) ? path.resolve(target) : path.resolve(baseDir, target);
+    const canonical = await canonicalizeAsFarAsExists(resolved);
+    if (canonical.isErr()) return Result.err(canonical.error);
+    const canonicalPath = canonical.value;
+    if (
+      isPathWithin(resolved, denyResolved) ||
+      isPathWithin(resolved, denyCanonical) ||
+      isPathWithin(canonicalPath, denyResolved) ||
+      isPathWithin(canonicalPath, denyCanonical)
+    ) {
+      return Result.err(
+        new LocalApplyPatchGuardFailed({
+          message: `Access denied: '${resolved}' is blocked for patch`,
+        }),
+      );
+    }
+    return await checkAt(index + 1);
+  };
+  return await checkAt(0);
 }
 
 function signalBuiltinToolHostError(message: string): never {

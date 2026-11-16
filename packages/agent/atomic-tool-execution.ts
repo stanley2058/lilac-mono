@@ -439,14 +439,13 @@ async function settleAtomicToolCallImpl(
       } else {
         assertNotAborted();
         const validatedInput = await validateInput(options);
-        const validationError = validatedInput.match({ ok: () => null, err: (error) => error });
-        if (validationError) {
+        if (validatedInput.isErr()) {
           isError = true;
           outcome = "invalid-input";
-          result = validationError.message;
-          toolOutput = { type: "error-text", value: validationError.message };
+          result = validatedInput.error.message;
+          toolOutput = { type: "error-text", value: validatedInput.error.message };
         } else {
-          const input = validatedInput.match({ ok: (value) => value, err: () => call.input });
+          const input = validatedInput.value;
           assertNotAborted();
 
           if (!tool.execute) {
