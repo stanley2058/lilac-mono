@@ -9,6 +9,8 @@ facts are incorporated into those documents and remain available in Git history.
 
 - [Repository audit fixes (2026-11)](audit-2026-11.md): approved fixes from the November audit, split
   into lanes A to I.
+- [Native remote runner](remote-runner.md): replace the JS SSH runners with a Rust binary that Core
+  uploads, and make remote commands cancellable.
 
 Native surface implementation is complete. See [setup and operation](../docs/native-surface.md)
 and [verification](../docs/native-surface-verification.md).

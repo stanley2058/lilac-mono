@@ -71,6 +71,7 @@ The fail-closed workspace inventory is `ACTIVE_WORKSPACES` in `scripts/architect
 - `apps/computer-use-gateway`: optional authenticated MCP desktop gateway, Docker lifecycle, and session/port SQLite bookkeeping.
 - `apps/core`: Core composition, surfaces, routing, tool adapters/server, workflows, recovery, and Core-owned persistence.
 - `apps/installer`: standalone setup CLI, provider and Discord onboarding, configuration updates, and published-image Compose deployment. See `docs/installation.md` for installation and release operations.
+- `apps/remote-runner`: the Rust `lilac-remote` binary Core uploads to SSH hosts, and the TypeScript module that locates its built targets.
 - `apps/tui`: OpenTUI/Solid container-local operator console with temporary conversations and plaintext presentation. It reuses `packages/client`; Core owns execution and server history.
 - `apps/tool-bridge`: the native `tools` launcher, its resident Bun HTTP client, and the reduced dev-mode Core tool server entry.
 
@@ -164,9 +165,8 @@ before the reader reaches it.
 - `packages/coding-tools`: shared coding-tool schemas and implementations, patch/edit behavior, instruction discovery, and tool guardrails.
 - `packages/computer-use-runner`: pinned CUA desktop image, Chromium seccomp profile, persistent Python runtime, and runner checks.
 - `packages/event-bus`: event catalog, codecs, typed bus, delivery policy, dead letters, and Redis Streams transport.
-- `packages/fs`: local filesystem operations, search backends, edit/hashline primitives, and the remote filesystem protocol.
+- `packages/fs`: filesystem operations, search backends, edit/hashline primitives, and the `FileSystemHost` interface with its local implementation.
 - `packages/plugin-runtime`: generic Level 1/Level 2 plugin capability contracts, discovery, loading, lifecycle, and reload management.
-- `packages/remote-fs-runner`: short-lived publishable remote runner used by Core SSH filesystem tools.
 - `packages/tool-results`: bounded model-view output, media projection, and encrypted transient artifact storage.
 - `packages/utils`: shared Core configuration, environment, model/provider resolution, prompt workspace, skills parsing/discovery, OAuth helpers, logging, and common utilities.
 
@@ -241,6 +241,8 @@ Lilac uses progressive disclosure, but ownership is more important than the leve
 ### Level 1: Agent-Local Tools
 
 Level 1 tools are direct model-callable AI SDK tools assembled for each run. `packages/coding-tools`, `packages/fs`, `packages/bash-safety`, and `packages/tool-results` own portable behavior. Core-specific host, SSH, restricted execution, attachments, artifacts, logging, and bus delegation adapters live in `apps/core/src/tools`. Built-in exposure is declared in `apps/core/src/plugins/builtin`, and `apps/core/src/plugins/manager.ts` applies model, profile, safety, and request context.
+
+Tools aimed at an SSH host (`cwd` of `host:path`, and `ssh.run`) run through `apps/remote-runner`. Core probes the host's platform, uploads the matching static binary by content hash to `${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runner/<sha256>/`, and starts it once per call over the multiplexed connection (`src/ssh/remote-runner-deploy.ts`). The request is the first line on stdin, and stdin stays open for the call; when Core closes it, the runner kills the command's process group and, on Linux, every descendant it adopted as a subreaper. File tools run the same `FileSystem` code as local calls, with I/O going to the runner through `src/ssh/remote-filesystem-host.ts`. Hosts without a bundled target keep `ssh.run` and remote Bash on a shell fallback that also cancels through a process group; their file tools fail. Remote fuzzy search walks the host and ranks with `fzf`, because remote hosts have no fff index.
 
 Native Bash executes with the Core service user's host authority. Static Bash checks, denied paths, redaction, `network`, and `workspaceWrites` are behavioral guardrails, not security boundaries. Use restricted execution or OS isolation when same-user files, secrets, or network access must be unavailable.
 

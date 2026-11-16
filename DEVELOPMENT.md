@@ -261,31 +261,25 @@ docker stop lilac-rustfs-test
 `bun run test:s3` fails when the variables are unset instead of skipping. The bucket `PUT` is
 idempotent. Each test writes under its own random prefix, so reruns need no cleanup.
 
-### Remote filesystem runner
+### Remote runner
 
-Core runs remote `glob`, `grep`, and `fuzzy_search` through
-`@stanley2058/lilac-remote-fs-runner@<version>`, using the version in
-`packages/remote-fs-runner/package.json`. Remote hosts fetch that version from npm with `bunx` or
-`npx`, so a change to the runner, to the `packages/fs` code it bundles, or to its dependencies
-reaches them only under a new version.
+`apps/remote-runner` is a Rust crate that builds `lilac-remote`, the binary Core uploads to SSH hosts.
+Its toolchain, `rustfmt` and targets are pinned in `apps/remote-runner/rust-toolchain.toml`. `cargo`
+must be on `PATH`; Homebrew's `rustup` installs it in `/opt/homebrew/opt/rustup/bin`, which Homebrew
+does not link.
 
-`packages/remote-fs-runner/published-fingerprint.json` records the last published version and a
-fingerprint of the bundle inputs. `packages/remote-fs-runner/tests/published-fingerprint.test.ts`
-fails when those inputs change while the version stays the same. To release a runner change:
+- `bun run build:remote-runner` builds the target for this machine into
+  `apps/remote-runner/dist/<target>/lilac-remote`. Core's test script runs it first, because the SSH
+  tests drive the real binary through a shim that stands in for `ssh`.
+- `bun run build:remote-runner -- --all` builds every target, as the Docker image does. Linux targets
+  link with `rust-lld`. macOS targets need `zig` on `PATH` when built off a Mac.
+- `bun --cwd=apps/remote-runner run test` runs `cargo fmt --check` and the crate's tests.
 
-1. Bump `version` in `packages/remote-fs-runner/package.json`. The version tests in
-   `packages/remote-fs-runner/tests/version.test.ts` and `apps/core/tests/ssh/ssh-exec.test.ts`
-   name it too.
-2. Run `bun run build:remote-fs` and `bun run test:remote-fs-package`, then publish the package from
-   `packages/remote-fs-runner`.
-3. Run `bun run remote-fs:fingerprint` and commit the updated record. The script refuses to record
-   new inputs for a version that npm already has.
-
-`bun run test:remote-fs-package` packs the runner with `npm pack` and installs the tarball through
-`bunx` and `npx` outside the workspace. It needs npm and registry access, and CI runs it after the
-ordinary checks. `apps/core/tests/ssh/remote-fs-runner-boundary.test.ts` runs every protocol
-operation through the built runner over the SSH test shim and compares the results with the local
-filesystem.
+The runner protocol is private to one Core build and the binaries built with it, so it needs no
+version bump or compatibility window. `apps/core/tests/ssh/remote-filesystem-parity.test.ts` runs
+every file operation locally and through the runner on the same fixtures and expects identical
+results. It catches behavior changes in the cases it covers; `plan/remote-runner.md` lists known
+differences outside them.
 
 Read [MIGRATIONS.md](MIGRATIONS.md) before changing stored data or versioned contracts. Active
 implementation plans are indexed in [plan/README.md](plan/README.md).

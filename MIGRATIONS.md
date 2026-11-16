@@ -167,6 +167,29 @@ successfully produces a report remains `Result.ok(report)` even when the report 
 validation findings, unhealthy state, or another negative conclusion. `Result.err` means the
 callable itself failed to complete as expected.
 
+### Native SSH remote runner
+
+Core no longer runs JavaScript on SSH hosts. It uploads the Rust `lilac-remote` binary for the host's
+platform and runs remote commands and file tools through it. Remote hosts no longer need `bun`,
+`node`, `npx` or registry access.
+
+- Core probes each host once per process with `uname -sm` and uploads the matching binary, about
+  1 MB gzipped, to `${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runner/<sha256>/lilac-remote`.
+  The old caches under `lilac/remote-runners` and `lilac/remote-fs-runner` are unused and can be
+  deleted, as can the `@stanley2058/lilac-remote-fs-runner` package in remote npm or bun caches.
+- Bundled targets are Linux, and macOS 11 or later, on x86_64 and aarch64. On other hosts, or where
+  the binary cannot be installed or executed, `ssh.run` and remote `bash` use a shell fallback and
+  file tools return an `ENOTSUP` failure. Unsupported results are retried after 10 minutes.
+- Closing the call now stops the remote command. A timeout, an abort, Core exiting or a dropped
+  connection kills the command's process group, and on Linux every process the runner adopted.
+  Background processes a command starts and leaves running after it exits normally are unaffected.
+- `LILAC_REMOTE_FS_RUNNER_COMMAND` and `LILAC_REMOTE_FS_RUNNER_PACKAGE` are removed and ignored.
+- Remote fuzzy search walks the host and ranks with `fzf` instead of using an fff index, so it has no
+  warm index, frecency or typo tolerance. `tools.fsBackend` no longer affects remote glob and grep.
+
+The runner protocol is internal to each Core build and its bundled binaries; no configuration or
+database migration is required. Rolling back restores the old runners, which redeploy themselves.
+
 ### Tool launcher build artifacts
 
 Built tool installations now include `tools-build-id` and `tools-build-info.json` beside
@@ -775,13 +798,8 @@ bounded redactor; payloads and arbitrary nested causes are not logged.
 Byte reads use an internal `MEDIA_TOO_LARGE` tag. Remote byte-read failures may include an
 internal `errorCode` with that value, so Core can present size guidance without matching error text.
 Model-facing read error codes are unchanged; oversized media returns `UNKNOWN`.
-Upgrade Core and the published remote filesystem runner together. Existing remote failures
-without `errorCode` remain readable and keep their original error text.
 
 SSH multiplexing uses private temporary control sockets with a 60-second idle lifetime.
-Bundled remote runners are cached under `${XDG_CACHE_HOME:-$HOME/.cache}/lilac/remote-runners`
-by SHA-256 content hash. No database migration is required. Those runner files can be removed
-when no tool calls are active; a failed execution invalidates Core's deployment cache so the next call repairs the runner.
 
 ### GitHub redelivery receipts
 
