@@ -15,6 +15,7 @@ import {
 } from "../../shared/attachment-utils";
 import { parseSshCwdTarget } from "../../ssh/ssh-cwd";
 import { remoteReadFileBytes } from "../../tools/fs/remote-fs";
+import type { SessionSafetyMode } from "../session-policy";
 import type { NativeThreadRecord, NativeUser } from "./codec";
 import { NATIVE_TEXT_PREVIEW_BYTES, textPreview } from "./resource-preview";
 import { nativeFailure, type NativeStoreFailure } from "./errors";
@@ -65,12 +66,33 @@ export class NativeLiveFileService {
     }, this);
   }
 
-  /** Reads a whole file under the thread's filesystem permissions, as `resolve` previews it. */
-  async readThreadFile(actorId: string, threadId: string, inputPath: string, signal?: AbortSignal) {
+  /**
+   * Reads a whole file with the file access of the run that named it. A restricted run reads only
+   * from its own session directory, even when the thread starter has broader access.
+   */
+  async readRunFile(
+    actorId: string,
+    threadId: string,
+    inputPath: string,
+    run: { readonly sessionId: string; readonly safetyMode: SessionSafetyMode },
+    maxBytes: number,
+  ) {
     return Result.gen(async function* () {
-      const reference = yield* this.publish(actorId, threadId, inputPath);
-      const file = yield* Result.await(this.read(actorId, reference.id, signal));
-      return Result.ok({ ...file, path: reference.path });
+      const thread = yield* this.threadFileRoot(actorId, threadId);
+      const restricted = thread.restricted || run.safetyMode === "restricted";
+      const resolved = yield* resolveToolPathForRequestContextResult({
+        cwd: restricted ? "/tmp" : this.dependencies.toolRoot,
+        inputPath,
+        context: { sessionId: run.sessionId, safetyMode: restricted ? "restricted" : "trusted" },
+      }).mapError(() => nativeFailure("forbidden", "File path is outside this thread's access"));
+      if (restricted) yield* Result.await(this.canonicalPath(resolved, run.sessionId));
+      // The reader checks deny paths against both the requested and the canonical path.
+      const read = await this.dependencies.filesystem.readFileBytes({ path: resolved, maxBytes });
+      if (!read.success && read.error.code === "MEDIA_TOO_LARGE")
+        return Result.err(nativeFailure("invalid", "File exceeds the preview size limit"));
+      if (!read.success)
+        return Result.err(nativeFailure("not-found", "File is missing or unreadable"));
+      return Result.ok({ bytes: read.bytes, path: resolved });
     }, this);
   }
 
@@ -100,24 +122,33 @@ export class NativeLiveFileService {
         context: { sessionId, safetyMode: restricted ? "restricted" : "trusted" },
       }).mapError(() => nativeFailure("forbidden", "File path is outside this thread's access"));
       const canonical = yield* Result.await(
+        this.canonicalPath(resolved, restricted ? sessionId : undefined),
+      );
+      return Result.ok({ root, path, resolved, canonical });
+    }, this);
+  }
+
+  // Restricted paths are checked lexically; a symlink in the session directory must not lead
+  // Core outside it. A restricted caller passes its session ID to check the canonical path.
+  private canonicalPath(resolved: string, restrictedSessionId?: string) {
+    return Result.gen(async function* () {
+      const canonical = yield* Result.await(
         Result.tryPromise({
           try: () => realpath(resolved),
           catch: () => nativeFailure("not-found", "File not found"),
         }),
       );
-      if (!restricted) return Result.ok({ root, path, resolved, canonical });
-      // Restricted paths are checked lexically; a symlink in the session directory must not
-      // lead the editor outside it.
+      if (restrictedSessionId === undefined) return Result.ok(canonical);
       const sessionRoot = yield* Result.await(
         Result.tryPromise({
-          try: () => realpath(resolveRestrictedSessionTmpDir(sessionId)),
+          try: () => realpath(resolveRestrictedSessionTmpDir(restrictedSessionId)),
           catch: () => nativeFailure("not-found", "File not found"),
         }),
       );
       if (!isPathInside(sessionRoot, canonical))
         return Result.err(nativeFailure("forbidden", "File path is outside this thread's access"));
-      return Result.ok({ root, path, resolved, canonical });
-    }, this);
+      return Result.ok(canonical);
+    });
   }
 
   /** Runs `task` after earlier saves of `key`; `task` must resolve with a Result instead of rejecting. */

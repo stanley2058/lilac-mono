@@ -231,8 +231,10 @@ comment remain usable if the source changes or disappears. Encoded and expanded 
 fit the existing 65,536-character limit.
 
 Agents can publish an HTML page with a fenced `html-preview-file` block containing one file path.
-At turn completion or failure, Core reads the file under the thread's filesystem permissions,
-inlines local and retained resource assets, and saves the page as a native upload. The authenticated
+At turn completion or failure, Core reads that one file with the file access of the run that wrote
+the reply and saves it as a native upload. A restricted run, or any run in a thread whose starter
+is restricted, reads only from its own session directory. Core does not follow the page's references, so local assets must already be inlined;
+the visualize skill's build helper inlines local scripts, stylesheets, and images. The authenticated
 preview uses a sandboxed opaque origin with scripts, forms, and popups enabled. Remote scripts may
 load. Deleting the thread removes its preview records. A missing or unreadable source records a
 failure instead of a saved page.

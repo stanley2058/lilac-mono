@@ -479,3 +479,48 @@ test("editing keeps deny paths for symlinks inside denied directories", async ()
   expect(await readFile(target, "utf8")).toBe("outside");
   native.close();
 });
+
+test("run file reads use the run's access, not the thread starter's", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "lilac-run-file-"));
+  directories.push(workspace);
+  await writeFile(join(workspace, "page.html"), "<p>workspace</p>");
+  const native = new NativeStore(new Database(":memory:"));
+  value(native.initialize());
+  value(
+    native.upsertUser({
+      id: "owner",
+      providerId: "owner",
+      role: "owner",
+      toolMode: "full",
+      displayName: "Owner",
+    }),
+  );
+  const thread = value(native.createThread("owner", { commandId: "run-file" }));
+  const sessionId = `run-file-${crypto.randomUUID()}`;
+  const sessionRoot = resolveRestrictedSessionTmpDir(sessionId);
+  directories.push(sessionRoot);
+  await mkdir(sessionRoot, { recursive: true });
+  await writeFile(join(sessionRoot, "page.html"), "<p>session</p>");
+  await symlink(join(workspace, "page.html"), join(sessionRoot, "link.html"));
+  const service = new NativeLiveFileService({
+    native,
+    filesystem: new FileSystem(workspace),
+    toolRoot: workspace,
+    remoteDenyPaths: [],
+  });
+  const read = (path: string, safetyMode: "trusted" | "restricted", maxBytes = 1024) =>
+    service.readRunFile("owner", thread.id, path, { sessionId, safetyMode }, maxBytes);
+  const text = async (result: ReturnType<typeof read>) =>
+    new TextDecoder().decode(value(await result).bytes);
+
+  expect(await text(read("page.html", "trusted"))).toBe("<p>workspace</p>");
+  expect(await text(read("/tmp/page.html", "restricted"))).toBe("<p>session</p>");
+  expect(await text(read("page.html", "restricted"))).toBe("<p>session</p>");
+  for (const path of [join(workspace, "page.html"), "/tmp/link.html", "~/page.html"])
+    expect((await read(path, "restricted")).status).toBe("error");
+  const oversized = await read("page.html", "trusted", 4);
+  expect(oversized.match({ ok: () => "", err: (error) => error.message })).toBe(
+    "File exceeds the preview size limit",
+  );
+  native.close();
+});

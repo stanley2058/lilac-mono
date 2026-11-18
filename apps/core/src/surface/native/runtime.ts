@@ -9,6 +9,7 @@ import { NativeReferences } from "./references";
 import { nativeStoreTransaction, type NativeStoreError } from "./store";
 import { serverToolFailure } from "@stanley2058/lilac-plugin-runtime";
 import type { NativeAttachmentOutput } from "../../tool-server/tools/attachment";
+import type { SessionSafetyMode } from "../session-policy";
 import type { NativeOutputPublisher } from "./output";
 import { createNativeTitleGeneration, type NativeTitleGenerator } from "./title-generation";
 import { NativeSubagents, type SubagentReader } from "./subagents";
@@ -753,6 +754,8 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
   }
 
   function createOutput(input: {
+    // Resolved after output starts, so it is read when the turn ends.
+    getSafetyMode: () => SessionSafetyMode | undefined;
     requestId: string;
     requestClient: string;
     recoveryOutputFrontier?: NativeOutputFrontier;
@@ -793,6 +796,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
       await htmlPreviews.snapshot({
         threadId: attempt.parentThreadId,
         turnId: attempt.turnId,
+        run: { sessionId: input.sessionId, safetyMode: input.getSafetyMode() ?? "restricted" },
         texts: reply.texts(),
       });
     }

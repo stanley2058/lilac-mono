@@ -51,6 +51,7 @@ async function fixture() {
     agentId: child.run.runId,
   };
   const publisher = f.runtime.createOutput({
+    getSafetyMode: () => "trusted",
     requestId: child.requestId,
     sessionId: child.sessionId,
     requestClient: "unknown",
@@ -218,6 +219,7 @@ test("workflow cancellation settles an observed child even before model output a
       parentSessionId: f.child.sessionId,
     });
     const nestedPublisher = f.runtime.createOutput({
+      getSafetyMode: () => "trusted",
       requestId: nested.requestId,
       sessionId: nested.sessionId,
       requestClient: "unknown",

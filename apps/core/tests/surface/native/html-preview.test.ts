@@ -97,7 +97,8 @@ test("a reply's html-preview-file fence serves the page saved when the turn ende
     const html = await page.text();
     expect(html).toContain('<style id="lilac-theme">');
     expect(html).toContain('<script src="https://cdn.example.com/chart.js">');
-    expect(html).toContain('<img src="data:image/png;base64,iVBORw==">');
+    // Core saves only the named file; the page's local references stay as written.
+    expect(html).toContain('<img src="./dot.png">');
     expect(html).toContain("<p>Saved page</p>");
 
     const missing = await preview("missing.html");

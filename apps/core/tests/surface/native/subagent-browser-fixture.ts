@@ -54,6 +54,7 @@ fixture.store
   )
   .unwrap();
 const publisher = fixture.runtime.createOutput({
+  getSafetyMode: () => "trusted",
   workflowRunId: child.run.runId,
   sessionId: child.sessionId,
   requestId: child.requestId,

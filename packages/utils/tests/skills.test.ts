@@ -472,6 +472,53 @@ describe("bundled skills", () => {
     expect(skill.body).toContain("```html-preview-file");
   });
 
+  it("builds a visualize preview by inlining local scripts, stylesheets, and images", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-visualize-build-"));
+    try {
+      const script = path.join(
+        import.meta.dir,
+        "..",
+        "builtin-skills",
+        "visualize",
+        "scripts",
+        "build.ts",
+      );
+      await fs.writeFile(path.join(dir, "app"), 'console.log("</script>")');
+      await fs.writeFile(path.join(dir, "style.css"), "p{color:red}");
+      await fs.writeFile(path.join(dir, "dot#1.png"), new Uint8Array([137, 80, 78, 71]));
+      await fs.writeFile(
+        path.join(dir, "page.html"),
+        [
+          '<link rel="stylesheet" media="print" href="style.css"><link rel="canonical" href="other.html">',
+          '<script src="https://cdn.example.com/chart.js"></script><script defer src="./app"></script>',
+          '<img src="dot%231.png?v=1#view"><img src="data:image/gif;base64,R0lG">',
+        ].join(""),
+      );
+      const base64 = (text: string) => Buffer.from(text).toString("base64");
+      const build = (source: string, output: string) =>
+        Bun.spawnSync(["bun", script, source, output], { cwd: dir, stderr: "pipe" });
+
+      expect(build("page.html", "out/index.html").exitCode).toBe(0);
+      expect(await fs.readFile(path.join(dir, "out", "index.html"), "utf8")).toBe(
+        [
+          `<link rel="stylesheet" media="print" href="data:text/css;base64,${base64("p{color:red}")}">`,
+          '<link rel="canonical" href="other.html">',
+          '<script src="https://cdn.example.com/chart.js"></script>',
+          `<script defer src="data:text/javascript;base64,${base64('console.log("</script>")')}"></script>`,
+          '<img src="data:image/png;base64,iVBORw==#view"><img src="data:image/gif;base64,R0lG">',
+        ].join(""),
+      );
+
+      await fs.writeFile(path.join(dir, "broken.html"), '<img src="missing.png">');
+      const failed = build("broken.html", "broken-out.html");
+      expect(failed.exitCode).toBe(1);
+      expect(failed.stderr.toString()).toContain("Missing local files: missing.png");
+      expect(await Bun.file(path.join(dir, "broken-out.html")).exists()).toBe(false);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("routes Lilac deployment and config work to separate references", async () => {
     const skillDir = path.join(import.meta.dir, "..", "builtin-skills", "customize-lilac");
     const skill = parseSkillMarkdown(await Bun.file(path.join(skillDir, "SKILL.md")).text());

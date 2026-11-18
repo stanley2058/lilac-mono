@@ -1316,6 +1316,7 @@ export async function startBusAgentRunner(params: {
   requestDelivery?: BusAgentRunnerRequestDelivery;
   onRequestSettled?: (requestDeliveryId: string) => void;
   createNativeOutput?: (input: {
+    readonly getSafetyMode: () => SessionSafetyMode | undefined;
     readonly requestId: string;
     readonly sessionId: string;
     readonly requestClient: AdapterPlatform;
@@ -3454,7 +3455,9 @@ export async function startBusAgentRunner(params: {
         }),
       );
     };
+    let runSafetyMode: SessionSafetyMode | undefined;
     const nativeOutput = params.createNativeOutput?.({
+      getSafetyMode: () => runSafetyMode,
       requestId: next.requestId,
       sessionId: next.sessionId,
       requestClient: next.requestClient,
@@ -4443,6 +4446,7 @@ export async function startBusAgentRunner(params: {
               };
             }
           }
+          runSafetyMode = safetyMode;
 
           const additionalSessionPrompts = await waitForPreAgent(
             resolveSessionAdditionalPrompts({
