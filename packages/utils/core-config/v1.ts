@@ -1087,9 +1087,7 @@ export const coreConfigInputSchemaV1 = z.object({
   basePrompt: z
     .string()
     .optional()
-    .describe(
-      "Base instructions. Codex uses this as Responses instructions when `codex_instructions` is absent. Other providers prepend it to the prompt files under DATA_DIR/prompts. Omit to use the provider's normal prompt assembly.",
-    ),
+    .describe("Optional base prompt prepended to the prompt files under DATA_DIR/prompts."),
 });
 
 export const coreConfigSchema = coreConfigInputSchemaV1;

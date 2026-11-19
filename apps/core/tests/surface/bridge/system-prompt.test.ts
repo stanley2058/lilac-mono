@@ -2,6 +2,25 @@ import { expect, it } from "bun:test";
 import { parseCoreConfigV2ToUniversal, resolveModelRef } from "@stanley2058/lilac-utils";
 import { buildAgentRunSystemPrompt } from "../../../src/surface/bridge/bus-agent-runner/system-prompt";
 
+it("puts basePrompt before the workspace prompt for Codex", () => {
+  const cfg = parseCoreConfigV2ToUniversal({ basePrompt: "Base prompt" });
+  cfg.agent.systemPrompt = "Workspace prompt";
+  const prompt = buildAgentRunSystemPrompt({
+    cfg,
+    resolved: resolveModelRef(cfg, { model: "codex/gpt-6.2-sol" }, "test"),
+    requestClient: "native",
+    runProfile: "primary",
+    editingToolMode: "apply_patch",
+    skillsSection: null,
+    additionalSessionPrompts: [],
+    messages: [],
+    safetyMode: "trusted",
+    sessionId: "channel",
+  });
+  expect(prompt).toStartWith("Base prompt\n\nWorkspace prompt");
+  expect(prompt.split("Base prompt")).toHaveLength(2);
+});
+
 it("adds output instructions for the requesting surface", () => {
   const cfg = parseCoreConfigV2ToUniversal({});
   const resolved = resolveModelRef(cfg, { model: "openai/gpt-5" }, "test");

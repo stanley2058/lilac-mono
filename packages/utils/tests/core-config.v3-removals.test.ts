@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { parseCoreConfigResult } from "../core-config";
 import { defaultNativeSurfaceConfig } from "../core-config/types";
+import { resolveModelSlot } from "../model-slot";
 
 function parseCoreConfig(raw: unknown) {
   return parseCoreConfigResult(raw).unwrap();
@@ -30,6 +31,45 @@ const retiredInputs = [
 ];
 
 describe("v3 retired configuration", () => {
+  it("accepts and ignores codex_instructions in v1 and v2", () => {
+    for (const configVersion of [1, 2]) {
+      const cfg = parseCoreConfig({
+        configVersion,
+        models: {
+          main: {
+            model: "codex/gpt-6.1-sol",
+            options: { codex_instructions: "Retired prompt", parallelToolCalls: false },
+          },
+        },
+      });
+      expect(resolveModelSlot(cfg, "main").providerOptions).toEqual({
+        openai: { parallelToolCalls: false, store: false, systemMessageMode: "developer" },
+      });
+    }
+  });
+
+  it("rejects codex_instructions in every v3 model options location", () => {
+    const options = { codex_instructions: "Retired prompt" };
+    const model = "codex/gpt-6.2-sol";
+    for (const models of [
+      { main: { model, options } },
+      { fast: { model, options } },
+      { def: { codex: { model, options } } },
+      { rules: [{ match: "codex/*", options }] },
+      { main: { model, fallback: [{ model, options }] } },
+      { fast: { model, fallback: [{ model, options }] } },
+      { def: { codex: { model, fallback: [{ model, options }] } } },
+    ]) {
+      const result = parseCoreConfigResult({ configVersion: 3, models });
+      if (!result.isErr()) throw new Error("Expected v3 to reject codex_instructions");
+      expect(result.error._tag).toBe("CoreConfigV3Invalid");
+      if (result.error._tag !== "CoreConfigV3Invalid") throw result.error;
+      expect(JSON.stringify(result.error.cause.issues)).toContain(
+        "codex_instructions was removed in configVersion 3",
+      );
+    }
+  });
+
   for (const input of retiredInputs) {
     it(`rejects ${JSON.stringify(input)} with migration guidance while v2 accepts it`, () => {
       expect(() => parseCoreConfig({ configVersion: 3, ...input })).toThrow("configVersion 3");

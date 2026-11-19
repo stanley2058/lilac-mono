@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 
 import {
   promptWorkspaceSignature,
-  applyBasePromptForProvider,
+  applyBasePrompt,
   buildAgentSystemPrompt,
   CORE_PROMPT_FILES,
   DEFAULT_PROMPT_DIRNAME,
@@ -166,22 +166,19 @@ describe("agent prompts", () => {
     });
   });
 
-  it("applies basePrompt to non-codex provider system prompts", () => {
+  it("prepends basePrompt to the workspace system prompt", () => {
     expect(
-      applyBasePromptForProvider({
+      applyBasePrompt({
         systemPrompt: "Workspace prompt",
         basePrompt: "Base prompt",
-        provider: "openai",
       }),
     ).toBe("Base prompt\n\nWorkspace prompt");
   });
 
-  it("omits basePrompt from codex provider system prompts", () => {
+  it("uses the workspace system prompt when basePrompt is absent", () => {
     expect(
-      applyBasePromptForProvider({
+      applyBasePrompt({
         systemPrompt: "Workspace prompt",
-        basePrompt: "Base prompt",
-        provider: "codex",
       }),
     ).toBe("Workspace prompt");
   });

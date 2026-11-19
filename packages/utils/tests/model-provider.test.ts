@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { streamText } from "ai";
 
-import { CODEX_BASE_INSTRUCTIONS } from "../codex-instructions";
 import type { CodexOAuthTokens } from "../codex-oauth";
 import {
   CodexRequestInvalid,
@@ -39,28 +38,28 @@ function jwt(claims: Record<string, unknown>): string {
 }
 
 describe("normalizeCodexResponsesRequestRecord", () => {
-  it("backfills missing instructions and store for codex responses", () => {
+  it("sets store to false and leaves instructions absent for Codex responses", () => {
     const normalized = normalizeCodexResponsesRequestRecord({
       stream: true,
       input: [{ type: "message", role: "user", id: "msg_123", content: [] }],
     });
 
     expect(normalized.store).toBe(false);
-    expect(normalized.instructions).toBe(CODEX_BASE_INSTRUCTIONS);
+    expect(normalized).not.toHaveProperty("instructions");
     expect(normalized.include).toEqual(["reasoning.encrypted_content"]);
     expect(normalized.parallel_tool_calls).toBe(true);
     expect((normalized.input as Array<Record<string, unknown>>)[0]?.id).toBeUndefined();
   });
 
-  it("preserves explicit non-empty instructions", () => {
+  it("strips top-level instructions from older Codex requests", () => {
     const normalized = normalizeCodexResponsesRequestRecord({
       stream: true,
-      instructions: "Keep this exact instruction",
+      instructions: "Legacy instruction",
       store: false,
       input: [],
     });
 
-    expect(normalized.instructions).toBe("Keep this exact instruction");
+    expect(normalized).not.toHaveProperty("instructions");
     expect(normalized.store).toBe(false);
   });
 
@@ -149,7 +148,6 @@ describe("normalizeCodexResponsesRequestRecord", () => {
       parallel_tool_calls: false,
       text: { verbosity: "low" },
       store: false,
-      instructions: CODEX_BASE_INSTRUCTIONS,
     });
   });
 
@@ -368,6 +366,7 @@ describe("refreshCodexOAuthTokens", () => {
     let readCalls = 0;
     let refreshCalls = 0;
     let responseCalls = 0;
+    let responseBody: unknown;
     let refreshSignal: AbortSignal | undefined;
 
     globalThis.fetch = (async (input, init) => {
@@ -380,6 +379,7 @@ describe("refreshCodexOAuthTokens", () => {
       }
       if (url.pathname.endsWith("/backend-api/codex/responses")) {
         responseCalls += 1;
+        responseBody = JSON.parse(String(init?.body));
         return new Response(
           [
             `data: ${JSON.stringify({
@@ -409,6 +409,7 @@ describe("refreshCodexOAuthTokens", () => {
 
     try {
       const provider = createCodexOAuthProvider({
+        responsesTransport: "sse",
         readTokens: async () => {
           readCalls += 1;
           if (readCalls === 3) {
@@ -440,7 +441,12 @@ describe("refreshCodexOAuthTokens", () => {
       })();
 
       await refreshStarted.promise;
-      const secondResult = streamText({ model, prompt: "second request" });
+      const secondResult = streamText({
+        model,
+        instructions: "Base prompt\n\nWorkspace prompt",
+        prompt: "second request",
+        providerOptions: { openai: { instructions: "Legacy instruction" } },
+      });
       const secondPartsPromise = (async () => {
         const parts = [];
         for await (const part of secondResult.stream) parts.push(part);
@@ -471,6 +477,13 @@ describe("refreshCodexOAuthTokens", () => {
 
       expect(refreshCalls).toBe(1);
       expect(responseCalls).toBe(1);
+      expect(responseBody).not.toHaveProperty("instructions");
+      expect(responseBody).toMatchObject({
+        input: [
+          { role: "developer", content: "Base prompt\n\nWorkspace prompt" },
+          { role: "user" },
+        ],
+      });
       expect(secondParts.some((part) => part.type === "finish")).toBe(true);
       expect(tokens.access).toBe("fresh-access");
       expect(tokens.refresh).toBe("fresh-refresh");

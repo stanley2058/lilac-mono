@@ -15,7 +15,7 @@ test("Codex encodes complete stateless replay before request normalization and p
   const context: AgentPreparedContext = {
     scopeId: "scope",
     step: 0,
-    system: "system",
+    system: "Base prompt\n\nWorkspace prompt",
     tools: [
       {
         name: "optional",
@@ -63,12 +63,18 @@ test("Codex encodes complete stateless replay before request normalization and p
           conversation: "stored-conversation",
           previousResponseId: "resp_stored",
           promptCacheKey: "cache-key",
+          instructions: "Legacy instruction",
         },
       },
     })
   ).unwrap();
   const request = normalizeCodexWebSocketRequest(encoded).unwrap();
   expect(request.store).toBe(false);
+  expect(request).not.toHaveProperty("instructions");
+  expect(request.input[0]).toEqual({
+    role: "developer",
+    content: "Base prompt\n\nWorkspace prompt",
+  });
   expect(request.prompt_cache_key).toBe("cache-key");
   expect<unknown[]>(request.input).toContainEqual({
     type: "reasoning",

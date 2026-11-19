@@ -1176,9 +1176,9 @@
           "markdownDescription": "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt."
         },
         "basePrompt": {
-          "description": "Base instructions. Codex uses this as Responses instructions when `codex_instructions` is absent. Other providers prepend it to the prompt files under DATA_DIR/prompts. Omit to use the provider's normal prompt assembly.",
+          "description": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts.",
           "type": "string",
-          "markdownDescription": "Base instructions. Codex uses this as Responses instructions when `codex_instructions` is absent. Other providers prepend it to the prompt files under DATA_DIR/prompts. Omit to use the provider's normal prompt assembly."
+          "markdownDescription": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts."
         }
       },
       "additionalProperties": false
@@ -4022,9 +4022,9 @@
           "markdownDescription": "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt."
         },
         "basePrompt": {
-          "description": "Base instructions. Codex uses this as Responses instructions when `codex_instructions` is absent. Other providers prepend it to the prompt files under DATA_DIR/prompts. Omit to use the provider's normal prompt assembly.",
+          "description": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts.",
           "type": "string",
-          "markdownDescription": "Base instructions. Codex uses this as Responses instructions when `codex_instructions` is absent. Other providers prepend it to the prompt files under DATA_DIR/prompts. Omit to use the provider's normal prompt assembly."
+          "markdownDescription": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts."
         }
       },
       "additionalProperties": false,
@@ -5919,7 +5919,7 @@
                   "options": {
                     "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
                     "type": "object",
-                    "propertyNames": { "type": "string" },
+                    "properties": { "codex_instructions": { "not": {} } },
                     "additionalProperties": { "$ref": "#/definitions/__schema0" },
                     "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning."
                   },
@@ -5956,7 +5956,7 @@
                             "options": {
                               "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
                               "type": "object",
-                              "propertyNames": { "type": "string" },
+                              "properties": { "codex_instructions": { "not": {} } },
                               "additionalProperties": { "$ref": "#/definitions/__schema0" },
                               "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning."
                             }
@@ -6016,7 +6016,7 @@
                 "options": {
                   "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
                   "type": "object",
-                  "propertyNames": { "type": "string" },
+                  "properties": { "codex_instructions": { "not": {} } },
                   "additionalProperties": { "$ref": "#/definitions/__schema0" },
                   "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning."
                 },
@@ -6053,7 +6053,7 @@
                           "options": {
                             "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
                             "type": "object",
-                            "propertyNames": { "type": "string" },
+                            "properties": { "codex_instructions": { "not": {} } },
                             "additionalProperties": { "$ref": "#/definitions/__schema0" },
                             "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning."
                           }
@@ -6099,7 +6099,7 @@
                 "options": {
                   "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
                   "type": "object",
-                  "propertyNames": { "type": "string" },
+                  "properties": { "codex_instructions": { "not": {} } },
                   "additionalProperties": { "$ref": "#/definitions/__schema0" },
                   "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning."
                 },
@@ -6136,7 +6136,7 @@
                           "options": {
                             "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
                             "type": "object",
-                            "propertyNames": { "type": "string" },
+                            "properties": { "codex_instructions": { "not": {} } },
                             "additionalProperties": { "$ref": "#/definitions/__schema0" },
                             "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning."
                           }
@@ -6353,7 +6353,7 @@
                   "options": {
                     "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning.",
                     "type": "object",
-                    "propertyNames": { "type": "string" },
+                    "properties": { "codex_instructions": { "not": {} } },
                     "additionalProperties": { "$ref": "#/definitions/__schema0" },
                     "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to opt into system/latest-user cache control. Cache writes can increase cost and interact poorly with tool-result pruning."
                   },
@@ -6472,9 +6472,9 @@
           "markdownDescription": "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt."
         },
         "basePrompt": {
-          "description": "Base instructions. Codex uses this as Responses instructions when `codex_instructions` is absent. Other providers prepend it to the prompt files under DATA_DIR/prompts. Omit to use the provider's normal prompt assembly.",
+          "description": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts.",
           "type": "string",
-          "markdownDescription": "Base instructions. Codex uses this as Responses instructions when `codex_instructions` is absent. Other providers prepend it to the prompt files under DATA_DIR/prompts. Omit to use the provider's normal prompt assembly."
+          "markdownDescription": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts."
         }
       },
       "additionalProperties": false,

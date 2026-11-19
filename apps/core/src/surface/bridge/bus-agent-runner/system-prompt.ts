@@ -1,5 +1,5 @@
 import {
-  applyBasePromptForProvider,
+  applyBasePrompt,
   resolveCoreConfigPath,
   resolveSubagentPermissionProfile,
   type CoreConfig,
@@ -46,17 +46,16 @@ export function buildAgentRunSystemPrompt(params: {
     primarySystemPrompt: params.cfg.agent.systemPrompt,
     workerSystemPrompt: params.cfg.agent.workerSystemPrompt,
   });
-  const providerSystemPrompt = applyBasePromptForProvider({
+  const systemPrompt = applyBasePrompt({
     systemPrompt: workspaceSystemPrompt,
     basePrompt: params.cfg.basePrompt,
-    provider: params.resolved.provider,
   });
   const profileConfig =
     params.runProfile === "primary"
       ? null
       : resolveSubagentPermissionProfile(params.cfg, params.runProfile);
   const profilePrompt = {
-    baseSystemPrompt: providerSystemPrompt,
+    baseSystemPrompt: systemPrompt,
     activeEditingTool: profileConfig?.workspaceWrites === false ? null : params.editingToolMode,
     skillsSection: params.skillsSection,
   };

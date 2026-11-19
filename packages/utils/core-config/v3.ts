@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { defaultNativeSurfaceConfig, MODEL_REASONING_EFFORTS } from "./types";
 import { isPermissionProfileName } from "../subagent-profile";
+import { jsonValueSchema } from "./v1";
 import {
   AGENT_DEFAULT_V2,
   agentSchemaFieldsV2,
@@ -188,6 +189,13 @@ const { subagents: _v2Subagents, ...agentFieldsWithoutSubagents } = agentSchemaF
 const { subagents: _v2SubagentsDefault, ...agentDefaultWithoutSubagents } = AGENT_DEFAULT_V2;
 
 const baseModels = coreConfigInputSchemaV2.shape.models.unwrap();
+const modelOptionsSchemaV3 = z
+  .object({
+    codex_instructions: removedV3Field("codex_instructions", "use basePrompt or prompt files"),
+  })
+  .catchall(jsonValueSchema)
+  .optional()
+  .describe(baseModels.shape.main.unwrap().shape.options.description ?? "");
 const modelRulesSchema = z
   .array(
     z.object({
@@ -198,7 +206,7 @@ const modelRulesSchema = z
         .describe(
           "Glob matched against the canonical provider/model reference. `*` also matches slashes. Rules apply in declaration order.",
         ),
-      options: baseModels.shape.main.unwrap().shape.options,
+      options: modelOptionsSchemaV3,
       reasoning: z
         .enum(MODEL_REASONING_EFFORTS)
         .optional()
@@ -250,7 +258,7 @@ const reasoningFieldsV3 = {
             .describe(
               "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model.",
             ),
-          options: baseModels.shape.main.unwrap().shape.options,
+          options: modelOptionsSchemaV3,
         }),
       ]),
     )
@@ -270,6 +278,7 @@ const modelsSchemaV3 = z
           .refine((name) => !name.includes("/")),
         baseModels.shape.def.unwrap().valueType.extend({
           ...reasoningFieldsV3,
+          options: modelOptionsSchemaV3,
           agentCanSelect: baseModels.shape.def
             .unwrap()
             .valueType.shape.agentCanSelect.describe(
@@ -289,14 +298,14 @@ const modelsSchemaV3 = z
       ),
     main: baseModels.shape.main
       .unwrap()
-      .extend(reasoningFieldsV3)
+      .extend({ ...reasoningFieldsV3, options: modelOptionsSchemaV3 })
       .default({ model: "openrouter/openai/gpt-4o" })
       .describe(
         "Primary request model and optional reasoning, options, and fallback overrides. Defaults to openrouter/openai/gpt-4o.",
       ),
     fast: baseModels.shape.fast
       .unwrap()
-      .extend(reasoningFieldsV3)
+      .extend({ ...reasoningFieldsV3, options: modelOptionsSchemaV3 })
       .default({ model: "openrouter/openai/gpt-4o-mini" })
       .describe(
         "Lightweight model used by features such as the router gate. Defaults to openrouter/openai/gpt-4o-mini.",

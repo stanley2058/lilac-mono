@@ -16,7 +16,6 @@ import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
 
 import { claudeCodeExecutableSettings } from "./claude-code-executable";
-import { CODEX_BASE_INSTRUCTIONS } from "./codex-instructions";
 import { OAUTH_DUMMY_KEY } from "./codex-oauth";
 import {
   createCodexOAuthAuthorization,
@@ -48,7 +47,6 @@ export type Providers =
 
 const CODEX_RESPONSES_REQUEST_KEYS = new Set([
   "model",
-  "instructions",
   "input",
   "tools",
   "tool_choice",
@@ -113,11 +111,6 @@ export function normalizeCodexResponsesRequestRecordResult(
     ? normalized.include.filter((value): value is string => typeof value === "string")
     : [];
   normalized.include = [...new Set([...include, CODEX_REASONING_INCLUDE])];
-
-  const instructions = normalized.instructions;
-  if (typeof instructions !== "string" || instructions.trim().length === 0) {
-    normalized.instructions = CODEX_BASE_INSTRUCTIONS;
-  }
 
   // The Codex backend defaults omitted function-tool strictness to true and
   // makes every declared property required, changing omission-based schemas.

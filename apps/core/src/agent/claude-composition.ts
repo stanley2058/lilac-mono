@@ -6,7 +6,7 @@ import type { ToolSet, ModelMessage, LanguageModel } from "ai";
 import { AiSdkPiAgent, AgentExternalHostFailed } from "@stanley2058/lilac-agent";
 import { signalExternalToolCallHost } from "@stanley2058/lilac-agent/agent-runtime-support";
 import {
-  applyBasePromptForProvider,
+  applyBasePrompt,
   claudeCodeExecutableSettings,
   resolveSubagentPermissionProfile,
   createLogger,
@@ -253,10 +253,9 @@ export async function createCoreClaudeComposition(
         }
       : null,
     systemPolicy: {
-      base: applyBasePromptForProvider({
+      base: applyBasePrompt({
         systemPrompt: workspaceSystemPrompt,
         basePrompt: cfg.basePrompt,
-        provider: activeBinding.resolved.provider,
       }),
       profileOverlay: profileConfig?.promptOverlay ?? null,
       additionalSessionPrompts,

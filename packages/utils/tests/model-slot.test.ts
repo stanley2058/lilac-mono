@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 
 import {
-  CODEX_BASE_INSTRUCTIONS,
   fromDurableResolvedModelPlan,
+  fromDurableResolvedModelRequest,
   parseCoreConfigV1ToUniversal,
   providers,
   resolveModelChain,
@@ -216,7 +216,7 @@ describe("resolveModelSlot", () => {
     });
   });
 
-  it("uses codex_instructions as a top-level meta option for codex", () => {
+  it("ignores retired Codex instructions in v1 model options", () => {
     const cfg = baseConfig();
     cfg.basePrompt = "base prompt";
     cfg.models.main = {
@@ -225,24 +225,40 @@ describe("resolveModelSlot", () => {
         codex_instructions: "hello",
         openai: {
           instructions: "direct provider instruction",
+          systemMessageMode: "remove",
         },
       },
     };
 
     const resolved = resolveModelSlot(cfg, "main");
-    expect(resolved.providerOptions?.openai?.instructions).toBe("hello");
-    expect(resolved.providerOptions?.openai?.parallelToolCalls).toBe(true);
-    expect(resolved.providerOptions?.openai?.store).toBe(false);
-
-    // Ensure the meta key is not forwarded.
-    expect(resolved.providerOptions?.codex_instructions).toBeUndefined();
+    expect(resolved.providerOptions).toEqual({
+      openai: { parallelToolCalls: true, store: false, systemMessageMode: "developer" },
+    });
   });
 
-  it("uses basePrompt for codex instructions when codex_instructions is absent", () => {
+  it("restores old Codex plans with developer input and without retired instructions", () => {
+    const restored = fromDurableResolvedModelRequest({
+      spec: "codex/gpt-4o",
+      provider: "codex",
+      modelId: "gpt-4o",
+      reasoningDisplay: "detailed",
+      providerOptions: {
+        openai: {
+          instructions: "Former Codex prompt",
+          systemMessageMode: "remove",
+          parallelToolCalls: false,
+        },
+      },
+    });
+    expect(restored.providerOptions).toEqual({
+      openai: { parallelToolCalls: false, store: false, systemMessageMode: "developer" },
+    });
+  });
+
+  it("preserves explicitly configured Responses instructions for the OpenAI provider", () => {
     const cfg = baseConfig();
-    cfg.basePrompt = "base prompt";
     cfg.models.main = {
-      model: "codex/gpt-4o",
+      model: "openai/gpt-4o",
       options: {
         openai: {
           instructions: "direct provider instruction",
@@ -251,7 +267,7 @@ describe("resolveModelSlot", () => {
     };
 
     const resolved = resolveModelSlot(cfg, "main");
-    expect(resolved.providerOptions?.openai?.instructions).toBe("base prompt");
+    expect(resolved.providerOptions?.openai?.instructions).toBe("direct provider instruction");
   });
 
   it("uses response_commentary as a top-level meta option for openai", () => {
@@ -371,7 +387,7 @@ describe("resolveModelSlot", () => {
 
     const resolved = resolveModelSlot(cfg, "main");
     expect(resolved.responseCommentary).toBe(true);
-    expect(resolved.providerOptions?.openai?.instructions).toBe(CODEX_BASE_INSTRUCTIONS);
+    expect(resolved.providerOptions?.openai).not.toHaveProperty("instructions");
     expect(resolved.providerOptions?.openai?.parallelToolCalls).toBe(true);
     expect(resolved.providerOptions?.openai?.store).toBe(false);
 
@@ -401,17 +417,12 @@ describe("resolveModelSlot", () => {
     const cfg = baseConfig();
     cfg.models.main = {
       model: "codex/gpt-4o",
-      options: {
-        openai: {
-          instructions: "direct provider instruction",
-        },
-      },
     };
 
     const resolved = resolveModelSlot(cfg, "main");
     expect(resolved.providerOptions).toEqual({
       openai: {
-        instructions: CODEX_BASE_INSTRUCTIONS,
+        systemMessageMode: "developer",
         parallelToolCalls: true,
         store: false,
       },

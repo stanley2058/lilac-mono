@@ -659,13 +659,8 @@ export async function buildAgentSystemPrompt(options?: { dataDir?: string }): Pr
   };
 }
 
-export function applyBasePromptForProvider(params: {
-  systemPrompt: string;
-  basePrompt?: string;
-  provider: string;
-}): string {
+export function applyBasePrompt(params: { systemPrompt: string; basePrompt?: string }): string {
   const systemPrompt = params.systemPrompt.trim();
-  if (params.provider === "codex") return systemPrompt;
 
   const basePrompt = params.basePrompt?.trim();
   if (!basePrompt) return systemPrompt;

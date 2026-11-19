@@ -2,7 +2,6 @@ import type { LanguageModel } from "ai";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
 import { providers, type Providers } from "./model-provider";
-import { CODEX_BASE_INSTRUCTIONS } from "./codex-instructions";
 import type {
   ConfiguredModelChainEntry,
   ConfiguredModelRef,
@@ -201,13 +200,17 @@ export function fromDurableResolvedModelRequestResult(
       }),
     );
   }
+  const providerOptions =
+    request.provider === "codex"
+      ? withCodexRequestOptions(request.providerOptions)
+      : request.providerOptions;
   return Result.ok({
     ...(request.alias ? { alias: request.alias } : {}),
     spec: request.spec,
     provider: request.provider,
     modelId: request.modelId,
     model: provider(request.modelId),
-    ...(request.providerOptions ? { providerOptions: request.providerOptions } : {}),
+    ...(providerOptions ? { providerOptions } : {}),
     ...(request.reasoning ? { reasoning: request.reasoning } : {}),
     ...(request.responseCommentary ? { responseCommentary: true } : {}),
     ...(request.openaiServerCompaction ? { openaiServerCompaction: true } : {}),
@@ -354,11 +357,7 @@ function withOpenAIParallelToolCallsDefault(
   };
 }
 
-function buildProviderOptionsResult(params: {
-  provider: string;
-  options?: JSONObject;
-  basePrompt?: string;
-}): ResultType<
+function buildProviderOptionsResult(params: { provider: string; options?: JSONObject }): ResultType<
   {
     providerOptions?: { [x: string]: JSONObject };
     responseCommentary?: boolean;
@@ -369,26 +368,12 @@ function buildProviderOptionsResult(params: {
 > {
   const options = params.options ?? {};
 
-  const {
-    anthropic_prompt_cache,
-    codex_instructions,
-    openai_server_compaction,
-    response_commentary,
-  } = options as JSONObject & {
-    anthropic_prompt_cache?: JSONValue;
-    codex_instructions?: JSONValue;
-    openai_server_compaction?: JSONValue;
-    response_commentary?: JSONValue;
-  };
-  const codexInstructions =
-    typeof codex_instructions === "string" && codex_instructions.length > 0
-      ? codex_instructions
-      : undefined;
-  const basePrompt =
-    typeof params.basePrompt === "string" && params.basePrompt.length > 0
-      ? params.basePrompt
-      : undefined;
-
+  const { anthropic_prompt_cache, openai_server_compaction, response_commentary } =
+    options as JSONObject & {
+      anthropic_prompt_cache?: JSONValue;
+      openai_server_compaction?: JSONValue;
+      response_commentary?: JSONValue;
+    };
   const responseCommentary =
     response_commentary === true && (params.provider === "openai" || params.provider === "codex")
       ? true
@@ -422,38 +407,25 @@ function buildProviderOptionsResult(params: {
 
   const provider = params.provider;
   const providerOptions = normalizeConfiguredModelProviderOptions(provider, options);
-
-  if (provider !== "codex") {
-    // Non-codex: codex_instructions is ignored; also not forwarded.
-    return Result.ok({
-      providerOptions: withOpenAIParallelToolCallsDefault(provider, providerOptions),
-      responseCommentary,
-      openaiServerCompaction,
-      anthropicPromptCache,
-    });
-  }
-
-  // Codex: ensure OpenAI namespace exists + has instructions.
-  const openaiKey = "openai";
-  const existing = providerOptions?.[openaiKey] ?? {};
-  const resolvedInstructions = codexInstructions ?? basePrompt ?? CODEX_BASE_INSTRUCTIONS;
-
-  const nextOpenAI = {
-    ...existing,
-    instructions: resolvedInstructions,
-    // Codex backend requires store=false (items are not persisted).
-    store: false,
-  } satisfies JSONObject;
+  const requestOptions =
+    provider === "codex" ? withCodexRequestOptions(providerOptions) : providerOptions;
 
   return Result.ok({
-    providerOptions: withOpenAIParallelToolCallsDefault(provider, {
-      ...providerOptions,
-      [openaiKey]: nextOpenAI,
-    }),
+    providerOptions: withOpenAIParallelToolCallsDefault(provider, requestOptions),
     responseCommentary,
     openaiServerCompaction,
     anthropicPromptCache,
   });
+}
+
+function withCodexRequestOptions(
+  providerOptions?: Record<string, JSONObject>,
+): Record<string, JSONObject> {
+  const { instructions: _instructions, ...openai } = providerOptions?.openai ?? {};
+  return {
+    ...providerOptions,
+    openai: { ...openai, systemMessageMode: "developer", store: false },
+  };
 }
 
 function resolveModelSpecFromRawResult(
@@ -559,7 +531,6 @@ function resolveModelResult(params: {
   alias?: string;
   options?: JSONObject;
   reasoning?: ModelReasoningEffort;
-  basePrompt?: string;
 }): ResultType<ResolvedModelRef, ModelResolutionFailed> {
   const parsed = parseModelSpecifierResult(params.spec);
   const parsedSpec = parsed.match<{ provider: string; model: string } | string>({
@@ -580,7 +551,6 @@ function resolveModelResult(params: {
   const builtOptions = buildProviderOptionsResult({
     provider,
     options: params.options,
-    basePrompt: params.basePrompt,
   });
   const options = builtOptions.match<
     | {
@@ -668,7 +638,6 @@ export function resolveModelRefResult(
     alias: baseValue.alias,
     options: mergedOptions,
     reasoning,
-    basePrompt: cfg.basePrompt,
   });
 }
 
@@ -834,7 +803,6 @@ export function resolveModelSlotResult(
     alias,
     options: mergedOptions,
     reasoning,
-    basePrompt: cfg.basePrompt,
   });
   const resolvedValue = resolved.match<ResolvedModelRef | ModelResolutionFailed>({
     ok: (value) => value,

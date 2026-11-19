@@ -7,15 +7,18 @@ For database cutovers and rollback, use [MIGRATIONS.md](../MIGRATIONS.md).
 ## Upgrade procedure
 
 1. Back up the configuration and the coordinated deployment data before upgrading binaries.
-2. Keep the existing config version for the first startup. V1 and v2 still parse; startup never
+2. Before starting the upgraded build, remove `codex_instructions` from model options. V1 and v2
+   accept and ignore it. To keep its text in use, move it to `basePrompt` or the workspace prompt
+   files under `DATA_DIR/prompts`. Those prompts are shared across models.
+3. Keep the existing config version for the first startup. V1 and v2 still parse; startup never
    rewrites a file to v3. An omitted `configVersion` means v1.
-3. For native installations with customized YAML deployment settings, start with v2 once and
+4. For native installations with customized YAML deployment settings, start with v2 once and
    verify the imported values in Settings > Deployment before removing those keys.
-4. Apply the v3 field conversions below. Update custom skills, scripts, plugins, and tool allowlists
+5. Apply the v3 field conversions below. Update custom skills, scripts, plugins, and tool allowlists
    for removed callables even if you keep v1 or v2.
-5. Review delegated authority before setting `configVersion: 3`. V1/v2 default delegation to
+6. Review delegated authority before setting `configVersion: 3`. V1/v2 default delegation to
    `restricted`; v3 defaults to `full` when the caller can grant it, otherwise the caller's profile.
-6. Validate the edited file with the matching local schema, restart where required, and verify the
+7. Validate the edited file with the matching local schema, restart where required, and verify the
    selected models, permission profiles, and native deployment settings. Deploy Core and clients together.
 
 The installer supports guided edits to v2 and v3 and preserves the existing version. Its final review
@@ -134,6 +137,8 @@ workflow is removed. `tools.inspect` is rejected in v3; v2 accepts and ignores i
 V3 rejects these legacy input forms with migration guidance, including when both old and new keys
 are present. V1/v2 retain their existing input compatibility:
 
+- Remove `codex_instructions` from model options as described in the upgrade procedure. Codex
+  sends its prompt as a developer message and ignores `systemMessageMode` overrides.
 - `tools.web.search` becomes `tools.web.extract`.
 - `tools.web.extract.provider` becomes `tools.web.extract.providers: [provider]`.
 - `conversation.thread.jevAutoInject` becomes `conversation.thread.decisionAutoInject`.
