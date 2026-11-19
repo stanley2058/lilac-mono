@@ -86,6 +86,7 @@ export function withAbortSignal<T>(
     };
     signal.addEventListener("abort", onAbort, { once: true });
     removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+    if (signal.aborted) onAbort();
   });
   return Promise.race([pending, aborted]).finally(removeAbortListener);
 }

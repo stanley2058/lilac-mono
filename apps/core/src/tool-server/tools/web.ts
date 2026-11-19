@@ -22,6 +22,7 @@ import {
   webSearchInputSchema,
   type WebSearchProvider,
   type WebSearchProviderId,
+  type WebSearchResult,
 } from "./web-search";
 import {
   FirecrawlPermitPool,
@@ -30,6 +31,7 @@ import {
   type FirecrawlPermitFailure,
   type FirecrawlPermitPolicy,
 } from "./web-search/firecrawl-permit-pool";
+import { withAbortSignal } from "./web-search/shared";
 import {
   createBrowserPageAcquisition,
   type BrowserPageAcquisition,
@@ -96,6 +98,15 @@ const getPageSchema = z.object({
 type GetPageMode = z.infer<typeof getPageModeSchema>;
 type GetPageInput = z.infer<typeof getPageSchema>;
 type WebProviderFailure = { providerId: WebSearchProviderId; failure: ServerToolFailure };
+const WEB_SEARCH_ATTEMPT_TIMEOUT_MS = 10_000;
+
+type WebSearchFailure = { kind: "failure"; failure: ServerToolFailure; retryable: boolean };
+type WebSearchProviderOutcome =
+  | { kind: "success"; results: readonly WebSearchResult[] }
+  | WebSearchFailure;
+type WebSearchAttemptOutcome =
+  | WebSearchProviderOutcome
+  | { kind: "queueFailure"; error: FirecrawlPermitFailure };
 
 class WebProviderOperationFailed extends TaggedError("WebProviderOperationFailed")<{
   readonly cause: ServerToolFailure;
@@ -282,6 +293,68 @@ function webFailure(error: unknown, signal?: AbortSignal): ServerToolFailure {
     message,
     retryable: category === "unavailable" || category === "timeout",
   });
+}
+
+function classifySearchAttemptFailure(
+  cause: Error | Panic,
+  timedOut: boolean,
+  callerSignal?: AbortSignal,
+): WebSearchFailure {
+  if (Panic.is(cause)) preserveToolPanic(cause);
+  const error = timedOut
+    ? new Error(`Web search timed out after ${WEB_SEARCH_ATTEMPT_TIMEOUT_MS}ms.`)
+    : cause;
+  const failure = webFailure(error, callerSignal);
+  return {
+    kind: "failure",
+    failure,
+    retryable: !callerSignal?.aborted && (timedOut || isRetriableWebProviderError(error)),
+  };
+}
+
+async function searchWithDeadline(
+  provider: WebSearchProvider,
+  input: z.output<typeof webSearchInputSchema>,
+  callerSignal?: AbortSignal,
+): Promise<WebSearchProviderOutcome> {
+  const deadline = new AbortController();
+  const signal = callerSignal ? AbortSignal.any([callerSignal, deadline.signal]) : deadline.signal;
+  const timer = setTimeout(() => deadline.abort(), WEB_SEARCH_ATTEMPT_TIMEOUT_MS);
+  const searched = await Result.tryPromise({
+    try: () => withAbortSignal(signal, () => provider.search(input, { signal })),
+    catch: captureWebFailure,
+  }).finally(() => clearTimeout(timer));
+
+  if (searched.isErr()) {
+    return classifySearchAttemptFailure(
+      searched.error.cause,
+      deadline.signal.aborted,
+      callerSignal,
+    );
+  }
+  return { kind: "success", results: searched.value };
+}
+
+function searchFailureForLog(failure: ServerToolFailure): WebProviderOperationFailed {
+  return new WebProviderOperationFailed({ cause: failure, message: failure.message });
+}
+
+function describeSearchFailure(
+  outcome: Exclude<WebSearchAttemptOutcome, { kind: "success" }>,
+  signal?: AbortSignal,
+) {
+  if (outcome.kind === "queueFailure") {
+    return {
+      failure: webFailure(outcome.error, signal),
+      retryable: FirecrawlPermitQueueTimedOut.is(outcome.error),
+      error: outcome.error,
+    };
+  }
+  return {
+    failure: outcome.failure,
+    retryable: outcome.retryable,
+    error: searchFailureForLog(outcome.failure),
+  };
 }
 
 function formatWebProviderFailureMessage(
@@ -538,87 +611,59 @@ export class Web implements ServerTool {
         this.logger.logInfo(`web.search retrying with fallback provider '${provider.id}'.`);
       }
 
-      let permit: FirecrawlPermit | undefined;
-      if (provider.id === "firecrawl") {
-        const acquired = (
-          await this.dependencies.firecrawlSearchPermits.acquire(opts?.signal)
-        ).match<{ permit: FirecrawlPermit } | { error: FirecrawlPermitFailure; timedOut: boolean }>(
-          {
-            ok: (value) => ({ permit: value }),
-            err: (error) => ({ error, timedOut: FirecrawlPermitQueueTimedOut.is(error) }),
-          },
-        );
-        if ("error" in acquired) {
-          const failure = webFailure(acquired.error, opts?.signal);
-          failures.push({ providerId: provider.id, failure });
-          if (acquired.timedOut && index < this.webSearchProviders.length - 1) {
-            this.logger.logInfo(
-              `web.search retryable failure (${provider.id}); falling back to next provider.`,
-              formatTaggedErrorForLog(acquired.error),
-            );
-            continue;
-          }
-          this.logger.logError(
-            `web.search failed (${provider.id}).`,
-            formatTaggedErrorForLog(acquired.error),
-          );
-          return Result.err(failure);
-        }
-        permit = acquired.permit;
+      const outcome = await this.searchProvider(provider, input, opts?.signal);
+      if (opts?.signal?.aborted) {
+        return Result.err(webFailure(new Error("Web search was aborted."), opts.signal));
       }
+      if (outcome.kind === "success") return Result.ok(outcome.results);
 
-      const outcome = await (async () => {
-        const searched = await Result.tryPromise({
-          try: () => provider.search(input, { signal: opts?.signal }),
-          catch: captureWebFailure,
-        });
-        return searched.match<
-          | { readonly kind: "return"; readonly value: ServerToolResult }
-          | { readonly kind: "panic"; readonly panic: Panic }
-          | {
-              readonly kind: "failure";
-              readonly failure: ServerToolFailure;
-              readonly retryable: boolean;
-            }
-        >({
-          ok: (value) => ({ kind: "return", value: Result.ok(value) }),
-          err: ({ cause }) =>
-            Panic.is(cause)
-              ? ({ kind: "panic", panic: cause } as const)
-              : ({
-                  kind: "failure",
-                  failure: webFailure(cause, opts?.signal),
-                  retryable: isRetriableWebProviderError(cause),
-                } as const),
-        });
-      })().finally(() => permit?.release());
-      if (outcome.kind === "return") return outcome.value;
-      if (outcome.kind === "panic") preserveToolPanic(outcome.panic);
-      failures.push({ providerId: provider.id, failure: outcome.failure });
-      if (outcome.retryable && index < this.webSearchProviders.length - 1) {
+      const { failure, retryable, error } = describeSearchFailure(outcome, opts?.signal);
+      failures.push({ providerId: provider.id, failure });
+      if (retryable && index < this.webSearchProviders.length - 1) {
         this.logger.logInfo(
           `web.search retryable failure (${provider.id}); falling back to next provider.`,
-          formatTaggedErrorForLog(
-            new WebProviderOperationFailed({
-              cause: outcome.failure,
-              message: outcome.failure.message,
-            }),
-          ),
+          formatTaggedErrorForLog(error),
         );
         continue;
       }
-      this.logger.logError(
-        `web.search failed (${provider.id}).`,
-        formatTaggedErrorForLog(
-          new WebProviderOperationFailed({
-            cause: outcome.failure,
-            message: outcome.failure.message,
-          }),
-        ),
-      );
+      this.logger.logError(`web.search failed (${provider.id}).`, formatTaggedErrorForLog(error));
+      if (outcome.kind === "queueFailure") return Result.err(failure);
       break;
     }
     return Result.err(aggregateWebProviderFailure("search", failures));
+  }
+
+  private async searchProvider(
+    provider: WebSearchProvider,
+    input: z.output<typeof webSearchInputSchema>,
+    signal?: AbortSignal,
+  ): Promise<WebSearchAttemptOutcome> {
+    const outcome = await this.searchProviderAttempt(provider, input, signal);
+    if (outcome.kind !== "failure" || !outcome.retryable || signal?.aborted) return outcome;
+
+    this.logger.logInfo(
+      `web.search retryable failure (${provider.id}); retrying the same provider.`,
+      formatTaggedErrorForLog(searchFailureForLog(outcome.failure)),
+    );
+    return this.searchProviderAttempt(provider, input, signal);
+  }
+
+  private async searchProviderAttempt(
+    provider: WebSearchProvider,
+    input: z.output<typeof webSearchInputSchema>,
+    signal?: AbortSignal,
+  ): Promise<WebSearchAttemptOutcome> {
+    if (provider.id !== "firecrawl") return searchWithDeadline(provider, input, signal);
+
+    const acquired = (await this.dependencies.firecrawlSearchPermits.acquire(signal)).match<
+      { permit: FirecrawlPermit } | { error: FirecrawlPermitFailure }
+    >({
+      ok: (permit) => ({ permit }),
+      err: (error) => ({ error }),
+    });
+    if ("error" in acquired) return { kind: "queueFailure", error: acquired.error };
+
+    return searchWithDeadline(provider, input, signal).finally(() => acquired.permit.release());
   }
 
   private async extractPageContent(
