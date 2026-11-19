@@ -105,17 +105,20 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* An atomic inline icon adds a break opportunity before the link text, so a long URL wraps
+   below a lone icon. Padding on an empty inline box reserves the space without one. */
 .markdown-link .link-favicon {
-  display: inline-flex;
-  vertical-align: -0.125em;
-  width: 1em;
-  height: 1em;
-  margin-right: calc(var(--ui-space-unit) * 1);
+  position: relative;
+  padding-left: calc(1em + var(--ui-space-unit) * 1);
 }
 .markdown-link .link-favicon img,
 .markdown-link .link-favicon svg {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 1em;
+  height: 1em;
+  transform: translateY(-50%);
   margin: 0;
   border-radius: 0;
   object-fit: contain;
