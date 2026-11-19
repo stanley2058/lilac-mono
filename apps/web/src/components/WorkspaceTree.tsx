@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { SkeletonRows } from "./ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { FileTree, useFileTree } from "@pierre/trees/react";
@@ -9,7 +9,15 @@ import { ErrorNotice, IconButton } from "./ui";
 import { Input } from "./ui/input";
 import "./workspace-tree.css";
 
-export default function WorkspaceTree({ threadId, active }: { threadId: string; active: boolean }) {
+export default function WorkspaceTree({
+  threadId,
+  active,
+  activePath,
+}: {
+  threadId: string;
+  active: boolean;
+  activePath?: string;
+}) {
   const { client, panels } = useWorkspace();
   const draft = threadId.startsWith("draft:");
   const query = useQuery({
@@ -19,9 +27,13 @@ export default function WorkspaceTree({ threadId, active }: { threadId: string; 
     enabled: active && !draft,
     retry: false,
   });
+  const root = query.data?.root.replace(/\/$/, "");
+  const selectedPath =
+    root !== undefined && activePath?.startsWith(`${root}/`)
+      ? activePath.slice(root.length + 1)
+      : undefined;
   const open = (path: string) => {
-    if (!query.data) return;
-    const root = query.data.root.replace(/\/$/, "");
+    if (root === undefined) return;
     panels.getState().openFile(threadId, {
       type: "path",
       path: `${root}/${path}`,
@@ -35,6 +47,7 @@ export default function WorkspaceTree({ threadId, active }: { threadId: string; 
     <WorkspaceTreeView
       paths={query.data?.paths ?? emptyPaths}
       root={query.data?.root}
+      selectedPath={selectedPath}
       onOpen={open}
       onRefresh={draft ? undefined : () => void query.refetch()}
       refreshing={query.isFetching}
@@ -50,6 +63,7 @@ const emptyPaths: readonly string[] = [];
 export function WorkspaceTreeView({
   paths,
   root,
+  selectedPath,
   onOpen,
   onRefresh,
   refreshing = false,
@@ -59,6 +73,8 @@ export function WorkspaceTreeView({
 }: {
   paths: readonly string[];
   root?: string;
+  /** Workspace-relative path of the open file, revealed and highlighted in the tree. */
+  selectedPath?: string;
   onOpen: (path: string) => void;
   onRefresh?: () => void;
   refreshing?: boolean;
@@ -68,12 +84,27 @@ export function WorkspaceTreeView({
 }) {
   const [search, setSearch] = useState("");
   const query = search.trim() || null;
+  // Selection mirrors the open file, so syncing it must not open files.
+  const syncing = useRef(false);
+  const syncSelection = () => {
+    syncing.current = true;
+    for (const path of model.getSelectedPaths())
+      if (path !== selectedPath) model.getItem(path)?.deselect();
+    if (selectedPath && paths.includes(selectedPath)) model.getItem(selectedPath)?.select();
+    syncing.current = false;
+  };
   const select = useEffectEvent((selected: readonly string[]) => {
-    const path = selected[0];
-    if (!path || !paths.includes(path)) return;
+    if (syncing.current) return;
+    const path = selected.find((item) => item !== selectedPath && paths.includes(item));
+    if (!path) {
+      // A folder click or deselection must not drop the open file's highlight.
+      if (selectedPath !== undefined) syncSelection();
+      return;
+    }
     onOpen(path);
-    // Selection only reports changes, so clear it to let the same file open again.
-    model.getItem(path)?.deselect();
+    // The opened file becomes the revealed selection. Without one, clear the selection,
+    // since it only reports changes and the same file must be able to open again.
+    if (selectedPath === undefined) syncSelection();
   });
   const { model } = useFileTree({
     paths: [],
@@ -93,6 +124,19 @@ export function WorkspaceTreeView({
   useEffect(() => {
     model.setSearch(query);
   }, [model, query]);
+  const reveal = useEffectEvent(() => {
+    syncSelection();
+    if (!selectedPath || !paths.includes(selectedPath)) return;
+    const segments = selectedPath.split("/");
+    for (let end = 1; end < segments.length; end++) {
+      const folder = model.getItem(segments.slice(0, end).join("/"));
+      if (folder && "expand" in folder) folder.expand();
+    }
+    model.scrollToPath(selectedPath, { focus: false, offset: "center" });
+  });
+  useEffect(() => {
+    reveal();
+  }, [model, paths, selectedPath]);
   return (
     <div
       className="workspace-tree flex flex-col flex-1 min-w-0 min-h-0 bg-sidebar text-sidebar-foreground"

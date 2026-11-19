@@ -19,7 +19,7 @@ import {
 } from "./ui/dropdown-menu";
 import { IconButton } from "./ui";
 import { useStore } from "zustand";
-import { Bot, Plus, X, Files, Maximize2, Minimize2, Pencil, Eye } from "lucide-react";
+import { Bot, Plus, X, Files, Maximize2, Minimize2, Pencil, Eye, Download } from "lucide-react";
 import { useOptionalWorkspace, useWorkspace } from "../workspace-context";
 import type { FileTarget } from "../file-target";
 import { useFileResolution, useFileViewer } from "./file-viewer-context";
@@ -108,15 +108,20 @@ export function FilePanelContent({
   )
     editablePath = target.path;
   const canEdit = !!(editablePath && workspace && viewer);
-  const modeToggle = canEdit ? (
-    <IconButton
-      label={editing ? "View file" : "Edit file"}
-      aria-pressed={editing}
-      onClick={() => setEditing(!editing)}
-    >
-      {editing ? <Eye /> : <Pencil />}
-    </IconButton>
-  ) : null;
+  const actions = (
+    <>
+      <FileDownload name={file?.name ?? target.name} href={file?.href} />
+      {canEdit ? (
+        <IconButton
+          label={editing ? "View file" : "Edit file"}
+          aria-pressed={editing}
+          onClick={() => setEditing(!editing)}
+        >
+          {editing ? <Eye /> : <Pencil />}
+        </IconButton>
+      ) : null}
+    </>
+  );
   if (kind === "text" && editing && editablePath && viewer)
     return (
       <FileDocumentEditor
@@ -125,7 +130,7 @@ export function FilePanelContent({
         target={target}
         active={active}
         heading={heading}
-        actions={modeToggle}
+        actions={actions}
       />
     );
   if (kind === "text")
@@ -138,7 +143,7 @@ export function FilePanelContent({
         endLine={target.endLine}
         navigation={target}
         heading={heading}
-        actions={modeToggle}
+        actions={actions}
       />
     );
   return (
@@ -146,6 +151,34 @@ export function FilePanelContent({
       {heading}
       {media}
     </>
+  );
+}
+
+export function FileDownload({ name, href }: { name: string; href?: string }) {
+  if (!href)
+    return (
+      <IconButton label={`Download ${name}`} tooltip="Download" disabled>
+        <Download />
+      </IconButton>
+    );
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            nativeButton={false}
+            variant="ghost"
+            size="icon"
+            className="icon-button rounded-sm text-muted-foreground"
+            aria-label={`Download ${name}`}
+            render={<a href={href} download={name} />}
+          />
+        }
+      >
+        <Download />
+      </TooltipTrigger>
+      <TooltipContent>Download</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -157,6 +190,8 @@ export function RightPanel({ threadId, foreground }: { threadId: string; foregro
   const open = useStore(panels, (state) => (state.threads.get(threadId) ?? defaultRightPanel).open);
   const visible = foreground && open;
   const actions = panels.getState();
+  const activeTab = tabs.items.find((tab) => tab.id === tabs.activeId);
+  const activePath = activeTab?.type === "file" ? activeTab.target.path : undefined;
   function draftKey(id: string) {
     const tab = tabs.items.find((item) => item.id === id);
     return tab?.type === "file" && tab.target.path
@@ -198,7 +233,7 @@ export function RightPanel({ threadId, foreground }: { threadId: string; foregro
         onFiles={() => actions.openFiles(threadId)}
         expandedSidebar={
           <Suspense fallback={<SkeletonRows label="Loading files" rows={8} />}>
-            <WorkspaceTree threadId={threadId} active={visible} />
+            <WorkspaceTree threadId={threadId} active={visible} activePath={activePath} />
           </Suspense>
         }
         renderTab={(tab, active) => {

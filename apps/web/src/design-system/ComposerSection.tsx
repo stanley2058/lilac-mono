@@ -4,7 +4,7 @@ import { FloatingChatMenu } from "../components/FloatingChatMenu";
 import { ConversationBadge } from "../components/ConversationReference";
 import { useStore } from "zustand";
 import { createPanelStore, defaultPanelTabs } from "../panel-store";
-import { RightPanelTabs } from "../components/FileViewer";
+import { FileDownload, RightPanelTabs } from "../components/FileViewer";
 import { FileSource } from "../components/FileSource";
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
@@ -169,15 +169,27 @@ export function ComposerSpecimen() {
     </Section>
   );
 }
+function demoFileText(name: string) {
+  return name.endsWith(".md")
+    ? Array.from<number, string>(
+        { length: 25 },
+        (_, index) => `- Note ${index + 1}: Each file keeps its own view.`,
+      ).join("\n")
+    : Array.from<number, string>(
+        { length: 180 },
+        (_, index) => `export const line${index + 1} = "A longer source file";`,
+      ).join("\n");
+}
+
 export function FileTabsDemo() {
   const [store] = useState(() => {
     const store = createPanelStore();
     store
       .getState()
-      .openFile("demo", { type: "path", path: "/workspace/notes.md", name: "notes.md" });
+      .openFile("demo", { type: "path", path: "/workspace/README.md", name: "README.md" });
     store
       .getState()
-      .openFile("demo", { type: "path", path: "/workspace/example.ts", name: "example.ts" });
+      .openFile("demo", { type: "path", path: "/workspace/src/app.ts", name: "app.ts" });
     store
       .getState()
       .openThread(
@@ -189,6 +201,22 @@ export function FileTabsDemo() {
   });
   const tabs = useStore(store, (state) => state.tabs.get("demo") ?? defaultPanelTabs);
   const actions = store.getState();
+  const activeTab = tabs.items.find((tab) => tab.id === tabs.activeId);
+  const activePath = activeTab?.type === "file" ? activeTab.target.path : undefined;
+  const tree = (selectedPath?: string) => (
+    <WorkspaceTreeView
+      paths={editorDemoPaths}
+      root="/workspace"
+      selectedPath={selectedPath}
+      onOpen={(path) =>
+        actions.openFile("demo", {
+          type: "path",
+          path: `/workspace/${path}`,
+          name: path.split("/").at(-1) ?? path,
+        })
+      }
+    />
+  );
   return (
     <div style={{ height: 420 }}>
       <RightPanelTabs
@@ -197,45 +225,30 @@ export function FileTabsDemo() {
         onClose={(id) => actions.closeTab("demo", id)}
         onAgents={() => actions.openAgents("demo")}
         onFiles={() => actions.openFiles("demo")}
+        expandedSidebar={tree(activePath?.replace(/^\/workspace\//, ""))}
         renderTab={(tab) => {
           if (tab.type === "thread") return <ConversationBadge target={tab.target} />;
-          if (tab.type === "files")
+          if (tab.type === "files") return tree();
+          if (tab.type === "agents")
             return (
-              <WorkspaceTreeView
-                paths={editorDemoPaths}
-                root="/workspace"
-                onOpen={(path) =>
-                  actions.openFile("demo", {
-                    type: "path",
-                    path: `/workspace/${path}`,
-                    name: path.split("/").at(-1) ?? path,
-                  })
-                }
-              />
+              <div className="file-status grid place-content-center flex-1 p-4 text-sm text-muted-foreground">
+                No subagents yet
+              </div>
             );
-          return tab.type === "agents" ? (
-            <div className="file-status grid place-content-center flex-1 p-4 text-sm text-muted-foreground">
-              No subagents yet
-            </div>
-          ) : (
+          const text = demoFileText(tab.target.name);
+          return (
             <FileSource
               name={tab.target.name}
               heading={
                 <span>{tab.target.type === "path" ? tab.target.path : tab.target.name}</span>
               }
-              text={{
-                status: "ready",
-                text: tab.target.name.endsWith(".md")
-                  ? Array.from<number, string>(
-                      { length: 25 },
-                      (_, index) => `- Note ${index + 1}: Each file keeps its own view.`,
-                    ).join("\n")
-                  : Array.from<number, string>(
-                      { length: 180 },
-                      (_, index) => `export const line${index + 1} = "A longer source file";`,
-                    ).join("\n"),
-                truncated: false,
-              }}
+              actions={
+                <FileDownload
+                  name={tab.target.name}
+                  href={`data:text/plain;charset=utf-8,${encodeURIComponent(text)}`}
+                />
+              }
+              text={{ status: "ready", text, truncated: false }}
             />
           );
         }}
