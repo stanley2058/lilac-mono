@@ -9,6 +9,7 @@ import {
   type LanguageModelUsage,
   type ModelMessage,
   type ToolModelMessage,
+  type ToolResultPart,
   type ToolSet,
 } from "ai";
 import type { ModelReasoningEffort } from "@stanley2058/lilac-utils/core-config/types";
@@ -71,6 +72,72 @@ export interface AiSdkModelCallResult {
   modelInputMessages: ModelMessage[];
 }
 
+type ProviderOptions = NonNullable<ModelMessage["providerOptions"]>;
+type ProviderValue = ProviderOptions[string][string];
+
+function normalizeProviderValue(
+  value: Exclude<ProviderValue, undefined>,
+): Exclude<ProviderValue, undefined> {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(normalizeProviderValue);
+  return normalizeProviderRecord(value);
+}
+
+function normalizeProviderRecord(
+  options: ProviderOptions[string] | readonly Exclude<ProviderValue, undefined>[],
+): ProviderOptions[string] {
+  // Anthropic caller metadata can include toolId: undefined, which is not stored JSON.
+  return Object.fromEntries(
+    Object.entries(options).flatMap(([key, entry]) => {
+      if (entry === undefined) return [];
+      return [[key, normalizeProviderValue(entry)]];
+    }),
+  );
+}
+
+function normalizeProviderOptions<T extends { providerOptions?: ProviderOptions }>(value: T): T {
+  if (!value.providerOptions) return value;
+  return {
+    ...value,
+    providerOptions: Object.fromEntries(
+      Object.entries(value.providerOptions).map(([provider, options]) => [
+        provider,
+        normalizeProviderRecord(options),
+      ]),
+    ),
+  };
+}
+
+function normalizeToolOutputProviderOptions(
+  output: ToolResultPart["output"],
+): ToolResultPart["output"] {
+  if (output.type !== "content") {
+    return "providerOptions" in output ? normalizeProviderOptions(output) : output;
+  }
+  return {
+    ...output,
+    value: output.value.map((part) =>
+      "providerOptions" in part ? normalizeProviderOptions(part) : part,
+    ),
+  };
+}
+
+function normalizeMessageProviderOptions<T extends ModelMessage>(message: T): T {
+  const normalized = normalizeProviderOptions(message);
+  if (typeof normalized.content === "string") return normalized;
+  return {
+    ...normalized,
+    content: normalized.content.map((part) => {
+      const normalizedPart = "providerOptions" in part ? normalizeProviderOptions(part) : part;
+      if (normalizedPart.type !== "tool-result") return normalizedPart;
+      return {
+        ...normalizedPart,
+        output: normalizeToolOutputProviderOptions(normalizedPart.output),
+      };
+    }),
+  };
+}
+
 export async function executeAiSdkModelCall(
   input: AiSdkModelCallInput,
 ): Promise<AiSdkModelCallResult> {
@@ -104,6 +171,9 @@ export async function executeAiSdkModelCall(
   // Tool calls observed in `stream` may still have raw/unvalidated JSON.
   // They are useful for UI events, but we must execute tools only from the
   // finalized `response.messages` (post-parse + schema validation).
+
+  const checkpointDraft = () =>
+    input.host.checkpointDraft(normalizeMessageProviderOptions(partialAssistant));
 
   let aborted = false;
 
@@ -149,7 +219,7 @@ export async function executeAiSdkModelCall(
         const part = projectedPart.raw;
         // Some providers omit the preceding block's explicit end event. A new
         // block still makes the accumulated prefix a completed boundary.
-        input.host.checkpointDraft(partialAssistant);
+        checkpointDraft();
         input.host.emit({
           type: "message_update",
           message: cloneMessage(partialAssistant),
@@ -170,7 +240,7 @@ export async function executeAiSdkModelCall(
       case "text-delta": {
         const part = projectedPart.raw;
         if (partialAssistant.content.at(-1)?.type === "reasoning") {
-          input.host.checkpointDraft(partialAssistant);
+          checkpointDraft();
         }
         upsertTextPart(partialAssistant.content, "text", part.text);
         input.host.setStreamMessage(partialAssistant);
@@ -196,7 +266,7 @@ export async function executeAiSdkModelCall(
       case "text-end": {
         const part = projectedPart.raw;
         if (input.abortSignal?.aborted) break;
-        input.host.checkpointDraft(partialAssistant);
+        checkpointDraft();
         input.host.emit({
           type: "message_update",
           message: cloneMessage(partialAssistant),
@@ -216,7 +286,7 @@ export async function executeAiSdkModelCall(
       }
       case "reasoning-start": {
         const part = projectedPart.raw;
-        input.host.checkpointDraft(partialAssistant);
+        checkpointDraft();
         input.host.emit({
           type: "message_update",
           message: cloneMessage(partialAssistant),
@@ -237,7 +307,7 @@ export async function executeAiSdkModelCall(
       case "reasoning-delta": {
         const part = projectedPart.raw;
         if (partialAssistant.content.at(-1)?.type === "text") {
-          input.host.checkpointDraft(partialAssistant);
+          checkpointDraft();
         }
         upsertTextPart(partialAssistant.content, "reasoning", part.text);
         input.host.setStreamMessage(partialAssistant);
@@ -263,7 +333,7 @@ export async function executeAiSdkModelCall(
       case "reasoning-end": {
         const part = projectedPart.raw;
         if (input.abortSignal?.aborted) break;
-        input.host.checkpointDraft(partialAssistant);
+        checkpointDraft();
         input.host.emit({
           type: "message_update",
           message: cloneMessage(partialAssistant),
@@ -283,7 +353,7 @@ export async function executeAiSdkModelCall(
       }
       case "tool-input-start": {
         const part = projectedPart.raw;
-        input.host.checkpointDraft(partialAssistant);
+        checkpointDraft();
         if (part.providerExecuted === true) {
           input.host.markProviderTool();
         } else {
@@ -449,7 +519,7 @@ export async function executeAiSdkModelCall(
       case "tool-call": {
         const part = projectedPart.raw;
         if (input.abortSignal?.aborted) break;
-        input.host.checkpointDraft(partialAssistant);
+        checkpointDraft();
         const { toolCallId, toolName, input: toolInput } = part;
         if (part.providerExecuted === true) {
           input.host.markProviderTool();
@@ -478,7 +548,7 @@ export async function executeAiSdkModelCall(
             output: recoveryToolOutput(part.output),
           });
           input.host.setStreamMessage(partialAssistant);
-          input.host.checkpointDraft(partialAssistant);
+          checkpointDraft();
         }
         break;
       }
@@ -494,7 +564,7 @@ export async function executeAiSdkModelCall(
             output: { type: "error-text", value: String(part.error) },
           });
           input.host.setStreamMessage(partialAssistant);
-          input.host.checkpointDraft(partialAssistant);
+          checkpointDraft();
         }
         break;
       }
@@ -510,7 +580,7 @@ export async function executeAiSdkModelCall(
             output: { type: "execution-denied", reason: "Tool output was denied." },
           });
           input.host.setStreamMessage(partialAssistant);
-          input.host.checkpointDraft(partialAssistant);
+          checkpointDraft();
         }
         break;
       }
@@ -587,7 +657,8 @@ export async function executeAiSdkModelCall(
   }
 
   const newMessages: ModelMessage[] = [];
-  for (const message of normalizeReplayMessages(response.messages)) {
+  for (const responseMessage of normalizeReplayMessages(response.messages)) {
+    const message = normalizeMessageProviderOptions(responseMessage);
     if (message.role === "tool") {
       newMessages.push(await input.host.normalizeNewToolMessage(message));
     } else if (message.role === "assistant") {
