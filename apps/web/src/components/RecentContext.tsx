@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, type ReactNode } from "react";
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { queryOptions, skipToken, useQuery } from "@tanstack/react-query";
 import { ListStart } from "lucide-react";
 import type { NativeClient } from "@stanley2058/lilac-client";
 import type { NativeRpcOutputs, NativeThread } from "@stanley2058/lilac-client-protocol";
-import { useWorkspace } from "../workspace-context";
+import { useOptionalWorkspace, useWorkspace } from "../workspace-context";
 import { useNativeOnline } from "../queries";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
@@ -11,10 +11,13 @@ type Context = Omit<NativeRpcOutputs["threads"]["context"], "evaluatedAt">;
 const RecentContext = createContext<Context | undefined>(undefined);
 export const useRecentContext = () => useContext(RecentContext);
 
-function recentContextOptions(client: NativeClient, threadId: string | undefined) {
+function recentContextOptions(client: NativeClient | undefined, threadId: string | undefined) {
   return queryOptions({
     queryKey: ["recent-context", threadId],
-    queryFn: ({ signal }) => client.rpc!.threads.context({ threadId: threadId! }, { signal }),
+    queryFn:
+      client && threadId
+        ? ({ signal }) => client.rpc!.threads.context({ threadId }, { signal })
+        : skipToken,
   });
 }
 
@@ -86,7 +89,7 @@ export function NextContextStartAfter({
   turn: { startedAt?: number; settledAt?: number };
   show: boolean;
 }) {
-  const { client } = useWorkspace();
+  const client = useOptionalWorkspace()?.client;
   const evaluatedAt = useQuery({
     ...recentContextOptions(client, threadId),
     enabled: false,
