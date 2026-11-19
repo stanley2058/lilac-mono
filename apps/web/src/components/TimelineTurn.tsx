@@ -183,7 +183,9 @@ export function AgentTurn(props: TurnProps) {
       data-turn-id={slot.turnId}
     >
       {firstUser ? (
-        <div className={`user-turn ml-12 max-workspace:ml-6 ${remaining.length ? "mb-10" : ""}`}>
+        <div
+          className={`user-turn ml-12 max-workspace:ml-6 ${active || remaining.length ? "mb-10" : ""}`}
+        >
           <MessageBody
             live={props.animateArrivals ?? true}
             message={firstUser}
