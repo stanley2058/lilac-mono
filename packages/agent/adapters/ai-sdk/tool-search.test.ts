@@ -61,7 +61,6 @@ test("keeps declarations and signed thinking stable after tool discovery and rep
         output: {
           type: "content",
           value: [
-            { type: "text" },
             {
               type: "custom",
               providerOptions: { anthropic: { type: "tool-reference", toolName: "lookup" } },
@@ -265,7 +264,7 @@ test("retains native references across production output overflow and checkpoint
     ),
   ).toBe(true);
   const prompt = JSON.stringify(provider.doStreamCalls[1]?.prompt);
-  expect(prompt).toContain("[tool result overflow]");
+  expect(prompt).not.toContain("[tool result overflow]");
   expect(prompt).toContain("tool-reference");
   const replayed = prepareAnthropicToolSearch({
     model,

@@ -59,7 +59,8 @@ for (const legacy of [false, true]) {
     });
     const projected = prepareAnthropicToolSearch({ model, messages: pruned, tools, deferredTools });
     const output = JSON.stringify(projected.messages);
-    expect(output).toContain("[Old tool result content cleared]");
+    expect(output).not.toContain("[Old tool result content cleared]");
+    expect(JSON.stringify(pruned)).toContain("[Old tool result content cleared]");
     expect(output).toContain('"type":"tool-reference","toolName":"lookup"');
     expect(seedAnthropicToolSearch({ model, messages: canonical, tools, deferredTools })).toBe(
       canonical,

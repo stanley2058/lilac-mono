@@ -48,26 +48,15 @@ function referenceSearchResult(part: ToolResultPart, names: string[]): ToolResul
   if (names.length === 0) return part;
   const output = part.output;
   if (output.type !== "json" && output.type !== "text" && output.type !== "content") return part;
-  const content =
-    output.type === "content"
-      ? output.value
-      : [
-          {
-            type: "text" as const,
-            text: output.type === "json" ? JSON.stringify(output.value) : output.value,
-          },
-        ];
   return {
     ...part,
     output: {
       type: "content",
-      value: [
-        ...content,
-        ...names.map((toolName) => ({
-          type: "custom" as const,
-          providerOptions: { anthropic: { type: "tool-reference", toolName } },
-        })),
-      ],
+      // Anthropic expands these into tool definitions and rejects mixed content.
+      value: names.map((toolName) => ({
+        type: "custom" as const,
+        providerOptions: { anthropic: { type: "tool-reference", toolName } },
+      })),
     },
   };
 }

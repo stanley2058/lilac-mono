@@ -9,7 +9,35 @@ test("Anthropic SDK encodes deferred definitions and client tool references on t
     apiKey: "test",
     fetch: Object.assign(
       async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-        requests.push(JSON.parse(String(init?.body)));
+        const request = JSON.parse(String(init?.body)) as {
+          messages: Array<{
+            content: string | Array<{ type: string; content?: string | Array<{ type: string }> }>;
+          }>;
+        };
+        requests.push(request);
+        const mixedReferences = request.messages.some(
+          (message) =>
+            Array.isArray(message.content) &&
+            message.content.some(
+              (part) =>
+                part.type === "tool_result" &&
+                Array.isArray(part.content) &&
+                part.content.some((item) => item.type === "tool_reference") &&
+                part.content.some((item) => item.type !== "tool_reference"),
+            ),
+        );
+        if (mixedReferences)
+          return Response.json(
+            {
+              type: "error",
+              error: {
+                type: "invalid_request_error",
+                message:
+                  "Tool definitions/code execution functions cannot be mixed with other content",
+              },
+            },
+            { status: 400 },
+          );
         const events = [
           {
             type: "message_start",
@@ -103,7 +131,7 @@ test("Anthropic SDK encodes deferred definitions and client tool references on t
       content: [
         {
           type: "tool_result",
-          content: [{ type: "text" }, { type: "tool_reference", tool_name: "lookup" }],
+          content: [{ type: "tool_reference", tool_name: "lookup" }],
         },
       ],
     },
