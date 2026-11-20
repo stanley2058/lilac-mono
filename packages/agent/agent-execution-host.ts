@@ -5,6 +5,7 @@ import type {
   ModelMessage,
   SystemModelMessage,
   ToolSet,
+  ToolResultPart,
 } from "ai";
 import type { Result as ResultType } from "better-result";
 import type { AgentHostServices } from "./agent-adapter";
@@ -20,6 +21,11 @@ import type { AgentToolHost, ToolBatchExecutionFailed } from "./agent-tool-host"
 import type { AgentToolCall } from "./tool-call";
 import type { OpaqueAgentValue } from "./failure-adapters";
 
+export type ProjectSettledToolResult = (
+  part: ToolResultPart,
+  outcome: { readonly result: OpaqueAgentValue; readonly isError: boolean },
+) => ToolResultPart;
+
 export type ExecutionRequestSelection = {
   executionMode: "local-tools" | "provider-tools";
   payload: { readonly mode: "full" } | { readonly mode: "suffix"; readonly startIndex: number };
@@ -31,6 +37,7 @@ export type PreparedExecutionRequest = {
   messages: ModelMessage[];
   canonicalMessages: ModelMessage[];
   tools: ToolSet;
+  deferredTools?: ToolSet;
   selection: ExecutionRequestSelection;
 };
 export type ExecutionTurn = {
@@ -70,6 +77,11 @@ export interface AgentExecutionHost<TOOLS extends ToolSet = ToolSet> extends Age
     executionMode: "local-tools" | "provider-tools";
     signal?: AbortSignal;
     preparation?: "continuation";
+    seedToolContext?(context: {
+      messages: ModelMessage[];
+      tools: ToolSet;
+      deferredTools: ToolSet;
+    }): ModelMessage[];
     onErrorPhase(phase: TurnErrorPhase): void;
     selectRequest(context: {
       canonicalMessages: readonly ModelMessage[];
@@ -86,6 +98,7 @@ export interface AgentExecutionHost<TOOLS extends ToolSet = ToolSet> extends Age
   executeToolBatch(
     calls: AgentToolCall[],
     scopeId: string,
+    projectResult?: ProjectSettledToolResult,
   ): Promise<ResultType<number, ToolBatchExecutionFailed>>;
   readState(): AgentExecutionState<TOOLS>;
   recordModelView(messages: readonly ModelMessage[], step: number): void;

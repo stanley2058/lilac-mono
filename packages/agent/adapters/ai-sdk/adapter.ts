@@ -1,3 +1,4 @@
+import { prepareAnthropicToolSearch, seedAnthropicToolSearch } from "./tool-search";
 import { portableToolLoadingMessages } from "../openai-responses/tool-search";
 import type { LanguageModel, ToolSet, Experimental_DownloadFunction as DownloadFunction } from "ai";
 import { Result } from "better-result";
@@ -164,6 +165,13 @@ export class ModelCallAgentAdapter<TOOLS extends ToolSet = ToolSet> implements A
             streamTextMaxRetries: this.maxRetries,
           };
           const prepared = await host.prepareRequest({
+            seedToolContext: (context) =>
+              seedAnthropicToolSearch({
+                ...context,
+                model: runtime.model,
+                deferredTools:
+                  runtime.executionMode === "local-tools" ? context.deferredTools : undefined,
+              }),
             executionMode: runtime.executionMode,
             onErrorPhase: (value) => {
               phase = value;
@@ -187,8 +195,14 @@ export class ModelCallAgentAdapter<TOOLS extends ToolSet = ToolSet> implements A
               return { executionMode: runtime.executionMode, payload: result.payload };
             },
           });
+          const toolSearch = prepareAnthropicToolSearch({
+            ...prepared,
+            model: runtime.model,
+            deferredTools:
+              runtime.executionMode === "local-tools" ? prepared.deferredTools : undefined,
+          });
           const messages = normalizeModelMessagesToolCallIds({
-            messages: portableToolLoadingMessages(prepared.messages),
+            messages: portableToolLoadingMessages(toolSearch.messages),
             modelSpecifier: runtime.modelSpecifier,
           });
           const state = host.readState();
@@ -198,7 +212,7 @@ export class ModelCallAgentAdapter<TOOLS extends ToolSet = ToolSet> implements A
             model: runtime.model,
             system: prepared.system,
             messages,
-            ...(runtime.executionMode === "local-tools" ? { tools: prepared.tools } : {}),
+            ...(runtime.executionMode === "local-tools" ? { tools: toolSearch.tools } : {}),
             reasoning: state.reasoning,
             providerOptions: state.providerOptions,
             download: this.download,
@@ -239,7 +253,11 @@ export class ModelCallAgentAdapter<TOOLS extends ToolSet = ToolSet> implements A
               (message) => message.role === "tool" || hasInlineToolResult(message),
             );
           const execution = hasLocalTools
-            ? await host.executeToolBatch(turn.toolCalls, prepared.scopeId)
+            ? await host.executeToolBatch(
+                turn.toolCalls,
+                prepared.scopeId,
+                toolSearch.projectResult,
+              )
             : Result.ok(0);
           const executionOutcome = resultOutcome(execution);
           if (!executionOutcome.ok) return signalExternalToolCallHost(executionOutcome.error);

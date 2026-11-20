@@ -1,3 +1,4 @@
+import type { ProjectSettledToolResult } from "./agent-execution-host";
 import { groupToolCalls } from "./tool-call-scheduling";
 import type {
   AssistantContent,
@@ -5,6 +6,7 @@ import type {
   ModelMessage,
   ToolModelMessage,
   ToolSet,
+  ToolResultPart,
 } from "ai";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import {
@@ -271,6 +273,7 @@ export class AgentToolHost<TOOLS extends ToolSet> {
   async executeToolCalls(
     toolCalls: AgentToolCall[],
     snapshot: StepToolSnapshot<TOOLS>,
+    projectResult?: ProjectSettledToolResult,
   ): Promise<ResultType<number, ToolBatchExecutionFailed>> {
     const hasExclusiveTool = toolCalls.some((call) => this.exclusiveToolNames.has(call.toolName));
 
@@ -302,10 +305,23 @@ export class AgentToolHost<TOOLS extends ToolSet> {
         onEvent: (event) => this.host.emit(event),
       });
 
-    const outcomes: Array<AtomicToolExecutionOutcome | undefined> = Array.from({
+    const settledParts: Array<ToolResultPart | undefined> = Array.from({
       length: toolCalls.length,
     });
     let nextAppendIndex = 0;
+
+    const projectPart = (
+      call: AgentToolCall,
+      outcome: AtomicToolExecutionOutcome,
+    ): ToolResultPart => {
+      const part: ToolResultPart = {
+        type: "tool-result",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: outcome.toolOutput,
+      };
+      return projectResult?.(part, outcome) ?? part;
+    };
 
     const checkpointCompletedOutcomes = () => {
       const baseLength = this.host.readToolExchangeBaseLength();
@@ -316,19 +332,11 @@ export class AgentToolHost<TOOLS extends ToolSet> {
         .messages.slice(0, baseLength + 1)
         .map(cloneMessage);
       for (let index = 0; index < toolCalls.length; index += 1) {
-        const outcome = outcomes[index];
-        if (outcome === undefined) continue;
-        const call = toolCalls[index]!;
+        const part = settledParts[index];
+        if (part === undefined) continue;
         candidate.push({
           role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: call.toolCallId,
-              toolName: call.toolName,
-              output: outcome.toolOutput,
-            },
-          ],
+          content: [part],
         });
       }
       this.host.checkpointMessages(candidate);
@@ -336,20 +344,12 @@ export class AgentToolHost<TOOLS extends ToolSet> {
 
     const appendReadyOutcomes = () => {
       while (nextAppendIndex < toolCalls.length) {
-        const call = toolCalls[nextAppendIndex]!;
-        const outcome = outcomes[nextAppendIndex];
-        if (!outcome) break;
+        const part = settledParts[nextAppendIndex];
+        if (!part) break;
 
         const toolMessage: ModelMessage = {
           role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: call.toolCallId,
-              toolName: call.toolName,
-              output: outcome.toolOutput,
-            },
-          ],
+          content: [part],
         };
 
         this.host.readState().messages.push(toolMessage);
@@ -375,7 +375,7 @@ export class AgentToolHost<TOOLS extends ToolSet> {
               executionError ??= outcome.error;
               return;
             }
-            outcomes[index] = outcome.value;
+            settledParts[index] = projectPart(call, outcome.value);
             checkpointCompletedOutcomes();
             appendReadyOutcomes();
           }),

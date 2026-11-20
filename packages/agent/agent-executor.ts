@@ -1358,6 +1358,13 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     const toolSnapshot = this.createStepToolSnapshot(turnIndex);
     this.lastStepToolSnapshot = toolSnapshot;
     const allModelTools = stripToolExecuteForModel(toolSnapshot.tools);
+    const deferredTools = stripToolExecuteForModel(
+      Object.fromEntries(
+        (this.deferredToolNames?.() ?? []).flatMap((name) =>
+          this.state.tools[name] ? [[name, this.state.tools[name]]] : [],
+        ),
+      ),
+    );
 
     const getAbortReason = (): TurnAbortReason =>
       this.abortRequestedReason ?? (this.pendingInterrupt ? "interrupt" : "manual");
@@ -1408,6 +1415,16 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
       transformContext: preparationContext,
     });
     throwIfPreparationAborted();
+
+    const seededMessages =
+      request.seedToolContext?.({
+        messages: canonicalMessages,
+        tools: allModelTools,
+        deferredTools,
+      }) ?? canonicalMessages;
+    if (seededMessages !== canonicalMessages)
+      this.state.messages = seededMessages.map(cloneMessage);
+    canonicalMessages = seededMessages;
 
     const suffixStart =
       callPreparation.payload.mode === "full" ? 0 : callPreparation.payload.startIndex;
@@ -1476,6 +1493,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
       messages: messagesForModel,
       canonicalMessages: canonicalMessages.map(cloneMessage),
       tools: allModelTools,
+      deferredTools,
       selection: callPreparation,
     };
   }
@@ -2192,13 +2210,11 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     });
     this.requireActiveAttempt(attemptId);
     this.scopes.set(prepared.scopeId, this.lastStepToolSnapshot!);
-    const deferredNames = new Set(this.deferredToolNames?.());
+    const deferredNames = new Set(Object.keys(prepared.deferredTools ?? {}));
     const declarations = projectToolContext
       ? {
           ...prepared.tools,
-          ...Object.fromEntries(
-            Object.entries(this.state.tools).filter(([name]) => deferredNames.has(name)),
-          ),
+          ...prepared.deferredTools,
         }
       : prepared.tools;
     const definitions = await Promise.all(
@@ -2334,7 +2350,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         const decision = await this.settleExecutionFailure(error, context);
         return this.finishAdapterBoundary(decision);
       },
-      executeToolBatch: async (calls, scopeId) => {
+      executeToolBatch: async (calls, scopeId, projectResult) => {
         active();
         const snapshot = this.scopes.get(scopeId);
         if (!snapshot)
@@ -2344,7 +2360,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
               message: "Unknown tool authority scope",
             }),
           );
-        const result = await this.toolHost.executeToolCalls(calls, snapshot);
+        const result = await this.toolHost.executeToolCalls(calls, snapshot, projectResult);
         active();
         const outcome = resultOutcome(result);
         if (outcome.ok) this.recoveryCheckpoint = null;

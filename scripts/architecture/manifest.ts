@@ -1151,7 +1151,10 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "message-clone.ts", exportName },
         category: "projection" as const,
       })),
-      ...["AgentToolHost.executeExternalToolCall"].map((exportName) => ({
+      ...[
+        "AgentToolHost.executeExternalToolCall",
+        "AgentToolHost.executeToolCalls.projectPart",
+      ].map((exportName) => ({
         identity: { module: "agent-tool-host.ts", exportName },
         category: "projection" as const,
       })),
@@ -1215,6 +1218,10 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
       ...["assistantMessage", "encodeRequest"].map((exportName) => ({
         identity: { module: "adapters/openai-responses/input.ts", exportName },
         category: "request" as const,
+      })),
+      ...["matchedNames", "retainedNames"].map((exportName) => ({
+        identity: { module: "adapters/ai-sdk/tool-search.ts", exportName },
+        category: "projection" as const,
       })),
       ...[
         "readToolLoadingDefinitions",
