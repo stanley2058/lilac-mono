@@ -5,9 +5,13 @@ import { AiSdkAgentAdapter } from "@stanley2058/lilac-agent/adapters/ai-sdk/adap
 import { OpenAIResponsesAgentAdapter } from "@stanley2058/lilac-agent/adapters/openai-responses/adapter";
 import type { AgentExecutionHost } from "@stanley2058/lilac-agent/agent-execution-host";
 import { ClaudeCodeAgentAdapter } from "@stanley2058/lilac-claude-code-bridge";
+import { createMemoryBlobStore } from "@stanley2058/lilac-blob-storage";
 import type { ResolvedModelRef } from "@stanley2058/lilac-utils";
 
-import { createCoreAgentAdapter } from "../../src/agent/agent-composition";
+import {
+  createCoreAgentAdapter,
+  prepareCoreProviderBinding,
+} from "../../src/agent/agent-composition";
 
 function resolvedModel(provider: string, modelId = "gpt-6-astra"): ResolvedModelRef {
   return {
@@ -25,6 +29,29 @@ const openai = {
 };
 
 describe("Core agent adapter selection", () => {
+  test("keeps the Anthropic cache default out of shared provider options", async () => {
+    const blobStore = (await createMemoryBlobStore()).unwrap();
+    try {
+      const resolved = resolvedModel("anthropic", "claude-opus-5-5");
+      const binding = {
+        resolved,
+        blobStore,
+        reasoningDisplay: "none" as const,
+        systemPrompt: "test",
+        sessionId: "test",
+      };
+      expect(prepareCoreProviderBinding(binding).providerOptionsForAgent).toBeUndefined();
+
+      const providerOptions = { anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } } };
+      expect(
+        prepareCoreProviderBinding({ ...binding, resolved: { ...resolved, providerOptions } })
+          .providerOptionsForAgent,
+      ).toEqual(providerOptions);
+    } finally {
+      await blobStore.close({ deadlineAtMs: Date.now() + 1_000 });
+    }
+  });
+
   test("explicit SSE uses the AI SDK adapter", () => {
     const resolved = resolvedModel("openai");
     const adapter = createCoreAgentAdapter(

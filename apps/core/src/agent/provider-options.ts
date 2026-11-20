@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
-import type { ModelMessage } from "ai";
+import type { ModelMessage, ToolSet } from "ai";
+import type { AiSdkModelCallInput } from "@stanley2058/lilac-agent/adapters/ai-sdk/model-call";
 import type { CoreConfig, JSONObject } from "@stanley2058/lilac-utils";
 
 import { isAnthropicModelSpec } from "./anthropic-fallback-media";
@@ -81,6 +82,66 @@ export function toOpenAIPromptCacheKey(sessionId: string): string {
 
 function jsonObjectOrEmpty(value: JSONObject | undefined): JSONObject {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function isFirstPartyAnthropicEndpoint(baseUrl: string | undefined): boolean {
+  if (baseUrl === undefined) return true;
+  const endpoint = URL.parse(baseUrl);
+  if (!endpoint || endpoint.origin !== "https://api.anthropic.com") return false;
+  if (endpoint.href !== `${endpoint.origin}${endpoint.pathname}`) return false;
+  const path = endpoint.pathname.replace(/\/$/u, "");
+  return path === "" || path === "/v1";
+}
+
+function hasAnthropicCacheControl(providerOptions: ModelMessage["providerOptions"]): boolean {
+  const anthropic = providerOptions?.anthropic;
+  return Boolean(anthropic?.cacheControl ?? anthropic?.cache_control);
+}
+
+function hasAnthropicMessageCacheControl(message: ModelMessage): boolean {
+  if (hasAnthropicCacheControl(message.providerOptions)) return true;
+  if (typeof message.content === "string") return false;
+  return message.content.some((part) => {
+    if ("providerOptions" in part && hasAnthropicCacheControl(part.providerOptions)) return true;
+    if (part.type !== "tool-result") return false;
+    const { output } = part;
+    if ("providerOptions" in output) return hasAnthropicCacheControl(output.providerOptions);
+    return (
+      output.type === "content" &&
+      output.value.some((content) => hasAnthropicCacheControl(content.providerOptions))
+    );
+  });
+}
+
+export function withDefaultAnthropicAutomaticPromptCache(params: {
+  provider: string;
+  baseUrl?: string;
+  anthropicPromptCache?: boolean;
+  providerOptions?: Record<string, JSONObject>;
+  system?: AiSdkModelCallInput["system"];
+  messages?: readonly ModelMessage[];
+  tools?: ToolSet;
+}): Record<string, JSONObject> | undefined {
+  const { provider, baseUrl, anthropicPromptCache, providerOptions, system, messages, tools } =
+    params;
+  if (provider !== "anthropic" || anthropicPromptCache !== undefined) return providerOptions;
+  if (!isFirstPartyAnthropicEndpoint(baseUrl)) return providerOptions;
+
+  const anthropic = jsonObjectOrEmpty(providerOptions?.anthropic);
+  if ("cacheControl" in anthropic) return providerOptions;
+
+  // A request-level marker can conflict with the final explicit marker or exceed the slot limit.
+  const instructions = typeof system === "string" || system === undefined ? [] : [system].flat();
+  if (instructions.some(hasAnthropicMessageCacheControl)) return providerOptions;
+  if (messages?.some(hasAnthropicMessageCacheControl)) return providerOptions;
+  if (Object.values(tools ?? {}).some((tool) => hasAnthropicCacheControl(tool.providerOptions))) {
+    return providerOptions;
+  }
+
+  return {
+    ...providerOptions,
+    anthropic: { ...anthropic, cacheControl: ANTHROPIC_PROMPT_CACHE_CONTROL },
+  };
 }
 
 export function withOpenAIPromptCacheKey(

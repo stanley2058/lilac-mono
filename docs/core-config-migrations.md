@@ -9,7 +9,8 @@ For database cutovers and rollback, use [MIGRATIONS.md](../MIGRATIONS.md).
 1. Back up the configuration and the coordinated deployment data before upgrading binaries.
 2. Before starting the upgraded build, remove `codex_instructions` from model options. V1 and v2
    accept and ignore it. To keep its text in use, move it to `basePrompt` or the workspace prompt
-   files under `DATA_DIR/prompts`. Those prompts are shared across models.
+   files under `DATA_DIR/prompts`. Those prompts are shared across models. Review
+   [Anthropic prompt caching](#anthropic-prompt-caching) for the new default and the change to `true`.
 3. Keep the existing config version for the first startup. V1 and v2 still parse; startup never
    rewrites a file to v3. An omitted `configVersion` means v1.
 4. For native installations with customized YAML deployment settings, start with v2 once and
@@ -24,6 +25,21 @@ For database cutovers and rollback, use [MIGRATIONS.md](../MIGRATIONS.md).
 The installer supports guided edits to v2 and v3 and preserves the existing version. Its final review
 shows resolved permission profiles, including omitted defaults. V1 can be reinstalled unchanged;
 convert it manually before using guided edits. The installer does not perform a version migration.
+
+## Anthropic prompt caching
+
+This change applies to model options in every supported config version. To keep the old explicit
+breakpoints on the system prompt and latest user message, replace `anthropic_prompt_cache: true`
+with `anthropic_prompt_cache: legacy` wherever you set it, including model rules, aliases, and slots.
+
+Omitting the option or setting it to `auto` or `true` uses the new default. Core agent calls
+to the first-party Anthropic API use automatic caching with a five-minute lifetime. To opt out of
+Lilac's cache injection for a model, set `anthropic_prompt_cache: false`. Explicit
+`anthropic.cacheControl` provider options still configure caching directly. The default defers to
+explicit cache breakpoints on request content.
+
+Keep your current `configVersion`. Saved workflow requests retain the meaning of their stored cache
+override. When rolling back, use `true` again in place of `legacy` to select the old breakpoints.
 
 ## Review subagent authority
 

@@ -44,7 +44,7 @@ export type ResolvedModelSlot = {
   responseCommentary?: boolean;
   /** Explicit opt-in for OpenAI server-side compaction. */
   openaiServerCompaction?: true;
-  /** Opt-in Anthropic cache-control injection for system prompt + latest user message. */
+  /** Cache override encoded as a legacy opt-in or an opt-out. Omission uses the route default. */
   anthropicPromptCache?: boolean;
   /** Durable workflow candidates may retain the display policy from their dispatch. */
   reasoningDisplay?: CoreConfig["agent"]["reasoningDisplay"];
@@ -133,7 +133,9 @@ export function toDurableResolvedModelRequest(
     ...(resolved.reasoning ? { reasoning: resolved.reasoning } : {}),
     ...(resolved.responseCommentary ? { responseCommentary: true } : {}),
     ...(resolved.openaiServerCompaction ? { openaiServerCompaction: true } : {}),
-    ...(resolved.anthropicPromptCache ? { anthropicPromptCache: true } : {}),
+    ...(resolved.anthropicPromptCache !== undefined
+      ? { anthropicPromptCache: resolved.anthropicPromptCache }
+      : {}),
     reasoningDisplay: resolved.reasoningDisplay ?? reasoningDisplay,
   };
 }
@@ -214,7 +216,9 @@ export function fromDurableResolvedModelRequestResult(
     ...(request.reasoning ? { reasoning: request.reasoning } : {}),
     ...(request.responseCommentary ? { responseCommentary: true } : {}),
     ...(request.openaiServerCompaction ? { openaiServerCompaction: true } : {}),
-    ...(request.anthropicPromptCache ? { anthropicPromptCache: true } : {}),
+    ...(request.anthropicPromptCache !== undefined
+      ? { anthropicPromptCache: request.anthropicPromptCache }
+      : {}),
     reasoningDisplay: request.reasoningDisplay,
   });
 }
@@ -403,7 +407,9 @@ function buildProviderOptionsResult(params: { provider: string; options?: JSONOb
     openaiServerCompaction = true;
   }
 
-  const anthropicPromptCache = anthropic_prompt_cache === true ? true : undefined;
+  let anthropicPromptCache: boolean | undefined;
+  if (anthropic_prompt_cache === "legacy") anthropicPromptCache = true;
+  if (anthropic_prompt_cache === false) anthropicPromptCache = false;
 
   const provider = params.provider;
   const providerOptions = normalizeConfiguredModelProviderOptions(provider, options);

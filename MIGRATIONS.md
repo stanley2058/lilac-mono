@@ -30,6 +30,13 @@ older binary to open current data.
 
 ## Configuration and caller changes
 
+### Anthropic prompt caching
+
+Before upgrading, change `anthropic_prompt_cache: true` to `anthropic_prompt_cache: legacy` wherever
+you want to keep explicit breakpoints. The new default uses five-minute automatic caching on
+first-party Anthropic agent calls. See [Core configuration upgrades](docs/core-config-migrations.md#anthropic-prompt-caching)
+for opt-out and rollback instructions.
+
 ### Native transport selection
 
 Native deployment settings add `transport`, with `auto`, `websocket`, and `http-sse` values.

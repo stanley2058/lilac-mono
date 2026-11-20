@@ -26,6 +26,7 @@ import {
 } from "@stanley2058/lilac-agent";
 import { signalExternalToolCallHost } from "@stanley2058/lilac-agent/agent-runtime-support";
 import { AiSdkAgentAdapter } from "@stanley2058/lilac-agent/adapters/ai-sdk/adapter";
+import { executeAiSdkModelCall } from "@stanley2058/lilac-agent/adapters/ai-sdk/model-call";
 import { OpenAIResponsesAgentAdapter } from "@stanley2058/lilac-agent/adapters/openai-responses/adapter";
 import { createResponsesTransport } from "@stanley2058/lilac-agent/adapters/openai-responses/transport";
 import { CodexAgentAdapter } from "@stanley2058/lilac-agent/adapters/codex/adapter";
@@ -56,6 +57,7 @@ import {
 import {
   shouldEnableAnthropicPromptCache,
   toOpenAIPromptCacheKey,
+  withDefaultAnthropicAutomaticPromptCache,
   withOpenAIPromptCacheKey,
   withOpenAIServerCompaction,
   withReasoningDisplayDefaultForAnthropicModels,
@@ -91,6 +93,20 @@ export function createCoreAgentAdapter(
         ? (messages) => runtime.recordSuccessfulModelCall(messages)
         : undefined,
       retireForRetry: runtime ? () => runtime.retireForRetry() : undefined,
+    });
+  }
+  if (resolved.provider === "anthropic") {
+    return new AiSdkAgentAdapter(options, (call) => {
+      if (call.model !== resolved.model) return executeAiSdkModelCall(call);
+      return executeAiSdkModelCall({
+        ...call,
+        providerOptions: withDefaultAnthropicAutomaticPromptCache({
+          ...call,
+          provider: resolved.provider,
+          baseUrl: env.providers.anthropic.baseUrl,
+          anthropicPromptCache: resolved.anthropicPromptCache,
+        }),
+      });
     });
   }
   if (resolved.provider === "codex" && options.model === resolved.model)

@@ -12,6 +12,7 @@ import {
   resolveModelSlotResult,
   resolveModelSlotPlan,
   toDurableResolvedModelPlan,
+  toDurableResolvedModelRequest,
   withModelPlanReasoning,
   type CoreConfig,
 } from "../index";
@@ -346,12 +347,17 @@ describe("resolveModelSlot", () => {
     expect(resolveModelSlot(cfg, "main").openaiServerCompaction).toBe(true);
   });
 
-  it("uses anthropic_prompt_cache as a top-level meta option", () => {
+  it.each([
+    ["legacy", true],
+    ["auto", undefined],
+    [true, undefined],
+    [false, false],
+  ] as const)("resolves the %s cache policy without forwarding it", (setting, override) => {
     const cfg = baseConfig();
     cfg.models.main = {
       model: "openrouter/anthropic/claude-sonnet-4.5",
       options: {
-        anthropic_prompt_cache: true,
+        anthropic_prompt_cache: setting,
         openrouter: {
           route: "fallback",
         },
@@ -359,14 +365,15 @@ describe("resolveModelSlot", () => {
     };
 
     const resolved = resolveModelSlot(cfg, "main");
-    expect(resolved.anthropicPromptCache).toBe(true);
+    const durable = toDurableResolvedModelRequest(resolved, "none");
+    expect(resolved.anthropicPromptCache).toBe(override);
+    expect(durable.anthropicPromptCache).toBe(override);
+    expect(fromDurableResolvedModelRequest(durable).anthropicPromptCache).toBe(override);
     expect(resolved.providerOptions?.openrouter?.route).toBe("fallback");
-
-    // Ensure the meta key is not forwarded.
     expect(resolved.providerOptions?.anthropic_prompt_cache).toBeUndefined();
   });
 
-  it("defaults anthropic_prompt_cache to disabled", () => {
+  it("leaves anthropic_prompt_cache unset when omitted", () => {
     const cfg = baseConfig();
     cfg.models.main = {
       model: "openrouter/anthropic/claude-sonnet-4.5",
@@ -374,6 +381,43 @@ describe("resolveModelSlot", () => {
 
     const resolved = resolveModelSlot(cfg, "main");
     expect(resolved.anthropicPromptCache).toBeUndefined();
+  });
+
+  it("preserves an Anthropic cache opt-out through inheritance and durable model resolution", () => {
+    const cfg = baseConfig();
+    cfg.models.def = {
+      sonnet: {
+        model: "openrouter/anthropic/claude-sonnet-4.5",
+        options: { anthropic_prompt_cache: "legacy" },
+      },
+    };
+    cfg.models.main = {
+      model: "sonnet",
+      options: { anthropic_prompt_cache: false },
+    };
+
+    const resolved = resolveModelSlot(cfg, "main");
+    const durable = toDurableResolvedModelRequest(resolved, "none");
+
+    expect(resolved.anthropicPromptCache).toBe(false);
+    expect(resolved.providerOptions?.anthropic_prompt_cache).toBeUndefined();
+    expect(durable.anthropicPromptCache).toBe(false);
+    expect(fromDurableResolvedModelRequest(durable).anthropicPromptCache).toBe(false);
+  });
+
+  it("keeps accepting an older configuration with a null Anthropic cache option", () => {
+    const cfg = parseCoreConfigV1ToUniversal({
+      models: {
+        main: {
+          model: "cerebras/gpt-oss-120b",
+          options: { anthropic_prompt_cache: null },
+        },
+      },
+    });
+
+    const resolved = resolveModelSlot(cfg, "main");
+    expect(resolved.anthropicPromptCache).toBeUndefined();
+    expect(resolved.providerOptions).toBeUndefined();
   });
 
   it("uses response_commentary as a top-level meta option for codex", () => {
