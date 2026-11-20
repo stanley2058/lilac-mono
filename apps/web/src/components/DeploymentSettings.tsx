@@ -235,7 +235,7 @@ export function DeploymentSettingsForm({
       />
       <DurationRow
         label="DM timestamp gap"
-        description="Default: 30 minutes. Timestamps also appear when the day changes."
+        description="Also sets the DM rewind window. Default: 30 minutes. Timestamps also appear when the day changes."
         value={value.dmTimestampGapMs}
         unit={minute}
         suffix="min"

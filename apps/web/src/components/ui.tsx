@@ -68,12 +68,14 @@ export function Modal({
   onClose,
   wide = false,
   open: controlledOpen,
+  finalFocus,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
   open?: boolean;
+  finalFocus?: ComponentProps<typeof DialogContent>["finalFocus"];
 }) {
   const [localOpen, setLocalOpen] = useState(true);
   const close = () => {
@@ -93,6 +95,7 @@ export function Modal({
       <DialogContent
         className={`block max-h-[calc(100dvh-calc(var(--ui-space-unit)*8))] overflow-y-auto p-5 ${wide ? "sm:max-w-4xl" : "sm:max-w-lg"}`}
         showCloseButton={false}
+        finalFocus={finalFocus}
       >
         <DialogHeader className="modal-header flex gap-4 mb-4 flex-row items-center justify-between">
           <DialogTitle>{title}</DialogTitle>

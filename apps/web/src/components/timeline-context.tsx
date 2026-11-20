@@ -2,9 +2,13 @@ import { type OptimisticTurn } from "../optimistic-turns";
 import { type MessageServices } from "./message-services";
 import { createContext, type ReactNode, useMemo } from "react";
 import type { NativeClient } from "@stanley2058/lilac-client";
+import type { RewindRestriction } from "../rewind-policy";
 import { type OutlineSource } from "../timeline-outline";
 
+export const RewindRestrictionContext = createContext<RewindRestriction | undefined>(undefined);
+
 export type TimelineProps = MessageServices & {
+  rewindRestriction?: RewindRestriction;
   header?: ReactNode;
   footer?: ReactNode;
   /** Messages after the last turn that are not turns yet, such as queued or unsent input. */
@@ -40,7 +44,15 @@ export function useMessageServicesValue({
   questions,
 }: MessageServices) {
   return useMemo(
-    () => ({ canEdit, rewindDisabled, resourceUrl, upload, onAction, onReaction, questions }),
+    () => ({
+      canEdit,
+      rewindDisabled,
+      resourceUrl,
+      upload,
+      onAction,
+      onReaction,
+      questions,
+    }),
     [canEdit, rewindDisabled, resourceUrl, upload, onAction, onReaction, questions],
   );
 }

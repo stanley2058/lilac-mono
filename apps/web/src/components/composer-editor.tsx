@@ -80,6 +80,9 @@ import {
   type ComposerSkill,
   completeEditor,
   replaceEditorDocument,
+  updateEditorDocument,
+  applyEditorRewind,
+  type ComposerReplacement,
   chipWorkflowRunIds,
   insertEditorReference,
   insertLiteralWorkflowRunIds,
@@ -314,6 +317,8 @@ export type ComposerEditorProps = {
   ref?: Ref<ComposerEditorHandle>;
   text: string;
   documentKey?: string;
+  replacement?: ComposerReplacement;
+  onReplacementApplied?: () => void;
   loadingDraft?: boolean;
   autoFocus?: boolean;
   typeToFocus?: boolean;
@@ -349,6 +354,7 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
   current.current = props;
   const lastText = useRef(props.text);
   const documentKey = useRef(props.documentKey);
+  const replacementId = useRef<symbol>(undefined);
   const seenAttachments = useRef(new Set<string>());
   const referencedAttachments = useRef(new Set<string>());
   const pasting = useRef(false);
@@ -471,7 +477,12 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
       const text = writeComposerDocument(editor.state.doc);
       const plain = composerText(editor.state.doc);
       lastText.current = text;
-      if (text !== p.text) p.onText(text, plain, editorSkillIds(editor.state.doc));
+      const skillIds = editorSkillIds(editor.state.doc);
+      if (
+        text !== p.text ||
+        skillIds.join("\n") !== (p.skills ?? []).map((skill) => skill.id).join("\n")
+      )
+        p.onText(text, plain, skillIds);
       p.onPlainText(plain, text);
       p.onPrefix(composerCompletionPrefix(editor));
     },
@@ -495,8 +506,18 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
   useLayoutEffect(() => {
     if (!editor || props.loadingDraft) return;
     const switched = documentKey.current !== props.documentKey;
-    lastText.current = switched ? props.text : lastText.current;
+    if (props.replacement && replacementId.current !== props.replacement.id) {
+      if (switched) replaceEditorDocument(editor, props.text);
+      replacementId.current = props.replacement.id;
+      documentKey.current = props.replacement.documentKey;
+      lastText.current = props.replacement.text;
+      applyEditorRewind(editor, props.replacement, skills);
+      props.onPlainText(composerText(editor.state.doc), props.replacement.text);
+      props.onReplacementApplied?.();
+      return;
+    }
     if (switched) {
+      lastText.current = props.text;
       documentKey.current = props.documentKey;
       seenAttachments.current.clear();
       referencedAttachments.current.clear();
@@ -504,17 +525,24 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
       markEditorSkills(editor, skills);
     } else if (props.text !== lastText.current) {
       lastText.current = props.text;
-      editor.commands.setContent(readComposerDocument(props.text, editor.schema).toJSON(), {
-        emitUpdate: false,
-      });
+      updateEditorDocument(editor, props.text);
       markEditorSkills(editor, skills);
     }
     props.onPlainText(composerText(editor.state.doc), props.text);
-  }, [editor, props.documentKey, props.loadingDraft, props.text, props.onPlainText, skills]);
+  }, [
+    editor,
+    props.documentKey,
+    props.replacement,
+    props.onReplacementApplied,
+    props.loadingDraft,
+    props.text,
+    props.onPlainText,
+    skills,
+  ]);
   useLayoutEffect(() => {
-    if (!editor || props.loadingDraft) return;
+    if (!editor || props.loadingDraft || props.replacement) return;
     markEditorSkills(editor, skills);
-  }, [editor, props.loadingDraft, skills]);
+  }, [editor, props.loadingDraft, props.replacement, skills]);
   useEffect(() => {
     if (!editor) return;
     editor.setEditable(!props.disabled, false);

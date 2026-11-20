@@ -1,3 +1,4 @@
+import { closeHistory } from "@tiptap/pm/history";
 import { Extension, Node, getSchema, type Editor, type JSONContent } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -599,7 +600,11 @@ export function completeEditor(
   );
 }
 // Drafts store skill mentions as text. Restore badges for mentions of skills the draft selected.
-export function markEditorSkills(editor: Editor, skills: readonly ComposerSkill[]) {
+export function markEditorSkills(
+  editor: Editor,
+  skills: readonly ComposerSkill[],
+  emitUpdate = true,
+) {
   if (!skills.length) return;
   const pattern = skillMentionPattern(skills.map((skill) => skill.name));
   const { schema, tr } = editor.state;
@@ -622,7 +627,8 @@ export function markEditorSkills(editor: Editor, skills: readonly ComposerSkill[
       );
     }
   });
-  if (tr.docChanged) editor.view.dispatch(tr.setMeta("addToHistory", false));
+  if (tr.docChanged)
+    editor.view.dispatch(tr.setMeta("addToHistory", false).setMeta("preventUpdate", !emitUpdate));
 }
 export function replaceEditorDocument(editor: Editor, text: string) {
   const doc = readComposerDocument(text, editor.schema);
@@ -634,4 +640,36 @@ export function replaceEditorDocument(editor: Editor, text: string) {
       selection: TextSelection.atEnd(doc),
     }),
   );
+}
+
+function updateEditorContent(editor: Editor, content: JSONContent) {
+  editor.view.dispatch(closeHistory(editor.state.tr));
+  editor.commands.setContent(content, { emitUpdate: false });
+  editor.view.dispatch(closeHistory(editor.state.tr));
+}
+
+export function updateEditorDocument(editor: Editor, text: string) {
+  updateEditorContent(editor, readComposerDocument(text, editor.schema).toJSON());
+}
+
+export type ComposerReplacement = {
+  id: symbol;
+  text: string;
+  documentKey: string;
+  previous?: { text: string; skills: readonly ComposerSkill[] };
+};
+
+export function applyEditorRewind(
+  editor: Editor,
+  replacement: ComposerReplacement,
+  skills: readonly ComposerSkill[],
+) {
+  markEditorSkills(editor, skills, false);
+  if (replacement.previous?.text.trim()) {
+    const visible = editor.state.doc.toJSON();
+    updateEditorDocument(editor, replacement.previous.text);
+    markEditorSkills(editor, replacement.previous.skills, false);
+    updateEditorContent(editor, visible);
+  }
+  updateEditorDocument(editor, replacement.text);
 }

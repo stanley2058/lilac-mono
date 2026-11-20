@@ -1,3 +1,4 @@
+import type { ComposerReplacement } from "./composer-tiptap";
 import { ModelSelector } from "./ModelSelector";
 import type { ModelReasoning } from "@stanley2058/lilac-client-protocol";
 import { toast } from "./ui/toast";
@@ -66,6 +67,8 @@ import { inputDeliveryOptions } from "../input-mode";
 export type ComposerProps = Partial<Pick<ChatCommon, "client" | "scope" | "catalog">> & {
   text: string;
   documentKey?: string;
+  replacement?: ComposerReplacement;
+  onReplacementApplied?: () => void;
   loadingDraft?: boolean;
   autoFocus?: boolean;
   typeToFocus?: boolean;
@@ -125,6 +128,8 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     text: string;
     plainText: string;
     documentKey?: string;
+    replacement?: ComposerReplacement;
+    onReplacementApplied?: () => void;
   }>();
   const plainText = editorValue?.plainText ?? "";
   // Text the editor emits reaches `text` a tick later for query-backed drafts. Waiting for it would
@@ -611,6 +616,8 @@ export const Composer = memo(function Composer(props: ComposerProps) {
         >
           <ComposerEditor
             documentKey={props.documentKey}
+            replacement={props.replacement}
+            onReplacementApplied={props.onReplacementApplied}
             loadingDraft={props.loadingDraft}
             autoFocus={props.autoFocus}
             typeToFocus={props.typeToFocus}

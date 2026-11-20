@@ -62,7 +62,11 @@ export function createNativeExecution(options: {
   const { store } = options;
   const publications = new Map<string, Promise<ResultType<void, Error>>>();
   const activeCompactions = new Map<string, readonly ModelMessage[]>();
-  const cancelingThreads = new Set<string>();
+  const cancelingThreads = new Map<string, number>();
+  const rewinds = new Map<
+    string,
+    Promise<ResultType<{ text: string; historyGeneration: number }, Error>>
+  >();
   let accepting = true;
 
   function validate(request: NativeRunnerRequest): ReturnType<NativeRunnerLifecycle["validate"]> {
@@ -730,9 +734,11 @@ export function createNativeExecution(options: {
       const runner = options.runner();
       if (!runner) return Result.err(nativeFailure("conflict", "Native runner is unavailable"));
       yield* store.cancelRun(actorId, threadId, runId);
-      cancelingThreads.add(threadId);
+      cancelingThreads.set(threadId, (cancelingThreads.get(threadId) ?? 0) + 1);
       const canceled = await runner.cancelNativeSession(nativeSessionId(threadId));
-      cancelingThreads.delete(threadId);
+      const remaining = (cancelingThreads.get(threadId) ?? 1) - 1;
+      if (remaining) cancelingThreads.set(threadId, remaining);
+      else cancelingThreads.delete(threadId);
       yield* canceled;
       yield* Result.await(kick(threadId));
       return Result.ok(undefined);
@@ -752,6 +758,29 @@ export function createNativeExecution(options: {
     });
   }
 
+  async function finishRewind(
+    threadId: string,
+    turnId: string,
+    historyGeneration: number,
+    text: string,
+  ): Promise<ResultType<{ text: string; historyGeneration: number }, Error>> {
+    return Result.gen(async function* () {
+      const runner = options.runner();
+      if (!runner) return Result.err(nativeFailure("conflict", "Native runner is unavailable"));
+      yield* Result.await(runner.cancelNativeSession(nativeSessionId(threadId)));
+      const rewindCutoff = yield* store.getTurnInputCreatedAt(threadId, turnId);
+      if (rewindCutoff !== null)
+        await options.jobs?.stopSessionJobsSince(
+          nativeSessionId(threadId),
+          rewindCutoff,
+          "thread_rewound",
+        );
+      yield* reconcileCanonical(threadId);
+      yield* store.finishMutation(threadId, historyGeneration);
+      return Result.ok({ text, historyGeneration });
+    });
+  }
+
   async function rewind(
     actorId: string,
     request: {
@@ -763,22 +792,29 @@ export function createNativeExecution(options: {
     },
   ): Promise<ResultType<{ text: string; historyGeneration: number }, Error>> {
     return Result.gen(async function* () {
-      const rewound = yield* store.beginRewind(actorId, request);
-      const runner = options.runner();
-      if (!runner) return Result.err(nativeFailure("conflict", "Native runner is unavailable"));
-      yield* Result.await(runner.cancelNativeSession(nativeSessionId(request.threadId)));
-      const rewindCutoff = yield* store.getTurnInputCreatedAt(request.threadId, request.turnId);
-      if (rewindCutoff !== null)
-        await options.jobs?.stopSessionJobsSince(
-          nativeSessionId(request.threadId),
-          rewindCutoff,
-          "thread_rewound",
-        );
+      const rewound = yield* store.beginRewind(
+        actorId,
+        request,
+        cancelingThreads.has(request.threadId),
+      );
       if (rewound.historyGeneration === undefined || rewound.text === undefined)
         return Result.err(nativeFailure("invalid", "Rewind receipt is incomplete"));
-      yield* reconcileCanonical(request.threadId);
-      yield* store.finishMutation(request.threadId, rewound.historyGeneration);
-      return Result.ok({ text: rewound.text, historyGeneration: rewound.historyGeneration });
+      const thread = yield* store.getThreadRecord(request.threadId);
+      if (!thread.mutationPending || thread.historyGeneration !== rewound.historyGeneration)
+        return Result.ok({ text: rewound.text, historyGeneration: rewound.historyGeneration });
+      const key = `${request.threadId}:${rewound.historyGeneration}`;
+      const pending = rewinds.get(key);
+      if (pending) return await pending;
+      const operation = finishRewind(
+        request.threadId,
+        request.turnId,
+        rewound.historyGeneration,
+        rewound.text,
+      );
+      rewinds.set(key, operation);
+      const result = await operation;
+      rewinds.delete(key);
+      return result;
     });
   }
 

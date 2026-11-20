@@ -50,6 +50,7 @@ import {
   type ReadyTurnSlot,
   type DisplayPart,
 } from "@stanley2058/lilac-client-protocol";
+import { rewindRestrictionReason, rewindReasonText } from "../rewind-policy";
 import { IconButton, attempt } from "./ui";
 import { WorkVerb, useSettledWorkVerb } from "./WorkVerb";
 import { ResourceAttachment } from "./ResourceAttachment";
@@ -69,7 +70,12 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collap
 import { Message as ChatMessage, MessageContent, MessageAvatar } from "./ui/message";
 import { Marker, MarkerContent } from "./ui/marker";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-import { type TimelineProps, TimelineContext, useMessageServicesValue } from "./timeline-context";
+import {
+  type TimelineProps,
+  TimelineContext,
+  RewindRestrictionContext,
+  useMessageServicesValue,
+} from "./timeline-context";
 
 export type TurnProps = {
   /** Workflow cards posted during this turn, shown ahead of its reply. */
@@ -118,6 +124,9 @@ export function WorkflowTurn({
 export function AgentTurn(props: TurnProps) {
   const { onRewind, onLoadMore } = props;
   const { canEdit, rewindDisabled } = useMessageServices();
+  const restriction = useContext(RewindRestrictionContext);
+  const reason = rewindRestrictionReason(restriction, props.slot.turnId);
+  const rewindReason = reason ? rewindReasonText(reason) : undefined;
   const { slot } = props;
   const [expanded, setExpanded] = useState(false);
   const citedMessage = useStore(citationStore, (state) => {
@@ -194,8 +203,13 @@ export function AgentTurn(props: TurnProps) {
             rewind={
               canEdit && firstUser.metadata?.authorId === identities.viewerId
                 ? {
-                    disabled: !!props.optimistic || !!rewindDisabled || slot.state === "pending",
+                    disabled:
+                      !!props.optimistic ||
+                      !!rewindDisabled ||
+                      !!rewindReason ||
+                      slot.state === "pending",
                     run: () => onRewind(slot.turnId),
+                    reason: rewindReason,
                   }
                 : undefined
             }
@@ -204,13 +218,30 @@ export function AgentTurn(props: TurnProps) {
             controls={
               <>
                 {canEdit && firstUser.metadata?.authorId === identities.viewerId ? (
-                  <IconButton
-                    disabled={props.optimistic || rewindDisabled || slot.state === "pending"}
-                    label="Rewind to this turn"
-                    onClick={() => onRewind(slot.turnId)}
-                  >
-                    <RotateCcw />
-                  </IconButton>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span className="inline-flex" tabIndex={rewindReason ? 0 : undefined} />
+                      }
+                    >
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="icon-button rounded-sm text-muted-foreground"
+                        aria-label="Rewind to this turn"
+                        disabled={
+                          props.optimistic ||
+                          rewindDisabled ||
+                          !!rewindReason ||
+                          slot.state === "pending"
+                        }
+                        onClick={() => onRewind(slot.turnId)}
+                      >
+                        <RotateCcw />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{rewindReason ?? "Rewind to this turn"}</TooltipContent>
+                  </Tooltip>
                 ) : null}
               </>
             }
@@ -775,7 +806,7 @@ export const MessageBody = memo(function MessageBody(
     copyParts?: readonly DisplayPart[];
     renderKey?: string;
     optimistic?: boolean;
-    rewind?: { disabled: boolean; run: () => void };
+    rewind?: { disabled: boolean; reason?: string; run: () => void };
   },
 ) {
   const { resourceUrl, canEdit, onAction } = useMessageServices();
@@ -1051,7 +1082,14 @@ export const MessageBody = memo(function MessageBody(
           {props.rewind ? (
             <ContextMenuItem disabled={props.rewind.disabled} onClick={props.rewind.run}>
               <RotateCcw />
-              Rewind to this turn
+              <span>
+                Rewind to this turn
+                {props.rewind.reason ? (
+                  <span className="block text-xs max-w-64 whitespace-normal">
+                    {props.rewind.reason}
+                  </span>
+                ) : null}
+              </span>
             </ContextMenuItem>
           ) : null}
           {copyError ? <span role="status">{copyError}</span> : null}

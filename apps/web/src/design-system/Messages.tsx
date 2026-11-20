@@ -26,6 +26,7 @@ import { Message, ThinkingIndicator } from "../components/Timeline";
 import { QuestionDemo } from "../components/QuestionDemo";
 import { ConversationWelcome } from "../components/ConversationWelcome";
 import { MessageGroupingDemo } from "../components/MessageGroupingDemo";
+import { DmRewindDemo } from "../components/DmRewindDemo";
 import { TimelineRailDemo } from "../components/TimelineRailDemo";
 import { QueuedMessage, QueuedMessages } from "../components/QueuedMessage";
 import { CodeFallback } from "../components/CodeEditor";
@@ -177,6 +178,9 @@ export function Messages() {
             />
           ))}
         </div>
+        <Specimen title="DM rewind">
+          <DmRewindDemo />
+        </Specimen>
         <Specimen title="Queued and unsent messages">
           <QueuedMessages className="px-0 pb-0 max-workspace:px-0 max-workspace:pb-0">
             <QueuedMessage

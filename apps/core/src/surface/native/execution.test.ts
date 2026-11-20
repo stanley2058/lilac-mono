@@ -88,6 +88,7 @@ function fixture(
   const published: { data: CmdRequestMessageData; headers: Record<string, string> }[] = [];
   let cancellations = 0;
   let cancellationFailure: Error | undefined;
+  let cancellationWait: (() => Promise<void>) | undefined;
   let publicationFailure: EventPublishContractInvalid | EventPublishTransportFailed | undefined;
   const bus: Pick<LilacBus, "publish"> = {
     publish: async (type, data, options) => {
@@ -114,6 +115,7 @@ function fixture(
     runner: () => ({
       cancelNativeSession: async () => {
         cancellations += 1;
+        await cancellationWait?.();
         return cancellationFailure ? Result.err(cancellationFailure) : Result.ok(undefined);
       },
     }),
@@ -167,6 +169,9 @@ function fixture(
     submit,
     request,
     cancellations: () => cancellations,
+    waitForCancellation: (wait?: () => Promise<void>) => {
+      cancellationWait = wait;
+    },
     setNow: (value: number) => {
       now = value;
     },
@@ -1759,4 +1764,196 @@ describe("native turn row differential", () => {
       await publishedHistories(true, scenario),
     );
   });
+});
+
+function rewindFixture() {
+  const f = fixture(undefined, true);
+  value(
+    f.store.initializeDeployment({
+      titleModel: "fast",
+      transport: "auto",
+      outputStreaming: "paragraph",
+      dmContextGapMs: 7_200_000,
+      dmTimestampGapMs: 1_800_000,
+      oldMessageSelectionMaxAgeMs: null,
+      storageRetentionMaxAgeMs: null,
+      crossThreadSend: { triggerRun: true },
+    }),
+  );
+  const input = f.submit("rewind me");
+  value(f.store.settleInput(input.inputId, "admitted"));
+  value(
+    f.store.projectTurn(f.thread.id, 0, "settled_rewind", input.turnId!, (slot) =>
+      Result.ok({ slot: { ...slot, state: "complete", settledAt: 1000 }, changes: [] }),
+    ),
+  );
+  value(f.store.markInputCompleted(input.inputId));
+  const request = {
+    threadId: f.thread.id,
+    turnId: input.turnId!,
+    commandId: "rewind",
+    historyGeneration: 0,
+    revision: value(f.store.getThreadRecord(f.thread.id)).revision,
+  };
+  return { ...f, rewindRequest: request };
+}
+
+test("retrying a completed DM rewind leaves a newer run alone", async () => {
+  const f = rewindFixture();
+  try {
+    const first = value(await f.execution.rewind("owner", f.rewindRequest));
+    f.submit("new prompt");
+    value(await f.execution.kick(f.thread.id));
+    const active = value(f.store.getThreadRecord(f.thread.id)).activeRunId;
+    expect(active).toBeDefined();
+    expect(value(await f.execution.rewind("owner", f.rewindRequest))).toEqual(first);
+    expect(f.cancellations()).toBe(1);
+    expect(value(f.store.getThreadRecord(f.thread.id)).activeRunId).toBe(active);
+  } finally {
+    f.close();
+  }
+});
+
+test("concurrent retries share the unfinished rewind cancellation", async () => {
+  const f = rewindFixture();
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  f.waitForCancellation(async () => {
+    started.resolve();
+    await release.promise;
+  });
+  try {
+    const first = f.execution.rewind("owner", f.rewindRequest);
+    await started.promise;
+    const second = f.execution.rewind("owner", f.rewindRequest);
+    release.resolve();
+    expect(value(await first)).toEqual(value(await second));
+    expect(f.cancellations()).toBe(1);
+  } finally {
+    release.resolve();
+    f.close();
+  }
+});
+
+test("DM rewind waits until an in-progress cancellation finishes", async () => {
+  const f = rewindFixture();
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  f.waitForCancellation(async () => {
+    started.resolve();
+    await release.promise;
+  });
+  try {
+    const canceling = f.execution.cancel("owner", f.thread.id);
+    await started.promise;
+    const request = {
+      ...f.rewindRequest,
+      revision: value(f.store.getThreadRecord(f.thread.id)).revision,
+    };
+    expect(
+      (await f.execution.rewind("owner", request)).match({
+        ok: () => undefined,
+        err: (error) => error.message,
+      }),
+    ).toBe("Wait for cancellation to finish.");
+    expect(value(f.store.getThreadRecord(f.thread.id)).historyGeneration).toBe(0);
+    release.resolve();
+    value(await canceling);
+    f.waitForCancellation();
+    value(
+      await f.execution.rewind("owner", {
+        ...request,
+        revision: value(f.store.getThreadRecord(f.thread.id)).revision,
+      }),
+    );
+  } finally {
+    release.resolve();
+    f.close();
+  }
+});
+
+test("overlapping cancellations block new DM rewind until both settle", async () => {
+  const f = rewindFixture();
+  const firstStarted = Promise.withResolvers<void>();
+  const secondStarted = Promise.withResolvers<void>();
+  const releaseFirst = Promise.withResolvers<void>();
+  const releaseSecond = Promise.withResolvers<void>();
+  let calls = 0;
+  f.waitForCancellation(async () => {
+    calls++;
+    if (calls === 1) {
+      firstStarted.resolve();
+      return releaseFirst.promise;
+    }
+    secondStarted.resolve();
+    return releaseSecond.promise;
+  });
+  try {
+    const first = f.execution.cancel("owner", f.thread.id);
+    await firstStarted.promise;
+    const second = f.execution.cancel("owner", f.thread.id);
+    await secondStarted.promise;
+    releaseFirst.resolve();
+    value(await first);
+    const request = {
+      ...f.rewindRequest,
+      revision: value(f.store.getThreadRecord(f.thread.id)).revision,
+    };
+    expect((await f.execution.rewind("owner", request)).isErr()).toBe(true);
+    expect(value(f.store.getThreadRecord(f.thread.id)).historyGeneration).toBe(0);
+    releaseSecond.resolve();
+    value(await second);
+    f.waitForCancellation();
+    value(
+      await f.execution.rewind("owner", {
+        ...request,
+        revision: value(f.store.getThreadRecord(f.thread.id)).revision,
+      }),
+    );
+  } finally {
+    releaseFirst.resolve();
+    releaseSecond.resolve();
+    f.close();
+  }
+});
+
+test("completed rewind receipts remain readable during a later cancellation", async () => {
+  const f = rewindFixture();
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    const reply = value(await f.execution.rewind("owner", f.rewindRequest));
+    f.submit("new prompt");
+    value(await f.execution.kick(f.thread.id));
+    f.waitForCancellation(async () => {
+      started.resolve();
+      await release.promise;
+    });
+    const cancel = f.execution.cancel("owner", f.thread.id);
+    await started.promise;
+    expect(value(await f.execution.rewind("owner", f.rewindRequest))).toEqual(reply);
+    expect(f.cancellations()).toBe(2);
+    release.resolve();
+    value(await cancel);
+  } finally {
+    release.resolve();
+    f.close();
+  }
+});
+
+test("the original rewind command finishes after cancellation fails post-mutation", async () => {
+  const f = rewindFixture();
+  try {
+    f.failCancellation(new Error("runner unavailable"));
+    expect((await f.execution.rewind("owner", f.rewindRequest)).isErr()).toBe(true);
+    expect(value(f.store.getThreadRecord(f.thread.id))).toMatchObject({
+      historyGeneration: 1,
+      mutationPending: true,
+    });
+    f.failCancellation();
+    expect(value(await f.execution.rewind("owner", f.rewindRequest)).text).toBe("rewind me");
+    expect(value(f.store.getThreadRecord(f.thread.id)).mutationPending).toBe(false);
+  } finally {
+    f.close();
+  }
 });

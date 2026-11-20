@@ -1,5 +1,7 @@
 import {
   OUTLINE_PAGE_TURNS,
+  dmRewindDisabledReason,
+  dmRewindReasonText,
   startsContextWindow,
   turnPreviewText,
   type ModelReasoning,
@@ -2861,6 +2863,37 @@ export class NativeStore {
     );
   }
 
+  private validateDmRewind(
+    thread: NativeThreadRecord,
+    turn: ReadyTurnSlot,
+  ): NativeStoreResult<void> {
+    return Result.gen(function* () {
+      const latest = yield* this.readRows(
+        `SELECT * FROM native_records WHERE kind='turn' AND thread_id=? AND (${TURN_VISIBLE} OR json_extract(data_json,'$.value.settledAt') IS NULL OR json_extract(data_json,'$.value.state') NOT IN ('complete','failed','canceled')) ORDER BY position DESC LIMIT 1`,
+        [thread.id],
+      );
+      const pending = yield* this.listPendingInputs(thread.id);
+      const pendingSends = yield* this.readRows(
+        "SELECT * FROM native_records WHERE kind='send-group' AND thread_id=? AND json_extract(data_json,'$.value.delivered')=0 LIMIT 1",
+        [thread.id],
+      );
+      if (pendingSends.length)
+        return Result.err(nativeFailure("forbidden", dmRewindReasonText("outside")));
+      const deployment = yield* this.getDeployment();
+      const last = latest[0];
+      const reason = dmRewindDisabledReason({
+        turn,
+        latestTurnId: last?.kind === "turn" ? last.value.turnId : undefined,
+        ownerId: thread.starterId,
+        busy: !!thread.activeRunId || pending.length > 0,
+        windowMs: deployment.settings.dmTimestampGapMs,
+        now: this.now(),
+      });
+      if (reason) return Result.err(nativeFailure("forbidden", dmRewindReasonText(reason)));
+      return Result.ok(undefined);
+    }, this);
+  }
+
   private rewindCommand(
     input: {
       readonly threadId: string;
@@ -2885,6 +2918,7 @@ export class NativeStore {
         [thread.id, input.turnId],
       );
       const fullInput = targetInputs[0];
+      if (thread.kind === "dm") yield* this.validateDmRewind(thread, target.value);
       const inputs = yield* this.readRows(
         "SELECT i.* FROM native_records i WHERE i.kind='input' AND i.thread_id=? AND (json_extract(i.data_json,'$.value.state') IN ('queued','uploading') OR EXISTS(SELECT 1 FROM native_records t WHERE t.kind='turn' AND t.thread_id=i.thread_id AND t.position>=? AND t.id=json_extract(i.data_json,'$.value.turnId'))) ORDER BY i.position",
         [thread.id, target.value.position],
@@ -2932,15 +2966,16 @@ export class NativeStore {
       historyGeneration: number;
       revision: number;
     },
+    cancellationPending = false,
   ): NativeStoreResult<NativeMutationResult> {
     return nativeStoreTransaction(this.db, () =>
       Result.gen(function* () {
         const thread = yield* this.authorizeThread(actorId, input.threadId, true);
-        if (thread.kind === "dm")
-          return Result.err(nativeFailure("forbidden", "The DM cannot be rewound"));
-        return this.command(actorId, input.commandId, { operation: "rewind", ...input }, () =>
-          this.rewindCommand(input, thread),
-        );
+        return this.command(actorId, input.commandId, { operation: "rewind", ...input }, () => {
+          if (thread.kind === "dm" && cancellationPending)
+            return Result.err(nativeFailure("conflict", "Wait for cancellation to finish."));
+          return this.rewindCommand(input, thread);
+        });
       }, this),
     );
   }

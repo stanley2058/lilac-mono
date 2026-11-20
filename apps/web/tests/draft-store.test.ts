@@ -59,3 +59,35 @@ test("draft summaries track creation, clearing and removal without crossing sess
   store.getState().setLocalDrafts(new Map());
   expect(store.getState().localDrafts.size).toBe(0);
 });
+
+test("rewind preparation claims survive navigation and reject stale owners", () => {
+  const store = createDraftStore();
+  const first = store.getState().claimRewind("dm", "turn", "question-draft")!;
+  expect(store.getState().claimRewind("other", "other-turn")).toBeDefined();
+  expect(store.getState().claimRewind("dm", "turn")).toBeUndefined();
+  store.getState().setRewind("dm", first.owner, { ...first, running: false });
+  const retry = store.getState().claimRewind("dm", "turn")!;
+  expect(retry.owner).toBe(first.owner);
+  expect(retry.draftKey).toBe("question-draft");
+  store.getState().setRewind("dm", first.owner);
+  const next = store.getState().claimRewind("dm", "next")!;
+  store.getState().setRewind("dm", first.owner, first);
+  store.getState().setRewind("dm", first.owner);
+  expect(store.getState().rewinds.get("dm")).toBe(next);
+});
+
+test("completed rewind waits for its composer without allowing another claim", () => {
+  const store = createDraftStore();
+  const pending = store.getState().claimRewind("dm", "turn", "question-draft")!;
+  const completed = {
+    ...pending,
+    running: false,
+    completed: { text: "Restored", attachments: [] },
+  };
+  store.getState().setRewind("dm", pending.owner, completed);
+  store.getState().claimRewind("other", "other-turn");
+  expect(store.getState().rewinds.get("dm")).toBe(completed);
+  expect(store.getState().claimRewind("dm", "turn")).toBeUndefined();
+  store.getState().setRewind("dm", pending.owner);
+  expect(store.getState().rewinds.has("dm")).toBe(false);
+});

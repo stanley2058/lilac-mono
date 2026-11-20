@@ -11,7 +11,10 @@ type Context = Omit<NativeRpcOutputs["threads"]["context"], "evaluatedAt">;
 const RecentContext = createContext<Context | undefined>(undefined);
 export const useRecentContext = () => useContext(RecentContext);
 
-function recentContextOptions(client: NativeClient | undefined, threadId: string | undefined) {
+export function recentContextOptions(
+  client: NativeClient | undefined,
+  threadId: string | undefined,
+) {
   return queryOptions({
     queryKey: ["recent-context", threadId],
     queryFn:
@@ -44,7 +47,9 @@ export function RecentContextProvider({
     enabled: online && thread?.kind === "dm",
     refetchInterval: ({ state }) => {
       if (thread?.activeRunId) return 1000;
-      return state.data?.expiresAt ? Math.max(1, state.data.expiresAt - Date.now()) : false;
+      return state.data?.expiresAt
+        ? Math.min(30_000, Math.max(1, state.data.expiresAt - Date.now()))
+        : 30_000;
     },
     select: withoutEvaluation,
   });

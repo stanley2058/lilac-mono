@@ -733,6 +733,7 @@ function appendAttachment(value: ComposerBlock[], attachment: Pick<Attachment, "
 export function restoreMessageAttachments(
   text: string,
   attachments: ReadonlyMap<string, Attachment>,
+  missing: ReadonlyMap<string, string> = new Map(),
 ): string {
   const byUrl = new Map(
     [...attachments].map(([id, attachment]) => [
@@ -740,17 +741,31 @@ export function restoreMessageAttachments(
       attachment,
     ]),
   );
+  const missingByUrl = new Map(
+    [...missing].map(([id, name]) => [`/api/resources/${encodeURIComponent(id)}`, name]),
+  );
+  const usedMissing = new Set<string>();
   const options: ReadOptions & { resourceUrls?: ReadonlySet<string> } = {
     source: text,
-    resourceUrls: new Set(byUrl.keys()),
+    resourceUrls: new Set([...byUrl.keys(), ...missingByUrl.keys()]),
     image: (node) => {
       const attachment = byUrl.get(node.url);
-      if (!attachment) return sourceText(node, options);
-      return { type: LINK, url: node.url, children: [{ text: attachment.file.name }] };
+      const missingName = missingByUrl.get(node.url);
+      if (!attachment && !missingName) return sourceText(node, options);
+      return {
+        type: LINK,
+        url: node.url,
+        children: [{ text: attachment?.file.name ?? missingName ?? "Attachment" }],
+      };
     },
   };
   const used = new Set<string>();
   const value = mapValue(readValue(text, options), (node) => {
+    const missingName = missingByUrl.get(node.url ?? "");
+    if (node.type === LINK && missingName) {
+      usedMissing.add(node.url!);
+      return { text: `[Reattach: ${missingName}]` };
+    }
     const attachment = byUrl.get(node.url ?? "");
     if (node.type !== LINK || !attachment) return node;
     used.add(attachment.key);
@@ -763,5 +778,8 @@ export function restoreMessageAttachments(
   }) as ComposerBlock[];
   for (const attachment of attachments.values())
     if (!used.has(attachment.key)) appendAttachment(value, attachment);
+  for (const [url, name] of missingByUrl)
+    if (!usedMissing.has(url))
+      value.push({ type: PARAGRAPH, children: [{ text: `[Reattach: ${name}]` }] });
   return writeComposerBlocks(value);
 }

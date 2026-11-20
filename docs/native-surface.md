@@ -249,7 +249,12 @@ The entry and the conversation header show the agent's avatar and display name. 
 shows the last activity time, a one-line preview of the latest text message, and the working timer
 while a reply runs.
 Bootstrap creates it on first use. Its history stays available indefinitely. Sharing, renaming,
-archiving, deletion, rewind, and storage-retention cleanup do not apply to this conversation.
+archiving, deletion, and storage-retention cleanup do not apply to this conversation.
+The latest full user turn can be rewound after completion, failure, or cancellation, until its
+settlement time plus "DM timestamp gap (ms)". Active runs and pending inputs block rewind, as do
+messages from outside the exchange anywhere in the removed history. Each rewind restores the prompt
+and attachments to the composer. Earlier turns can then be rewound while their original settlement
+times remain within the window. Rewind does not undo tool effects.
 
 Deployment settings expose "DM context gap (ms)", initially 7,200,000 ms. A request's context starts
 at the first visible turn after the most recent pause longer than the gap. Delivered heartbeat and

@@ -13,10 +13,14 @@ import {
   composerCompletionPrefix,
   composerExtensions,
   composerText,
+  markEditorSkills,
+  editorSkillIds,
   insertEditorAttachment,
   readComposerDocument,
   referenceNode,
   replaceEditorDocument,
+  updateEditorDocument,
+  applyEditorRewind,
   skillNode,
   workflowRunNode,
   writeComposerDocument,
@@ -489,4 +493,61 @@ it("formats attachment sizes", () => {
   expect(attachmentSize(512)).toBe("512 B");
   expect(attachmentSize(1536)).toBe("2 KB");
   expect(attachmentSize(1572864)).toBe("1.5 MB");
+});
+
+it("undo restores each composer replacement independently from typing", () => {
+  const editor = headlessEditor("Unsent draft");
+  editor.registerPlugin(history());
+  editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+  insert(editor, " edited");
+  updateEditorDocument(editor, "Latest turn");
+  updateEditorDocument(editor, "Earlier turn");
+  expect(draft(editor)).toBe("Earlier turn");
+  expect(undo(editor.state, editor.view.dispatch)).toBe(true);
+  expect(draft(editor)).toBe("Latest turn");
+  expect(undo(editor.state, editor.view.dispatch)).toBe(true);
+  expect(draft(editor)).toBe("Unsent draft edited");
+  expect(undo(editor.state, editor.view.dispatch)).toBe(true);
+  expect(draft(editor)).toBe("Unsent draft");
+  editor.destroy();
+});
+
+it("same-text replacement removes skill chips and undo restores their identity", () => {
+  const editor = headlessEditor("$review");
+  editor.registerPlugin(history());
+  markEditorSkills(editor, [{ id: "review-skill", name: "review" }]);
+  expect(editorSkillIds(editor.state.doc)).toEqual(["review-skill"]);
+  const text = draft(editor);
+  updateEditorDocument(editor, text);
+  expect(draft(editor)).toBe(text);
+  expect(editorSkillIds(editor.state.doc)).toEqual([]);
+  expect(undo(editor.state, editor.view.dispatch)).toBe(true);
+  expect(draft(editor)).toBe(text);
+  expect(editorSkillIds(editor.state.doc)).toEqual(["review-skill"]);
+  editor.destroy();
+});
+
+it("seeds remounted skills and preserves a hidden regular draft behind the reply undo step", () => {
+  const editor = headlessEditor("$review reply");
+  editor.registerPlugin(history());
+  let updates = 0;
+  editor.on("update", () => updates++);
+  applyEditorRewind(
+    editor,
+    {
+      id: Symbol(),
+      text: "Rewound prompt",
+      documentKey: "dm",
+      previous: { text: "Hidden regular message", skills: [] },
+    },
+    [{ id: "review-skill", name: "review" }],
+  );
+  expect(updates).toBe(0);
+  expect(draft(editor)).toBe("Rewound prompt");
+  expect(undo(editor.state, editor.view.dispatch)).toBe(true);
+  expect(draft(editor)).toBe("$review reply");
+  expect(editorSkillIds(editor.state.doc)).toEqual(["review-skill"]);
+  expect(undo(editor.state, editor.view.dispatch)).toBe(true);
+  expect(draft(editor)).toBe("Hidden regular message");
+  editor.destroy();
 });

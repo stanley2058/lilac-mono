@@ -56,7 +56,12 @@ import {
   startsNewDay,
   useSlotIds,
 } from "./timeline-slots";
-import { type TimelineProps, TimelineContext, useMessageServicesValue } from "./timeline-context";
+import {
+  type TimelineProps,
+  TimelineContext,
+  RewindRestrictionContext,
+  useMessageServicesValue,
+} from "./timeline-context";
 import { Turn, messageArrivalIds } from "./TimelineTurn";
 
 export function useLatestReadableTurn(store: NativeThreadStore) {
@@ -347,137 +352,139 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
     <MessageArrivalsContext value={arrivals}>
       <TimelineContext value={timeline}>
         <MessageServicesContext value={services}>
-          <div className="relative flex min-h-0 flex-1 flex-col">
-            <div
-              className={`timeline overflow-auto overscroll-none min-h-0 flex-1 [overflow-anchor:none] chat-scroll relative overflow-y-auto overflow-x-hidden ${centered ? "timeline-centered" : ""}`}
-              ref={bindViewport}
-              data-timeline-viewport
-              data-messaging={props.timestamps || undefined}
-              onScroll={(event) => {
-                scroll.handlers.onScroll();
-                const viewport = event.currentTarget;
-                setAwayFromEnd(
-                  viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 8,
-                );
-              }}
-              onScrollEnd={scroll.handlers.onScrollEnd}
-              onWheel={scroll.handlers.onWheel}
-              onKeyDown={scroll.handlers.onKeyDown}
-              onTouchStart={scroll.handlers.onTouchStart}
-              onTouchMove={scroll.handlers.onTouchMove}
-              onPointerDown={scroll.handlers.onPointerDown}
-              onFocus={scroll.handlers.onFocus}
-              onClickCapture={(event) => {
-                if (!(event.target instanceof Element)) return;
-                const trigger = event.target.closest(
-                  '[data-slot="collapsible-trigger"], [data-ui=message-expand]',
-                );
-                // An expanding disclosure grows down from where the reader is looking.
-                if (trigger?.getAttribute("aria-expanded") === "false") scroll.stopFollowing();
-              }}
-              onFocusCapture={(event) => {
-                if (
-                  event.target instanceof Element &&
-                  event.target.closest('[data-ui=message-card-preview][data-collapsed="true"]')
-                )
-                  scroll.stopFollowing();
-              }}
-              role="region"
-              aria-label="Conversation"
-              tabIndex={0}
-            >
-              <AssistantSelectionToolbar viewport={citationViewport} threadId={props.threadId} />
+          <RewindRestrictionContext value={props.rewindRestriction}>
+            <div className="relative flex min-h-0 flex-1 flex-col">
               <div
-                ref={measureHeader}
-                data-index={0}
-                className="chat-sticky-header sticky top-0 z-3 [background:color-mix(in_srgb,_var(--ui-background)_var(--ui-glass-opacity),_transparent)] [backdrop-filter:blur(var(--ui-glass-blur))]"
+                className={`timeline overflow-auto overscroll-none min-h-0 flex-1 [overflow-anchor:none] chat-scroll relative overflow-y-auto overflow-x-hidden ${centered ? "timeline-centered" : ""}`}
+                ref={bindViewport}
+                data-timeline-viewport
+                data-messaging={props.timestamps || undefined}
+                onScroll={(event) => {
+                  scroll.handlers.onScroll();
+                  const viewport = event.currentTarget;
+                  setAwayFromEnd(
+                    viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 8,
+                  );
+                }}
+                onScrollEnd={scroll.handlers.onScrollEnd}
+                onWheel={scroll.handlers.onWheel}
+                onKeyDown={scroll.handlers.onKeyDown}
+                onTouchStart={scroll.handlers.onTouchStart}
+                onTouchMove={scroll.handlers.onTouchMove}
+                onPointerDown={scroll.handlers.onPointerDown}
+                onFocus={scroll.handlers.onFocus}
+                onClickCapture={(event) => {
+                  if (!(event.target instanceof Element)) return;
+                  const trigger = event.target.closest(
+                    '[data-slot="collapsible-trigger"], [data-ui=message-expand]',
+                  );
+                  // An expanding disclosure grows down from where the reader is looking.
+                  if (trigger?.getAttribute("aria-expanded") === "false") scroll.stopFollowing();
+                }}
+                onFocusCapture={(event) => {
+                  if (
+                    event.target instanceof Element &&
+                    event.target.closest('[data-ui=message-card-preview][data-collapsed="true"]')
+                  )
+                    scroll.stopFollowing();
+                }}
+                role="region"
+                aria-label="Conversation"
+                tabIndex={0}
               >
-                {props.header}
-              </div>
-              <div
-                data-timeline-canvas
-                className="virtual-canvas relative w-full timeline-canvas max-w-[var(--ui-chat-width)] m-auto"
-                style={
-                  centered
-                    ? undefined
-                    : {
-                        height: Math.max(0, totalSize - headerSize - footerSize),
-                        minHeight: `calc(100% - ${insets.top + insets.bottom}px)`,
-                      }
-                }
-              >
-                {rows.map((row) => (
-                  <div
-                    key={row.key}
-                    data-index={row.index}
-                    ref={virtual.measureElement}
-                    className="virtual-row absolute top-0 left-0 w-full"
-                    style={{ transform: `translateY(${row.start - headerSize}px)` }}
-                  >
-                    <SlotRow
-                      slotId={ids[row.index - 1]!}
-                      previousSlotId={ids[row.index - 2]}
-                      nextSlotId={ids[row.index]}
-                      store={store}
-                      renderKey={identities.key(ids[row.index - 1]!)}
-                      fallback={
-                        ids[row.index - 1] === (pending?.confirmedSlotId ?? pending?.slot.slotId)
-                          ? pending?.slot
-                          : undefined
-                      }
-                    />
-                  </div>
-                ))}
-                {trailingRow ? (
-                  <div
-                    key={trailingRow.key}
-                    data-index={trailingRow.index}
-                    ref={virtual.measureElement}
-                    className="virtual-row absolute top-0 left-0 w-full"
-                    style={{ transform: `translateY(${trailingRow.start - headerSize}px)` }}
-                  >
-                    {props.trailing}
-                  </div>
-                ) : null}
-                {empty
-                  ? (props.emptyContent ?? (
-                      <div className="empty-chat">
-                        {props.emptyMessage ?? "Start a conversation."}
-                      </div>
-                    ))
-                  : null}
-              </div>
-              {props.footer ? (
+                <AssistantSelectionToolbar viewport={citationViewport} threadId={props.threadId} />
                 <div
-                  ref={measureFooter}
-                  data-index={ids.length + 2}
-                  className="chat-sticky-footer sticky bottom-0 z-3"
+                  ref={measureHeader}
+                  data-index={0}
+                  className="chat-sticky-header sticky top-0 z-3 [background:color-mix(in_srgb,_var(--ui-background)_var(--ui-glass-opacity),_transparent)] [backdrop-filter:blur(var(--ui-glass-blur))]"
                 >
-                  {awayFromEnd && scroll.mode === "read" ? (
-                    <div className="scroll-to-end absolute bottom-full left-0 right-0 flex justify-center pb-2 pointer-events-none">
-                      <Button variant="secondary" onClick={scroll.followEnd}>
-                        <ChevronDown />
-                        Scroll to end
-                      </Button>
+                  {props.header}
+                </div>
+                <div
+                  data-timeline-canvas
+                  className="virtual-canvas relative w-full timeline-canvas max-w-[var(--ui-chat-width)] m-auto"
+                  style={
+                    centered
+                      ? undefined
+                      : {
+                          height: Math.max(0, totalSize - headerSize - footerSize),
+                          minHeight: `calc(100% - ${insets.top + insets.bottom}px)`,
+                        }
+                  }
+                >
+                  {rows.map((row) => (
+                    <div
+                      key={row.key}
+                      data-index={row.index}
+                      ref={virtual.measureElement}
+                      className="virtual-row absolute top-0 left-0 w-full"
+                      style={{ transform: `translateY(${row.start - headerSize}px)` }}
+                    >
+                      <SlotRow
+                        slotId={ids[row.index - 1]!}
+                        previousSlotId={ids[row.index - 2]}
+                        nextSlotId={ids[row.index]}
+                        store={store}
+                        renderKey={identities.key(ids[row.index - 1]!)}
+                        fallback={
+                          ids[row.index - 1] === (pending?.confirmedSlotId ?? pending?.slot.slotId)
+                            ? pending?.slot
+                            : undefined
+                        }
+                      />
+                    </div>
+                  ))}
+                  {trailingRow ? (
+                    <div
+                      key={trailingRow.key}
+                      data-index={trailingRow.index}
+                      ref={virtual.measureElement}
+                      className="virtual-row absolute top-0 left-0 w-full"
+                      style={{ transform: `translateY(${trailingRow.start - headerSize}px)` }}
+                    >
+                      {props.trailing}
                     </div>
                   ) : null}
-                  {props.footer}
+                  {empty
+                    ? (props.emptyContent ?? (
+                        <div className="empty-chat">
+                          {props.emptyMessage ?? "Start a conversation."}
+                        </div>
+                      ))
+                    : null}
                 </div>
+                {props.footer ? (
+                  <div
+                    ref={measureFooter}
+                    data-index={ids.length + 2}
+                    className="chat-sticky-footer sticky bottom-0 z-3"
+                  >
+                    {awayFromEnd && scroll.mode === "read" ? (
+                      <div className="scroll-to-end absolute bottom-full left-0 right-0 flex justify-center pb-2 pointer-events-none">
+                        <Button variant="secondary" onClick={scroll.followEnd}>
+                          <ChevronDown />
+                          Scroll to end
+                        </Button>
+                      </div>
+                    ) : null}
+                    {props.footer}
+                  </div>
+                ) : null}
+              </div>
+              {props.outline && !switching ? (
+                <TimelineRail
+                  source={props.outline}
+                  threadId={props.threadId}
+                  store={store}
+                  viewport={citationViewport}
+                  insets={insets}
+                  visibleRange={visibleRange}
+                  onSelect={selectTurn}
+                  onWheel={scroll.handlers.onWheel}
+                />
               ) : null}
             </div>
-            {props.outline && !switching ? (
-              <TimelineRail
-                source={props.outline}
-                threadId={props.threadId}
-                store={store}
-                viewport={citationViewport}
-                insets={insets}
-                visibleRange={visibleRange}
-                onSelect={selectTurn}
-                onWheel={scroll.handlers.onWheel}
-              />
-            ) : null}
-          </div>
+          </RewindRestrictionContext>
         </MessageServicesContext>
       </TimelineContext>
     </MessageArrivalsContext>
