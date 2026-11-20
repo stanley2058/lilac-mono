@@ -38,7 +38,6 @@ export function buildAgentRunSystemPrompt(params: {
   messages: readonly SurfaceMetadataMessage[];
   safetyMode: SessionSafetyMode;
   sessionId: string;
-  heartbeatOverlay?: string | null;
   subagentConversation?: SubagentConversation;
 }): string {
   const workspaceSystemPrompt = selectWorkspaceSystemPrompt({
@@ -81,7 +80,6 @@ export function buildAgentRunSystemPrompt(params: {
       ? buildRestrictedSessionOverlay({ sessionId: params.sessionId })
       : null;
   for (const overlay of [
-    params.heartbeatOverlay,
     buildGeneratedMessageOverlay(),
     surfaceMetadataOverlay,
     params.requestClient === "discord" ? buildDiscordOutputOverlay() : null,

@@ -14,7 +14,7 @@ import {
 } from "../../../src/conversation/thread-auto-inject-decision";
 import {
   AUTO_INJECTED_THREAD_BRIEF_DISPLAY_LENGTH,
-  appendAutoInjectedThreadSearchLineage,
+  appendGeneratedContextLineage,
   degradeCorePrimaryLineageForMutation,
   buildAutoInjectedThreadSearchMessages,
   maybeBuildAutoInjectedThreadSearchMessages,
@@ -136,12 +136,12 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
     });
     const storedInjected = transcriptResultValue(projectStoredMessagesV1(injected));
 
-    const first = appendAutoInjectedThreadSearchLineage({
+    const first = appendGeneratedContextLineage({
       lineage: source,
       canonicalMessages: sourceMessages,
       injectedMessages: injected,
     });
-    const second = appendAutoInjectedThreadSearchLineage({
+    const second = appendGeneratedContextLineage({
       lineage: source,
       canonicalMessages: sourceMessages,
       injectedMessages: injected,
@@ -200,7 +200,7 @@ describe("buildAutoInjectedThreadSearchMessages", () => {
 
     expect(
       cases.map((lineage, index) =>
-        appendAutoInjectedThreadSearchLineage({
+        appendGeneratedContextLineage({
           lineage,
           canonicalMessages:
             index === cases.length - 1

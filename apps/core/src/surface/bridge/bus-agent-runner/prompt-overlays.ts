@@ -1,3 +1,4 @@
+import { buildGeneratedMessage } from "@stanley2058/lilac-agent";
 import { captureError } from "../../../shared/error-capture";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import {
@@ -318,6 +319,18 @@ export function buildHeartbeatOverlayForRequest(params: {
   return buildOrdinaryHeartbeatOverlay({
     requestId: params.requestId,
     sessionId: params.sessionId,
+  });
+}
+
+export function buildHeartbeatContextMessage(
+  params: Parameters<typeof buildHeartbeatOverlayForRequest>[0],
+) {
+  const content = buildHeartbeatOverlayForRequest(params);
+  if (!content) return null;
+  return buildGeneratedMessage({
+    kind: "heartbeat_context",
+    id: `${params.requestId}:heartbeat-context`,
+    content,
   });
 }
 

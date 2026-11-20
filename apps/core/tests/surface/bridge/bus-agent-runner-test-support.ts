@@ -928,7 +928,7 @@ export function acceptedRunnerDelivery(input: {
   readonly requestDeliveryId: string;
   readonly requestId: string;
   readonly sessionId: string;
-  readonly requestClient?: "discord" | "github";
+  readonly requestClient?: "discord" | "github" | "native";
   readonly queue: CoreAcceptedRequestWork["data"]["queue"];
   readonly messages: readonly StoredMessageV1[];
   readonly corePrimaryLineage?: CorePrimaryLineageV2;

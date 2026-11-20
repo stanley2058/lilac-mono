@@ -24,8 +24,10 @@ import {
 } from "../bridge/bus-agent-runner/stats";
 import { maybeBuildSkillsSectionForPrimary } from "../bridge/bus-agent-runner/skills-context";
 import { buildAgentRunSystemPrompt } from "../bridge/bus-agent-runner/system-prompt";
-import { resolveSessionAdditionalPrompts } from "../bridge/bus-agent-runner/prompt-overlays";
-import { buildHeartbeatOverlayForRequest } from "../bridge/bus-agent-runner/prompt-overlays";
+import {
+  buildHeartbeatContextMessage,
+  resolveSessionAdditionalPrompts,
+} from "../bridge/bus-agent-runner/prompt-overlays";
 
 const CONTEXT_REPORT_ACCENT_COLOR = 0x5865f2;
 const USAGE_BAR_WIDTH = 20;
@@ -221,13 +223,6 @@ export function createDiscordContextReportProvider(params: {
       messages: request.messages,
       safetyMode,
       sessionId: request.sessionId,
-      heartbeatOverlay: buildHeartbeatOverlayForRequest({
-        cfg: request.config,
-        requestId: reportRequestId,
-        sessionId: request.sessionId,
-        runProfile: "primary",
-        nowMs: Date.now(),
-      }),
     });
 
     const subagents = request.config.agent.subagents;
@@ -284,11 +279,21 @@ export function createDiscordContextReportProvider(params: {
       });
       const activeToolNames = selectedLevel1ToolNames(toolset, selectedCatalogIds);
       const activeTools = selectActiveTools(toolset.tools, activeToolNames);
+      const heartbeatContext = buildHeartbeatContextMessage({
+        cfg: request.config,
+        requestId: reportRequestId,
+        sessionId: request.sessionId,
+        runProfile: "primary",
+        nowMs: Date.now(),
+      });
+      const messages = heartbeatContext
+        ? [...request.messages, heartbeatContext]
+        : request.messages;
       const estimate = estimateContextSnapshotTokens({
         system,
         skillsSection,
         additionalSessionPrompts,
-        messages: request.messages,
+        messages,
         tools: activeTools,
       });
 

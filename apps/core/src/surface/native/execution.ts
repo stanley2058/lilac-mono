@@ -1,3 +1,4 @@
+import { projectAssistantTextHistory } from "../bridge/request-composition/normalization";
 import type { JobService } from "../../jobs/job-service";
 import type { ModelMessage } from "ai";
 import { isDeepStrictEqual } from "node:util";
@@ -171,6 +172,32 @@ export function createNativeExecution(options: {
       : store.selectCanonicalInput(threadId);
   }
 
+  function canonicalTurnMessages(
+    threadId: string,
+    source: NativeInputRecord,
+    latest: NativeInputRecord,
+    messages: readonly StoredMessageV1[],
+  ): ResultType<readonly StoredMessageV1[] | null, Error> {
+    return Result.gen(function* () {
+      const rows: (readonly StoredMessageV1[])[] = [messages];
+      let turn = latest;
+      let row = messages;
+      while (turn.position > source.position && opensNativeTurn(row[0], turn.requestId)) {
+        const previous = yield* store.selectCanonicalInput(threadId, { before: turn.position });
+        if (!previous || previous.position < source.position) return Result.ok(null);
+        const snapshot = yield* (
+          options.transcriptStore.getRequestTranscript?.({ requestId: previous.requestId }) ??
+            Result.ok(null)
+        );
+        if (!snapshot) return Result.ok(null);
+        turn = previous;
+        row = snapshot.messages;
+        rows.push(row);
+      }
+      return Result.ok(rows.toReversed().flatMap((row) => [...row]));
+    });
+  }
+
   /**
    * Trims a full-history row to start at `first`. Rows written before native turn slices, and
    * compaction checkpoints, hold the turn's whole canonical context.
@@ -203,11 +230,13 @@ export function createNativeExecution(options: {
         }
         const source = yield* canonicalSource(thread.id, turn);
         if (!source || source.position > turn.position) return Result.ok(empty);
+        const reconstructed = yield* canonicalTurnMessages(thread.id, source, turn, messages);
+        if (!reconstructed) return Result.ok(empty);
         if (selectedTurn.position <= source.position) {
-          selected = { messages, firstRequestId: source.requestId };
+          selected = { messages: reconstructed, firstRequestId: source.requestId };
           break;
         }
-        pending.push({ messages, firstRequestId: selectedTurn.requestId });
+        pending.push({ messages: reconstructed, firstRequestId: selectedTurn.requestId });
         const previous = yield* store.selectCanonicalInput(thread.id, {
           before: selectedTurn.position,
         });
@@ -222,7 +251,11 @@ export function createNativeExecution(options: {
             selected.messages,
           )
         ) {
-          if (thread.kind !== "dm") return Result.ok(empty);
+          const repairedPrefix = projectAssistantTextHistory(selected.messages);
+          const onlyAssistantTextRetained =
+            !isDeepStrictEqual(repairedPrefix, selected.messages) &&
+            isDeepStrictEqual(boundary.messages.slice(0, repairedPrefix.length), repairedPrefix);
+          if (thread.kind !== "dm" && !onlyAssistantTextRetained) return Result.ok(empty);
           return directHistorySuffix(thread.id, first.position, canonical);
         }
         selected = {

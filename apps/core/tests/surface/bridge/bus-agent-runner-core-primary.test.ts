@@ -482,9 +482,10 @@ describe("startBusAgentRunner prefix-lineage tool authority", () => {
 });
 
 describe("startBusAgentRunner Core-primary Claude production path", () => {
-  it("promotes an auto-injected first turn and forks the exact linked reply with suffix-only input", async () => {
+  it("promotes an auto-injected heartbeat turn and forks the exact linked reply with suffix-only input", async () => {
     const config = parseCoreConfigV2ToUniversal({});
     config.models.main = { model: "claude-code/sonnet" };
+    config.surface.heartbeat.enabled = true;
     config.agent.retry = {
       enabled: false,
       maxRetries: 0,
@@ -795,8 +796,8 @@ describe("startBusAgentRunner Core-primary Claude production path", () => {
     expect(persistedFirstManifest.currentCanonicalStart).toBe(
       firstInputManifest.currentCanonicalStart,
     );
-    expect(firstInputManifest.segments).toEqual(persistedFirstManifest.segments.slice(0, -1));
-    expect(persistedFirstManifest.segments.at(-1)?.atoms).toEqual([
+    expect(firstInputManifest.segments).toEqual(persistedFirstManifest.segments.slice(0, -2));
+    expect(persistedFirstManifest.segments.at(-2)?.atoms).toEqual([
       expect.objectContaining({
         kind: "synthetic",
         source: "conversation-thread-auto-inject",
@@ -805,6 +806,9 @@ describe("startBusAgentRunner Core-primary Claude production path", () => {
     expect(
       persistedFirstManifest.segments.at(-1)?.canonicalMessages.map((message) => message.role),
     ).toEqual(["user"]);
+    expect(persistedFirstManifest.segments.at(-1)?.atoms).toEqual([
+      expect.objectContaining({ kind: "synthetic", source: "heartbeat-context" }),
+    ]);
     const firstOutput = adapter.outputs[0];
     if (!firstOutput) throw new Error("first output stream was not created");
     expect(
@@ -888,10 +892,11 @@ describe("startBusAgentRunner Core-primary Claude production path", () => {
     expect(secondManifest.segments.map((segment) => segment.atoms[0]?.kind)).toEqual([
       "surface",
       "synthetic",
+      "synthetic",
       "request",
       "surface",
     ]);
-    expect(secondManifest.segments[2]?.requestSource?.aliases).toEqual([
+    expect(secondManifest.segments[3]?.requestSource?.aliases).toEqual([
       {
         requestClient: "discord",
         surfaceId: `discord:${sessionId}`,
@@ -900,7 +905,7 @@ describe("startBusAgentRunner Core-primary Claude production path", () => {
       },
     ]);
     expect(secondManifest.segments[1]?.canonicalMessages).toEqual(
-      persistedFirstManifest.segments.at(-1)?.canonicalMessages,
+      persistedFirstManifest.segments.at(-2)?.canonicalMessages,
     );
     const secondCurrentSegment = secondManifest.segments.at(-1);
     if (!secondCurrentSegment) throw new Error("second current segment is missing");

@@ -82,10 +82,11 @@ export function corePrimaryLineageHasCompactionCheckpoint(
 
 const AUTO_INJECTED_THREAD_SEARCH_LINEAGE_SOURCE = "conversation-thread-auto-inject";
 
-export function appendAutoInjectedThreadSearchLineage(input: {
+export function appendGeneratedContextLineage(input: {
   lineage: unknown;
   canonicalMessages: readonly ModelMessage[];
   injectedMessages: readonly ModelMessage[];
+  source?: "conversation-thread-auto-inject" | "heartbeat-context";
 }): CorePrimaryLineageV2 {
   const parsedShape = corePrimaryLineageV2Schema.safeParse(input.lineage);
   const fallbackCurrentCanonicalStart = parsedShape.success
@@ -123,7 +124,7 @@ export function appendAutoInjectedThreadSearchLineage(input: {
   const prepared = preparedInjected.value;
   const atom = {
     kind: "synthetic" as const,
-    source: AUTO_INJECTED_THREAD_SEARCH_LINEAGE_SOURCE,
+    source: input.source ?? AUTO_INJECTED_THREAD_SEARCH_LINEAGE_SOURCE,
     messageDigest: prepared.messageDigest,
   };
   const cumulativeAtomCount = previous.cumulativeAtomCount + 1;

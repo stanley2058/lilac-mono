@@ -2043,169 +2043,181 @@ describe("durable accepted runner recovery", () => {
     }
   });
 
-  it("reseeds recovery from the previous checkpoint when the latest blob is unavailable", async () => {
-    const bus = createLilacBus(createInMemoryRawBus());
-    let level1RequestContext:
-      | Parameters<CoreToolPluginManager["buildLevel1ToolsetResult"]>[0]["requestContext"]
-      | undefined;
-    const pluginManager = corePrimaryTestPluginManager((requestContext) => {
-      level1RequestContext = requestContext;
-    });
-    const modelCalled = deferred<void>();
-    let observedPrompt = "";
-    let observedTools: string[] = [];
-    let resets = 0;
-    let promotions = 0;
-    const journal = {
-      openRun: (owner: {
-        readonly requestDeliveryId: string;
-        readonly requestId: string;
-        readonly sessionId: string;
-      }) =>
-        Result.ok({
-          runId: owner.requestDeliveryId,
-          requestId: owner.requestId,
-          sessionId: owner.sessionId,
-          sequence: 1,
-        }),
-      writeCheckpoint: (handle: {
-        readonly runId: string;
-        readonly requestId: string;
-        readonly sessionId: string;
-        readonly sequence: number;
-      }) => Result.ok({ ...handle, sequence: handle.sequence + 1 }),
-      promotePreviousCheckpoint: (handle: {
-        readonly runId: string;
-        readonly requestId: string;
-        readonly sessionId: string;
-        readonly sequence: number;
-      }) => {
-        promotions += 1;
-        return Result.ok({ ...handle, sequence: handle.sequence + 1 });
-      },
-      markTerminal: (handle: {
-        readonly runId: string;
-        readonly requestId: string;
-        readonly sessionId: string;
-        readonly sequence: number;
-      }) => Result.ok({ ...handle, sequence: handle.sequence + 1 }),
-      loadRecoveryHeads: () => Result.ok({ heads: [], resets: [] }),
-      resetRun: () => {
-        resets += 1;
-        return Result.ok(undefined);
-      },
-      resetAll: () => Result.ok(undefined),
-      removeReconciled: () => Result.ok(undefined),
-    };
-    const runner = await startBusAgentRunner({
-      bus,
-      subscriptionId: "journal-previous-checkpoint",
-      startPaused: true,
-      reportFatalPanic: () => undefined,
-      config: parseCoreConfigV2ToUniversal({}),
-      pluginManager,
-      agentRunJournal: journal,
-      resolveDiscordSessionContext: () => ({ parentChannelId: null, guildId: null }),
-      issueControlCapability: () => ({
-        capability: "journal-previous-checkpoint",
-        principal: null,
-      }),
-      createAgent: (options) =>
-        new AiSdkPiAgent({
-          ...options,
-          model: new MockLanguageModelV4({
-            modelId: "journal-previous-checkpoint",
-            doStream: async (call) => {
-              observedPrompt = JSON.stringify(call.prompt);
-              observedTools = level1OfferedToolNames(call);
-              modelCalled.resolve(undefined);
-              return level1TextStep("recovered previous checkpoint");
-            },
+  it.each([false, true])(
+    "keeps repair consumed on unavailable checkpoint (%s)",
+    async (repaired) => {
+      const bus = createLilacBus(createInMemoryRawBus());
+      let level1RequestContext:
+        | Parameters<CoreToolPluginManager["buildLevel1ToolsetResult"]>[0]["requestContext"]
+        | undefined;
+      const pluginManager = corePrimaryTestPluginManager((requestContext) => {
+        level1RequestContext = requestContext;
+      });
+      const modelCalled = deferred<void>();
+      let observedPrompt = "";
+      let observedTools: string[] = [];
+      let resets = 0;
+      let promotions = 0;
+      const journal = {
+        openRun: (owner: {
+          readonly requestDeliveryId: string;
+          readonly requestId: string;
+          readonly sessionId: string;
+        }) =>
+          Result.ok({
+            runId: owner.requestDeliveryId,
+            requestId: owner.requestId,
+            sessionId: owner.sessionId,
+            sequence: 1,
           }),
+        writeCheckpoint: (handle: {
+          readonly runId: string;
+          readonly requestId: string;
+          readonly sessionId: string;
+          readonly sequence: number;
+        }) => Result.ok({ ...handle, sequence: handle.sequence + 1 }),
+        promotePreviousCheckpoint: (handle: {
+          readonly runId: string;
+          readonly requestId: string;
+          readonly sessionId: string;
+          readonly sequence: number;
+        }) => {
+          promotions += 1;
+          return Result.ok({ ...handle, sequence: handle.sequence + 1 });
+        },
+        markTerminal: (handle: {
+          readonly runId: string;
+          readonly requestId: string;
+          readonly sessionId: string;
+          readonly sequence: number;
+        }) => Result.ok({ ...handle, sequence: handle.sequence + 1 }),
+        loadRecoveryHeads: () => Result.ok({ heads: [], resets: [] }),
+        resetRun: () => {
+          resets += 1;
+          return Result.ok(undefined);
+        },
+        resetAll: () => Result.ok(undefined),
+        removeReconciled: () => Result.ok(undefined),
+      };
+      const runner = await startBusAgentRunner({
+        bus,
+        subscriptionId: "journal-previous-checkpoint",
+        startPaused: true,
+        reportFatalPanic: () => undefined,
+        config: parseCoreConfigV2ToUniversal({}),
+        pluginManager,
+        agentRunJournal: journal,
+        resolveDiscordSessionContext: () => ({ parentChannelId: null, guildId: null }),
+        issueControlCapability: () => ({
+          capability: "journal-previous-checkpoint",
+          principal: null,
         }),
-    });
-    const sessionId = "journal-previous-checkpoint";
-    const originalMessageId = "accepted-message";
-    const accepted = acceptedRunnerDelivery({
-      requestDeliveryId: crypto.randomUUID(),
-      requestId: `discord:${sessionId}:${originalMessageId}`,
-      sessionId,
-      requestClient: "discord",
-      queue: "prompt",
-      messages: [{ role: "user", content: "accepted floor" }],
-      raw: {
-        authenticatedOrigin: {
-          platform: "discord",
-          userId: "accepted-user",
-          messageRef: {
+        createAgent: (options) =>
+          new AiSdkPiAgent({
+            ...options,
+            model: new MockLanguageModelV4({
+              modelId: "journal-previous-checkpoint",
+              doStream: async (call) => {
+                observedPrompt = JSON.stringify(call.prompt);
+                observedTools = level1OfferedToolNames(call);
+                modelCalled.resolve(undefined);
+                return level1TextStep("recovered previous checkpoint");
+              },
+            }),
+          }),
+      });
+      const sessionId = "journal-previous-checkpoint";
+      const originalMessageId = "accepted-message";
+      const accepted = acceptedRunnerDelivery({
+        requestDeliveryId: crypto.randomUUID(),
+        requestId: `discord:${sessionId}:${originalMessageId}`,
+        sessionId,
+        requestClient: "discord",
+        queue: "prompt",
+        messages: [{ role: "user", content: "accepted floor" }],
+        raw: {
+          authenticatedOrigin: {
             platform: "discord",
-            channelId: sessionId,
-            messageId: originalMessageId,
+            userId: "accepted-user",
+            messageRef: {
+              platform: "discord",
+              channelId: sessionId,
+              messageId: originalMessageId,
+            },
           },
         },
-      },
-    });
-    const head: AgentRunRecoveryHead = {
-      handle: {
-        runId: accepted.requestDeliveryId,
-        requestId: accepted.requestId,
-        sessionId: accepted.work.sessionId,
-        sequence: 3,
-      },
-      state: "active",
-      checkpoint: {
-        version: 1,
-        messages: [
-          {
-            role: "assistant",
-            content: [
-              {
-                type: "blob",
-                blob: {
-                  version: 1,
-                  objectId: `b1_${"11".repeat(16)}`,
-                  sha256: "22".repeat(32),
-                  byteLength: 1,
-                },
-                mediaType: "image/png",
-                filename: "missing.png",
-              },
-            ],
-          },
-        ],
-        loadedCatalogIds: [],
-        retainedRequestDeliveries: [],
-      },
-      previousCheckpoint: {
-        version: 1,
-        messages: [{ role: "user", content: "previous safe checkpoint" }],
-        loadedCatalogIds: ["catalog-id"],
-        currentTurnUserId: "checkpoint-user",
-        retainedRequestDeliveries: [],
-      },
-      createdAt: 1,
-      updatedAt: 3,
-    };
-    try {
-      transcriptResultValue(await runner.resumeAcceptedDelivery(accepted, head));
-      runner.activate();
-      await modelCalled.promise;
-      expect(promotions).toBe(1);
-      expect(resets).toBe(0);
-      expect(observedPrompt).toContain("previous safe checkpoint");
-      expect(observedPrompt).not.toContain("accepted floor");
-      expect(observedPrompt).not.toContain("missing.png");
-      expect(observedTools).toEqual(["builtin", "find_tools", "deferred_tool"]);
-      expect(level1RequestContext).toMatchObject({
-        currentTurnUserId: "checkpoint-user",
       });
-      expect(level1RequestContext?.currentTurnMessageRef).toBeUndefined();
-    } finally {
-      await runner.stop();
-      await pluginManager.destroy();
-      await bus.close();
-    }
-  });
+      const head: AgentRunRecoveryHead = {
+        handle: {
+          runId: accepted.requestDeliveryId,
+          requestId: accepted.requestId,
+          sessionId: accepted.work.sessionId,
+          sequence: 3,
+        },
+        state: "active",
+        checkpoint: {
+          version: 1,
+          anthropicThinkingRepaired: repaired,
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "blob",
+                  blob: {
+                    version: 1,
+                    objectId: `b1_${"11".repeat(16)}`,
+                    sha256: "22".repeat(32),
+                    byteLength: 1,
+                  },
+                  mediaType: "image/png",
+                  filename: "missing.png",
+                },
+              ],
+            },
+          ],
+          loadedCatalogIds: [],
+          retainedRequestDeliveries: [],
+        },
+        previousCheckpoint: {
+          version: 1,
+          messages: [{ role: "user", content: "previous safe checkpoint" }],
+          loadedCatalogIds: ["catalog-id"],
+          currentTurnUserId: "checkpoint-user",
+          retainedRequestDeliveries: [],
+        },
+        createdAt: 1,
+        updatedAt: 3,
+      };
+      const lifecycle = await observeRequestLifecycle(bus, accepted.requestId);
+      try {
+        transcriptResultValue(await runner.resumeAcceptedDelivery(accepted, head));
+        runner.activate();
+        if (repaired) {
+          expect(await lifecycle.terminal).toBe("failed");
+          expect(observedPrompt).toBe("");
+          expect(promotions).toBe(0);
+          return;
+        }
+        await modelCalled.promise;
+        expect(promotions).toBe(1);
+        expect(resets).toBe(0);
+        expect(observedPrompt).toContain("previous safe checkpoint");
+        expect(observedPrompt).not.toContain("accepted floor");
+        expect(observedPrompt).not.toContain("missing.png");
+        expect(observedTools).toEqual(["builtin", "find_tools", "deferred_tool"]);
+        expect(level1RequestContext).toMatchObject({
+          currentTurnUserId: "checkpoint-user",
+        });
+        expect(level1RequestContext?.currentTurnMessageRef).toBeUndefined();
+      } finally {
+        await lifecycle.stop();
+        await runner.stop();
+        await pluginManager.destroy();
+        await bus.close();
+      }
+    },
+  );
 
   it("restores the accepted message relation when no recovery checkpoint can be loaded", async () => {
     const bus = createLilacBus(createInMemoryRawBus());

@@ -5,7 +5,8 @@ export type GeneratedMessageKind =
   | "subagent_completion"
   | "conversation_recall"
   | "custom_command_result"
-  | "job_event";
+  | "job_event"
+  | "heartbeat_context";
 
 export function escapeGeneratedMessageTags(text: string): string {
   return text.replace(/<\/?LILAC_GENERATED:v\d+>/gu, (tag) => `&lt;${tag.slice(1)}`);
@@ -52,7 +53,8 @@ export function generatedMessageMetadata(message: Pick<ModelMessage, "role" | "p
     marker.kind !== "subagent_completion" &&
     marker.kind !== "conversation_recall" &&
     marker.kind !== "custom_command_result" &&
-    marker.kind !== "job_event"
+    marker.kind !== "job_event" &&
+    marker.kind !== "heartbeat_context"
   )
     return null;
   return marker;

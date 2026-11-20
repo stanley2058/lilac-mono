@@ -68,6 +68,7 @@ export type Enqueued = {
     checkpointMessages: ModelMessage[];
     partialText: string;
     nativeOutputFrontier?: NativeOutputFrontier;
+    anthropicThinkingRepaired?: boolean;
   };
   storedRecoveryCheckpoint?: StoredMessageV1[];
   recoveryMcpImages?: McpImageCheckpointReference[];
@@ -248,6 +249,7 @@ export type SessionQueue = {
     origin?: RequestOrigin;
     messages: ModelMessage[];
     storedMessages: StoredMessageV1[];
+    anthropicThinkingRepaired?: boolean;
     corePrimaryLineage?: CorePrimaryLineageV2;
     toolAuthority: LineageToolAuthority;
     questionContinuation: QuestionContinuation;
@@ -295,12 +297,14 @@ export type SessionQueue = {
         readonly identityProjection: StoredMessageIdentityProjectionV1;
         readonly nativeOutputBarrier?: Promise<NativeOutputPublication>;
         readonly nativeOutputFrontier?: NativeOutputFrontier;
+        readonly anthropicThinkingRepaired?: boolean;
       } | null;
       operation: Promise<void> | null;
       closed: boolean;
       abandoned: boolean;
       retryInputIds: Set<AgentInputQueueId>;
       inFlightInputIds: ReadonlySet<AgentInputQueueId> | null;
+      lastCommittedAnthropicThinkingRepaired: boolean;
       lastCommittedProviderMessages: readonly ModelMessage[];
       lastCommittedStoredMessages: readonly StoredMessageV1[];
       retainedPredecessorStoredMessages: readonly StoredMessageV1[];

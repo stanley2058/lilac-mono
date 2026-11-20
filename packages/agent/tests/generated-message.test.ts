@@ -31,3 +31,13 @@ test("generated messages preserve media and use metadata rather than text for id
   ]);
   expect(isGeneratedMessage({ ...message, providerOptions: undefined })).toBe(false);
 });
+
+test("heartbeat context is recognized as generated runtime input", () => {
+  const message = buildGeneratedMessage({
+    kind: "heartbeat_context",
+    id: "request:heartbeat",
+    content: "source request",
+  });
+  expect(isGeneratedMessage(message)).toBe(true);
+  expect(generatedMessageMetadata(message)?.kind).toBe("heartbeat_context");
+});

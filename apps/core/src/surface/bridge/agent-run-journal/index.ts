@@ -56,6 +56,7 @@ export const agentRunCheckpointV1Schema = z
     loadedCatalogIds: z.array(z.string().min(1)).optional(),
     questionResultIds: z.array(z.string().min(1)).optional(),
     currentTurnUserId: z.string().optional(),
+    anthropicThinkingRepaired: z.boolean().optional(),
     retainedRequestDeliveries: z.array(retainedDeliverySchema),
   })
   .refine(validMcpImageCheckpointReferences, {
@@ -75,6 +76,7 @@ const agentRunCheckpointDeltaSchema = z.strictObject({
   loadedCatalogIds: z.array(z.string().min(1)).optional(),
   questionResultIds: z.array(z.string().min(1)).optional(),
   currentTurnUserId: z.string().optional(),
+  anthropicThinkingRepaired: z.boolean().optional(),
   retainedRequestDeliveries: z.array(retainedDeliverySchema),
 });
 
@@ -1197,6 +1199,7 @@ export function createAgentRunCheckpoint(input: {
   readonly loadedCatalogIds?: readonly string[];
   readonly questionResultIds?: readonly string[];
   readonly currentTurnUserId?: string;
+  readonly anthropicThinkingRepaired?: boolean;
   readonly retainedRequestDeliveries?: readonly {
     readonly requestDeliveryId: string;
     readonly outcome: RequestDeliveryTerminalOutcome;
@@ -1210,6 +1213,7 @@ export function createAgentRunCheckpoint(input: {
     ...(input.nativeOutput ? { nativeOutput: input.nativeOutput } : {}),
     ...(input.loadedCatalogIds ? { loadedCatalogIds: [...input.loadedCatalogIds] } : {}),
     ...(input.questionResultIds ? { questionResultIds: [...input.questionResultIds] } : {}),
+    ...(input.anthropicThinkingRepaired ? { anthropicThinkingRepaired: true } : {}),
     ...(input.currentTurnUserId ? { currentTurnUserId: input.currentTurnUserId } : {}),
     retainedRequestDeliveries: [...(input.retainedRequestDeliveries ?? [])],
   };

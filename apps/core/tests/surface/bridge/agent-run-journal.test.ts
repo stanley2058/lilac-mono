@@ -432,6 +432,7 @@ describe("SqliteAgentRunJournal", () => {
       const checkpoint = createAgentRunCheckpoint({
         messages: [...history],
         loadedCatalogIds: [`catalog-${step}`],
+        anthropicThinkingRepaired: step >= 1,
       });
       checkpoints.push(checkpoint);
       handle = unwrap(journal.writeCheckpoint(handle, checkpoint));
@@ -452,11 +453,13 @@ describe("SqliteAgentRunJournal", () => {
     const reopened = new SqliteAgentRunJournal({ dbPath });
     const recovery = unwrap(reopened.loadRecoveryHeads());
     expect(recovery.resets).toEqual([]);
+    expect(recovery.heads[0]?.checkpoint?.anthropicThinkingRepaired).toBe(true);
     expect(recovery.heads[0]?.checkpoint).toEqual(checkpoints[3]!);
     expect(recovery.heads[0]?.previousCheckpoint).toEqual(checkpoints[2]!);
 
     const rewritten = createAgentRunCheckpoint({
       messages: [{ role: "user", content: "compacted" }],
+      anthropicThinkingRepaired: true,
     });
     handle = unwrap(reopened.writeCheckpoint(handle, rewritten));
     const after = unwrap(reopened.loadRecoveryHeads());

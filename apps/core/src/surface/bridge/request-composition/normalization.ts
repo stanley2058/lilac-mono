@@ -1,3 +1,5 @@
+import { withBlankLineBetweenTextParts } from "../bus-agent-runner/agent-event-projector";
+import type { ModelMessage } from "ai";
 import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
 
 import type { TranscriptSnapshot } from "../../../transcript/transcript-store";
@@ -16,6 +18,36 @@ function stripLeadingDiscordAttributionHeader(text: string): string {
 
 export function normalizeAssistantContextText(text: string): string {
   return stripSurfaceMetadataLines(stripLeadingDiscordAttributionHeader(text)).trimEnd();
+}
+
+export function projectAssistantTextHistory(messages: readonly ModelMessage[]): ModelMessage[];
+export function projectAssistantTextHistory(
+  messages: readonly StoredMessageV1[],
+): StoredMessageV1[];
+export function projectAssistantTextHistory(
+  messages: readonly (ModelMessage | StoredMessageV1)[],
+): (ModelMessage | StoredMessageV1)[] {
+  return messages.flatMap((message): (ModelMessage | StoredMessageV1)[] => {
+    if (message.role === "tool") return [];
+    if (message.role !== "assistant") return [message];
+    const text =
+      typeof message.content === "string"
+        ? message.content
+        : message.content
+            .filter((part) => part.type === "text")
+            .reduce(
+              (accumulatedText, part) =>
+                accumulatedText +
+                withBlankLineBetweenTextParts({
+                  accumulatedText,
+                  delta: part.text,
+                  partChanged: true,
+                }),
+              "",
+            );
+    const content = normalizeAssistantContextText(text);
+    return content.length > 0 ? [{ role: "assistant", content }] : [];
+  });
 }
 
 function extractAssistantTextFromContent(content: StoredMessageV1["content"]): string | null {

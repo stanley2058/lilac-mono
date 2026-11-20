@@ -1,3 +1,5 @@
+import { projectAssistantTextHistory } from "./request-composition/normalization";
+import { recoverAnthropicThinking } from "../../agent/anthropic-thinking-recovery";
 import { findCatalogModel } from "@stanley2058/lilac-utils";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import { planJobEventBoundary } from "../../jobs/job-events";
@@ -231,7 +233,7 @@ import {
   systemPromptToText,
 } from "./bus-agent-runner/stats";
 import {
-  buildHeartbeatOverlayForRequest,
+  buildHeartbeatContextMessage,
   resolveSessionAdditionalPrompts,
 } from "./bus-agent-runner/prompt-overlays";
 import { maybeBuildSkillsSectionForPrimary } from "./bus-agent-runner/skills-context";
@@ -283,7 +285,7 @@ import {
 } from "./bus-agent-runner/tool-output-policy";
 import { maybeBuildAutoInjectedThreadSearchMessages } from "./bus-agent-runner/auto-inject-thread-search";
 import {
-  appendAutoInjectedThreadSearchLineage,
+  appendGeneratedContextLineage,
   corePrimaryLineageHasCompactionCheckpoint,
   degradeCorePrimaryLineageForMutation,
   mapCorePrimaryCompactionCurrentCanonicalStart,
@@ -316,7 +318,7 @@ export {
   unconsumedControlDisposition,
 } from "./bus-agent-runner/session-queue";
 export {
-  appendAutoInjectedThreadSearchLineage,
+  appendGeneratedContextLineage,
   corePrimaryLineageHasCompactionCheckpoint,
   degradeCorePrimaryLineageForMutation,
   mapCorePrimaryCompactionCurrentCanonicalStart,
@@ -3210,6 +3212,11 @@ export async function startBusAgentRunner(params: {
       state.running = false;
       state.activeRequestId = null;
     };
+    const failDequeuedEntry = async (cause: Error): Promise<void> => {
+      releaseDequeuedSession();
+      await failUnmaterializableEntry(next, cause);
+      startSessionQueueDrain(sessionId, state);
+    };
     if (next.requestClient === "native") {
       const validated = validateNativeRequest({
         requestId: next.requestId,
@@ -3233,20 +3240,6 @@ export async function startBusAgentRunner(params: {
     const mcpImages = new McpImageCheckpointRegistry();
     let recoveredQueuedControlStoredMessages: StoredMessageV1[] = [];
 
-    if (next.messages.length === 0 && next.storedMessages.length > 0) {
-      const materialized = await materializeStoredMessagesV1({
-        messages: next.storedMessages,
-        blobStore: params.blobStore,
-        identityProjection: storedMessageIdentity,
-      });
-      if (materialized.isErr()) {
-        releaseDequeuedSession();
-        await failUnmaterializableEntry(next, materialized.error);
-        startSessionQueueDrain(sessionId, state);
-        return;
-      }
-      next.messages = materialized.value;
-    }
     if (next.recovery && next.storedRecoveryCheckpoint) {
       const materialized = await materializeMcpImageCheckpoint({
         imageRegistry: mcpImages,
@@ -3256,6 +3249,7 @@ export async function startBusAgentRunner(params: {
         identityProjection: storedMessageIdentity,
       });
       if (materialized.isErr()) {
+        if (next.recovery.anthropicThinkingRepaired) return failDequeuedEntry(materialized.error);
         const previous = await materializePreviousRunCheckpoint({
           imageRegistry: mcpImages,
           entry: next,
@@ -3275,6 +3269,19 @@ export async function startBusAgentRunner(params: {
       } else {
         next.recovery.checkpointMessages = materialized.value;
       }
+    }
+    if (next.recovery?.anthropicThinkingRepaired) {
+      next.storedMessages = projectAssistantTextHistory(next.storedMessages);
+      next.messages = projectAssistantTextHistory(next.messages);
+    }
+    if (next.messages.length === 0 && next.storedMessages.length > 0) {
+      const materialized = await materializeStoredMessagesV1({
+        messages: next.storedMessages,
+        blobStore: params.blobStore,
+        identityProjection: storedMessageIdentity,
+      });
+      if (materialized.isErr()) return failDequeuedEntry(materialized.error);
+      next.messages = materialized.value;
     }
     if (draining) {
       // beginDrain's abort pass cannot reach a run that has no activeRun yet; keep the work
@@ -3782,6 +3789,7 @@ export async function startBusAgentRunner(params: {
       questionContinuation,
       modelOverride: next.modelOverride,
       currentTurnUserId: next.currentTurnUserId,
+      anthropicThinkingRepaired: next.recovery?.anthropicThinkingRepaired,
       currentTurnMessageRef: next.currentTurnMessageRef,
       raw: next.raw,
       resolvedModelSpec: null,
@@ -3836,6 +3844,7 @@ export async function startBusAgentRunner(params: {
         abandoned: false,
         retryInputIds: new Set(),
         inFlightInputIds: null,
+        lastCommittedAnthropicThinkingRepaired: next.recovery?.anthropicThinkingRepaired === true,
         lastCommittedProviderMessages: next.recovery?.checkpointMessages ?? [],
         lastCommittedStoredMessages: next.storedRecoveryCheckpoint ?? [],
         retainedPredecessorStoredMessages: next.previousRecoveryCheckpoint?.messages ?? [],
@@ -3850,6 +3859,8 @@ export async function startBusAgentRunner(params: {
     > | null = null;
     let initialMessagesEndWithGeneratedContext = false;
     let responseStartIndex = 0;
+    let repairedCheckpointPending = false;
+    let recoveredAnthropicThinking = next.recovery?.anthropicThinkingRepaired === true;
     let transcriptHasCompactionCheckpoint = corePrimaryLineageHasCompactionCheckpoint(
       next.corePrimaryLineage,
     );
@@ -4465,7 +4476,7 @@ export async function startBusAgentRunner(params: {
             }),
           );
 
-          const heartbeatOverlay = buildHeartbeatOverlayForRequest({
+          const heartbeatContext = buildHeartbeatContextMessage({
             cfg,
             requestId: next.requestId,
             sessionId: next.sessionId,
@@ -4488,7 +4499,6 @@ export async function startBusAgentRunner(params: {
               messages: next.messages,
               safetyMode,
               sessionId: next.sessionId,
-              heartbeatOverlay,
               ...(subagentConversation ? { subagentConversation } : {}),
             });
 
@@ -4902,6 +4912,43 @@ export async function startBusAgentRunner(params: {
             modelSpec: activeBinding.resolved.spec,
             ...(hasNativeModelFallback ? { advanceModel } : {}),
           });
+          const retryWithRepairedThinking = (
+            projectedError: ReturnType<typeof projectBusAgentRunnerError>,
+            errorContext: Parameters<
+              NonNullable<Parameters<typeof attachAutoCompaction>[1]["baseTurnErrorHandler"]>
+            >[1],
+          ): boolean => {
+            if (
+              !agent ||
+              recoveredAnthropicThinking ||
+              !errorContext.retrySafety.canRetry ||
+              errorContext.phase !== "model-call" ||
+              errorContext.abortSignal?.aborted
+            )
+              return false;
+            const repaired = recoverAnthropicThinking({
+              provider: activeBinding.resolved.provider,
+              error: projectedError.details,
+              messages: agent.state.messages,
+            });
+            if (!repaired) return false;
+            const repairedResponseStartIndex = projectAssistantTextHistory(
+              agent.state.messages.slice(0, responseStartIndex),
+            ).length;
+            const replacement = agent.replaceMessages(repaired, {
+              preserveRecoveryCheckpoint: true,
+            });
+            if (replacement.isErr()) return false;
+            responseStartIndex = repairedResponseStartIndex;
+            recoveredAnthropicThinking = true;
+            if (state.activeRun) state.activeRun.anthropicThinkingRepaired = true;
+            repairedCheckpointPending = true;
+            logger.warn("Anthropic thinking prefix mismatch; retrying without retained thinking", {
+              requestId: headers.request_id,
+              sessionId: headers.session_id,
+            });
+            return true;
+          };
           const turnErrorHandler = async <ErrorCause>(
             error: ErrorCause,
             errorContext: Parameters<
@@ -4909,6 +4956,7 @@ export async function startBusAgentRunner(params: {
             >[1],
           ) => {
             const projectedError = projectBusAgentRunnerError(error, "Model turn failed");
+            if (retryWithRepairedThinking(projectedError, errorContext)) return "retry" as const;
             const transientDecision = await transientRetryController.handler(error, errorContext);
             if (transientDecision === "retry") return "retry" as const;
             if (
@@ -5000,10 +5048,21 @@ export async function startBusAgentRunner(params: {
               providerOptions: activeBinding.providerOptionsForAgent,
               reasoning: activeBinding.resolved.reasoning,
               turnErrorHandler,
-              recoveryCheckpointHandler: (messages, canonicalInputIds) => {
+              recoveryCheckpointHandler: async (messages, canonicalInputIds) => {
                 const activeRun = state.activeRun;
                 if (!activeRun || activeRun.requestId !== next.requestId) return;
                 enqueueRunCheckpoint(activeRun, messages, canonicalInputIds, storedMessageIdentity);
+                if (!repairedCheckpointPending) return;
+                await flushRunCheckpointWriter(activeRun, false);
+                if (
+                  params.agentRunJournal &&
+                  activeRun.requestDeliveryId &&
+                  !activeRun.checkpointWriter.lastCommittedAnthropicThinkingRepaired
+                )
+                  return signalBusAgentRunnerHostFailure(
+                    new Error("Could not persist Anthropic thinking repair before retry"),
+                  );
+                repairedCheckpointPending = false;
               },
               normalizeToolResultOutput,
               genericOutputNormalizerBypassTools:
@@ -6284,6 +6343,7 @@ export async function startBusAgentRunner(params: {
           } else if (parsedCustomCommand) {
             initialMessages = [...next.messages];
             agent.appendMessages(initialMessages);
+            if (heartbeatContext) agent.appendMessages([heartbeatContext]);
             responseStartIndex = agent.state.messages.length;
             const commandModel = activeBinding.resolved.model;
             const commandProvider =
@@ -6428,7 +6488,7 @@ export async function startBusAgentRunner(params: {
               runProfile === "primary" &&
               next.requestClient === "discord"
             ) {
-              next.corePrimaryLineage = appendAutoInjectedThreadSearchLineage({
+              next.corePrimaryLineage = appendGeneratedContextLineage({
                 lineage: next.corePrimaryLineage,
                 canonicalMessages: mergedInitial,
                 injectedMessages: autoInjectedThreadSearchMessages,
@@ -6450,6 +6510,43 @@ export async function startBusAgentRunner(params: {
             await publishTerminalResponseText({ finalText });
             return;
           }
+
+          const heartbeatAgent = agent;
+          const recordHeartbeatLineage = (message: ModelMessage) => {
+            if (runProfile !== "primary" || next.requestClient !== "discord") return;
+            next.corePrimaryLineage = appendGeneratedContextLineage({
+              lineage: next.corePrimaryLineage,
+              canonicalMessages: [...heartbeatAgent.state.messages, ...initialMessages],
+              injectedMessages: [message],
+              source: "heartbeat-context",
+            });
+            if (state.activeRun) state.activeRun.corePrimaryLineage = next.corePrimaryLineage;
+          };
+          const refreshHeartbeatContext = () => {
+            if (!heartbeatContext || !isHeartbeatSessionId(headers.session_id)) return;
+            const refreshed = heartbeatAgent.state.messages.map((message) =>
+              generatedMessageMetadata(message)?.id === `${headers.request_id}:heartbeat-context`
+                ? heartbeatContext
+                : message,
+            );
+            const replaced = heartbeatAgent.replaceMessages(refreshed, {
+              preserveRecoveryCheckpoint: true,
+            });
+            if (replaced.isErr()) return signalBusAgentRunnerHostFailure(replaced.error);
+          };
+          const appendHeartbeatContextForRun = () => {
+            if (!heartbeatContext || parsedCustomCommand) return;
+            const alreadyPresent = heartbeatAgent.state.messages.some(
+              (message) =>
+                generatedMessageMetadata(message)?.id === `${headers.request_id}:heartbeat-context`,
+            );
+            if (alreadyPresent) return refreshHeartbeatContext();
+            recordHeartbeatLineage(heartbeatContext);
+            initialMessages = [...initialMessages, heartbeatContext];
+            initialMessagesEndWithGeneratedContext = true;
+            responseStartIndex += 1;
+          };
+          appendHeartbeatContextForRun();
 
           // Events waiting since the last run reach the model with this run's first turn.
           const startingJobEvents = (await drainJobEvents([])).append;
@@ -6639,6 +6736,7 @@ export async function startBusAgentRunner(params: {
                     responseStartIndex,
                     isPrimary: runProfile === "primary",
                     didCompact: isCompactionCheckpoint,
+                    didRepairHistory: recoveredAnthropicThinking,
                     ...(next.requestClient === "native"
                       ? {
                           native: {
@@ -7133,6 +7231,13 @@ export async function startBusAgentRunner(params: {
                   return buildPersistedHeartbeatMessages(`Error: ${msg}`);
                 }
 
+                if (recoveredAnthropicThinking && next.requestClient === "native")
+                  return safeFinalMessages.length > 0
+                    ? safeFinalMessages
+                    : buildSafeRecoveryCheckpoint(
+                        next.recovery?.checkpointMessages ?? next.messages,
+                        "agent run failed",
+                      );
                 if (next.requestClient === "native") {
                   const messages = safeFinalMessages.length > 0 ? safeFinalMessages : next.messages;
                   return runProfile === "primary" && completedCompactionCount === 0
@@ -8032,6 +8137,7 @@ export async function startBusAgentRunner(params: {
               checkpointMessages: [],
               partialText: "",
               nativeOutputFrontier: recoveryHead.checkpoint.nativeOutput,
+              anthropicThinkingRepaired: recoveryHead.checkpoint.anthropicThinkingRepaired,
             },
             storedRecoveryCheckpoint: [...recoveryHead.checkpoint.messages],
             recoveryMcpImages: recoveryHead.checkpoint.mcpImages,
@@ -8174,10 +8280,12 @@ export function selectPersistedTranscriptMessages(input: {
   responseStartIndex: number;
   isPrimary: boolean;
   didCompact: boolean;
+  didRepairHistory?: boolean;
   /** Native history is rebuilt from per-turn rows, so a native row keeps its own input too. */
   native?: { requestId: string; requestMessages: readonly ModelMessage[] };
 }): ModelMessage[] {
-  if (!input.isPrimary || input.didCompact) return [...input.finalMessages];
+  if (!input.isPrimary || input.didCompact || (input.native && input.didRepairHistory))
+    return [...input.finalMessages];
   if (input.native)
     return selectNativeRunMessages(
       input.finalMessages,

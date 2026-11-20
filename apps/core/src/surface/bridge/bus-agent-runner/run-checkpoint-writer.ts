@@ -125,6 +125,7 @@ export function createRunCheckpointWriter(context: {
     canonicalInputIds: readonly AgentInputQueueId[],
     identityProjection: StoredMessageIdentityProjectionV1,
     nativeOutputFrontier?: NativeOutputFrontier,
+    anthropicThinkingRepaired?: boolean,
   ): Promise<"written" | "kept-previous"> => {
     const journal = activeAgentRunJournal;
     const requestDeliveryId = run.requestDeliveryId;
@@ -161,6 +162,7 @@ export function createRunCheckpointWriter(context: {
       shouldAbandon: () => run.checkpointWriter.abandoned,
       ...(run.corePrimaryLineage ? { corePrimaryLineage: run.corePrimaryLineage } : {}),
       loadedCatalogIds: run.toolAuthority.snapshot(),
+      anthropicThinkingRepaired,
       questionResultIds: run.questionContinuation.checkpoint(messages),
       ...(run.currentTurnUserId ? { currentTurnUserId: run.currentTurnUserId } : {}),
       retainedRequestDeliveries: [...run.retainedRequestDeliveries]
@@ -227,6 +229,8 @@ export function createRunCheckpointWriter(context: {
     if (decision.advanced) {
       run.checkpointWriter.retainedPredecessorStoredMessages = priorCommittedCheckpointMessages;
     }
+    run.checkpointWriter.lastCommittedAnthropicThinkingRepaired =
+      anthropicThinkingRepaired === true;
     run.checkpointWriter.lastCommittedProviderMessages = messages;
     run.checkpointWriter.lastCommittedStoredMessages = decision.messages;
     for (const inputId of canonicalInputIds) {
@@ -274,6 +278,7 @@ export function createRunCheckpointWriter(context: {
       identityProjection,
       nativeOutputBarrier,
       nativeOutputFrontier: nativeCheckpoint?.frontier,
+      anthropicThinkingRepaired: run.anthropicThinkingRepaired,
     };
     startRunCheckpointWriter(run);
   };
@@ -357,6 +362,7 @@ export function createRunCheckpointWriter(context: {
         [...canonicalInputIds],
         pending.identityProjection,
         pending.nativeOutputFrontier,
+        pending.anthropicThinkingRepaired,
       );
       run.checkpointWriter.inFlightInputIds = null;
       if (outcome === "kept-previous") {
@@ -369,8 +375,9 @@ export function createRunCheckpointWriter(context: {
 
   const flushRunCheckpointWriter = async (
     run: NonNullable<SessionQueue["activeRun"]>,
+    close = true,
   ): Promise<void> => {
-    run.checkpointWriter.closed = true;
+    if (close) run.checkpointWriter.closed = true;
     while (run.checkpointWriter.operation) {
       await run.checkpointWriter.operation;
     }
@@ -503,6 +510,7 @@ export function createRunCheckpointWriter(context: {
     });
     input.recovery.checkpointMessages = input.messages;
     input.recovery.nativeOutputFrontier = input.checkpoint.nativeOutput;
+    input.recovery.anthropicThinkingRepaired = input.checkpoint.anthropicThinkingRepaired;
     input.entry.questionResultIds = input.checkpoint.questionResultIds;
     input.entry.storedRecoveryCheckpoint = [...input.checkpoint.messages];
     input.entry.recoveryMcpImages = input.checkpoint.mcpImages;

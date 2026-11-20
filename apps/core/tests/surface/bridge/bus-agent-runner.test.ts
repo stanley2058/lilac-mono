@@ -1,3 +1,10 @@
+import {
+  AgentRunJournalSqliteFailure,
+  type AgentRunCheckpointV1,
+} from "../../../src/surface/bridge/agent-run-journal";
+import { projectAssistantTextHistory } from "../../../src/surface/bridge/request-composition/normalization";
+import { buildGeneratedMessage } from "@stanley2058/lilac-agent";
+import { projectStoredMessagesV1 } from "../../../src/transcript/stored-message-materialization";
 import { createCorePrimaryLineageFreshOnlyV2 } from "@stanley2058/lilac-event-bus";
 import type { QuestionService } from "../../../src/question/question-service";
 import type { QuestionCall } from "../../../src/question/question-domain";
@@ -21,7 +28,7 @@ import {
   type Message,
 } from "@stanley2058/lilac-event-bus";
 import { createLogger, parseCoreConfigV2ToUniversal } from "@stanley2058/lilac-utils";
-import { jsonSchema, tool, type ModelMessage, type ToolSet } from "ai";
+import { APICallError, jsonSchema, tool, type ModelMessage, type ToolSet } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { Panic, Result, TaggedError } from "better-result";
 import { createMemoryBlobStore, type BlobStore } from "@stanley2058/lilac-blob-storage";
@@ -1341,6 +1348,19 @@ describe("selectPersistedTranscriptMessages", () => {
     { role: "tool", content: [] },
     { role: "assistant", content: "final response" },
   ] satisfies ModelMessage[];
+
+  it("persists repaired history as a full snapshot", () => {
+    expect(
+      selectPersistedTranscriptMessages({
+        finalMessages,
+        responseStartIndex: 3,
+        isPrimary: true,
+        didCompact: false,
+        didRepairHistory: true,
+        native: { requestId: "native:repair", requestMessages: [finalMessages[0]!] },
+      }),
+    ).toEqual(finalMessages);
+  });
 
   it("persists response-only messages for ordinary primary runs", () => {
     expect(
@@ -5365,4 +5385,414 @@ describe("deferred questions in the production runner", () => {
       }
     },
   );
+});
+
+it.each([
+  [false, false, "ordinary"],
+  [true, false, "ordinary"],
+  [false, true, "ordinary"],
+  [true, true, "ordinary"],
+  [false, true, "compacted"],
+  [true, true, "compacted"],
+  [true, true, "setup-failure"],
+  [true, true, "compacted-repaired"],
+  [true, false, "checkpoint-write-failure"],
+  [false, true, "heartbeat"],
+  [false, false, "post-input-thinking"],
+  [false, false, "non-durable"],
+  [false, true, "missing-discarded-attachment"],
+] as const)(
+  "repairs Anthropic thinking once and appends heartbeat context (retry fails: %s, resume: %s, checkpoint: %s)",
+  async (retryFails, resume, checkpointKind) => {
+    const compacted = checkpointKind === "compacted";
+    const repairedCompaction = checkpointKind === "compacted-repaired";
+    const setupFailure = checkpointKind === "setup-failure";
+    const writeFailure = checkpointKind === "checkpoint-write-failure";
+    const nonDurable = checkpointKind === "non-durable";
+    const heartbeat = checkpointKind === "heartbeat";
+    const postInputThinking = checkpointKind === "post-input-thinking";
+    const sessionId = heartbeat ? "__heartbeat__" : "native:thinking-recovery";
+    const requestClient = postInputThinking || heartbeat ? "github" : "native";
+    const expectedCalls = setupFailure
+      ? 0
+      : postInputThinking
+        ? 2
+        : writeFailure || (resume && !compacted)
+          ? 1
+          : 2;
+    const config = parseCoreConfigV2ToUniversal({});
+    config.models.main = { model: "anthropic/claude-opus-5-5" };
+    config.surface.heartbeat.enabled = true;
+    config.agent.retry = { enabled: false, maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0 };
+    const dataDir = await mkdtemp(path.join(tmpdir(), "thinking-recovery-"));
+    const pluginManager = createCoreToolPluginManager({ runtime: { config }, dataDir });
+    const bus = createLilacBus(createInMemoryRawBus());
+    const store = new SqliteTranscriptStore(path.join(dataDir, "transcripts.db"));
+    const blobStore = transcriptResultValue(await createMemoryBlobStore());
+    const checkpoints: AgentRunCheckpointV1[] = [];
+    const journal: NonNullable<Parameters<typeof startBusAgentRunner>[0]["agentRunJournal"]> = {
+      openRun: (owner) => Result.ok({ ...owner, runId: owner.requestDeliveryId, sequence: 1 }),
+      writeCheckpoint: (handle, checkpoint) => {
+        if (writeFailure && checkpoint.anthropicThinkingRepaired)
+          return Result.err(
+            new AgentRunJournalSqliteFailure({
+              operation: "write",
+              code: "SQLITE_IOERR",
+              message: "checkpoint write failed",
+            }),
+          );
+        checkpoints.push(checkpoint);
+        return Result.ok({ ...handle, sequence: handle.sequence + 1 });
+      },
+      markTerminal: (handle) => Result.ok({ ...handle, sequence: handle.sequence + 1 }),
+      resetRun: () => Result.ok(undefined),
+      removeReconciled: () => Result.ok(undefined),
+    };
+    let calls = 0;
+    let liveAgent: AiSdkPiAgent<ToolSet> | undefined;
+    const prompts: unknown[] = [];
+    const runner = await startBusAgentRunner({
+      bus,
+      config,
+      pluginManager,
+      subscriptionId: "thinking-recovery",
+      transcriptStore: store,
+      blobStore,
+      ...(!resume ? { agentRunJournal: journal } : {}),
+      nativeExecution: {
+        validate: () => Result.ok({ safetyMode: "restricted" }),
+        settled: async () => Result.ok(undefined),
+      },
+      issueHeartbeatCapability: () => "test-heartbeat-capability",
+      issueControlCapability: () => ({ capability: "test-capability", principal: null }),
+      reportFatalPanic: () => undefined,
+      createAgent: (options) => {
+        if (setupFailure) throw new Error("model setup failed");
+        expect(JSON.stringify(options.system)).not.toContain("Heartbeat Context");
+        liveAgent = new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "claude-opus-5-5",
+            doStream: async (call) => {
+              prompts.push(call.prompt);
+              calls += 1;
+              if (postInputThinking && calls === 1)
+                liveAgent!.appendMessages([
+                  {
+                    role: "assistant",
+                    content: [
+                      {
+                        type: "reasoning",
+                        text: "thinking",
+                        providerOptions: { anthropic: { signature: "generated-signature" } },
+                      },
+                    ],
+                  },
+                  { role: "user", content: "Continue the response" },
+                ]);
+              if (!resume && !postInputThinking && !nonDurable && calls === 2) {
+                const checkpoint = checkpoints.at(-1);
+                expect(checkpoint?.anthropicThinkingRepaired).toBe(true);
+                expect(JSON.stringify(checkpoint?.messages)).not.toContain("old-signature");
+                expect(JSON.stringify(checkpoint?.messages)).not.toContain("retained.txt");
+              }
+              if (((!resume || compacted) && calls === 1) || retryFails)
+                throw new APICallError({
+                  message:
+                    "messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation. The `system` prompt differs from the one this block was created with.",
+                  url: "https://api.anthropic.com/v1/messages",
+                  requestBodyValues: {},
+                  statusCode: 400,
+                  isRetryable: false,
+                });
+              return level1TextStep("recovered");
+            },
+          }),
+        });
+        return liveAgent;
+      },
+    });
+    const requestId = "native:thinking-recovery:request";
+    const requestDeliveryId = crypto.randomUUID();
+    const lifecycle = await observeRequestLifecycle(bus, requestId);
+    try {
+      const raw = {
+        native: {
+          requestId,
+          requestDeliveryId,
+          threadId: "thinking-recovery",
+          authorUserId: "starter",
+          starterUserId: "starter",
+          turnId: "turn",
+          inputId: "input",
+          historyGeneration: 0,
+        },
+        authenticatedActor: { platform: "native", userId: "starter" },
+        authenticatedOrigin: {
+          platform: "native",
+          userId: "starter",
+          messageRef: {
+            platform: "native",
+            channelId: "thinking-recovery",
+            messageId: "request",
+          },
+        },
+      };
+      const messages: ModelMessage[] = [
+        { role: "user", content: "first" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "reasoning",
+              text: "",
+              providerOptions: { anthropic: { signature: "old-signature" } },
+            },
+            { type: "text", text: "first answer" },
+            {
+              type: "file",
+              data: new Uint8Array([65, 66]),
+              mediaType: "text/plain",
+              filename: "retained.txt",
+            },
+          ],
+        },
+        {
+          role: "user",
+          content:
+            '<LILAC_META:v1>{"platform":"native","thread_id":"thinking-recovery","message_id":"request"}</LILAC_META:v1>\nnext',
+        },
+      ];
+      if (nonDurable)
+        for (const message of messages) {
+          if (message.role !== "assistant" || typeof message.content === "string") continue;
+          message.content = message.content.filter((part) => part.type !== "file");
+        }
+      if (compacted || repairedCompaction)
+        messages.unshift(
+          { role: "user", content: "older turn" },
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "reasoning",
+                text: "",
+                providerOptions: { anthropic: { signature: "compacted-signature" } },
+              },
+              { type: "text", text: "older answer" },
+            ],
+          },
+        );
+      const persistMessages = (providerMessages: readonly ModelMessage[]) =>
+        projectTranscriptMessagesForPersistence({
+          identityProjection: createStoredMessageIdentityProjectionV1(),
+          providerMessages,
+          blobStore,
+          transcriptStore: store,
+        });
+      const storedMessages = await persistMessages(messages);
+      if (checkpointKind === "missing-discarded-attachment")
+        for (const message of storedMessages) {
+          if (message.role !== "assistant" || typeof message.content === "string") continue;
+          for (const part of message.content) {
+            if (part.type !== "blob") continue;
+            transcriptResultValue(await blobStore.delete(part.blob));
+          }
+        }
+      if (resume) {
+        const accepted = acceptedRunnerDelivery({
+          requestDeliveryId,
+          requestId,
+          sessionId,
+          requestClient,
+          queue: "prompt",
+          messages: storedMessages,
+          raw,
+        });
+        const restored: ModelMessage[] =
+          compacted || repairedCompaction
+            ? [
+                { role: "user", content: "<context-compaction>summary</context-compaction>" },
+                ...messages.slice(2),
+              ]
+            : projectAssistantTextHistory(messages);
+        if (repairedCompaction) {
+          restored.splice(0, restored.length, ...projectAssistantTextHistory(restored));
+          restored.push({
+            role: "assistant",
+            content: [
+              {
+                type: "reasoning",
+                text: "",
+                providerOptions: { anthropic: { signature: "fresh-signature" } },
+              },
+              { type: "text", text: "continued after repair" },
+            ],
+          });
+        }
+        const checkpointMessages = [
+          ...restored,
+          buildGeneratedMessage({
+            kind: "heartbeat_context",
+            id: `${requestId}:heartbeat-context`,
+            content: `Original heartbeat sourceRequestId='${requestId}'`,
+          }),
+        ];
+        transcriptResultValue(
+          await runner.resumeAcceptedDelivery(accepted, {
+            handle: {
+              runId: requestDeliveryId,
+              requestId,
+              sessionId,
+              sequence: 2,
+            },
+            state: "active",
+            createdAt: 1,
+            updatedAt: 2,
+            checkpoint: {
+              version: 1,
+              messages: await persistMessages(checkpointMessages),
+              anthropicThinkingRepaired: !compacted,
+              loadedCatalogIds: [],
+              retainedRequestDeliveries: [],
+            },
+          }),
+        );
+        runner.activate();
+      } else if (nonDurable) {
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          requestDeliveryId,
+          sessionId,
+          requestClient,
+          text: "next",
+          messages,
+          raw,
+        });
+      } else {
+        transcriptResultValue(
+          await runner.resumeAcceptedDelivery(
+            acceptedRunnerDelivery({
+              requestId,
+              requestDeliveryId,
+              sessionId,
+              requestClient,
+              queue: "prompt",
+              raw,
+              messages: storedMessages,
+            }),
+          ),
+        );
+        runner.activate();
+      }
+      expect({
+        terminal: await lifecycle.terminal,
+        calls,
+        details: lifecycle.details,
+      }).toMatchObject({ terminal: retryFails ? "failed" : "resolved", calls: expectedCalls });
+      expect(calls).toBe(expectedCalls);
+      const saved = getRequestTranscript(store, { requestId });
+      if (postInputThinking) {
+        expect(JSON.stringify(saved?.messages)).not.toContain("Heartbeat Context");
+        expect(JSON.stringify(saved?.messages)).not.toContain("first answer");
+        expect(JSON.stringify(saved?.messages)).toContain("recovered");
+        return;
+      }
+      if (heartbeat) {
+        expect(JSON.stringify(prompts[0])).not.toContain("Original heartbeat");
+        expect(
+          liveAgent!.state.messages.filter(
+            (message) => generatedMessageMetadata(message)?.kind === "heartbeat_context",
+          ),
+        ).toHaveLength(1);
+        return;
+      }
+      expect(saved?.messages[0]).toMatchObject({ role: "user" });
+      expect(JSON.stringify(saved?.messages)).toContain("first answer");
+      expect(JSON.stringify(saved?.messages)).not.toContain("old-signature");
+      expect(JSON.stringify(saved?.messages)).not.toContain("retained.txt");
+      if (setupFailure || writeFailure) return;
+      if (!resume) expect(JSON.stringify(prompts[0])).toContain("old-signature");
+      expect(JSON.stringify(prompts.at(-1))).not.toContain("old-signature");
+      expect(JSON.stringify(prompts.at(-1))).toContain("first answer");
+      expect(JSON.stringify(prompts.at(-1))).toContain(`sourceRequestId='${requestId}'`);
+      expect(JSON.stringify(liveAgent!.state.messages)).not.toContain("old-signature");
+      const generated = liveAgent!.state.messages.filter(
+        (message) => generatedMessageMetadata(message)?.kind === "heartbeat_context",
+      );
+      expect(generated).toHaveLength(1);
+    } finally {
+      await lifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+      store.close();
+      transcriptResultValue(await blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  },
+);
+
+it("keeps the custom command result in response-only transcripts with heartbeat enabled", async () => {
+  const config = parseCoreConfigV2ToUniversal({});
+  config.surface.heartbeat.enabled = true;
+  const dataDir = await mkdtemp(path.join(tmpdir(), "heartbeat-command-"));
+  const commandDir = path.join(dataDir, "cmds", "fixture");
+  await mkdir(commandDir, { recursive: true });
+  await writeFile(
+    path.join(commandDir, "def.json"),
+    JSON.stringify({ name: "fixture", description: "test command" }),
+  );
+  await writeFile(
+    path.join(commandDir, "index.ts"),
+    "export async function execute() { return { type: 'text', value: 'command result' }; }",
+  );
+  const customCommands = new CustomCommandManager(dataDir);
+  const initialized = await customCommands.init();
+  if (initialized.status === "error") throw initialized.error;
+  const pluginManager = corePrimaryTestPluginManager();
+  const bus = createLilacBus(createInMemoryRawBus());
+  const store = new SqliteTranscriptStore(path.join(dataDir, "transcripts.db"));
+  const runner = await startBusAgentRunner({
+    bus,
+    config,
+    pluginManager,
+    customCommands,
+    transcriptStore: store,
+    subscriptionId: "heartbeat-command",
+    reportFatalPanic: () => undefined,
+    issueControlCapability: () => ({ capability: "test", principal: null }),
+    createAgent: (options) =>
+      new AiSdkPiAgent({
+        ...options,
+        model: new MockLanguageModelV4({
+          modelId: "test",
+          doStream: async () => level1TextStep("answer"),
+        }),
+      }),
+  });
+  const requestId = "discord:heartbeat-command:input";
+  const lifecycle = await observeRequestLifecycle(bus, requestId);
+  try {
+    await publishRunnerRequest({
+      bus,
+      requestId,
+      sessionId: "heartbeat-command",
+      requestClient: "discord",
+      text: "/lilac:fixture",
+      raw: { customCommand: { name: "fixture", args: [], text: "/lilac:fixture", source: "text" } },
+    });
+    expect(await lifecycle.terminal).toBe("resolved");
+    const saved = getRequestTranscript(store, { requestId });
+    expect(JSON.stringify(saved?.messages)).toContain("command result");
+    expect(JSON.stringify(saved?.messages)).not.toContain("heartbeat_context");
+  } finally {
+    await lifecycle.stop();
+    await runner.stop();
+    await pluginManager.destroy();
+    await bus.close();
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
