@@ -29,9 +29,16 @@ export type AppProps = {
   draftCache?: Pick<WebNativeCache, "readDraft" | "saveDraft" | "listLocalDrafts" | "deleteDraft"> &
     Partial<Pick<WebNativeCache, "flushDrafts" | "listDraftedThreads">>;
 };
-export type Attachment = {
+export type UploadReference = {
   key: string;
-  file: File;
+  resourceId: string;
+  name: string;
+  type: string;
+  size: number;
+  staging?: { threadId: string; historyGeneration: number; expiresAt: number };
+};
+type AttachmentState = {
+  key: string;
   preview?: string;
   resourceId?: string;
   reservation: Promise<string | undefined>;
@@ -39,6 +46,18 @@ export type Attachment = {
   state: "reserving" | "uploading" | "ready" | "failed";
   error?: string;
 };
+export type LocalAttachment = AttachmentState & {
+  file: File;
+  reference?: never;
+  staging?: UploadReference["staging"];
+};
+export type ReferencedAttachment = AttachmentState & {
+  file?: never;
+  reference: UploadReference;
+  resourceId: string;
+  state: "ready";
+};
+export type Attachment = LocalAttachment | ReferencedAttachment;
 export type ComposerSubmission = {
   text: string;
   attachmentText?: string;

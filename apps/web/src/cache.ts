@@ -1,5 +1,6 @@
 import { Result } from "better-result";
 import { z } from "zod";
+import type { UploadReference } from "./types";
 import {
   cacheProjectionKey,
   cacheScopeKey,
@@ -34,6 +35,7 @@ export type WebDraft = {
   savedText?: string;
   title?: string;
   modelId?: string;
+  attachmentReferences?: readonly UploadReference[];
 };
 
 export type CachedBootstrap = { scope: CacheScope; bootstrap: BootstrapReply; savedAt: number };
@@ -112,6 +114,24 @@ const draftRowSchema = z.strictObject({
   savedText: z.string().max(65_536).optional(),
   title: z.string().max(512).optional(),
   modelId: identitySchema.optional(),
+  attachmentReferences: z
+    .array(
+      z.strictObject({
+        key: identitySchema,
+        resourceId: identitySchema,
+        name: z.string().max(512),
+        type: z.string().max(256),
+        size: revisionSchema,
+        staging: z
+          .strictObject({
+            threadId: identitySchema,
+            historyGeneration: revisionSchema,
+            expiresAt: revisionSchema,
+          })
+          .optional(),
+      }),
+    )
+    .optional(),
   updatedAt: revisionSchema,
 });
 function decodeThread(value: unknown): ThreadRow | undefined {
@@ -148,6 +168,9 @@ function decodeDraft(value: unknown): WebDraft {
     savedText: parsed.data.savedText,
     ...(parsed.data.title === undefined ? {} : { title: parsed.data.title }),
     ...(parsed.data.modelId === undefined ? {} : { modelId: parsed.data.modelId }),
+    ...(parsed.data.attachmentReferences?.length
+      ? { attachmentReferences: parsed.data.attachmentReferences }
+      : {}),
   };
 }
 function rejectWebCacheRequest(reject: (cause: Error) => void, error: Error): void {
@@ -233,7 +256,13 @@ type QueuedWrite = {
   settled: PromiseWithResolvers<CacheCommitOutcome>;
 };
 function draftIsEmpty(draft: WebDraft): boolean {
-  return !draft.text.trim() && !draft.skillIds.length && !draft.commandId && !draft.savedText;
+  return (
+    !draft.text.trim() &&
+    !draft.skillIds.length &&
+    !draft.commandId &&
+    !draft.savedText &&
+    !draft.attachmentReferences?.length
+  );
 }
 
 export class WebNativeCache implements NativeCache {
@@ -703,6 +732,9 @@ export class WebNativeCache implements NativeCache {
       savedText: draft.savedText?.slice(0, 65_536),
       ...(draft.title === undefined ? {} : { title: draft.title.slice(0, 512) }),
       ...(draft.modelId === undefined ? {} : { modelId: draft.modelId }),
+      ...(draft.attachmentReferences?.length
+        ? { attachmentReferences: [...draft.attachmentReferences] }
+        : {}),
     };
     const key = threadKey(scope, threadId);
     this.drafts.delete(key);

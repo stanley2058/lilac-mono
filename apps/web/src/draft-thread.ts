@@ -1,7 +1,7 @@
 import type { ModelReasoning } from "@stanley2058/lilac-client-protocol";
 import { z } from "zod";
 import type { NativeThread } from "@stanley2058/lilac-client-protocol";
-import type { ComposerSubmission, Attachment } from "./types";
+import type { ComposerSubmission, Attachment, LocalAttachment } from "./types";
 import type { Draft, PendingInput } from "./components/Chat";
 
 export type DraftThread = {
@@ -34,7 +34,7 @@ export function newDraftThread(): DraftThread {
 export function draftThreadTitle(thread: DraftThread): string {
   return (
     (thread.title ?? draftPreviewLine(thread.draft.text).slice(0, 80) ?? "") ||
-    thread.attachments[0]?.file.name ||
+    (thread.attachments[0]?.file ?? thread.attachments[0]?.reference)?.name ||
     "New conversation"
   );
 }
@@ -82,7 +82,7 @@ export function hasDraftContent(thread: DraftThread): boolean {
   );
 }
 
-export function draftAttachment(file: File): Attachment {
+export function draftAttachment(file: File): LocalAttachment {
   return {
     key: crypto.randomUUID(),
     file,

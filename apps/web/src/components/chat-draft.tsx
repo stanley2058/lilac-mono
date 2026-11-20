@@ -4,12 +4,14 @@ import type { DraftThread } from "../draft-thread";
 import { composerDraftOptions } from "../queries";
 import { useWorkspace } from "../workspace-context";
 import { Composer, type ComposerProps } from "./Composer";
+import type { UploadReference } from "../types";
 
 export type Draft = {
   text: string;
   skillIds: string[];
   commandId?: string;
   attachments: string[];
+  attachmentReferences?: readonly UploadReference[];
   savedText?: string;
 };
 

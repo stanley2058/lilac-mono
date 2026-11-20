@@ -45,9 +45,9 @@ export function pendingMessageParts(
         id: attachment.key,
         data: {
           resourceId: attachment.resourceId ?? attachment.key,
-          name: attachment.file.name,
-          mediaType: attachment.file.type || "application/octet-stream",
-          size: attachment.file.size,
+          name: (attachment.file ?? attachment.reference).name,
+          mediaType: (attachment.file ?? attachment.reference).type || "application/octet-stream",
+          size: (attachment.file ?? attachment.reference).size,
           state: attachment.preview || attachment.state === "ready" ? "ready" : "pending",
           progress: attachment.progress,
         },

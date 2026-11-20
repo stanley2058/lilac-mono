@@ -9,6 +9,7 @@ import {
   composerText,
   composerSchema,
   editorAttachmentKeys,
+  remapAttachmentSlice,
   composerExtensions,
   attachmentNode,
   referenceNode,
@@ -346,6 +347,20 @@ it("restores badges only for exact selected skill mentions outside code", () => 
   expect(editorSkillIds(editor.state.doc)).toEqual(["r", "b", "a"]);
   expect(writeComposerDocument(editor.state.doc)).toBe(before);
   editor.destroy();
+});
+
+it("remaps pasted file chips without losing selected skills or formatting", () => {
+  const source = headlessEditor("**Review** $review [notes.txt](attachment:old)");
+  const target = headlessEditor("");
+  markEditorSkills(source, [{ id: "skill", name: "review" }]);
+  const slice = new AllSelection(source.state.doc).content();
+  const pasted = remapAttachmentSlice(slice, target.schema, new Map([["old", "new"]]));
+  const transaction = target.state.tr.replaceSelection(pasted);
+  expect(editorAttachmentKeys(transaction.doc)).toEqual(new Set(["new"]));
+  expect(editorSkillIds(transaction.doc)).toEqual(["skill"]);
+  expect(writeComposerDocument(transaction.doc)).toContain("**Review**");
+  source.destroy();
+  target.destroy();
 });
 
 it("preserves existing draft and submission syntax through the Tiptap document", () => {

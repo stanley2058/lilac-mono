@@ -1,22 +1,25 @@
-import { Result } from "better-result";
-import type { DisplayPart } from "@stanley2058/lilac-client-protocol";
-import { messageClipboard } from "./message-clipboard";
+import type { DisplayPart, NativeRpcOutputs } from "@stanley2058/lilac-client-protocol";
+import { referencedAttachment } from "./attachment-reference";
+import type { Attachment, UploadReference } from "./types";
 import { attempt } from "./components/ui";
 import type { UploadPool } from "./uploads";
 
 type RewindCallbacks = {
-  rewind: () => Promise<{ text: string } | undefined>;
+  rewind: () => Promise<NativeRpcOutputs["threads"]["rewind"] | undefined>;
   onError: (message: string) => void;
 };
-export type PreparedRewind = (
-  callbacks: RewindCallbacks,
-) => Promise<{ text: string; attachments: string[] } | undefined>;
+type RestoredDraft = {
+  text: string;
+  attachments: string[];
+  attachmentReferences?: UploadReference[];
+};
+export type PreparedRewind = (callbacks: RewindCallbacks) => Promise<RestoredDraft | undefined>;
 export type RewindAttempt = {
   target: string;
   draftKey?: string;
   owner: symbol;
   running: boolean;
-  completed?: { text: string; attachments: string[] };
+  completed?: RestoredDraft;
   prepared?: {
     request: {
       threadId: string;
@@ -32,80 +35,65 @@ export type RewindAttempt = {
 export async function prepareRewindDraft(options: {
   parts: readonly DisplayPart[];
   threadId: string;
-  resourceUrl: (id: string) => string;
-  pool: Pick<UploadPool, "add" | "get" | "signal">;
+  pool: Pick<UploadPool, "add" | "signal"> & {
+    get: (threadId: string) => readonly Attachment[];
+  };
   onError: (message: string) => void;
 }): Promise<PreparedRewind | undefined> {
-  const resources = messageClipboard("", options.parts).resources;
-  const prepared = await attempt(async () => {
-    const { restoreMessageAttachments } = await import("./components/composer-editor");
-    const downloads = await Promise.all(
-      resources.map(async (resource) => {
-        const local = options.pool
-          .get(options.threadId)
-          .find((attachment) => attachment.resourceId === resource.resourceId);
-        if (local) return Result.ok<File | undefined>(local.file);
-        const part = options.parts.find(
-          (part) => part.type === "data-resource" && part.data.resourceId === resource.resourceId,
-        );
-        if (part?.type === "data-resource" && part.data.state !== "ready")
-          return Result.ok<File | undefined>(undefined);
-        const response = await fetch(options.resourceUrl(resource.resourceId), {
-          signal: options.pool.signal,
-        });
-        if (!response.ok) return Result.err(`Could not restore attachment ${resource.name}`);
-        return Result.ok(
-          new File([await response.blob()], resource.name, { type: resource.mediaType }),
-        );
-      }),
-    );
-    const files = Result.all(downloads).match({
-      ok: (value) => value,
-      err: (message) => {
-        options.onError(message);
-        return undefined;
-      },
-    });
-    if (!files) return;
-    return { files, restoreMessageAttachments };
-  }, options.onError);
-  if (!prepared || options.pool.signal.aborted) return;
+  const resources = new Map(
+    options.parts.flatMap((part) =>
+      part.type === "data-resource" ? [[part.data.resourceId, part.data] as const] : [],
+    ),
+  );
+  const editor = resources.size
+    ? await attempt(() => import("./components/composer-editor"), options.onError)
+    : undefined;
+  if (options.pool.signal.aborted || (resources.size && !editor)) return;
+
+  const localFiles = new Map(
+    options.pool
+      .get(options.threadId)
+      .flatMap((attachment) =>
+        attachment.resourceId && attachment.file
+          ? [[attachment.resourceId, attachment.file] as const]
+          : [],
+      ),
+  );
   return async (callbacks) => {
-    // Keep the bytes before rewind releases the original turn's resource references.
     const reply = await callbacks.rewind();
     if (!reply || options.pool.signal.aborted) return;
-    const restored = prepared.files.flatMap((file, index) =>
-      file
-        ? [
-            {
-              key: options.pool.add(options.threadId, file),
-              resource: resources[index]!,
-            },
-          ]
-        : [],
-    );
-    const missing = new Map(
-      resources.flatMap((resource, index) =>
-        prepared.files[index] ? [] : [[resource.resourceId, resource.name] as const],
-      ),
-    );
-    const attachments = options.pool.get(options.threadId);
+    const restored = new Map<string, Attachment>();
+    const references: UploadReference[] = [];
+    const missing = new Map<string, string>();
+    for (const [id, resource] of resources) {
+      const name = resource.name ?? "Attachment";
+      if (resource.state === "ready") {
+        const reference = {
+          key: crypto.randomUUID(),
+          resourceId: id,
+          name,
+          type: resource.mediaType ?? "application/octet-stream",
+          size: resource.size,
+        };
+        references.push(reference);
+        restored.set(id, referencedAttachment(reference));
+        continue;
+      }
+      const file = localFiles.get(id);
+      if (!file) {
+        missing.set(id, name);
+        continue;
+      }
+      const key = options.pool.add(options.threadId, file, reply.checkpoint.historyGeneration);
+      const attachment = options.pool.get(options.threadId).find((item) => item.key === key);
+      if (attachment) restored.set(id, attachment);
+    }
     if (missing.size)
       callbacks.onError(`Reattach missing files: ${[...missing.values()].join(", ")}`);
     return {
-      text: resources.length
-        ? prepared.restoreMessageAttachments(
-            reply.text,
-            new Map(
-              restored.map(({ key, resource }) => [
-                resource.resourceId,
-                attachments.find((attachment) => attachment.key === key)!,
-              ]),
-            ),
-            missing,
-          )
-        : reply.text,
-      attachments: restored.map(({ key }) => key),
+      text: editor?.restoreMessageAttachments(reply.text, restored, missing) ?? reply.text,
+      attachments: [...restored.values()].map((attachment) => attachment.key),
+      ...(references.length ? { attachmentReferences: references } : {}),
     };
   };
 }

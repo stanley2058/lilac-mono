@@ -68,6 +68,7 @@ import {
 import type { DisplayCatalog, NativeThread, SkillChoice } from "@stanley2058/lilac-client-protocol";
 import type { AppProps, ComposerSubmission } from "./types";
 import { resolveAttachmentIds } from "./uploads";
+import { readyUploadReference, referencedAttachment } from "./attachment-reference";
 import { Chat, type Draft, type PendingInput } from "./components/Chat";
 import { patchPendingInputs } from "./pending-input";
 import { isNarrowWorkspace, useNarrowWorkspace } from "./workspace-breakpoint";
@@ -344,6 +345,30 @@ function Workspace(props: AppProps) {
   }, [active]);
   const theme = useThemeMode();
   const drafts = useRef(new Map<string, Draft>());
+  useEffect(() => {
+    const cache = props.draftCache;
+    if (!cache) return;
+    return pool.subscribeReady((threadId, attachment, originalKey) => {
+      const reference = readyUploadReference(attachment);
+      if (!reference) return;
+      const original = queries.getQueryData<Draft>(["composer-draft", originalKey]);
+      // A closed question can move its draft into the main composer before the upload finishes.
+      const key = original?.attachments.includes(reference.key) ? originalKey : threadId;
+      const draft =
+        key === originalKey ? original : queries.getQueryData<Draft>(["composer-draft", key]);
+      if (!draft?.attachments.includes(reference.key)) return;
+      const next = {
+        ...draft,
+        attachmentReferences: [
+          ...(draft.attachmentReferences?.filter((item) => item.key !== reference.key) ?? []),
+          reference,
+        ],
+      };
+      updateComposerDraft(queries, key, next);
+      if (key === threadId) drafts.current.set(threadId, next);
+      void attempt(() => cache.saveDraft(props.scope, key, next), setError);
+    });
+  }, [pool, props.draftCache, props.scope, queries, setError]);
   const [pendingInputs, setPendingInputs] = useState(new Map<string, PendingInput[]>());
   const pending = useRef(pendingInputs);
   pending.current = pendingInputs;
@@ -396,8 +421,11 @@ function Workspace(props: AppProps) {
         if (changed.has(threadId) || removedDrafts.current.has(threadId)) continue;
         changed.set(threadId, {
           id: threadId,
-          draft: { ...draft, attachments: [] },
-          attachments: [],
+          draft: {
+            ...draft,
+            attachments: draft.attachmentReferences?.map((item) => item.key) ?? [],
+          },
+          attachments: draft.attachmentReferences?.map(referencedAttachment) ?? [],
           title: draft.title,
           modelId: draft.modelId,
         });
@@ -681,7 +709,8 @@ function Workspace(props: AppProps) {
     const latest = draftStore.getState().localDrafts.get(id);
     const moveAttachments = (files: ComposerSubmission["attachments"]) =>
       files.map((item) => {
-        const key = pool.add(created.id, item.file);
+        if (!item.file) return item;
+        const key = pool.add(created.id, item.file, 0);
         return pool.get(created.id).find((item) => item.key === key)!;
       });
     const files = moveAttachments(creation.entry.submission.attachments);
@@ -760,7 +789,9 @@ function Workspace(props: AppProps) {
             : entry.text,
           mode: "prompt" as const,
           modelId: entry.submission.modelId,
-          attachmentIds: attachmentIds.filter((resourceId): resourceId is string => !!resourceId),
+          attachmentIds: [
+            ...new Set(attachmentIds.filter((resourceId): resourceId is string => !!resourceId)),
+          ],
           skillIds: entry.submission.skillIds,
           command: entry.submission.command,
         };
@@ -772,6 +803,7 @@ function Workspace(props: AppProps) {
     const outcome = await client.submit(prepared);
     if (pool.signal.aborted) return;
     if (outcome.kind === "accepted") {
+      pool.markPublished(prepared.attachmentIds);
       if (outcome.receipt.turnId) {
         patch({ state: "accepted", receipt: outcome.receipt });
         return;

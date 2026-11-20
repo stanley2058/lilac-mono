@@ -28,6 +28,7 @@ import {
 import type { ResourceStore } from "../../resource/store";
 import type { NativeThreadRecord, NativeUploadRecord, NativeUser } from "./codec";
 import { nativeFailure, type NativeStoreFailure, type NativeStoreFailureCode } from "./errors";
+import { NATIVE_UPLOAD_STAGING_MS } from "./upload-staging";
 
 type NativeResourceStateError = NativeStoreFailure | PersistedDataError;
 export class NativeUploadSettlementFailed extends TaggedError("NativeUploadSettlementFailed")<{
@@ -281,7 +282,7 @@ export class NativeResourceService {
         this.dependencies.blobs
           .startStagedUpload({
             source: bounded,
-            stagingExpiresAt: this.#now() + 24 * 60 * 60_000,
+            stagingExpiresAt: this.#now() + NATIVE_UPLOAD_STAGING_MS,
             expectedByteLength: upload.size,
           })
           .then((result) =>
@@ -945,7 +946,8 @@ export class NativeResourceService {
         const active = thread && !thread.deleted && upload;
         const sameGeneration =
           upload && thread && upload.historyGeneration === thread.historyGeneration;
-        const withinStagingLifetime = upload && this.#now() - upload.createdAt < 24 * 60 * 60_000;
+        const withinStagingLifetime =
+          upload && this.#now() - upload.createdAt < NATIVE_UPLOAD_STAGING_MS;
         if (
           active &&
           ((upload.state === "ready" && (upload.published || withinStagingLifetime)) ||

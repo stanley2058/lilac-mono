@@ -1,6 +1,7 @@
 import { expect, it } from "bun:test";
 import { resolveAttachmentIds } from "../src/uploads";
 import type { Attachment } from "../src/types";
+import { canUseStagedUpload, readyUploadReference } from "../src/attachment-reference";
 it("retries a failed reservation from a pending message without retaining the obsolete promise", async () => {
   const sentAttachment: Attachment = {
     key: "attachment",
@@ -37,6 +38,53 @@ type Reservation = NativeRpcOutputs["resources"]["reserve"];
 function resource(): Reservation {
   return { id: "resource", name: "x.txt", size: 1, mediaType: "text/plain", state: "pending" };
 }
+
+it("reports readiness without a composer subscription and reserves a fresh ID for a restored key", async () => {
+  const commands: string[] = [];
+  const pool = new UploadPool(
+    {
+      rpc: {
+        resources: {
+          reserve: async ({ commandId }) => {
+            commands.push(commandId);
+            return { ...resource(), id: `resource-${commands.length}` };
+          },
+        },
+      },
+    },
+    async () => {},
+  );
+  const file = new File(["x"], "x.txt");
+  const first = Promise.withResolvers<Attachment>();
+  const stop = pool.subscribeReady((threadId, attachment) => {
+    expect(threadId).toBe("thread");
+    first.resolve(attachment);
+  });
+  const key = pool.add("thread", file, 1);
+  expect(readyUploadReference(await first.promise)).toMatchObject({
+    key,
+    resourceId: "resource-1",
+  });
+  stop();
+  pool.remove("thread", key);
+  const restored = Promise.withResolvers<Attachment>();
+  pool.subscribeReady((_threadId, attachment) => restored.resolve(attachment));
+  pool.add("thread", file, 2, key);
+  expect(readyUploadReference(await restored.promise)).toMatchObject({
+    key,
+    resourceId: "resource-2",
+  });
+  expect(new Set(commands).size).toBe(2);
+  pool.dispose();
+});
+
+it("rejects staged references from discarded history and expired uploads", () => {
+  const staging = { threadId: "thread", historyGeneration: 1, expiresAt: Date.now() + 60_000 };
+  expect(canUseStagedUpload(staging, "thread", 1)).toBe(true);
+  expect(canUseStagedUpload(staging, "thread", 2)).toBe(false);
+  expect(canUseStagedUpload(staging, "other", 1)).toBe(false);
+  expect(canUseStagedUpload({ ...staging, expiresAt: Date.now() }, "thread", 1)).toBe(false);
+});
 
 it("does not start transfer when a reservation completes after session disposal", async () => {
   const pending = Promise.withResolvers<Reservation>();

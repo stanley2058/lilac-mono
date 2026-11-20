@@ -1,3 +1,4 @@
+import { closeHistory, isHistoryTransaction } from "@tiptap/pm/history";
 import { Kbd } from "./ui/kbd";
 import { createPortal } from "react-dom";
 import { shortcutOverlayOpen } from "../shortcuts";
@@ -59,6 +60,7 @@ import {
 } from "@tiptap/react";
 import { type Editor } from "@tiptap/core";
 import { Slice } from "@tiptap/pm/model";
+import type { EditorView } from "@tiptap/pm/view";
 import {
   composerExtensions,
   attachmentNode,
@@ -76,6 +78,7 @@ import {
   captureEditorPaste,
   Placeholder,
   editorAttachmentKeys,
+  remapAttachmentSlice,
   editorSkillIds,
   type ComposerSkill,
   completeEditor,
@@ -169,6 +172,7 @@ const AttachmentContext = createContext<{
   attachments: readonly Attachment[];
   disabled: boolean;
   retry?: (key: string) => void;
+  available?: (attachment: Attachment) => boolean;
 }>({ attachments: emptyAttachments, disabled: false });
 
 function AttachmentElement(props: NodeViewProps) {
@@ -180,17 +184,21 @@ function AttachmentElement(props: NodeViewProps) {
   };
   const key = metadata.key ?? "";
   const attachment = context.attachments.find((item) => item.key === key);
-  const name = attachment?.file.name ?? metadata.name;
+  const file = attachment?.file ?? attachment?.reference;
+  const name = file?.name ?? metadata.name;
   const [preview, setPreview] = useState(false);
-  const ready = attachment?.state === "ready" && !!(attachment.resourceId || attachment.preview);
+  const unavailable = attachment && context.available?.(attachment) === false;
+  const state = unavailable ? "missing" : (attachment?.state ?? "missing");
+  const ready = state === "ready" && !!(attachment?.resourceId || attachment?.preview);
   const target: FileTarget = {
     type: "resource",
     href: attachment?.resourceId
       ? (workspace?.resourceUrl(attachment.resourceId) ??
+        attachment.preview ??
         `/api/resources/${encodeURIComponent(attachment.resourceId)}`)
       : (attachment?.preview ?? ""),
     name,
-    mediaType: attachment?.file.type || "application/octet-stream",
+    mediaType: file?.type || "application/octet-stream",
     resourceId: attachment?.resourceId,
   };
   return (
@@ -202,7 +210,7 @@ function AttachmentElement(props: NodeViewProps) {
               <span
                 data-ui="composer-attachment-chip"
                 className={`composer-attachment-chip ${inlineChipStyles}`}
-                data-state={attachment?.state ?? "missing"}
+                data-state={state}
               />
             }
           >
@@ -216,20 +224,22 @@ function AttachmentElement(props: NodeViewProps) {
               {attachment?.preview ? (
                 <img src={attachment.preview} alt="" />
               ) : (
-                <FileIcon name={name} mediaType={attachment?.file.type} />
+                <FileIcon name={name} mediaType={file?.type} />
               )}
               <span className="composer-attachment-name overflow-hidden text-ellipsis">{name}</span>
-              <small>{attachment ? attachmentSize(attachment.file.size) : "Reattach file"}</small>
+              <small>
+                {file && state !== "missing" ? attachmentSize(file.size) : "Reattach file"}
+              </small>
             </Button>
-            {attachment?.state === "reserving" ? (
+            {state === "reserving" ? (
               <span className="sr-only absolute w-px h-px overflow-hidden [clip:rect(0,_0,_0,_0)] whitespace-nowrap">
                 Preparing upload
               </span>
             ) : null}
-            {attachment?.state === "uploading" ? (
-              <progress value={attachment.progress} max={1} aria-label={`Uploading ${name}`} />
+            {state === "uploading" ? (
+              <progress value={attachment?.progress} max={1} aria-label={`Uploading ${name}`} />
             ) : null}
-            {attachment?.state === "failed" ? (
+            {state === "failed" || (unavailable && !!attachment?.file) ? (
               <IconButton
                 label={`Retry ${name}`}
                 disabled={context.disabled}
@@ -326,6 +336,12 @@ export type ComposerEditorProps = {
   skills?: readonly ComposerSkill[];
   onRemoveAttachment?: (key: string) => void;
   onRetryAttachment?: (key: string) => void;
+  onPasteAttachments?: (
+    attachments: readonly Attachment[],
+    restoreKeys?: boolean,
+  ) => Attachment[] | undefined;
+  attachmentAvailable?: (attachment: Attachment) => boolean;
+  attachmentDisabled?: boolean;
   disabled: boolean;
   placeholder: string;
   onText: (text: string, plainText: string, skillIds: string[]) => void;
@@ -339,6 +355,71 @@ export type ComposerEditorProps = {
   /** Renders the formatting buttons into this element, inline with the composer's controls. */
   formattingTarget?: HTMLElement | null;
 };
+const composerClipboardType = "application/x-lilac-composer";
+// The system clipboard carries a token. Local files stay scoped to the workspace that cut them.
+const composerClipboards = new WeakMap<
+  object,
+  { token: string; slice: Slice; attachments: readonly Attachment[] }
+>();
+
+function cutComposerAttachments(
+  view: EditorView,
+  event: ClipboardEvent,
+  props: ComposerEditorProps,
+  workspace: object | undefined,
+) {
+  const { state } = view;
+  const data = event.clipboardData;
+  if (!data || !workspace || props.disabled || !props.onPasteAttachments || state.selection.empty)
+    return false;
+  const slice = state.selection.content();
+  const keys = editorAttachmentKeys(slice.content);
+  const attachments = props.attachments?.filter((item) => keys.has(item.key));
+  if (!attachments?.length) {
+    composerClipboards.delete(workspace);
+    return false;
+  }
+  const { dom, text } = view.serializeForClipboard(slice);
+  const token = crypto.randomUUID();
+  composerClipboards.set(workspace, { token, slice, attachments });
+  data.clearData();
+  data.setData("text/html", dom.innerHTML);
+  data.setData("text/plain", text);
+  data.setData(composerClipboardType, token);
+  event.preventDefault();
+  view.dispatch(
+    closeHistory(state.tr).deleteSelection().scrollIntoView().setMeta("uiEvent", "cut"),
+  );
+  return true;
+}
+
+function pasteComposerAttachments(
+  view: EditorView,
+  event: ClipboardEvent,
+  props: ComposerEditorProps,
+  workspace: object | undefined,
+) {
+  const clip = workspace && composerClipboards.get(workspace);
+  if (
+    !clip ||
+    !props.onPasteAttachments ||
+    event.clipboardData?.getData(composerClipboardType) !== clip.token
+  )
+    return false;
+  event.preventDefault();
+  if (props.disabled || props.attachmentDisabled) return true;
+  const added = props.onPasteAttachments(clip.attachments);
+  if (!added) return true;
+  const keys = new Map(clip.attachments.map((item, index) => [item.key, added[index]!.key]));
+  view.dispatch(
+    closeHistory(view.state.tr)
+      .replaceSelection(remapAttachmentSlice(clip.slice, view.state.schema, keys))
+      .scrollIntoView()
+      .setMeta("uiEvent", "paste"),
+  );
+  return true;
+}
+
 // A hidden <Activity> runs effect cleanups, and TipTap then destroys its editor. The new key remounts
 // the editor from the current draft when the composer is revealed, before stale effects can run.
 const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) {
@@ -349,6 +430,9 @@ const ComposerEditor = memo(function ComposerEditor(props: ComposerEditorProps) 
 const ComposerEditorInstance = memo(function ComposerEditorInstance(props: ComposerEditorProps) {
   // TipTap builds the editor once, and its callbacks read the latest props through a ref.
   "use no memo";
+  const workspace = useOptionalWorkspace();
+  const localClipboard = useRef({});
+  const clipboardScope = workspace?.drafts ?? localClipboard.current;
   const [openCitation, setOpenCitation] = useState<OpenCitation>();
   const current = useRef(props);
   current.current = props;
@@ -357,6 +441,7 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
   const replacementId = useRef<symbol>(undefined);
   const seenAttachments = useRef(new Set<string>());
   const referencedAttachments = useRef(new Set<string>());
+  const historyAttachments = useRef(new WeakMap<object, Attachment>());
   const pasting = useRef(false);
   const attachments = props.attachments ?? emptyAttachments;
   const skills = props.skills ?? emptySkills;
@@ -418,7 +503,12 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
         return event.defaultPrevented;
       },
       handleDOMEvents: {
-        paste: (_view, event) => {
+        cut: (view, event) => cutComposerAttachments(view, event, current.current, clipboardScope),
+        paste: (view, event) => {
+          if (pasteComposerAttachments(view, event, current.current, clipboardScope)) {
+            pasting.current = false;
+            return true;
+          }
           current.current.onPaste(event);
           pasting.current = !event.defaultPrevented;
           return event.defaultPrevented;
@@ -465,13 +555,31 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
         return writeComposerDocument(doc);
       },
     },
-    onUpdate: ({ editor }) => {
+    onUpdate: ({ editor, transaction }) => {
       const p = current.current;
       if (p.loadingDraft) return;
       const references = editorAttachmentKeys(editor.state.doc);
-      for (const key of referencedAttachments.current) {
-        if (!references.has(key) && p.attachments?.some((attachment) => attachment.key === key))
-          p.onRemoveAttachment?.(key);
+      if (isHistoryTransaction(transaction) && p.onPasteAttachments) {
+        const restored = new Map<string, Attachment>();
+        editor.state.doc.descendants((node) => {
+          if (node.type.name !== "composer_attachment") return;
+          const attachment = historyAttachments.current.get(node);
+          if (!attachment || p.attachments?.some((item) => item.key === attachment.key)) return;
+          restored.set(attachment.key, attachment);
+        });
+        if (restored.size) p.onPasteAttachments([...restored.values()], true);
+      }
+      const removed = p.attachments?.filter(
+        (item) => referencedAttachments.current.has(item.key) && !references.has(item.key),
+      );
+      if (removed?.length) {
+        transaction.before.descendants((node) => {
+          if (node.type.name !== "composer_attachment") return;
+          const attachment = removed.find((item) => item.key === node.attrs.attachmentKey);
+          // History keeps the original atom, so its file can be collected with its last undo step.
+          if (attachment) historyAttachments.current.set(node, attachment);
+        });
+        for (const attachment of removed) p.onRemoveAttachment?.(attachment.key);
       }
       referencedAttachments.current = references;
       const text = writeComposerDocument(editor.state.doc);
@@ -521,6 +629,7 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
       documentKey.current = props.documentKey;
       seenAttachments.current.clear();
       referencedAttachments.current.clear();
+      historyAttachments.current = new WeakMap();
       replaceEditorDocument(editor, props.text);
       markEditorSkills(editor, skills);
     } else if (props.text !== lastText.current) {
@@ -591,7 +700,12 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
       hasMissingAttachments: () =>
         !!editor &&
         [...editorAttachmentKeys(editor.state.doc)].some(
-          (key) => !attachments.some((attachment) => attachment.key === key),
+          (key) =>
+            !attachments.some(
+              (attachment) =>
+                attachment.key === key &&
+                current.current.attachmentAvailable?.(attachment) !== false,
+            ),
         ),
       complete(text, length, skill, range) {
         if (!editor) return;
@@ -631,7 +745,12 @@ const ComposerEditorInstance = memo(function ComposerEditorInstance(props: Compo
   }, [editor, props.documentKey, props.loadingDraft, props.disabled, props.autoFocus]);
   return (
     <AttachmentContext
-      value={{ attachments, disabled: props.disabled, retry: props.onRetryAttachment }}
+      value={{
+        attachments,
+        disabled: props.disabled,
+        retry: props.onRetryAttachment,
+        available: props.attachmentAvailable,
+      }}
     >
       <CitationEditorContext
         value={{

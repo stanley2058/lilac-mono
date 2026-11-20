@@ -28,7 +28,8 @@ function value<T, E>(result: ResultType<T, E>): T {
 
 async function fixture() {
   const db = new Database(":memory:");
-  const native = new NativeStore(db);
+  let clock = Date.now();
+  const native = new NativeStore(db, () => clock);
   value(native.initialize());
   for (const [id, role] of [
     ["owner", "owner"],
@@ -45,7 +46,6 @@ async function fixture() {
     blobStore: blobs,
     originAdapters: new ResourceOriginAdapterRegistry([]),
   });
-  let clock = Date.now();
   const progress: number[] = [];
   const service = new NativeResourceService({
     native,
@@ -104,6 +104,35 @@ async function fixture() {
 }
 
 describe("native resources", () => {
+  test("rejects first admission of an expired upload and preserves an accepted command retry", async () => {
+    const f = await fixture();
+    const acceptedUpload = value(await f.service.upload("alice", f.reserve().id, f.source()));
+    const unsent = value(await f.service.upload("alice", f.reserve().id, f.source()));
+    const input = {
+      threadId: f.thread.id,
+      historyGeneration: 0,
+      commandId: "send-upload",
+      mode: "prompt" as const,
+      text: "",
+      attachmentIds: [acceptedUpload.id],
+      skillIds: [],
+    };
+    const receipt = value(f.native.acceptInput("alice", input));
+    f.advanceClock(25 * 60 * 60_000);
+    expect(value(f.service.reconcileReferences())).toBe(1);
+    expect(value(await f.access.maintain({ limit: 10 })).deleted).toBe(1);
+    expect(value(f.native.acceptInput("alice", input))).toEqual(receipt);
+    expect(
+      f.native
+        .acceptInput("alice", {
+          ...input,
+          commandId: "send-expired-upload",
+          attachmentIds: [unsent.id],
+        })
+        .match({ ok: () => undefined, err: (error) => error.message }),
+    ).toBe("Attachment expired. Reattach the file to send it.");
+  });
+
   for (const deliverFirst of [false, true]) {
     test(`deferred attachments survive staging expiry and release on deletion, delivered=${deliverFirst}`, async () => {
       const f = await fixture();

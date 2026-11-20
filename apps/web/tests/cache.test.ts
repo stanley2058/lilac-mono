@@ -312,6 +312,31 @@ test("structured composer identities survive cache reload", async () => {
   expect(await cache(factory).readDraft(scope, "thread")).toEqual(draft);
 });
 
+test("ready attachment references survive draft reload and are cleared with the draft", async () => {
+  const factory = new IDBFactory();
+  const first = cache(factory);
+  const attachmentReferences = Array.from({ length: 33 }, (_, index) => ({
+    key: `chip-${index}`,
+    resourceId: `upload-${index}`,
+    name: "notes.txt",
+    type: "text/plain",
+    size: 6,
+  }));
+  await first.saveDraft(scope, "thread", {
+    text: attachmentReferences.map((item) => `[notes.txt](attachment:${item.key})`).join(" "),
+    skillIds: [],
+    attachmentReferences,
+  });
+  first.close();
+  const reloaded = cache(factory);
+  expect((await reloaded.readDraft(scope, "thread")).attachmentReferences).toEqual(
+    attachmentReferences,
+  );
+  await reloaded.saveDraft(scope, "thread", { text: "", skillIds: [] });
+  reloaded.close();
+  expect((await cache(factory).readDraft(scope, "thread")).attachmentReferences).toBeUndefined();
+});
+
 test("legacy text-only draft rows retain text with empty selected skills", async () => {
   const factory = new IDBFactory();
   const first = cache(factory);

@@ -23,7 +23,12 @@ export function composerDraftOptions(
     queryKey: ["composer-draft", threadId],
     queryFn: async (): Promise<Draft> => {
       const saved = await cache?.readDraft(scope, threadId);
-      return { text: "", skillIds: [], ...saved, attachments: [] };
+      return {
+        text: "",
+        skillIds: [],
+        ...saved,
+        attachments: saved?.attachmentReferences?.map((reference) => reference.key) ?? [],
+      };
     },
     staleTime: "static",
     // Live attachment keys must survive sidebar unmounts and thread switches.

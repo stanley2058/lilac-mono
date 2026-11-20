@@ -712,7 +712,7 @@ export function remapComposerAttachments(text: string, keys: ReadonlyMap<string,
 }
 
 /** Separates an appended file chip from text before it, then leaves a space after it. */
-function appendAttachment(value: ComposerBlock[], attachment: Pick<Attachment, "key" | "file">) {
+function appendAttachment(value: ComposerBlock[], attachment: Attachment) {
   let block = value.at(-1);
   if (!block) {
     block = { type: PARAGRAPH, children: [{ text: "" }] };
@@ -721,7 +721,7 @@ function appendAttachment(value: ComposerBlock[], attachment: Pick<Attachment, "
   const chip: ComposerBlock = {
     type: ATTACHMENT,
     attachmentKey: attachment.key,
-    name: attachment.file.name,
+    name: (attachment.file ?? attachment.reference).name,
     children: [{ text: "" }],
   };
   const last = block.children.at(-1);
@@ -755,7 +755,11 @@ export function restoreMessageAttachments(
       return {
         type: LINK,
         url: node.url,
-        children: [{ text: attachment?.file.name ?? missingName ?? "Attachment" }],
+        children: [
+          {
+            text: (attachment?.file ?? attachment?.reference)?.name ?? missingName ?? "Attachment",
+          },
+        ],
       };
     },
   };
@@ -772,7 +776,7 @@ export function restoreMessageAttachments(
     return {
       type: ATTACHMENT,
       attachmentKey: attachment.key,
-      name: attachment.file.name,
+      name: (attachment.file ?? attachment.reference).name,
       children: [{ text: "" }],
     };
   }) as ComposerBlock[];

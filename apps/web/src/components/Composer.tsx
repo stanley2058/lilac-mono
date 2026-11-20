@@ -79,6 +79,12 @@ export type ComposerProps = Partial<Pick<ChatCommon, "client" | "scope" | "catal
   onText: (text: string) => void;
   attachments: readonly Attachment[];
   onAttach: (files: File[], requireAll?: boolean) => Attachment[] | void;
+  onPasteAttachments?: (
+    attachments: readonly Attachment[],
+    restoreKeys?: boolean,
+  ) => Attachment[] | undefined;
+  attachmentAvailable?: (attachment: Attachment) => boolean;
+  attachmentDisabled?: boolean;
   onRemoveAttachment: (key: string) => void;
   onRetryAttachment: (key: string) => void;
   active: boolean;
@@ -172,7 +178,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   useEffect(() => {
     if (!props.windowDrop) return;
     return installWindowFileDrop(window, {
-      canAttach: () => !dropProps.current.disabled,
+      canAttach: () => !dropProps.current.disabled && !dropProps.current.attachmentDisabled,
       show: setDragging,
       attach: (files) => dropProps.current.onAttach(files),
     });
@@ -274,6 +280,10 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     if (answer ? empty && !answer.ready : empty) return;
     if (input.current?.hasMissingAttachments()) {
       toast.add({ title: "Reattach or remove the missing files before sending.", type: "error" });
+      return;
+    }
+    if (attachments.length > 32) {
+      toast.add({ title: "A message can contain at most 32 attachments.", type: "error" });
       return;
     }
     if (currentText.length > 65_536) {
@@ -413,7 +423,8 @@ export const Composer = memo(function Composer(props: ComposerProps) {
         if (
           controller.signal.aborted ||
           dropProps.current.documentKey !== documentKey ||
-          dropProps.current.disabled
+          dropProps.current.disabled ||
+          dropProps.current.attachmentDisabled
         )
           return;
         if (dropProps.current.attachments.length + files.length > 32) {
@@ -450,20 +461,20 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     const message = readMessageClipboard(event.clipboardData.getData("text/html"));
     if (message && workspace) {
       event.preventDefault();
-      void pasteMessage(message);
+      if (!props.attachmentDisabled) void pasteMessage(message);
       return;
     }
     const files = [...event.clipboardData.files];
     if (files.length) {
       event.preventDefault();
-      props.onAttach(files.map(namePastedImage));
+      if (!props.attachmentDisabled) props.onAttach(files.map(namePastedImage));
     }
   }
   function drop(event: DragEvent) {
     if (!hasFileDrag(event.dataTransfer)) return;
     event.preventDefault();
     setDragging(false);
-    if (disabled) return;
+    if (disabled || props.attachmentDisabled) return;
     props.onAttach([...event.dataTransfer.files]);
   }
 
@@ -627,6 +638,9 @@ export const Composer = memo(function Composer(props: ComposerProps) {
             skills={skills}
             onRemoveAttachment={props.onRemoveAttachment}
             onRetryAttachment={props.onRetryAttachment}
+            onPasteAttachments={props.onPasteAttachments}
+            attachmentAvailable={props.attachmentAvailable}
+            attachmentDisabled={props.attachmentDisabled}
             onText={changeText}
             onPlainText={updatePlainText}
             onPrefix={setPrefix}
@@ -646,6 +660,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
             type="file"
             aria-label="Attach files"
             multiple
+            disabled={disabled || props.attachmentDisabled}
             className="sr-only absolute w-px h-px overflow-hidden [clip:rect(0,_0,_0,_0)] whitespace-nowrap"
             tabIndex={-1}
             onChange={(event) => {
@@ -656,7 +671,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           <IconButton
             label="Attach files"
             className="rounded-full"
-            disabled={disabled}
+            disabled={disabled || props.attachmentDisabled}
             onClick={() => fileInput.current?.click()}
           >
             <Paperclip />

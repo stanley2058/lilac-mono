@@ -59,6 +59,7 @@ import {
 import { nativeUserDisplay } from "./identity";
 import { TURN_CREATED_AT, turnCompletedAtSql } from "./turn-timing";
 import { nativeFailure, type NativeStoreFailure } from "./errors";
+import { NATIVE_UPLOAD_STAGING_MS } from "./upload-staging";
 
 export type NativeStoreError = NativeStoreFailure | PersistedDataError;
 export type NativeStoreResult<T> = ResultType<T, NativeStoreError>;
@@ -2014,6 +2015,14 @@ export class NativeStore {
           upload.state === "canceled"
         )
           return Result.err(nativeFailure("forbidden", "Attachment is unavailable to this input"));
+        if (
+          upload.state === "ready" &&
+          this.now() - upload.createdAt >= NATIVE_UPLOAD_STAGING_MS &&
+          !(yield* this.hasDeferredUpload(upload.id))
+        )
+          return Result.err(
+            nativeFailure("conflict", "Attachment expired. Reattach the file to send it."),
+          );
       }
       if (question && uploads.some((upload) => upload.state !== "ready"))
         return Result.err(

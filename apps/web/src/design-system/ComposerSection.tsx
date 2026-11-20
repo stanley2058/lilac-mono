@@ -10,6 +10,7 @@ import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import logo from "../assets/logo.svg";
 import type { Attachment } from "../types";
+import { referencedAttachment } from "../attachment-reference";
 import type { DisplayCatalog } from "@stanley2058/lilac-client-protocol";
 import { HTML_PREVIEW_BOOTSTRAP_MARKUP } from "@stanley2058/lilac-client-protocol";
 import { SkillCatalogContext } from "../components/skill-mentions";
@@ -81,12 +82,14 @@ export function ComposerSpecimen() {
   const [disabled, setDisabled] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>(() => [
     {
-      key: "gallery-notes",
-      file: new File([], "lilac.svg", { type: "image/svg+xml" }),
+      ...referencedAttachment({
+        key: "gallery-notes",
+        resourceId: "gallery-notes",
+        name: "lilac.svg",
+        type: "image/svg+xml",
+        size: 8_192,
+      }),
       preview: logo,
-      reservation: Promise.resolve("gallery-notes"),
-      state: "ready",
-      progress: 1,
     },
   ]);
   return (
@@ -133,6 +136,13 @@ export function ComposerSpecimen() {
           text={text}
           onText={setText}
           attachments={attachments}
+          onPasteAttachments={(items, restoreKeys) => {
+            const added = items.map((item) =>
+              restoreKeys ? item : { ...item, key: crypto.randomUUID() },
+            );
+            setAttachments((current) => [...current, ...added]);
+            return added;
+          }}
           onRemoveAttachment={(key) =>
             setAttachments((items) => items.filter((item) => item.key !== key))
           }
@@ -146,7 +156,10 @@ export function ComposerSpecimen() {
           active={false}
           canCancel={false}
           onModelChange={noop}
-          onSubmit={() => setText("")}
+          onSubmit={() => {
+            setText("");
+            setAttachments([]);
+          }}
           onCancel={noop}
         />
       </div>

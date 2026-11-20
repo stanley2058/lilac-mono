@@ -1,14 +1,27 @@
 import type { NativeRPC } from "@stanley2058/lilac-client";
-import type { AppProps, Attachment } from "./types";
+import type { AppProps, Attachment, LocalAttachment, UploadReference } from "./types";
 import { attempt } from "./components/ui";
 
-const empty: readonly Attachment[] = [];
+const empty: readonly LocalAttachment[] = [];
 export class UploadPool {
-  private readonly threads = new Map<string, readonly Attachment[]>();
+  private readonly threads = new Map<string, readonly LocalAttachment[]>();
   private readonly listeners = new Map<string, Set<() => void>>();
   private readonly lifetime = new AbortController();
-  private readonly transfers = new Map<string, AbortController>();
+  private readonly transfers = new Map<
+    string,
+    { controller: AbortController; commandId: string; draftKey: string }
+  >();
+  private readonly readyListeners = new Set<
+    (threadId: string, attachment: LocalAttachment, draftKey: string) => void
+  >();
   private readonly released = new Set<string>();
+  private readonly published = new Set<string>();
+  markPublished(ids: readonly string[]) {
+    for (const id of ids) this.published.add(id);
+  }
+  isPublished(id: string | undefined): boolean {
+    return id !== undefined && this.published.has(id);
+  }
   get signal(): AbortSignal {
     return this.lifetime.signal;
   }
@@ -18,7 +31,7 @@ export class UploadPool {
     },
     private readonly upload: AppProps["upload"],
   ) {}
-  get(threadId: string): readonly Attachment[] {
+  get(threadId: string): readonly LocalAttachment[] {
     return this.threads.get(threadId) ?? empty;
   }
   subscribe(threadId: string, listener: () => void): () => void {
@@ -29,7 +42,15 @@ export class UploadPool {
       listeners.delete(listener);
     };
   }
-  private update(threadId: string, key: string, change: Partial<Attachment>) {
+  subscribeReady(
+    listener: (threadId: string, attachment: LocalAttachment, draftKey: string) => void,
+  ): () => void {
+    this.readyListeners.add(listener);
+    return () => {
+      this.readyListeners.delete(listener);
+    };
+  }
+  private update(threadId: string, key: string, change: Partial<LocalAttachment>) {
     if (this.signal.aborted || !this.get(threadId).some((item) => item.key === key)) return;
     this.threads.set(
       threadId,
@@ -37,17 +58,32 @@ export class UploadPool {
     );
     for (const listener of this.listeners.get(threadId) ?? []) listener();
   }
-  add(threadId: string, file: File): string {
-    const key = crypto.randomUUID();
+  add(
+    threadId: string,
+    file: File,
+    historyGeneration?: number,
+    key: string = crypto.randomUUID(),
+    draftKey = threadId,
+  ): string {
     if (this.signal.aborted) return key;
-    this.transfers.set(key, new AbortController());
+    // Undo keeps the chip key, while each replacement upload needs a fresh reservation.
+    this.transfers.set(key, {
+      controller: new AbortController(),
+      commandId: crypto.randomUUID(),
+      draftKey,
+    });
     const pending = Promise.withResolvers<string | undefined>();
-    const attachment: Attachment = {
+    const attachment: LocalAttachment = {
       key,
       file,
       reservation: pending.promise,
       progress: 0,
       state: "reserving",
+      ...(historyGeneration === undefined
+        ? {}
+        : {
+            staging: { threadId, historyGeneration, expiresAt: Date.now() + 24 * 60 * 60_000 },
+          }),
       ...(file.type.startsWith("image/") ? { preview: URL.createObjectURL(file) } : {}),
     };
     this.threads.set(threadId, [...this.get(threadId), attachment]);
@@ -55,14 +91,35 @@ export class UploadPool {
     void this.reserve(threadId, attachment, pending.resolve);
     return key;
   }
+  keepFile(
+    threadId: string,
+    key: string,
+    file: File,
+    reference?: UploadReference,
+  ): LocalAttachment {
+    const attachment: LocalAttachment = {
+      key,
+      file,
+      resourceId: reference?.resourceId,
+      staging: reference?.staging,
+      reservation: Promise.resolve(reference?.resourceId),
+      progress: reference ? 1 : 0,
+      state: reference ? "ready" : "failed",
+      ...(file.type.startsWith("image/") ? { preview: URL.createObjectURL(file) } : {}),
+    };
+    this.threads.set(threadId, [...this.get(threadId), attachment]);
+    for (const listener of this.listeners.get(threadId) ?? []) listener();
+    return attachment;
+  }
   private async reserve(
     threadId: string,
-    attachment: Attachment,
+    attachment: LocalAttachment,
     resolve: (id: string | undefined) => void,
   ) {
     const signal = this.attachmentSignal(attachment.key);
     const rpc = this.client.rpc;
-    if (signal.aborted) {
+    const transfer = this.transfers.get(attachment.key);
+    if (signal.aborted || !transfer) {
       resolve(undefined);
       return;
     }
@@ -79,14 +136,16 @@ export class UploadPool {
         rpc.resources.reserve(
           {
             threadId,
-            commandId: attachment.key,
+            commandId: transfer.commandId,
             name: attachment.file.name,
             size: attachment.file.size,
             mediaType: attachment.file.type || "application/octet-stream",
           },
           { signal },
         ),
-      (error) => this.update(threadId, attachment.key, { state: "failed", error }),
+      (error) => {
+        if (!signal.aborted) this.update(threadId, attachment.key, { state: "failed", error });
+      },
     );
     if (signal.aborted) {
       resolve(undefined);
@@ -105,14 +164,25 @@ export class UploadPool {
         await this.upload(
           resourceId,
           file,
-          (progress) => this.update(threadId, key, { progress }),
+          (progress) => {
+            if (!signal.aborted) this.update(threadId, key, { progress });
+          },
           signal,
         );
         return true;
       },
-      (error) => this.update(threadId, key, { state: "failed", error }),
+      (error) => {
+        if (!signal.aborted) this.update(threadId, key, { state: "failed", error });
+      },
     );
-    if (outcome) this.update(threadId, key, { state: "ready", progress: 1, error: undefined });
+    if (outcome && !signal.aborted) {
+      this.update(threadId, key, { state: "ready", progress: 1, error: undefined });
+      const ready = this.get(threadId).find((item) => item.key === key);
+      const target = this.transfers.get(key);
+      if (ready && target)
+        for (const listener of this.readyListeners) listener(threadId, ready, target.draftKey);
+    }
+    if (signal.aborted) return;
     if (this.released.has(key)) this.remove(threadId, key);
   }
   retry(threadId: string, key: string) {
@@ -131,7 +201,7 @@ export class UploadPool {
     void this.reserve(threadId, item, pending.resolve);
   }
   private attachmentSignal(key: string): AbortSignal {
-    const controller = this.transfers.get(key);
+    const controller = this.transfers.get(key)?.controller;
     return controller ? AbortSignal.any([this.signal, controller.signal]) : AbortSignal.abort();
   }
   release(threadId: string, key: string) {
@@ -146,7 +216,7 @@ export class UploadPool {
   remove(threadId: string, key: string) {
     const entries = this.get(threadId);
     const item = entries.find((entry) => entry.key === key);
-    this.transfers.get(key)?.abort();
+    this.transfers.get(key)?.controller.abort();
     this.transfers.delete(key);
     this.released.delete(key);
     if (item?.preview) URL.revokeObjectURL(item.preview);
@@ -159,10 +229,12 @@ export class UploadPool {
     this.lifetime.abort();
     this.transfers.clear();
     this.released.clear();
+    this.published.clear();
     for (const entries of this.threads.values())
       for (const item of entries) if (item.preview) URL.revokeObjectURL(item.preview);
     this.threads.clear();
     this.listeners.clear();
+    this.readyListeners.clear();
   }
 }
 

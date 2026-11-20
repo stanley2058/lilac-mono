@@ -80,8 +80,15 @@ import type {
   NativeThread,
   ReadyTurnSlot,
 } from "@stanley2058/lilac-client-protocol";
-import type { ChatCommon, ComposerSubmission } from "../types";
+import type { Attachment, ChatCommon, ComposerSubmission, UploadReference } from "../types";
 import { resolveAttachmentIds } from "../uploads";
+import {
+  attachmentStaging,
+  canUseStagedUpload,
+  draftAttachments,
+  readyUploadReference,
+  referencedAttachment,
+} from "../attachment-reference";
 import { inputDeliveryOptions } from "../input-mode";
 import { deliverPendingInput, type PendingInput } from "../pending-input";
 import { pendingTurnSlot } from "../pending-message";
@@ -303,8 +310,13 @@ export function Chat(props: ChatProps) {
     (listener: () => void) => store.subscribe(listener),
     [store],
   );
-  const historySnapshot = useCallback(() => !!store.checkpoint, [store]);
-  const historyLoaded = useSyncExternalStore(subscribeHistory, historySnapshot, historySnapshot);
+  const historySnapshot = useCallback(() => store.checkpoint?.historyGeneration, [store]);
+  const historyGeneration = useSyncExternalStore(
+    subscribeHistory,
+    historySnapshot,
+    historySnapshot,
+  );
+  const historyLoaded = historyGeneration !== undefined;
   const readableTurnId = useLatestReadableTurn(store);
   const sendingEntry = localThread?.sending
     ? localThread.creation?.entry
@@ -439,8 +451,18 @@ export function Chat(props: ChatProps) {
   const attachments = useMemo(
     () =>
       localThread?.attachments ??
-      uploads.filter((attachment) => draft.attachments.includes(attachment.key)),
-    [localThread?.attachments, uploads, draft.attachments],
+      draftAttachments(draft.attachments, draft.attachmentReferences, uploads),
+    [localThread?.attachments, uploads, draft.attachments, draft.attachmentReferences],
+  );
+  const attachmentAvailable = useCallback(
+    (item: Attachment) =>
+      pool.isPublished(item.resourceId) ||
+      canUseStagedUpload(
+        attachmentStaging(item),
+        threadId,
+        store.checkpoint?.historyGeneration ?? historyGeneration,
+      ),
+    [historyGeneration, pool, store, threadId],
   );
   const refreshQueue = useCallback(() => refreshQueueQuery(queries, threadId), [queries, threadId]);
   useEffect(() => {
@@ -509,7 +531,17 @@ export function Chat(props: ChatProps) {
       removeQuestionDraft(key);
       if (!leftover.text.trim() && !leftover.attachments.length && !leftover.skillIds.length)
         continue;
-      commitDraft(mergeClosedReply(getDraft(threadId), leftover), threadId);
+      const regular = getDraft(threadId);
+      commitDraft(
+        {
+          ...mergeClosedReply(regular, leftover),
+          attachmentReferences: [
+            ...(regular.attachmentReferences ?? []),
+            ...(leftover.attachmentReferences ?? []),
+          ],
+        },
+        threadId,
+      );
       moved = true;
     }
     if (moved) toast.add({ title: "The question closed. Your reply is now a regular draft." });
@@ -579,6 +611,19 @@ export function Chat(props: ChatProps) {
       });
       return;
     }
+    if (
+      entry.submission.attachments.some(
+        (item) =>
+          !pool.isPublished(item.resourceId) &&
+          !canUseStagedUpload(attachmentStaging(item), threadId, checkpoint.historyGeneration),
+      )
+    ) {
+      setPending(entry.commandId, {
+        state: "rejected",
+        error: "Reattach or remove the missing files before sending.",
+      });
+      return;
+    }
     const questionReply = entry.submission.questionReply;
     if (questionReply && !(await questionStillOpen(questionReply))) {
       setPending(entry.commandId, {
@@ -613,7 +658,7 @@ export function Chat(props: ChatProps) {
       ),
       reasoning:
         serverActive && entry.submission.mode === "steer" ? undefined : entry.submission.reasoning,
-      attachmentIds: ids.filter((id): id is string => !!id),
+      attachmentIds: [...new Set(ids.filter((id): id is string => !!id))],
       skillIds: entry.submission.skillIds,
       command: entry.submission.command,
       ...(questionReply ? { questionReply } : {}),
@@ -648,7 +693,10 @@ export function Chat(props: ChatProps) {
       currentId.current !== threadId || canEdit.current,
     );
     if (outcome?.kind !== "accepted") return;
-    if (sent) showQueued(sent, outcome.receipt);
+    if (sent) {
+      pool.markPublished(sent.attachmentIds);
+      showQueued(sent, outcome.receipt);
+    }
     if (!awaitingProjection)
       for (const attachment of entry.submission.attachments) pool.release(threadId, attachment.key);
     void refreshQueue();
@@ -710,6 +758,10 @@ export function Chat(props: ChatProps) {
   ) {
     if (local) {
       props.onLocalSubmit(threadId, submission);
+      return;
+    }
+    if (submission.attachments.some((item) => !attachmentAvailable(item))) {
+      setError("Reattach or remove the missing files before sending.");
       return;
     }
     const entry: PendingInput = {
@@ -775,7 +827,6 @@ export function Chat(props: ChatProps) {
     const finish = await prepareRewindDraft({
       parts: message.parts,
       threadId,
-      resourceUrl,
       pool,
       onError: setError,
     });
@@ -841,7 +892,16 @@ export function Chat(props: ChatProps) {
     if (pending.draftKey && pending.draftKey !== threadId) removeQuestionDraft(pending.draftKey);
     const choice = questionReplyStore.getState().choices.get(threadId);
     if (choice) questionReplyStore.getState().choose(threadId, { ...choice, replying: false });
-    commitDraft({ ...pending.completed, skillIds: [] }, threadId);
+    const completed = pending.completed;
+    const ready = draftAttachments(
+      completed.attachments,
+      completed.attachmentReferences,
+      pool.get(threadId),
+    ).flatMap((item) => {
+      const reference = readyUploadReference(item);
+      return reference ? [reference] : [];
+    });
+    commitDraft({ ...completed, skillIds: [], attachmentReferences: ready }, threadId);
     draftStore.getState().setRewind(threadId, pending.owner);
     updateView({ rewindTarget: undefined, rewindRejected: undefined });
   });
@@ -940,6 +1000,19 @@ export function Chat(props: ChatProps) {
       return;
     }
     const keys = drafts.flatMap((saved) => saved!.attachments);
+    const replies = draftAttachments(
+      keys,
+      drafts.flatMap((saved) => saved?.attachmentReferences ?? []),
+      pool.get(threadId),
+    );
+    if (replies.length !== keys.length || replies.some((item) => !attachmentAvailable(item))) {
+      setError("Reattach or remove the missing files before sending.");
+      return;
+    }
+    if (replies.length > 32) {
+      toast.add({ title: "A message can contain at most 32 attachments.", type: "error" });
+      return;
+    }
     chooseReply(messageId, false);
     updateProgress(messageId, () => undefined);
     submit(
@@ -949,7 +1022,7 @@ export function Chat(props: ChatProps) {
         // The composer keeps at most 32 skill references per draft.
         skillIds: [...new Set(drafts.flatMap((saved) => saved!.skillIds))].slice(0, 32),
         mode: "followup",
-        attachments: pool.get(threadId).filter((attachment) => keys.includes(attachment.key)),
+        attachments: replies,
       },
       target,
     );
@@ -1054,48 +1127,122 @@ export function Chat(props: ChatProps) {
     commitDraft({ ...getDraft(), commandId }),
   );
   const composerText = useEventCallback((text: string) => commitDraft({ ...getDraft(), text }));
-  const composerAttach = useEventCallback((files: File[], requireAll?: boolean) => {
+  function addDraftAttachments(
+    items: readonly (File | { reference: UploadReference; file?: File })[],
+    requireAll?: boolean,
+    keys?: readonly string[],
+  ) {
+    const current = getDraft();
+    const available = keys ? items.length : Math.max(0, 32 - current.attachments.length);
+    if (requireAll && items.length > available) return [];
+    const historyGeneration = store.checkpoint?.historyGeneration;
+    if (!keys && !local && historyGeneration === undefined) return [];
+    const added = items.slice(0, available).map((item, index) => {
+      const key = keys?.[index];
+      if (!(item instanceof File)) {
+        const reference = { ...item.reference, key: key ?? crypto.randomUUID() };
+        return item.file && reference.staging
+          ? pool.keepFile(threadId, reference.key, item.file, reference)
+          : referencedAttachment(reference);
+      }
+      if (local) return { ...draftAttachment(item), ...(key ? { key } : {}) };
+      if (key && historyGeneration === undefined) return pool.keepFile(threadId, key, item);
+      const uploadKey = pool.add(threadId, item, historyGeneration, key, draftKey);
+      return pool.get(threadId).find((attachment) => attachment.key === uploadKey)!;
+    });
+    const next = {
+      ...current,
+      attachments: [...current.attachments, ...added.map((item) => item.key)],
+      attachmentReferences: [
+        ...(current.attachmentReferences ?? []),
+        ...added.flatMap((item) => {
+          const reference = readyUploadReference(item);
+          return reference ? [reference] : [];
+        }),
+      ],
+    };
     if (local) {
-      const current = draftStore.getState().localDrafts.get(threadId);
-      if (!current) return [];
-      const available = 32 - current.attachments.length;
-      if (requireAll && files.length > available) return [];
-      const added = files.slice(0, available).map(draftAttachment);
       props.onLocalChange(threadId, (current) => ({
         ...current,
         attachments: [...current.attachments, ...added],
-        draft: {
-          ...current.draft,
-          attachments: [...current.draft.attachments, ...added.map((item) => item.key)],
-        },
+        draft: next,
       }));
-      return added;
+    } else {
+      commitDraft(next);
     }
-    const current = getDraft();
-    const available = 32 - current.attachments.length;
-    if (requireAll && files.length > available) return [];
-    const keys = files.slice(0, available).map((file) => pool.add(threadId, file));
-    commitDraft({ ...current, attachments: [...current.attachments, ...keys] });
-    return keys.map((key) => pool.get(threadId).find((attachment) => attachment.key === key)!);
-  });
+    return added;
+  }
+  const composerAttach = useEventCallback((files: File[], requireAll?: boolean) =>
+    addDraftAttachments(files, requireAll),
+  );
+  const composerPasteAttachments = useEventCallback(
+    (attachments: readonly Attachment[], restoreKeys?: boolean) => {
+      if (!restoreKeys && !local && !store.checkpoint) return;
+      const generation = store.checkpoint?.historyGeneration;
+      const items = attachments.flatMap<File | { reference: UploadReference; file?: File }>(
+        (attachment) => {
+          const reference = readyUploadReference(attachment);
+          if (reference && pool.isPublished(reference.resourceId))
+            return [{ reference: { ...reference, staging: undefined }, file: attachment.file }];
+          if (
+            reference &&
+            (restoreKeys || canUseStagedUpload(reference.staging, threadId, generation))
+          )
+            return [{ reference, file: attachment.file }];
+          return attachment.file ? [attachment.file] : [];
+        },
+      );
+      if (items.length !== attachments.length) {
+        setError("An attachment is unavailable in this conversation.");
+        return;
+      }
+      const added = addDraftAttachments(
+        items,
+        true,
+        restoreKeys ? attachments.map((item) => item.key) : undefined,
+      );
+      if (added.length === items.length) return added;
+      toast.add({ title: "A message can contain at most 32 attachments.", type: "error" });
+    },
+  );
   const composerRemoveAttachment = useEventCallback((key: string) => {
+    const current = getDraft();
+    const next = {
+      ...current,
+      attachments: current.attachments.filter((id) => id !== key),
+      attachmentReferences: current.attachmentReferences?.filter((item) => item.key !== key),
+    };
     if (local) {
       releaseDraftAttachments(attachments.filter((item) => item.key === key));
       props.onLocalChange(threadId, (current) => ({
         ...current,
         attachments: current.attachments.filter((item) => item.key !== key),
-        draft: {
-          ...current.draft,
-          attachments: current.draft.attachments.filter((id) => id !== key),
-        },
+        draft: next,
       }));
       return;
     }
     pool.remove(threadId, key);
-    const current = getDraft();
-    commitDraft({ ...current, attachments: current.attachments.filter((id) => id !== key) });
+    commitDraft(next);
   });
-  const composerRetryAttachment = useEventCallback((key: string) => pool.retry(threadId, key));
+  const composerRetryAttachment = useEventCallback((key: string) => {
+    const generation = store.checkpoint?.historyGeneration;
+    const attachment = pool.get(threadId).find((item) => item.key === key);
+    if (
+      attachment &&
+      generation !== undefined &&
+      (!attachment.staging || !canUseStagedUpload(attachment.staging, threadId, generation))
+    ) {
+      const current = getDraft();
+      pool.remove(threadId, key);
+      pool.add(threadId, attachment.file, generation, key, draftKey);
+      commitDraft({
+        ...current,
+        attachmentReferences: current.attachmentReferences?.filter((item) => item.key !== key),
+      });
+      return;
+    }
+    pool.retry(threadId, key);
+  });
   const composerModelChange = useEventCallback((modelId: string, reasoning?: ModelReasoning) => {
     if (local) {
       props.onLocalChange(threadId, (current) => ({ ...current, modelId, reasoning }));
@@ -1237,6 +1384,9 @@ export function Chat(props: ChatProps) {
           onText={composerText}
           attachments={attachments}
           onAttach={composerAttach}
+          onPasteAttachments={composerPasteAttachments}
+          attachmentAvailable={attachmentAvailable}
+          attachmentDisabled={!local && !historyLoaded}
           onRemoveAttachment={composerRemoveAttachment}
           onRetryAttachment={composerRetryAttachment}
           active={active}

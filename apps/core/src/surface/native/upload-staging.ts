@@ -1,0 +1,1 @@
+export const NATIVE_UPLOAD_STAGING_MS = 24 * 60 * 60_000;

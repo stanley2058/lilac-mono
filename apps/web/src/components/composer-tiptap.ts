@@ -510,13 +510,40 @@ export function composerCompletionPrefix(editor: Editor): string {
     node.type.name === "hardBreak" ? "\n" : "",
   );
 }
-export function editorAttachmentKeys(doc: DocumentNode): Set<string> {
+export function editorAttachmentKeys(doc: DocumentNode | Fragment): Set<string> {
   const keys = new Set<string>();
   doc.descendants((node) => {
     if (node.type.name === "composer_attachment" && typeof node.attrs.attachmentKey === "string")
       keys.add(node.attrs.attachmentKey);
   });
   return keys;
+}
+
+function remapAttachmentFragment(fragment: Fragment, keys: ReadonlyMap<string, string>): Fragment {
+  const nodes: DocumentNode[] = [];
+  fragment.forEach((node) => {
+    const key =
+      node.type.name === "composer_attachment" ? keys.get(node.attrs.attachmentKey) : undefined;
+    if (key) {
+      nodes.push(node.type.create({ ...node.attrs, attachmentKey: key }, node.content, node.marks));
+      return;
+    }
+    nodes.push(node.isLeaf ? node : node.copy(remapAttachmentFragment(node.content, keys)));
+  });
+  return Fragment.fromArray(nodes);
+}
+
+export function remapAttachmentSlice(
+  slice: Slice,
+  schema: Schema,
+  keys: ReadonlyMap<string, string>,
+): Slice {
+  const remapped = new Slice(
+    remapAttachmentFragment(slice.content, keys),
+    slice.openStart,
+    slice.openEnd,
+  );
+  return Slice.fromJSON(schema, remapped.toJSON());
 }
 export type ComposerSkill = { id: string; name: string };
 export function editorSkillIds(doc: DocumentNode): string[] {
@@ -528,7 +555,11 @@ export function editorSkillIds(doc: DocumentNode): string[] {
 }
 export function insertEditorAttachment(
   editor: Editor,
-  attachment: Pick<Attachment, "key" | "file">,
+  attachment: Pick<Attachment, "key"> &
+    (
+      | { file: Pick<File, "name">; reference?: never }
+      | { file?: never; reference: Pick<NonNullable<Attachment["reference"]>, "name"> }
+    ),
 ) {
   const { from } = editor.state.selection;
   const previous = editor.state.doc.textBetween(Math.max(0, from - 1), from, "", "x");
@@ -536,7 +567,10 @@ export function insertEditorAttachment(
     ...(/\S/.test(previous) ? [{ type: "text", text: " " }] : []),
     {
       type: "composer_attachment",
-      attrs: { attachmentKey: attachment.key, name: attachment.file.name },
+      attrs: {
+        attachmentKey: attachment.key,
+        name: (attachment.file ?? attachment.reference).name,
+      },
     },
     { type: "text", text: " " },
   ]);
