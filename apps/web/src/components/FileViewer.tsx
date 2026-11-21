@@ -30,7 +30,7 @@ import {
   useResourcePreviewText,
 } from "./ResourcePreview";
 import { FileSource } from "./FileSource";
-import { NativeSubagentPanel } from "./SubagentPanel";
+import { AgentTabIcon, NativeAgentSidebar, NativeSubagentPanel } from "./SubagentPanel";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "./ui/tooltip";
 import "./file-viewer.css";
@@ -231,15 +231,29 @@ export function RightPanel({ threadId, foreground }: { threadId: string; foregro
         }}
         onAgents={() => actions.openAgents(threadId)}
         onFiles={() => actions.openFiles(threadId)}
-        expandedSidebar={
-          <Suspense fallback={<SkeletonRows label="Loading files" rows={8} />}>
-            <WorkspaceTree threadId={threadId} active={visible} activePath={activePath} />
-          </Suspense>
-        }
+        expandedSidebar={(tab) => {
+          if (tab?.type === "files") return null;
+          if (tab?.type === "agent")
+            return <NativeAgentSidebar threadId={threadId} activeId={tab.agentId} />;
+          return (
+            <Suspense fallback={<SkeletonRows label="Loading files" rows={8} />}>
+              <WorkspaceTree threadId={threadId} active={visible} activePath={activePath} />
+            </Suspense>
+          );
+        }}
         renderTab={(tab, active) => {
           if (tab.type === "agents")
             return (
               <NativeSubagentPanel threadId={threadId} foreground={foreground && active} embedded />
+            );
+          if (tab.type === "agent")
+            return (
+              <NativeSubagentPanel
+                threadId={threadId}
+                targetId={tab.agentId}
+                foreground={foreground && active}
+                embedded
+              />
             );
           if (tab.type === "thread")
             return <ThreadReferenceView target={tab.target} active={visible && active} panel />;
@@ -297,7 +311,8 @@ export function RightPanelTabs({
   renderTab: (tab: PanelTab, active: boolean) => ReactNode;
   visible?: boolean;
   dirtyIds?: ReadonlySet<string>;
-  expandedSidebar?: ReactNode;
+  /** The expanded panel's sidebar for the active tab; null hides it. */
+  expandedSidebar?: (tab: PanelTab | undefined) => ReactNode;
 }) {
   const list = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -305,7 +320,8 @@ export function RightPanelTabs({
   function tabName(tab: PanelTab) {
     if (tab.type === "agents") return "Agents";
     if (tab.type === "files") return "Files";
-    return tab.type === "thread" ? tab.title : tab.target.name;
+    if (tab.type === "agent" || tab.type === "thread") return tab.title;
+    return tab.target.name;
   }
   useLayoutEffect(() => {
     const viewport = list.current;
@@ -332,8 +348,8 @@ export function RightPanelTabs({
       stopWatching();
     };
   }, [expanded]);
-  const activeType = tabs.items.find((tab) => tab.id === tabs.activeId)?.type;
-  const sidebar = expanded && expandedSidebar && activeType !== "files";
+  const activeTab = tabs.items.find((tab) => tab.id === tabs.activeId);
+  const sidebar = expanded ? expandedSidebar?.(activeTab) : null;
   return (
     <>
       {expanded ? (
@@ -379,6 +395,9 @@ export function RightPanelTabs({
                     }}
                   >
                     {tab.type === "agents" ? <Bot /> : null}
+                    {tab.type === "agent" ? (
+                      <AgentTabIcon agentId={tab.agentId} profile={tab.profile} />
+                    ) : null}
                     {tab.type === "files" ? <Files /> : null}
                     {tab.type === "thread" ? (
                       <ConversationIcon surface={tab.target.surface} />
@@ -442,8 +461,10 @@ export function RightPanelTabs({
           </div>
           <div className="flex flex-1 min-h-0 min-w-0">
             {sidebar ? (
-              <div className="file-panel-tree flex flex-none w-64 min-h-0 border-r border-border">
-                {expandedSidebar}
+              <div
+                className={`file-panel-tree flex flex-none min-h-0 border-r border-border ${activeTab?.type === "agent" ? "w-56" : "w-64"}`}
+              >
+                {sidebar}
               </div>
             ) : null}
             <div className="file-panel-tab-content">

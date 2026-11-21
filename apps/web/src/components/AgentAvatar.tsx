@@ -106,11 +106,14 @@ export function AgentAvatar({
   size = "default",
   decorative = false,
   avatarUrl,
+  color,
 }: {
   profile: AgentProfile;
   displayName: string;
   decorative?: boolean;
   avatarUrl?: string;
+  /** Subagent palette index from `subagentRelations`; Lilac keeps its own color. */
+  color?: number;
   size?: "sm" | "default" | "lg";
 }) {
   const identities = useContext(MessageIdentityContext);
@@ -127,6 +130,7 @@ export function AgentAvatar({
       aria-label={decorative ? undefined : displayName}
       className="agent-avatar after:hidden"
       data-agent-profile={shape}
+      data-agent-color={shape === "self" ? undefined : color}
     >
       {configuredAvatar ? (
         <>

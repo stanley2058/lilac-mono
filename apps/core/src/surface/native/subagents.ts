@@ -37,6 +37,8 @@ export type SubagentReader = {
   ): SubagentSnapshot | undefined;
 };
 
+type LiveParentTarget = Extract<WorkflowRun["completionTarget"], { kind: "live_parent" }>;
+
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
 
 export type SubagentStreamingMode = "paragraph" | "complete";
@@ -225,21 +227,30 @@ export class NativeSubagents {
           const canonical = yield* this.options.native.listCanonicalRequestIds(input.threadId);
           return Result.ok(input.turnId && canonical.includes(input.requestId) ? input : null);
         }
-        const operation = yield* this.options.workflows
-          .getOperationByRequestId(target.parentRequestId)
-          .mapError(() => nativeFailure("sqlite", "Subagent is unavailable"));
-        if (!operation) return Result.ok(null);
-        const parent = yield* this.options.workflows
-          .getRun(operation.runId)
-          .mapError(() => nativeFailure("sqlite", "Subagent is unavailable"));
-        if (
-          parent?.completionTarget.kind !== "live_parent" ||
-          parent.completionTarget.childSessionId !== target.parentSessionId
-        )
-          return Result.ok(null);
+        const parent = yield* this.parentRun(target);
+        if (!parent) return Result.ok(null);
         current = parent;
       }
       return Result.ok(null);
+    }, this);
+  }
+
+  /** The subagent run that delegated this one; null when a thread input or nothing owns it. */
+  private parentRun(target: LiveParentTarget) {
+    return Result.gen(function* () {
+      const operation = yield* this.options.workflows
+        .getOperationByRequestId(target.parentRequestId)
+        .mapError(() => nativeFailure("sqlite", "Subagent is unavailable"));
+      if (!operation) return Result.ok(null);
+      const parent = yield* this.options.workflows
+        .getRun(operation.runId)
+        .mapError(() => nativeFailure("sqlite", "Subagent is unavailable"));
+      if (
+        parent?.completionTarget.kind !== "live_parent" ||
+        parent.completionTarget.childSessionId !== target.parentSessionId
+      )
+        return Result.ok(null);
+      return Result.ok(parent);
     }, this);
   }
 
@@ -379,8 +390,10 @@ export class NativeSubagents {
         .mapError(() => nativeFailure("sqlite", "Subagent is unavailable"));
       const execution = [live, stream].find((entry) => entry?.model);
       const reasoning = execution ? execution.reasoning : policy?.resolvedModelRequest.reasoning;
+      const parent = yield* this.parentRun(target);
       return Result.ok({
         id: run.runId,
+        ...(parent ? { parentId: parent.runId } : {}),
         activityId: digest(target.parentToolCallId),
         turnId,
         profile: target.profile,

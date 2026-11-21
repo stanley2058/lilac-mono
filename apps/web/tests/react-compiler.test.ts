@@ -15,7 +15,6 @@ const knownBails = [
   "src/components/QuestionDemo.tsx: useQuestionReplyDemo: Cannot access refs during render",
   "src/components/ResourcePreview.tsx: AttachmentPreviewBody: [PruneHoistedContexts] Unexpected hoisted function",
   "src/components/Settings.tsx: Settings: Cannot access refs during render",
-  "src/components/SubagentPanel.tsx: NativeSubagentPanel: Existing memoization could not be preserved",
   "src/components/SubagentPanel.tsx: SubagentPanelView: Existing memoization could not be preserved",
   "src/components/ThreadReferenceView.tsx: ThreadReferenceView: (BuildHIR::lowerStatement) Handle for-await loops",
   "src/components/WorkspaceTree.tsx: WorkspaceTreeView: Cannot access variable while it is being initialized",

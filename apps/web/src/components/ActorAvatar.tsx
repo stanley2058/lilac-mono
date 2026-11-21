@@ -5,6 +5,7 @@ export type ActorIdentity = {
   displayName: string;
   avatarUrl?: string;
   agentProfile?: AgentProfile;
+  agentColor?: number;
 };
 
 export function initials(name: string): string {
@@ -24,6 +25,7 @@ export function ActorAvatar({
   displayName,
   avatarUrl,
   agentProfile,
+  agentColor,
   size = "default",
 }: ActorIdentity & { size?: "default" | "sm" | "lg" }) {
   if (agentProfile)
@@ -33,6 +35,7 @@ export function ActorAvatar({
         displayName={displayName}
         size={size}
         avatarUrl={avatarUrl}
+        color={agentColor}
       />
     );
   return (

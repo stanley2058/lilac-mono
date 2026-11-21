@@ -114,6 +114,7 @@ function fixture() {
       terminalAt: null,
     },
   ];
+  const runs = [run];
   let workflowReads = 0;
   let transcriptReads = 0;
   let live: SubagentSnapshot | undefined;
@@ -130,15 +131,15 @@ function fixture() {
         Result.ok(operations.find((operation) => operation.requestId === id) ?? null),
       getRun: (id) => {
         workflowReads++;
-        return Result.ok(id === run.runId ? run : null);
+        return Result.ok(runs.find((entry) => entry.runId === id) ?? null);
       },
       listSubagentRuns: () => {
         workflowReads++;
-        return Result.ok([run]);
+        return Result.ok(runs);
       },
       listOperations: (runId) => {
         workflowReads++;
-        return Result.ok(runId === run.runId ? operations : []);
+        return Result.ok(operations.filter((operation) => operation.runId === runId));
       },
     },
     transcripts: {
@@ -167,7 +168,9 @@ function fixture() {
     run,
     target,
     operations,
+    executionRequestId,
     service,
+    addRun: (value: WorkflowRun) => runs.push(value),
     counters: () => ({ workflowReads, transcriptReads }),
     setLive: (value: SubagentSnapshot | undefined) => {
       live = value;
@@ -190,6 +193,28 @@ test("subagent reads authorize the parent before accessing workflow or transcrip
   f.native.shareThread("owner", { threadId: f.thread.id, userId: "guest", grant: null }).unwrap();
   expect(f.read("guest").isErr()).toBe(true);
   expect(f.counters().transcriptReads).toBe(1);
+});
+
+test("nested subagents name the subagent that delegated them", () => {
+  const f = fixture();
+  f.addRun({
+    ...f.run,
+    runId: "wfrun:subagent:nested",
+    completionTarget: {
+      ...f.target,
+      parentRequestId: f.executionRequestId,
+      parentSessionId: f.target.childSessionId,
+      parentToolCallId: "tool-2",
+      childRequestId: "child-2",
+      childSessionId: "nested-session",
+      depth: 2,
+    },
+  });
+  const items = f.service.list("owner", { threadId: f.thread.id }).unwrap().items;
+  expect(items.map((item) => [item.id, item.parentId])).toEqual([
+    [f.run.runId, undefined],
+    ["wfrun:subagent:nested", f.run.runId],
+  ]);
 });
 
 test("subagent IDs cannot expose a different thread or rewound request", () => {

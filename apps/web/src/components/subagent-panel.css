@@ -81,3 +81,9 @@
 .subagent-transcript .user-turn {
   margin-left: 0;
 }
+
+/* Avatar artwork fills its avatar; the status icon size above targets Lucide and spinner icons. */
+.subagent-status .nested-agents svg {
+  width: 100%;
+  height: 100%;
+}

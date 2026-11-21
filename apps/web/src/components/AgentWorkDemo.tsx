@@ -3,9 +3,10 @@ import { WorkspacePanels, WorkspaceSidePanel } from "./WorkspacePanels";
 import { useMemo, useLayoutEffect } from "react";
 import { useStore } from "zustand";
 import { demoSubagents, demoSubagentTranscript } from "../agent-work-fixtures";
-import { createPanelStore, defaultRightPanel } from "../panel-store";
-import { SubagentContext } from "./subagent-context";
-import { SubagentPanelView, RightPanelToggle } from "./SubagentPanel";
+import { createPanelStore, defaultPanelTabs, defaultRightPanel } from "../panel-store";
+import { agentTabTarget, SubagentContext, subagentContextValue } from "./subagent-context";
+import { AgentSidebarView, SubagentPanelView, RightPanelToggle } from "./SubagentPanel";
+import { RightPanelTabs } from "./FileViewer";
 import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Pause, Play, RotateCcw } from "lucide-react";
 import {
@@ -55,7 +56,7 @@ export function AgentWorkDemo() {
   const [streaming, setStreaming] = useState<StreamingMode>("paragraph");
   const panelLayout = useStore(panel, (state) => state.threads.get("demo") ?? defaultRightPanel);
   const panelOpen = panelLayout.open;
-  const panelSelection = useStore(panel, (state) => state.selection);
+  const panelTabs = useStore(panel, (state) => state.tabs.get("demo") ?? defaultPanelTabs);
   const [playhead, setPlayhead] = useState({ stage: 0, frame: 0, playing: false });
   const [store] = useState(() => new NativeThreadStore());
   const revision = useRef(0);
@@ -132,14 +133,15 @@ export function AgentWorkDemo() {
     });
   }, [store, slot, stage.id, sent, promptText, run, stageStartedAt]);
   const agents = useMemo(() => demoSubagents(slot), [slot]);
-  const selectedAgent = agents.find((agent) => agent.id === panelSelection?.agentId);
   const agentContext = useMemo(
-    () => ({
-      agents: new Map(agents.map((agent) => [agent.activityId, agent])),
-      open: (id: string) => panel.getState().select("demo", id),
-    }),
+    () =>
+      subagentContextValue(agents, (agent, aliasId) =>
+        panel.getState().openAgent("demo", agent, aliasId),
+      ),
     [agents, panel],
   );
+  const openAgent = (agent: (typeof agents)[number]) =>
+    agentContext.open(agentTabTarget(agent), agent.activityId);
   useEffect(() => {
     if (!playhead.playing) return;
     const timer = window.setTimeout(
@@ -460,12 +462,33 @@ export function AgentWorkDemo() {
               onWidthChange={(width) => panel.getState().resize("demo", width)}
               label="Demo agents panel width"
             >
-              <SubagentPanelView
-                items={agents}
-                selected={selectedAgent}
-                messages={selectedAgent ? demoSubagentTranscript(selectedAgent) : []}
-                onSelect={agentContext.open}
-                onBack={panel.getState().back}
+              <RightPanelTabs
+                tabs={panelTabs}
+                visible={panelOpen}
+                onFocus={(id) => panel.getState().focusTab("demo", id)}
+                onClose={(id) => panel.getState().closeTab("demo", id)}
+                onAgents={() => panel.getState().openAgents("demo")}
+                expandedSidebar={(tab) =>
+                  tab?.type === "agent" ? (
+                    <AgentSidebarView items={agents} activeId={tab.agentId} onSelect={openAgent} />
+                  ) : null
+                }
+                renderTab={(tab) => {
+                  if (tab.type === "agents")
+                    return <SubagentPanelView embedded items={agents} onSelect={openAgent} />;
+                  if (tab.type !== "agent") return null;
+                  const selected = agents.find((agent) => agent.id === tab.agentId);
+                  return (
+                    <SubagentPanelView
+                      embedded
+                      items={agents}
+                      selected={selected}
+                      messages={selected ? demoSubagentTranscript(selected) : []}
+                      error={selected ? undefined : "Subagent is no longer available."}
+                      onSelect={openAgent}
+                    />
+                  );
+                }}
               />
             </WorkspaceSidePanel>
           </WorkspacePanels>

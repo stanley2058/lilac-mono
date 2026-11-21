@@ -2,26 +2,60 @@ import { mergeSubagentTranscript, type SubagentTranscriptPage } from "../src/que
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { agentWorkStages, demoSubagents, demoSubagentTranscript } from "../src/agent-work-fixtures";
-import { SubagentPanelView } from "../src/components/SubagentPanel";
-import { SubagentContext } from "../src/components/subagent-context";
+import { AgentSidebarView, SubagentPanelView } from "../src/components/SubagentPanel";
+import {
+  agentTabTarget,
+  SubagentContext,
+  subagentContextValue,
+  subagentRelations,
+} from "../src/components/subagent-context";
+import { nestedAgentsLabel, subagentTitle } from "../src/components/NestedAgents";
 import { ActivityItem } from "../src/components/ActivityLog";
 import { createPanelStore, defaultRightPanel } from "../src/panel-store";
 
-const actions = { onSelect: () => {}, onBack: () => {} };
+const actions = { onSelect: () => {} };
 const slot = agentWorkStages.find((stage) => stage.id === "subagents-working")!.frames[0]!;
 const agents = demoSubagents(slot);
+const nestedSlot = agentWorkStages.find((stage) => stage.id === "subagents-nested")!.frames[0]!;
+const nestedAgents = demoSubagents(nestedSlot);
 
-test("agents panel starts closed and retains its selected transcript across close and reopen", () => {
+test("each agent opens its own tab beside a single Agents tab", () => {
   const store = createPanelStore();
+  const tabIds = () =>
+    store
+      .getState()
+      .tabs.get("thread")
+      ?.items.map((tab) => tab.id);
   expect((store.getState().threads.get("thread") ?? defaultRightPanel).open).toBe(false);
-  store.getState().select("thread", agents[0]!.id);
+  const [parent, child] = demoSubagents(nestedSlot);
+  store.getState().openAgent("thread", agentTabTarget(parent!));
   expect((store.getState().threads.get("thread") ?? defaultRightPanel).open).toBe(true);
+  store.getState().openAgent("thread", agentTabTarget(child!));
+  store.getState().openAgents("thread");
+  store.getState().openAgent("thread", agentTabTarget(parent!));
+  expect(tabIds()).toEqual(["agents", `agent:${parent!.id}`, `agent:${child!.id}`]);
+  expect(store.getState().tabs.get("thread")?.activeId).toBe(`agent:${parent!.id}`);
   store.getState().toggle("thread");
-  expect(store.getState().selection).toEqual({ threadId: "thread", agentId: agents[0]!.id });
   store.getState().toggle("thread");
-  expect((store.getState().threads.get("thread") ?? defaultRightPanel).open).toBe(true);
-  store.getState().back();
-  expect(store.getState().selection).toBeUndefined();
+  expect(store.getState().tabs.get("thread")?.activeId).toBe(`agent:${parent!.id}`);
+  store.getState().closeTab("thread", `agent:${child!.id}`);
+  expect(tabIds()).toEqual(["agents", `agent:${parent!.id}`]);
+});
+
+test("the expanded agent sidebar lists delegated agents under their parent", () => {
+  const ordered = [...nestedAgents].reverse();
+  const html = renderToStaticMarkup(
+    <AgentSidebarView items={ordered} activeId="demo_subagent_tickets" onSelect={() => {}} />,
+  );
+  const titles = [...html.matchAll(/title="([^"]+)"/g)].map((match) => match[1]);
+  expect(titles).toEqual([
+    "Plan the museum visit",
+    "Find ticket prices",
+    "Check exhibit hours",
+    "Check the weather",
+  ]);
+  expect(html.match(/aria-current="page"/g)).toHaveLength(1);
+  expect(html).toContain("var(--ui-space-unit) * 6");
 });
 
 test("agent preview uses an agent avatar and readable profile and work title, with no raw tool tree", () => {
@@ -31,7 +65,7 @@ test("agent preview uses an agent avatar and readable profile and work title, wi
     .find((part) => part.type === "data-activity" && part.id === agent.activityId)!;
   if (part.type !== "data-activity") throw new Error("Missing agent activity");
   const html = renderToStaticMarkup(
-    <SubagentContext value={{ agents: new Map([[agent.activityId, agent]]), open: () => {} }}>
+    <SubagentContext value={subagentContextValue([agent], () => {})}>
       <ActivityItem part={part} />
     </SubagentContext>,
   );
@@ -133,4 +167,109 @@ test("completed transcripts keep every initial prompt chunk outside folded work"
   expect(html).toContain("x".repeat(2000) + "End of the long prompt.");
   expect(html).toContain("Worked");
   expect(html).not.toContain('data-message-id="child_1_0"');
+});
+
+test("nested agents take a color apart from their parent", () => {
+  const { colors, children } = subagentRelations(nestedAgents);
+  const plan = nestedAgents.find((agent) => agent.id === "demo_subagent_plan")!;
+  const nested = children.get(plan.id)!;
+  expect(nested.map((agent) => agent.parentId)).toEqual([plan.id, plan.id]);
+  for (const agent of nested) expect(colors.get(agent.id)).not.toBe(colors.get(plan.id));
+  expect(subagentRelations(nestedAgents).colors).toEqual(colors);
+});
+
+test("a delegating agent row stacks its running agents instead of the raw progress label", () => {
+  const part = nestedSlot.messages
+    .flatMap((message) => message.parts)
+    .find((part) => part.type === "data-activity" && part.id === "demo_subagent_plan")!;
+  if (part.type !== "data-activity") throw new Error("Missing agent activity");
+  const html = renderToStaticMarkup(
+    <SubagentContext value={subagentContextValue(nestedAgents, () => {})}>
+      <ActivityItem part={part} />
+    </SubagentContext>,
+  );
+  expect(html).toContain("Plan the museum visit");
+  expect(html).toContain("2 agents running");
+  expect(html.match(/\bnested-agents\b/g)).toHaveLength(1);
+  expect(html.match(/data-agent-color=/g)).toHaveLength(3);
+  expect(html).not.toContain("subagent (");
+  expect(subagentTitle("subagent (full; codex/gpt [high]; 1/2 done)\n`- > read a")).toBe(
+    "Delegating to Full Agent",
+  );
+  expect(nestedAgentsLabel([{ ...nestedAgents[1]!, state: "complete" }, nestedAgents[2]!])).toBe(
+    "1 of 2 agents running",
+  );
+});
+
+test("a nested agent's transcript shows its parent agent as the prompter", () => {
+  const { colors } = subagentRelations(nestedAgents);
+  const selected = nestedAgents.find((agent) => agent.id === "demo_subagent_tickets")!;
+  const html = renderToStaticMarkup(
+    <SubagentPanelView
+      items={nestedAgents}
+      selected={selected}
+      messages={demoSubagentTranscript(selected)}
+      {...actions}
+    />,
+  );
+  expect(html).toContain('aria-label="About Full Agent"');
+  expect(html).not.toContain('aria-label="About Lilac"');
+  expect(html).toContain(`data-agent-color="${colors.get(selected.parentId!)}"`);
+  expect(html).toContain(`data-agent-color="${colors.get(selected.id)}"`);
+});
+
+test("a tab opened by activity ID converges on the agent's run tab", () => {
+  const store = createPanelStore();
+  const [parent, child] = demoSubagents(nestedSlot);
+  const alias = { ...agentTabTarget(child!), agentId: "activity-child" };
+  store.getState().openAgent("thread", alias);
+  store.getState().resolveAgent("thread", "activity-child", agentTabTarget(child!));
+  expect(store.getState().tabs.get("thread")).toEqual({
+    items: [
+      { id: "agents", type: "agents" },
+      { id: `agent:${child!.id}`, type: "agent", ...agentTabTarget(child!) },
+    ],
+    activeId: `agent:${child!.id}`,
+  });
+  store.getState().openAgent("thread", alias);
+  store.getState().openAgent("thread", agentTabTarget(parent!));
+  store.getState().resolveAgent("thread", "activity-child", agentTabTarget(child!));
+  expect(
+    store
+      .getState()
+      .tabs.get("thread")
+      ?.items.map((tab) => tab.id),
+  ).toEqual(["agents", `agent:${child!.id}`, `agent:${parent!.id}`]);
+  expect(store.getState().tabs.get("thread")?.activeId).toBe(`agent:${parent!.id}`);
+});
+
+test("a nested transcript waits for its parent instead of crediting the main agent", () => {
+  const selected = nestedAgents.find((agent) => agent.id === "demo_subagent_tickets")!;
+  const html = renderToStaticMarkup(
+    <SubagentPanelView
+      items={[selected]}
+      selected={selected}
+      messages={demoSubagentTranscript(selected)}
+      {...actions}
+    />,
+  );
+  expect(html).toContain('aria-label="About Parent agent"');
+  expect(html).not.toContain('aria-label="About Lilac"');
+});
+
+test("opening a loaded agent merges a hidden tab opened under its activity ID", () => {
+  const store = createPanelStore();
+  const [, child] = demoSubagents(nestedSlot);
+  store
+    .getState()
+    .openAgent("thread", { ...agentTabTarget(child!), agentId: child!.activityId + "-pending" });
+  store.getState().openAgents("thread");
+  store.getState().openAgent("thread", agentTabTarget(child!), child!.activityId + "-pending");
+  expect(store.getState().tabs.get("thread")).toEqual({
+    items: [
+      { id: "agents", type: "agents" },
+      { id: `agent:${child!.id}`, type: "agent", ...agentTabTarget(child!) },
+    ],
+    activeId: `agent:${child!.id}`,
+  });
 });

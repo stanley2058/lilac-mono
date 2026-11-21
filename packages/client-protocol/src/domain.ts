@@ -292,6 +292,8 @@ export const subagentSummarySchema = z.strictObject({
   model: z.string().max(512).optional(),
   reasoning: modelReasoningSchema.optional(),
   id: runIdentitySchema,
+  /** The delegating subagent's `id`; absent when the thread's agent delegated this one. */
+  parentId: runIdentitySchema.optional(),
   activityId: identitySchema,
   turnId: identitySchema,
   /** Name of the subagent permission profile. */

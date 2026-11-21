@@ -864,7 +864,8 @@ export const MessageBody = memo(function MessageBody(
       group.kind === "text" || (group.kind === "part" && group.part.type === "data-resource"),
   );
   let authorRole = externalAuthor ? "User" : "Participant";
-  if (identities.promptingAgent) authorRole = "Main agent";
+  if (identities.promptingAgent)
+    authorRole = identities.promptingAgent.agentProfile ? "Parent agent" : "Main agent";
   if (message.role === "assistant") authorRole = "Agent";
   else if (authorId !== undefined && authorId === identities.viewerId) authorRole = "You";
   const self =

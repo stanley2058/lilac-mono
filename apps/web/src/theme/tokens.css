@@ -81,3 +81,34 @@
   --ui-agent-base: #9c72d4;
   --ui-agent-shadow: #65468f;
 }
+/* Subagent colors keep the default stops' lightness and chroma. Hues skip Lilac's purple and red. */
+[data-agent-color] {
+  --ui-agent-highlight: oklch(0.89 0.06 var(--ui-agent-hue));
+  --ui-agent-light: oklch(0.75 0.125 var(--ui-agent-hue));
+  --ui-agent-base: oklch(0.67 0.145 var(--ui-agent-hue));
+  --ui-agent-shadow: oklch(0.48 0.1 var(--ui-agent-hue));
+}
+[data-agent-color="0"] {
+  --ui-agent-hue: 252;
+}
+[data-agent-color="1"] {
+  --ui-agent-hue: 163;
+}
+[data-agent-color="2"] {
+  --ui-agent-hue: 60;
+}
+[data-agent-color="3"] {
+  --ui-agent-hue: 215;
+}
+[data-agent-color="4"] {
+  --ui-agent-hue: 350;
+}
+[data-agent-color="5"] {
+  --ui-agent-hue: 128;
+}
+[data-agent-color="6"] {
+  --ui-agent-hue: 88;
+}
+[data-agent-color="7"] {
+  --ui-agent-hue: 190;
+}
