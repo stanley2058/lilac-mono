@@ -1,0 +1,893 @@
+[
+  {
+    "role": "user",
+    "content": "<text:1>"
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "reasoning",
+        "text": "<text:2>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_3",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:4>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:5>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_3",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:6>",
+            "stderr": "<s:7>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:8>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:9>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_10",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:11>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:12>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_10",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:13>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:15>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:16>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_17",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:18>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:19>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_17",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:20>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:21>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:22>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_23",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:24>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:25>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_23",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:26>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:27>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_28",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:29>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:30>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_28",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:31>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:32>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:33>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_34",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:35>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:36>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_34",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:37>",
+            "stderr": "<s:14>",
+            "exitCode": 1
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:38>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:39>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_40",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:41>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:42>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_40",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:43>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:44>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:45>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_46",
+        "toolName": "mcp__lilac__batch",
+        "input": {
+          "tool_calls": [
+            {
+              "tool": "<s:47>",
+              "parameters": {
+                "command": "<s:48>"
+              }
+            },
+            {
+              "tool": "<s:47>",
+              "parameters": {
+                "command": "<s:49>"
+              }
+            }
+          ]
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:50>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_46",
+        "toolName": "mcp__lilac__batch",
+        "output": {
+          "type": "json",
+          "value": {
+            "type": "<s:51>",
+            "version": 1,
+            "accepted": true,
+            "total": 2,
+            "children": [
+              {
+                "index": 1,
+                "toolCallId": "<s:52>",
+                "toolName": "<s:47>",
+                "outcome": "<s:53>",
+                "isError": false,
+                "outputType": "<s:54>",
+                "contentStart": 1,
+                "contentCount": 2
+              },
+              {
+                "index": 2,
+                "toolCallId": "<s:55>",
+                "toolName": "<s:47>",
+                "outcome": "<s:53>",
+                "isError": false,
+                "outputType": "<s:54>",
+                "contentStart": 3,
+                "contentCount": 2
+              }
+            ]
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:56>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_57",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:58>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:59>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_57",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:60>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:61>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:62>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_63",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:64>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:65>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_63",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:66>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:67>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:68>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_69",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:70>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:71>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_69",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:72>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:73>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:74>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_75",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:76>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:77>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_75",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:78>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:79>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_80",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:81>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:82>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_80",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:83>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:84>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:85>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_86",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:87>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:88>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_86",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:89>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:90>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:91>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_92",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:93>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:94>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_92",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:95>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:96>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:97>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_98",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:99>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:100>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_98",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:101>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:102>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_103",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:104>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:105>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_103",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:106>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:107>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:108>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_109",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:110>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:111>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_109",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:112>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:113>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:114>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_115",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:116>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:117>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_115",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:118>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:119>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:120>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_121",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:122>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:123>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_121",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:124>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:125>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_126",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:127>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:128>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_126",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:129>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:130>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:131>"
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_132",
+        "toolName": "mcp__lilac__bash",
+        "input": {
+          "command": "<s:133>"
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawInput": "<s:134>",
+            "parentToolCallId": null
+          }
+        },
+        "providerExecuted": true
+      },
+      {
+        "type": "tool-result",
+        "toolCallId": "call_132",
+        "toolName": "mcp__lilac__bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:135>",
+            "stderr": "<s:14>",
+            "exitCode": 0
+          }
+        },
+        "providerOptions": {
+          "claude-code": {
+            "rawResult": "<s:136>",
+            "rawResultTruncated": false,
+            "parentToolCallId": null
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:137>"
+      },
+      {
+        "type": "text",
+        "text": "<text:138>"
+      }
+    ]
+  }
+]

@@ -1,0 +1,207 @@
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:1>"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:2>"
+      },
+      {
+        "type": "text",
+        "text": "<text:3>"
+      },
+      {
+        "type": "text",
+        "text": "<text:4>"
+      }
+    ],
+    "providerOptions": {
+      "lilac": {
+        "generated": {
+          "version": 1,
+          "kind": "conversation_recall",
+          "id": "<s:5>",
+          "threadIds": ["<s:6>"]
+        }
+      }
+    }
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "tool-call",
+        "toolCallId": "call_7",
+        "toolName": "find_tools",
+        "input": {
+          "query": "<s:8>",
+          "max_results": 4
+        },
+        "providerOptions": {
+          "openai": {
+            "itemId": "tsc_9",
+            "toolSearchCall": true
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": [
+      {
+        "type": "tool-result",
+        "toolCallId": "call_7",
+        "toolName": "find_tools",
+        "output": {
+          "type": "json",
+          "value": {
+            "query": "<s:8>",
+            "queryType": "<s:10>",
+            "matches": [
+              {
+                "name": "mcp_computer_use_execute",
+                "stableId": "<s:11>",
+                "source": "<s:12>",
+                "sourceId": "<s:13>",
+                "rawName": "<s:14>"
+              },
+              {
+                "name": "mcp_computer_use_provision",
+                "stableId": "<s:15>",
+                "source": "<s:12>",
+                "sourceId": "<s:13>",
+                "rawName": "<s:16>"
+              },
+              {
+                "name": "mcp_computer_use_terminate",
+                "stableId": "<s:17>",
+                "source": "<s:12>",
+                "sourceId": "<s:13>",
+                "rawName": "<s:18>"
+              },
+              {
+                "name": "mcp_computer_use_viewer",
+                "stableId": "<s:19>",
+                "source": "<s:12>",
+                "sourceId": "<s:13>",
+                "rawName": "<s:20>"
+              }
+            ]
+          }
+        },
+        "providerOptions": {
+          "openai": {
+            "toolSearchTools": [
+              {
+                "name": "mcp_computer_use_execute",
+                "description": "<s:21>",
+                "inputSchemaJson": "{\"type\":\"object\",\"properties\":{}}",
+                "strict": false
+              },
+              {
+                "name": "mcp_computer_use_provision",
+                "description": "<s:22>",
+                "inputSchemaJson": "{\"type\":\"object\",\"properties\":{}}",
+                "strict": false
+              },
+              {
+                "name": "mcp_computer_use_terminate",
+                "description": "<s:23>",
+                "inputSchemaJson": "{\"type\":\"object\",\"properties\":{}}",
+                "strict": false
+              },
+              {
+                "name": "mcp_computer_use_viewer",
+                "description": "<s:24>",
+                "inputSchemaJson": "{\"type\":\"object\",\"properties\":{}}",
+                "strict": false
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "reasoning",
+        "text": "<text:25>",
+        "providerOptions": {
+          "openai": {
+            "itemId": "rs_26",
+            "reasoningEncryptedContent": "<opaque:27>"
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_28",
+        "toolName": "bash",
+        "input": {
+          "command": "<s:29>",
+          "timeoutMs": 10000
+        },
+        "providerOptions": {
+          "openai": {
+            "itemId": "fc_30"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": [
+      {
+        "type": "tool-result",
+        "toolCallId": "call_28",
+        "toolName": "bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:31>",
+            "stderr": "<s:25>",
+            "exitCode": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "reasoning",
+        "text": "<text:25>",
+        "providerOptions": {
+          "openai": {
+            "itemId": "rs_32",
+            "reasoningEncryptedContent": "<opaque:33>"
+          }
+        }
+      },
+      {
+        "type": "text",
+        "text": "<text:34>",
+        "providerOptions": {
+          "openai": {
+            "itemId": "msg_35",
+            "phase": "final_answer"
+          }
+        }
+      }
+    ]
+  }
+]

@@ -1220,22 +1220,19 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         category: "request" as const,
       })),
       {
-        identity: { module: "adapters/anthropic-replay.ts", exportName: "withoutAnthropicReplay" },
+        identity: { module: "adapters/provider-history.ts", exportName: "projectMessagesFor" },
         category: "projection",
       },
       ...["matchedNames", "retainedNames"].map((exportName) => ({
         identity: { module: "adapters/ai-sdk/tool-search.ts", exportName },
         category: "projection" as const,
       })),
-      ...[
-        "readToolLoadingDefinitions",
-        "loadSearchResult",
-        "portableToolLoadingMessages",
-        "searchResultValue",
-      ].map((exportName) => ({
-        identity: { module: "adapters/openai-responses/tool-search.ts", exportName },
-        category: "projection" as const,
-      })),
+      ...["readToolLoadingDefinitions", "loadSearchResult", "searchResultValue"].map(
+        (exportName) => ({
+          identity: { module: "adapters/openai-responses/tool-search.ts", exportName },
+          category: "projection" as const,
+        }),
+      ),
       {
         identity: { module: "adapters/openai-responses/output.ts", exportName: "projectResponse" },
         category: "wire",

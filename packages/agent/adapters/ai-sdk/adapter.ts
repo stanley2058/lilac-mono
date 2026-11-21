@@ -1,6 +1,5 @@
-import { withoutAnthropicReplay } from "../anthropic-replay";
+import { projectMessagesFor, resolveAiSdkHistoryProfile } from "../provider-history";
 import { prepareAnthropicToolSearch, seedAnthropicToolSearch } from "./tool-search";
-import { portableToolLoadingMessages } from "../openai-responses/tool-search";
 import type { LanguageModel, ToolSet, Experimental_DownloadFunction as DownloadFunction } from "ai";
 import { Result } from "better-result";
 import { AgentAdapterFailure, type AgentAdapter, type AgentExecution } from "../../agent-adapter";
@@ -203,10 +202,10 @@ export class ModelCallAgentAdapter<TOOLS extends ToolSet = ToolSet> implements A
               runtime.executionMode === "local-tools" ? prepared.deferredTools : undefined,
           });
           const messages = normalizeModelMessagesToolCallIds({
-            messages:
-              typeof runtime.model !== "string" && runtime.model.provider?.startsWith("anthropic.")
-                ? portableToolLoadingMessages(toolSearch.messages)
-                : withoutAnthropicReplay(portableToolLoadingMessages(toolSearch.messages)),
+            messages: [
+              ...projectMessagesFor(resolveAiSdkHistoryProfile(runtime.model), toolSearch.messages)
+                .messages,
+            ],
             modelSpecifier: runtime.modelSpecifier,
           });
           const state = host.readState();

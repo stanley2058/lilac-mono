@@ -1,0 +1,432 @@
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:1>"
+      },
+      {
+        "type": "resource",
+        "uri": "<s:2>",
+        "filename": "<s:3>",
+        "mediaType": "image/png",
+        "size": 144031
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:4>"
+      },
+      {
+        "type": "text",
+        "text": "<text:5>"
+      },
+      {
+        "type": "text",
+        "text": "<text:6>"
+      }
+    ],
+    "providerOptions": {
+      "lilac": {
+        "generated": {
+          "version": 1,
+          "kind": "conversation_recall",
+          "id": "<s:7>",
+          "threadIds": ["<s:8>"]
+        }
+      }
+    }
+  },
+  {
+    "role": "assistant",
+    "content": "<text:9>"
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:10>"
+      },
+      {
+        "type": "resource",
+        "uri": "<s:11>",
+        "filename": "<s:3>",
+        "mediaType": "image/png",
+        "size": 52013
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "<text:12>"
+  },
+  {
+    "role": "assistant",
+    "content": "<text:12>"
+  },
+  {
+    "role": "assistant",
+    "content": "<text:12>"
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:13>"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:14>"
+      },
+      {
+        "type": "text",
+        "text": "<text:15>"
+      },
+      {
+        "type": "text",
+        "text": "<text:6>"
+      }
+    ],
+    "providerOptions": {
+      "lilac": {
+        "generated": {
+          "version": 1,
+          "kind": "conversation_recall",
+          "id": "<s:16>",
+          "threadIds": ["<s:17>", "<s:18>"]
+        }
+      }
+    }
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:19>"
+      },
+      {
+        "type": "text",
+        "text": "<text:20>"
+      },
+      {
+        "type": "text",
+        "text": "<text:6>"
+      }
+    ],
+    "providerOptions": {
+      "lilac": {
+        "generated": {
+          "version": 1,
+          "kind": "heartbeat_context",
+          "id": "<s:21>"
+        }
+      }
+    }
+  },
+  {
+    "role": "assistant",
+    "content": "<text:22>"
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:23>"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:24>"
+      },
+      {
+        "type": "text",
+        "text": "<text:25>"
+      },
+      {
+        "type": "text",
+        "text": "<text:6>"
+      }
+    ],
+    "providerOptions": {
+      "lilac": {
+        "generated": {
+          "version": 1,
+          "kind": "conversation_recall",
+          "id": "<s:26>",
+          "threadIds": ["<s:8>", "<s:27>", "<s:28>"]
+        }
+      }
+    }
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:29>"
+      },
+      {
+        "type": "text",
+        "text": "<text:30>"
+      },
+      {
+        "type": "text",
+        "text": "<text:6>"
+      }
+    ],
+    "providerOptions": {
+      "lilac": {
+        "generated": {
+          "version": 1,
+          "kind": "heartbeat_context",
+          "id": "<s:31>"
+        }
+      }
+    }
+  },
+  {
+    "role": "assistant",
+    "content": "<text:32>"
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:33>"
+      },
+      {
+        "type": "resource",
+        "uri": "<s:34>",
+        "filename": "<s:3>",
+        "mediaType": "image/png",
+        "size": 235858
+      },
+      {
+        "type": "resource",
+        "uri": "<s:35>",
+        "filename": "<s:3>",
+        "mediaType": "image/png",
+        "size": 218581
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:36>"
+      },
+      {
+        "type": "text",
+        "text": "<text:37>"
+      },
+      {
+        "type": "text",
+        "text": "<text:6>"
+      }
+    ],
+    "providerOptions": {
+      "lilac": {
+        "generated": {
+          "version": 1,
+          "kind": "conversation_recall",
+          "id": "<s:38>",
+          "threadIds": ["<s:39>"]
+        }
+      }
+    }
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:40>"
+      },
+      {
+        "type": "text",
+        "text": "<text:41>"
+      },
+      {
+        "type": "text",
+        "text": "<text:6>"
+      }
+    ],
+    "providerOptions": {
+      "lilac": {
+        "generated": {
+          "version": 1,
+          "kind": "heartbeat_context",
+          "id": "<s:42>"
+        }
+      }
+    }
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "custom",
+        "kind": "anthropic.message_start",
+        "providerOptions": {
+          "anthropic": {
+            "id": "<s:43>",
+            "model": "<s:44>",
+            "usage": {
+              "input_tokens": 0,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 0
+              },
+              "output_tokens": 0,
+              "service_tier": "<s:45>",
+              "inference_geo": "<s:46>",
+              "speed": "<s:45>"
+            }
+          }
+        }
+      },
+      {
+        "type": "reasoning",
+        "text": "<text:47>",
+        "providerOptions": {
+          "anthropic": {
+            "signature": "<opaque:48>"
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_49",
+        "toolName": "find_tools",
+        "input": {
+          "query": "<s:50>",
+          "max_results": 8
+        },
+        "providerOptions": {
+          "anthropic": {
+            "caller": {
+              "type": "direct"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": [
+      {
+        "type": "tool-result",
+        "toolCallId": "call_49",
+        "toolName": "find_tools",
+        "output": {
+          "type": "json",
+          "value": {
+            "query": "<s:50>",
+            "queryType": "<s:51>",
+            "matches": [
+              {
+                "name": "mcp_t3code_t3_thread_read",
+                "stableId": "<s:52>",
+                "source": "<s:53>",
+                "sourceId": "<s:54>",
+                "rawName": "<s:55>",
+                "title": "<s:56>"
+              },
+              {
+                "name": "mcp_t3code_t3_queue",
+                "stableId": "<s:57>",
+                "source": "<s:53>",
+                "sourceId": "<s:54>",
+                "rawName": "<s:58>"
+              },
+              {
+                "name": "mcp_t3code_list_thread_issues",
+                "stableId": "<s:59>",
+                "source": "<s:53>",
+                "sourceId": "<s:54>",
+                "rawName": "<s:60>",
+                "title": "<s:61>"
+              },
+              {
+                "name": "mcp_t3code_list_thread_pull_requests",
+                "stableId": "<s:62>",
+                "source": "<s:53>",
+                "sourceId": "<s:54>",
+                "rawName": "<s:63>",
+                "title": "<s:64>"
+              },
+              {
+                "name": "mcp_t3code_t3_thread_configure",
+                "stableId": "<s:65>",
+                "source": "<s:53>",
+                "sourceId": "<s:54>",
+                "rawName": "<s:66>"
+              },
+              {
+                "name": "mcp_t3code_t3_thread_interrupt",
+                "stableId": "<s:67>",
+                "source": "<s:53>",
+                "sourceId": "<s:54>",
+                "rawName": "<s:68>",
+                "title": "<s:69>"
+              },
+              {
+                "name": "mcp_t3code_t3_thread_launch",
+                "stableId": "<s:70>",
+                "source": "<s:53>",
+                "sourceId": "<s:54>",
+                "rawName": "<s:71>"
+              },
+              {
+                "name": "mcp_t3code_t3_thread_list",
+                "stableId": "<s:72>",
+                "source": "<s:53>",
+                "sourceId": "<s:54>",
+                "rawName": "<s:73>",
+                "title": "<s:74>"
+              }
+            ]
+          }
+        },
+        "providerOptions": {
+          "anthropic": {
+            "toolSearchReferences": [
+              "mcp_t3code_t3_thread_read",
+              "mcp_t3code_t3_queue",
+              "mcp_t3code_list_thread_issues",
+              "mcp_t3code_list_thread_pull_requests",
+              "mcp_t3code_t3_thread_configure",
+              "mcp_t3code_t3_thread_interrupt",
+              "mcp_t3code_t3_thread_launch",
+              "mcp_t3code_t3_thread_list"
+            ]
+          }
+        }
+      }
+    ]
+  }
+]

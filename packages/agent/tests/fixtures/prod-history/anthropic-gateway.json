@@ -1,0 +1,241 @@
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<text:1>"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "reasoning",
+        "text": "<text:2>",
+        "providerOptions": {
+          "anthropic": {
+            "signature": "<opaque:3>"
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_4",
+        "toolName": "bash",
+        "input": {
+          "command": "<s:5>"
+        },
+        "providerOptions": {
+          "anthropic": {
+            "caller": {
+              "type": "direct"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": [
+      {
+        "type": "tool-result",
+        "toolCallId": "call_4",
+        "toolName": "bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:6>",
+            "stderr": "<s:7>",
+            "exitCode": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "reasoning",
+        "text": "<text:8>",
+        "providerOptions": {
+          "anthropic": {
+            "signature": "<opaque:9>"
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_10",
+        "toolName": "bash",
+        "input": {
+          "command": "<s:11>"
+        },
+        "providerOptions": {
+          "anthropic": {
+            "caller": {
+              "type": "direct"
+            }
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_12",
+        "toolName": "bash",
+        "input": {
+          "command": "<s:13>"
+        },
+        "providerOptions": {
+          "anthropic": {
+            "caller": {
+              "type": "direct"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": [
+      {
+        "type": "tool-result",
+        "toolCallId": "call_10",
+        "toolName": "bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:14>",
+            "stderr": "<s:7>",
+            "exitCode": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": [
+      {
+        "type": "tool-result",
+        "toolCallId": "call_12",
+        "toolName": "bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:15>",
+            "stderr": "<s:7>",
+            "exitCode": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "tool-call",
+        "toolCallId": "call_16",
+        "toolName": "bash",
+        "input": {
+          "command": "<s:17>"
+        },
+        "providerOptions": {
+          "anthropic": {
+            "caller": {
+              "type": "direct"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": [
+      {
+        "type": "tool-result",
+        "toolCallId": "call_16",
+        "toolName": "bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:18>",
+            "stderr": "<s:7>",
+            "exitCode": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "reasoning",
+        "text": "<text:19>",
+        "providerOptions": {
+          "anthropic": {
+            "signature": "<opaque:20>"
+          }
+        }
+      },
+      {
+        "type": "tool-call",
+        "toolCallId": "call_21",
+        "toolName": "bash",
+        "input": {
+          "command": "<s:22>"
+        },
+        "providerOptions": {
+          "anthropic": {
+            "caller": {
+              "type": "direct"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": [
+      {
+        "type": "tool-result",
+        "toolCallId": "call_21",
+        "toolName": "bash",
+        "output": {
+          "type": "json",
+          "value": {
+            "stdout": "<s:23>",
+            "stderr": "<s:7>",
+            "exitCode": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "reasoning",
+        "text": "<text:24>",
+        "providerOptions": {
+          "anthropic": {
+            "signature": "<opaque:25>"
+          }
+        }
+      },
+      {
+        "type": "text",
+        "text": "<text:26>"
+      }
+    ]
+  }
+]

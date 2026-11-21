@@ -19,6 +19,7 @@ import {
 } from "@stanley2058/lilac-utils/core-config/types";
 
 import { stripToolExecuteForModel, type SystemPrompt } from "./ai-sdk-pi-agent";
+import { projectMessagesFor, resolveAiSdkHistoryProfile } from "./adapters/provider-history";
 import { captureAgentPromise, rethrowAgentPanic, type OpaqueAgentValue } from "./failure-adapters";
 
 const SERVER_COMPACTION_FORMAT_VERSION = 1 as const;
@@ -271,7 +272,9 @@ export async function compactWithOpenAIResponsesResult(
     const result = streamText({
       model: request.model,
       instructions: request.system,
-      messages: [...request.messages],
+      messages: [
+        ...projectMessagesFor(resolveAiSdkHistoryProfile(request.model), request.messages).messages,
+      ],
       ...(request.tools ? { tools: declarationOnlyServerCompactionTools(request.tools) } : {}),
       providerOptions: serverCompactionProviderOptions(request.providerOptions),
       reasoning: request.reasoning,

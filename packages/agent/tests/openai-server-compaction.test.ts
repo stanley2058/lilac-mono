@@ -145,6 +145,70 @@ describe("OpenAI server compaction artifacts", () => {
     });
   });
 
+  it("sends stored history without other providers' replay content", async () => {
+    const model = new MockLanguageModelV4({
+      provider: "openai.responses",
+      modelId: "gpt-test",
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            {
+              type: "custom",
+              kind: "openai.compaction",
+              providerMetadata: {
+                openai: { type: "compaction", itemId: "cmp_new", encryptedContent: "state" },
+              },
+            },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: "stop" },
+              usage: {
+                inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 0, text: 0, reasoning: 0 },
+              },
+            },
+          ],
+        }),
+      },
+    });
+    const messages: ModelMessage[] = [
+      { role: "user", content: "history" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "custom",
+            kind: "anthropic.message_start",
+            providerOptions: { anthropic: { id: "msg_old" } },
+          },
+          {
+            type: "reasoning",
+            text: "thinking",
+            providerOptions: {
+              anthropic: { signature: "anthropic-signature" },
+              openai: { itemId: "rs_1", reasoningEncryptedContent: "openai-reasoning" },
+            },
+          },
+          { type: "text", text: "answer" },
+        ],
+      },
+    ];
+
+    const result = await compactWithOpenAIResponsesResult({
+      model,
+      replayKey: "openai:openai/gpt-test",
+      portableSummary: "Portable summary.",
+      messages,
+      system: "system",
+    });
+
+    expect(result.isOk()).toBe(true);
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).not.toContain("anthropic");
+    expect(prompt).toContain("openai-reasoning");
+    expect(JSON.stringify(messages)).toContain("anthropic.message_start");
+  });
+
   it("returns an owned error when the provider omits its compaction part", async () => {
     const model = new MockLanguageModelV4({
       doStream: {
