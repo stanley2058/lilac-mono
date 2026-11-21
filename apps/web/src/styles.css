@@ -370,8 +370,15 @@
   .markdown blockquote {
     margin: calc(var(--ui-space-unit) * 3) 0;
     padding-inline-start: calc(var(--ui-space-unit) * 4);
-    border-inline-start: calc(var(--ui-space-unit) * 1) solid var(--ui-muted-foreground);
-    color: var(--ui-muted-foreground);
+    border-inline-start: calc(var(--ui-space-unit) * 1) solid
+      color-mix(in srgb, var(--ui-muted-foreground) 55%, transparent);
+    color: color-mix(in srgb, var(--ui-foreground) 80%, var(--ui-background));
+  }
+  .markdown blockquote :is(h1, h2, h3, h4, h5, h6, strong, b) {
+    color: color-mix(in srgb, var(--ui-foreground) 85%, var(--ui-background));
+  }
+  .markdown a :is(strong, b) {
+    color: inherit;
   }
   .markdown-alert {
     --alert-color: var(--ui-info);
