@@ -10,6 +10,21 @@ export function rewindReasonText(reason: RewindReason): string {
   return dmRewindReasonText(reason);
 }
 
+const tooltipReasons: Record<RewindReason, string> = {
+  busy: "Wait for active run to finish",
+  "not-latest": "Latest turn only",
+  outside: "Blocked by outside messages",
+  unsettled: "Wait for this turn to finish",
+  expired: "Rewind window expired",
+  loading: "Checking availability",
+  unavailable: "Load latest turn first",
+  changed: "Conversation changed",
+};
+
+export function rewindTooltipText(reason: RewindReason): string {
+  return tooltipReasons[reason];
+}
+
 export function rewindRestrictionReason(
   restriction: RewindRestriction | undefined,
   turnId: string | undefined,

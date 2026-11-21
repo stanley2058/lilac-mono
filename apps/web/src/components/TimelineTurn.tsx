@@ -50,7 +50,7 @@ import {
   type ReadyTurnSlot,
   type DisplayPart,
 } from "@stanley2058/lilac-client-protocol";
-import { rewindRestrictionReason, rewindReasonText } from "../rewind-policy";
+import { rewindRestrictionReason, rewindTooltipText } from "../rewind-policy";
 import { IconButton, attempt } from "./ui";
 import { WorkVerb, useSettledWorkVerb } from "./WorkVerb";
 import { ResourceAttachment } from "./ResourceAttachment";
@@ -125,9 +125,11 @@ export function AgentTurn(props: TurnProps) {
   const { onRewind, onLoadMore } = props;
   const { canEdit, rewindDisabled } = useMessageServices();
   const restriction = useContext(RewindRestrictionContext);
-  const reason = rewindRestrictionReason(restriction, props.slot.turnId);
-  const rewindReason = reason ? rewindReasonText(reason) : undefined;
   const { slot } = props;
+  let reason = rewindRestrictionReason(restriction, slot.turnId);
+  if (!reason && rewindDisabled) reason = "busy";
+  if (!reason && (props.optimistic || slot.state === "pending")) reason = "unsettled";
+  const rewindTooltip = reason ? rewindTooltipText(reason) : undefined;
   const [expanded, setExpanded] = useState(false);
   const citedMessage = useStore(citationStore, (state) => {
     const id = state.navigation?.citation.messageId;
@@ -203,13 +205,9 @@ export function AgentTurn(props: TurnProps) {
             rewind={
               canEdit && firstUser.metadata?.authorId === identities.viewerId
                 ? {
-                    disabled:
-                      !!props.optimistic ||
-                      !!rewindDisabled ||
-                      !!rewindReason ||
-                      slot.state === "pending",
+                    disabled: !!rewindTooltip,
                     run: () => onRewind(slot.turnId),
-                    reason: rewindReason,
+                    reason: rewindTooltip,
                   }
                 : undefined
             }
@@ -221,7 +219,7 @@ export function AgentTurn(props: TurnProps) {
                   <Tooltip>
                     <TooltipTrigger
                       render={
-                        <span className="inline-flex" tabIndex={rewindReason ? 0 : undefined} />
+                        <span className="inline-flex" tabIndex={rewindTooltip ? 0 : undefined} />
                       }
                     >
                       <Button
@@ -229,18 +227,13 @@ export function AgentTurn(props: TurnProps) {
                         size="icon"
                         className="icon-button rounded-sm text-muted-foreground"
                         aria-label="Rewind to this turn"
-                        disabled={
-                          props.optimistic ||
-                          rewindDisabled ||
-                          !!rewindReason ||
-                          slot.state === "pending"
-                        }
+                        disabled={!!rewindTooltip}
                         onClick={() => onRewind(slot.turnId)}
                       >
                         <RotateCcw />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>{rewindReason ?? "Rewind to this turn"}</TooltipContent>
+                    <TooltipContent>{rewindTooltip ?? "Rewind to this turn"}</TooltipContent>
                   </Tooltip>
                 ) : null}
               </>
@@ -1080,22 +1073,34 @@ export const MessageBody = memo(function MessageBody(
             Copy link
           </ContextMenuItem>
           <AddReaction messageId={message.id} items={reactions} disabled={props.optimistic} menu />
-          {props.rewind ? (
-            <ContextMenuItem disabled={props.rewind.disabled} onClick={props.rewind.run}>
-              <RotateCcw />
-              <span>
-                Rewind to this turn
-                {props.rewind.reason ? (
-                  <span className="block text-xs max-w-64 whitespace-normal">
-                    {props.rewind.reason}
-                  </span>
-                ) : null}
-              </span>
-            </ContextMenuItem>
-          ) : null}
+          {props.rewind ? <RewindContextMenuItem {...props.rewind} /> : null}
           {copyError ? <span role="status">{copyError}</span> : null}
         </ContextMenuContent>
       </ContextMenu>
     </LiveMessageContext>
   );
 });
+
+function RewindContextMenuItem({
+  disabled,
+  reason,
+  run,
+}: {
+  disabled: boolean;
+  reason?: string;
+  run: () => void;
+}) {
+  const item = (
+    <ContextMenuItem disabled={disabled} onClick={run}>
+      <RotateCcw />
+      Rewind to this turn
+    </ContextMenuItem>
+  );
+  if (!disabled || !reason) return item;
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span className="block" />}>{item}</TooltipTrigger>
+      <TooltipContent side="bottom">{reason}</TooltipContent>
+    </Tooltip>
+  );
+}
