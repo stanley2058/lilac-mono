@@ -1,5 +1,7 @@
 import {
+  accessSync,
   closeSync,
+  constants,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -9,10 +11,11 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 
 import { dlopen, FFIType } from "bun:ffi";
@@ -26,6 +29,10 @@ const CREATION_LOCK_PREFIX = ".lilac-test-data-creation-";
 const OWNER_FILE = ".lilac-test-owner.json";
 const OWNER_LOCK_FILE = ".lilac-test-owner.lock";
 const TEST_TEMP_ROOT_SUFFIX = /^[A-Za-z0-9]{6}$/u;
+const TEST_TEMP_ROOT_SUFFIX_LENGTH = 6;
+// Keep room under TMPDIR for Unix domain sockets (Chromium SingletonSocket, Go t.TempDir, tool-bridge).
+const TEST_TEMP_SOCKET_HEADROOM_BYTES = 54;
+const POSIX_FALLBACK_TEMP_DIR = "/tmp";
 
 const POSIX_FILE_LOCK_SYMBOLS = {
   flock: {
@@ -227,6 +234,50 @@ function readOwner(rootDirectory: string): TestTempRootMarker | undefined {
 export function resolveTestTempBaseDirectory(candidate: string): string {
   if (!path.isAbsolute(candidate)) throw new Error("Test temporary base must be absolute");
   return realpathSync(candidate);
+}
+
+function posixSocketPathLimit(): number {
+  return process.platform === "darwin" ? 103 : 107;
+}
+
+function projectedTempDirectoryBytes(baseDirectory: string): number {
+  const { rootPrefix } = currentScope();
+  const sampleTempDirectory = path.join(
+    baseDirectory,
+    `${rootPrefix}${"x".repeat(TEST_TEMP_ROOT_SUFFIX_LENGTH)}`,
+    "tmp",
+  );
+  return Buffer.byteLength(sampleTempDirectory);
+}
+
+function resolveWritableDirectory(candidate: string): string | undefined {
+  try {
+    const resolved = resolveTestTempBaseDirectory(candidate);
+    if (!statSync(resolved).isDirectory()) return undefined;
+    accessSync(resolved, constants.W_OK | constants.X_OK);
+    return resolved;
+  } catch {
+    return undefined;
+  }
+}
+
+export function selectTestTempBaseDirectory(options?: {
+  readonly explicitBase?: string;
+  readonly defaultTempDir?: string;
+  readonly fallbackTempDir?: string;
+}): string {
+  if (options?.explicitBase !== undefined) {
+    return resolveTestTempBaseDirectory(options.explicitBase);
+  }
+  const candidate = resolveTestTempBaseDirectory(options?.defaultTempDir ?? tmpdir());
+  if (process.platform !== "linux" && process.platform !== "darwin") return candidate;
+
+  const maxTempDirectoryBytes = posixSocketPathLimit() - TEST_TEMP_SOCKET_HEADROOM_BYTES;
+  if (projectedTempDirectoryBytes(candidate) <= maxTempDirectoryBytes) return candidate;
+
+  const fallback = resolveWritableDirectory(options?.fallbackTempDir ?? POSIX_FALLBACK_TEMP_DIR);
+  if (!fallback) return candidate;
+  return Buffer.byteLength(fallback) < Buffer.byteLength(candidate) ? fallback : candidate;
 }
 
 export function createOwnedTestTempRoot(

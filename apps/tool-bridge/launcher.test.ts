@@ -344,9 +344,9 @@ describe("resident tools worker", () => {
   });
 
   it("reuses one worker while isolating concurrent invocation context", async () => {
-    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "lilac-tools-worker-test-"));
-    const cwdA = await fs.mkdtemp(path.join(tmpdir(), "lilac-tools-worker-a-"));
-    const cwdB = await fs.mkdtemp(path.join(tmpdir(), "lilac-tools-worker-b-"));
+    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "ltw-"));
+    const cwdA = await fs.mkdtemp(path.join(tmpdir(), "ltwa-"));
+    const cwdB = await fs.mkdtemp(path.join(tmpdir(), "ltwb-"));
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -448,7 +448,7 @@ describe("resident tools worker", () => {
   });
 
   it("does not consume an open stdin pipe for commands that ignore stdin", async () => {
-    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "lilac-tools-worker-help-"));
+    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "ltwh-"));
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -513,7 +513,7 @@ describe("resident tools worker", () => {
   });
 
   it("does not change permissions on an existing worker directory", async () => {
-    const root = await fs.mkdtemp(path.join(tmpdir(), "lilac-tools-worker-mode-"));
+    const root = await fs.mkdtemp(path.join(tmpdir(), "ltwm-"));
     const workerDir = path.join(root, "shared");
     const runtimeDir = path.join(workerDir, String(process.getuid?.() ?? 0));
     await fs.mkdir(workerDir, { mode: 0o755 });
@@ -538,7 +538,7 @@ describe("resident tools worker", () => {
   });
 
   it("preserves piped stdin when worker startup fails", async () => {
-    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "lilac-tools-worker-fallback-"));
+    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "ltwf-"));
     const uid = process.getuid?.() ?? 0;
     const runtimeDir = path.join(workerDir, String(uid));
     await fs.mkdir(runtimeDir, { mode: 0o700 });
@@ -572,7 +572,7 @@ describe("resident tools worker", () => {
   });
 
   it("shuts down an obsolete worker from the same installation", async () => {
-    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "lilac-tools-worker-rebuild-"));
+    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "ltwr-"));
     const uid = process.getuid?.() ?? 0;
     const runtimeDir = path.join(workerDir, String(uid));
     await fs.mkdir(runtimeDir, { mode: 0o700 });
@@ -625,7 +625,7 @@ describe("resident tools worker", () => {
   });
 
   it("cancels the worker's backend request when the launcher is terminated", async () => {
-    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "lilac-tools-worker-signal-"));
+    const workerDir = await fs.mkdtemp(path.join(tmpdir(), "ltws-"));
     const requestStarted = Promise.withResolvers<void>();
     const requestAborted = Promise.withResolvers<void>();
     const server = Bun.serve({
@@ -681,7 +681,7 @@ describe("resident tools worker", () => {
 it("bounds native health requests when the worker accepts but never replies", async () => {
   const child = Bun.spawn(
     ["go", "test", "native-launcher.go", "native-launcher_test.go", "-timeout=10s"],
-    { cwd: import.meta.dir, stdout: "pipe", stderr: "pipe" },
+    { cwd: import.meta.dir, env: process.env, stdout: "pipe", stderr: "pipe" },
   );
   const [code, stdout, stderr] = await Promise.all([
     child.exited,

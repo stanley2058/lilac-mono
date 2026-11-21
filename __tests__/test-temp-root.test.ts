@@ -16,6 +16,7 @@ import {
   reapStaleTestTempRoots,
   removeOwnedTestTempRoot,
   resolveTestTempBaseDirectory,
+  selectTestTempBaseDirectory,
   TEST_TEMP_ROOT_PREFIX,
 } from "./test-temp-root";
 
@@ -230,5 +231,33 @@ describe("owned test temp roots", () => {
     expect(resolveTestTempBaseDirectory(baseDirectory)).toBe(baseDirectory);
     expect(() => resolveTestTempBaseDirectory("relative")).toThrow("must be absolute");
     expect(() => resolveTestTempBaseDirectory(path.join(baseDirectory, "missing"))).toThrow();
+  });
+
+  test("falls back to a shorter writable temp base when default TMPDIR leaves insufficient Unix socket headroom", () => {
+    const fallbackDirectory = createSandbox();
+    const longDirectory = path.join(
+      fallbackDirectory,
+      "nested-long-tmpdir-segment-for-unix-sockets",
+    );
+    mkdirSync(longDirectory, { recursive: true });
+
+    expect(
+      selectTestTempBaseDirectory({
+        defaultTempDir: longDirectory,
+        fallbackTempDir: fallbackDirectory,
+      }),
+    ).toBe(fallbackDirectory);
+    expect(
+      selectTestTempBaseDirectory({
+        explicitBase: longDirectory,
+        fallbackTempDir: fallbackDirectory,
+      }),
+    ).toBe(longDirectory);
+    expect(
+      selectTestTempBaseDirectory({
+        defaultTempDir: longDirectory,
+        fallbackTempDir: path.join(fallbackDirectory, "missing"),
+      }),
+    ).toBe(longDirectory);
   });
 });
