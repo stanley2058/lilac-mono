@@ -43,7 +43,13 @@ import {
 import { AgentAvatar } from "./AgentAvatar";
 import { Markdown } from "./Markdown";
 import { useMessageArrival } from "./message-arrivals";
-import { subagentProfileName, useSubagents } from "./subagent-context";
+import { agentTabTarget, subagentProfileName, useSubagents } from "./subagent-context";
+import {
+  activeNestedAgents,
+  NestedAgentStack,
+  nestedAgentsLabel,
+  subagentTitle,
+} from "./NestedAgents";
 import { activityFileTarget, type FileTarget } from "../file-target";
 import { useFileResolution, useFileViewer } from "./file-viewer-context";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
@@ -269,16 +275,25 @@ function SubagentItem({
   part: ActivityPart;
   agent: NonNullable<ReturnType<typeof subagentActivity>>;
 }) {
-  const { open } = useSubagents();
+  const { open, children, colors } = useSubagents();
   const requestActive = useContext(RequestActiveContext);
   const times = useContext(ActivityTimesContext);
   const arrivalRef = useMessageArrival(`activity-item:${part.id}`);
+  const nested = activeNestedAgents(agent, children);
+  let status: ReactNode = subagentTitle(agent.title);
+  if (agent.state === "failed") status = <span className="text-danger">{agent.title}</span>;
+  if (nested) status = nestedAgentsLabel(nested);
   return (
     <div ref={arrivalRef}>
       <button
         type="button"
         className={`subagent-activity ${triggerClass}`}
-        onClick={() => open(agent.id ?? part.id)}
+        onClick={() =>
+          open(
+            agentTabTarget({ ...agent, id: agent.id ?? part.id }),
+            agent.id ? part.id : undefined,
+          )
+        }
       >
         <span
           aria-hidden="true"
@@ -288,19 +303,15 @@ function SubagentItem({
             decorative
             profile={agent.profile}
             displayName={subagentProfileName(agent.profile)}
+            color={agent.id ? colors.get(agent.id) : undefined}
             size="sm"
           />
         </span>
         <span className="max-w-[45%] shrink-0 truncate text-foreground">
           {agent.taskTitle ?? subagentProfileName(agent.profile)}
         </span>
-        <Label live={requestActive !== false && agent.state === "running"}>
-          {agent.state === "failed" ? (
-            <span className="text-danger">{agent.title}</span>
-          ) : (
-            agent.title
-          )}
-        </Label>
+        {nested ? <NestedAgentStack nested={nested} colors={colors} /> : null}
+        <Label live={requestActive !== false && agent.state === "running"}>{status}</Label>
         {agent.model ? (
           <span
             title={`${agent.model} · ${agent.profile}${agent.reasoning ? ` · ${agent.reasoning}` : ""}`}

@@ -238,10 +238,13 @@ export function FileTabsDemo() {
         onClose={(id) => actions.closeTab("demo", id)}
         onAgents={() => actions.openAgents("demo")}
         onFiles={() => actions.openFiles("demo")}
-        expandedSidebar={tree(activePath?.replace(/^\/workspace\//, ""))}
+        expandedSidebar={(tab) =>
+          tab?.type === "files" ? null : tree(activePath?.replace(/^\/workspace\//, ""))
+        }
         renderTab={(tab) => {
           if (tab.type === "thread") return <ConversationBadge target={tab.target} />;
           if (tab.type === "files") return tree();
+          if (tab.type === "agent") return null;
           if (tab.type === "agents")
             return (
               <div className="file-status grid place-content-center flex-1 p-4 text-sm text-muted-foreground">

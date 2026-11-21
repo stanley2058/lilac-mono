@@ -18,7 +18,7 @@ import {
   workflowRunStateSchema,
   workflowOperationStateSchema,
 } from "../../core/src/workflow/workflow-domain";
-import { SubagentContext } from "../src/components/subagent-context";
+import { SubagentContext, subagentContextValue } from "../src/components/subagent-context";
 import { MessageIdentityContext } from "../src/components/message-identity";
 import { Turn } from "../src/components/Timeline";
 import { MessageServicesContext } from "../src/components/message-services";
@@ -127,12 +127,7 @@ function renderStage(id: string, override?: ReadyTurnSlot) {
       <MessageServicesContext
         value={{ canEdit: true, resourceUrl: () => "", onAction: () => {}, onReaction: () => {} }}
       >
-        <SubagentContext
-          value={{
-            agents: new Map(demoSubagents(slot).map((agent) => [agent.activityId, agent])),
-            open: () => {},
-          }}
-        >
+        <SubagentContext value={subagentContextValue(demoSubagents(slot), () => {})}>
           <Turn slot={slot} onRewind={() => {}} onLoadMore={() => {}} />
         </SubagentContext>
       </MessageServicesContext>

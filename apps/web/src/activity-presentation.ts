@@ -105,19 +105,25 @@ export function activityRowKind(part: ActivityPart): ActivityRowKind {
  * Core caps labels at 256 characters but keeps the same `<tool> <JSON args>` text in the detail
  * up to 8192, so long arguments only decode from the detail.
  */
-function toolCallArgs(part: ActivityPart): { name: string; args: ToolArgs | undefined } {
-  const { name, args } = parseToolLabel(part.data.label);
-  const detail = parseToolLabel(part.data.detail ?? "");
+function toolCallArgs(
+  label: string,
+  detailLabel = "",
+): { name: string; args: ToolArgs | undefined } {
+  const { name, args } = parseToolLabel(label);
+  const detail = parseToolLabel(detailLabel);
   const fromDetail = detail.name === name ? decodeToolLabelArgs(detail.args) : undefined;
   return { name, args: fromDetail ?? decodeToolLabelArgs(args) };
 }
 
 export function subagentLabelProfile(part: ActivityPart): string | undefined {
-  const labeled = /^subagent(?:_delegate)? \(([a-z][a-z0-9_-]*)(?:[;,]|\))/.exec(
-    part.data.label,
-  )?.[1];
+  return toolLabelSubagentProfile(part.data.label, part.data.detail);
+}
+
+/** The same lookup for a bare label, such as a subagent title Core copied from its active tool. */
+export function toolLabelSubagentProfile(label: string, detail?: string): string | undefined {
+  const labeled = /^subagent(?:_delegate)? \(([a-z][a-z0-9_-]*)(?:[;,]|\))/.exec(label)?.[1];
   if (labeled) return labeled;
-  const { name, args } = toolCallArgs(part);
+  const { name, args } = toolCallArgs(label, detail);
   if (name !== "subagent_delegate") return undefined;
   // Calls recorded before permission profiles name the role in `profile`.
   return args?.permissions ?? args?.profile;
@@ -209,7 +215,7 @@ function toolArgsTitle(name: string, args: ToolArgs): string | undefined {
 }
 
 function toolTitle(part: ActivityPart): string {
-  const { name, args } = toolCallArgs(part);
+  const { name, args } = toolCallArgs(part.data.label, part.data.detail);
   const title = args ? toolArgsTitle(name, args) : undefined;
   return oneLine(title ?? part.data.label);
 }

@@ -548,6 +548,7 @@ const weatherSubagent = subagent("demo_subagent_weather", subagentActivities.wea
 const museumSubagent = subagent("demo_subagent_museum", subagentActivities.museum.working);
 const weatherSubagentDone = subagent("demo_subagent_weather", subagentActivities.weather.done);
 const museumSubagentDone = subagent("demo_subagent_museum", subagentActivities.museum.done);
+const planSubagent = subagent("demo_subagent_plan", subagentActivities.museum.working);
 const subagentUpdate = message("demo_subagent_update", [
   {
     type: "text",
@@ -779,6 +780,13 @@ export const agentWorkStages: AgentWorkStage[] = [
       },
     ],
   },
+  {
+    id: "subagents-nested",
+    label: "Subagents · nested",
+    description:
+      "A subagent delegates two checks of its own. Open it to see the agents it prompted.",
+    frames: [turn([delegation, weatherSubagentDone, planSubagent, parentRouteDone])],
+  },
   ...workflowStages,
   {
     id: "streaming",
@@ -964,6 +972,95 @@ const demoSubagentSamples = {
   demo_subagent_museum: { profile: "full", name: "Museum visit", sample: "museum" },
 } as const;
 
+type NestedDemoAgent = {
+  profile: string;
+  taskTitle: string;
+  task: string;
+  model: string;
+  /** A tool label for leaf agents; delegating agents list their children instead. */
+  tool?: string;
+  children?: readonly string[];
+};
+
+const nestedDemoAgents: Record<string, NestedDemoAgent> = {
+  demo_subagent_plan: {
+    profile: "full",
+    taskTitle: "Plan the museum visit",
+    task: "Plan the museum visit: confirm Saturday's exhibit hours and ticket prices.",
+    model: "claude-code/opus",
+    children: ["demo_subagent_hours", "demo_subagent_tickets"],
+  },
+  demo_subagent_hours: {
+    profile: "full",
+    taskTitle: "Check exhibit hours",
+    task: "Check Saturday's hours for the special exhibit.",
+    model: "claude-code/opus",
+    tool: 'bash tools web.search "Kyoto museum special exhibit hours"',
+  },
+  demo_subagent_tickets: {
+    profile: "restricted",
+    taskTitle: "Find ticket prices",
+    task: "Find adult ticket prices and whether advance booking is needed.",
+    model: "codex/gpt-6-luna",
+    tool: 'bash tools web.search "Kyoto museum ticket prices"',
+  },
+};
+
+function nestedDemoTranscript(agent: NestedDemoAgent): DisplayMessage[] {
+  const prompt: DisplayMessage = {
+    id: "child_0_0_0",
+    role: "user",
+    parts: [{ type: "text", text: agent.task }],
+  };
+  const running = (id: string, label: string): DisplayMessage => ({
+    id,
+    role: "assistant",
+    parts: [tool(id, { kind: "tool", label, state: "running", detail: label })],
+  });
+  if (agent.tool) return [prompt, running("child_1_0", agent.tool)];
+  const children = (agent.children ?? []).map((id) => {
+    const child = nestedDemoAgents[id]!;
+    const task = JSON.stringify({
+      permissions: child.profile,
+      task: child.task,
+    });
+    return running(id, `subagent_delegate ${task}`);
+  });
+  const split: DisplayMessage = {
+    id: "child_1_0",
+    role: "assistant",
+    parts: [{ type: "text", text: "I'll check the hours and prices in parallel." }],
+  };
+  return [prompt, split, ...children];
+}
+
+function nestedDemoSubagents(
+  id: string,
+  slot: ReadyTurnSlot,
+  parentId?: string,
+): SubagentSummary[] {
+  const agent = nestedDemoAgents[id]!;
+  // Core titles a delegating agent with its latest nested delegation's progress display.
+  const title =
+    agent.tool ?? 'subagent (restricted; 0/1 done)\n`- > bash tools web.search "Kyoto mus...';
+  return [
+    {
+      id,
+      ...(parentId ? { parentId } : {}),
+      activityId: id,
+      turnId: slot.turnId,
+      profile: agent.profile,
+      taskTitle: agent.taskTitle,
+      model: agent.model,
+      name: agent.taskTitle,
+      state: "running",
+      title,
+      startedAt: demoTime + 3000,
+    },
+    ...(agent.children ?? []).flatMap((child) => nestedDemoSubagents(child, slot, id)),
+  ];
+}
+
 function demoSubagentSample(id: string) {
   return id in demoSubagentSamples
     ? demoSubagentSamples[id as keyof typeof demoSubagentSamples]
@@ -974,6 +1071,7 @@ export function demoSubagents(slot: ReadyTurnSlot): SubagentSummary[] {
   return slot.messages.flatMap((message) =>
     message.parts.flatMap((part) => {
       if (part.type !== "data-activity") return [];
+      if (part.id === "demo_subagent_plan") return nestedDemoSubagents(part.id, slot);
       const sample = demoSubagentSample(part.id);
       if (!sample) return [];
       const running = part.data.state === "running";
@@ -1002,6 +1100,8 @@ export function demoSubagents(slot: ReadyTurnSlot): SubagentSummary[] {
 }
 
 export function demoSubagentTranscript(agent: SubagentSummary): DisplayMessage[] {
+  const nested = nestedDemoAgents[agent.id];
+  if (nested) return nestedDemoTranscript(nested);
   const sample = demoSubagentSample(agent.id);
   if (!sample) return [];
   return subagentTranscripts[sample.sample][agent.state === "running" ? "running" : "complete"];

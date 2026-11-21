@@ -52,18 +52,32 @@ describe("local panel layouts", () => {
     }
   });
 
-  test("opening a subagent saves only its thread layout, not transcript selection", () => {
+  test("opening a subagent saves its tab with its thread layout", () => {
     const storage = memoryStorage();
     const store = createPanelStore(scope, storage);
     store.getState().resize("a", 440);
-    store.getState().select("a", "child-agent");
+    store
+      .getState()
+      .openAgent("a", { agentId: "child-agent", title: "Check hours", profile: "full" });
     const loaded = createPanelStore(scope, storage).getState();
     expect(loaded.threads.get("a")).toEqual({ open: true, width: 440 });
     expect(loaded.threads.get("b") ?? defaultRightPanel).toEqual({
       open: false,
       width: 360,
     });
-    expect(loaded.selection).toBeUndefined();
+    expect(loaded.tabs.get("a")).toEqual({
+      items: [
+        { id: "agents", type: "agents" },
+        {
+          id: "agent:child-agent",
+          type: "agent",
+          agentId: "child-agent",
+          title: "Check hours",
+          profile: "full",
+        },
+      ],
+      activeId: "agent:child-agent",
+    });
   });
 
   test("transfers a local draft layout to its created thread", () => {
@@ -159,14 +173,15 @@ test("file tabs coexist with Agents, refocus without duplicates, and stay per th
   expect(store.getState().tabs.get("thread")?.items).toHaveLength(3);
   expect(store.getState().tabs.get("thread")?.activeId).toBe("path:/tmp/a.md");
   expect(store.getState().threads.get("thread")).toBe(layout);
-  actions.select("thread", "agent");
-  expect(store.getState().tabs.get("thread")?.activeId).toBe("agents");
+  actions.openAgent("thread", { agentId: "agent", title: "Agent", profile: "full" });
+  expect(store.getState().tabs.get("thread")?.activeId).toBe("agent:agent");
   actions.openAgents("thread");
-  expect(store.getState().tabs.get("thread")?.items).toHaveLength(3);
+  expect(store.getState().tabs.get("thread")?.activeId).toBe("agents");
+  expect(store.getState().tabs.get("thread")?.items).toHaveLength(4);
   actions.openFile("other", b);
   expect(store.getState().tabs.get("other")?.items).toHaveLength(2);
   actions.moveThread("thread", "saved");
-  expect(store.getState().tabs.get("saved")?.items).toHaveLength(3);
+  expect(store.getState().tabs.get("saved")?.items).toHaveLength(4);
   expect(store.getState().tabs.has("thread")).toBe(false);
   expect(createPanelStore(scope, storage).getState().tabs).toEqual(store.getState().tabs);
 });

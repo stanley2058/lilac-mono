@@ -14,14 +14,7 @@ import {
 } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useStore } from "zustand";
-import {
-  ArrowLeft,
-  Bot,
-  CircleAlert,
-  CircleCheck,
-  PanelRightClose,
-  PanelRightOpen,
-} from "lucide-react";
+import { Bot, CircleAlert, CircleCheck, PanelRightClose, PanelRightOpen } from "lucide-react";
 import type {
   DisplayMessage,
   ReadyTurnSlot,
@@ -30,8 +23,23 @@ import type {
 } from "@stanley2058/lilac-client-protocol";
 import { useWorkspace } from "../workspace-context";
 import { subagentsOptions, useNativeOnline } from "../queries";
-import { SubagentContext, subagentProfileName } from "./subagent-context";
+import {
+  agentTabTarget,
+  SubagentContext,
+  subagentContextValue,
+  subagentProfileName,
+  subagentRelations,
+  useSubagents,
+  type SubagentRelations,
+} from "./subagent-context";
+import {
+  activeNestedAgents,
+  NestedAgentStack,
+  nestedAgentsLabel,
+  subagentTitle,
+} from "./NestedAgents";
 import { MessageIdentityContext } from "./message-identity";
+import type { ActorIdentity } from "./ActorAvatar";
 import { Turn, useSlot, useSlotIds } from "./Timeline";
 import {
   DisplayStreamContext,
@@ -39,7 +47,6 @@ import {
   type MessageServices,
 } from "./message-services";
 import { Button } from "./ui/button";
-import { IconButton } from "./ui";
 import { WorkingText } from "./ui/working-text";
 import { PanelToggleButton } from "./PanelToggleButton";
 import "./subagent-panel.css";
@@ -77,50 +84,65 @@ export function NativeSubagentProvider({
         ? 2000
         : false,
   });
-  const agents = useMemo(
-    () =>
-      new Map(
-        query.data?.pages.flatMap((page) => page.items).map((agent) => [agent.activityId, agent]),
-      ),
-    [query.data],
-  );
   const value = useMemo(
-    () => ({ agents, open: (id: string) => panels.getState().select(threadId, id) }),
-    [agents, panels, threadId],
+    () =>
+      subagentContextValue(
+        query.data?.pages.flatMap((page) => page.items) ?? [],
+        (agent, aliasId) => panels.getState().openAgent(threadId, agent, aliasId),
+      ),
+    [query.data, panels, threadId],
   );
+  // Agent tabs opened before their summary loaded are keyed by activity ID, and a hidden tab
+  // does not watch the list, so the always-mounted provider merges them into the run's tab.
+  const tabAgentIds = useStore(panels, (state) =>
+    (state.tabs.get(threadId)?.items ?? [])
+      .flatMap((tab) => (tab.type === "agent" ? [tab.agentId] : []))
+      .join("\n"),
+  );
+  useEffect(() => {
+    for (const aliasId of tabAgentIds.split("\n")) {
+      const agent = value.agents.get(aliasId);
+      if (agent && agent.id !== aliasId)
+        panels.getState().resolveAgent(threadId, aliasId, agentTabTarget(agent));
+    }
+  }, [tabAgentIds, value.agents, panels, threadId]);
   return <SubagentContext value={value}>{children}</SubagentContext>;
 }
 
+/** Lists the thread's agents, or shows one agent's transcript when `targetId` names it. */
 export function NativeSubagentPanel({
   threadId,
+  targetId = "",
   foreground,
   embedded,
 }: {
   threadId: string;
+  targetId?: string;
   foreground: boolean;
   embedded?: boolean;
 }) {
   const { client, panels, resourceUrl } = useWorkspace();
   const open = useStore(panels, (state) => (state.threads.get(threadId) ?? defaultRightPanel).open);
-  const selection = useStore(panels, (state) => state.selection);
-
-  const targetId = selection?.threadId === threadId ? selection.agentId : "";
   const online = useNativeOnline(client);
   const list = useInfiniteQuery({
     ...subagentsOptions(client, threadId),
     enabled: open && online && foreground,
+    // Visited agent tabs stay mounted; hidden ones skip the running list's polls.
+    subscribed: open && foreground,
   });
   const items = useMemo(() => list.data?.pages.flatMap((page) => page.items) ?? [], [list.data]);
   const target = items.find((agent) => agent.id === targetId || agent.activityId === targetId);
   const agentId = target?.id ?? "";
-  const resolving = !!targetId && !target && (list.isPending || !!list.hasNextPage);
+  // Pages run newest first, so a delegating parent can sit on a later page than its child.
+  const parentMissing = !!target?.parentId && !items.some((agent) => agent.id === target.parentId);
+  const unresolved = (!!targetId && !target) || parentMissing;
+  const resolving = unresolved && (list.isPending || !!list.hasNextPage);
   useEffect(() => {
     if (
       open &&
       foreground &&
       online &&
-      targetId &&
-      !target &&
+      unresolved &&
       list.hasNextPage &&
       !list.isFetching &&
       !list.error
@@ -130,13 +152,17 @@ export function NativeSubagentPanel({
     open,
     foreground,
     online,
-    targetId,
-    target,
+    unresolved,
     list.hasNextPage,
     list.isFetching,
     list.error,
     list.fetchNextPage,
   ]);
+  // The provider only sees the first page; this tab resolves aliases found on later pages.
+  useEffect(() => {
+    if (target && target.id !== targetId)
+      panels.getState().resolveAgent(threadId, targetId, agentTabTarget(target));
+  }, [panels, threadId, targetId, target]);
   const targetStream = useMemo<DisplayStreamTarget>(
     () => ({ kind: "subagent", threadId, agentId }),
     [threadId, agentId],
@@ -192,8 +218,7 @@ export function NativeSubagentPanel({
       streamTarget={targetStream}
       loading={loading}
       error={error}
-      onSelect={(id) => actions.select(threadId, id)}
-      onBack={actions.back}
+      onSelect={(agent) => actions.openAgent(threadId, agentTabTarget(agent), agent.activityId)}
       hasMore={agentId ? moreHistory : list.hasNextPage}
       loadingMore={agentId ? loadingHistory : list.isFetchingNextPage}
       onMore={() => {
@@ -216,6 +241,22 @@ function streamAgentSummary(agent: SubagentSummary | undefined, turn: ReadyTurnS
   return { ...agent, state, title: titles[state] };
 }
 
+/** A nested subagent's prompts come from the subagent that delegated it, even before it loads. */
+function promptingIdentity(
+  selected: SubagentSummary | undefined,
+  parent: SubagentSummary | undefined,
+  relations: SubagentRelations,
+): ActorIdentity | undefined {
+  if (parent)
+    return {
+      displayName: subagentProfileName(parent.profile),
+      agentProfile: parent.profile,
+      agentColor: relations.colors.get(parent.id),
+    };
+  if (selected?.parentId) return { displayName: "Parent agent", agentProfile: "full" };
+  return undefined;
+}
+
 export function SubagentPanelView({
   embedded,
   items,
@@ -228,7 +269,6 @@ export function SubagentPanelView({
   error,
   unavailable,
   onSelect,
-  onBack,
   hasMore,
   loadingMore,
   onMore,
@@ -243,25 +283,29 @@ export function SubagentPanelView({
   loading?: boolean;
   error?: string;
   unavailable?: boolean;
-  onSelect: (id: string) => void;
-  onBack: () => void;
+  onSelect: (agent: SubagentSummary) => void;
   hasMore?: boolean;
   loadingMore?: boolean;
   onMore?: () => void;
 }) {
   const services = useMemo(() => ({ ...transcriptServices, resourceUrl }), [resourceUrl]);
   const identity = useContext(MessageIdentityContext);
+  const relations = useMemo(() => subagentRelations(items), [items]);
+  const parent = selected?.parentId
+    ? items.find((agent) => agent.id === selected.parentId)
+    : undefined;
   const transcriptIdentity = useMemo(
     () => ({
       ...identity,
       viewerId: undefined,
-      promptingAgent: identity.agent,
+      promptingAgent: promptingIdentity(selected, parent, relations) ?? identity.agent,
       agent: {
         displayName: selected ? subagentProfileName(selected.profile) : "Agent",
         agentProfile: selected?.profile,
+        agentColor: selected ? relations.colors.get(selected.id) : undefined,
       },
     }),
-    [identity, selected?.profile],
+    [identity, parent, relations, selected?.id, selected?.parentId, selected?.profile],
   );
   const turn = useMemo<ReadyTurnSlot | undefined>(() => {
     if (streamedTurn) return streamedTurn;
@@ -308,20 +352,14 @@ export function SubagentPanelView({
     >
       {selected || !embedded ? (
         <header className="subagent-panel-header flex items-center gap-2 h-[var(--ui-header-height)] flex-none px-2 pr-[calc(calc(var(--ui-space-unit)*3)_+_var(--ui-control-compact)_+_calc(var(--ui-space-unit)*2))]">
-          {selected ? (
-            <IconButton label="Back to agents" onClick={onBack}>
-              <ArrowLeft />
-            </IconButton>
-          ) : (
-            <Bot />
-          )}
+          {selected ? null : <Bot />}
           <h2 title={selected?.name}>
             {selected ? (selected.taskTitle ?? subagentProfileName(selected.profile)) : "Agents"}
           </h2>
           {selected ? (
             <span className="subagent-status flex flex-1 gap-1.5 items-center min-w-0 text-muted-foreground text-xs">
               <AgentStatus agent={selected} />
-              <StatusTitle agent={selected} />
+              <StatusTitle agent={selected} relations={relations} />
             </span>
           ) : null}
         </header>
@@ -382,12 +420,13 @@ export function SubagentPanelView({
               key={agent.id}
               variant="ghost"
               className="subagent-card flex items-start justify-start w-full h-auto p-3 text-left gap-3"
-              onClick={() => onSelect(agent.id)}
+              onClick={() => onSelect(agent)}
             >
               <AgentAvatar
                 decorative
                 profile={agent.profile}
                 displayName={subagentProfileName(agent.profile)}
+                color={relations.colors.get(agent.id)}
                 size="sm"
               />
               <span>
@@ -407,7 +446,7 @@ export function SubagentPanelView({
                 </span>
                 <span className="subagent-status flex gap-2 items-center min-w-0 text-muted-foreground text-sm">
                   <AgentStatus agent={agent} />
-                  <StatusTitle agent={agent} />
+                  <StatusTitle agent={agent} relations={relations} />
                 </span>
               </span>
             </Button>
@@ -419,8 +458,122 @@ export function SubagentPanelView({
   );
 }
 
-function StatusTitle({ agent }: { agent: SubagentSummary }) {
-  if (agent.state === "running") return <WorkingText>{agent.title}</WorkingText>;
+/** Parents before their delegated agents, so the sidebar reads as a tree. */
+function agentTree(
+  items: readonly SubagentSummary[],
+  children: SubagentRelations["children"],
+): { agent: SubagentSummary; depth: number }[] {
+  const ids = new Set(items.map((agent) => agent.id));
+  const rows: { agent: SubagentSummary; depth: number }[] = [];
+  const seen = new Set<string>();
+  const visit = (agent: SubagentSummary, depth: number) => {
+    if (seen.has(agent.id)) return;
+    seen.add(agent.id);
+    rows.push({ agent, depth });
+    for (const child of children.get(agent.id) ?? []) visit(child, depth + 1);
+  };
+  for (const agent of items) if (!agent.parentId || !ids.has(agent.parentId)) visit(agent, 0);
+  return rows;
+}
+
+/** The compact agent list beside an expanded agent tab. */
+export function AgentSidebarView({
+  items,
+  activeId,
+  onSelect,
+}: {
+  items: readonly SubagentSummary[];
+  activeId?: string;
+  onSelect: (agent: SubagentSummary) => void;
+}) {
+  const relations = useMemo(() => subagentRelations(items), [items]);
+  const rows = useMemo(() => agentTree(items, relations.children), [items, relations]);
+  return (
+    <nav
+      className="agent-sidebar flex flex-col gap-0.5 w-full min-h-0 overflow-y-auto p-2"
+      aria-label="Agents"
+    >
+      {rows.map(({ agent, depth }) => {
+        const active = agent.id === activeId || agent.activityId === activeId;
+        const title = agent.taskTitle ?? subagentProfileName(agent.profile);
+        return (
+          <Button
+            key={agent.id}
+            variant="ghost"
+            data-selected={active || undefined}
+            aria-current={active ? "page" : undefined}
+            title={title}
+            className="h-8 w-full min-w-0 justify-start gap-2 pr-2 text-left text-sm font-normal data-[selected]:bg-selection data-[selected]:text-selection-foreground"
+            style={{ paddingInlineStart: `calc(var(--ui-space-unit) * ${2 + depth * 4})` }}
+            onClick={() => onSelect(agent)}
+          >
+            <span aria-hidden="true" className="flex shrink-0 [&>[data-slot=avatar]]:size-5">
+              <AgentAvatar
+                decorative
+                profile={agent.profile}
+                displayName={subagentProfileName(agent.profile)}
+                color={relations.colors.get(agent.id)}
+                size="sm"
+              />
+            </span>
+            <span className="min-w-0 flex-1 truncate">{title}</span>
+            <span className="flex shrink-0 text-muted-foreground [&_svg]:size-3.5">
+              <AgentStatus agent={agent} />
+            </span>
+          </Button>
+        );
+      })}
+    </nav>
+  );
+}
+
+export function NativeAgentSidebar({ threadId, activeId }: { threadId: string; activeId: string }) {
+  const { panels } = useWorkspace();
+  const { agents } = useSubagents();
+  const items = useMemo(() => [...agents.values()], [agents]);
+  return (
+    <AgentSidebarView
+      items={items}
+      activeId={activeId}
+      onSelect={(agent) =>
+        panels.getState().openAgent(threadId, agentTabTarget(agent), agent.activityId)
+      }
+    />
+  );
+}
+
+/** Tab icon; the color resolves once the agent list loads. */
+export function AgentTabIcon({ agentId, profile }: { agentId: string; profile: string }) {
+  const { colors } = useSubagents();
+  return (
+    <span aria-hidden="true" className="flex shrink-0 [&>[data-slot=avatar]]:size-4">
+      <AgentAvatar
+        decorative
+        profile={profile}
+        displayName={subagentProfileName(profile)}
+        color={colors.get(agentId)}
+        size="sm"
+      />
+    </span>
+  );
+}
+
+function StatusTitle({
+  agent,
+  relations,
+}: {
+  agent: SubagentSummary;
+  relations: SubagentRelations;
+}) {
+  const nested = activeNestedAgents(agent, relations.children);
+  if (nested)
+    return (
+      <>
+        <NestedAgentStack nested={nested} colors={relations.colors} />
+        <WorkingText>{nestedAgentsLabel(nested)}</WorkingText>
+      </>
+    );
+  if (agent.state === "running") return <WorkingText>{subagentTitle(agent.title)}</WorkingText>;
   return <span>{agent.title}</span>;
 }
 

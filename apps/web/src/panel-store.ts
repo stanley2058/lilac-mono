@@ -60,6 +60,15 @@ const tabsSchema = z
           })
           .strict(),
         z.object({ id: z.literal("agents"), type: z.literal("agents") }).strict(),
+        z
+          .object({
+            id: z.string(),
+            type: z.literal("agent"),
+            agentId: z.string(),
+            title: z.string(),
+            profile: z.string(),
+          })
+          .strict(),
         z.object({ id: z.literal("files"), type: z.literal("files") }).strict(),
         z.object({ id: z.string(), type: z.literal("file"), target: fileTargetSchema }).strict(),
       ]),
@@ -89,9 +98,12 @@ type PanelLayouts = {
 export type PanelTab =
   | { id: string; type: "thread"; target: ConversationReference; title: string }
   | { id: string; type: "agents" }
+  | ({ id: string; type: "agent" } & AgentTabTarget)
   | { id: string; type: "files" }
   | { id: string; type: "file"; target: FileTarget };
 export type PanelTabs = { items: PanelTab[]; activeId?: string };
+/** A subagent opened in its own tab; the title and profile label the tab before agents load. */
+export type AgentTabTarget = { agentId: string; title: string; profile: string };
 export const defaultPanelTabs: PanelTabs = {
   items: [{ id: "agents", type: "agents" }],
   activeId: "agents",
@@ -128,18 +140,19 @@ type PanelStore = PanelLayouts & {
     conversationThreadId?: string,
   ) => void;
   openAgents: (threadId: string) => void;
+  /** `aliasId` merges a tab opened under that ID, such as an activity ID, into this agent's. */
+  openAgent: (threadId: string, agent: AgentTabTarget, aliasId?: string) => void;
+  /** Rekeys a tab opened by an alias, such as an activity ID, to the agent's run ID. */
+  resolveAgent: (threadId: string, aliasId: string, agent: AgentTabTarget) => void;
   openFiles: (threadId: string) => void;
   focusTab: (threadId: string, id: string) => void;
   closeTab: (threadId: string, id: string) => void;
   resolveFile: (threadId: string, id: string, target: FileTarget) => void;
   openFile: (threadId: string, target: FileTarget) => void;
-  selection?: { threadId: string; agentId: string };
   toggleSidebar: () => void;
   resizeSidebar: (width: number) => void;
   toggle: (threadId: string) => void;
   resize: (threadId: string, width: number) => void;
-  select: (threadId: string, agentId: string) => void;
-  back: () => void;
   moveThread: (from: string, to: string) => void;
 };
 
@@ -226,7 +239,6 @@ export function createPanelStore(
       updateTabs(threadId, { items, activeId: type });
       updateRight(threadId, { open: true });
     }
-    const openAgents = (threadId: string) => openTool(threadId, "agents");
     return {
       ...initial,
       computerGeometry: new Map(),
@@ -252,7 +264,29 @@ export function createPanelStore(
         updateTabs(threadId, { items, activeId: id });
         updateRight(threadId, { open: true });
       },
-      openAgents,
+      openAgents: (threadId) => openTool(threadId, "agents"),
+      openAgent: (threadId, agent, aliasId) => {
+        if (aliasId) get().resolveAgent(threadId, aliasId, agent);
+        const current = get().tabs.get(threadId) ?? defaultPanelTabs;
+        const tab: PanelTab = { id: `agent:${agent.agentId}`, type: "agent", ...agent };
+        const items = current.items.some((item) => item.id === tab.id)
+          ? current.items.map((item) => (item.id === tab.id ? tab : item))
+          : [...current.items, tab];
+        updateTabs(threadId, { items, activeId: tab.id });
+        updateRight(threadId, { open: true });
+      },
+      resolveAgent: (threadId, aliasId, agent) => {
+        const current = get().tabs.get(threadId);
+        const alias = `agent:${aliasId}`;
+        const tab: PanelTab = { id: `agent:${agent.agentId}`, type: "agent", ...agent };
+        if (!current?.items.some((item) => item.id === alias) || alias === tab.id) return;
+        const duplicate = current.items.some((item) => item.id === tab.id);
+        const items = duplicate
+          ? current.items.filter((item) => item.id !== alias)
+          : current.items.map((item) => (item.id === alias ? tab : item));
+        const activeId = current.activeId === alias ? tab.id : current.activeId;
+        updateTabs(threadId, { items, activeId });
+      },
       openFiles: (threadId) => openTool(threadId, "files"),
       focusTab: (threadId, id) => {
         const current = get().tabs.get(threadId) ?? defaultPanelTabs;
@@ -315,12 +349,6 @@ export function createPanelStore(
       toggle: (threadId) =>
         updateRight(threadId, { open: !(get().threads.get(threadId) ?? defaultRightPanel).open }),
       resize: (threadId, width) => updateRight(threadId, { width }),
-      select: (threadId, agentId) => {
-        openAgents(threadId);
-        set({ selection: { threadId, agentId } });
-        updateRight(threadId, { open: true });
-      },
-      back: () => set({ selection: undefined }),
       moveThread: (from, to) => {
         const layout = get().threads.get(from);
         if (!layout) return;
