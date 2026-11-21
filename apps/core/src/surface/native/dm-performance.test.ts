@@ -56,6 +56,7 @@ for (const count of [1_000, 10_000, 100_000]) {
         for (let i = 0; i < count; i++) {
           const turnId = `${thread.id}-turn-${i}`;
           const inputId = `${thread.id}-input-${i}`;
+          const completedAt = i < count - 10 ? i : i + 1;
           write.run(
             "input",
             inputId,
@@ -70,7 +71,7 @@ for (const count of [1_000, 10_000, 100_000]) {
                 requestId: `${thread.id}-request-${i}`,
                 position: i,
                 createdAt: i,
-                completedAt: i + 1,
+                completedAt,
                 state: "admitted",
               },
             }),
@@ -83,13 +84,24 @@ for (const count of [1_000, 10_000, 100_000]) {
             i,
             JSON.stringify({
               kind: "turn",
-              value: { ...turn, slotId: turnId, turnId, position: i, state: "complete" },
+              value: {
+                ...turn,
+                slotId: turnId,
+                turnId,
+                position: i,
+                messages: turn.messages.map((message) => ({
+                  ...message,
+                  metadata: { ...message.metadata, createdAt: i },
+                })),
+                state: "complete",
+              },
             }),
             i,
           );
         }
       })();
       const selection: number[] = [];
+      const sessionSelection: number[] = [];
       const windows: number[] = [];
       let bytes = 0;
       for (let run = 0; run < 21; run++) {
@@ -98,6 +110,14 @@ for (const count of [1_000, 10_000, 100_000]) {
           count - 3,
         );
         selection.push(performance.now() - start);
+        if (thread.kind === "dm") {
+          const sessionStart = performance.now();
+          expect(
+            store.selectSessionStartInput(thread.id, { gapMs: 0, at: count - 1 }).unwrap()
+              ?.position,
+          ).toBe(count - 10);
+          sessionSelection.push(performance.now() - sessionStart);
+        }
         const opened = performance.now();
         const reply = store.sync("owner", thread.id).unwrap();
         windows.push(performance.now() - opened);
@@ -106,6 +126,14 @@ for (const count of [1_000, 10_000, 100_000]) {
         expect(reply.slots[0]?.kind).toBe("deferred");
         bytes = new TextEncoder().encode(JSON.stringify(reply)).length;
         expect(bytes).toBeLessThan(16_000);
+      }
+      if (thread.kind === "dm") {
+        expect(sessionSelection.slice(1).sort((a, b) => a - b)[18]!).toBeLessThan(50);
+        const outlineStart = performance.now();
+        expect(
+          store.outline("owner", thread.id, { dmContextGapMs: 0 }).unwrap().positions,
+        ).toHaveLength(256);
+        expect(performance.now() - outlineStart).toBeLessThan(200);
       }
       const sent = performance.now();
       const pending = store

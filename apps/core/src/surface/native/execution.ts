@@ -341,10 +341,13 @@ export function createNativeExecution(options: {
     return Result.gen(function* () {
       const thread = yield* store.getThreadRecord(input.threadId);
       if (thread.kind !== "dm") return Result.ok([...canonical]);
+      const inputTurnPosition = input.turnId
+        ? yield* store.getTurnPosition(input.turnId)
+        : undefined;
       const session = yield* store.selectSessionWindow(input.threadId, {
         gapMs: options.getDmContextGapMs?.() ?? DEFAULT_DM_CONTEXT_GAP_MS,
         at: input.createdAt,
-        beforePosition: input.position,
+        beforePosition: inputTurnPosition,
         includePosts: true,
       });
       const history = canonical.filter((message) => {
@@ -358,6 +361,7 @@ export function createNativeExecution(options: {
           return true;
         return !(Date.parse(header.meta.message_time) < session.firstAt);
       });
+      if (session.postedTurns.length === 0) return Result.ok(history);
       const knownIds = new Set(
         history.flatMap((message) => {
           const header = messageHeader(message);
@@ -368,6 +372,7 @@ export function createNativeExecution(options: {
         }),
       );
       const anchors: { index: number; position: number }[] = [];
+      const turnPositions = new Map<string, number>();
       for (const [index, message] of history.entries()) {
         if (message.role !== "user") continue;
         const header = messageHeader(message);
@@ -376,7 +381,13 @@ export function createNativeExecution(options: {
         const source = yield* store.getInputByRequestId(
           `native:${input.threadId}:${header.meta.message_id}`,
         );
-        if (source) anchors.push({ index, position: source.position });
+        if (!source?.turnId) continue;
+        let turnPosition = turnPositions.get(source.turnId);
+        if (turnPosition === undefined) {
+          turnPosition = yield* store.getTurnPosition(source.turnId);
+          turnPositions.set(source.turnId, turnPosition);
+        }
+        anchors.push({ index, position: turnPosition });
       }
       const hasSummary = history.some((message) => {
         const text =
@@ -389,7 +400,11 @@ export function createNativeExecution(options: {
       });
       const insertions = new Map<number, StoredMessageV1[]>();
       for (const turn of session.postedTurns) {
-        if (hasSummary && turn.position < (anchors[0]?.position ?? input.position)) continue;
+        if (
+          hasSummary &&
+          turn.position < (anchors[0]?.position ?? inputTurnPosition ?? Number.MAX_SAFE_INTEGER)
+        )
+          continue;
         for (const posted of turn.messages) {
           if (
             posted.role !== "assistant" ||
@@ -961,11 +976,14 @@ export function createNativeExecution(options: {
       const active = thread.activeRunId
         ? yield* store.getInputByRequestId(thread.activeRunId)
         : null;
+      const activeTurnPosition = active?.turnId
+        ? yield* store.getTurnPosition(active.turnId)
+        : undefined;
       const gapMs = options.getDmContextGapMs?.() ?? DEFAULT_DM_CONTEXT_GAP_MS;
       const session = yield* store.selectSessionWindow(threadId, {
         gapMs,
         at: active?.createdAt ?? result.evaluatedAt,
-        beforePosition: active ? active.position + 1 : undefined,
+        beforePosition: activeTurnPosition === undefined ? undefined : activeTurnPosition + 1,
       });
       return Result.ok({
         ...result,

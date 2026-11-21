@@ -250,6 +250,7 @@ describe("native store replay durability", () => {
       "native_input_request",
       "native_input_delivery",
       "native_input_created",
+      "native_input_turn",
       "native_pending_inputs",
     ])
       db.exec(`DROP INDEX ${name}`);
