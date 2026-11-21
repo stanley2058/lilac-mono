@@ -1219,6 +1219,10 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "adapters/openai-responses/input.ts", exportName },
         category: "request" as const,
       })),
+      {
+        identity: { module: "adapters/anthropic-replay.ts", exportName: "withoutAnthropicReplay" },
+        category: "projection",
+      },
       ...["matchedNames", "retainedNames"].map((exportName) => ({
         identity: { module: "adapters/ai-sdk/tool-search.ts", exportName },
         category: "projection" as const,

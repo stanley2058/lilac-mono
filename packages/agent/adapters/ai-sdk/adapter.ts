@@ -1,3 +1,4 @@
+import { withoutAnthropicReplay } from "../anthropic-replay";
 import { prepareAnthropicToolSearch, seedAnthropicToolSearch } from "./tool-search";
 import { portableToolLoadingMessages } from "../openai-responses/tool-search";
 import type { LanguageModel, ToolSet, Experimental_DownloadFunction as DownloadFunction } from "ai";
@@ -202,7 +203,10 @@ export class ModelCallAgentAdapter<TOOLS extends ToolSet = ToolSet> implements A
               runtime.executionMode === "local-tools" ? prepared.deferredTools : undefined,
           });
           const messages = normalizeModelMessagesToolCallIds({
-            messages: portableToolLoadingMessages(toolSearch.messages),
+            messages:
+              typeof runtime.model !== "string" && runtime.model.provider?.startsWith("anthropic.")
+                ? portableToolLoadingMessages(toolSearch.messages)
+                : withoutAnthropicReplay(portableToolLoadingMessages(toolSearch.messages)),
             modelSpecifier: runtime.modelSpecifier,
           });
           const state = host.readState();

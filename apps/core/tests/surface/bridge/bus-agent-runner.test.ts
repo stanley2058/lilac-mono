@@ -5472,6 +5472,7 @@ it.each([
         liveAgent = new AiSdkPiAgent({
           ...options,
           model: new MockLanguageModelV4({
+            provider: "anthropic.messages",
             modelId: "claude-opus-5-5",
             doStream: async (call) => {
               prompts.push(call.prompt);

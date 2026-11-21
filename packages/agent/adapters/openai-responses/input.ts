@@ -1,3 +1,4 @@
+import { withoutAnthropicReplay } from "../anthropic-replay";
 import { readToolLoadingDefinitions, portableToolLoadingMessages } from "./tool-search";
 import type { AgentToolDefinition } from "../../agent-adapter";
 import type { FilePart, ModelMessage, ToolResultPart } from "ai";
@@ -422,9 +423,9 @@ function encodeMessages(
   policy: EncodingPolicy,
 ): Encoded<OpenAIInputItem[]> {
   const items: OpenAIInputItem[] = [];
-  for (const message of policy.nativeToolSearch
-    ? messages
-    : portableToolLoadingMessages(messages)) {
+  for (const message of withoutAnthropicReplay(
+    policy.nativeToolSearch ? messages : portableToolLoadingMessages(messages),
+  )) {
     if (policy.nativeToolSearch) {
       const seed = captureResultOutcome(
         readToolLoadingDefinitions(message.providerOptions, "toolSearchSeed"),

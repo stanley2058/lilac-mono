@@ -351,3 +351,34 @@ test("retains inherited selection after signed history without moving the existi
     ),
   ).toHaveLength(1);
 });
+
+for (const providerName of ["anthropic.messages", "google.generative-ai", "openai.chat"]) {
+  test(`isolates Anthropic replay content at the ${providerName} boundary`, async () => {
+    const provider = new MockLanguageModelV4({
+      provider: providerName,
+      modelId: "test-model",
+      doStream: [done()],
+    });
+    const messages: ModelMessage[] = [
+      { role: "user", content: "old prompt" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "custom",
+            kind: "anthropic.message_start",
+            providerOptions: { anthropic: { id: "old-message" } },
+          },
+          { type: "text", text: "old answer" },
+        ],
+      },
+    ];
+    const agent = new AiSdkPiAgent({ system: "test", model: provider, messages });
+    await agent.prompt("continue");
+    const prompt = JSON.stringify(provider.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("old answer");
+    if (providerName === "anthropic.messages") expect(prompt).toContain("anthropic.message_start");
+    else expect(prompt).not.toContain("anthropic");
+    expect(JSON.stringify(agent.state.messages)).toContain("anthropic.message_start");
+  });
+}
