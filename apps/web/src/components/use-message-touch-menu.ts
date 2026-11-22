@@ -5,6 +5,36 @@ type TriggerProps = ComponentProps<typeof ContextMenuTrigger>;
 const interactiveTarget =
   'a, button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"], [tabindex]';
 
+export type ContextMenuPolicy = "menu" | "native" | "outside";
+
+function targetElement(target: EventTarget | null): Element | null {
+  if (typeof Element !== "undefined" && target instanceof Element) return target;
+  if (typeof Node !== "undefined" && target instanceof Node) return target.parentElement;
+  return null;
+}
+
+export function shouldStartTouchMenu(currentTarget: Element, target: EventTarget | null): boolean {
+  const element = targetElement(target);
+  if (!element || !currentTarget.contains(element)) return false;
+  const control = element.closest(interactiveTarget);
+  return !(control && currentTarget.contains(control));
+}
+
+export function messageContextMenuPolicy(
+  currentTarget: Element,
+  target: EventTarget | null,
+  options: { touchInput: boolean; isReleaseEvent: boolean },
+): ContextMenuPolicy {
+  const element = targetElement(target);
+  if (!element || !currentTarget.contains(element)) return "outside";
+  if (options.touchInput && !options.isReleaseEvent) return "native";
+  const selection = currentTarget.ownerDocument.getSelection();
+  if (selection && !selection.isCollapsed) return "native";
+  const link = element.closest("a[href]");
+  if (link && currentTarget.contains(link)) return "native";
+  return "menu";
+}
+
 export function useMessageTouchMenu() {
   const touchInput = useRef(false);
   const releaseEvent = useRef<Event | null>(null);
@@ -27,10 +57,7 @@ export function useMessageTouchMenu() {
     event.preventBaseUIHandler();
     touchInput.current = true;
     cancel();
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const control = target.closest(interactiveTarget);
-    if (control && event.currentTarget.contains(control)) return;
+    if (!shouldStartTouchMenu(event.currentTarget, event.target)) return;
     const doc = event.currentTarget.ownerDocument;
     if (event.touches.length !== 1) return;
     const selection = doc.getSelection();
@@ -109,10 +136,15 @@ export function useMessageTouchMenu() {
     };
   };
   const onContextMenu: TriggerProps["onContextMenu"] = (event) => {
-    if (
-      (touchInput.current && event.nativeEvent !== releaseEvent.current) ||
-      !event.currentTarget.ownerDocument.getSelection()?.isCollapsed
-    ) {
+    const policy = messageContextMenuPolicy(event.currentTarget, event.target, {
+      touchInput: touchInput.current,
+      isReleaseEvent: event.nativeEvent === releaseEvent.current,
+    });
+    if (policy === "outside") {
+      event.preventBaseUIHandler();
+      return;
+    }
+    if (policy === "native") {
       event.preventBaseUIHandler();
       event.stopPropagation();
     }
