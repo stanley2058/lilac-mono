@@ -147,7 +147,8 @@ export class NativeSearchService {
       const limit = Math.min(100, Math.max(1, input.limit ?? 10));
       const surrounding = Math.min(20, Math.max(0, input.surrounding ?? 1));
       const groupBy = input.groupBy ?? "origin";
-      const window = yield* resolveTimeWindow(input, Date.now()).mapError((error) =>
+      const now = Date.now();
+      const window = yield* resolveTimeWindow(input, now).mapError((error) =>
         nativeFailure("invalid", error.message),
       );
       const grouped = new Map<string, DiscoverySearchResult["groups"][number]>();
@@ -180,7 +181,7 @@ export class NativeSearchService {
             ts: row.createdAt,
             score:
               1 / (21 + grouped.size) +
-              0.35 * Math.exp(-Math.max(0, Date.now() - row.createdAt) / 604_800_000),
+              0.35 * Math.exp(-Math.max(0, now - row.createdAt) / 604_800_000),
             source: "conversation" as const,
             ...(groupBy === "source" ? {} : { origin }),
             time: new Date(row.createdAt).toISOString(),
@@ -191,6 +192,13 @@ export class NativeSearchService {
               ? (yield* this.params.searchStore.readThread(userId, row.threadId, {
                   offset: Math.max(0, row.ordinal - surrounding),
                   limit: surrounding * 2 + 1,
+                  around: {
+                    turnId: row.turnId,
+                    messageId: row.messageId,
+                    ordinal: row.ordinal,
+                    surrounding,
+                  },
+                  skipBounds: true,
                 })).messages
               : [row];
           const entries: DiscoverySearchResult["groups"][number]["entries"][number] = [];

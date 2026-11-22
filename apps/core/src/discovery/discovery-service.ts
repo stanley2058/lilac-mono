@@ -662,24 +662,46 @@ function mergeLineWindows(
   return merged;
 }
 
-function mergeIndexWindows(
-  windows: ReadonlyArray<{ start: number; end: number }>,
-): Array<{ start: number; end: number }> {
-  if (windows.length === 0) return [];
-  const sorted = [...windows].sort((a, b) => a.start - b.start || a.end - b.end);
-  const merged: Array<{ start: number; end: number }> = [];
+function compareBinaryUtf8(left: string, right: string): number {
+  if (left === right) return 0;
+  return Buffer.compare(Buffer.from(left), Buffer.from(right));
+}
 
-  for (const window of sorted) {
+function mergeConversationWindows(
+  windows: ReadonlyArray<{
+    rows: readonly IndexedDocumentRow[];
+    nextDocKey?: string;
+  }>,
+): IndexedDocumentRow[][] {
+  if (windows.length === 0) return [];
+  const merged: Array<{
+    rows: IndexedDocumentRow[];
+    keys: Set<string>;
+    nextDocKey?: string;
+  }> = [];
+
+  for (const window of windows) {
+    if (window.rows.length === 0) continue;
+    const firstKey = window.rows[0]!.doc_key;
     const prev = merged.at(-1);
-    if (!prev || window.start > prev.end + 1) {
-      merged.push({ ...window });
+    if (!prev || (!prev.keys.has(firstKey) && prev.nextDocKey !== firstKey)) {
+      merged.push({
+        rows: [...window.rows],
+        keys: new Set(window.rows.map((row) => row.doc_key)),
+        nextDocKey: window.nextDocKey,
+      });
       continue;
     }
 
-    prev.end = Math.max(prev.end, window.end);
+    for (const row of window.rows) {
+      if (prev.keys.has(row.doc_key)) continue;
+      prev.keys.add(row.doc_key);
+      prev.rows.push(row);
+    }
+    prev.nextDocKey = window.nextDocKey;
   }
 
-  return merged;
+  return merged.map((window) => window.rows);
 }
 
 function buildConversationEntry(params: {
@@ -800,6 +822,16 @@ class SqliteDiscoveryStore {
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_discovery_documents_session_ts
       ON discovery_documents(platform, session_id, ts ASC, doc_key ASC);
+    `);
+
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_discovery_documents_source_kind_updated
+      ON discovery_documents(source, kind, updated_ts DESC, doc_key ASC);
+    `);
+
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_discovery_documents_conv_session_ts
+      ON discovery_documents(source, deleted, platform, session_id, ts ASC, doc_key ASC);
     `);
 
     this.db.run(`
@@ -945,11 +977,34 @@ class SqliteDiscoveryStore {
   }
 
   upsertDocuments(documents: readonly IndexedDocument[]): void {
+    if (documents.length === 0) return;
     const tx = this.db.transaction((docs: readonly IndexedDocument[]) => {
       this.upsertDocumentsInTransaction(docs);
     });
 
     tx(documents);
+  }
+
+  applyDocumentDelta(params: {
+    upsert: readonly IndexedDocument[];
+    deleteKeys: readonly string[];
+  }): void {
+    if (params.upsert.length === 0 && params.deleteKeys.length === 0) return;
+    const tx = this.db.transaction(
+      (delta: { upsert: readonly IndexedDocument[]; deleteKeys: readonly string[] }) => {
+        if (delta.upsert.length > 0) {
+          this.upsertDocumentsInTransaction(delta.upsert);
+        }
+        if (delta.deleteKeys.length > 0) {
+          const del = this.db.prepare("DELETE FROM discovery_documents WHERE doc_key = ?");
+          for (const key of delta.deleteKeys) {
+            del.run(key);
+          }
+        }
+      },
+    );
+
+    tx(params);
   }
 
   replaceDocumentsWhere(params: {
@@ -1055,10 +1110,14 @@ class SqliteDiscoveryStore {
       .all(...values) as IndexedDocumentRow[];
   }
 
-  listConversationBySession(params: {
+  listConversationBefore(params: {
     platform: AdapterPlatform;
     sessionId: string;
+    ts: number;
+    docKey: string;
+    limit: number;
   }): IndexedDocumentRow[] {
+    if (params.limit <= 0) return [];
     return this.db
       .query(
         `
@@ -1085,23 +1144,86 @@ class SqliteDiscoveryStore {
           AND deleted = 0
           AND platform = ?
           AND session_id = ?
-        ORDER BY ts ASC, doc_key ASC
+          AND (ts, doc_key) < (?, ?)
+        ORDER BY ts DESC, doc_key DESC
+        LIMIT ?
         `,
       )
-      .all(params.platform, params.sessionId) as IndexedDocumentRow[];
+      .all(
+        params.platform,
+        params.sessionId,
+        params.ts,
+        params.docKey,
+        params.limit,
+      ) as IndexedDocumentRow[];
+  }
+
+  listConversationAfter(params: {
+    platform: AdapterPlatform;
+    sessionId: string;
+    ts: number;
+    docKey: string;
+    limit: number;
+  }): IndexedDocumentRow[] {
+    if (params.limit <= 0) return [];
+    return this.db
+      .query(
+        `
+        SELECT
+          rowid,
+          doc_key,
+          source,
+          kind,
+          platform,
+          session_id,
+          message_id,
+          request_id,
+          file_path,
+          title,
+          author_id,
+          author_name,
+          text,
+          ts,
+          updated_ts,
+          start_line,
+          end_line
+        FROM discovery_documents
+        WHERE source = 'conversation'
+          AND deleted = 0
+          AND platform = ?
+          AND session_id = ?
+          AND (ts, doc_key) > (?, ?)
+        ORDER BY ts ASC, doc_key ASC
+        LIMIT ?
+        `,
+      )
+      .all(
+        params.platform,
+        params.sessionId,
+        params.ts,
+        params.docKey,
+        params.limit,
+      ) as IndexedDocumentRow[];
   }
 }
 
 export class DiscoveryService {
   private readonly store: SqliteDiscoveryStore;
   private lastDiscordUpdatedTs: number | undefined;
+  private lastDiscordVersion: string | undefined;
   private readonly fileDocuments = new Map<
     string,
     { mtimeMs: number; size: number; documents: IndexedDocument[] }
   >();
+  private promptWorkspaceEnsured = false;
+  private promptSynced = false;
+  private heartbeatSynced = false;
+  private promptFilePaths: string[] = [];
+  private heartbeatFilePaths: string[] = [];
   private transcriptWatermark = 0;
   private transcriptSnapshot = new Map<string, { updatedTs: number; fingerprint: string }>();
   private lastTranscriptVersion: string | undefined;
+  private transcriptSyncInitialized = false;
   private readonly transcriptDocuments = new Map<
     string,
     { updatedTs: number; text: string; document: IndexedDocument }
@@ -1151,29 +1273,36 @@ export class DiscoveryService {
 
   private async syncConversationFromDiscord(): Promise<void> {
     if (!this.params.discordSearchStore) return;
-    const rows = this.params.discordSearchStore.listMessagesForDiscovery(this.lastDiscordUpdatedTs);
-    if (rows.length === 0) return;
+    const version = this.params.discordSearchStore.getDiscoveryVersion?.();
+    if (version !== undefined && version === this.lastDiscordVersion) return;
 
-    const documents: IndexedDocument[] = rows.map((row) => ({
-      docKey: `conversation:surface:${row.ref.platform}:${row.ref.channelId}:${row.ref.messageId}`,
-      source: "conversation",
-      kind: "surface_message",
-      platform: row.ref.platform,
-      sessionId: row.ref.channelId,
-      messageId: row.ref.messageId,
-      text: row.text,
-      ts: row.ts,
-      updatedTs: row.updatedTs,
-      authorId: row.userId,
-      authorName: row.userName,
-      deleted: row.deleted,
-    }));
-
-    this.store.upsertDocuments(documents);
-    this.lastDiscordUpdatedTs = rows.reduce(
-      (max, row) => Math.max(max, row.updatedTs),
-      this.lastDiscordUpdatedTs ?? 0,
+    const rows = this.params.discordSearchStore.listMessagesForDiscovery(
+      this.lastDiscordUpdatedTs,
+      { includeAttachments: false },
     );
+    if (rows.length > 0) {
+      const documents: IndexedDocument[] = rows.map((row) => ({
+        docKey: `conversation:surface:${row.ref.platform}:${row.ref.channelId}:${row.ref.messageId}`,
+        source: "conversation",
+        kind: "surface_message",
+        platform: row.ref.platform,
+        sessionId: row.ref.channelId,
+        messageId: row.ref.messageId,
+        text: row.text,
+        ts: row.ts,
+        updatedTs: row.updatedTs,
+        authorId: row.userId,
+        authorName: row.userName,
+        deleted: row.deleted,
+      }));
+
+      this.store.upsertDocuments(documents);
+      this.lastDiscordUpdatedTs = rows.reduce(
+        (max, row) => Math.max(max, row.updatedTs),
+        this.lastDiscordUpdatedTs ?? 0,
+      );
+    }
+    this.lastDiscordVersion = version;
   }
 
   private async syncConversationFromTranscripts(): Promise<void> {
@@ -1193,25 +1322,43 @@ export class DiscoveryService {
       .map((row) => row.requestId);
     const records = this.params.transcriptStore?.listDiscoveryRecords?.(changedIds) ?? [];
     const liveSnapshotIds = snapshot ? new Set(snapshot.map((row) => row.requestId)) : undefined;
+    const changedIdSet = new Set(changedIds ?? []);
+
+    const removedRequestIds = new Set<string>();
+    const removedDocKeys: string[] = [];
+    const updatedEntries = new Map<
+      string,
+      { updatedTs: number; text: string; document: IndexedDocument }
+    >();
+
     if (liveSnapshotIds) {
-      for (const requestId of this.transcriptDocuments.keys()) {
-        if (!liveSnapshotIds.has(requestId)) this.transcriptDocuments.delete(requestId);
+      for (const [requestId, cached] of this.transcriptDocuments) {
+        if (liveSnapshotIds.has(requestId)) continue;
+        removedRequestIds.add(requestId);
+        removedDocKeys.push(cached.document.docKey);
       }
-      for (const requestId of changedIds ?? []) this.transcriptDocuments.delete(requestId);
     }
-    const documents: IndexedDocument[] = [];
+
+    const changedDocuments: IndexedDocument[] = [];
+    const seenLiveRequests = new Set<string>();
 
     for (const record of records) {
       const text = record.finalText?.trim();
       if (!text) continue;
       if (record.requestClient === "native" || hasIndexedSurfaceCoverage(record)) continue;
+      seenLiveRequests.add(record.requestId);
+      const docKey = `conversation:transcript:${record.requestClient}:${record.sessionId}:${record.requestId}`;
       const cached = this.transcriptDocuments.get(record.requestId);
-      if (cached && cached.updatedTs === record.updatedTs && cached.text === text) {
-        documents.push(cached.document);
+      if (
+        cached &&
+        cached.document.docKey === docKey &&
+        cached.updatedTs === record.updatedTs &&
+        cached.text === text
+      ) {
         continue;
       }
       const document: IndexedDocument = {
-        docKey: `conversation:transcript:${record.requestClient}:${record.sessionId}:${record.requestId}`,
+        docKey,
         source: "conversation",
         kind: "transcript_request",
         platform: record.requestClient,
@@ -1221,26 +1368,61 @@ export class DiscoveryService {
         ts: record.updatedTs,
         updatedTs: record.updatedTs,
       };
-      this.transcriptDocuments.set(record.requestId, {
+      if (cached && cached.document.docKey !== docKey) {
+        removedDocKeys.push(cached.document.docKey);
+      }
+      updatedEntries.set(record.requestId, {
         updatedTs: record.updatedTs,
         text,
         document,
       });
-      documents.push(document);
+      changedDocuments.push(document);
     }
 
-    const liveRequests = new Set(documents.map((document) => document.requestId));
-    if (!snapshot) {
+    if (liveSnapshotIds) {
+      for (const requestId of changedIdSet) {
+        if (seenLiveRequests.has(requestId) || removedRequestIds.has(requestId)) continue;
+        const previous = this.transcriptDocuments.get(requestId);
+        if (!previous) continue;
+        removedRequestIds.add(requestId);
+        removedDocKeys.push(previous.document.docKey);
+      }
+    } else {
       for (const requestId of this.transcriptDocuments.keys()) {
-        if (!liveRequests.has(requestId)) this.transcriptDocuments.delete(requestId);
+        if (!seenLiveRequests.has(requestId)) removedRequestIds.add(requestId);
       }
     }
-    this.store.replaceDocumentsWhere({
-      source: "conversation",
-      kind: "transcript_request",
-      documents: Array.from(this.transcriptDocuments.values(), (cached) => cached.document),
-      changedDocuments: documents,
-    });
+
+    if (this.transcriptSyncInitialized && snapshot) {
+      this.store.applyDocumentDelta({
+        upsert: changedDocuments,
+        deleteKeys: removedDocKeys,
+      });
+    } else {
+      const nextDocuments: IndexedDocument[] = [];
+      for (const [requestId, cached] of this.transcriptDocuments) {
+        if (removedRequestIds.has(requestId)) continue;
+        nextDocuments.push((updatedEntries.get(requestId) ?? cached).document);
+      }
+      for (const [requestId, entry] of updatedEntries) {
+        if (this.transcriptDocuments.has(requestId)) continue;
+        nextDocuments.push(entry.document);
+      }
+      this.store.replaceDocumentsWhere({
+        source: "conversation",
+        kind: "transcript_request",
+        documents: nextDocuments,
+        changedDocuments: this.transcriptSyncInitialized ? changedDocuments : nextDocuments,
+      });
+    }
+
+    for (const requestId of removedRequestIds) {
+      this.transcriptDocuments.delete(requestId);
+    }
+    for (const [requestId, entry] of updatedEntries) {
+      this.transcriptDocuments.set(requestId, entry);
+    }
+    this.transcriptSyncInitialized = true;
     if (snapshot) {
       this.transcriptSnapshot = new Map(snapshot.map((row) => [row.requestId, row]));
       this.transcriptWatermark = snapshot.reduce(
@@ -1251,18 +1433,33 @@ export class DiscoveryService {
     this.lastTranscriptVersion = version;
   }
 
-  private async buildPromptDocuments(): Promise<IndexedDocument[]> {
+  private async buildPromptDocuments(): Promise<{
+    documents: IndexedDocument[];
+    changedDocuments: IndexedDocument[];
+    filePaths: string[];
+    hasChanges: boolean;
+    cacheUpdates: Map<string, { mtimeMs: number; size: number; documents: IndexedDocument[] }>;
+  }> {
     const promptDir = resolvePromptDir({ dataDir: this.params.dataDir });
+    const filePaths = CORE_PROMPT_FILES.map((fileName) => path.join(promptDir, fileName));
     const documents: IndexedDocument[] = [];
+    const changedDocuments: IndexedDocument[] = [];
+    const cacheUpdates = new Map<
+      string,
+      { mtimeMs: number; size: number; documents: IndexedDocument[] }
+    >();
+    let hasChanges =
+      filePaths.length !== this.promptFilePaths.length ||
+      filePaths.some((filePath, index) => filePath !== this.promptFilePaths[index]);
 
-    for (const fileName of CORE_PROMPT_FILES) {
-      const filePath = path.join(promptDir, fileName);
+    for (const filePath of filePaths) {
       const stat = await Bun.file(filePath).stat();
       const cached = this.fileDocuments.get(filePath);
       if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
         documents.push(...cached.documents);
         continue;
       }
+      hasChanges = true;
       const raw = await Bun.file(filePath).text();
       const text = stripFrontmatter(raw).trim();
       const blocks = extractFileBlocks({
@@ -1287,18 +1484,25 @@ export class DiscoveryService {
           endLine: block.endLine,
         });
       }
-      this.fileDocuments.set(filePath, {
+      cacheUpdates.set(filePath, {
         mtimeMs: stat.mtimeMs,
         size: stat.size,
         documents: fileDocuments,
       });
       documents.push(...fileDocuments);
+      changedDocuments.push(...fileDocuments);
     }
 
-    return documents;
+    return { documents, changedDocuments, filePaths, hasChanges, cacheUpdates };
   }
 
-  private async buildHeartbeatDocuments(): Promise<IndexedDocument[]> {
+  private async buildHeartbeatDocuments(): Promise<{
+    documents: IndexedDocument[];
+    changedDocuments: IndexedDocument[];
+    filePaths: string[];
+    hasChanges: boolean;
+    cacheUpdates: Map<string, { mtimeMs: number; size: number; documents: IndexedDocument[] }>;
+  }> {
     const paths = resolveHeartbeatPromptPaths({ dataDir: this.params.dataDir });
     const filePaths = [
       paths.heartbeatFilePath,
@@ -1306,6 +1510,14 @@ export class DiscoveryService {
     ];
     const uniqueFilePaths = [...new Set(filePaths)].sort();
     const documents: IndexedDocument[] = [];
+    const changedDocuments: IndexedDocument[] = [];
+    const cacheUpdates = new Map<
+      string,
+      { mtimeMs: number; size: number; documents: IndexedDocument[] }
+    >();
+    let hasChanges =
+      uniqueFilePaths.length !== this.heartbeatFilePaths.length ||
+      uniqueFilePaths.some((filePath, index) => filePath !== this.heartbeatFilePaths[index]);
 
     for (const filePath of uniqueFilePaths) {
       const stat = await Bun.file(filePath).stat();
@@ -1314,16 +1526,18 @@ export class DiscoveryService {
         documents.push(...cached.documents);
         continue;
       }
+      hasChanges = true;
       const raw = await Bun.file(filePath).text();
       const text = filePath === paths.heartbeatFilePath ? stripFrontmatter(raw).trim() : raw.trim();
-      if (!text) continue;
-      const blocks = extractFileBlocks({
-        source: "heartbeat",
-        filePath,
-        title: path.relative(paths.promptDir, filePath) || path.basename(filePath),
-        text,
-        ts: Math.floor(stat.mtimeMs),
-      });
+      const blocks = text
+        ? extractFileBlocks({
+            source: "heartbeat",
+            filePath,
+            title: path.relative(paths.promptDir, filePath) || path.basename(filePath),
+            text,
+            ts: Math.floor(stat.mtimeMs),
+          })
+        : [];
       const fileDocuments: IndexedDocument[] = [];
       for (const block of blocks) {
         fileDocuments.push({
@@ -1339,32 +1553,79 @@ export class DiscoveryService {
           endLine: block.endLine,
         });
       }
-      this.fileDocuments.set(filePath, {
+      cacheUpdates.set(filePath, {
         mtimeMs: stat.mtimeMs,
         size: stat.size,
         documents: fileDocuments,
       });
       documents.push(...fileDocuments);
+      changedDocuments.push(...fileDocuments);
     }
 
-    return documents;
+    return { documents, changedDocuments, filePaths: uniqueFilePaths, hasChanges, cacheUpdates };
+  }
+
+  private async ensureManagedPromptFilesExist(): Promise<void> {
+    if (!this.promptWorkspaceEnsured) {
+      await ensurePromptWorkspace({ dataDir: this.params.dataDir });
+      this.promptWorkspaceEnsured = true;
+      return;
+    }
+
+    const promptDir = resolvePromptDir({ dataDir: this.params.dataDir });
+    const heartbeatPaths = resolveHeartbeatPromptPaths({ dataDir: this.params.dataDir });
+    const requiredPaths = [
+      ...CORE_PROMPT_FILES.map((fileName) => path.join(promptDir, fileName)),
+      heartbeatPaths.heartbeatFilePath,
+      heartbeatPaths.heartbeatDir,
+      heartbeatPaths.workFilePath,
+    ];
+    const present = await Promise.all(requiredPaths.map((targetPath) => fs.exists(targetPath)));
+    if (present.every(Boolean)) return;
+
+    await ensurePromptWorkspace({ dataDir: this.params.dataDir });
   }
 
   private async syncFileSources(): Promise<void> {
-    await ensurePromptWorkspace({ dataDir: this.params.dataDir });
-    const [promptDocuments, heartbeatDocuments] = await Promise.all([
+    await this.ensureManagedPromptFilesExist();
+    const [promptResult, heartbeatResult] = await Promise.all([
       this.buildPromptDocuments(),
       this.buildHeartbeatDocuments(),
     ]);
 
-    const livePaths = new Set(
-      [...promptDocuments, ...heartbeatDocuments].map((doc) => doc.filePath),
-    );
+    if (!this.promptSynced || promptResult.hasChanges) {
+      this.store.replaceDocumentsWhere({
+        source: "prompt",
+        documents: promptResult.documents,
+        changedDocuments: this.promptSynced
+          ? promptResult.changedDocuments
+          : promptResult.documents,
+      });
+      for (const [filePath, entry] of promptResult.cacheUpdates) {
+        this.fileDocuments.set(filePath, entry);
+      }
+      this.promptSynced = true;
+      this.promptFilePaths = promptResult.filePaths;
+    }
+    if (!this.heartbeatSynced || heartbeatResult.hasChanges) {
+      this.store.replaceDocumentsWhere({
+        source: "heartbeat",
+        documents: heartbeatResult.documents,
+        changedDocuments: this.heartbeatSynced
+          ? heartbeatResult.changedDocuments
+          : heartbeatResult.documents,
+      });
+      for (const [filePath, entry] of heartbeatResult.cacheUpdates) {
+        this.fileDocuments.set(filePath, entry);
+      }
+      this.heartbeatSynced = true;
+      this.heartbeatFilePaths = heartbeatResult.filePaths;
+    }
+
+    const livePaths = new Set([...promptResult.filePaths, ...heartbeatResult.filePaths]);
     for (const filePath of this.fileDocuments.keys()) {
       if (!livePaths.has(filePath)) this.fileDocuments.delete(filePath);
     }
-    this.store.replaceDocumentsWhere({ source: "prompt", documents: promptDocuments });
-    this.store.replaceDocumentsWhere({ source: "heartbeat", documents: heartbeatDocuments });
   }
 
   private async syncAllSources(): Promise<void> {
@@ -1384,9 +1645,144 @@ export class DiscoveryService {
     });
   }
 
+  private buildConversationOriginGroup(params: {
+    key: string;
+    platform: AdapterPlatform;
+    sessionId: string;
+    matches: readonly SearchCandidate[];
+    score: number;
+    ts: number;
+    surrounding: number;
+    origin?: DiscoveryOrigin;
+    discordUserAliasById: ReadonlyMap<string, string>;
+  }): DiscoveryResultGroup {
+    const matchByKey = new Map(params.matches.map((match) => [match.row.doc_key, match] as const));
+    const sortedMatches = [...params.matches].sort(
+      (left, right) =>
+        left.row.ts - right.row.ts || compareBinaryUtf8(left.row.doc_key, right.row.doc_key),
+    );
+    const needLookahead = params.surrounding > 0 || sortedMatches.length > 1;
+    const rawWindows = sortedMatches.map((match) => {
+      const beforeRows =
+        params.surrounding > 0
+          ? this.store
+              .listConversationBefore({
+                platform: params.platform,
+                sessionId: params.sessionId,
+                ts: match.row.ts,
+                docKey: match.row.doc_key,
+                limit: params.surrounding,
+              })
+              .reverse()
+          : [];
+      const afterWithLookahead = needLookahead
+        ? this.store.listConversationAfter({
+            platform: params.platform,
+            sessionId: params.sessionId,
+            ts: match.row.ts,
+            docKey: match.row.doc_key,
+            limit: params.surrounding + 1,
+          })
+        : [];
+      const afterRows = afterWithLookahead.slice(0, params.surrounding);
+      const nextDocKey = afterWithLookahead[params.surrounding]?.doc_key;
+      return {
+        rows: [...beforeRows, match.row, ...afterRows],
+        nextDocKey,
+      };
+    });
+
+    const mergedWindows = mergeConversationWindows(rawWindows);
+    const entries = mergedWindows.map((windowRows) =>
+      windowRows.map((row) =>
+        buildConversationEntry({
+          row,
+          matched: matchByKey.has(row.doc_key),
+          candidate: matchByKey.get(row.doc_key),
+          origin: params.origin,
+          discordUserAliasById: params.discordUserAliasById,
+        }),
+      ),
+    );
+
+    return {
+      key: params.key,
+      source: "conversation",
+      score: params.score,
+      ts: params.ts,
+      time: formatDiscoveryTime(params.ts),
+      origin: params.origin,
+      entries,
+    };
+  }
+
+  private async buildFileOriginGroup(params: {
+    key: string;
+    source: DiscoverySource;
+    filePath: string;
+    topRow: IndexedDocumentRow;
+    matches: readonly SearchCandidate[];
+    score: number;
+    ts: number;
+    surrounding: number;
+    origin?: DiscoveryOrigin;
+    fileLinesCache: Map<string, string[]>;
+  }): Promise<DiscoveryResultGroup> {
+    let lines = params.fileLinesCache.get(params.filePath);
+    if (!lines) {
+      const raw = await Bun.file(params.filePath).text();
+      lines = splitLines(
+        params.source === "prompt" || params.filePath.endsWith("HEARTBEAT.md")
+          ? stripFrontmatter(raw)
+          : raw,
+      );
+      params.fileLinesCache.set(params.filePath, lines);
+    }
+
+    const windows = params.matches.flatMap((match) => {
+      const startLine = Math.max(1, (match.row.start_line ?? 1) - params.surrounding);
+      const endLine = Math.min(
+        lines.length,
+        (match.row.end_line ?? lines.length) + params.surrounding,
+      );
+      return {
+        startLine,
+        endLine,
+        matchStartLine: match.row.start_line ?? startLine,
+        matchEndLine: match.row.end_line ?? endLine,
+      };
+    });
+
+    const mergedWindows = mergeLineWindows(windows);
+    const entries = mergedWindows.map((window) => [
+      buildFileRangeEntry({
+        row: params.topRow,
+        startLine: window.startLine,
+        endLine: window.endLine,
+        text: lines.slice(window.startLine - 1, window.endLine).join("\n"),
+        matchRanges: window.matchRanges,
+        candidate: params.matches[0],
+        origin: params.origin,
+      }),
+    ]);
+
+    return {
+      key: params.key,
+      source: params.source,
+      score: params.score,
+      ts: params.ts,
+      time: formatDiscoveryTime(params.ts),
+      origin: params.origin,
+      entries,
+    };
+  }
+
   private async buildOriginGroups(params: {
     candidates: readonly SearchCandidate[];
     surrounding: number;
+    orderBy: DiscoveryOrderBy;
+    direction: DiscoveryDirection;
+    limit: number;
     cfg: CoreConfig | null;
   }): Promise<DiscoveryResultGroup[]> {
     const byOrigin = new Map<string, SearchCandidate[]>();
@@ -1400,112 +1796,87 @@ export class DiscoveryService {
       else byOrigin.set(key, [candidate]);
     }
 
-    const groups: DiscoveryResultGroup[] = [];
-    const sessionCache = new Map<string, IndexedDocumentRow[]>();
-    const fileLinesCache = new Map<string, string[]>();
-    const discordUserAliasById = buildDiscordUserAliasById(params.cfg);
+    const rankedOrigins: Array<{
+      key: string;
+      source: DiscoverySource;
+      score: number;
+      ts: number;
+      matches: SearchCandidate[];
+    }> = [];
 
     for (const [key, matches] of byOrigin) {
       const top = matches[0]!;
+      const isValidConversation =
+        top.row.source === "conversation" && Boolean(top.row.platform && top.row.session_id);
+      const isValidFile = !isValidConversation && Boolean(top.row.file_path);
+      if (!isValidConversation && !isValidFile) continue;
+
+      let maxScore = -Infinity;
+      let maxTs = -Infinity;
+      for (const match of matches) {
+        if (match.score > maxScore) maxScore = match.score;
+        if (match.row.ts > maxTs) maxTs = match.row.ts;
+      }
+
+      rankedOrigins.push({
+        key,
+        source: isValidConversation ? "conversation" : top.row.source,
+        score: maxScore,
+        ts: maxTs,
+        matches,
+      });
+    }
+
+    rankedOrigins.sort((left, right) =>
+      compareGroups(
+        { key: left.key, source: left.source, score: left.score, ts: left.ts, entries: [] },
+        { key: right.key, source: right.source, score: right.score, ts: right.ts, entries: [] },
+        params.orderBy,
+        params.direction,
+      ),
+    );
+
+    const selectedOrigins = rankedOrigins.slice(0, params.limit);
+    const groups: DiscoveryResultGroup[] = [];
+    const fileLinesCache = new Map<string, string[]>();
+    const discordUserAliasById = buildDiscordUserAliasById(params.cfg);
+
+    for (const ranked of selectedOrigins) {
+      const { key, matches, score, ts } = ranked;
+      const top = matches[0]!;
       const origin = buildOriginFromRow(top.row, params.cfg);
       if (top.row.source === "conversation" && top.row.platform && top.row.session_id) {
-        const sessionKey = `${top.row.platform}:${top.row.session_id}`;
-        let sessionRows = sessionCache.get(sessionKey);
-        if (!sessionRows) {
-          sessionRows = this.store.listConversationBySession({
+        groups.push(
+          this.buildConversationOriginGroup({
+            key,
             platform: top.row.platform,
             sessionId: top.row.session_id,
-          });
-          sessionCache.set(sessionKey, sessionRows);
-        }
-
-        const rowIndexByKey = new Map(
-          sessionRows.map((row, index) => [row.doc_key, index] as const),
-        );
-        const matchByKey = new Map(matches.map((match) => [match.row.doc_key, match] as const));
-        const mergedWindows = mergeIndexWindows(
-          matches.flatMap((match) => {
-            const centerIndex = rowIndexByKey.get(match.row.doc_key);
-            if (centerIndex === undefined) return [];
-            return {
-              start: Math.max(0, centerIndex - params.surrounding),
-              end: Math.min(sessionRows.length - 1, centerIndex + params.surrounding),
-            };
+            matches,
+            score,
+            ts,
+            surrounding: params.surrounding,
+            origin,
+            discordUserAliasById,
           }),
         );
-
-        const entries = mergedWindows.map((window) =>
-          sessionRows.slice(window.start, window.end + 1).map((row) =>
-            buildConversationEntry({
-              row,
-              matched: matchByKey.has(row.doc_key),
-              candidate: matchByKey.get(row.doc_key),
-              origin,
-              discordUserAliasById,
-            }),
-          ),
-        );
-
-        groups.push({
-          key,
-          source: "conversation",
-          score: Math.max(...matches.map((match) => match.score)),
-          ts: Math.max(...matches.map((match) => match.row.ts)),
-          time: formatDiscoveryTime(Math.max(...matches.map((match) => match.row.ts))),
-          origin,
-          entries,
-        });
         continue;
       }
 
       if (top.row.file_path) {
-        let lines = fileLinesCache.get(top.row.file_path);
-        if (!lines) {
-          const raw = await Bun.file(top.row.file_path).text();
-          lines = splitLines(
-            top.row.source === "prompt" || top.row.file_path.endsWith("HEARTBEAT.md")
-              ? stripFrontmatter(raw)
-              : raw,
-          );
-          fileLinesCache.set(top.row.file_path, lines);
-        }
-
-        const windows = matches.flatMap((match) => {
-          const startLine = Math.max(1, (match.row.start_line ?? 1) - params.surrounding);
-          const endLine = Math.min(
-            lines.length,
-            (match.row.end_line ?? lines.length) + params.surrounding,
-          );
-          return {
-            startLine,
-            endLine,
-            matchStartLine: match.row.start_line ?? startLine,
-            matchEndLine: match.row.end_line ?? endLine,
-          };
-        });
-
-        const mergedWindows = mergeLineWindows(windows);
-        const entries = mergedWindows.map((window) => [
-          buildFileRangeEntry({
-            row: top.row,
-            startLine: window.startLine,
-            endLine: window.endLine,
-            text: lines.slice(window.startLine - 1, window.endLine).join("\n"),
-            matchRanges: window.matchRanges,
-            candidate: matches[0],
+        groups.push(
+          await this.buildFileOriginGroup({
+            key,
+            source: top.row.source,
+            filePath: top.row.file_path,
+            topRow: top.row,
+            matches,
+            score,
+            ts,
+            surrounding: params.surrounding,
             origin,
+            fileLinesCache,
           }),
-        ]);
-
-        groups.push({
-          key,
-          source: top.row.source,
-          score: Math.max(...matches.map((match) => match.score)),
-          ts: Math.max(...matches.map((match) => match.row.ts)),
-          time: formatDiscoveryTime(Math.max(...matches.map((match) => match.row.ts))),
-          origin,
-          entries,
-        });
+        );
       }
     }
 
@@ -1609,8 +1980,6 @@ export class DiscoveryService {
   }
 
   private async searchOperation(input: DiscoverySearchInput): Promise<DiscoverySearchResult> {
-    await this.syncAllSources();
-
     const normalizedQuery = normalizeFtsQuery(input.query);
     const ftsQuery = adaptDiscoverySearchInputResultToHost(
       normalizedQuery
@@ -1632,9 +2001,12 @@ export class DiscoveryService {
     const surrounding = clampNonNegativeInt(input.surrounding, 1, DISCOVERY_SURROUNDING_MAX);
     const limit = clampPositiveInt(input.limit, 10, DISCOVERY_LIMIT_MAX);
     const verbose = input.verbose ?? false;
+    adaptDiscoverySearchInputResultToHost(resolveTimeWindow(input, Date.now()));
+    const candidateLimit = Math.min(500, Math.max(limit * 8, 50));
+
+    await this.syncAllSources();
     const nowMs = Date.now();
     const window = adaptDiscoverySearchInputResultToHost(resolveTimeWindow(input, nowMs));
-    const candidateLimit = Math.min(500, Math.max(limit * 8, 50));
     const cfg = await this.getConfig();
 
     const rows = this.store.searchDocuments({
@@ -1660,12 +2032,20 @@ export class DiscoveryService {
     let groups: DiscoveryResultGroup[];
     switch (groupBy) {
       case "origin":
-        groups = await this.buildOriginGroups({ candidates, surrounding, cfg });
+        groups = await this.buildOriginGroups({
+          candidates,
+          surrounding,
+          orderBy,
+          direction,
+          limit,
+          cfg,
+        });
         break;
       case "source":
         groups = this.buildSourceGroups({ candidates, cfg });
         break;
-      case "none":
+      case "none": {
+        const discordUserAliasById = buildDiscordUserAliasById(cfg);
         groups = candidates.slice(0, limit).map((candidate) => ({
           key: `hit:${candidate.row.doc_key}`,
           source: candidate.row.source,
@@ -1682,7 +2062,7 @@ export class DiscoveryService {
                       matched: true,
                       candidate,
                       origin: buildOriginFromRow(candidate.row, cfg),
-                      discordUserAliasById: buildDiscordUserAliasById(cfg),
+                      discordUserAliasById,
                     }),
                   ],
                 ]
@@ -1706,10 +2086,11 @@ export class DiscoveryService {
                 ],
         }));
         break;
+      }
     }
 
     const limitedGroups =
-      groupBy === "none"
+      groupBy === "none" || groupBy === "origin"
         ? groups
         : [...groups]
             .sort((left, right) => compareGroups(left, right, orderBy, direction))

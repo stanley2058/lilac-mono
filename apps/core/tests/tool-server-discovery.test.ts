@@ -862,4 +862,237 @@ describe("tool-server discovery", () => {
       fixture.transcriptStore.close();
     }
   });
+
+  it("merges adjacent, overlapping, and disjoint conversation windows using keyset lookup", async () => {
+    const fixture = await makeFixture();
+    const base = fixture.now - 10_000;
+    fixture.discordSearchStore.upsertMessages(
+      [
+        ["w0", "context zero"],
+        ["w1", "windowneedle one"],
+        ["w2", "windowneedle two"],
+        ["w3", "middle gap"],
+        ["w4", "windowneedle four"],
+        ["w5", "bridge five"],
+        ["w6", "bridge six"],
+        ["w7", "bridge seven"],
+        ["w8", "windowneedle eight"],
+        ["w9", "tail nine"],
+      ].map(([messageId, text], index) => ({
+        ref: { platform: "discord" as const, channelId: "c-win", messageId: messageId! },
+        session: { platform: "discord" as const, channelId: "c-win" },
+        userId: "u1",
+        userName: "alice",
+        text: text!,
+        ts: base + index * 100,
+      })),
+    );
+
+    try {
+      // surrounding=1: w1/w2/w4 merge into [w0..w5], w8 stays separate [w7..w9]
+      const withSurrounding = (await fixture.tool.call("discovery.search", {
+        query: "windowneedle",
+        sources: ["conversation"],
+        sessionId: "c-win",
+        groupBy: "origin",
+        surrounding: 1,
+      })) as {
+        groups: Array<{ entries: Array<Array<{ messageId?: string; matched?: boolean }>> }>;
+      };
+      expect(withSurrounding.groups).toHaveLength(1);
+      expect(
+        withSurrounding.groups[0]!.entries.map((window) => window.map((entry) => entry.messageId)),
+      ).toEqual([
+        ["w0", "w1", "w2", "w3", "w4", "w5"],
+        ["w7", "w8", "w9"],
+      ]);
+
+      // surrounding=0: adjacent w1+w2 merge into [w1, w2]; w4 and w8 stay separate
+      const zeroSurrounding = (await fixture.tool.call("discovery.search", {
+        query: "windowneedle",
+        sources: ["conversation"],
+        sessionId: "c-win",
+        groupBy: "origin",
+        surrounding: 0,
+      })) as { groups: Array<{ entries: Array<Array<{ messageId?: string }>> }> };
+      expect(
+        zeroSurrounding.groups[0]!.entries.map((window) => window.map((entry) => entry.messageId)),
+      ).toEqual([["w1", "w2"], ["w4"], ["w8"]]);
+    } finally {
+      fixture.discoveryService.close();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
+
+  it("skips unchanged Discord syncs, handles binary tie-breaks, recovers missing files, and reconciles restarts", async () => {
+    const fixture = await makeFixture();
+    const listSpy = spyOn(fixture.discordSearchStore, "listMessagesForDiscovery");
+    try {
+      await fixture.discoveryService.search({ query: "deploy", sources: ["conversation"] });
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      // Unchanged Discord store skips listMessagesForDiscovery completely
+      await fixture.discoveryService.search({ query: "deploy", sources: ["conversation"] });
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      // Tied timestamps with uppercase/lowercase doc keys sort in SQLite BINARY order (A, B, a)
+      const tiedTs = fixture.now - 5_000;
+      fixture.discordSearchStore.upsertMessages(
+        ["A", "B", "a"].map((messageId) => ({
+          ref: { platform: "discord" as const, channelId: "c-tied", messageId },
+          session: { platform: "discord" as const, channelId: "c-tied" },
+          userId: "u1",
+          userName: "alice",
+          text: `tiedbinaryneedle ${messageId}`,
+          ts: tiedTs,
+        })),
+      );
+      const tiedResult = (await fixture.tool.call("discovery.search", {
+        query: "tiedbinaryneedle",
+        sources: ["conversation"],
+        sessionId: "c-tied",
+        groupBy: "origin",
+        surrounding: 0,
+      })) as { groups: Array<{ entries: Array<Array<{ messageId?: string }>> }> };
+      expect(
+        tiedResult.groups[0]!.entries.map((window) => window.map((entry) => entry.messageId)),
+      ).toEqual([["A", "B", "a"]]);
+
+      // Removing managed prompt or heartbeat WORK.md files after warm-up still recovers cleanly
+      await fs.rm(path.join(fixture.dataDir, "prompts", "AGENTS.md"));
+      await fs.rm(path.join(fixture.dataDir, "prompts", "heartbeat", "WORK.md"));
+      await expect(fixture.discoveryService.search({ query: "deploy" })).resolves.toBeDefined();
+      expect(await fs.exists(path.join(fixture.dataDir, "prompts", "heartbeat", "WORK.md"))).toBe(
+        true,
+      );
+
+      // Failed transcript and prompt index writes must not publish stale caches before commit
+      const memoryPath = path.join(fixture.dataDir, "prompts", "MEMORY.md");
+      const failDb = new Database(path.join(fixture.root, "discovery.db"));
+      try {
+        fixture.transcriptStore.saveRequestTranscript({
+          requestId: "req-retry",
+          sessionId: "owner/repo#303",
+          requestClient: "github",
+          messages: [],
+          finalText: "retryabletranscriptchange",
+          modelLabel: "test",
+        });
+        failDb.run(`
+          CREATE TRIGGER fail_transcript_writes
+          BEFORE INSERT ON discovery_documents
+          WHEN new.kind = 'transcript_request'
+          BEGIN
+            SELECT RAISE(ABORT, 'injected transcript write failure');
+          END;
+        `);
+        expect(
+          (await fixture.discoveryService.searchResult({ query: "retryabletranscriptchange" }))
+            .status,
+        ).toBe("error");
+        failDb.run("DROP TRIGGER fail_transcript_writes");
+
+        expect(
+          (await fixture.discoveryService.search({ query: "retryabletranscriptchange" })).groups
+            .length,
+        ).toBeGreaterThan(0);
+
+        await Bun.write(memoryPath, "# Memory\n\nretryablepromptchange\n");
+        failDb.run(`
+          CREATE TRIGGER fail_prompt_writes
+          BEFORE INSERT ON discovery_documents
+          WHEN new.source = 'prompt'
+          BEGIN
+            SELECT RAISE(ABORT, 'injected prompt write failure');
+          END;
+        `);
+        expect(
+          (await fixture.discoveryService.searchResult({ query: "retryablepromptchange" })).status,
+        ).toBe("error");
+        failDb.run("DROP TRIGGER fail_prompt_writes");
+      } finally {
+        failDb.close();
+      }
+      expect(
+        (await fixture.discoveryService.search({ query: "retryablepromptchange" })).groups.length,
+      ).toBeGreaterThan(0);
+
+      // Same-ms transcript move to a new session updates its origin cleanly
+      const sameTs = fixture.now + 50_000;
+      const clock = spyOn(Date, "now").mockReturnValue(sameTs);
+      try {
+        fixture.transcriptStore.saveRequestTranscript({
+          requestId: "req-move",
+          sessionId: "owner/repo#101",
+          requestClient: "github",
+          messages: [],
+          finalText: "samemillismove",
+          modelLabel: "test",
+        });
+        const beforeMove = await fixture.discoveryService.search({
+          query: "samemillismove",
+          sources: ["conversation"],
+          groupBy: "none",
+        });
+        expect(beforeMove.groups[0]?.origin).toMatchObject({ sessionId: "owner/repo#101" });
+
+        fixture.transcriptStore.saveRequestTranscript({
+          requestId: "req-move",
+          sessionId: "owner/repo#202",
+          requestClient: "github",
+          messages: [],
+          finalText: "samemillismove",
+          modelLabel: "test",
+        });
+        const afterMove = await fixture.discoveryService.search({
+          query: "samemillismove",
+          sources: ["conversation"],
+          groupBy: "none",
+        });
+        expect(afterMove.groups).toHaveLength(1);
+        expect(afterMove.groups[0]?.origin).toMatchObject({ sessionId: "owner/repo#202" });
+      } finally {
+        clock.mockRestore();
+      }
+
+      // Simulate restart with a tombstone written at an older clock timestamp
+      const clockBack = spyOn(Date, "now").mockReturnValue(1_000);
+      try {
+        fixture.discordSearchStore.markDeleted({
+          channelId: "c-tied",
+          messageId: "A",
+        });
+      } finally {
+        clockBack.mockRestore();
+      }
+      fixture.discoveryService.close();
+      const restarted = new DiscoveryService({
+        dbPath: path.join(fixture.root, "discovery.db"),
+        dataDir: fixture.dataDir,
+        discordSearchStore: fixture.discordSearchStore,
+        transcriptStore: fixture.transcriptStore,
+      });
+      try {
+        const afterRestart = await restarted.search({
+          query: "tiedbinaryneedle",
+          sources: ["conversation"],
+          sessionId: "c-tied",
+          groupBy: "origin",
+          surrounding: 0,
+        });
+        expect(
+          afterRestart.groups[0]?.entries
+            .flat()
+            .map((entry) => (entry.kind === "message" ? entry.messageId : undefined)),
+        ).toEqual(["B", "a"]);
+      } finally {
+        restarted.close();
+      }
+    } finally {
+      listSpy.mockRestore();
+      fixture.discordSearchStore.close();
+      fixture.transcriptStore.close();
+    }
+  });
 });

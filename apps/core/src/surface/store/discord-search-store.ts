@@ -274,6 +274,11 @@ export class DiscordSearchStore {
       ON discord_search_messages(channel_id, ts DESC);
     `);
 
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_discord_search_messages_updated_ts
+      ON discord_search_messages(updated_ts ASC, channel_id ASC, message_id ASC);
+    `);
+
     const hadFts =
       this.db
         .query("SELECT 1 FROM sqlite_master WHERE name='discord_search_messages_fts'")
@@ -545,7 +550,16 @@ export class DiscordSearchStore {
     );
   }
 
-  listMessagesForDiscovery(sinceUpdatedTs?: number): DiscordSearchIndexedMessage[] {
+  getDiscoveryVersion(): string {
+    const local = this.db.query<{ changes: number }, []>("SELECT total_changes() AS changes").get();
+    const external = this.db.query<{ data_version: number }, []>("PRAGMA data_version").get();
+    return `${local?.changes ?? 0}:${external?.data_version ?? 0}`;
+  }
+
+  listMessagesForDiscovery(
+    sinceUpdatedTs?: number,
+    options?: { includeAttachments?: boolean },
+  ): DiscordSearchIndexedMessage[] {
     const rows =
       sinceUpdatedTs === undefined
         ? this.db
@@ -590,10 +604,11 @@ export class DiscordSearchStore {
             )
             .all(sinceUpdatedTs);
 
+    const includeAttachments = options?.includeAttachments ?? true;
     return rows.map((row) =>
       asDiscordSearchIndexedMessage(
         row,
-        this.listMessageAttachments(row.channel_id, row.message_id),
+        includeAttachments ? this.listMessageAttachments(row.channel_id, row.message_id) : [],
       ),
     );
   }
