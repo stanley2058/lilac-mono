@@ -33,14 +33,14 @@ export function SearchThreadButton({
     <Button
       type="button"
       variant="ghost"
-      className="search-result relative flex w-full gap-1 p-3 text-left rounded-sm h-auto flex-col items-start whitespace-normal"
+      className="search-result relative flex w-full min-w-0 gap-1 p-3 text-left rounded-sm h-auto flex-col items-start whitespace-normal wrap-anywhere"
       aria-keyshortcuts={shortcut.aria}
       onClick={onSelect}
     >
-      <strong>
+      <strong className="w-full min-w-0">
         <SearchHighlight text={title} query={query} />
       </strong>
-      <span>
+      <span className="w-full min-w-0">
         <SearchHighlight text={excerpt} query={query} />
       </span>
       {shortcut.held && shortcut.label ? (
