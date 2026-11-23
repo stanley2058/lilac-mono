@@ -188,6 +188,30 @@ export async function logoutHttp(): Promise<Result<void, WebRequestFailed>> {
   });
 }
 
+export const UPLOAD_INTERRUPTED_ERROR = "Upload interrupted. Retry this file.";
+export const UPLOAD_ALREADY_ACTIVE_ERROR = "This file is already uploading";
+
+const uploadErrorSchema = z.object({ error: z.string() });
+
+export function decodeWebUploadError(value: unknown): Result<string, WebRequestFailed> {
+  const parsed = uploadErrorSchema.safeParse(value);
+  if (!parsed.success) return Result.err(failed("unavailable", "Upload failed. Retry this file."));
+  return Result.ok(parsed.data.error);
+}
+
+function isUploadAlreadyActive(xhr: XMLHttpRequest): boolean {
+  if (xhr.status !== 409) return false;
+  return Result.try({
+    try: (): unknown => JSON.parse(xhr.responseText),
+    catch: () => failed("unavailable", "Upload failed. Retry this file."),
+  })
+    .andThen(decodeWebUploadError)
+    .match({
+      ok: (message) => message === UPLOAD_ALREADY_ACTIVE_ERROR,
+      err: () => false,
+    });
+}
+
 function uploadResult(
   resourceId: string,
   file: File,
@@ -226,11 +250,10 @@ function uploadResult(
           if (event.lengthComputable && event.total > 0)
             onProgress(Math.min(1, Math.max(0, event.loaded / event.total)));
         };
-        current.onerror = () =>
-          finish(Result.err(failed("unavailable", "Upload interrupted. Retry this file.")));
+        current.onerror = () => finish(Result.err(failed("unavailable", UPLOAD_INTERRUPTED_ERROR)));
         current.onabort = () => finish(Result.err(failed("canceled", "Upload canceled")));
         current.ontimeout = () =>
-          finish(Result.err(failed("unavailable", "Upload interrupted. Retry this file.")));
+          finish(Result.err(failed("unavailable", UPLOAD_INTERRUPTED_ERROR)));
         current.onload = () => {
           if (current.status === 401) {
             finish(Result.err(failed("unauthenticated", "Sign in to upload this file")));
@@ -238,6 +261,10 @@ function uploadResult(
           }
           if (current.status === 403) {
             finish(Result.err(failed("forbidden", "You no longer have access to this thread")));
+            return;
+          }
+          if (isUploadAlreadyActive(current)) {
+            finish(Result.err(failed("unavailable", UPLOAD_ALREADY_ACTIVE_ERROR)));
             return;
           }
           if (current.status < 200 || current.status >= 300) {
@@ -250,7 +277,7 @@ function uploadResult(
         signal?.addEventListener("abort", abort, { once: true });
         current.send(file);
       },
-      catch: () => failed("unavailable", "Upload interrupted. Retry this file."),
+      catch: () => failed("unavailable", UPLOAD_INTERRUPTED_ERROR),
     });
     started.match({ ok: () => undefined, err: (error) => finish(Result.err(error)) });
   });

@@ -64,6 +64,7 @@ export function WorkspaceProvider({ children, ...props }: AppProps & { children:
   }, [fileEditors]);
   const panels = useMemo(() => createPanelStore(scope), [scope.installationId, scope.principalId]);
   const pool = useMemo(() => new UploadPool(client, upload), [client, upload]);
+  useEffect(() => pool.start(), [pool]);
   const drafts = useMemo(() => createDraftStore(), [client]);
   const threadMetadata = useMemo(
     () => createThreadMetadataStore(props.initial.threads.items),

@@ -3725,7 +3725,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
           ]
         : []),
       ...(root === "apps/web"
-        ? ["decodeWebBootstrap", "decodeWebAuthInfo"].map((exportName) => ({
+        ? ["decodeWebBootstrap", "decodeWebAuthInfo", "decodeWebUploadError"].map((exportName) => ({
             identity: { module: "src/http.ts", exportName },
             category: "wire" as const,
           }))
@@ -4402,6 +4402,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             "localLogin",
             "decodeWebBootstrap",
             "decodeWebAuthInfo",
+            "decodeWebUploadError",
             "responseStatus",
             "request",
             "bootstrapResult",

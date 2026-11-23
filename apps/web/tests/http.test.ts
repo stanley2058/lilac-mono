@@ -9,6 +9,7 @@ import {
   uploadResource,
   openNativeSocket,
   resourceUrl,
+  UPLOAD_ALREADY_ACTIVE_ERROR,
 } from "../src/http";
 
 const bootstrap: BootstrapReply = {
@@ -45,6 +46,7 @@ afterEach(() => {
 class UploadRequest {
   static instances: UploadRequest[] = [];
   status = 0;
+  responseText = "";
   withCredentials = false;
   method = "";
   url = "";
@@ -75,8 +77,9 @@ class UploadRequest {
   abort(): void {
     this.onabort?.();
   }
-  complete(status: number): void {
+  complete(status: number, responseText = ""): void {
     this.status = status;
+    this.responseText = responseText;
     this.onload?.();
   }
 }
@@ -253,6 +256,22 @@ describe("native web HTTP", () => {
       uploadResource("resource", file, progress, alreadyCanceled.signal),
     ).rejects.toMatchObject({ code: "CLIENT_CLOSED_REQUEST" });
     expect(UploadRequest.instances).toHaveLength(before);
+
+    const activeConflict = uploadResource("resource", file, progress);
+    UploadRequest.instances
+      .at(-1)!
+      .complete(409, JSON.stringify({ error: UPLOAD_ALREADY_ACTIVE_ERROR }));
+    await expect(activeConflict).rejects.toThrow(UPLOAD_ALREADY_ACTIVE_ERROR);
+
+    const genericConflict = uploadResource("resource", file, progress);
+    UploadRequest.instances
+      .at(-1)!
+      .complete(409, JSON.stringify({ error: "Upload is no longer writable" }));
+    await expect(genericConflict).rejects.toThrow("Upload failed. Retry this file.");
+
+    const malformedConflict = uploadResource("resource", file, progress);
+    UploadRequest.instances.at(-1)!.complete(409, "not-json");
+    await expect(malformedConflict).rejects.toThrow("Upload failed. Retry this file.");
   });
 
   test("socket uses the same origin without query credentials and resource IDs stay opaque", () => {

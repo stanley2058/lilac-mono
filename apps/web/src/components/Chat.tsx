@@ -581,12 +581,9 @@ export function Chat(props: ChatProps) {
         : entries.filter((entry) => entry.commandId !== commandId),
     );
   };
-  async function prepareInput(
-    entry: PendingInput,
-    retryFailed: boolean,
-  ): Promise<NativeInput | undefined> {
+  async function prepareInput(entry: PendingInput): Promise<NativeInput | undefined> {
     const [ids, { resolveComposerAttachments }] = await Promise.all([
-      resolveAttachmentIds(pool, threadId, entry.submission.attachments, retryFailed),
+      resolveAttachmentIds(pool, threadId, entry.submission.attachments, true),
       loadComposerEditor(),
     ]);
     if (currentId.current === threadId && !canEdit.current) {
@@ -678,12 +675,12 @@ export function Chat(props: ChatProps) {
         questionReplyTarget(question)?.token === target.token,
     );
   }
-  async function deliver(entry: PendingInput, retryFailed = false) {
+  async function deliver(entry: PendingInput) {
     let awaitingProjection = false;
     let sent: NativeInput | undefined;
     const outcome = await deliverPendingInput(
       entry,
-      () => prepareInput(entry, retryFailed),
+      () => prepareInput(entry),
       (input) => client.submit(input),
       (patch) => {
         awaitingProjection = patch?.state === "accepted";
@@ -720,19 +717,16 @@ export function Chat(props: ChatProps) {
     );
   }
   function retryPending(entry: PendingInput) {
-    void deliver(
-      {
-        ...entry,
-        submission: {
-          ...entry.submission,
-          attachments: entry.submission.attachments.map(
-            (attachment) =>
-              uploads.find((candidate) => candidate.key === attachment.key) ?? attachment,
-          ),
-        },
+    void deliver({
+      ...entry,
+      submission: {
+        ...entry.submission,
+        attachments: entry.submission.attachments.map(
+          (attachment) =>
+            uploads.find((candidate) => candidate.key === attachment.key) ?? attachment,
+        ),
       },
-      true,
-    );
+    });
   }
   function discardPending(entry: PendingInput) {
     for (const attachment of entry.submission.attachments) pool.release(threadId, attachment.key);

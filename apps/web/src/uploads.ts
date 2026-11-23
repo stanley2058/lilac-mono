@@ -1,8 +1,19 @@
-import type { NativeRPC } from "@stanley2058/lilac-client";
+import type { NativeClient, NativeRPC } from "@stanley2058/lilac-client";
 import type { AppProps, Attachment, LocalAttachment, UploadReference } from "./types";
 import { attempt } from "./components/ui";
+import { isConnectionFailure } from "./connection-lifecycle";
+import { UPLOAD_ALREADY_ACTIVE_ERROR, UPLOAD_INTERRUPTED_ERROR } from "./http";
 
 const empty: readonly LocalAttachment[] = [];
+
+function isTransferConnectionFailure(error: string, recovering: boolean): boolean {
+  return (
+    isConnectionFailure(error) ||
+    error === UPLOAD_INTERRUPTED_ERROR ||
+    (recovering && error === UPLOAD_ALREADY_ACTIVE_ERROR)
+  );
+}
+
 export class UploadPool {
   private readonly threads = new Map<string, readonly LocalAttachment[]>();
   private readonly listeners = new Map<string, Set<() => void>>();
@@ -15,7 +26,10 @@ export class UploadPool {
     (threadId: string, attachment: LocalAttachment, draftKey: string) => void
   >();
   private readonly released = new Set<string>();
+  private readonly retryOnReconnect = new Set<string>();
   private readonly published = new Set<string>();
+  private onlineGeneration = 0;
+  private stopConnection?: () => void;
   markPublished(ids: readonly string[]) {
     for (const id of ids) this.published.add(id);
   }
@@ -28,9 +42,68 @@ export class UploadPool {
   constructor(
     private readonly client: {
       readonly rpc: { resources: Pick<NativeRPC["resources"], "reserve"> } | undefined;
+      readonly subscribe?: NativeClient["subscribe"];
+      readonly checkConnection?: NativeClient["checkConnection"];
     },
     private readonly upload: AppProps["upload"],
   ) {}
+  start(): () => void {
+    if (this.signal.aborted || !this.client.subscribe) return () => {};
+    this.stopConnection?.();
+    const unsubscribe = this.client.subscribe((event) => {
+      if (event.kind !== "connection" || event.state !== "online") return;
+      this.onlineGeneration++;
+      this.retryConnectionFailures();
+    });
+    const stop = () => {
+      if (this.stopConnection === stop) this.stopConnection = undefined;
+      unsubscribe();
+    };
+    this.stopConnection = stop;
+    return stop;
+  }
+  private queueReconnectRetry(key: string, attemptGeneration: number): boolean {
+    if (this.onlineGeneration > attemptGeneration) return true;
+    this.retryOnReconnect.add(key);
+    void this.client.checkConnection?.();
+    return false;
+  }
+  private retryConnectionFailures() {
+    if (this.signal.aborted || !this.retryOnReconnect.size) return;
+    const targets: Array<{ threadId: string; key: string }> = [];
+    for (const [threadId, entries] of this.threads) {
+      for (const item of entries) {
+        if (item.state === "failed" && this.retryOnReconnect.has(item.key))
+          targets.push({ threadId, key: item.key });
+      }
+    }
+    for (const target of targets) this.retry(target.threadId, target.key, true);
+  }
+  private failDisconnectedReservation(threadId: string, key: string) {
+    if (this.released.has(key)) {
+      this.remove(threadId, key);
+      return;
+    }
+    this.retryOnReconnect.add(key);
+    this.update(threadId, key, {
+      state: "failed",
+      error: "Connect to upload this file",
+    });
+  }
+  private async settleFailedReservation(
+    threadId: string,
+    key: string,
+    retryNow: boolean,
+  ): Promise<string | undefined> {
+    if (this.released.has(key)) {
+      this.remove(threadId, key);
+      return undefined;
+    }
+    if (!retryNow) return undefined;
+    this.retry(threadId, key, true);
+    const next = this.get(threadId).find((item) => item.key === key)?.reservation;
+    return next ? await next : undefined;
+  }
   get(threadId: string): readonly LocalAttachment[] {
     return this.threads.get(threadId) ?? empty;
   }
@@ -66,6 +139,7 @@ export class UploadPool {
     draftKey = threadId,
   ): string {
     if (this.signal.aborted) return key;
+    this.retryOnReconnect.delete(key);
     // Undo keeps the chip key, while each replacement upload needs a fresh reservation.
     this.transfers.set(key, {
       controller: new AbortController(),
@@ -124,13 +198,12 @@ export class UploadPool {
       return;
     }
     if (!rpc) {
-      this.update(threadId, attachment.key, {
-        state: "failed",
-        error: "Connect to upload this file",
-      });
+      this.failDisconnectedReservation(threadId, attachment.key);
       resolve(undefined);
       return;
     }
+    const attemptGeneration = this.onlineGeneration;
+    let retryNow = false;
     const resource = await attempt(
       () =>
         rpc.resources.reserve(
@@ -144,21 +217,36 @@ export class UploadPool {
           { signal },
         ),
       (error) => {
-        if (!signal.aborted) this.update(threadId, attachment.key, { state: "failed", error });
+        if (signal.aborted) return;
+        this.update(threadId, attachment.key, { state: "failed", error });
+        if (!this.released.has(attachment.key) && isConnectionFailure(error))
+          retryNow = this.queueReconnectRetry(attachment.key, attemptGeneration);
       },
     );
     if (signal.aborted) {
       resolve(undefined);
       return;
     }
-    resolve(resource?.id);
-    if (!resource) return;
+    if (!resource) {
+      resolve(await this.settleFailedReservation(threadId, attachment.key, retryNow));
+      return;
+    }
+    resolve(resource.id);
+    this.retryOnReconnect.delete(attachment.key);
     this.update(threadId, attachment.key, { resourceId: resource.id, state: "uploading" });
     await this.transfer(threadId, attachment.key, resource.id, attachment.file);
   }
-  private async transfer(threadId: string, key: string, resourceId: string, file: File) {
+  private async transfer(
+    threadId: string,
+    key: string,
+    resourceId: string,
+    file: File,
+    recovering = false,
+  ) {
     const signal = this.attachmentSignal(key);
     if (signal.aborted) return;
+    const attemptGeneration = this.onlineGeneration;
+    let retryNow = false;
     const outcome = await attempt(
       async () => {
         await this.upload(
@@ -172,10 +260,14 @@ export class UploadPool {
         return true;
       },
       (error) => {
-        if (!signal.aborted) this.update(threadId, key, { state: "failed", error });
+        if (signal.aborted) return;
+        this.update(threadId, key, { state: "failed", error });
+        if (!this.released.has(key) && isTransferConnectionFailure(error, recovering))
+          retryNow = this.queueReconnectRetry(key, attemptGeneration);
       },
     );
     if (outcome && !signal.aborted) {
+      this.retryOnReconnect.delete(key);
       this.update(threadId, key, { state: "ready", progress: 1, error: undefined });
       const ready = this.get(threadId).find((item) => item.key === key);
       const target = this.transfers.get(key);
@@ -183,17 +275,23 @@ export class UploadPool {
         for (const listener of this.readyListeners) listener(threadId, ready, target.draftKey);
     }
     if (signal.aborted) return;
-    if (this.released.has(key)) this.remove(threadId, key);
+    if (this.released.has(key)) {
+      this.remove(threadId, key);
+      return;
+    }
+    if (!outcome && retryNow) this.retry(threadId, key, true);
   }
-  retry(threadId: string, key: string) {
+  retry(threadId: string, key: string, recovering = false) {
     const item = this.get(threadId).find((entry) => entry.key === key);
     if (!item || item.state !== "failed" || this.signal.aborted) return;
+    const recovery = recovering || this.retryOnReconnect.has(key);
+    this.retryOnReconnect.delete(key);
     this.update(threadId, key, {
       state: item.resourceId ? "uploading" : "reserving",
       error: undefined,
     });
     if (item.resourceId) {
-      void this.transfer(threadId, key, item.resourceId, item.file);
+      void this.transfer(threadId, key, item.resourceId, item.file, recovery);
       return;
     }
     const pending = Promise.withResolvers<string | undefined>();
@@ -205,6 +303,7 @@ export class UploadPool {
     return controller ? AbortSignal.any([this.signal, controller.signal]) : AbortSignal.abort();
   }
   release(threadId: string, key: string) {
+    this.retryOnReconnect.delete(key);
     const item = this.get(threadId).find((entry) => entry.key === key);
     if (!item) return;
     if (item.state === "ready" || item.state === "failed") {
@@ -219,6 +318,7 @@ export class UploadPool {
     this.transfers.get(key)?.controller.abort();
     this.transfers.delete(key);
     this.released.delete(key);
+    this.retryOnReconnect.delete(key);
     if (item?.preview) URL.revokeObjectURL(item.preview);
     const remaining = entries.filter((entry) => entry.key !== key);
     if (remaining.length) this.threads.set(threadId, remaining);
@@ -226,9 +326,11 @@ export class UploadPool {
     for (const listener of this.listeners.get(threadId) ?? []) listener();
   }
   dispose() {
+    this.stopConnection?.();
     this.lifetime.abort();
     this.transfers.clear();
     this.released.clear();
+    this.retryOnReconnect.clear();
     this.published.clear();
     for (const entries of this.threads.values())
       for (const item of entries) if (item.preview) URL.revokeObjectURL(item.preview);
