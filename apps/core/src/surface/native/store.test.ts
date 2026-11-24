@@ -655,3 +655,25 @@ test("changing thread model clears its old reasoning override", () => {
       .unwrap().reasoning,
   ).toBeUndefined();
 });
+
+test("agent discovery lists archived threads and the actor's own DM", () => {
+  const { store } = fixture();
+  const open = store.createThread("alice", { commandId: "open" }).unwrap();
+  const archived = store.createThread("alice", { commandId: "old" }).unwrap();
+  store
+    .updateThread("alice", { threadId: archived.id, commandId: "archive", archived: true })
+    .unwrap();
+  const dm = store.ensureDirectThread("alice").unwrap();
+  const bobDm = store.ensureDirectThread("bob").unwrap();
+  const ids = (actor: string, includeArchivedAndOwnDm?: boolean) =>
+    store
+      .listThreads(actor, includeArchivedAndOwnDm ? { includeArchivedAndOwnDm } : {})
+      .unwrap()
+      .map((thread) => thread.id)
+      .sort();
+
+  expect(ids("alice")).toEqual([open.id]);
+  expect(ids("alice", true)).toEqual([open.id, archived.id, dm.id].sort());
+  expect(ids("owner", true)).toEqual([open.id, archived.id].sort());
+  expect(ids("owner", true)).not.toContain(bobDm.id);
+});

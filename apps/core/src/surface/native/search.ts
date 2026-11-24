@@ -1,4 +1,4 @@
-import { Result } from "better-result";
+import { Panic, Result } from "better-result";
 import type { ConversationThreadToolService } from "../../conversation/thread-service";
 import {
   resolveTimeWindow,
@@ -9,6 +9,8 @@ import {
   type DiscoverySearchResult,
 } from "../../discovery/discovery-service";
 import type { RequestContext } from "../../tool-server/types";
+import { preserveToolPanic } from "../../tools/tool-result-adapters";
+import { linkedDiscordIds, type NativeClerkAuthenticator } from "./auth-clerk";
 import { NativeStore, type NativeStoreResult, type NativeStoreError } from "./store";
 import { NativeSearchStore, type NativeSearchMessage } from "./store-search";
 import { nativeThreadId } from "./native-protocol";
@@ -20,6 +22,20 @@ type SearchHit = {
   title: string;
   excerpt: string;
   surface: "native";
+};
+
+export type NativeThreadListing = {
+  readonly id: string;
+  readonly title: string;
+  readonly updatedAt: number;
+  readonly active: boolean;
+};
+
+export type NativeSummaryHit = {
+  readonly threadId: string;
+  readonly title: string;
+  readonly brief: string;
+  readonly updatedAt?: string;
 };
 
 function discoveryGroupKey(
@@ -63,8 +79,92 @@ export class NativeSearchService {
       store: NativeStore;
       searchStore: NativeSearchStore;
       conversationThreads?: ConversationThreadToolService;
+      /** Present when the deployment signs users in with Clerk. */
+      profileProvider?: Pick<NativeClerkAuthenticator, "lookupUser">;
     },
   ) {}
+
+  /** The verified Discord accounts linked to a native user's Clerk profile. */
+  async linkedDiscordIds(userId: string): Promise<readonly string[]> {
+    const provider = this.params.profileProvider;
+    if (!provider) return [];
+    const user = this.params.store.getUser(userId).match({ ok: (value) => value, err: () => null });
+    if (!user) return [];
+    return linkedDiscordIds(provider, user.providerId);
+  }
+
+  /** A page of the threads a user can see, most recently updated first. */
+  threads(
+    userId: string,
+    input: { limit: number; cursor?: string },
+  ): NativeStoreResult<{ items: NativeThreadListing[]; nextCursor?: string }> {
+    return this.params.store
+      .listThreads(userId, {
+        limit: input.limit,
+        includeArchivedAndOwnDm: true,
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+      })
+      .map((threads) => {
+        const last = threads.at(-1);
+        return {
+          items: threads.map((thread) => ({
+            id: thread.id,
+            title: thread.title,
+            updatedAt: thread.updatedAt,
+            active: Boolean(thread.activeRunId),
+          })),
+          ...(last && threads.length >= input.limit
+            ? { nextCursor: `${last.updatedAt}_${last.id}` }
+            : {}),
+        };
+      });
+  }
+
+  /** Summary search over the native threads a user can read. */
+  async summaries(
+    userId: string,
+    input: { query: string; limit: number },
+  ): Promise<NativeStoreResult<NativeSummaryHit[]>> {
+    const service = this.params.conversationThreads;
+    if (!service) return Result.ok([]);
+    const searched = await Result.tryPromise({
+      try: () =>
+        service.search({
+          surface: "native",
+          query: input.query,
+          limit: input.limit,
+          verbose: true,
+        }),
+      // A defect keeps its identity; any other rejection is an ordinary search failure.
+      catch: (cause) =>
+        Panic.is(cause)
+          ? cause
+          : nativeFailure(
+              "invalid",
+              cause instanceof Error ? cause.message : "Conversation search failed",
+            ),
+    });
+    return searched
+      .mapError((error) => (Panic.is(error) ? preserveToolPanic(error) : error))
+      .map((result) =>
+        result.results.flatMap((hit) => {
+          const threadId = hit.session?.channelId;
+          if (!threadId) return [];
+          const readable = this.params.store
+            .authorizeThread(userId, threadId)
+            .match({ ok: () => true, err: () => false });
+          if (!readable) return [];
+          return [
+            {
+              threadId,
+              title: hit.title,
+              brief: hit.brief,
+              ...(hit.timeRange ? { updatedAt: hit.timeRange.end } : {}),
+            },
+          ];
+        }),
+      );
+  }
 
   forThread(threadId: string): ConversationThreadToolService {
     const service = () => this.forUser(resolveNativeSearchToHost(this.starter(threadId)));

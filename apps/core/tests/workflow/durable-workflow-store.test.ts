@@ -744,7 +744,7 @@ describe("durable workflow store minimal dispatch schema", () => {
       );
       expect(store.listMigrations().at(-1)).toMatchObject({
         version: WORKFLOW_SCHEMA_VERSION,
-        name: "workflow cancellation outbox and atomic wait journaling",
+        name: "workflow runs by origin user",
       });
     } finally {
       store.close();
@@ -1826,7 +1826,9 @@ for (const historicalVersion of [26, 27]) {
       const previousWait = workflowStoreValue(store.getWait("run-1", "sleep"));
       store.close();
       // Remove exactly the additive migrations after the supported blob baseline.
-      db.run(`DROP TRIGGER workflow_operation_cancellation_intent;
+      db.run(`DROP INDEX idx_workflow_runs_origin_user;
+        DELETE FROM workflow_schema_migrations WHERE version = 29;
+        DROP TRIGGER workflow_operation_cancellation_intent;
         DROP TABLE workflow_cancellation_outbox;
         DROP INDEX idx_workflow_runs_claim;
         DROP INDEX idx_workflow_waits_deadline;
@@ -1843,7 +1845,7 @@ for (const historicalVersion of [26, 27]) {
           .get()?.version,
       ).toBe(historicalVersion);
       store = new DurableWorkflowStore(file);
-      expect(store.listMigrations().at(-1)?.version).toBe(28);
+      expect(store.listMigrations().at(-1)?.version).toBe(29);
       expect(workflowStoreValue(store.getRun("run-1"))).toEqual(previousRun);
       expect(workflowStoreValue(store.getWait("run-1", "sleep"))).toEqual(previousWait);
       const wakeup = Promise.withResolvers<void>();

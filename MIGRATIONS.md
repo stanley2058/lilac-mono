@@ -23,7 +23,7 @@ matter when upgrading an older installation.
    Verify native deployment settings and subagent authority after adopting v3.
 
 Rollback uses the matching pre-upgrade databases and blob storage together. Current workflow schema
-28, transcript schema 14, and native schema 7 are not readable by older builds. Strict record codecs
+29, transcript schema 14, and native schema 7 are not readable by older builds. Strict record codecs
 can also change within a schema version; a matching version number alone does not establish downgrade
 compatibility. Keep producers stopped while restoring. Never remove migration markers to force an
 older binary to open current data.
@@ -332,7 +332,7 @@ Use `--dry-run` for a read-only preflight. The normal command preflights and the
 invocation. It accepts only supported legacy schemas, verifies every copied object's SHA-256 and byte
 length, rewrites each database only after its required objects exist, and removes replaced legacy byte
 columns and files. The offline command emits transcript schema 6 and workflow schema 26; current Core
-then applies transcript schemas 7 through 14 and workflow schemas 27 through 28 during startup. Databases below
+then applies transcript schemas 7 through 14 and workflow schemas 27 through 29 during startup. Databases below
 those blob baselines, including partially migrated legacy databases, stop startup with the migration command.
 
 The migration copies durable transcript, projection, lineage, and workflow artifact content. It discards
@@ -402,6 +402,13 @@ earlier versions cannot be identified safely by this migration and are not delet
 A process interrupted immediately after a delayed backend decision write can leave an inert metadata
 file after deletion. It cannot resurrect readable content or a durable blob reference. Completed calls
 clean that file; removing every such interrupted marker would require a separate backend storage change.
+
+### Workflow schema 29: runs by origin user
+
+Core upgrades workflow schema 28 to 29 online. It adds an index on
+`(origin_client, origin_user_id, created_at DESC, run_id DESC)` so `orchestrate list` can page the
+runs one surface user started. Existing records are unchanged. Older builds reject schema 29; restore
+the pre-upgrade workflow database to roll back.
 
 ### Workflow schema 28: cancellation intent and atomic waits
 

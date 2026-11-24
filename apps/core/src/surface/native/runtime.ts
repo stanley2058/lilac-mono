@@ -318,6 +318,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     get conversationThreads() {
       return options.conversationThreads();
     },
+    ...(clerk ? { profileProvider: clerk } : {}),
   });
   const config = new NativeConfigService({
     dataDir: options.dataDir,

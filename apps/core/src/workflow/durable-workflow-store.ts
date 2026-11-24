@@ -185,6 +185,27 @@ function boundedLimit(limit: number | undefined): number {
   return Math.max(1, Math.min(1_000, limit ?? 100));
 }
 
+/** A keyset page of runs ordered newest first, optionally only ended or unended ones. */
+export type RunListPage = {
+  readonly before?: { readonly createdAt: number; readonly runId: string };
+  readonly terminal?: boolean;
+};
+
+const TERMINAL_RUN_STATE_SQL = "('succeeded','failed','cancelled')";
+
+function runPageClauses(alias: string, page: RunListPage) {
+  let sql = "";
+  const bindings: (string | number)[] = [];
+  if (page.terminal !== undefined)
+    sql += ` AND ${alias}.state ${page.terminal ? "IN" : "NOT IN"} ${TERMINAL_RUN_STATE_SQL}`;
+  if (page.before) {
+    // A row value lets SQLite seek the (created_at, run_id) index columns to the cursor.
+    sql += ` AND (${alias}.created_at, ${alias}.run_id) < (?, ?)`;
+    bindings.push(page.before.createdAt, page.before.runId);
+  }
+  return { sql, bindings };
+}
+
 const workflowOperationProgressSummarySchema = z.object({
   phase: z.string().nullable(),
   kind: workflowOperationKindSchema,
@@ -1122,23 +1143,82 @@ export class DurableWorkflowStore {
     );
   }
 
+  /**
+   * Lists every subagent run under a session, following nested subagents, newest first. Pages hold
+   * 100 runs plus one that signals another page. `before` continues after a listed run, and
+   * `terminal` keeps only ended (true) or unended (false) runs. `throughWorkflows` also follows
+   * subagents that agent steps of scripted workflows started from the session delegated.
+   */
   listSubagentRuns(
     parentSessionId: string,
     offset = 0,
+    options: RunListPage & { readonly throughWorkflows?: boolean } = {},
   ): ResultType<WorkflowRun[], DurableWorkflowReadError> {
     return captureWorkflowRead("list-subagent-runs", () => {
+      const page = runPageClauses("r", options);
       const rows = this.persistedRows(
         `WITH RECURSIVE descendants(run_id, child_session_id) AS (
            SELECT run_id,json_extract(completion_target_json,'$.childSessionId') FROM workflow_runs
            WHERE json_extract(completion_target_json,'$.kind')='live_parent'
-             AND json_extract(completion_target_json,'$.parentSessionId')=?
+             AND (json_extract(completion_target_json,'$.parentSessionId')=?
+               OR (?=1 AND json_extract(completion_target_json,'$.parentRequestId') IN (
+                 SELECT o.request_id FROM workflow_operations o
+                 JOIN workflow_runs w ON w.run_id=o.run_id
+                 WHERE w.origin_session_id=? AND o.request_id IS NOT NULL
+                   AND json_extract(w.completion_target_json,'$.kind')<>'live_parent')))
            UNION
            SELECT r.run_id,json_extract(r.completion_target_json,'$.childSessionId') FROM workflow_runs r
            JOIN descendants p ON json_extract(r.completion_target_json,'$.parentSessionId')=p.child_session_id
            WHERE json_extract(r.completion_target_json,'$.kind')='live_parent'
          ) SELECT r.* FROM workflow_runs r JOIN descendants d ON d.run_id=r.run_id
+         WHERE 1=1${page.sql}
          ORDER BY r.created_at DESC,r.run_id DESC LIMIT 101 OFFSET ?`,
-      ).all(parentSessionId, offset);
+      ).all(
+        parentSessionId,
+        options.throughWorkflows ? 1 : 0,
+        parentSessionId,
+        ...page.bindings,
+        offset,
+      );
+      return this.decodeRows(rows, decodeWorkflowRunRow);
+    });
+  }
+
+  /**
+   * Lists runs that one surface user started, newest first. `subagent` runs report to a live
+   * parent; `workflow` runs are the scripted ones, limited to a project when one is given.
+   */
+  listRunsByOriginUser(
+    input: {
+      client: string;
+      userIds: readonly string[];
+      kind: "subagent" | "workflow";
+      canonicalProjectId?: string;
+      limit: number;
+    } & RunListPage,
+  ): ResultType<WorkflowRun[], DurableWorkflowReadError> {
+    return captureWorkflowRead("list-runs-by-origin-user", () => {
+      if (input.userIds.length === 0) return Result.ok([]);
+      const page = runPageClauses("r", input);
+      const kind =
+        input.kind === "subagent"
+          ? ` AND json_extract(r.completion_target_json,'$.kind')='live_parent'`
+          : ` AND json_extract(r.completion_target_json,'$.kind')<>'live_parent'`;
+      const project = input.canonicalProjectId
+        ? ` AND r.revision_id IN (SELECT revision_id FROM workflow_revisions WHERE canonical_project_id = ?)`
+        : "";
+      const rows = this.persistedRows(
+        `SELECT r.* FROM workflow_runs r
+         WHERE r.origin_client = ? AND r.origin_user_id IN (${input.userIds.map(() => "?").join(",")})
+         ${kind}${project}${page.sql}
+         ORDER BY r.created_at DESC, r.run_id DESC LIMIT ?`,
+      ).all(
+        input.client,
+        ...input.userIds,
+        ...(input.canonicalProjectId ? [input.canonicalProjectId] : []),
+        ...page.bindings,
+        boundedLimit(input.limit),
+      );
       return this.decodeRows(rows, decodeWorkflowRunRow);
     });
   }

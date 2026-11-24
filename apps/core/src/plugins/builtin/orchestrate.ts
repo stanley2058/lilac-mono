@@ -67,6 +67,15 @@ const ORCHESTRATE_TOOL: CoreLevel1ToolSpec = markBoundedBuiltinOutput({
         : {}),
       ...(runtime.bus ? { bus: runtime.bus } : {}),
       ...(runtime.workflowProgressCards ? { progressCards: runtime.workflowProgressCards } : {}),
+      directory: {
+        ...(runtime.nativeSearch ? { native: runtime.nativeSearch } : {}),
+        ...(runtime.conversationThreads
+          ? { conversationThreads: runtime.conversationThreads }
+          : {}),
+        ...(runtime.discovery ? { discovery: runtime.discovery } : {}),
+        discordAdapter: () => runtime.surfaceAdapterResolver?.resolve("discord")?.adapter,
+        ...(runtime.getConfig ? { getConfig: runtime.getConfig } : {}),
+      },
       ...(subagentConfig.enabled && onSubagentDelegate ? { delegate: onSubagentDelegate } : {}),
     });
   },

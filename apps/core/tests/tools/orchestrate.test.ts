@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { asSchema } from "ai";
-import { Result } from "better-result";
+import { Panic, Result } from "better-result";
 import { parseCoreConfigV3ToUniversal } from "@stanley2058/lilac-utils";
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import type { Level1ExecutionRequestContext } from "@stanley2058/lilac-plugin-runtime";
@@ -73,10 +73,13 @@ describe("orchestrate tool", () => {
       parentRequestId?: string;
       sessionName?: string;
       childRequestId?: string;
+      title?: string;
     };
     finished?: { result: string };
+    origin?: Partial<WorkflowRun["origin"]>;
+    createdAt?: number;
   }) {
-    const now = Date.now();
+    const now = input.createdAt ?? Date.now();
     const resources: WorkflowRevision["resources"] = {
       agents: { maxConcurrent: 1, maxTotal: 1 },
       maxNestingDepth: 1,
@@ -123,6 +126,7 @@ describe("orchestrate tool", () => {
         client: "native",
         userId: "owner",
         projectCwd: dir,
+        ...input.origin,
       },
       completionTarget: subagent
         ? {
@@ -135,6 +139,7 @@ describe("orchestrate tool", () => {
             childSessionId: `sub:${subagent.parentSessionId}:named:${sessionName}`,
             profile: "full",
             sessionName,
+            ...(subagent.title ? { title: subagent.title } : {}),
             depth: 1,
             reasoning: null,
             fallbackToSurface: false,
@@ -545,12 +550,12 @@ describe("orchestrate tool", () => {
     }
   });
 
-  it("offers only read to a run that cannot control targets", async () => {
+  it("offers only reading actions to a run that cannot control targets", async () => {
     const built = build({ canControl: false, runProfile: "full" });
     const schema = asSchema(built.inputSchema as never).jsonSchema as {
       properties: { action: { enum: string[] } };
     };
-    expect(schema.properties.action.enum).toEqual(["read"]);
+    expect(schema.properties.action.enum).toEqual(["read", "list", "search"]);
   });
 
   it("rejects thread targets when the caller's surface has no thread control", async () => {
@@ -757,5 +762,510 @@ describe("orchestrate tool", () => {
       "phase-0999",
       "phase-1000",
     ]);
+  });
+  it("lists the subagents in this conversation, nested ones included, newest first", async () => {
+    const first = seedRun({
+      id: "first",
+      subagent: { parentSessionId: PARENT_SESSION, title: "Review" },
+      createdAt: 1_000,
+    });
+    const nested = seedRun({
+      id: "nested",
+      subagent: {
+        parentSessionId: first.childSessionId,
+        parentRequestId: first.requestId,
+        sessionName: "full-nested",
+      },
+      createdAt: 2_000,
+      finished: { result: "done" },
+    });
+    seedRun({ id: "elsewhere", subagent: { parentSessionId: "native:other" }, createdAt: 3_000 });
+
+    const listed = await call(build(), { action: "list" });
+    expect(listed.items).toEqual([
+      expect.objectContaining({
+        kind: "subagent",
+        id: nested.runId,
+        parentId: first.runId,
+        state: "succeeded",
+        controllable: false,
+      }),
+      expect.objectContaining({
+        kind: "subagent",
+        id: first.runId,
+        title: "Review",
+        client: "native",
+        controllable: true,
+      }),
+    ]);
+    expect(listed.before).toBeUndefined();
+
+    const page = await call(build(), { action: "list", limit: 1 });
+    expect(page.items.map((item: { id: string }) => item.id)).toEqual([nested.runId]);
+    const next = await call(build(), { action: "list", limit: 1, before: page.before });
+    expect(next.items.map((item: { id: string }) => item.id)).toEqual([first.runId]);
+
+    const active = await call(build(), { action: "list", state: "active" });
+    expect(active.items.map((item: { id: string }) => item.id)).toEqual([first.runId]);
+
+    // A subagent sees its whole conversation, itself included, but controls none of it.
+    const fromChild = build({
+      runProfile: "full",
+      canControl: false,
+      requestContext: primaryContext({
+        requestId: first.requestId,
+        sessionId: first.childSessionId,
+        subagentDepth: 1,
+        subagentProfile: "full",
+        serverOwnedRequest: undefined,
+      }),
+    });
+    const seen = await call(fromChild, { action: "list" });
+    expect(seen.items).toEqual([
+      expect.objectContaining({ id: nested.runId, controllable: false }),
+      expect.objectContaining({ id: first.runId, self: true, controllable: false }),
+    ]);
+  });
+
+  it("lists the runs a user started, and only workflows in this project", async () => {
+    const mine = seedRun({
+      id: "mine",
+      subagent: { parentSessionId: "native:another-thread" },
+      createdAt: 1_000,
+    });
+    seedRun({
+      id: "theirs",
+      subagent: { parentSessionId: "native:their-thread" },
+      origin: { userId: "someone-else" },
+    });
+    const workflow = seedRun({ id: "report", createdAt: 2_000 });
+
+    const subagents = await call(build(), { action: "list", scope: "user", kind: "subagent" });
+    expect(subagents.items.map((item: { id: string }) => item.id)).toEqual([mine.runId]);
+    expect(subagents.items[0]).toMatchObject({ controllable: false });
+
+    const workflows = await call(build(), { action: "list", scope: "user", kind: "workflow" });
+    expect(workflows.items).toEqual([
+      expect.objectContaining({ kind: "workflow", id: workflow.runId, name: "nightly-report" }),
+    ]);
+
+    const other = realpathSync(mkdtempSync(path.join(tmpdir(), "lilac-orchestrate-other-")));
+    try {
+      const elsewhere = await call(build({ cwd: other }), {
+        action: "list",
+        scope: "user",
+        kind: "workflow",
+      });
+      expect(elsewhere.items).toEqual([]);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it("lists threads on the user's surface and, through a linked account, Discord", async () => {
+    const config = {
+      ...CONFIG,
+      surface: {
+        ...CONFIG.surface,
+        discord: {
+          ...CONFIG.surface.discord,
+          allowedChannelIds: ["111", "222"],
+          allowedGuildIds: [],
+        },
+      },
+    } as typeof CONFIG;
+    const threadCalls: unknown[] = [];
+    const native = {
+      linkedDiscordIds: async (userId: string) => (userId === "owner" ? ["d-owner"] : []),
+      threads: (userId: string, input: unknown) => {
+        threadCalls.push({ userId, input });
+        return Result.ok({
+          items: [{ id: "t1", title: "Plan", updatedAt: 5_000, active: true }],
+          nextCursor: "5000_t1",
+        });
+      },
+      summaries: async () => Result.ok([]),
+      query: () => Result.ok({ items: [] }),
+    };
+    const discordAdapter = {
+      listSessions: async () =>
+        Result.ok([
+          {
+            ref: { platform: "discord", channelId: "111" },
+            title: "#dev",
+            kind: "channel",
+            updatedAt: 3_000,
+          },
+          {
+            ref: { platform: "discord", channelId: "999" },
+            title: "#secret",
+            kind: "channel",
+            updatedAt: 4_000,
+          },
+          {
+            ref: { platform: "discord", channelId: "222" },
+            title: "#ops",
+            kind: "channel",
+            updatedAt: 2_000,
+          },
+        ]),
+    };
+    const built = build({
+      config,
+      directory: { native: native as never, discordAdapter: () => discordAdapter as never },
+    });
+
+    const nativeThreads = await call(built, { action: "list", scope: "user", limit: 1 });
+    expect(nativeThreads).toEqual({
+      items: [
+        {
+          kind: "thread",
+          id: "t1",
+          client: "native",
+          title: "Plan",
+          updatedAt: new Date(5_000).toISOString(),
+          active: true,
+        },
+      ],
+      before: "5000_t1",
+    });
+    expect(threadCalls).toEqual([{ userId: "owner", input: { limit: 1 } }]);
+
+    const discord = await call(built, {
+      action: "list",
+      scope: "user",
+      client: "discord",
+      limit: 1,
+    });
+    expect(discord.items.map((item: { id: string }) => item.id)).toEqual(["111"]);
+    const rest = await call(built, {
+      action: "list",
+      scope: "user",
+      client: "discord",
+      before: discord.before,
+    });
+    expect(rest).toEqual({
+      items: [expect.objectContaining({ id: "222", title: "#ops", client: "discord" })],
+    });
+
+    const unlinked = build({
+      config,
+      requestContext: primaryContext({ requestInitiator: { platform: "native", userId: "guest" } }),
+      directory: { native: native as never, discordAdapter: () => discordAdapter as never },
+    });
+    await expect(
+      call(unlinked, { action: "list", scope: "user", client: "discord" }),
+    ).rejects.toThrow(/no linked discord account/u);
+  });
+
+  it("searches summaries before messages, one row per thread, across linked surfaces", async () => {
+    const config = {
+      ...CONFIG,
+      surface: {
+        ...CONFIG.surface,
+        discord: { ...CONFIG.surface.discord, allowedChannelIds: ["111"], allowedGuildIds: [] },
+      },
+    } as typeof CONFIG;
+    const native = {
+      linkedDiscordIds: async () => ["d-owner"],
+      threads: () => Result.ok({ items: [] }),
+      summaries: async () =>
+        Result.ok([{ threadId: "t1", title: "Auth refactor", brief: "Moved sessions to JWT" }]),
+      query: () =>
+        Result.ok({
+          items: [
+            { threadId: "t1", title: "Auth refactor", excerpt: "jwt", surface: "native" },
+            { threadId: "t2", title: "Login bug", excerpt: "the jwt expired", surface: "native" },
+          ],
+        }),
+    };
+    const conversationThreads = {
+      search: async () => ({
+        meta: {},
+        results: [
+          {
+            surface: "discord",
+            threadId: "discord:channel:111:1",
+            title: "Token talk",
+            brief: "JWT rotation",
+            session: { platform: "discord", channelId: "111" },
+          },
+          {
+            surface: "discord",
+            threadId: "discord:channel:999:1",
+            title: "Hidden",
+            brief: "JWT secrets",
+            session: { platform: "discord", channelId: "999" },
+          },
+        ],
+      }),
+    };
+    const discovery = {
+      searchResult: async () =>
+        Result.ok({
+          meta: {},
+          groups: [
+            {
+              key: "discord:111",
+              source: "conversation",
+              origin: { kind: "session", platform: "discord", sessionId: "111", label: "#dev" },
+              entries: [[{ kind: "message", matched: true, text: "jwt again" }]],
+            },
+          ],
+        }),
+    };
+    const built = build({
+      config,
+      directory: {
+        native: native as never,
+        conversationThreads: conversationThreads as never,
+        discovery: discovery as never,
+      },
+    });
+
+    const found = await call(built, { action: "search", query: "jwt", maxCharsPerItem: 10 });
+    expect(found.items).toEqual([
+      {
+        id: "t1",
+        client: "native",
+        title: "Auth refactor",
+        snippet: "Moved sess",
+        snippetTruncated: true,
+        matchedIn: "summary",
+      },
+      {
+        id: "111",
+        client: "discord",
+        title: "Token talk",
+        snippet: "JWT rotati",
+        snippetTruncated: true,
+        matchedIn: "summary",
+      },
+      {
+        id: "t2",
+        client: "native",
+        title: "Login bug",
+        snippet: "the jwt ex",
+        snippetTruncated: true,
+        matchedIn: "message",
+      },
+    ]);
+
+    const nativeOnly = await call(built, { action: "search", query: "jwt", client: "native" });
+    expect(nativeOnly.items.map((item: { id: string }) => item.id)).toEqual(["t1", "t2"]);
+
+    await expect(call(built, { action: "search" })).rejects.toThrow(/search requires query/u);
+    const unverified = build({ requestContext: primaryContext({ serverOwnedRequest: undefined }) });
+    await expect(call(unverified, { action: "search", query: "jwt" })).rejects.toThrow(
+      /no verified surface user/u,
+    );
+  });
+
+  it("reads a Discord thread from native only through a linked account", async () => {
+    const calls: unknown[] = [];
+    const discordPort: SurfaceThreadControlPort = {
+      read: async (caller, threadId) => {
+        calls.push({ caller, threadId });
+        return Result.ok({ threadId, title: "#dev", activeRunId: null, items: [], hasMore: false });
+      },
+      send: async () => Result.ok({ disposition: "posted", messageId: "m" }),
+      interrupt: async () => Result.ok({ status: "idle" }),
+    };
+    const threadControl = {
+      resolve: (platform: string) => (platform === "discord" ? discordPort : null),
+    };
+    const linked = build({
+      threadControl,
+      directory: { native: { linkedDiscordIds: async () => ["d-owner"] } as never },
+    });
+    expect(await call(linked, { action: "read", id: "111", client: "discord" })).toMatchObject({
+      kind: "thread",
+      threadId: "111",
+    });
+    expect(calls).toEqual([
+      { caller: { userId: "d-owner", sourceThreadId: PARENT_SESSION }, threadId: "111" },
+    ]);
+
+    const unlinked = build({
+      threadControl,
+      directory: { native: { linkedDiscordIds: async () => [] } as never },
+    });
+    await expect(call(unlinked, { action: "read", id: "111", client: "discord" })).rejects.toThrow(
+      /linked Discord account/u,
+    );
+    await expect(
+      call(linked, { action: "read", id: "wfrun:anything", client: "discord" }),
+    ).rejects.toThrow(/client applies/u);
+  });
+  it("lists subagents that a scripted workflow's agent step delegated from this conversation", async () => {
+    const workflow = seedRun({ id: "flow", createdAt: 1_000 });
+    const stepChild = seedRun({
+      id: "step-child",
+      subagent: {
+        parentSessionId: `workflow:${workflow.runId}:agent`,
+        parentRequestId: workflow.requestId,
+      },
+      createdAt: 2_000,
+    });
+    const listed = await call(build(), { action: "list" });
+    expect(listed.items).toEqual([
+      expect.objectContaining({ id: stepChild.runId, controllable: false, self: false }),
+    ]);
+  });
+
+  it("pages every stored Discord session and checks a Discord link on each call", async () => {
+    const config = {
+      ...CONFIG,
+      surface: {
+        ...CONFIG.surface,
+        discord: { ...CONFIG.surface.discord, allowedChannelIds: ["111"], allowedGuildIds: [] },
+      },
+    } as typeof CONFIG;
+    const limits: (number | undefined)[] = [];
+    let links: string[] = ["d-owner"];
+    const built = build({
+      config,
+      directory: {
+        native: { linkedDiscordIds: async () => links } as never,
+        discordAdapter: () =>
+          ({
+            listSessions: async (opts?: { limit?: number }) => {
+              limits.push(opts?.limit);
+              return Result.ok([
+                { ref: { platform: "discord", channelId: "111" }, kind: "channel" },
+              ]);
+            },
+          }) as never,
+      },
+    });
+    const listed = await call(built, { action: "list", scope: "user", client: "discord" });
+    expect(listed.items.map((item: { id: string }) => item.id)).toEqual(["111"]);
+    expect(limits).toEqual([Number.MAX_SAFE_INTEGER]);
+
+    links = [];
+    await expect(call(built, { action: "list", scope: "user", client: "discord" })).rejects.toThrow(
+      /no linked discord account/u,
+    );
+  });
+
+  it("asks each search source for all its candidates and keeps defects as defects", async () => {
+    const requested: unknown[] = [];
+    const native = {
+      linkedDiscordIds: async () => [],
+      threads: () => Result.ok({ items: [] }),
+      summaries: async (_userId: string, input: { limit: number }) => {
+        requested.push({ source: "summaries", limit: input.limit });
+        return Result.ok([]);
+      },
+      query: (_userId: string, input: { limit: number }) => {
+        requested.push({ source: "messages", limit: input.limit });
+        return Result.ok({
+          items: [
+            { threadId: "t1", title: "One", excerpt: "a", surface: "native" },
+            { threadId: "t1", title: "One", excerpt: "b", surface: "native" },
+            { threadId: "t2", title: "Two", excerpt: "c", surface: "native" },
+          ],
+        });
+      },
+    };
+    const found = await call(build({ directory: { native: native as never } }), {
+      action: "search",
+      query: "x",
+      limit: 2,
+    });
+    expect(found.items.map((item: { id: string }) => item.id)).toEqual(["t1", "t2"]);
+    expect(requested).toEqual([
+      { source: "summaries", limit: 50 },
+      { source: "messages", limit: 100 },
+    ]);
+
+    const panic = new Panic({ message: "summary index invariant" });
+    const config = {
+      ...CONFIG,
+      surface: {
+        ...CONFIG.surface,
+        discord: { ...CONFIG.surface.discord, allowedChannelIds: ["111"], allowedGuildIds: [] },
+      },
+    } as typeof CONFIG;
+    const broken = build({
+      config,
+      requestContext: primaryContext({ requestInitiator: { platform: "native", userId: "owner" } }),
+      directory: {
+        native: { ...native, linkedDiscordIds: async () => ["d-owner"] } as never,
+        conversationThreads: {
+          search: async () => {
+            throw panic;
+          },
+        } as never,
+      },
+    });
+    const [settled] = await Promise.allSettled([
+      call(broken, { action: "search", query: "x", client: "discord" }),
+    ]);
+    expect(settled?.status === "rejected" && Panic.is(settled.reason)).toBe(true);
+  });
+
+  it("authorizes a subagent read on the run's own surface only", async () => {
+    const child = seedRun({
+      id: "discord-child",
+      subagent: { parentSessionId: "channel-1" },
+      origin: { client: "discord", sessionId: "channel-1", userId: "d-user" },
+    });
+    const nativePort: SurfaceThreadControlPort = {
+      read: async (_caller, threadId) =>
+        Result.ok({ threadId, title: "Same id", activeRunId: null, items: [], hasMore: false }),
+      send: async () => Result.ok({ disposition: "posted", messageId: "m" }),
+      interrupt: async () => Result.ok({ status: "idle" }),
+    };
+    const built = build({
+      threadControl: { resolve: (platform) => (platform === "native" ? nativePort : null) },
+      directory: { native: { linkedDiscordIds: async () => [] } as never },
+    });
+    await expect(call(built, { action: "read", id: child.runId })).rejects.toThrow(/cannot read/u);
+  });
+  it("lists unseen allowlisted Discord channels and follows allowlist changes mid-run", async () => {
+    const withAllowlist = (ids: string[]) =>
+      ({
+        ...CONFIG,
+        surface: {
+          ...CONFIG.surface,
+          discord: { ...CONFIG.surface.discord, allowedChannelIds: ids, allowedGuildIds: [] },
+        },
+      }) as typeof CONFIG;
+    let current = withAllowlist(["111", "333", "333"]);
+    const built = build({
+      config: withAllowlist([]),
+      directory: {
+        getConfig: async () => current,
+        discordAdapter: () =>
+          ({
+            listSessions: async () =>
+              Result.ok([
+                {
+                  ref: { platform: "discord", channelId: "111" },
+                  title: "#dev",
+                  kind: "channel",
+                  updatedAt: 5_000,
+                },
+              ]),
+          }) as never,
+      },
+      requestContext: primaryContext({
+        requestClient: "unknown",
+        sessionId: "sub:discord:111:named:helper",
+        requestInitiator: { platform: "discord", userId: "d-user" },
+        requestInitiatorSessionId: "111",
+        subagentDepth: 1,
+        subagentProfile: "full",
+        serverOwnedRequest: undefined,
+      }),
+      runProfile: "full",
+    });
+    const listed = await call(built, { action: "list", scope: "user" });
+    expect(listed.items.map((item: { id: string }) => item.id)).toEqual(["111", "333"]);
+
+    current = withAllowlist(["333"]);
+    const after = await call(built, { action: "list", scope: "user" });
+    expect(after.items.map((item: { id: string }) => item.id)).toEqual(["333"]);
   });
 });

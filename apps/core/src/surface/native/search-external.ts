@@ -30,7 +30,7 @@ import { parseRequestId } from "../bridge/request-ids";
 import type { SurfaceAdapterResolver } from "../runtime-descriptor";
 import type { SurfaceSession } from "../types";
 import { parseSurfaceMetadataLine, stripSurfaceMetadataLines } from "../bridge/surface-metadata";
-import type { NativeClerkAuthenticator } from "./auth-clerk";
+import { linkedDiscordIds, type NativeClerkAuthenticator } from "./auth-clerk";
 import type { NativeUser } from "./codec";
 import { nativeFailure } from "./errors";
 import type { NativeStoreError } from "./store";
@@ -601,11 +601,7 @@ export class NativeExternalThreads {
     if (!this.params.profileProvider) return [];
     const user = this.params.getUser(userId).match({ ok: (value) => value, err: () => null });
     if (!user) return [];
-    return (await this.params.profileProvider.lookupUser(user.providerId)).match({
-      ok: (profile) =>
-        profile.providerUserId === user.providerId ? (profile.discordUserIds ?? []) : [],
-      err: () => [],
-    });
+    return linkedDiscordIds(this.params.profileProvider, user.providerId);
   }
 
   file(userId: string, resourceId: string): ResultType<ExternalFile, NativeStoreError> {

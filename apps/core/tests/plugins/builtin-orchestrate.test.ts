@@ -77,8 +77,8 @@ describe("orchestrate tool capability", () => {
     expect(await enabled({ sessionId: "__heartbeat__" })).toBe(false);
   });
 
-  it("lets primaries and delegating subagents control targets, and others only read", async () => {
-    expect(await actions({})).toEqual(["read", "send", "interrupt"]);
+  it("lets primaries and delegating subagents control targets, and others only read or find them", async () => {
+    expect(await actions({})).toEqual(["read", "send", "interrupt", "list", "search"]);
     expect(
       await actions({
         requestClient: "unknown",
@@ -86,7 +86,7 @@ describe("orchestrate tool capability", () => {
         runProfile: "full",
         subagentDepth: 1,
       }),
-    ).toEqual(["read", "send", "interrupt"]);
+    ).toEqual(["read", "send", "interrupt", "list", "search"]);
     expect(
       await actions({
         requestClient: "unknown",
@@ -94,7 +94,7 @@ describe("orchestrate tool capability", () => {
         runProfile: "full",
         subagentDepth: 2,
       }),
-    ).toEqual(["read"]);
+    ).toEqual(["read", "list", "search"]);
     expect(
       await actions({
         requestClient: "unknown",
@@ -102,7 +102,7 @@ describe("orchestrate tool capability", () => {
         runProfile: "restricted",
         subagentDepth: 1,
       }),
-    ).toEqual(["read"]);
+    ).toEqual(["read", "list", "search"]);
   });
 
   it("stays out of the built-in restricted profile, which lists its plugins", () => {

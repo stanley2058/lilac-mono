@@ -58,6 +58,18 @@ export function providerProfile(user: {
   };
 }
 
+/** The verified Discord accounts linked to a Clerk user, or none when the lookup fails. */
+export async function linkedDiscordIds(
+  provider: Pick<NativeClerkAuthenticator, "lookupUser">,
+  providerUserId: string,
+): Promise<readonly string[]> {
+  const profile = await provider.lookupUser(providerUserId);
+  return profile.match({
+    ok: (value) => (value.providerUserId === providerUserId ? (value.discordUserIds ?? []) : []),
+    err: () => [],
+  });
+}
+
 export interface NativeClerkAuthenticator extends NativeAuthenticator {
   updateDisplayName(
     providerUserId: string,

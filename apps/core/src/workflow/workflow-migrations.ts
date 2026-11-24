@@ -9,7 +9,7 @@ import {
 } from "./workflow-domain";
 import { canonicalJson } from "./workflow-definition";
 
-export const WORKFLOW_SCHEMA_VERSION = 28;
+export const WORKFLOW_SCHEMA_VERSION = 29;
 const WORKFLOW_BLOB_SCHEMA_VERSION = 26;
 export const WORKFLOW_BLOB_MIGRATION_COMMAND =
   "check out commit f2c90667 (see MIGRATIONS.md), then bun run migrate:blob-storage -- --config /path/to/core-config.yaml --data-dir /path/to/data";
@@ -1555,6 +1555,14 @@ const WORKFLOW_MIGRATIONS: readonly WorkflowMigration[] = [
          FROM workflow_request_dispatches
          WHERE run_id = NEW.run_id AND operation_id = NEW.operation_id AND active = 1;
        END`,
+    ],
+  },
+  {
+    version: 29,
+    name: "workflow runs by origin user",
+    statements: [
+      `CREATE INDEX idx_workflow_runs_origin_user
+       ON workflow_runs(origin_client, origin_user_id, created_at DESC, run_id DESC)`,
     ],
   },
 ];
