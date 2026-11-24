@@ -3,6 +3,7 @@ export * from "./model-provider";
 export * from "./openai-decision-model";
 export * from "./model-message-provider-options";
 export * from "./model-slot";
+export * from "./model-provider-agent-option-schema";
 export * from "./codex-oauth";
 export * from "./codex-instructions";
 export * from "./env";

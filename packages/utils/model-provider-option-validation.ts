@@ -1,5 +1,5 @@
 import type { CoreConfigModelOptionWarning, JSONObject, JSONValue } from "./core-config/types";
-import { MODEL_PROVIDER_OPTION_SHAPES } from "./model-provider-option-shapes.generated";
+import { MODEL_PROVIDER_OPTION_SCHEMAS } from "./model-provider-option-schema.generated";
 import { isRecord } from "./runtime-utils";
 
 export type ModelProviderOptionWarning = CoreConfigModelOptionWarning;
@@ -11,23 +11,19 @@ const MODEL_OPTION_META_KEYS = new Set([
   "response_commentary",
 ]);
 
-type ProviderOptionShape =
-  | null
-  | {
-      readonly kind: "object";
-      readonly properties: Readonly<Record<string, ProviderOptionShape>>;
-    }
-  | {
-      readonly kind: "array";
-      readonly element: ProviderOptionShape;
-    }
-  | {
-      readonly kind: "union";
-      readonly variants: readonly ProviderOptionShape[];
-    };
+/** The JSON Schema subset emitted by scripts/generate-provider-option-schema.ts. */
+export type ProviderOptionSchema = {
+  readonly type?: "string" | "number" | "boolean" | "null" | "array" | "object";
+  readonly enum?: readonly (string | number | boolean)[];
+  readonly items?: ProviderOptionSchema;
+  readonly properties?: Readonly<Record<string, ProviderOptionSchema>>;
+  readonly required?: readonly string[];
+  readonly additionalProperties?: ProviderOptionSchema | false;
+  readonly anyOf?: readonly ProviderOptionSchema[];
+};
 
-const OPTION_SHAPES_BY_NAMESPACE = MODEL_PROVIDER_OPTION_SHAPES as Readonly<
-  Record<string, ProviderOptionShape>
+export const PROVIDER_OPTION_SCHEMAS = MODEL_PROVIDER_OPTION_SCHEMAS as Readonly<
+  Record<string, ProviderOptionSchema>
 >;
 
 function looksLikeProviderOptionsMap(options: JSONObject): boolean {
@@ -35,7 +31,7 @@ function looksLikeProviderOptionsMap(options: JSONObject): boolean {
   return values.length > 0 && values.every(isRecord);
 }
 
-function providerOptionsNamespace(provider: string): string {
+export function providerOptionsNamespace(provider: string): string {
   if (provider === "codex") return "openai";
   if (provider === "openai-compatible") return "openaiCompatible";
   if (provider === "vercel") return "gateway";
@@ -85,7 +81,7 @@ function editDistance(a: string, b: string): number {
   return previous[b.length] ?? b.length;
 }
 
-function suggestOption(option: string, candidates: readonly string[]): string | undefined {
+export function suggestOption(option: string, candidates: readonly string[]): string | undefined {
   const normalizedOption = option.toLowerCase();
   let best: { candidate: string; distance: number } | undefined;
 
@@ -107,61 +103,60 @@ function arrayPath(path: readonly string[]): readonly string[] {
   return last ? [...path.slice(0, -1), `${last}[]`] : path;
 }
 
-function validateShape(params: {
+/** Flattens `anyOf` so a value can be checked against every variant at once. */
+function schemaVariants(schemas: readonly ProviderOptionSchema[]): ProviderOptionSchema[] {
+  return schemas.flatMap((schema) => (schema.anyOf ? schemaVariants(schema.anyOf) : [schema]));
+}
+
+// Config validation checks key names only: union variants merge their keys, and open records
+// (any additionalProperties schema) accept every key, because AI SDK strips unknown keys.
+function validateKeys(params: {
   namespace: string;
   path: readonly string[];
   value: JSONValue;
-  shape: ProviderOptionShape;
+  schemas: readonly ProviderOptionSchema[];
   warnings: ModelProviderOptionWarning[];
 }): void {
-  const { namespace, path, value, shape, warnings } = params;
-  if (!shape) return;
+  const { namespace, path, value, warnings } = params;
+  const variants = schemaVariants(params.schemas);
 
-  if (shape.kind === "array") {
-    if (!Array.isArray(value)) return;
-    const itemPath = arrayPath(path);
-    for (const item of value) {
-      validateShape({ namespace, path: itemPath, value: item, shape: shape.element, warnings });
-    }
-    return;
-  }
-
-  if (shape.kind === "union") {
-    const matchingShape = shape.variants.find(
-      (variant) =>
-        variant !== null &&
-        ((variant.kind === "array" && Array.isArray(value)) ||
-          (variant.kind === "object" && isRecord(value))),
+  if (Array.isArray(value)) {
+    const items = variants.flatMap((variant) =>
+      variant.type === "array" && variant.items ? [variant.items] : [],
     );
-    if (matchingShape) {
-      validateShape({ namespace, path, value, shape: matchingShape, warnings });
+    if (items.length === 0) return;
+    for (const item of value) {
+      validateKeys({ namespace, path: arrayPath(path), value: item, schemas: items, warnings });
     }
     return;
   }
 
   if (!isRecord(value)) return;
-  const knownKeys = Object.keys(shape.properties);
+  const objects = variants.filter((variant) => variant.type === "object");
+  if (objects.length === 0) return;
+  if (objects.some((variant) => variant.additionalProperties !== false)) return;
+
+  const propertySchemas = new Map<string, ProviderOptionSchema[]>();
+  for (const variant of objects) {
+    for (const [key, schema] of Object.entries(variant.properties ?? {})) {
+      propertySchemas.set(key, [...(propertySchemas.get(key) ?? []), schema]);
+    }
+  }
+  const knownKeys = [...propertySchemas.keys()];
   for (const [option, nestedValue] of Object.entries(value)) {
     const optionPath = [...path, option];
-    const fullOption = optionPath.join(".");
-    if (!Object.hasOwn(shape.properties, option)) {
+    const schemas = propertySchemas.get(option);
+    if (!schemas) {
       const suggestion = suggestOption(option, knownKeys);
       warnings.push({
         namespace,
-        option: fullOption,
+        option: optionPath.join("."),
         ...(suggestion ? { suggestion: [...path, suggestion].join(".") } : {}),
       });
       continue;
     }
     if (nestedValue === undefined) continue;
-
-    validateShape({
-      namespace,
-      path: optionPath,
-      value: nestedValue,
-      shape: shape.properties[option] ?? null,
-      warnings,
-    });
+    validateKeys({ namespace, path: optionPath, value: nestedValue, schemas, warnings });
   }
 }
 
@@ -172,9 +167,9 @@ export function validateModelProviderOptions(providerOptions?: {
 
   const warnings: ModelProviderOptionWarning[] = [];
   for (const [namespace, options] of Object.entries(providerOptions)) {
-    const shape = OPTION_SHAPES_BY_NAMESPACE[namespace];
-    if (!shape) continue;
-    validateShape({ namespace, path: [], value: options, shape, warnings });
+    const schema = PROVIDER_OPTION_SCHEMAS[namespace];
+    if (!schema) continue;
+    validateKeys({ namespace, path: [], value: options, schemas: [schema], warnings });
   }
 
   return warnings;
@@ -194,5 +189,5 @@ export function formatModelProviderOptionWarning(
   const suggestion = warning.suggestion
     ? ` Did you mean '${warning.namespace}.${warning.suggestion}'?`
     : "";
-  return `Unknown model provider option '${warning.namespace}.${warning.option}' (${source}); AI SDK will ignore it.${suggestion}`;
+  return `Unknown model provider option '${warning.namespace}.${warning.option}' (${source}); the provider will ignore it.${suggestion}`;
 }
