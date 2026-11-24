@@ -2,24 +2,15 @@ import { Result, type Result as ResultType } from "better-result";
 import { RichRenderFailed } from "./rich-render-error";
 import { memo, useEffect, useId, useState } from "react";
 import DOMPurify from "dompurify";
-import mermaid from "mermaid";
+import { renderAsync } from "pele/lazy";
 import { diagramSourceAllowed } from "./markdown-policy";
-
-mermaid.initialize({
-  startOnLoad: false,
-  securityLevel: "strict",
-  theme: "neutral",
-  htmlLabels: false,
-  flowchart: { htmlLabels: false },
-  maxTextSize: 32 * 1024,
-  suppressErrorRendering: true,
-});
 
 export function sanitizeDiagram(svg: string): string {
   const fragment = DOMPurify.sanitize(svg, {
     USE_PROFILES: { svg: true, svgFilters: true },
     FORBID_TAGS: ["foreignObject", "a", "style", "animate", "set"],
-    FORBID_ATTR: ["href", "xlink:href", "style"],
+    // Pele defines its theme variables in the root SVG's inline style, so keep style attributes.
+    FORBID_ATTR: ["href", "xlink:href"],
     ALLOW_DATA_ATTR: false,
     RETURN_DOM_FRAGMENT: true,
   });
@@ -55,7 +46,18 @@ export function renderDiagram(
   source: string,
 ): Promise<ResultType<string, RichRenderFailed>> {
   return Result.tryPromise({
-    try: async () => sanitizeDiagram((await mermaid.render(id, source)).svg),
+    try: async () => {
+      // Pele sizes nodes by measuring labels, so it must measure with the font the page draws in.
+      const fonts = getComputedStyle(document.documentElement);
+      const { svg } = await renderAsync(source, {
+        idPrefix: id,
+        links: false,
+        images: false,
+        fontFamily: fonts.getPropertyValue("--ui-font-sans").trim() || "sans-serif",
+        fontFamilyMono: fonts.getPropertyValue("--ui-font-mono").trim() || "monospace",
+      });
+      return sanitizeDiagram(svg);
+    },
     catch: () => new RichRenderFailed({ message: "Diagram rendering is unavailable" }),
   });
 }
@@ -77,7 +79,7 @@ export default memo(function Diagram({ source }: { source: string }) {
       if (!active) return;
       result.match({ ok: accept, err: () => setFailed(source) });
     }
-    // Leave a paint for conversation text before Mermaid performs synchronous layout work.
+    // Leave a paint for conversation text before the diagram performs synchronous layout work.
     let frame = requestAnimationFrame(() => {
       frame = requestAnimationFrame(() => void render());
     });

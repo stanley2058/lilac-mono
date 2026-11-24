@@ -498,40 +498,22 @@
   .markdown-diagram {
     overflow: auto;
     padding: calc(var(--ui-space-unit) * 3);
+    --pele-bg: var(--ui-background);
+    --pele-fg: var(--ui-foreground);
+    --pele-muted: var(--ui-muted-foreground);
+    --pele-line: var(--ui-muted-foreground);
+    --pele-surface: var(--ui-surface);
+    --pele-surface-alt: var(--ui-muted);
+    --pele-border: color-mix(in srgb, var(--ui-primary) 55%, var(--ui-muted-foreground));
+    --pele-accent: var(--ui-primary);
+    --pele-critical: var(--ui-danger);
+    --pele-radius: var(--ui-radius-sm);
+    --pele-font: var(--ui-font-sans);
+    --pele-font-mono: var(--ui-font-mono);
   }
   .markdown-diagram > svg {
-    width: 100%;
-    height: auto;
+    width: auto;
     max-height: 36rem;
-  }
-  .markdown-diagram svg text,
-  .markdown-diagram svg tspan {
-    fill: var(--ui-foreground);
-  }
-  /* Mermaid sizes boxes with its default font; sanitizing drops that style, so restore it. */
-  .markdown-diagram svg {
-    font-family: "trebuchet ms", verdana, arial, sans-serif;
-    font-size: 16px;
-  }
-  /* Sanitization removes Mermaid's stylesheet, including its node label alignment. */
-  .markdown-diagram svg.flowchart .node .label text {
-    text-anchor: middle;
-  }
-  .markdown-diagram svg rect,
-  .markdown-diagram svg circle,
-  .markdown-diagram svg ellipse,
-  .markdown-diagram svg polygon {
-    fill: var(--ui-surface);
-    stroke: color-mix(in srgb, var(--ui-primary) 55%, var(--ui-muted-foreground));
-  }
-  .markdown-diagram svg path,
-  .markdown-diagram svg line,
-  .markdown-diagram svg polyline {
-    stroke: var(--ui-muted-foreground);
-    fill: none;
-  }
-  .markdown-diagram svg marker path {
-    fill: var(--ui-muted-foreground);
   }
   .markdown-rich-error {
     color: var(--ui-muted-foreground);
