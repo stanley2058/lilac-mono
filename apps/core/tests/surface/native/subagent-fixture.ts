@@ -15,7 +15,14 @@ export function seedNativeSubagent(
   store: NativeStore,
   workflows: DurableWorkflowStore,
   threadId: string,
-  options: { id?: string; parentRequestId?: string; parentSessionId?: string } = {},
+  options: {
+    id?: string;
+    parentRequestId?: string;
+    parentSessionId?: string;
+    /** Reuse a child session to seed a follow-up run. */
+    childSessionId?: string;
+    title?: string;
+  } = {},
 ) {
   const input = store.listCanonicalRequestIds(threadId).unwrap().at(-1)!;
   const id = options.id ?? crypto.randomUUID();
@@ -72,9 +79,10 @@ export function seedNativeSubagent(
       parentRequestClient: "native",
       parentToolCallId: `spawn-${id}`,
       childRequestId: `child-${id}`,
-      childSessionId: `child-session-${id}`,
+      childSessionId: options.childSessionId ?? `child-session-${id}`,
       profile: "general",
       sessionName: "Research",
+      ...(options.title ? { title: options.title } : {}),
       depth: options.parentRequestId ? 2 : 1,
       reasoning: null,
       fallbackToSurface: false,

@@ -549,6 +549,10 @@ const museumSubagent = subagent("demo_subagent_museum", subagentActivities.museu
 const weatherSubagentDone = subagent("demo_subagent_weather", subagentActivities.weather.done);
 const museumSubagentDone = subagent("demo_subagent_museum", subagentActivities.museum.done);
 const planSubagent = subagent("demo_subagent_plan", subagentActivities.museum.working);
+const weatherFollowUp = subagent(
+  "demo_subagent_weather_follow_up",
+  subagentActivities.weather.done,
+);
 const subagentUpdate = message("demo_subagent_update", [
   {
     type: "text",
@@ -821,6 +825,22 @@ export const agentWorkStages: AgentWorkStage[] = [
     ],
   },
   {
+    id: "subagents-follow-up",
+    label: "Subagents · follow-up",
+    description:
+      "The parent asks the weather subagent a follow-up. Both rows open one agent with the whole conversation.",
+    frames: [
+      turn([
+        delegation,
+        weatherSubagentDone,
+        museumSubagentDone,
+        parentRouteDone,
+        subagentUpdate,
+        weatherFollowUp,
+      ]),
+    ],
+  },
+  {
     id: "subagents-nested",
     label: "Subagents · nested",
     description:
@@ -1054,14 +1074,45 @@ agentWorkStages.unshift({
   frames: conversationFrames,
 });
 
-const demoSubagentSamples = {
+/** The follow-up the parent sends after the weather check, and the reply. */
+const weatherFollowUpExchange: DisplayMessage[] = [
+  {
+    id: "demo_weather_follow_up_prompt",
+    role: "user",
+    parts: [{ type: "text", text: "Is the riverside path shaded around noon?" }],
+  },
+  {
+    id: "demo_weather_follow_up_reply",
+    role: "assistant",
+    metadata: { phase: "final" },
+    parts: [{ type: "text", text: "Mostly. Trees cover the east bank; the west bank is open." }],
+  },
+];
+
+type DemoSubagentSample = {
+  profile: "restricted" | "full";
+  name: string;
+  sample: keyof typeof subagentTranscripts;
+  /** The demo run this follow-up continues. */
+  firstRunId?: string;
+  /** The follow-up's own exchange after the session's earlier transcript. */
+  followUp?: readonly DisplayMessage[];
+};
+const demoSubagentSamples: Record<string, DemoSubagentSample> = {
   demo_subagent_weather: {
     profile: "restricted",
     name: "Weather and riverside",
     sample: "weather",
   },
   demo_subagent_museum: { profile: "full", name: "Museum visit", sample: "museum" },
-} as const;
+  demo_subagent_weather_follow_up: {
+    profile: "restricted",
+    name: "Weather and riverside",
+    sample: "weather",
+    firstRunId: "demo_subagent_weather",
+    followUp: weatherFollowUpExchange,
+  },
+};
 
 type NestedDemoAgent = {
   profile: string;
@@ -1153,9 +1204,7 @@ function nestedDemoSubagents(
 }
 
 function demoSubagentSample(id: string) {
-  return id in demoSubagentSamples
-    ? demoSubagentSamples[id as keyof typeof demoSubagentSamples]
-    : undefined;
+  return Object.hasOwn(demoSubagentSamples, id) ? demoSubagentSamples[id] : undefined;
 }
 
 export function demoSubagents(slot: ReadyTurnSlot): SubagentSummary[] {
@@ -1174,6 +1223,7 @@ export function demoSubagents(slot: ReadyTurnSlot): SubagentSummary[] {
       return [
         {
           id: part.id,
+          ...(sample.firstRunId ? { firstRunId: sample.firstRunId } : {}),
           activityId: part.id,
           turnId: slot.turnId,
           profile: sample.profile,
@@ -1183,7 +1233,7 @@ export function demoSubagents(slot: ReadyTurnSlot): SubagentSummary[] {
           name: sample.name,
           state: part.data.state,
           title: running ? title : "Completed",
-          startedAt: demoTime + 3000,
+          startedAt: demoTime + (sample.firstRunId ? 40_000 : 3000),
         },
       ];
     }),
@@ -1195,5 +1245,7 @@ export function demoSubagentTranscript(agent: SubagentSummary): DisplayMessage[]
   if (nested) return nestedDemoTranscript(nested);
   const sample = demoSubagentSample(agent.id);
   if (!sample) return [];
-  return subagentTranscripts[sample.sample][agent.state === "running" ? "running" : "complete"];
+  const transcript =
+    subagentTranscripts[sample.sample][agent.state === "running" ? "running" : "complete"];
+  return [...transcript, ...(sample.followUp ?? [])];
 }

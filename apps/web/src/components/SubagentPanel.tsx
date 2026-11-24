@@ -27,6 +27,8 @@ import {
   agentTabTarget,
   SubagentContext,
   subagentContextValue,
+  latestAgents,
+  latestRuns,
   subagentProfileName,
   subagentRelations,
   useSubagents,
@@ -101,11 +103,12 @@ export function NativeSubagentProvider({
   );
   useEffect(() => {
     for (const aliasId of tabAgentIds.split("\n")) {
-      const agent = value.agents.get(aliasId);
+      const run = value.agents.get(aliasId)?.id ?? aliasId;
+      const agent = value.latest.get(run);
       if (agent && agent.id !== aliasId)
         panels.getState().resolveAgent(threadId, aliasId, agentTabTarget(agent));
     }
-  }, [tabAgentIds, value.agents, panels, threadId]);
+  }, [tabAgentIds, value.agents, value.latest, panels, threadId]);
   return <SubagentContext value={value}>{children}</SubagentContext>;
 }
 
@@ -131,7 +134,10 @@ export function NativeSubagentPanel({
     subscribed: open && foreground,
   });
   const items = useMemo(() => list.data?.pages.flatMap((page) => page.items) ?? [], [list.data]);
-  const target = items.find((agent) => agent.id === targetId || agent.activityId === targetId);
+  const latest = useMemo(() => latestRuns(items), [items]);
+  const run = items.find((agent) => agent.id === targetId || agent.activityId === targetId);
+  // A follow-up continues its session, whose newest run holds the whole conversation.
+  const target = run && latest.get(run.id);
   const agentId = target?.id ?? "";
   // Pages run newest first, so a delegating parent can sit on a later page than its child.
   const parentMissing = !!target?.parentId && !items.some((agent) => agent.id === target.parentId);
@@ -291,9 +297,8 @@ export function SubagentPanelView({
   const services = useMemo(() => ({ ...transcriptServices, resourceUrl }), [resourceUrl]);
   const identity = useContext(MessageIdentityContext);
   const relations = useMemo(() => subagentRelations(items), [items]);
-  const parent = selected?.parentId
-    ? items.find((agent) => agent.id === selected.parentId)
-    : undefined;
+  const listed = useMemo(() => latestAgents(items, relations.latest), [items, relations]);
+  const parent = selected?.parentId ? relations.latest.get(selected.parentId) : undefined;
   const transcriptIdentity = useMemo(
     () => ({
       ...identity,
@@ -408,14 +413,14 @@ export function SubagentPanelView({
         </div>
       ) : (
         <div className="subagent-list overflow-auto min-h-0 flex-1 p-2">
-          {!loading && !error && items.length === 0 ? (
+          {!loading && !error && listed.length === 0 ? (
             <div className="subagent-empty flex items-center flex-col justify-center text-center gap-3 min-h-56 text-muted-foreground p-4">
               <Bot />
               <p>No subagents yet</p>
               <span>Agents spawned in this conversation appear here.</span>
             </div>
           ) : null}
-          {items.map((agent) => (
+          {listed.map((agent) => (
             <Button
               key={agent.id}
               variant="ghost"
@@ -429,8 +434,10 @@ export function SubagentPanelView({
                 color={relations.colors.get(agent.id)}
                 size="sm"
               />
-              <span>
-                <strong>{agent.taskTitle ?? subagentProfileName(agent.profile)}</strong>
+              <span className="min-w-0 flex-1">
+                <strong className="block truncate">
+                  {agent.taskTitle ?? subagentProfileName(agent.profile)}
+                </strong>
                 <span className="subagent-name overflow-hidden text-ellipsis whitespace-nowrap">
                   {agent.model ? (
                     <span
@@ -461,18 +468,18 @@ export function SubagentPanelView({
 /** Parents before their delegated agents, so the sidebar reads as a tree. */
 function agentTree(
   items: readonly SubagentSummary[],
-  children: SubagentRelations["children"],
+  relations: SubagentRelations,
 ): { agent: SubagentSummary; depth: number }[] {
-  const ids = new Set(items.map((agent) => agent.id));
   const rows: { agent: SubagentSummary; depth: number }[] = [];
   const seen = new Set<string>();
   const visit = (agent: SubagentSummary, depth: number) => {
     if (seen.has(agent.id)) return;
     seen.add(agent.id);
     rows.push({ agent, depth });
-    for (const child of children.get(agent.id) ?? []) visit(child, depth + 1);
+    for (const child of relations.children.get(agent.id) ?? []) visit(child, depth + 1);
   };
-  for (const agent of items) if (!agent.parentId || !ids.has(agent.parentId)) visit(agent, 0);
+  for (const agent of latestAgents(items, relations.latest))
+    if (!agent.parentId || !relations.latest.has(agent.parentId)) visit(agent, 0);
   return rows;
 }
 
@@ -487,7 +494,7 @@ export function AgentSidebarView({
   onSelect: (agent: SubagentSummary) => void;
 }) {
   const relations = useMemo(() => subagentRelations(items), [items]);
-  const rows = useMemo(() => agentTree(items, relations.children), [items, relations]);
+  const rows = useMemo(() => agentTree(items, relations), [items, relations]);
   return (
     <nav
       className="agent-sidebar flex flex-col gap-0.5 w-full min-h-0 overflow-y-auto p-2"

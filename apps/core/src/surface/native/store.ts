@@ -643,6 +643,39 @@ export class NativeStore {
     );
   }
 
+  /** The messages a subagent run's stream showed, or null when it has no stream. */
+  agentStreamMessages(runId: string): NativeStoreResult<DisplayMessage[] | null> {
+    return Result.gen(function* () {
+      const stream = yield* this.findAgentStream(runId);
+      if (!stream) return Result.ok(null);
+      const turn = yield* this.readRecord("turn", stream.turnId);
+      return Result.ok(turn?.kind === "turn" ? turn.value.messages : null);
+    }, this);
+  }
+
+  /** Rewrites a subagent run's stream messages in one transaction; null leaves them unchanged. */
+  rewriteAgentStream(
+    runId: string,
+    rewrite: (messages: readonly DisplayMessage[]) => DisplayMessage[] | null,
+  ): NativeStoreResult<void> {
+    return nativeStoreTransaction(this.db, () =>
+      Result.gen(function* () {
+        const stream = yield* this.findAgentStream(runId);
+        const turn = stream ? yield* this.readRecord("turn", stream.turnId) : null;
+        if (!stream || turn?.kind !== "turn") return Result.ok(undefined);
+        const messages = rewrite(turn.value.messages);
+        if (!messages) return Result.ok(undefined);
+        this.writeRecord(
+          turn.value.turnId,
+          { ...turn, value: { ...turn.value, messages } },
+          stream.id,
+        );
+        this.bump(stream, "reset", turn.value.turnId);
+        return Result.ok(undefined);
+      }, this),
+    );
+  }
+
   settleAgentStream(stream: NativeAgentStreamRecord, state: "complete" | "failed" | "canceled") {
     return nativeStoreTransaction(this.db, () =>
       Result.gen(function* () {

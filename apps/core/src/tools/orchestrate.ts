@@ -604,11 +604,18 @@ export function createOrchestrateTool(options: OrchestrateToolOptions) {
         : yield* (
             options.transcripts?.getRequestTranscript?.({ requestId }) ?? Result.ok(null)
           ).mapError(storeFailure);
+      // Item IDs name activities by their message, as they did before transcript tool parts took
+      // call-derived IDs, so IDs from an earlier read still select the same item.
       const display = subagentMessages(
         live?.messages ?? saved?.messages ?? [],
         live?.streaming,
         live?.activeTools,
-      );
+      ).map((message) => ({
+        ...message,
+        parts: message.parts.map((part) =>
+          part.type === "data-activity" ? { ...part, id: message.id } : part,
+        ),
+      }));
       const resultText = TERMINAL_RUN_STATES.has(run.state) ? runResultText(run) : null;
       const header = {
         kind: "subagent" as const,

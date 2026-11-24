@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Result } from "better-result";
 import {
   MAX_REPLAY_TEXT_LENGTH,
   displayMessageSchema,
+  type DisplayMessage,
   subagentSummarySchema,
 } from "@stanley2058/lilac-client-protocol";
 import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
@@ -115,6 +117,8 @@ function fixture() {
     },
   ];
   const runs = [run];
+  const predecessors = new Map<string, string>();
+  const otherTranscripts = new Map<string, StoredMessageV1[]>();
   let workflowReads = 0;
   let transcriptReads = 0;
   let live: SubagentSnapshot | undefined;
@@ -137,6 +141,15 @@ function fixture() {
         workflowReads++;
         return Result.ok(runs);
       },
+      listSubagentFollowUps: (_session, runIds) =>
+        Result.ok(
+          new Map(
+            runIds.flatMap((id) => {
+              const previousRunId = predecessors.get(id);
+              return previousRunId ? [[id, { firstRunId: run.runId, previousRunId }]] : [];
+            }),
+          ),
+        ),
       listOperations: (runId) => {
         workflowReads++;
         return Result.ok(operations.filter((operation) => operation.runId === runId));
@@ -145,14 +158,15 @@ function fixture() {
     transcripts: {
       getRequestTranscript: ({ requestId }) => {
         transcriptReads++;
-        if (requestId !== executionRequestId) return Result.ok(null);
+        const messages = requestId === executionRequestId ? saved : otherTranscripts.get(requestId);
+        if (!messages) return Result.ok(null);
         return Result.ok({
           requestId,
           sessionId: target.childSessionId,
           requestClient: "native",
           createdTs: 1,
           updatedTs: 2,
-          messages: saved,
+          messages,
         });
       },
     },
@@ -171,6 +185,10 @@ function fixture() {
     executionRequestId,
     service,
     addRun: (value: WorkflowRun) => runs.push(value),
+    addOperation: (value: WorkflowOperation) => operations.push(value),
+    setPrevious: (runId: string, previousId: string) => predecessors.set(runId, previousId),
+    setTranscript: (requestId: string, messages: StoredMessageV1[]) =>
+      otherTranscripts.set(requestId, messages),
     counters: () => ({ workflowReads, transcriptReads }),
     setLive: (value: SubagentSnapshot | undefined) => {
       live = value;
@@ -215,6 +233,309 @@ test("nested subagents name the subagent that delegated them", () => {
     [f.run.runId, undefined],
     ["wfrun:subagent:nested", f.run.runId],
   ]);
+});
+
+function addFollowUp(
+  f: ReturnType<typeof fixture>,
+  state: WorkflowRun["state"] = "running",
+  { name = "follow-up", previous = f.run.runId, createdAt = 3 } = {},
+) {
+  const runId = `wfrun:subagent:${name}`;
+  const requestId = `wfr:${name}:operation:0`;
+  f.addRun({
+    ...f.run,
+    runId,
+    state,
+    createdAt,
+    startedAt: createdAt + 1,
+    completionTarget: { ...f.target, parentToolCallId: `tool-${name}`, childRequestId: name },
+  });
+  f.addOperation({ ...f.operations[0]!, runId, operationId: name, requestId });
+  f.setPrevious(runId, previous);
+  return { runId, requestId };
+}
+
+function texts(messages: readonly DisplayMessage[]) {
+  return messages.flatMap((message) =>
+    message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])),
+  );
+}
+
+test("follow-up subagent runs name the run that started their session", () => {
+  const f = fixture();
+  const followUp = addFollowUp(f);
+  const items = f.service.list("owner", { threadId: f.thread.id }).unwrap().items;
+  expect(items.map((item) => [item.id, item.firstRunId, item.previousId])).toEqual([
+    [f.run.runId, undefined, undefined],
+    [followUp.runId, f.run.runId, f.run.runId],
+  ]);
+  const read = f.service.read("owner", { threadId: f.thread.id, agentId: followUp.runId }).unwrap();
+  expect(read.agent.firstRunId).toBe(f.run.runId);
+});
+
+function agentStreamMessages(f: ReturnType<typeof fixture>, streamId: string) {
+  const replay = f.native.syncAgentStream("owner", f.thread.id, streamId).unwrap();
+  const slot = replay.kind === "window" ? replay.slots[0] : undefined;
+  return slot?.kind === "ready" ? slot.messages : [];
+}
+
+function prepareFollowUp(f: ReturnType<typeof fixture>, followUp: ReturnType<typeof addFollowUp>) {
+  return f.service
+    .prepareOutput({
+      runId: followUp.runId,
+      requestId: followUp.requestId,
+      sessionId: f.target.childSessionId,
+      prompt: "Next",
+    })
+    .unwrap()!;
+}
+
+test("a follow-up stream starts with the child session's earlier exchanges", () => {
+  const f = fixture();
+  f.setSaved([
+    { role: "user", content: "Research" },
+    {
+      role: "assistant",
+      content: [{ type: "tool-call", toolCallId: "c", toolName: "read", input: {} }],
+    },
+    { role: "assistant", content: "Done" },
+  ]);
+  const followUp = addFollowUp(f);
+  const messages = agentStreamMessages(f, prepareFollowUp(f, followUp).id);
+  expect(
+    messages.map((message) => [
+      message.role,
+      message.metadata?.phase,
+      message.parts.map((part) => part.type),
+    ]),
+  ).toEqual([
+    ["user", undefined, ["text"]],
+    ["assistant", "commentary", ["data-activity"]],
+    ["assistant", "final", ["text"]],
+    ["user", undefined, ["text"]],
+  ]);
+  expect(new Set(messages.map((message) => message.id)).size).toBe(messages.length);
+});
+
+test("a follow-up continues from what the previous run showed, not its compacted transcript", () => {
+  const f = fixture();
+  f.native
+    .ensureAgentStream({
+      parentThreadId: f.thread.id,
+      parentRequestId: f.input.requestId,
+      runId: f.run.runId,
+      requestId: f.executionRequestId,
+      state: "complete",
+      startedAt: 2,
+      messages: subagentMessages([
+        { role: "user", content: "Research" },
+        { role: "assistant", content: "Shown reply" },
+      ]),
+    })
+    .unwrap();
+  f.setSaved([{ role: "user", content: "Summary of the earlier conversation" }]);
+  const followUp = addFollowUp(f);
+  expect(texts(agentStreamMessages(f, prepareFollowUp(f, followUp).id))).toEqual([
+    "Research",
+    "Shown reply",
+    "Next",
+  ]);
+});
+
+test("a follow-up that ended without a transcript still shows the earlier exchanges", () => {
+  const f = fixture();
+  const followUp = addFollowUp(f, "failed");
+  const stream = f.service
+    .stream("owner", { threadId: f.thread.id, agentId: followUp.runId })
+    .unwrap();
+  expect(texts(agentStreamMessages(f, stream.id))).toEqual(["Research", "Done"]);
+});
+
+test("seeded history takes new IDs so a follow-up's output cannot land among the copies", () => {
+  const f = fixture();
+  const nativeId = `np_${"a".repeat(24)}_${"b".repeat(24)}_${"9".repeat(16)}_${"c".repeat(24)}`;
+  f.native
+    .ensureAgentStream({
+      parentThreadId: f.thread.id,
+      parentRequestId: f.input.requestId,
+      runId: f.run.runId,
+      requestId: f.executionRequestId,
+      state: "complete",
+      startedAt: 2,
+      messages: [
+        { id: "child_0_0_0", role: "user", parts: [{ type: "text", text: "Research" }] },
+        {
+          id: nativeId,
+          role: "assistant",
+          parts: [
+            {
+              type: "data-activity",
+              id: "reasoning-0",
+              data: { kind: "thinking", label: "Thinking", state: "complete" },
+            },
+            {
+              type: "data-activity",
+              id: "delegation-tool",
+              data: { kind: "tool", label: "subagent_delegate", state: "complete" },
+            },
+          ],
+        },
+      ],
+    })
+    .unwrap();
+  const followUp = addFollowUp(f);
+  const messages = agentStreamMessages(f, prepareFollowUp(f, followUp).id);
+  const ids = messages.flatMap((message) => [
+    message.id,
+    ...message.parts.flatMap((part) => ("id" in part ? [part.id] : [])),
+  ]);
+  expect(ids).not.toContain(nativeId);
+  expect(ids).not.toContain("reasoning-0");
+  // A delegation row finds its nested agent by the tool activity ID.
+  expect(ids).toContain("delegation-tool");
+  expect(texts(messages)).toEqual(["Research", "Next"]);
+});
+
+test("a follow-up takes history from the nearest earlier run that kept it", () => {
+  const f = fixture();
+  const lost = addFollowUp(f, "failed", { name: "lost" });
+  const next = addFollowUp(f, "running", { name: "next", previous: lost.runId, createdAt: 5 });
+  expect(texts(agentStreamMessages(f, prepareFollowUp(f, next).id))).toEqual([
+    "Research",
+    "Done",
+    "Next",
+  ]);
+});
+
+/** A follow-up stream as it was created before history seeding: only its own exchange. */
+function legacyStream(
+  f: ReturnType<typeof fixture>,
+  run: ReturnType<typeof addFollowUp>,
+  exchange: [string, string],
+) {
+  f.native
+    .ensureAgentStream({
+      parentThreadId: f.thread.id,
+      parentRequestId: f.input.requestId,
+      runId: run.runId,
+      requestId: run.requestId,
+      state: "complete",
+      startedAt: 4,
+      messages: subagentMessages([
+        { role: "user", content: exchange[0] },
+        { role: "assistant", content: exchange[1] },
+      ]),
+    })
+    .unwrap();
+}
+
+const said = (...exchanges: [string, string][]): StoredMessageV1[] =>
+  exchanges.flatMap(([prompt, reply]) => [
+    { role: "user" as const, content: prompt },
+    { role: "assistant" as const, content: reply },
+  ]);
+
+test("ended follow-up streams from before seeding gain earlier exchanges once, newest first", () => {
+  const f = fixture();
+  const second = addFollowUp(f, "succeeded", { name: "second" });
+  const third = addFollowUp(f, "succeeded", {
+    name: "third",
+    previous: second.runId,
+    createdAt: 5,
+  });
+  f.setTranscript(second.requestId, said(["Research", "Done"], ["Next", "Answer"]));
+  f.setTranscript(
+    third.requestId,
+    said(["Research", "Done"], ["Next", "Answer"], ["Third", "Reply"]),
+  );
+  legacyStream(f, second, ["Next", "Answer"]);
+  legacyStream(f, third, ["Third", "Reply"]);
+  const open = (run: ReturnType<typeof addFollowUp>) =>
+    texts(
+      agentStreamMessages(
+        f,
+        f.service.stream("owner", { threadId: f.thread.id, agentId: run.runId }).unwrap().id,
+      ),
+    );
+  const whole = ["Research", "Done", "Next", "Answer", "Third", "Reply"];
+  expect(open(third)).toEqual(whole);
+  expect(open(second)).toEqual(whole.slice(0, 4));
+  expect(open(third)).toEqual(whole);
+});
+
+test("a steered follow-up stream from before seeding still gains earlier exchanges", () => {
+  const f = fixture();
+  const followUp = addFollowUp(f, "succeeded");
+  f.setTranscript(followUp.requestId, [
+    ...said(["Research", "Done"], ["Next", "Answer"]),
+    { role: "user", content: "Also check the weekend" },
+    { role: "assistant", content: "Weekend is clear" },
+  ]);
+  legacyStream(f, followUp, ["Next", "Answer"]);
+  const stream = f.service
+    .stream("owner", { threadId: f.thread.id, agentId: followUp.runId })
+    .unwrap();
+  expect(texts(agentStreamMessages(f, stream.id))).toEqual(["Research", "Done", "Next", "Answer"]);
+});
+
+test("a queued follow-up opened before it starts still shows its prompt once it runs", () => {
+  const f = fixture();
+  const followUp = addFollowUp(f, "queued");
+  const opened = f.service
+    .stream("owner", { threadId: f.thread.id, agentId: followUp.runId })
+    .unwrap();
+  expect(agentStreamMessages(f, opened.id)).toEqual([]);
+  expect(texts(agentStreamMessages(f, prepareFollowUp(f, followUp).id))).toEqual([
+    "Research",
+    "Done",
+    "Next",
+  ]);
+});
+
+test("history from a transcript keeps delegation IDs that link nested agents", () => {
+  const f = fixture();
+  f.setSaved([
+    { role: "user", content: "Research" },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool-call", toolCallId: "delegate-1", toolName: "subagent_delegate", input: {} },
+      ],
+    },
+    { role: "assistant", content: "Done" },
+  ]);
+  const followUp = addFollowUp(f);
+  const ids = agentStreamMessages(f, prepareFollowUp(f, followUp).id).flatMap((message) =>
+    message.parts.flatMap((part) => (part.type === "data-activity" ? [part.id] : [])),
+  );
+  expect(ids).toEqual([createHash("sha256").update("delegate-1").digest("hex").slice(0, 24)]);
+});
+
+test("a follow-up canceled before it started does not hide earlier exchanges", () => {
+  const f = fixture();
+  const canceled = addFollowUp(f, "cancelled", { name: "canceled" });
+  // Opening the follow-up while it was queued left its stream empty.
+  f.native
+    .ensureAgentStream({
+      parentThreadId: f.thread.id,
+      parentRequestId: f.input.requestId,
+      runId: canceled.runId,
+      requestId: canceled.requestId,
+      state: "running",
+      startedAt: 4,
+      messages: [],
+    })
+    .unwrap();
+  const next = addFollowUp(f, "running", { name: "next", previous: canceled.runId, createdAt: 5 });
+  expect(texts(agentStreamMessages(f, prepareFollowUp(f, next).id))).toEqual([
+    "Research",
+    "Done",
+    "Next",
+  ]);
+  const reopened = f.service
+    .stream("owner", { threadId: f.thread.id, agentId: canceled.runId })
+    .unwrap();
+  expect(texts(agentStreamMessages(f, reopened.id))).toEqual(["Research", "Done"]);
 });
 
 test("subagent IDs cannot expose a different thread or rewound request", () => {

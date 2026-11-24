@@ -8,7 +8,7 @@ import {
 import type { ModelMessage } from "ai";
 import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
 import { Result } from "better-result";
-import type { DurableWorkflowStore } from "../../workflow/durable-workflow-store";
+import type { DurableWorkflowStore, SubagentFollowUp } from "../../workflow/durable-workflow-store";
 import type { WorkflowRun } from "../../workflow/workflow-domain";
 import type { TranscriptStore } from "../../transcript/transcript-store";
 import type { NativeStore } from "./store";
@@ -155,6 +155,77 @@ function workflowDisplayState(
   return ({ succeeded: "complete", failed: "failed", cancelled: "canceled" } as const)[state];
 }
 
+/** Indexes of the text replies after an exchange's last activity, in `[start, end)`. */
+function closingReplies(messages: readonly DisplayMessage[], start: number, end: number) {
+  const lastWork = messages
+    .slice(start, end)
+    .findLastIndex((message) => message.parts.some((part) => part.type !== "text"));
+  const replies: number[] = [];
+  for (let reply = start + lastWork + 1; reply < end; reply++) replies.push(reply);
+  return replies;
+}
+
+/**
+ * Marks the replies that close each prompt as final and other assistant messages as commentary.
+ * The last prompt's reply is final only once its run completed.
+ */
+function withReplyPhases(messages: readonly DisplayMessage[], complete: boolean): DisplayMessage[] {
+  const finals = new Set<number>();
+  let start = 0;
+  for (let index = 0; index <= messages.length; index++) {
+    const end = index === messages.length;
+    if (!end && messages[index]!.role !== "user") continue;
+    if (!end || complete)
+      for (const reply of closingReplies(messages, start, index)) finals.add(reply);
+    start = index + 1;
+  }
+  return messages.map((message, index) =>
+    message.role === "assistant"
+      ? {
+          ...message,
+          metadata: { ...message.metadata, phase: finals.has(index) ? "final" : "commentary" },
+        }
+      : message,
+  );
+}
+
+/**
+ * Copies earlier exchanges into a follow-up's stream under new IDs. Native message IDs carry
+ * their run's output position and thinking IDs repeat between runs, so kept IDs would let the
+ * follow-up's own output land among or update the copies. Tool activity IDs come from unique
+ * tool calls and stay, since a delegation row finds its nested agent by that ID.
+ */
+function seededHistory(messages: readonly DisplayMessage[]): DisplayMessage[] {
+  const seeded = (id: string) => `seed_${digest(id)}`;
+  return messages.map((message) => ({
+    ...message,
+    id: seeded(message.id),
+    parts: message.parts.map((part) => {
+      if (part.type === "data-activity" && part.data.kind === "tool") return part;
+      return "id" in part ? { ...part, id: seeded(part.id) } : part;
+    }),
+  }));
+}
+
+/**
+ * Whether a follow-up's stream starts at a later prompt of its saved session, as streams did
+ * before history seeding. Seeded streams start with copied history, and streams projected from a
+ * transcript start at its first prompt. A later prompt may be followed by steers.
+ */
+function startsAtOwnPrompt(
+  shown: readonly DisplayMessage[],
+  saved: readonly (StoredMessageV1 | ModelMessage)[],
+) {
+  const first = shown[0];
+  if (first?.role !== "user" || !first.id.startsWith("child_0_0_")) return false;
+  const text = (message: DisplayMessage | undefined) =>
+    message?.parts.find((part) => part.type === "text")?.text;
+  const [opening, ...later] = saved
+    .filter((message) => message.role === "user")
+    .map((message) => text(subagentMessages([message])[0]));
+  return text(first) !== opening && later.includes(text(first));
+}
+
 function transcriptActivity(
   part: Exclude<StoredMessageV1["content"] | ModelMessage["content"], string>[number],
   id: string,
@@ -175,7 +246,9 @@ function transcriptActivity(
   const event = { args: part.input, result: transcriptToolValue(output) };
   return {
     type: "data-activity",
-    id,
+    // Native output derives tool activity IDs from the call, and delegation rows find nested
+    // agents by them.
+    id: digest(part.toolCallId),
     data: activityPartData({
       kind: "tool",
       label: nativeToolActivityLabel({ toolName: part.toolName, event }),
@@ -197,11 +270,14 @@ export class NativeSubagents {
         | "ensureAgentStream"
         | "findAgentStream"
         | "settleAgentStream"
+        | "agentStreamMessages"
+        | "rewriteAgentStream"
         | "notifyDisplayChanged"
       >;
       workflows: Pick<
         DurableWorkflowStore,
         | "listSubagentRuns"
+        | "listSubagentFollowUps"
         | "getRun"
         | "listOperations"
         | "getOperationByRequestId"
@@ -270,12 +346,14 @@ export class NativeSubagents {
       if (operation?.runId !== input.runId) return Result.ok(null);
       const root = yield* this.root(run);
       if (!root) return Result.ok(null);
+      const history = yield* this.previousHistory(root.threadId, run);
+      const prompt = subagentMessages([{ role: "user", content: input.prompt }]);
       return this.options.native.ensureAgentStream({
         parentThreadId: root.threadId,
         parentRequestId: root.requestId,
         runId: run.runId,
         requestId: input.requestId,
-        messages: subagentMessages([{ role: "user", content: input.prompt }]),
+        messages: [...history, ...prompt],
         taskTitle:
           run.completionTarget.kind === "live_parent" ? run.completionTarget.title : undefined,
         titlePrompt: input.prompt,
@@ -300,40 +378,16 @@ export class NativeSubagents {
       )
         return Result.err(nativeFailure("not-found", "Subagent not found"));
       const existing = yield* this.options.native.findAgentStream(run.runId);
-      if (existing) {
-        yield* this.settle(run, existing);
-        return Result.ok(existing);
-      }
+      if (existing) return this.openExisting(root.threadId, run, existing);
       const requestId = yield* this.childRequestId(run, run.completionTarget.childRequestId);
-      const saved = yield* (
-        this.options.transcripts
-          .getRequestTranscript?.({ requestId })
-          .mapError(() => nativeFailure("sqlite", "Transcript is unavailable")) ?? Result.ok(null)
-      );
-      const messages = subagentMessages(saved?.messages ?? []);
-      const lastWork = messages.findLastIndex(
-        (message) =>
-          message.role !== "assistant" || message.parts.some((part) => part.type !== "text"),
-      );
-      const state = workflowDisplayState(run.state);
       return this.options.native.ensureAgentStream({
         parentThreadId: root.threadId,
         parentRequestId: root.requestId,
         runId: run.runId,
         requestId,
-        state,
+        state: workflowDisplayState(run.state),
         startedAt: run.startedAt ?? run.createdAt,
-        messages: messages.map((message, index) =>
-          message.role === "assistant"
-            ? {
-                ...message,
-                metadata: {
-                  ...message.metadata,
-                  phase: state === "complete" && index > lastWork ? "final" : "commentary",
-                },
-              }
-            : message,
-        ),
+        messages: yield* this.unstreamedMessages(root.threadId, run, requestId),
       });
     }, this);
   }
@@ -360,6 +414,119 @@ export class NativeSubagents {
     }, this);
   }
 
+  /** Where listed follow-up runs sit in their child sessions, by run id. */
+  private followUps(threadId: string, runIds: readonly string[]) {
+    return this.options.workflows
+      .listSubagentFollowUps(`native:${threadId}`, runIds)
+      .mapError(() => nativeFailure("sqlite", "Subagent is unavailable"));
+  }
+
+  private savedTranscript(requestId: string) {
+    return (
+      this.options.transcripts
+        .getRequestTranscript?.({ requestId })
+        .mapError(() => nativeFailure("sqlite", "Transcript is unavailable")) ?? Result.ok(null)
+    );
+  }
+
+  /**
+   * What a run without a stream shows: its saved transcript, or for a follow-up that ended
+   * before saving one, the session so far. A run yet to start stays empty, so preparing its
+   * output adds the prompt.
+   */
+  private unstreamedMessages(threadId: string, run: WorkflowRun, requestId: string) {
+    return Result.gen(function* () {
+      const saved = yield* this.savedTranscript(requestId);
+      const state = workflowDisplayState(run.state);
+      if (saved)
+        return Result.ok(withReplyPhases(subagentMessages(saved.messages), state === "complete"));
+      if (state === "running") return Result.ok([]);
+      return this.previousHistory(threadId, run);
+    }, this);
+  }
+
+  /** Settles an existing stream and fills in history it lacks before a viewer opens it. */
+  private openExisting(threadId: string, run: WorkflowRun, stream: NativeAgentStreamRecord) {
+    return Result.gen(function* () {
+      yield* this.settle(run, stream);
+      yield* this.backfillHistory(threadId, run);
+      return Result.ok((yield* this.options.native.findAgentStream(run.runId)) ?? stream);
+    }, this);
+  }
+
+  /**
+   * What the child session showed before this run, from the nearest earlier run that kept it.
+   */
+  private previousHistory(threadId: string, run: WorkflowRun) {
+    return Result.gen(function* () {
+      const visited = new Set([run.runId]);
+      let current = run.runId;
+      for (;;) {
+        const previousId = (yield* this.followUps(threadId, [current])).get(current)?.previousRunId;
+        if (!previousId || visited.has(previousId)) return Result.ok([]);
+        visited.add(previousId);
+        const history = yield* this.runHistory(previousId);
+        if (history) return Result.ok(seededHistory(history));
+        current = previousId;
+      }
+    }, this);
+  }
+
+  /**
+   * What one run's session showed: its stream, which keeps exchanges a compacted transcript
+   * summarizes, unless the stream starts at the run's own prompt; then its saved transcript,
+   * which holds the whole session. Null when the run kept neither.
+   */
+  private runHistory(runId: string) {
+    return Result.gen(function* () {
+      const shown = yield* this.options.native.agentStreamMessages(runId);
+      const saved = yield* this.runTranscript(runId);
+      // A run canceled before it started leaves an empty stream, which holds no history.
+      const usable = shown?.length && !(saved && startsAtOwnPrompt(shown, saved.messages));
+      if (usable) return Result.ok(shown);
+      if (saved) return Result.ok(withReplyPhases(subagentMessages(saved.messages), true));
+      return Result.ok(null);
+    }, this);
+  }
+
+  private runTranscript(runId: string) {
+    return Result.gen(function* () {
+      const run = yield* this.options.workflows
+        .getRun(runId)
+        .mapError(() => nativeFailure("sqlite", "Subagent is unavailable"));
+      if (run?.completionTarget.kind !== "live_parent") return Result.ok(null);
+      const requestId = yield* this.childRequestId(run, run.completionTarget.childRequestId);
+      return this.savedTranscript(requestId);
+    }, this);
+  }
+
+  /**
+   * Fills in history an ended run's stream lacks: earlier exchanges ahead of a stream that
+   * starts at its own prompt, as streams did before follow-ups were seeded, or the session so far
+   * in a stream left empty by a run canceled before it started. The rewritten stream no longer
+   * matches either case, so this runs once.
+   */
+  private backfillHistory(threadId: string, run: WorkflowRun) {
+    return Result.gen(function* () {
+      if (workflowDisplayState(run.state) === "running") return Result.ok(undefined);
+      const shown = yield* this.options.native.agentStreamMessages(run.runId);
+      if (!shown) return Result.ok(undefined);
+      const saved = yield* this.runTranscript(run.runId);
+      const legacy = (messages: readonly DisplayMessage[]) =>
+        !!saved && startsAtOwnPrompt(messages, saved.messages);
+      if (shown.length > 0 && !legacy(shown)) return Result.ok(undefined);
+      const history =
+        shown.length === 0 && saved
+          ? withReplyPhases(subagentMessages(saved.messages), run.state === "succeeded")
+          : yield* this.previousHistory(threadId, run);
+      if (history.length === 0) return Result.ok(undefined);
+      return this.options.native.rewriteAgentStream(run.runId, (messages) => {
+        if (messages.length === 0) return history;
+        return legacy(messages) ? [...history, ...messages] : null;
+      });
+    }, this);
+  }
+
   private childRequestId(run: WorkflowRun, fallback: string) {
     return this.options.workflows
       .listOperations(run.runId, { limit: 1_000 })
@@ -371,7 +538,12 @@ export class NativeSubagents {
       );
   }
 
-  private summary(run: WorkflowRun, turnId: string, requestId: string) {
+  private summary(
+    run: WorkflowRun,
+    turnId: string,
+    requestId: string,
+    followUp?: SubagentFollowUp,
+  ) {
     return Result.gen(function* () {
       const target = run.completionTarget;
       if (target.kind !== "live_parent") return Result.ok(undefined);
@@ -394,6 +566,9 @@ export class NativeSubagents {
       return Result.ok({
         id: run.runId,
         ...(parent ? { parentId: parent.runId } : {}),
+        ...(followUp
+          ? { firstRunId: followUp.firstRunId, previousId: followUp.previousRunId }
+          : {}),
         activityId: digest(target.parentToolCallId),
         turnId,
         profile: target.profile,
@@ -418,15 +593,25 @@ export class NativeSubagents {
       const runs = yield* this.options.workflows
         .listSubagentRuns(`native:${input.threadId}`, offset)
         .mapError(() => nativeFailure("sqlite", "Subagents are unavailable"));
+      const listed = runs.slice(0, 100);
+      const followUps = yield* this.followUps(
+        input.threadId,
+        listed.map((run) => run.runId),
+      );
       const items: SubagentSummary[] = [];
-      for (const run of runs.slice(0, 100)) {
+      for (const run of listed) {
         const target = run.completionTarget;
         if (target.kind !== "live_parent") continue;
         const parent = yield* this.root(run);
         if (parent?.threadId !== input.threadId) continue;
         if (!parent?.turnId) continue;
         const requestId = yield* this.childRequestId(run, target.childRequestId);
-        const summary = yield* this.summary(run, parent.turnId, requestId);
+        const summary = yield* this.summary(
+          run,
+          parent.turnId,
+          requestId,
+          followUps.get(run.runId),
+        );
         if (summary) items.push(summary);
       }
       return Result.ok({
@@ -452,18 +637,12 @@ export class NativeSubagents {
       if (parent?.threadId !== input.threadId || !parent.turnId)
         return Result.err(nativeFailure("not-found", "Subagent not found"));
       const requestId = yield* this.childRequestId(run, target.childRequestId);
-      const agent = (yield* this.summary(run, parent.turnId, requestId))!;
+      const followUp = (yield* this.followUps(input.threadId, [run.runId])).get(run.runId);
+      const agent = (yield* this.summary(run, parent.turnId, requestId, followUp))!;
       const live = this.options
         .live()
         ?.readSubagentSnapshot(target.childSessionId, requestId, true);
-      const saved = live
-        ? null
-        : yield* (
-            this.options.transcripts
-              .getRequestTranscript?.({ requestId })
-              .mapError(() => nativeFailure("sqlite", "Transcript is unavailable")) ??
-              Result.ok(null)
-          );
+      const saved = live ? null : yield* this.savedTranscript(requestId);
       const projected = subagentMessages(
         live?.messages ?? saved?.messages ?? [],
         live?.streaming,

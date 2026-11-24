@@ -342,7 +342,7 @@ export const subagentTranscripts: Record<
         parts: [
           {
             type: "data-activity",
-            id: "child_1_1",
+            id: "4855a31de220c2c08981aa2c",
             data: {
               kind: "tool",
               label: 'bash tools web.search "Kyoto weather Saturday"',
@@ -358,7 +358,7 @@ export const subagentTranscripts: Record<
         parts: [
           {
             type: "data-activity",
-            id: "child_1_2",
+            id: "953c5ae64c4502f2025a16f6",
             data: {
               kind: "tool",
               label: 'read {"path":"~/notes/riverside-path.md"}',
@@ -399,7 +399,7 @@ export const subagentTranscripts: Record<
         parts: [
           {
             type: "data-activity",
-            id: "child_1_1",
+            id: "4855a31de220c2c08981aa2c",
             data: {
               kind: "tool",
               label: 'bash tools web.search "Kyoto weather Saturday"',
@@ -415,7 +415,7 @@ export const subagentTranscripts: Record<
         parts: [
           {
             type: "data-activity",
-            id: "child_1_2",
+            id: "953c5ae64c4502f2025a16f6",
             data: {
               kind: "tool",
               label: 'read {"path":"~/notes/riverside-path.md"}',
@@ -468,7 +468,7 @@ export const subagentTranscripts: Record<
         parts: [
           {
             type: "data-activity",
-            id: "child_1_1",
+            id: "4855a31de220c2c08981aa2c",
             data: {
               kind: "tool",
               label: 'bash tools web.search "Kyoto museum Saturday hours"',
@@ -484,7 +484,7 @@ export const subagentTranscripts: Record<
         parts: [
           {
             type: "data-activity",
-            id: "child_1_2",
+            id: "953c5ae64c4502f2025a16f6",
             data: {
               kind: "tool",
               label: 'bash tools web.search "Kyoto museum tickets"',
@@ -525,7 +525,7 @@ export const subagentTranscripts: Record<
         parts: [
           {
             type: "data-activity",
-            id: "child_1_1",
+            id: "4855a31de220c2c08981aa2c",
             data: {
               kind: "tool",
               label: 'bash tools web.search "Kyoto museum Saturday hours"',
@@ -541,7 +541,7 @@ export const subagentTranscripts: Record<
         parts: [
           {
             type: "data-activity",
-            id: "child_1_2",
+            id: "953c5ae64c4502f2025a16f6",
             data: {
               kind: "tool",
               label: 'bash tools web.search "Kyoto museum tickets"',

@@ -1292,6 +1292,58 @@ it("lists bounded subagent pages for only the requested parent session, includin
   }
 });
 
+it("maps follow-up subagent runs to the first and previous runs of their child session", () => {
+  const store = new DurableWorkflowStore(":memory:");
+  try {
+    store.createRevision(revision());
+    const session = (id: string, childSessionId: string, createdAt: number) => {
+      const child = liveParentRun(id, "parent-request");
+      child.createdAt = createdAt;
+      if (child.completionTarget.kind === "live_parent")
+        child.completionTarget = { ...child.completionTarget, childSessionId };
+      expect(store.createRun(child)).toBe(true);
+    };
+    session("first", "child-a", 10);
+    session("other", "child-b", 11);
+    session("second", "child-a", 12);
+    session("third", "child-a", 13);
+    expect(
+      workflowStoreValue(
+        store.listSubagentFollowUps("session-1", ["first", "other", "third", "second"]),
+      ),
+    ).toEqual(
+      new Map([
+        ["second", { firstRunId: "first", previousRunId: "first" }],
+        ["third", { firstRunId: "first", previousRunId: "second" }],
+      ]),
+    );
+    expect(workflowStoreValue(store.listSubagentFollowUps("session-1", ["first"]))).toEqual(
+      new Map(),
+    );
+  } finally {
+    store.close();
+  }
+});
+
+it("orders same-millisecond follow-ups by registration, not run ID", () => {
+  const store = new DurableWorkflowStore(":memory:");
+  try {
+    store.createRevision(revision());
+    for (const id of ["z-first", "a-second"]) {
+      const child = liveParentRun(id, "parent-request");
+      child.createdAt = 10;
+      if (child.completionTarget.kind === "live_parent")
+        child.completionTarget = { ...child.completionTarget, childSessionId: "child-a" };
+      expect(store.createRun(child)).toBe(true);
+    }
+    expect(workflowStoreValue(store.listSubagentFollowUps("session-1", ["a-second"]))).toEqual(
+      new Map([["a-second", { firstRunId: "z-first", previousRunId: "z-first" }]]),
+    );
+  } finally {
+    store.close();
+  }
+});
+
 describe("workflow audit recovery invariants", () => {
   it("enforces the revision agent budget in the insert and sums usage past a page", () => {
     const store = new DurableWorkflowStore(":memory:");

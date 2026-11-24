@@ -9,6 +9,9 @@ import { restoreNativeBrowserSnapshot } from "./browser-snapshot";
 import type { NativeStore } from "../../../src/surface/native/store";
 import type { DurableWorkflowStore } from "../../../src/workflow/durable-workflow-store";
 import { seedNativeWorkflowRun } from "./workflow-fixture";
+import { seedNativeSubagent } from "./subagent-fixture";
+import type { SqliteTranscriptStore } from "../../../src/transcript/transcript-store";
+import { createHash } from "node:crypto";
 
 const HTML_PREVIEW_ICON =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>';
@@ -470,6 +473,102 @@ function seedBrowserWorkflowHistory(workflows: DurableWorkflowStore) {
     });
 }
 
+/** A finished subagent that took two follow-ups in its session, beside a separate agent. */
+function seedBrowserAgentFollowUps(
+  store: NativeStore,
+  workflows: DurableWorkflowStore,
+  transcripts: SqliteTranscriptStore,
+) {
+  const thread = store
+    .createThread("owner", { commandId: "browser-agent-follow-ups", title: "Agent follow-ups" })
+    .unwrap();
+  const receipt = store
+    .acceptInput("owner", {
+      threadId: thread.id,
+      commandId: "browser-agent-follow-ups-input",
+      historyGeneration: 0,
+      mode: "prompt",
+      text: "Check that the agent remembers across follow-ups.",
+      attachmentIds: [],
+      skillIds: [],
+    })
+    .unwrap();
+  store.settleInput(receipt.inputId, "admitted").unwrap();
+  store.markInputCompleted(receipt.inputId).unwrap();
+  const exchanges = [
+    [
+      "Remember the token ORCHID-739 and the value 17. Reply only 'Baseline ready.'",
+      "Baseline ready.",
+    ],
+    ["Reply with the token and the value plus 6.", "ORCHID-739 23"],
+    ["Reply with the token and the value plus 10.", "ORCHID-739 27"],
+  ] as const;
+  const title = "Orchestrate follow-up configuration smoke test with a long title";
+  const history: { role: "user" | "assistant"; content: string }[] = [];
+  const runs = exchanges.map(([prompt, reply], index) => {
+    const child = seedNativeSubagent(store, workflows, thread.id, {
+      id: `browser-follow-up-${index}`,
+      childSessionId: "child-session-browser-follow-up",
+      title,
+    });
+    history.push({ role: "user", content: prompt }, { role: "assistant", content: reply });
+    transcripts
+      .saveRequestTranscript({
+        requestId: child.requestId,
+        sessionId: child.sessionId,
+        requestClient: "native",
+        messages: [...history],
+      })
+      .unwrap();
+    return child;
+  });
+  const other = seedNativeSubagent(store, workflows, thread.id, {
+    id: "browser-follow-up-other",
+    title: "Summarize the release notes",
+  });
+  transcripts
+    .saveRequestTranscript({
+      requestId: other.requestId,
+      sessionId: other.sessionId,
+      requestClient: "native",
+      messages: [
+        { role: "user", content: "Summarize the release notes." },
+        { role: "assistant", content: "The release adds provider options for agents." },
+      ],
+    })
+    .unwrap();
+  const children = [...runs, other];
+  for (const child of children)
+    workflows.transitionRun({
+      runId: child.run.runId,
+      from: "running",
+      to: "succeeded",
+      now: Date.now(),
+    });
+  store
+    .appendMessage(thread.id, 0, receipt.turnId!, {
+      id: "browser_agent_follow_ups",
+      role: "assistant",
+      parts: children.map((child) => ({
+        type: "data-activity" as const,
+        id: createHash("sha256").update(child.parentToolCallId).digest("hex").slice(0, 24),
+        data: { kind: "tool" as const, label: "subagent_delegate", state: "complete" as const },
+      })),
+    })
+    .unwrap();
+  store
+    .projectTurn(thread.id, 0, "browser_agent_follow_ups_complete", receipt.turnId!, (slot) =>
+      Result.ok({
+        slot: { ...slot, state: "complete" },
+        changes: [
+          { kind: "turn-state", turnId: slot.turnId, position: slot.position, state: "complete" },
+        ],
+      }),
+    )
+    .unwrap();
+  return thread.id;
+}
+
 export async function startNativeBrowserFixture(
   mcpRegistry?: NativeRuntimeOptions["mcpRegistry"],
   options: { port?: number; webOrigins?: string[]; clerk?: BrowserFixtureClerkAuth } = {},
@@ -586,12 +685,16 @@ export async function startNativeBrowserFixture(
   if (!threads) throw new Error("Browser fixture data was not seeded");
   seedBrowserWorkflowViews(fixture.store, fixture.workflows);
   seedBrowserWorkflowHistory(fixture.workflows);
+  const seeded = {
+    ...threads,
+    agents: seedBrowserAgentFollowUps(fixture.store, fixture.workflows, fixture.transcript),
+  };
   const links = Object.fromEntries(
-    Object.entries(threads)
+    Object.entries(seeded)
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")
       .map(([name, threadId]) => [name, `${fixture.url}?thread=${encodeURIComponent(threadId)}`]),
   );
-  return { ...fixture, threads, links };
+  return { ...fixture, threads: seeded, links };
 }
 
 if (import.meta.main) {

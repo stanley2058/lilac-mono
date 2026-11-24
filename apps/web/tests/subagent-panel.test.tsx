@@ -273,3 +273,85 @@ test("opening a loaded agent merges a hidden tab opened under its activity ID", 
     activeId: `agent:${child!.id}`,
   });
 });
+
+test("follow-up runs of one child session show as one agent", () => {
+  const [first] = agents;
+  const followUp = {
+    ...first!,
+    id: `${first!.id}_follow_up`,
+    firstRunId: first!.id,
+    activityId: `${first!.activityId}_follow_up`,
+    model: "openai/gpt-follow-up",
+    startedAt: first!.startedAt + 1000,
+  };
+  const items = [followUp, ...agents];
+  const relations = subagentRelations(items);
+  expect(relations.latest.get(first!.id)).toBe(followUp);
+  expect(relations.colors.get(followUp.id)).toBe(relations.colors.get(first!.id));
+  // An earlier page holding the first run does not change the agent's color.
+  expect(subagentRelations([followUp]).colors.get(followUp.id)).toBe(
+    relations.colors.get(followUp.id),
+  );
+  const list = renderToStaticMarkup(<SubagentPanelView items={items} {...actions} />);
+  expect(list.match(/subagent-card/g)).toHaveLength(agents.length);
+  expect(list).toContain("gpt-follow-up");
+  const sidebar = renderToStaticMarkup(
+    <AgentSidebarView items={items} activeId={followUp.id} onSelect={() => {}} />,
+  );
+  expect(sidebar.match(/aria-current="page"/g)).toHaveLength(1);
+  expect(sidebar.match(/<button/g)).toHaveLength(agents.length);
+
+  const opened: string[] = [];
+  subagentContextValue(items, (agent) => opened.push(agent.agentId)).open(agentTabTarget(first!));
+  expect(opened).toEqual([followUp.id]);
+});
+
+test("a delegating agent counts each nested child session once", () => {
+  const plan = nestedAgents.find((agent) => agent.id === "demo_subagent_plan")!;
+  const [child] = nestedAgents.filter((agent) => agent.parentId === plan.id);
+  const finished = { ...child!, state: "complete" as const };
+  const followUp = {
+    ...child!,
+    id: `${child!.id}_follow_up`,
+    firstRunId: child!.id,
+    activityId: `${child!.activityId}_follow_up`,
+    startedAt: child!.startedAt + 1000,
+  };
+  const items = nestedAgents.map((agent) => (agent === child ? finished : agent));
+  const { children } = subagentRelations([...items, followUp]);
+  const nested = children.get(plan.id)!;
+  expect(nested).toHaveLength(nestedAgents.filter((agent) => agent.parentId === plan.id).length);
+  expect(nested).toContain(followUp);
+  expect(nested).not.toContain(finished);
+});
+
+test("every run of a nested child session shares one color", () => {
+  const plan = nestedAgents.find((agent) => agent.id === "demo_subagent_plan")!;
+  const [child] = nestedAgents.filter((agent) => agent.parentId === plan.id);
+  // This follow-up was sent by a parent run that is not loaded.
+  const followUp = {
+    ...child!,
+    id: `${child!.id}_follow_up`,
+    firstRunId: child!.id,
+    previousId: child!.id,
+    parentId: "unloaded_parent_run",
+    activityId: `${child!.activityId}_follow_up`,
+  };
+  const { colors, latest } = subagentRelations([...nestedAgents, followUp]);
+  expect(colors.get(followUp.id)).toBe(colors.get(child!.id));
+  expect(latest.get(child!.id)).toBe(followUp);
+});
+
+test("tied follow-ups pick the run no other run continues", () => {
+  const [first] = agents;
+  const followUp = (suffix: string, previousId: string) => ({
+    ...first!,
+    id: `${first!.id}_${suffix}`,
+    firstRunId: first!.id,
+    previousId,
+    activityId: `${first!.activityId}_${suffix}`,
+  });
+  const older = followUp("older", first!.id);
+  const newest = followUp("newest", older.id);
+  expect(subagentRelations([older, newest, first!]).latest.get(first!.id)).toBe(newest);
+});

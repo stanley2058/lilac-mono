@@ -294,6 +294,10 @@ export const subagentSummarySchema = z.strictObject({
   id: runIdentitySchema,
   /** The delegating subagent's `id`; absent when the thread's agent delegated this one. */
   parentId: runIdentitySchema.optional(),
+  /** The run this follow-up continues in its child session; absent when this run started it. */
+  previousId: runIdentitySchema.optional(),
+  /** The first run of this follow-up's child session; absent when this run started the session. */
+  firstRunId: runIdentitySchema.optional(),
   activityId: identitySchema,
   turnId: identitySchema,
   /** Name of the subagent permission profile. */
