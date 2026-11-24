@@ -17,6 +17,10 @@ export type ThreadTimelineItem = {
   readonly kind: "text" | "activity";
   readonly text: string;
   readonly truncated: boolean;
+  /** Where `text` starts in the full item, when it is not the start. */
+  readonly textOffset?: number;
+  /** Pass with this item's id as `textOffset` to read the rest of a truncated item. */
+  readonly nextTextOffset?: number;
   /** Who wrote a user message, on surfaces where several people share a thread. */
   readonly author?: string;
   /**
@@ -37,6 +41,8 @@ export type ThreadReadInput = {
   readonly after?: string;
   readonly limit: number;
   readonly maxCharsPerItem: number;
+  /** Read only this item, starting at `textOffset`, instead of a page. */
+  readonly item?: { readonly id: string; readonly textOffset: number };
 };
 
 export type ThreadReadResult = {
@@ -93,9 +99,29 @@ export type SurfaceThreadControlPort = {
 export function boundTimelineText(
   text: string,
   maxChars: number,
-): { text: string; truncated: boolean } {
-  if (text.length <= maxChars) return { text, truncated: false };
-  return { text: text.slice(0, maxChars), truncated: true };
+  textOffset = 0,
+): { text: string; truncated: boolean; textOffset?: number; nextTextOffset?: number } {
+  const end = textOffset + maxChars;
+  const offset = textOffset > 0 ? { textOffset } : {};
+  if (text.length <= end) return { text: text.slice(textOffset), truncated: false, ...offset };
+  return { text: text.slice(textOffset, end), truncated: true, ...offset, nextTextOffset: end };
+}
+
+/** The message id of a timeline item; activity items append the part id after a colon. */
+export function timelineItemMessageId(itemId: string): string {
+  const colon = itemId.indexOf(":");
+  return colon < 0 ? itemId : itemId.slice(0, colon);
+}
+
+/** Re-bounds one item of a full-text timeline from `textOffset`, for an item read. */
+export function sliceTimelineItem(
+  items: readonly ThreadTimelineItem[],
+  item: NonNullable<ThreadReadInput["item"]>,
+  maxChars: number,
+): ThreadTimelineItem[] {
+  const found = items.find((candidate) => candidate.id === item.id);
+  if (!found) return [];
+  return [{ ...found, ...boundTimelineText(found.text, maxChars, item.textOffset) }];
 }
 
 /**

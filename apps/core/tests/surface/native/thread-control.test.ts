@@ -110,6 +110,27 @@ test("an agent reads another thread and posts to it when cross-thread runs are o
       "Hello target",
       "Fixture response.\n\nReady for the next message.",
     ]);
+    const reply = read.items[1]!;
+    const truncated = value(
+      await port.read(caller, target.id, { view: "messages", limit: 20, maxCharsPerItem: 8 }),
+    );
+    expect(truncated.items[1]).toMatchObject({ text: "Fixture ", nextTextOffset: 8 });
+    const rest = value(
+      await port.read(caller, target.id, {
+        view: "messages",
+        limit: 20,
+        maxCharsPerItem: 500,
+        item: { id: reply.id, textOffset: 8 },
+      }),
+    );
+    expect(rest.items).toEqual([
+      expect.objectContaining({
+        id: reply.id,
+        text: "response.\n\nReady for the next message.",
+        textOffset: 8,
+        truncated: false,
+      }),
+    ]);
 
     const note = { text: "A note from the source thread", mode: "auto" as const, commandId: "n1" };
     const posted = value(await port.send(caller, target.id, note));

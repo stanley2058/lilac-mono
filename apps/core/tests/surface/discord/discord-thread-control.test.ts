@@ -39,7 +39,8 @@ function fakeAdapter(messages: readonly SurfaceMessage[]) {
     sendMsg: async () => {
       throw new Error("unused");
     },
-    readMsg: async (_msgRef: MsgRef) => Result.ok(null),
+    readMsg: async (msgRef: MsgRef) =>
+      Result.ok(messages.find((entry) => entry.ref.messageId === msgRef.messageId) ?? null),
     listMsg: async (sessionRef: SessionRef, opts?: LimitOpts) => {
       listed.push({ sessionRef, ...(opts ? { opts } : {}) });
       return Result.ok([...messages]);
@@ -72,6 +73,21 @@ function control(messages: readonly SurfaceMessage[]) {
 }
 
 describe("Discord thread control", () => {
+  it("reads the rest of one truncated message from a text offset", async () => {
+    const { port } = control([message("1", { userId: "user-1", text: "0123456789", ts: 10 })]);
+    const head = await port.read(CALLER, "#ops", { ...READ, maxCharsPerItem: 4 });
+    expect(head.unwrap().items[0]).toMatchObject({ text: "0123", nextTextOffset: 4 });
+
+    const rest = await port.read(CALLER, "#ops", {
+      ...READ,
+      maxCharsPerItem: 4,
+      item: { id: "1", textOffset: 8 },
+    });
+    expect(rest.unwrap().items).toEqual([
+      { id: "1", role: "user", kind: "text", text: "89", truncated: false, textOffset: 8 },
+    ]);
+  });
+
   it("reads an allowed channel oldest first with authors and paging cursors", async () => {
     // Discord returns pages newest first.
     const { port, listed } = control([

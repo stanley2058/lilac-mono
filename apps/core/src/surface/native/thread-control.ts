@@ -12,8 +12,12 @@ import {
 } from "../adapter";
 import {
   projectThreadTimeline,
+  sliceTimelineItem,
+  timelineItemMessageId,
   type SurfaceThreadControlPort,
   type ThreadControlCaller,
+  type ThreadReadInput,
+  type ThreadReadResult,
   type ThreadSendMode,
   type ThreadSendResult,
 } from "../thread-control";
@@ -110,6 +114,24 @@ export function createNativeThreadControl(
     });
   }
 
+  /** One item of a message, from its text offset, for continuing a truncated item. */
+  function readItem(
+    userId: string,
+    header: Pick<ThreadReadResult, "threadId" | "title" | "activeRunId">,
+    item: NonNullable<ThreadReadInput["item"]>,
+    maxChars: number,
+  ) {
+    return surface
+      .readMessage(userId, header.threadId, timelineItemMessageId(item.id))
+      .mapError((error) => nativeSurfaceError("list-messages", error))
+      .map((row) => {
+        const full = row
+          ? projectThreadTimeline([row.message], "activity", Number.MAX_SAFE_INTEGER, inputStateOf)
+          : [];
+        return { ...header, items: sliceTimelineItem(full, item, maxChars), hasMore: false };
+      });
+  }
+
   function otherThread(caller: ThreadControlCaller, threadId: string, operation: SurfaceOperation) {
     const id = nativeThreadId(threadId);
     if (id === nativeThreadId(caller.sourceThreadId))
@@ -125,6 +147,12 @@ export function createNativeThreadControl(
         const thread = yield* store
           .authorizeThread(caller.userId, id)
           .mapError((error) => nativeSurfaceError("list-messages", error));
+        const header = {
+          threadId: id,
+          title: thread.title,
+          activeRunId: thread.activeRunId ?? null,
+        };
+        if (input.item) return readItem(caller.userId, header, input.item, input.maxCharsPerItem);
         const rows = yield* surface
           .listMessages(caller.userId, id, {
             limit: input.limit,
@@ -135,9 +163,7 @@ export function createNativeThreadControl(
         const first = rows[0]?.message.id;
         const last = rows.at(-1)?.message.id ?? input.after;
         return Result.ok({
-          threadId: id,
-          title: thread.title,
-          activeRunId: thread.activeRunId ?? null,
+          ...header,
           items: projectThreadTimeline(
             rows.map((row) => row.message),
             input.view,

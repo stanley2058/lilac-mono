@@ -11,6 +11,8 @@ import {
 import {
   boundTimelineText,
   type SurfaceThreadControlPort,
+  type ThreadReadInput,
+  type ThreadReadResult,
   type ThreadTimelineItem,
 } from "../thread-control";
 import type { SurfaceToolTargetRouting } from "../protocol";
@@ -44,6 +46,7 @@ function timelineItem(
   message: SurfaceMessage,
   selfUserId: string,
   maxCharsPerItem: number,
+  textOffset = 0,
 ): ThreadTimelineItem | null {
   if (message.deleted || !message.text.trim()) return null;
   const fromSelf = message.userId === selfUserId;
@@ -51,7 +54,7 @@ function timelineItem(
     id: message.ref.messageId,
     role: fromSelf ? "assistant" : "user",
     kind: "text",
-    ...boundTimelineText(message.text, maxCharsPerItem),
+    ...boundTimelineText(message.text, maxCharsPerItem, textOffset),
     ...(!fromSelf && message.userName ? { author: message.userName } : {}),
   };
 }
@@ -83,6 +86,23 @@ export function createDiscordThreadControl(input: {
     );
   }
 
+  /** One message from its text offset, for continuing a truncated item. */
+  async function readItem(
+    channelId: string,
+    header: Pick<ThreadReadResult, "threadId" | "title">,
+    item: NonNullable<ThreadReadInput["item"]>,
+    maxChars: number,
+  ) {
+    return Result.gen(async function* () {
+      const message = yield* Result.await(
+        adapter.readMsg({ platform: "discord", channelId, messageId: item.id }),
+      );
+      const self = yield* Result.await(selfUserId());
+      const read = message && timelineItem(message, self, maxChars, item.textOffset);
+      return Result.ok({ ...header, activeRunId: null, items: read ? [read] : [], hasMore: false });
+    });
+  }
+
   async function selfUserId() {
     const self = await Result.tryPromise({
       try: () => adapter.getSelf(),
@@ -101,6 +121,11 @@ export function createDiscordThreadControl(input: {
       return Result.gen(async function* () {
         const target = yield* Result.await(resolveChannel(threadId));
         const { channelId } = target.sessionRef;
+        const alias = target.config
+          ? bestEffortAliasForDiscordChannelId({ channelId, cfg: target.config })
+          : undefined;
+        const header = { threadId: channelId, title: alias ? `#${alias}` : channelId };
+        if (read.item) return await readItem(channelId, header, read.item, read.maxCharsPerItem);
         const messages = yield* Result.await(
           adapter.listMsg(target.sessionRef, {
             limit: read.limit,
@@ -113,12 +138,8 @@ export function createDiscordThreadControl(input: {
         const ordered = [...messages].sort(bySnowflake);
         const first = ordered[0]?.ref.messageId;
         const last = ordered.at(-1)?.ref.messageId ?? read.after;
-        const alias = target.config
-          ? bestEffortAliasForDiscordChannelId({ channelId, cfg: target.config })
-          : undefined;
         return Result.ok({
-          threadId: channelId,
-          title: alias ? `#${alias}` : channelId,
+          ...header,
           activeRunId: null,
           // Discord keeps only posted messages, so both views return the same text items.
           items: ordered.flatMap(
