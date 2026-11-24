@@ -30,6 +30,24 @@ function reasoningOptions(
   return { effort: reasoning === "minimal" ? "low" : reasoning };
 }
 
+const claudeCodeProviderOptionsSchema = z.object({
+  taskBudget: z.object({ total: z.number() }).optional(),
+  settings: z.object({ fastMode: z.boolean().optional() }).optional(),
+});
+
+/** The `claude-code` provider options this bridge forwards; other keys are ignored. */
+function claudeCodeOptions(
+  providerOptions: AiSdkModelCallInput["providerOptions"],
+): Pick<Options, "taskBudget"> & { settings?: { fastMode?: boolean } } {
+  const parsed = claudeCodeProviderOptionsSchema.safeParse(providerOptions?.["claude-code"] ?? {});
+  if (!parsed.success) return {};
+  const { taskBudget, settings } = parsed.data;
+  return {
+    ...(taskBudget ? { taskBudget } : {}),
+    ...(settings?.fastMode !== undefined ? { settings: { fastMode: settings.fastMode } } : {}),
+  };
+}
+
 function systemText(system: AiSdkModelCallInput["system"]): string {
   if (typeof system === "string") return system;
   if (Array.isArray(system)) return system.map((part) => part.content).join("\n\n");
@@ -418,6 +436,7 @@ export async function executeClaudeSdkCall(
         raw: { type: "tool-input-delta", id, delta: delta.partial_json },
       });
   };
+  const modelOptions = claudeCodeOptions(input.providerOptions);
   const result = await Result.tryPromise({
     try: async () => {
       const activeQuery = queryFactory({
@@ -430,6 +449,7 @@ export async function executeClaudeSdkCall(
           includePartialMessages: true,
           extraArgs: { ...settings.extraArgs, "replay-user-messages": null },
           ...reasoningOptions(input.reasoning),
+          ...(modelOptions.taskBudget ? { taskBudget: modelOptions.taskBudget } : {}),
           systemPrompt: {
             type: "preset",
             preset: "claude_code",
@@ -437,6 +457,7 @@ export async function executeClaudeSdkCall(
             append: systemText(input.system),
           },
           settings: {
+            ...modelOptions.settings,
             includeGitInstructions: false,
             attribution: { commit: "", pr: "" },
             autoMemoryEnabled: false,

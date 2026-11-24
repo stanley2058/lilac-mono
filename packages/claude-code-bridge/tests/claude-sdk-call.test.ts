@@ -202,6 +202,23 @@ describe("direct Claude SDK execution", () => {
     expect(truncateToLastValidBoundary(output.newMessages).droppedMessageCount).toBe(0);
   });
 
+  test("forwards claude-code provider options without overriding Lilac settings", async () => {
+    const f = fixture([result()]);
+    await executeClaudeSdkCall({
+      ...f.input,
+      providerOptions: {
+        "claude-code": {
+          taskBudget: { total: 50_000 },
+          settings: { fastMode: true, includeGitInstructions: true },
+          permissionMode: "bypassPermissions",
+        },
+      },
+    });
+    expect(f.options()?.taskBudget).toEqual({ total: 50_000 });
+    expect(f.options()?.settings).toMatchObject({ fastMode: true, includeGitInstructions: false });
+    expect(f.options()?.permissionMode).toBeUndefined();
+  });
+
   test("uses the preset plus Lilac instructions and preserves streamed text, reasoning, tools and usage", async () => {
     const f = fixture([
       frame({

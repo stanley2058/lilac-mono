@@ -1705,10 +1705,12 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "claude-sdk-call.ts", exportName: "executeClaudeSdkCall.receive" },
         category: "plugin",
       },
-      ...["decodeClaudeToolContent", "restoreClaudeToolOutput"].map((exportName) => ({
-        identity: { module: "claude-sdk-call.ts", exportName },
-        category: "plugin" as const,
-      })),
+      ...["claudeCodeOptions", "decodeClaudeToolContent", "restoreClaudeToolOutput"].map(
+        (exportName) => ({
+          identity: { module: "claude-sdk-call.ts", exportName },
+          category: "plugin" as const,
+        }),
+      ),
       ...[
         "decodeClaudeNativeSessionStart",
         "decodeClaudeContextUsage",
