@@ -531,7 +531,7 @@ export function subagentTools(params: {
     ...(params.orchestrateAvailable
       ? [
           "The result's workflowRunId identifies this assignment. Pass it to orchestrate to read the subagent's progress, send it a message, or interrupt it.",
-          "When new work builds on what a finished subagent already read or changed, continue that subagent with orchestrate send and its id, so it keeps its context. This tool always starts a new subagent with empty context.",
+          "When new work builds on what a finished subagent already read or changed, continue that subagent with orchestrate send and its id, so it keeps its context. This tool always starts a new subagent with empty context; use it when the work needs a fresh read, such as a review of another subagent's work.",
         ]
       : ["Do not call tools only to wait or check the subagent status."]),
     "The runtime keeps the request open. It resumes you when a subagent_result arrives.",
