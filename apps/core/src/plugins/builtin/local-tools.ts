@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import {
+  agentProviderOptionSchema,
   modelCatalogCache,
   projectModelCatalog,
   configuredCatalogProviders,
@@ -435,7 +436,7 @@ export const BUILTIN_LEVEL1_TOOLS = {
     createTool: ({ runtime }) =>
       tool({
         description:
-          "Find available models for delegation. Omit filters for providers and a short list; search by provider or text. Exact model lookup accepts an alias or provider/model and returns supported reasoning and effective defaults. Any available model can be delegated; favorites do not restrict selection.",
+          "Find available models for delegation. Omit filters for providers and a short list; search by provider or text. Exact model lookup accepts an alias or provider/model and returns supported reasoning, effective defaults, and agentOptions: the JSON Schema of provider options you may pass as options. The schema comes from the provider SDK types; check the provider's documentation when an option's meaning or model support is unclear. Any available model can be delegated; favorites do not restrict selection.",
         inputSchema: z.object({
           provider: z.string().optional(),
           search: z.string().optional(),
@@ -463,6 +464,7 @@ export const BUILTIN_LEVEL1_TOOLS = {
                 ? {
                     defaults: modelRuleDefaults(config, `${entry.provider}/${entry.model}`),
                     aliasOptions: config.models.def[entry.id]?.options,
+                    agentOptions: agentProviderOptionSchema(entry.provider)?.schema ?? null,
                   }
                 : {}),
             })),

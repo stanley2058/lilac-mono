@@ -799,7 +799,7 @@ function assertStaticHostCallArguments(
   sourceFile: ts.SourceFile,
   state: WorkflowValidationState,
 ): void {
-  const agentOptionKeys = new Set(["profile", "model", "reasoning", "cwd", "label"]);
+  const agentOptionKeys = new Set(["profile", "model", "reasoning", "options", "cwd", "label"]);
 
   const assertStaticObject = (input: {
     node: ts.Expression;

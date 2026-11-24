@@ -3,12 +3,18 @@ import path from "node:path";
 import { z } from "zod";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
-import { workflowAgentProfileSchema, workflowReasoningSchema } from "./workflow-domain";
+import {
+  jsonObjectSchema,
+  workflowAgentProfileSchema,
+  workflowReasoningSchema,
+} from "./workflow-domain";
 
 export const workflowRequestedAgentOptionsSchema = z.strictObject({
   profile: workflowAgentProfileSchema,
   model: z.string().min(1).max(200).optional(),
   reasoning: workflowReasoningSchema.optional(),
+  /** Provider options for the selected model's provider, such as `{ speed: "fast" }`. */
+  options: jsonObjectSchema.optional(),
   cwd: z.string().min(1).max(4_096).optional(),
   label: z.string().min(1).max(500).optional(),
 });
@@ -22,6 +28,7 @@ export const resolvedWorkflowAgentOptionsSchema = z.strictObject({
   profile: workflowAgentProfileSchema,
   model: z.string().min(1).max(200).optional(),
   reasoning: workflowReasoningSchema.optional(),
+  options: jsonObjectSchema.optional(),
   cwd: z.string().min(1).max(4_096),
   label: z.string().min(1).max(500).optional(),
 });
@@ -105,6 +112,7 @@ export function resolveWorkflowAgentOperationInputResult(input: {
       profile: parsed.data.options.profile,
       ...(parsed.data.options.model ? { model: parsed.data.options.model } : {}),
       ...(parsed.data.options.reasoning ? { reasoning: parsed.data.options.reasoning } : {}),
+      ...(parsed.data.options.options ? { options: parsed.data.options.options } : {}),
       cwd,
       ...(parsed.data.options.label ? { label: parsed.data.options.label } : {}),
     },

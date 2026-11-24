@@ -804,6 +804,70 @@ describe("WorkflowEngine", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+  it("passes agent() provider options to selection and keeps them in the dispatch policy", async () => {
+    const store = new DurableWorkflowStore(":memory:");
+    const bus = createLilacBus(new CapturingRawBus());
+    createApprovedRun(store, "run-1", {}, { operation: 10000, result: 10000 });
+    const selections: unknown[] = [];
+    const policies: WorkflowRequestPolicy[] = [];
+    const engine = new WorkflowEngine({
+      bus,
+      store,
+      blobStore,
+      dataDir: tmpdir(),
+      subscriptionId: "agent-provider-options",
+      pollMs: 5,
+      loadSnapshot: async () =>
+        workflowSource(
+          "agent",
+          `return await agent("work fast", { profile: "general", model: "fast", options: { speed: "fast" } });`,
+        ),
+      compileSource: compileTestWorkflow,
+      validateAgentSelection: (selection) => {
+        selections.push(selection);
+        return {
+          model: "anthropic/claude",
+          reasoning: null,
+          request: {
+            spec: "anthropic/claude",
+            provider: "anthropic",
+            modelId: "claude",
+            providerOptions: { anthropic: { speed: "fast" } },
+            reasoningDisplay: "simple",
+          },
+        };
+      },
+      dispatchAgentRequest: async (request) => {
+        policies.push(request.policy);
+        return { state: "failed", output: "", detail: "test complete", usage: null };
+      },
+    });
+    try {
+      await engine.start();
+      await waitFor(() => workflowStoreValue(store.getRun("run-1"))?.state === "failed");
+      expect(selections).toContainEqual({
+        profile: "general",
+        model: "fast",
+        options: { speed: "fast" },
+      });
+      expect(policies[0]).toMatchObject({
+        model: "fast",
+        options: { speed: "fast" },
+        resolvedModelRequest: { providerOptions: { anthropic: { speed: "fast" } } },
+      });
+      const requestId = workflowStoreValue(store.listOperations("run-1")).find(
+        (operation) => operation.kind === "agent",
+      )?.requestId;
+      expect(
+        workflowStoreValue(store.getWorkflowRequestDispatchPolicy(requestId!))?.options,
+      ).toEqual({ speed: "fast" });
+    } finally {
+      await engine.stop();
+      await bus.close();
+      store.close();
+    }
+  });
+
   it("refreshes or clears only fallbacks while preserving the pinned head on stale redispatch", async () => {
     const scenarios = [
       {

@@ -40,6 +40,7 @@ import { Panic, Result, TaggedError, type Result as ResultType } from "better-re
 import type {
   ConfiguredModelChainEntry,
   CoreConfig,
+  JSONObject,
   CustomCommandResult,
   DurableResolvedModelRequest,
   ModelCapabilityInfo,
@@ -49,8 +50,10 @@ import type {
   ResolvedModelRef,
 } from "@stanley2058/lilac-utils";
 import {
+  AgentProviderOptionsInvalid,
   CUSTOM_COMMAND_TOOL_NAME,
   deriveSubagentIdleTimeoutMs,
+  parseAgentProviderOptions,
   env,
   formatTaggedErrorForLog,
   getCoreConfig,
@@ -953,14 +956,33 @@ export class SubagentPermissionProfileNotConfigured extends TaggedError(
 
 type AgentRunModelResolutionError =
   | AgentRunModelSelectionInvalid
+  | AgentProviderOptionsInvalid
   | SubagentPermissionProfileNotConfigured
   | ModelResolutionFailed;
+
+/** Requested options override the alias options of the same namespace key by key. */
+function withRequestedProviderOptions(
+  head: ResolvedModelRef,
+  options: JSONObject | undefined,
+): ResultType<ResolvedModelRef, AgentProviderOptionsInvalid> {
+  if (!options) return Result.ok(head);
+  return parseAgentProviderOptions(head.provider, options).map((requested) => {
+    if (Object.keys(requested).length === 0) return head;
+    const providerOptions = { ...head.providerOptions };
+    for (const [namespace, value] of Object.entries(requested)) {
+      providerOptions[namespace] = { ...providerOptions[namespace], ...value };
+    }
+    return { ...head, providerOptions };
+  });
+}
 
 export function resolveAgentRunModelResult(params: {
   cfg: CoreConfig;
   runProfile: AgentRunProfile;
   requestModelOverride?: string;
   reasoningOverride?: ModelReasoningEffort;
+  /** Agent-requested options for the head model's provider, validated against its schema. */
+  providerOptionsOverride?: JSONObject;
   resolvedModelRequest?: DurableResolvedModelRequest;
 }): ResultType<ResolvedModelPlan, AgentRunModelResolutionError> {
   if (params.resolvedModelRequest) {
@@ -1038,10 +1060,11 @@ export function resolveAgentRunModelResult(params: {
         fallbackSource: "models.main.fallback",
       });
   const fallbacks = resolveAgentRunModelFallbacksResult(params);
-  return Result.all([resolved, fallbacks]).map(([plan, fallbackValues]) => ({
-    head: applyHeadReasoning(plan.head),
-    fallbacks: fallbackValues,
-  }));
+  return Result.all([resolved, fallbacks]).andThen(([plan, fallbackValues]) =>
+    withRequestedProviderOptions(applyHeadReasoning(plan.head), params.providerOptionsOverride).map(
+      (head) => ({ head, fallbacks: fallbackValues }),
+    ),
+  );
 }
 
 export function resolveAgentRunModel(params: {
@@ -1049,6 +1072,7 @@ export function resolveAgentRunModel(params: {
   runProfile: AgentRunProfile;
   requestModelOverride?: string;
   reasoningOverride?: ModelReasoningEffort;
+  providerOptionsOverride?: JSONObject;
   resolvedModelRequest?: DurableResolvedModelRequest;
 }): ResolvedModelPlan {
   const resolved = resolveAgentRunModelResult(params);
@@ -3088,6 +3112,7 @@ export async function startBusAgentRunner(params: {
           policy,
           task,
           idleTimeoutMs: deriveSubagentIdleTimeoutMs(cfg.agent.idleTimeoutMs),
+          config: cfg,
           sender,
         }),
       );

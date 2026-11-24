@@ -51,6 +51,8 @@ export const workflowRequestPolicySchema = z.strictObject({
   profile: workflowAgentProfileSchema,
   model: z.string().min(1).max(200).nullable(),
   reasoning: workflowReasoningSchema.nullable(),
+  /** Provider options the caller requested for `model`, before alias options were merged in. */
+  options: jsonObjectSchema.optional(),
   resolvedModelRequest: workflowResolvedModelRequestSchema,
   cwd: z.string().min(1).max(4_096),
   originSession: workflowOriginSessionSchema,

@@ -524,6 +524,27 @@ describe("workflow subagent convergence", () => {
     expect(generated).not.toContain("delegation:");
     store.close();
   });
+  it("writes requested provider options into the generated workflow", async () => {
+    const { projectRoot, store, dispatcher } = await setup();
+    const handle = await dispatcher.delegate({
+      ...registration(projectRoot),
+      modelOverride: "fast",
+      providerOptionsOverride: { speed: "fast" },
+    });
+    const run = workflowStoreValue(store.getRun(handle.runId));
+    const revision = run ? workflowStoreValue(store.getRevision(run.revisionId)) : null;
+    if (!revision) throw new Error("generated revision missing");
+    const generated = (
+      await readWorkflowSourceArtifact({
+        blobStore,
+        reference: revision.snapshotArtifact,
+        maxBytes: revision.limits.maxSourceBytes,
+      })
+    ).unwrap();
+    expect(generated).toContain('options: {"speed":"fast"},');
+    store.close();
+  });
+
   it("transfers child tool-result wrappers before parent delivery", async () => {
     const setupResult = await setup();
     const artifacts = createToolResultArtifactStore(

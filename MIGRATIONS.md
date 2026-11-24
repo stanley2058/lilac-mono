@@ -403,6 +403,15 @@ A process interrupted immediately after a delayed backend decision write can lea
 file after deletion. It cannot resurrect readable content or a durable blob reference. Completed calls
 clean that file; removing every such interrupted marker would require a separate backend storage change.
 
+### Agent-requested provider options in workflow records
+
+Workflow `agent()` operation inputs and dispatch policies may carry an `options` object: the provider
+options an agent requested for `agent()`, `subagent_delegate`, or `orchestrate send`. The schema
+version does not change, and existing records decode unchanged. Older builds decode both records with
+strict codecs, so they reject any operation or policy written with `options` and cannot recover or
+follow up the run that owns it. Before rolling back, let subagent and workflow runs started with
+options finish or cancel them, or restore the pre-upgrade workflow database.
+
 ### Workflow schema 29: runs by origin user
 
 Core upgrades workflow schema 28 to 29 online. It adds an index on

@@ -857,6 +857,39 @@ describe("subagent model selection", () => {
     expect(resolved.head.reasoning).toBe("high");
   });
 
+  it("merges requested provider options over alias options on the head model", () => {
+    const cfg = parseCoreConfigV2ToUniversal({});
+    cfg.models.def = {
+      deep: {
+        model: "openai/gpt-5.5",
+        options: { serviceTier: "flex", textVerbosity: "low" },
+        fallback: ["openai/gpt-5.5-mini"],
+        agentCanSelect: true,
+      },
+    };
+
+    const plan = resolveAgentRunModel({
+      cfg,
+      runProfile: "restricted",
+      requestModelOverride: "deep",
+      providerOptionsOverride: { serviceTier: "priority" },
+    });
+
+    expect(plan.head.providerOptions?.["openai"]).toMatchObject({
+      serviceTier: "priority",
+      textVerbosity: "low",
+    });
+    expect(plan.fallbacks[0]?.providerOptions?.["openai"]?.["serviceTier"]).toBeUndefined();
+    expect(() =>
+      resolveAgentRunModel({
+        cfg,
+        runProfile: "restricted",
+        requestModelOverride: "deep",
+        providerOptionsOverride: { store: true },
+      }),
+    ).toThrow("store is not a supported option");
+  });
+
   it("rejects direct and opted-out subagent model overrides", () => {
     const cfg = parseCoreConfigV2ToUniversal({});
     cfg.models.def = {

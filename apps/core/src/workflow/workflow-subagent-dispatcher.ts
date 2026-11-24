@@ -72,6 +72,7 @@ function generatedSource(input: {
   profile: SubagentDelegationRegistration["profile"];
   model?: string;
   reasoning?: string;
+  options?: SubagentDelegationRegistration["providerOptionsOverride"];
   idleTimeoutMs: number;
 }): string {
   const operationIdleTimeoutMs = Math.min(
@@ -112,6 +113,7 @@ export default defineWorkflow({
       profile: args.profile,
       ${input.model ? `model: ${JSON.stringify(input.model)},` : ""}
       ${input.reasoning ? `reasoning: ${JSON.stringify(input.reasoning)},` : ""}
+      ${input.options ? `options: ${JSON.stringify(input.options)},` : ""}
       label: "subagent " + args.profile,
     });
   },
@@ -268,6 +270,9 @@ export class WorkflowSubagentDispatcher {
         profile: registration.profile,
         ...(registration.modelOverride ? { model: registration.modelOverride } : {}),
         ...(registration.reasoningOverride ? { reasoning: registration.reasoningOverride } : {}),
+        ...(registration.providerOptionsOverride
+          ? { options: registration.providerOptionsOverride }
+          : {}),
         idleTimeoutMs: registration.idleTimeoutMs,
       });
       const validation = yield* validateWorkflowSourceUnchecked({

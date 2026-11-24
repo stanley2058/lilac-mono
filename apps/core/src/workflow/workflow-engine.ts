@@ -460,6 +460,7 @@ export class WorkflowEngine {
         profile: string;
         model?: string;
         reasoning?: ResolvedWorkflowAgentInput["options"]["reasoning"];
+        options?: ResolvedWorkflowAgentInput["options"]["options"];
       }) => void | ResolvedAgentSelection | Promise<void | ResolvedAgentSelection>;
       resolveAgentFallbacks?: (input: {
         profile: string;
@@ -1066,6 +1067,7 @@ export class WorkflowEngine {
               profile: options.profile,
               ...(options.model ? { model: options.model } : {}),
               ...(options.reasoning ? { reasoning: options.reasoning } : {}),
+              ...(options.options ? { options: options.options } : {}),
             }),
           ),
         );
@@ -1459,7 +1461,7 @@ export class WorkflowEngine {
     signal: AbortSignal,
     reconcile: boolean,
   ): Promise<WorkflowExecutionResult<JsonValue>> {
-    const { profile, model, reasoning } = input.options;
+    const { profile, model, reasoning, options: providerOptions } = input.options;
     const expectedRequestId = workflowAgentRequestId(
       run.runId,
       operation.operationId,
@@ -1522,11 +1524,15 @@ export class WorkflowEngine {
           ...(model ? { model } : {}),
           ...(reasoning ? { reasoning } : {}),
         };
+        const optionSelectionInput = {
+          ...selectionInput,
+          ...(providerOptions ? { options: providerOptions } : {}),
+        };
         let currentSelection: void | ResolvedAgentSelection | undefined;
         if (handoff.status === "fresh" && this.input.validateAgentSelection) {
           currentSelection = yield* Result.await(
             captureWorkflowExternal(() =>
-              Promise.resolve(this.input.validateAgentSelection!(selectionInput)),
+              Promise.resolve(this.input.validateAgentSelection!(optionSelectionInput)),
             ),
           );
         }
@@ -1582,6 +1588,7 @@ export class WorkflowEngine {
           profile,
           model: model ?? null,
           reasoning: reasoning ?? null,
+          ...(providerOptions ? { options: providerOptions } : {}),
           resolvedModelRequest: concreteSelection.request,
           cwd: agentCwd,
           originSession: {

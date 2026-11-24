@@ -302,6 +302,54 @@ describe("subagent_delegate tool", () => {
     ).rejects.toThrow();
   });
 
+  it("validates provider options against the selected model's provider", async () => {
+    const selected: Array<{ providerOptionsOverride?: unknown }> = [];
+    const tools = subagentTools({
+      runProfile: "primary",
+      config: { ...TEST_CONFIG, configVersion: 2 },
+      idleTimeoutMs: 2_000,
+      maxDepth: 1,
+      modelPresets: {
+        scout: { model: "openrouter/google/gemini-2.5-flash", agentCanSelect: true },
+        deep: { model: "openai/gpt-5.5", agentCanSelect: true },
+      },
+      onDelegate: async (registration) => {
+        selected.push(registration);
+        return {
+          runId: "run:options",
+          completion: Promise.resolve({ status: "resolved", finalText: "" }),
+          cancel: async () => {},
+        };
+      },
+    });
+    const delegate = (input: Record<string, unknown>) =>
+      resolveExecuteResult(
+        tools.subagent_delegate.execute!(
+          { permissions: "restricted", task: "Map auth flow", mode: "deferred", ...input },
+          {
+            toolCallId: "tool-options",
+            messages: [],
+            context: {
+              requestId: "r:options",
+              sessionId: "s:options",
+              requestClient: "discord",
+              subagentDepth: 0,
+            },
+          },
+        ),
+      );
+
+    await delegate({ model: "deep", options: { serviceTier: "priority" } });
+    expect(selected[0]?.providerOptionsOverride).toEqual({ serviceTier: "priority" });
+    await expect(delegate({ model: "deep", options: { serviceTier: "turbo" } })).rejects.toThrow(
+      /serviceTier must be/u,
+    );
+    await expect(delegate({ model: "scout", options: { route: "fallback" } })).rejects.toThrow(
+      /accept no agent options/u,
+    );
+    expect(selected).toHaveLength(1);
+  });
+
   it("returns an accepted handle by default in deferred mode", async () => {
     const launches: Array<{
       sessionName: string;

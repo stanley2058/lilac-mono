@@ -87,7 +87,7 @@ Read [REFERENCE.md](REFERENCE.md) only when you need exact schema keywords, boun
 
 ## Host APIs
 
-- `agent(prompt, options) -> Promise<string>` dispatches one child and returns its final text. `profile` is required and names a permission profile from `agent.subagents.permissions`, such as `full` or `restricted`. Optional fields are `cwd`, `model`, `reasoning`, and `label`. Omit model to run the main model; omit reasoning to keep the model default. Relative cwd resolves from the invocation project; absolute cwd is allowed and existence is checked only when used.
+- `agent(prompt, options) -> Promise<string>` dispatches one child and returns its final text. `profile` is required and names a permission profile from `agent.subagents.permissions`, such as `full` or `restricted`. Optional fields are `cwd`, `model`, `reasoning`, `options`, and `label`. Omit model to run the main model; omit reasoning to keep the model default. `options` holds provider options for the selected model, such as `{ speed: "fast" }` on Anthropic models; `model_catalog` lists the options a model accepts. Relative cwd resolves from the invocation project; absolute cwd is allowed and existence is checked only when used.
 - `pipeline(items, callback, options?)` maps in stable item order. Concurrency defaults to `1`; set `{ concurrency }` for bounded fan-out.
 - `parallel(promises)` journals and joins already-created promises. It has no options.
 - `phase(name, callback)` groups operations for progress and deterministic scoping.

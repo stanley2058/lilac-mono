@@ -421,6 +421,24 @@ export default defineWorkflow({`,
   });
 
   it("validates statically known host-call options", () => {
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          BASE_AGENT_CALL,
+          'return agent("fast", { profile: "general", options: { speed: "fast" } });',
+        ),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkflowSource({
+        name: "audit-routes",
+        source: source().replace(
+          BASE_AGENT_CALL,
+          'return agent("bad", { profile: "general", options: "fast" });',
+        ),
+      }),
+    ).toThrow("Invalid workflow agent options");
     const profileNative = source().replace(
       BASE_AGENT_CALL,
       'return agent(`Audit ${args.directory}`, { profile: "general", isolation: "shared" });',

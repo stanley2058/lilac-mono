@@ -10,6 +10,8 @@ import {
   type SubagentProfile,
 } from "@stanley2058/lilac-coding-tools/schemas";
 import {
+  modelSelectionProvider,
+  parseAgentProviderOptions,
   projectModelCatalog,
   createLogger,
   formatTaggedErrorForLog,
@@ -18,6 +20,7 @@ import {
   MODEL_REASONING_EFFORTS,
   resolveSubagentPermissionProfile,
   type CoreConfig,
+  type JSONObject,
   type ModelReasoningEffort,
   type ResolvedSubagentPermissionProfile,
   type SubagentPermissionProfileConfig,
@@ -47,14 +50,27 @@ type AgentSelectableModelPreset = {
 type SubagentDelegateInput = z.input<typeof subagentDelegateBaseInputSchema> & {
   model?: string;
   reasoning?: ModelReasoningEffort;
+  options?: JSONObject;
   permissions?: string;
 };
 
 type ParsedSubagentDelegateInput = z.output<typeof subagentDelegateBaseInputSchema> & {
   model?: string;
   reasoning?: ModelReasoningEffort;
+  options?: JSONObject;
   permissions?: string;
 };
+
+export const MODEL_PROVIDER_OPTIONS_DESCRIPTION =
+  'Optional provider options for the selected model, as JSON. Examples: { "speed": "fast" } on Anthropic models, { "serviceTier": "priority" } on OpenAI models, { "settings": { "fastMode": true } } on claude-code models. Look up a model with model_catalog to see the options it accepts; check the provider\'s documentation when an option is unclear.';
+
+/**
+ * Agent-supplied provider options. Tool input is JSON, and each value is checked against the
+ * selected provider's option schema; a recursive JSON schema here would trip some tool APIs.
+ */
+export const modelProviderOptionsInputSchema = z
+  .record(z.string(), z.unknown())
+  .transform((value) => value as JSONObject);
 
 function isSelectableModelPreset(entry: readonly [string, AgentSelectableModelPreset]): boolean {
   const [alias, preset] = entry;
@@ -106,10 +122,15 @@ function createSubagentDelegateInputSchema(params: {
     ...permissionProfiles.map((profile) => describePermissionProfile(profile.name, profile)),
   ].join("\n");
 
-  let schema = subagentDelegateBaseInputSchema as z.ZodType<ParsedSubagentDelegateInput>;
+  const baseSchema = subagentDelegateBaseInputSchema.extend({
+    options: modelProviderOptionsInputSchema
+      .optional()
+      .describe(MODEL_PROVIDER_OPTIONS_DESCRIPTION),
+  });
+  let schema = baseSchema as z.ZodType<ParsedSubagentDelegateInput>;
   if (permissionNames.length > 0) {
     const [firstName, ...remainingNames] = permissionNames;
-    schema = subagentDelegateBaseInputSchema.extend({
+    schema = baseSchema.extend({
       permissions: z
         .enum([firstName!, ...remainingNames])
         .optional()
@@ -118,7 +139,7 @@ function createSubagentDelegateInputSchema(params: {
   }
 
   if (params.catalogSelection)
-    return (schema as typeof subagentDelegateBaseInputSchema).extend({
+    return (schema as typeof baseSchema).extend({
       model: z
         .string()
         .optional()
@@ -132,7 +153,7 @@ function createSubagentDelegateInputSchema(params: {
   if (selectableModels.length === 0) return schema;
 
   const [firstAlias, ...remainingAliases] = selectableModels.map(([alias]) => alias);
-  return (schema as typeof subagentDelegateBaseInputSchema).extend({
+  return (schema as typeof baseSchema).extend({
     model: z
       .enum([firstAlias!, ...remainingAliases])
       .optional()
@@ -142,6 +163,39 @@ function createSubagentDelegateInputSchema(params: {
       .describe(
         "Optional reasoning-effort override for this child run. When omitted, the selected alias default applies.",
       ),
+  });
+}
+
+/**
+ * Why an agent's model, reasoning, and provider options cannot run a child, or undefined when
+ * they can. Options are checked against the provider of the selected model, or the main model.
+ */
+export function subagentModelSelectionIssue(
+  config: CoreConfig,
+  selection: { model?: string; reasoning?: ModelReasoningEffort; options?: JSONObject },
+  modelPresets: Readonly<Record<string, AgentSelectableModelPreset>> = config.models.def,
+): string | undefined {
+  const { model, reasoning, options } = selection;
+  if (config.configVersion !== 3) {
+    const selectable = Object.entries(modelPresets).filter(isSelectableModelPreset);
+    if (model !== undefined && !selectable.some(([alias]) => alias === model))
+      return `Model alias '${model}' is not available for agent selection`;
+    if (reasoning !== undefined && selectable.length === 0)
+      return "Reasoning override requires an agent-selectable model alias";
+  }
+  if (config.configVersion === 3 && (model !== undefined || reasoning !== undefined)) {
+    const selected = projectModelCatalog(config).find(
+      (entry) => entry.id === (model ?? config.models.main.model),
+    );
+    if (!selected || (reasoning !== undefined && !selected.reasoning.includes(reasoning)))
+      return "Model or reasoning setting is unavailable; use model_catalog";
+  }
+  if (options === undefined) return undefined;
+  const ref = model ?? config.models.main.model;
+  const provider = modelSelectionProvider(config, modelPresets[ref]?.model ?? ref) ?? "unknown";
+  return parseAgentProviderOptions(provider, options).match({
+    ok: () => undefined,
+    err: (error) => error.message,
   });
 }
 
@@ -398,6 +452,8 @@ export type SubagentDelegationRegistration = {
   initialMessages: ModelMessage[];
   modelOverride?: string;
   reasoningOverride?: ModelReasoningEffort;
+  /** Provider options for the child's model, before validation against its provider. */
+  providerOptionsOverride?: JSONObject;
   authenticatedOrigin?: AuthenticatedSurfaceOrigin;
 };
 
@@ -417,6 +473,7 @@ export function buildSubagentDelegationRegistration(input: {
   readonly depth: number;
   readonly modelOverride?: string;
   readonly reasoningOverride?: ModelReasoningEffort;
+  readonly providerOptionsOverride?: JSONObject;
   /** A stable child request ID for a keyed follow-up; otherwise each assignment gets a new one. */
   readonly childRequestId?: string;
 }): SubagentDelegationRegistration {
@@ -465,6 +522,9 @@ export function buildSubagentDelegationRegistration(input: {
     ...(authenticatedOrigin ? { authenticatedOrigin } : {}),
     modelOverride: input.modelOverride,
     reasoningOverride: input.reasoningOverride,
+    ...(input.providerOptionsOverride
+      ? { providerOptionsOverride: input.providerOptionsOverride }
+      : {}),
   };
 }
 
@@ -505,7 +565,6 @@ export function subagentTools(params: {
   const selectableModels = Object.entries(params.modelPresets ?? {}).filter(
     isSelectableModelPreset,
   );
-  const selectableModelAliases = new Set(selectableModels.map(([alias]) => alias));
   const permissionProfiles = delegablePermissionProfiles(params.config, params.runProfile);
   const delegableProfileNames = new Set(permissionProfiles.map((profile) => profile.name));
   // The version-owned default applies whenever this run may grant it; a
@@ -551,47 +610,16 @@ export function subagentTools(params: {
       inputSchema,
       outputSchema: subagentDelegateOutputSchema,
       execute: async (input: SubagentDelegateInput, { abortSignal, context, toolCallId }) => {
-        const requestedModel = input.model;
-        if (
-          params.config.configVersion !== 3 &&
-          requestedModel !== undefined &&
-          !selectableModelAliases.has(requestedModel)
-        ) {
-          signalSubagentFailure(
-            "validate_input",
-            `Model alias '${requestedModel}' is not available for agent selection`,
-          );
-        }
-        if (
-          params.config.configVersion === 3 &&
-          (requestedModel !== undefined || input.reasoning !== undefined)
-        ) {
-          const selected = projectModelCatalog(params.config).find(
-            (entry) => entry.id === (requestedModel ?? params.config.models.main.model),
-          );
-          if (
-            !selected ||
-            (input.reasoning !== undefined && !selected.reasoning.includes(input.reasoning))
-          )
-            signalSubagentFailure(
-              "validate_input",
-              "Model or reasoning setting is unavailable; use model_catalog",
-            );
-        }
+        const selectionIssue = subagentModelSelectionIssue(
+          params.config,
+          input,
+          params.modelPresets ?? {},
+        );
+        if (selectionIssue) signalSubagentFailure("validate_input", selectionIssue);
         if (input.permissions !== undefined && !delegableProfileNames.has(input.permissions)) {
           signalSubagentFailure(
             "authorize_delegation",
             `Permission profile '${input.permissions}' is not within this run's authority`,
-          );
-        }
-        if (
-          params.config.configVersion !== 3 &&
-          input.reasoning !== undefined &&
-          selectableModels.length === 0
-        ) {
-          signalSubagentFailure(
-            "validate_input",
-            "Reasoning override requires an agent-selectable model alias",
           );
         }
         const decodedInput = inputSchema.safeParse(input);
@@ -632,6 +660,7 @@ export function subagentTools(params: {
           depth: depth + 1,
           modelOverride: parsed.model,
           reasoningOverride: parsed.reasoning,
+          ...(parsed.options ? { providerOptionsOverride: parsed.options } : {}),
         });
         const { sessionName, childRequestId, childSessionId } = registration;
         logger.info("subagent delegate start", {
@@ -648,6 +677,7 @@ export function subagentTools(params: {
           task: truncateEnd(parsed.task.replace(/\s+/g, " ").trim(), 240),
           modelOverride: parsed.model,
           reasoningOverride: parsed.reasoning,
+          providerOptions: parsed.options,
         });
 
         const onDelegate = params.onDelegate;

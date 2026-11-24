@@ -2914,13 +2914,14 @@ export async function createCoreRuntime(
             blobStore: activeBlobStore,
             subscriptionId: subId(subscriptionPrefix, "workflow-engine"),
             reportFatalPanic: reportFatalError,
-            validateAgentSelection: async ({ profile, model, reasoning }) => {
+            validateAgentSelection: async ({ profile, model, reasoning, options }) => {
               const cfg = await getCoreConfig();
               const resolved = resolveAgentRunModel({
                 cfg,
                 runProfile: profile,
                 ...(model ? { requestModelOverride: model } : {}),
                 ...(reasoning ? { reasoningOverride: reasoning } : {}),
+                ...(options ? { providerOptionsOverride: options } : {}),
               });
               return {
                 model: resolved.head.spec,
