@@ -12,6 +12,7 @@ import { ChevronLeft, ChevronRight, Pause, Play, RotateCcw } from "lucide-react"
 import {
   agentWorkStages,
   demoQuestion,
+  demoResourceUrls,
   rebaseWorkflowTimes,
   workflowActionFrame,
   type AgentWorkFrame,
@@ -267,7 +268,7 @@ export function AgentWorkDemo() {
   }
   const services: MessageServices = {
     canEdit: true,
-    resourceUrl: () => "",
+    resourceUrl: (id) => demoResourceUrls.get(id) ?? `/api/resources/${encodeURIComponent(id)}`,
     onAction,
     onReaction: () => {},
     questions: {

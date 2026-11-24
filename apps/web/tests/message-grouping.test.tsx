@@ -193,6 +193,47 @@ test("workflow cards stay after a reply that began before them", () => {
   expect(workflowPostsDuring(workflowCard("card", time), [late])).toEqual([]);
 });
 
+test("workflow cards posted between an earlier pre-steer final and the closing reply stay folded", () => {
+  const steered: ReadyTurnSlot = {
+    kind: "ready",
+    slotId: "agent",
+    turnId: "agent",
+    position: 0,
+    state: "complete",
+    startedAt: time,
+    settledAt: time + 70_000,
+    messages: [
+      {
+        id: "ask",
+        role: "user",
+        metadata: { authorId: "owner", createdAt: time },
+        parts: [{ type: "text", text: "Plan Saturday." }],
+      },
+      {
+        id: "early_reply",
+        role: "assistant",
+        metadata: { createdAt: time + 15_000, phase: "final" },
+        parts: [{ type: "text", text: "First answer." }],
+      },
+      {
+        id: "steer",
+        role: "user",
+        metadata: { authorId: "owner", createdAt: time + 20_000, inputMode: "steer" },
+        parts: [{ type: "text", text: "Also run workflow." }],
+      },
+      {
+        id: "closing_reply",
+        role: "assistant",
+        metadata: { createdAt: time + 60_000, phase: "final" },
+        parts: [{ type: "text", text: "Final answer." }],
+      },
+    ],
+  };
+  const midCard = workflowCard("mid", time + 35_000);
+  const lateCard = workflowCard("late", time + 90_000);
+  expect(workflowPostsDuring(steered, [midCard, lateCard])).toEqual(["mid"]);
+});
+
 test("an incoming agent message that starts a turn is not mistaken for its reply", () => {
   const turn = agentTurn("complete", time + 60_000);
   const triggered: ReadyTurnSlot = {

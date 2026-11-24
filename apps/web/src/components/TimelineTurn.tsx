@@ -17,6 +17,14 @@ import {
   RequestActiveContext,
 } from "./ActivityLog";
 import { formatDuration } from "../activity-presentation";
+import {
+  groupActivityMessages,
+  partitionTurnMessages,
+  workSegmentKeyForMessage,
+  type ResourcePart,
+  type TurnSegment,
+  type WorkSegment,
+} from "../turn-segments";
 import { copyMessage, messageClipboard } from "../message-clipboard";
 import { LiveMessageContext, useMessageArrival } from "./message-arrivals";
 import {
@@ -25,7 +33,9 @@ import {
   useMessageServices,
 } from "./message-services";
 import {
+  Fragment,
   memo,
+  useCallback,
   useContext,
   useId,
   type ReactNode,
@@ -130,14 +140,16 @@ export function AgentTurn(props: TurnProps) {
   if (!reason && rewindDisabled) reason = "busy";
   if (!reason && (props.optimistic || slot.state === "pending")) reason = "unsettled";
   const rewindTooltip = reason ? rewindTooltipText(reason) : undefined;
-  const [expanded, setExpanded] = useState(false);
-  const citedMessage = useStore(citationStore, (state) => {
-    const id = state.navigation?.citation.messageId;
-    return props.slot.messages.some((message) => message.id === id) ? id : undefined;
-  });
-  useEffect(() => {
-    if (citedMessage) setExpanded(true);
-  }, [citedMessage]);
+  const [expandedSegments, setExpandedSegments] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleSegment = useCallback((key: string, open: boolean) => {
+    setExpandedSegments((current) => {
+      if (current.has(key) === open) return current;
+      const next = new Set(current);
+      if (open) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
   const firstUser = slot.messages.find(
     (message) => message.role === "user" && message.metadata?.inputMode !== "steer",
   );
@@ -148,27 +160,17 @@ export function AgentTurn(props: TurnProps) {
       message.metadata.inputMode !== "steer",
   );
   const settled = slot.state === "complete" || slot.state === "failed" || slot.state === "canceled";
-  const remaining = useMemo(
+  const completed = slot.state === "complete";
+  const rawRemaining = useMemo(
     () =>
-      groupActivityMessages(
-        slot.messages.filter(
-          (message) => message.id !== firstUser?.id && message.id !== incomingMessage?.id,
-        ),
+      slot.messages.filter(
+        (message) => message.id !== firstUser?.id && message.id !== incomingMessage?.id,
       ),
     [slot.messages, firstUser?.id, incomingMessage?.id],
   );
   // Start times never change, so one stable map keeps streaming updates from rerendering every row.
   const [times] = useState(() => new Map<string, number>());
   recordActivityTimes(times, slot.messages);
-  // A trailing question card stays visible below the folded work so it can be answered.
-  const lastIntermediate = remaining.findLastIndex(
-    (message) =>
-      message.role !== "assistant" ||
-      (message.metadata?.phase !== "final" &&
-        !message.parts.some((part) => part.type === "data-question")),
-  );
-  const intermediate = remaining.slice(0, lastIntermediate + 1);
-  const finals = remaining.slice(lastIntermediate + 1);
   const identities = useContext(MessageIdentityContext);
   const startedAt =
     slot.startedAt ?? firstUser?.metadata?.createdAt ?? incomingMessage?.metadata?.createdAt;
@@ -177,15 +179,49 @@ export function AgentTurn(props: TurnProps) {
       ? Math.max(0, slot.settledAt - startedAt)
       : undefined;
   const settledVerb = useSettledWorkVerb(slot.turnId, duration);
+  const completedSegments = useMemo(
+    () =>
+      completed
+        ? partitionTurnMessages(rawRemaining, { startedAt, settledAt: slot.settledAt })
+        : undefined,
+    [completed, rawRemaining, startedAt, slot.settledAt],
+  );
+  const remaining = useMemo(
+    () => (completed ? [] : groupActivityMessages(rawRemaining)),
+    [completed, rawRemaining],
+  );
+  const citedMessage = useStore(citationStore, (state) => {
+    const id = state.navigation?.citation.messageId;
+    return props.slot.messages.some((message) => message.id === id) ? id : undefined;
+  });
+  useEffect(() => {
+    if (!citedMessage || !completedSegments) return;
+    const key = workSegmentKeyForMessage(completedSegments, citedMessage);
+    if (!key) return;
+    setExpandedSegments((current) => (current.has(key) ? current : new Set([...current, key])));
+  }, [citedMessage, completedSegments]);
+  // Live/failed/canceled turns stay unfolded in arrival order; trailing finals still drive thinkingAfter.
+  const lastIntermediate = completed
+    ? -1
+    : remaining.findLastIndex(
+        (message) =>
+          message.role !== "assistant" ||
+          (message.metadata?.phase !== "final" &&
+            !message.parts.some((part) => part.type === "data-question")),
+      );
+  const intermediate = completed ? [] : remaining.slice(0, lastIntermediate + 1);
+  const finals = completed ? [] : remaining.slice(lastIntermediate + 1);
   const active = slot.state === "pending" || slot.state === "running";
   const waiting = active && !remaining.some((message) => message.role === "assistant");
   // A running turn always ends in a live row: the trailing activity run, or Thinking after text.
-  const tail = waiting ? undefined : liveTailActivity(remaining);
+  const tail = completed || waiting ? undefined : liveTailActivity(remaining);
   const thinkingAfter =
     active && !waiting && !tail && !finals.length && !remaining.at(-1)?.metadata?.incomplete;
-  const incomingContinues = sameMessageAuthor(incomingMessage, remaining[0]);
+  const hasRemaining = completed ? (completedSegments?.length ?? 0) > 0 : remaining.length > 0;
+  const firstRemaining = completed ? completedSegments?.[0]?.messages[0] : remaining[0];
+  const incomingContinues = sameMessageAuthor(incomingMessage, firstRemaining);
   const incomingSpacing = incomingContinues ? "mb-2" : "mb-4";
-  const folded = slot.state === "complete" && intermediate.length > 0;
+  const hasLeadIn = !!firstUser || !!incomingMessage;
   return (
     <article
       className={`turn px-6 max-workspace:px-4 ${props.joinedBefore ? "pt-0" : "pt-1"} ${props.joinedAfter ? "pb-0" : "pb-8 max-workspace:pb-7"}`}
@@ -195,13 +231,13 @@ export function AgentTurn(props: TurnProps) {
     >
       {firstUser ? (
         <div
-          className={`user-turn ml-12 max-workspace:ml-6 ${active || remaining.length ? "mb-10" : ""}`}
+          className={`user-turn ml-12 max-workspace:ml-6 ${active || hasRemaining ? "mb-10" : ""}`}
         >
           <MessageBody
             live={props.animateArrivals ?? true}
             message={firstUser}
             showAvatar={!props.joinedBefore}
-            showControls={!(props.joinedAfter && !remaining.length)}
+            showControls={!(props.joinedAfter && !hasRemaining)}
             rewind={
               canEdit && firstUser.metadata?.authorId === identities.viewerId
                 ? {
@@ -242,12 +278,12 @@ export function AgentTurn(props: TurnProps) {
         </div>
       ) : null}
       {incomingMessage ? (
-        <div className={props.joinedAfter && !remaining.length ? "mb-0" : incomingSpacing}>
+        <div className={props.joinedAfter && !hasRemaining ? "mb-0" : incomingSpacing}>
           <MessageBody
             message={incomingMessage}
             live={props.animateArrivals ?? true}
             showAvatar={!props.joinedBefore}
-            showControls={!incomingContinues && !(props.joinedAfter && !remaining.length)}
+            showControls={!incomingContinues && !(props.joinedAfter && !hasRemaining)}
           />
         </div>
       ) : null}
@@ -255,77 +291,71 @@ export function AgentTurn(props: TurnProps) {
         <LiveTailContext value={tail}>
           <ActivityTimesContext value={times}>
             <div className="agent-response flex flex-col gap-2">
-              {!incomingContinues &&
-              (!props.joinedBefore || !!firstUser || !!incomingMessage) &&
-              (waiting ||
-                (remaining.length > 0 &&
-                  (settled ||
-                    remaining.find((message) => message.role !== "system")?.role ===
-                      "assistant"))) ? (
-                <AuthorAvatar author={identities.agent} role="Agent" />
-              ) : null}
-              {active ? (
-                <div
-                  data-ui="work-summary"
-                  className="work-summary flex items-center gap-2 border-b border-border/60 pt-1 pb-2 text-sm text-muted-foreground tabular-nums"
-                >
-                  {startedAt === undefined ? (
-                    "Working…"
-                  ) : (
-                    <span>
-                      <WorkVerb seed={slot.turnId} startedAt={startedAt} /> for{" "}
-                      <ElapsedTime since={startedAt} />
-                    </span>
-                  )}
-                  <TurnParticipants messages={slot.messages} />
-                </div>
-              ) : null}
-              {folded ? (
-                <Collapsible open={expanded} onOpenChange={setExpanded}>
-                  <CollapsibleTrigger
-                    render={
-                      <button
-                        type="button"
-                        data-ui="work-summary"
-                        className="work-summary flex w-full cursor-pointer items-center gap-2 border-b border-border/60 pt-1 pb-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-2 focus-visible:outline-focus"
-                      />
-                    }
-                  >
-                    <span className="work-summary-label flex min-w-0 flex-wrap items-center gap-2">
-                      <span>
-                        {duration === undefined
-                          ? settledVerb
-                          : `${settledVerb} for ${formatDuration(duration)}`}
-                      </span>
-                      <TurnParticipants messages={slot.messages} />
-                    </span>
-                    <ChevronRight
-                      aria-hidden="true"
-                      className={`size-3.5 shrink-0 opacity-70 transition-transform ${expanded ? "rotate-90" : ""}`}
-                    />
-                  </CollapsibleTrigger>
-                  <CollapsibleContent
-                    data-ui="expanded-work"
-                    className="expanded-work flex flex-col gap-2 pt-2"
-                  >
-                    <TurnMessages messages={intermediate} live={false} showFirstAvatar={false} />
-                  </CollapsibleContent>
-                </Collapsible>
+              {completedSegments ? (
+                <CompletedTurnSegments
+                  segments={completedSegments}
+                  expandedSegments={expandedSegments}
+                  onToggleSegment={toggleSegment}
+                  settledVerb={settledVerb}
+                  agent={identities.agent}
+                  animateArrivals={props.animateArrivals ?? true}
+                  joinedBefore={props.joinedBefore}
+                  joinedAfter={props.joinedAfter}
+                  hasLeadIn={hasLeadIn}
+                  incomingContinues={incomingContinues}
+                  posts={props.posts}
+                />
               ) : (
-                <TurnMessages messages={intermediate} live={!settled} showFirstAvatar={false} />
+                <>
+                  {!incomingContinues &&
+                  (!props.joinedBefore || hasLeadIn) &&
+                  (waiting ||
+                    (remaining.length > 0 &&
+                      (settled ||
+                        remaining.find((message) => message.role !== "system")?.role ===
+                          "assistant"))) ? (
+                    <AuthorAvatar author={identities.agent} role="Agent" />
+                  ) : null}
+                  {active ? (
+                    <div
+                      data-ui="work-summary"
+                      className="work-summary flex items-center gap-2 border-b border-border/60 pt-1 pb-2 text-sm text-muted-foreground tabular-nums"
+                    >
+                      {startedAt === undefined ? (
+                        "Working…"
+                      ) : (
+                        <span>
+                          <WorkVerb seed={slot.turnId} startedAt={startedAt} /> for{" "}
+                          <ElapsedTime since={startedAt} />
+                        </span>
+                      )}
+                      <TurnParticipants messages={slot.messages} />
+                    </div>
+                  ) : null}
+                  <TurnMessages
+                    messages={intermediate}
+                    live={!settled}
+                    showFirstAvatar={false}
+                    inResponse
+                    hasFollowing={
+                      !!props.posts?.length || waiting || thinkingAfter || finals.length > 0
+                    }
+                  />
+                  {props.posts?.map((post) => {
+                    const workflow = workflowCardMessage(post);
+                    return workflow ? <WorkflowCard key={post.slotId} {...workflow} /> : null;
+                  })}
+                  {waiting || thinkingAfter ? <LiveThinkingRow /> : null}
+                  <TurnMessages
+                    messages={finals}
+                    live={props.animateArrivals ?? true}
+                    showFirstAvatar={!settled && intermediate.at(-1)?.role === "user"}
+                    finalMessageId={settled && !props.joinedAfter ? finals.at(-1)?.id : undefined}
+                    finalText={finals.map(messageText).filter(Boolean).join("\n\n")}
+                    inResponse
+                  />
+                </>
               )}
-              {props.posts?.map((post) => {
-                const workflow = workflowCardMessage(post);
-                return workflow ? <WorkflowCard key={post.slotId} {...workflow} /> : null;
-              })}
-              {waiting || thinkingAfter ? <LiveThinkingRow /> : null}
-              <TurnMessages
-                messages={finals}
-                live={props.animateArrivals ?? true}
-                showFirstAvatar={!settled && intermediate.at(-1)?.role === "user"}
-                finalMessageId={settled && !props.joinedAfter ? finals.at(-1)?.id : undefined}
-                finalText={finals.map(messageText).filter(Boolean).join("\n\n")}
-              />
             </div>
           </ActivityTimesContext>
         </LiveTailContext>
@@ -426,18 +456,247 @@ export function TurnParticipants({ messages }: { messages: readonly DisplayMessa
   );
 }
 
+function workSegmentLabel(segment: WorkSegment, settledVerb: string): string {
+  const verb = segment.workIndex === 0 ? settledVerb : "Continued";
+  if (segment.durationMs === undefined) return verb;
+  return `${verb} for ${formatDuration(segment.durationMs)}`;
+}
+
+function workflowPostTargetMessageId(
+  finalMessages: readonly DisplayMessage[],
+  post: ReadyTurnSlot,
+): string | undefined {
+  const postedAt = post.messages[0]?.metadata?.createdAt;
+  if (postedAt !== undefined) {
+    const match = finalMessages.find((message) => {
+      const replyAt = message.metadata?.createdAt;
+      return replyAt !== undefined && replyAt > postedAt;
+    });
+    if (match) return match.id;
+  }
+  return finalMessages.at(-1)?.id;
+}
+
+function WorkSegmentCollapsible({
+  segment,
+  label,
+  open,
+  onOpenChange,
+}: {
+  segment: WorkSegment;
+  label: string;
+  open: boolean;
+  onOpenChange: (key: string, open: boolean) => void;
+}) {
+  return (
+    <Collapsible open={open} onOpenChange={(next) => onOpenChange(segment.key, next)}>
+      <CollapsibleTrigger
+        render={
+          <button
+            type="button"
+            data-ui="work-summary"
+            className="work-summary flex w-full cursor-pointer items-center gap-2 border-b border-border/60 pt-1 pb-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-2 focus-visible:outline-focus"
+          />
+        }
+      >
+        <span className="work-summary-label flex min-w-0 flex-wrap items-center gap-2">
+          <span>{label}</span>
+        </span>
+        <ChevronRight
+          aria-hidden="true"
+          className={`size-3.5 shrink-0 opacity-70 transition-transform ${open ? "rotate-90" : ""}`}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        data-ui="expanded-work"
+        className="expanded-work flex flex-col gap-2 pt-2"
+      >
+        <TurnMessages messages={segment.messages} live={false} showFirstAvatar={false} />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function renderWorkSegmentRow({
+  segment,
+  index,
+  needsAvatar,
+  agent,
+  label,
+  open,
+  onToggleSegment,
+}: {
+  segment: WorkSegment;
+  index: number;
+  needsAvatar: boolean;
+  agent: ActorIdentity;
+  label: string;
+  open: boolean;
+  onToggleSegment: (key: string, open: boolean) => void;
+}): ReactNode {
+  const collapsible = (
+    <WorkSegmentCollapsible
+      segment={segment}
+      label={label}
+      open={open}
+      onOpenChange={onToggleSegment}
+    />
+  );
+  if (needsAvatar && index === 0) {
+    return (
+      <Fragment key={segment.key}>
+        <AuthorAvatar author={agent} role="Agent" />
+        {collapsible}
+      </Fragment>
+    );
+  }
+  if (needsAvatar) {
+    return (
+      <div key={segment.key} className="agent-work-section relative flex flex-col gap-2">
+        <AuthorAvatar author={agent} role="Agent" />
+        {collapsible}
+      </div>
+    );
+  }
+  return <Fragment key={segment.key}>{collapsible}</Fragment>;
+}
+
+function CompletedTurnSegments({
+  segments,
+  expandedSegments,
+  onToggleSegment,
+  settledVerb,
+  agent,
+  animateArrivals,
+  joinedBefore,
+  joinedAfter,
+  hasLeadIn,
+  incomingContinues,
+  posts,
+}: {
+  segments: readonly TurnSegment[];
+  expandedSegments: ReadonlySet<string>;
+  onToggleSegment: (key: string, open: boolean) => void;
+  settledVerb: string;
+  agent: ActorIdentity;
+  animateArrivals: boolean;
+  joinedBefore?: boolean;
+  joinedAfter?: boolean;
+  hasLeadIn: boolean;
+  incomingContinues: boolean;
+  posts?: readonly ReadyTurnSlot[];
+}) {
+  const finalMessages = segments.flatMap((segment) =>
+    segment.kind === "visible" && segment.role === "assistant"
+      ? segment.messages.filter((message) => message.metadata?.phase === "final")
+      : [],
+  );
+  const postsBeforeMessage = new Map<string, ReadyTurnSlot[]>();
+  const trailingPosts: ReadyTurnSlot[] = [];
+  for (const post of posts ?? []) {
+    const targetId = workflowPostTargetMessageId(finalMessages, post);
+    if (!targetId) {
+      trailingPosts.push(post);
+      continue;
+    }
+    const bucket = postsBeforeMessage.get(targetId);
+    if (bucket) bucket.push(post);
+    else postsBeforeMessage.set(targetId, [post]);
+  }
+  const renderPosts = (items: readonly ReadyTurnSlot[]) =>
+    items.map((post) => {
+      const workflow = workflowCardMessage(post);
+      return workflow ? <WorkflowCard key={post.slotId} {...workflow} /> : null;
+    });
+  let lastRole: "agent" | "user" | undefined =
+    incomingContinues || (joinedBefore && !hasLeadIn) ? "agent" : undefined;
+  const rows: ReactNode[] = [];
+  for (const [index, segment] of segments.entries()) {
+    const hasFollowing = index < segments.length - 1 || trailingPosts.length > 0;
+    if (segment.kind === "work") {
+      const needsAvatar = lastRole !== "agent";
+      lastRole = "agent";
+      rows.push(
+        renderWorkSegmentRow({
+          segment,
+          index,
+          needsAvatar,
+          agent,
+          label: workSegmentLabel(segment, settledVerb),
+          open: expandedSegments.has(segment.key),
+          onToggleSegment,
+        }),
+      );
+      continue;
+    }
+    if (segment.role === "user") {
+      lastRole = "user";
+      rows.push(
+        <TurnMessages
+          key={segment.key}
+          messages={segment.messages}
+          live={animateArrivals}
+          showFirstAvatar
+          inResponse
+          hasFollowing={hasFollowing}
+        />,
+      );
+      continue;
+    }
+    const needsAvatar = lastRole !== "agent";
+    lastRole = "agent";
+    const hideControls = index === segments.length - 1 && !!joinedAfter;
+    const lastAssistant = segment.messages.findLast(
+      (message) =>
+        message.role === "assistant" &&
+        (message.parts.some((part) => part.type === "text" || part.type === "data-resource") ||
+          (segment.trailingAttachments.get(message.id)?.length ?? 0) > 0),
+    );
+    const extraParts = [...segment.trailingAttachments.values()].flat();
+    rows.push(
+      <TurnMessages
+        key={segment.key}
+        messages={segment.messages}
+        live={animateArrivals}
+        showFirstAvatar={needsAvatar}
+        finalMessageId={hideControls ? undefined : lastAssistant?.id}
+        finalText={segment.messages.map(messageText).filter(Boolean).join("\n\n")}
+        trailingAttachments={segment.trailingAttachments}
+        extraCopyParts={extraParts.length ? extraParts : undefined}
+        postsBeforeMessage={postsBeforeMessage.size ? postsBeforeMessage : undefined}
+        inResponse
+        hasFollowing={hasFollowing}
+      />,
+    );
+  }
+  if (trailingPosts.length) {
+    rows.push(<Fragment key="turn-posts:end">{renderPosts(trailingPosts)}</Fragment>);
+  }
+  return rows;
+}
+
 export function TurnMessages({
   messages,
   live,
   showFirstAvatar = true,
   finalMessageId,
   finalText,
+  trailingAttachments,
+  extraCopyParts,
+  postsBeforeMessage,
+  inResponse = false,
+  hasFollowing = false,
 }: {
   messages: readonly DisplayMessage[];
   live: boolean;
   showFirstAvatar?: boolean;
   finalMessageId?: string;
   finalText?: string;
+  trailingAttachments?: ReadonlyMap<string, readonly ResourcePart[]>;
+  extraCopyParts?: readonly DisplayPart[];
+  postsBeforeMessage?: ReadonlyMap<string, readonly ReadyTurnSlot[]>;
+  inResponse?: boolean;
+  hasFollowing?: boolean;
 }) {
   let nextAssistantAvatar = showFirstAvatar;
   return messages.map((message, index) => {
@@ -447,21 +706,47 @@ export function TurnMessages({
         (nextAssistantAvatar || (index > 0 && !sameMessageAuthor(messages[index - 1], message))));
     if (message.role === "user") nextAssistantAvatar = true;
     if (message.role === "assistant") nextAssistantAvatar = false;
-    return (
+    const trailing = trailingAttachments?.get(message.id);
+    const showControls =
+      (message.role === "user" && !sameMessageAuthor(message, messages[index + 1])) ||
+      message.id === finalMessageId;
+    const spacingClass = inResponse
+      ? [
+          message.role === "user" ? "not-first:mt-4" : "",
+          showControls && (hasFollowing || index < messages.length - 1)
+            ? "[@media(hover:hover)]:mb-7"
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : undefined;
+    const beforePosts = postsBeforeMessage?.get(message.id);
+    const body = (
       <MessageBody
         key={message.id}
         message={message}
         live={live}
         showAvatar={showAvatar}
-        showControls={
-          (message.role === "user" && !sameMessageAuthor(message, messages[index + 1])) ||
-          message.id === finalMessageId
-        }
+        showControls={showControls}
         copyText={message.id === finalMessageId ? finalText : undefined}
         copyParts={
-          message.id === finalMessageId ? messages.flatMap((item) => item.parts) : undefined
+          message.id === finalMessageId
+            ? [...messages.flatMap((item) => item.parts), ...(extraCopyParts ?? [])]
+            : undefined
         }
+        trailingAttachments={trailing}
+        className={spacingClass || undefined}
       />
+    );
+    if (!beforePosts?.length) return body;
+    return (
+      <Fragment key={message.id}>
+        {beforePosts.map((post) => {
+          const workflow = workflowCardMessage(post);
+          return workflow ? <WorkflowCard key={post.slotId} {...workflow} /> : null;
+        })}
+        {body}
+      </Fragment>
     );
   });
 }
@@ -510,32 +795,7 @@ export function AuthorAvatar({
   );
 }
 
-export function groupActivityMessages(messages: readonly DisplayMessage[]): DisplayMessage[] {
-  const grouped: DisplayMessage[] = [];
-  const activityOnly = (message: DisplayMessage) =>
-    message.role === "assistant" &&
-    message.parts.length > 0 &&
-    message.parts.every((part) => part.type === "data-activity");
-  for (const original of messages) {
-    const parts = original.parts.filter(
-      (part) =>
-        !(
-          part.type === "data-activity" &&
-          part.data.kind === "tool" &&
-          /^batch(?:\s|$)/.test(part.data.label)
-        ),
-    );
-    const message = parts.length === original.parts.length ? original : { ...original, parts };
-    if (!message.parts.length) continue;
-    const previous = grouped.at(-1);
-    if (previous && activityOnly(previous) && activityOnly(message)) {
-      grouped[grouped.length - 1] = { ...previous, parts: [...previous.parts, ...message.parts] };
-      continue;
-    }
-    grouped.push(message);
-  }
-  return grouped;
-}
+export { groupActivityMessages, partitionTurnMessages } from "../turn-segments";
 
 export function messageText(message: DisplayMessage): string {
   return message.parts
@@ -638,6 +898,7 @@ export function MessageCard({
   streaming,
   arrivalId,
   reactions,
+  trailingAttachments,
 }: {
   reactions?: ReactNode;
   arrivalId: string;
@@ -645,10 +906,13 @@ export function MessageCard({
   self: boolean;
   collapsible: boolean;
   streaming: boolean;
+  trailingAttachments?: readonly ResourcePart[];
 }) {
   const arrivalRef = useMessageArrival(
     arrivalId,
-    content.texts.some(Boolean) || content.attachments.length > 0,
+    content.texts.some(Boolean) ||
+      content.attachments.length > 0 ||
+      (trailingAttachments?.length ?? 0) > 0,
   );
   const contentRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -716,6 +980,9 @@ export function MessageCard({
   const collapsed = collapsible && !expanded;
   const images = content.attachments.filter((part) => part.data.mediaType.startsWith("image/"));
   const files = content.attachments.filter((part) => !part.data.mediaType.startsWith("image/"));
+  const bottomAttachments = trailingAttachments?.length
+    ? [...files, ...trailingAttachments]
+    : files;
   return (
     <Bubble ref={arrivalRef} variant={self ? "tinted" : "muted"} className="message-bubble">
       <BubbleContent>
@@ -751,12 +1018,16 @@ export function MessageCard({
                 />
               </div>
             ))}
-            {files.length > 0 ? (
+            {bottomAttachments.length > 0 ? (
               <div
                 data-ui="message-attachments"
-                className="message-attachments flex flex-wrap items-start gap-2"
+                className={`message-attachments flex flex-wrap items-start gap-2 ${
+                  trailingAttachments?.length && (content.texts.length > 0 || images.length > 0)
+                    ? "mt-3"
+                    : ""
+                }`}
               >
-                {files.map((part) => (
+                {bottomAttachments.map((part) => (
                   <ResourceAttachment key={part.id} part={part} />
                 ))}
               </div>
@@ -797,6 +1068,8 @@ export const MessageBody = memo(function MessageBody(
     showControls?: boolean;
     copyText?: string;
     copyParts?: readonly DisplayPart[];
+    trailingAttachments?: readonly ResourcePart[];
+    className?: string;
     renderKey?: string;
     optimistic?: boolean;
     rewind?: { disabled: boolean; reason?: string; run: () => void };
@@ -852,10 +1125,12 @@ export const MessageBody = memo(function MessageBody(
       ? identities.agent
       : (identities.users.get(message.metadata?.authorId ?? "") ??
         identities.promptingAgent ?? { displayName: "Participant" }));
-  const conversational = groups.some(
-    (group) =>
-      group.kind === "text" || (group.kind === "part" && group.part.type === "data-resource"),
-  );
+  const conversational =
+    (props.trailingAttachments?.length ?? 0) > 0 ||
+    groups.some(
+      (group) =>
+        group.kind === "text" || (group.kind === "part" && group.part.type === "data-resource"),
+    );
   let authorRole = externalAuthor ? "User" : "Participant";
   if (identities.promptingAgent)
     authorRole = identities.promptingAgent.agentProfile ? "Parent agent" : "Main agent";
@@ -864,8 +1139,11 @@ export const MessageBody = memo(function MessageBody(
   const self =
     message.role === "user" && authorId !== undefined && authorId === identities.viewerId;
   const attachments = useMemo(
-    () => message.parts.filter((part) => part.type === "data-resource"),
-    [message.parts],
+    () => [
+      ...message.parts.filter((part) => part.type === "data-resource"),
+      ...(props.trailingAttachments ?? []),
+    ],
+    [message.parts, props.trailingAttachments],
   );
   const resources = useMemo(
     () =>
@@ -898,7 +1176,10 @@ export const MessageBody = memo(function MessageBody(
     void attempt(
       async () => {
         setCopyError(undefined);
-        await copyMessage(messageClipboard(copyText, props.copyParts ?? message.parts));
+        const fallbackParts = props.trailingAttachments?.length
+          ? [...message.parts, ...props.trailingAttachments]
+          : message.parts;
+        await copyMessage(messageClipboard(copyText, props.copyParts ?? fallbackParts));
         setCopiedAt(Date.now());
       },
       () => setCopyError("Copy unavailable"),
@@ -935,7 +1216,7 @@ export const MessageBody = memo(function MessageBody(
           render={
             <ChatMessage
               align={self ? "end" : "start"}
-              className={`message leading-normal ${conversational ? "py-0.5" : "py-0"} px-0 wrap-anywhere message-${message.role} native-message text-base`}
+              className={`message leading-normal ${conversational ? "py-0.5" : "py-0"} px-0 wrap-anywhere message-${message.role} native-message text-base${props.className ? ` ${props.className}` : ""}`}
               data-message-id={message.id}
               data-citation-source={
                 message.role === "assistant" &&
@@ -966,6 +1247,9 @@ export const MessageBody = memo(function MessageBody(
                         self={self}
                         collapsible={message.role === "user"}
                         streaming={message.role === "assistant" && !!props.live}
+                        trailingAttachments={
+                          index === lastContent ? props.trailingAttachments : undefined
+                        }
                         reactions={
                           index === lastContent ? (
                             <MessageReactions messageId={message.id} items={reactions} />

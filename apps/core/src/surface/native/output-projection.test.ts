@@ -483,6 +483,180 @@ test("explicit final phases are preserved instead of promoting later commentary"
   ]);
 });
 
+function unlabelledText(position: number, partId: string, body: string): NativeOutputPayload {
+  return {
+    type: "text",
+    partId,
+    stepId: `step-${position}`,
+    position,
+    phase: "unspecified",
+    text: body,
+    incomplete: false,
+  };
+}
+
+function completedToolActivity(position: number, id: string): NativeOutputPayload {
+  return {
+    type: "activity",
+    activityId: id,
+    stepId: `step-${position}`,
+    position,
+    kind: "tool",
+    state: "complete",
+    label: `bash ${id}`,
+  };
+}
+
+test("completion promotes trailing unlabelled text before a steer without promoting pre-tool commentary", () => {
+  // Segment 1 has commentary -> tool -> trailing answer before steer; segment 2 has tool -> final.
+  let current = projectNativeOutput(
+    slot(),
+    event(unlabelledText(1, "c1", "Checking"), "attempt", 1),
+  );
+  current = projectNativeOutput(
+    current.slot,
+    event(completedToolActivity(2, "t1"), "attempt", 2),
+    current.projection,
+  );
+  current = projectNativeOutput(
+    current.slot,
+    event(unlabelledText(3, "a1", "Initial answer"), "attempt", 3),
+    current.projection,
+  );
+  const withSteer: ReadyTurnSlot = {
+    ...current.slot,
+    messages: [
+      ...current.slot.messages,
+      {
+        id: "steer_1",
+        role: "user",
+        metadata: { authorId: "owner", inputMode: "steer" },
+        parts: [{ type: "text", text: "Also adjust the time" }],
+      },
+    ],
+  };
+  current = projectNativeOutput(
+    withSteer,
+    event(completedToolActivity(4, "t2"), "attempt", 4),
+    current.projection,
+  );
+  current = projectNativeOutput(
+    current.slot,
+    event(unlabelledText(5, "a2", "Updated answer"), "attempt", 5),
+    current.projection,
+  );
+  const completed = projectNativeOutput(
+    current.slot,
+    event({ type: "terminal", state: "complete" }, "attempt", 6),
+    current.projection,
+  );
+
+  expect(
+    completed.slot.messages.slice(1).map((message) => [message.role, message.metadata?.phase]),
+  ).toEqual([
+    ["assistant", "commentary"],
+    ["assistant", undefined],
+    ["assistant", "final"],
+    ["user", undefined],
+    ["assistant", undefined],
+    ["assistant", "final"],
+  ]);
+});
+
+test("pre-tool unlabelled commentary before a steer stays commentary on completion", () => {
+  let current = projectNativeOutput(
+    slot(),
+    event(unlabelledText(1, "c1", "Checking"), "attempt", 1),
+  );
+  current = projectNativeOutput(
+    current.slot,
+    event(completedToolActivity(2, "t1"), "attempt", 2),
+    current.projection,
+  );
+  const withSteer: ReadyTurnSlot = {
+    ...current.slot,
+    messages: [
+      ...current.slot.messages,
+      {
+        id: "steer_1",
+        role: "user",
+        metadata: { authorId: "owner", inputMode: "steer" },
+        parts: [{ type: "text", text: "Keep it short" }],
+      },
+    ],
+  };
+  current = projectNativeOutput(
+    withSteer,
+    event(unlabelledText(3, "a2", "Short answer"), "attempt", 3),
+    current.projection,
+  );
+  const completed = projectNativeOutput(
+    current.slot,
+    event({ type: "terminal", state: "complete" }, "attempt", 4),
+    current.projection,
+  );
+
+  expect(
+    completed.slot.messages.slice(1).map((message) => [message.role, message.metadata?.phase]),
+  ).toEqual([
+    ["assistant", "commentary"],
+    ["assistant", undefined],
+    ["user", undefined],
+    ["assistant", "final"],
+  ]);
+});
+
+test("incoming agent prompts with phase final do not suppress pre-steer unlabelled reply promotion", () => {
+  const incomingPromptSlot: ReadyTurnSlot = {
+    kind: "ready",
+    slotId: "turn",
+    turnId: "turn",
+    position: 0,
+    state: "running",
+    messages: [
+      {
+        id: "incoming",
+        role: "assistant",
+        metadata: { authorId: "lilac", phase: "final", inputId: "in_1", inputMode: "prompt" },
+        parts: [{ type: "text", text: "Cross-thread ping." }],
+      },
+    ],
+  };
+  let current = projectNativeOutput(
+    incomingPromptSlot,
+    event(unlabelledText(1, "a1", "Pre-steer reply"), "attempt", 1),
+  );
+  const withSteer: ReadyTurnSlot = {
+    ...current.slot,
+    messages: [
+      ...current.slot.messages,
+      {
+        id: "steer_1",
+        role: "user",
+        metadata: { authorId: "owner", inputMode: "steer" },
+        parts: [{ type: "text", text: "Add details" }],
+      },
+    ],
+  };
+  current = projectNativeOutput(
+    withSteer,
+    event(unlabelledText(2, "a2", "Post-steer reply"), "attempt", 2),
+    current.projection,
+  );
+  const completed = projectNativeOutput(
+    current.slot,
+    event({ type: "terminal", state: "complete" }, "attempt", 3),
+    current.projection,
+  );
+
+  expect(completed.slot.messages.map((message) => [message.id, message.metadata?.phase])).toEqual([
+    ["incoming", "final"],
+    [current.slot.messages[1]!.id, "final"],
+    ["steer_1", undefined],
+    [current.slot.messages[3]!.id, "final"],
+  ]);
+});
+
 test("resource output follows cancellation and recovery frontiers", () => {
   const resource: NativeOutputPayload = {
     type: "resource",

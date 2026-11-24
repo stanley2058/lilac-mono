@@ -84,10 +84,10 @@ export function isWorkflowPost(slot: TurnSlot | undefined): boolean {
   return message?.id === slot.turnId && message.parts.some((part) => part.type === "data-workflow");
 }
 
-/** When a turn's reply began; a running turn without a reply still accepts every new post. */
+/** When a turn's closing reply began; a running turn without a reply still accepts every new post. */
 function replyStartedAt(turn: Extract<TurnSlot, { kind: "ready" }>): number {
   // Incoming messages from other agents carry an input id and start the turn; they are not the reply.
-  const reply = turn.messages.find(
+  const reply = turn.messages.findLast(
     (message) =>
       message.role === "assistant" &&
       message.metadata?.phase === "final" &&

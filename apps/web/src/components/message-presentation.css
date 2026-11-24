@@ -261,17 +261,21 @@
 .timeline .turn {
   padding-left: calc(var(--ui-space-unit) * 6 + var(--ui-message-gutter));
 }
-.timeline .agent-response {
+.timeline .agent-response,
+.timeline .agent-work-section {
   position: relative;
 }
 .timeline .agent-response > [data-slot="message-avatar"],
+.timeline .agent-work-section > [data-slot="message-avatar"],
 .timeline .native-message[data-align="start"] > [data-slot="message-avatar"] {
   position: absolute;
   top: 0;
   left: calc(-1 * var(--ui-message-gutter));
 }
 .timeline
-  .agent-response:has(> [data-ui="work-summary"], > [data-slot="collapsible"])
+  :is(.agent-response, .agent-work-section):has(
+    > [data-slot="message-avatar"] + :is([data-ui="work-summary"], [data-slot="collapsible"])
+  )
   > [data-slot="message-avatar"] {
   top: calc(var(--ui-space-unit) * -1);
 }
@@ -375,11 +379,12 @@
     padding-left: calc(var(--ui-space-unit) * 4);
   }
   .timeline .agent-response > [data-slot="message-avatar"],
+  .timeline .agent-work-section > [data-slot="message-avatar"],
   .timeline .native-message[data-align="start"] > [data-slot="message-avatar"] {
     position: static;
   }
   .timeline
-    .agent-response:has(
+    :is(.agent-response, .agent-work-section):has(
       > [data-slot="message-avatar"] + :is([data-ui="work-summary"], [data-slot="collapsible"])
     )
     > [data-slot="message-avatar"] {
@@ -387,15 +392,19 @@
     top: 0;
     left: 0;
   }
-  .timeline .agent-response > [data-slot="message-avatar"] + [data-ui="work-summary"],
   .timeline
-    .agent-response
+    :is(.agent-response, .agent-work-section)
+    > [data-slot="message-avatar"]
+    + [data-ui="work-summary"],
+  .timeline
+    :is(.agent-response, .agent-work-section)
     > [data-slot="message-avatar"]
     + [data-slot="collapsible"]
     > [data-ui="work-summary"] {
     padding-left: calc(var(--ui-space-unit) * 9);
   }
   .timeline .agent-response > [data-slot="message-avatar"] [data-slot="avatar"],
+  .timeline .agent-work-section > [data-slot="message-avatar"] [data-slot="avatar"],
   .timeline .native-message[data-align="start"] > [data-slot="message-avatar"] [data-slot="avatar"] {
     width: calc(var(--ui-space-unit) * 7);
     height: calc(var(--ui-space-unit) * 7);

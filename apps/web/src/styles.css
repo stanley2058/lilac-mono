@@ -726,7 +726,8 @@
   }
 }
 
-.agent-response > [data-slot="message-avatar"] {
+.agent-response > [data-slot="message-avatar"],
+.agent-work-section > [data-slot="message-avatar"] {
   align-self: flex-start;
   background: transparent;
   overflow: visible;
