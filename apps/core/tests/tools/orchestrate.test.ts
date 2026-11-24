@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { asSchema } from "ai";
 import { Panic, Result } from "better-result";
-import { parseCoreConfigV3ToUniversal } from "@stanley2058/lilac-utils";
+import {
+  parseCoreConfigV2ToUniversal,
+  parseCoreConfigV3ToUniversal,
+} from "@stanley2058/lilac-utils";
 import type { LilacBus } from "@stanley2058/lilac-event-bus";
 import type { Level1ExecutionRequestContext } from "@stanley2058/lilac-plugin-runtime";
 
@@ -76,6 +79,7 @@ describe("orchestrate tool", () => {
       title?: string;
     };
     finished?: { result: string };
+    queued?: boolean;
     origin?: Partial<WorkflowRun["origin"]>;
     createdAt?: number;
   }) {
@@ -116,7 +120,7 @@ describe("orchestrate tool", () => {
     const run: WorkflowRun = {
       runId,
       revisionId: `revision-${input.id}`,
-      state: "running",
+      state: input.queued ? "queued" : "running",
       inputSchemaSnapshot: {},
       args: {},
       argsSha256: canonicalJsonSha256({}),
@@ -159,6 +163,9 @@ describe("orchestrate tool", () => {
       terminalAt: null,
     };
     store.createRun(run);
+    const childSessionId =
+      run.completionTarget.kind === "live_parent" ? run.completionTarget.childSessionId : "";
+    if (input.queued) return { runId, requestId: "", childSessionId };
     const operation: WorkflowOperation = {
       runId,
       operationId: "agent",
@@ -193,12 +200,7 @@ describe("orchestrate tool", () => {
         now,
         result: input.finished.result,
       });
-    return {
-      runId,
-      requestId: operation.requestId!,
-      childSessionId:
-        run.completionTarget.kind === "live_parent" ? run.completionTarget.childSessionId : "",
-    };
+    return { runId, requestId: operation.requestId!, childSessionId };
   }
 
   function primaryContext(
@@ -451,30 +453,247 @@ describe("orchestrate tool", () => {
       }),
     });
 
-    await expect(
-      call(built, { action: "send", id: child.runId, message: "Now", mode: "steer" }),
-    ).rejects.toThrow(/target-ended/u);
+    expect(
+      await call(built, { action: "send", id: child.runId, message: "Now", mode: "steer" }),
+    ).toMatchObject({ disposition: "started" });
     expect(await call(built, { action: "send", id: child.runId, message: "Later" })).toMatchObject({
       disposition: "started",
     });
-    expect(launches.map((launch) => launch.task)).toEqual(["Later"]);
+    expect(launches.map((launch) => launch.task)).toEqual(["Now", "Later"]);
 
     active = true;
     expect(await call(built, { action: "send", id: child.runId, message: "Now" })).toMatchObject({
       disposition: "steered",
     });
+    expect(
+      await call(built, {
+        action: "send",
+        id: child.runId,
+        message: "Next, faster",
+        model: "claude-code/claude-opus-5-5",
+        options: { settings: { fastMode: true } },
+      }),
+    ).toMatchObject({ disposition: "started" });
+    await expect(
+      call(built, {
+        action: "send",
+        id: child.runId,
+        message: "Steer with settings",
+        mode: "steer",
+        model: "claude-code/claude-opus-5-5",
+      }),
+    ).rejects.toThrow(/apply to a new run/u);
   });
 
-  it("reports target-ended when an explicit steer reaches a finished child", async () => {
+  it("follows up when an explicit steer reaches a finished child", async () => {
     const child = seedRun({
       id: "ended",
       subagent: { parentSessionId: PARENT_SESSION },
       finished: { result: "done" },
     });
+    const built = build();
+    expect(
+      await call(built, { action: "send", id: child.runId, message: "More", mode: "steer" }),
+    ).toMatchObject({ disposition: "started" });
+    expect(
+      await call(built, {
+        action: "send",
+        id: child.runId,
+        message: "Faster",
+        mode: "steer",
+        model: "claude-code/claude-opus-5-5",
+      }),
+    ).toMatchObject({ disposition: "started" });
+    expect(launches.map((launch) => launch.task)).toEqual(["More", "Faster"]);
+  });
+
+  it("carries, replaces, and clears model settings across follow-ups", async () => {
+    const child = seedRun({
+      id: "settings",
+      subagent: { parentSessionId: PARENT_SESSION },
+      finished: { result: "done" },
+    });
+    const original = store.getWorkflowRequestDispatchPolicy.bind(store);
+    store.getWorkflowRequestDispatchPolicy = (requestId) =>
+      requestId === child.requestId
+        ? Result.ok({
+            model: "claude-code/claude-opus-5-5",
+            reasoning: "high",
+            options: { settings: { fastMode: true } },
+            resolvedModelRequest: { spec: "claude-code/claude-opus-5-5", provider: "claude-code" },
+          } as never)
+        : original(requestId);
+    const built = build();
+    const send = (input: Record<string, unknown>) =>
+      call(built, { action: "send", id: child.runId, message: "Again", ...input });
+
+    await send({});
+    await send({ options: { taskBudget: { total: 50000 } } });
+    await send({ options: {} });
+    await send({ model: "claude-code/claude-sonnet-5" });
+
+    expect(
+      launches.map(({ modelOverride, reasoningOverride, providerOptionsOverride }) => ({
+        modelOverride,
+        reasoningOverride,
+        providerOptionsOverride,
+      })),
+    ).toEqual([
+      {
+        modelOverride: "claude-code/claude-opus-5-5",
+        reasoningOverride: "high",
+        providerOptionsOverride: { settings: { fastMode: true } },
+      },
+      {
+        modelOverride: "claude-code/claude-opus-5-5",
+        reasoningOverride: "high",
+        providerOptionsOverride: { taskBudget: { total: 50000 } },
+      },
+      {
+        modelOverride: "claude-code/claude-opus-5-5",
+        reasoningOverride: "high",
+        providerOptionsOverride: undefined,
+      },
+      {
+        modelOverride: "claude-code/claude-sonnet-5",
+        reasoningOverride: undefined,
+        providerOptionsOverride: { settings: { fastMode: true } },
+      },
+    ]);
+  });
+
+  it("accepts the model read reports when continuing a v2 alias child", async () => {
+    const child = seedRun({
+      id: "v2-alias",
+      subagent: { parentSessionId: PARENT_SESSION },
+      finished: { result: "done" },
+    });
+    const config = parseCoreConfigV2ToUniversal({});
+    config.models.def = { deep: { model: "openai/gpt-5.5", agentCanSelect: true } };
+    const original = store.getWorkflowRequestDispatchPolicy.bind(store);
+    store.getWorkflowRequestDispatchPolicy = (requestId) =>
+      requestId === child.requestId
+        ? Result.ok({
+            model: "deep",
+            reasoning: "high",
+            resolvedModelRequest: { alias: "deep", spec: "openai/gpt-5.5", provider: "openai" },
+          } as never)
+        : original(requestId);
+    const built = build({ config });
+    const read = await call(built, { action: "read", id: child.runId });
+    await call(built, {
+      action: "send",
+      id: child.runId,
+      message: "Again, faster",
+      model: read.model,
+      options: { serviceTier: "priority" },
+    });
+    expect(launches[0]).toMatchObject({
+      modelOverride: "deep",
+      reasoningOverride: "high",
+      providerOptionsOverride: { serviceTier: "priority" },
+    });
+  });
+
+  it("rejects settings it cannot apply", async () => {
+    const child = seedRun({
+      id: "bad-settings",
+      subagent: { parentSessionId: PARENT_SESSION },
+      finished: { result: "done" },
+    });
+    const workflow = seedRun({ id: "scripted" });
+    const built = build();
     await expect(
-      call(build(), { action: "send", id: child.runId, message: "More", mode: "steer" }),
-    ).rejects.toThrow(/target-ended/u);
+      call(built, {
+        action: "send",
+        id: child.runId,
+        message: "Go",
+        model: "claude-code/claude-opus-5-5",
+        options: { previousResponseId: "resp_1" },
+      }),
+    ).rejects.toThrow(/previousResponseId is not a supported option/u);
+    await expect(
+      call(built, {
+        action: "interrupt",
+        id: workflow.runId,
+        model: "claude-code/claude-opus-5-5",
+      }),
+    ).rejects.toThrow(/apply only to send to a subagent/u);
     expect(launches).toHaveLength(0);
+  });
+
+  it("reads effective settings and the rest of a truncated result", async () => {
+    const child = seedRun({
+      id: "long",
+      subagent: { parentSessionId: PARENT_SESSION },
+      finished: { result: "0123456789abcdef" },
+    });
+    const original = store.getWorkflowRequestDispatchPolicy.bind(store);
+    store.getWorkflowRequestDispatchPolicy = (requestId) =>
+      requestId === child.requestId
+        ? Result.ok({
+            options: { serviceTier: "priority" },
+            resolvedModelRequest: {
+              spec: "codex/gpt-5.4-pro",
+              provider: "codex",
+              reasoning: "high",
+              providerOptions: {
+                openai: { serviceTier: "priority", textVerbosity: "low", store: false },
+              },
+            },
+          } as never)
+        : original(requestId);
+    const built = build();
+
+    const head = await call(built, { action: "read", id: child.runId, maxCharsPerItem: 10 });
+    expect(head).toMatchObject({
+      model: "codex/gpt-5.4-pro",
+      reasoning: "high",
+      options: { serviceTier: "priority", textVerbosity: "low" },
+      result: { text: "0123456789", truncated: true, nextTextOffset: 10 },
+    });
+    const rest = await call(built, {
+      action: "read",
+      id: child.runId,
+      itemId: "result",
+      textOffset: 10,
+      maxCharsPerItem: 10,
+    });
+    expect(rest.items).toEqual([
+      {
+        id: "result",
+        role: "assistant",
+        kind: "text",
+        text: "abcdef",
+        truncated: false,
+        textOffset: 10,
+      },
+    ]);
+    await expect(call(built, { action: "read", id: child.runId, textOffset: 10 })).rejects.toThrow(
+      /textOffset requires itemId/u,
+    );
+  });
+
+  it("names the live follow-up when interrupting an ended run", async () => {
+    const old = seedRun({
+      id: "old",
+      subagent: { parentSessionId: PARENT_SESSION, sessionName: "full-shared" },
+      finished: { result: "done" },
+    });
+    const next = seedRun({
+      id: "next",
+      subagent: { parentSessionId: PARENT_SESSION, sessionName: "full-shared" },
+    });
+    seedRun({
+      id: "later",
+      subagent: { parentSessionId: PARENT_SESSION, sessionName: "full-shared" },
+      queued: true,
+      createdAt: Date.now() + 1_000,
+    });
+    expect(await call(build(), { action: "interrupt", id: old.runId })).toMatchObject({
+      status: "ended",
+      liveRunId: next.runId,
+    });
   });
 
   it("only lets the launching conversation message or stop a child", async () => {
