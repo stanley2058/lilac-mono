@@ -32,6 +32,8 @@ import { workflowStoreValue } from "../workflow/workflow-store-test-helpers";
 import { createRealCoreBusFixture, requireBusOk, withBusDeadline } from "../helpers/real-core-bus";
 
 const CONFIG = parseCoreConfigV3ToUniversal({ configVersion: 3 });
+// The catalog lists claude-code only where its credentials exist, so CI pins it.
+CONFIG.models.catalog = { providers: { "claude-code": "enabled" } };
 const PARENT_SESSION = "native:parent-thread";
 
 type Published = { type: string; data: Record<string, unknown>; headers?: Record<string, string> };
