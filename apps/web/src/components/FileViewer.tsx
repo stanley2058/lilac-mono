@@ -232,7 +232,7 @@ export function RightPanel({ threadId, foreground }: { threadId: string; foregro
         onAgents={() => actions.openAgents(threadId)}
         onFiles={() => actions.openFiles(threadId)}
         expandedSidebar={(tab) => {
-          if (tab?.type === "files") return null;
+          if (tab?.type === "files" || tab?.type === "agents") return null;
           if (tab?.type === "agent")
             return <NativeAgentSidebar threadId={threadId} activeId={tab.agentId} />;
           return (
@@ -474,6 +474,7 @@ export function RightPanelTabs({
                   value={tab.id}
                   keepMounted
                   className="file-panel-tab-page"
+                  data-inactive={tabs.activeId !== tab.id || undefined}
                 >
                   <VisitedTabContent active={visible && tabs.activeId === tab.id}>
                     {renderTab(tab, tabs.activeId === tab.id)}

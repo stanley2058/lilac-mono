@@ -74,6 +74,15 @@
     pointer-events: none;
   }
 }
+/*
+ * Base UI sets `hidden` frames after a switch, and Chrome keeps painting a page's composited
+ * layers for a moment after it turns invisible, so both tabs would show at once.
+ */
+.file-panel-tab-page[data-inactive] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
 
 /* Long paths lose their start, so the file name stays visible. */
 .file-panel-heading span {
