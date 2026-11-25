@@ -222,11 +222,14 @@ function resetAttempt(
   const prefix = attemptPrefix(event.requestId, payload.previousAttemptId);
   const selectedPrefix =
     payload.stepId === undefined ? prefix : `${prefix}${digest(payload.stepId)}_`;
-  const removed = slot.messages.filter((message) => message.id.startsWith(selectedPrefix));
+  const matches = (message: DisplayMessage) =>
+    message.id.startsWith(selectedPrefix) &&
+    (!payload.textOnly || message.parts.some((part) => part.type === "text"));
+  const removed = slot.messages.filter(matches);
   return {
     slot: {
       ...slot,
-      messages: slot.messages.filter((message) => !message.id.startsWith(selectedPrefix)),
+      messages: slot.messages.filter((message) => !matches(message)),
     },
     changes: removed.map((message) => ({
       kind: "remove-message",

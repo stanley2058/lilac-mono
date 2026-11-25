@@ -190,14 +190,19 @@ export function createNativeOutputPublisher(options: {
     emit({ type: "compaction", ...input, position: activityPosition });
   }
 
-  function reset(nextAttemptId: string, stepId?: string): void {
+  function reset(nextAttemptId: string, stepId?: string, textOnly?: true): void {
     if (settled || nextAttemptId === attemptId) return;
     const previousAttemptId = attemptId;
     attemptId = nextAttemptId;
     sequence = 0;
     parts = [];
     activityPositions.clear();
-    emit({ type: "reset", previousAttemptId, ...(stepId ? { stepId } : {}) });
+    emit({
+      type: "reset",
+      previousAttemptId,
+      ...(stepId ? { stepId } : {}),
+      ...(textOnly ? { textOnly } : {}),
+    });
   }
 
   function terminal(state: "complete" | "failed" | "canceled"): Promise<NativeOutputPublication> {

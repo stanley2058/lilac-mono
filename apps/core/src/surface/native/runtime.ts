@@ -820,8 +820,8 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
         publisher.stepEnd(reason);
         reply.endStep();
       },
-      reset: (nextAttemptId: string, stepId?: string) => {
-        publisher.reset(nextAttemptId, stepId);
+      reset: (nextAttemptId: string, stepId?: string, textOnly?: true) => {
+        publisher.reset(nextAttemptId, stepId, textOnly);
         reply.reset(nextAttemptId, stepId);
       },
       terminal: async (state: Parameters<NativeOutputPublisher["terminal"]>[0]) => {

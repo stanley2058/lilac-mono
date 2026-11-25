@@ -292,6 +292,18 @@ older builds reject newer output event variants. Keep native state, transcripts,
 and retained output events together. Historical standalone messages without a known request remain
 unlinked; startup only restores links it can prove from retained native inputs.
 
+### Skip reply preview resets
+
+On a successful `skip_reply`, Core sends `discardPreview: true` on `evt.agent.output.text.reset`
+to withdraw the Discord preview. A native `evt.native.output` step reset can carry `textOnly: true`
+to clear the draft and keep the working activity. Older strict decoders reject both new fields.
+Drain active turns and upgrade the Discord relay and native projection consumer before restarting
+the runner that publishes these events. Existing reset events without the fields remain readable.
+
+Before rollback, let the upgraded consumers finish pending resets and stop the producers. Restore
+the matching pre-upgrade Redis and database backups together if an older consumer would replay
+retained reset events carrying either field.
+
 ### Native computer viewer through Core
 
 `computer.read.desktop.url` can now be a root-relative `/computer.html?...` URL. Native web resolves

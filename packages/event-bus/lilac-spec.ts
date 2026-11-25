@@ -357,6 +357,8 @@ export const evtAgentOutputDeltaTextDataSchema = z.strictObject({
 export type EvtAgentOutputDeltaTextData = z.output<typeof evtAgentOutputDeltaTextDataSchema>;
 
 export const evtAgentOutputTextResetDataSchema = z.strictObject({
+  /** Withdraw the current Discord preview after a completed skip, keeping the request open. */
+  discardPreview: z.literal(true).optional(),
   /** Full retained response text after rolling back transient streamed output. */
   text: z.string(),
   /** Phase of the last retained OpenAI text item, when known. */

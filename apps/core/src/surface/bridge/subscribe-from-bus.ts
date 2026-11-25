@@ -1003,9 +1003,9 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     const baseReplyTo = input.initialReplyTo;
     let currentReplyTo: MsgRef | undefined = baseReplyTo;
 
-    const resolveRecoveredOutputRef = (): MsgRef | undefined => {
+    const resolveRecoveredOutputRefs = (): MsgRef[] => {
       const listSurfaceMessages = params.transcriptStore?.listSurfaceMessagesForRequest;
-      if (!listSurfaceMessages || !params.transcriptStore) return undefined;
+      if (!listSurfaceMessages || !params.transcriptStore) return [];
       const listed = Result.try({
         try: () => listSurfaceMessages.call(params.transcriptStore, { requestId }),
         catch: captureError,
@@ -1024,28 +1024,29 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
           sessionId,
           errorTag: outcome.cause.name,
         });
-        return undefined;
+        return [];
       }
 
-      for (let index = outcome.refs.length - 1; index >= 0; index -= 1) {
-        const ref = outcome.refs[index];
-        if (!ref || ref.platform !== platform || ref.channelId !== sessionId) continue;
+      const refs: MsgRef[] = [];
+      for (const ref of outcome.refs) {
+        if (ref.platform !== platform || ref.channelId !== sessionId) continue;
         const decoded = policy.refs.decodeReanchorTarget({
           ref,
           expectedSessionId: sessionId,
         });
         const resumeAt = decoded.match({ ok: (value) => value, err: () => undefined });
-        if (resumeAt) return resumeAt;
+        if (resumeAt) refs.push(resumeAt);
       }
-      return undefined;
+      return refs;
     };
-    const recoveredOutputRef = resolveRecoveredOutputRef();
+    let recoveredOutputRefs = resolveRecoveredOutputRefs();
+    const recoveredOutputRef = recoveredOutputRefs.at(-1);
 
     let relayStream = createRelayStreamState();
     let streamShouldFinish = false;
     const createdOutputRefs: MsgRef[] = [];
     const createdOutputRefKeys = new Set<string>();
-    let activeOutputRefs: MsgRef[] = [];
+    let activeOutputRefs: MsgRef[] = recoveredOutputRef ? [recoveredOutputRef] : [];
     let activeOutputRefKeys = new Set(
       activeOutputRefs.map((ref) => `${ref.platform}:${ref.channelId}:${ref.messageId}`),
     );
@@ -1175,6 +1176,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     }): Promise<void> => {
       // Make the new stream active before abort can create follow-up messages.
       streamToken += 1;
+      recoveredOutputRefs = [];
       activeOutputRefs = [];
       activeOutputRefKeys = new Set();
       await runBusToAdapterBestEffort({
@@ -1290,12 +1292,12 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
     let firstOutLogged = false;
     let handlingOutputEvent = false;
 
-    const cleanupSkippedOutput = async () => {
+    const cleanupSkippedOutput = async (refs: readonly MsgRef[]) => {
       const cleanup = policy.finalization?.cleanupSkippedOutput;
       if (!cleanup) return;
       const deletions: Array<() => Promise<void>> = [];
-      for (let i = createdOutputRefs.length - 1; i >= 0; i--) {
-        const ref = createdOutputRefs[i];
+      for (let i = refs.length - 1; i >= 0; i--) {
+        const ref = refs[i];
         if (!ref) continue;
         const decoded = policy.refs.decodeReanchorTarget({
           ref,
@@ -1329,6 +1331,61 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
         );
       }
       await superviseBusToAdapterCleanup(deletions);
+    };
+
+    const recoveredPreviewParents = async (): Promise<MsgRef[]> => {
+      let child = recoveredOutputRefs.at(-1);
+      if (!child || recoveredOutputRefs.length < 2) return [];
+      // Split chunks reply to one another. A reanchored preview starts at a new user message.
+      const linked = new Set(recoveredOutputRefs.slice(0, -1).map((ref) => ref.messageId));
+      const parents: MsgRef[] = [];
+      while (linked.size) {
+        const chain = await adapter.planReplyChain(child, { maxDepth: 2 });
+        if (chain.isErr()) {
+          logger.warn(
+            "failed to recover skipped preview chunks",
+            formatBridgeTaggedErrorForLog(chain.error, { requestId, sessionId }),
+          );
+          break;
+        }
+        const parent = chain.value.at(-2);
+        if (
+          parent?.platform !== "discord" ||
+          parent.channelId !== sessionId ||
+          !linked.delete(parent.messageId)
+        )
+          break;
+        parents.push(parent);
+        child = parent;
+      }
+      return parents.reverse();
+    };
+
+    const discardCurrentPreview = async () => {
+      adaptSurfaceOperationToRelay("abort-output", await out.abort("skip"));
+      await cleanupSkippedOutput([...(await recoveredPreviewParents()), ...activeOutputRefs]);
+      recoveredOutputRefs = [];
+      for (let i = createdOutputRefs.length - 1; i >= 0; i--) {
+        const ref = createdOutputRefs[i]!;
+        const key = `${ref.platform}:${ref.channelId}:${ref.messageId}`;
+        if (!activeOutputRefKeys.has(key)) continue;
+        createdOutputRefs.splice(i, 1);
+        createdOutputRefKeys.delete(key);
+      }
+      activeOutputRefs = [];
+      activeOutputRefKeys = new Set();
+      streamShouldFinish = false;
+      relayStream = {
+        ...relayStream,
+        reasoningStartedAtMs: undefined,
+        reasoningFrozenAtMs: undefined,
+        reasoningDetailText: "",
+      };
+      out = adaptSurfaceOperationToRelay(
+        "start-output",
+        await adapter.startOutput(sessionRef, buildStartOpts(currentReplyTo, ++streamToken)),
+      );
+      finalTextMode = out.getFinalTextMode?.() ?? "continuation";
     };
 
     const unlinkDiscardedFinishedOutputRefs = async (
@@ -1549,6 +1606,14 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
                 const reduced = reduceRelayStreamEvent(relayStream, outMsg);
                 relayStream = reduced.state;
                 part = reduced.part;
+                if (
+                  outMsg.type === lilacEventTypes.EvtAgentOutputTextReset &&
+                  outMsg.data.discardPreview &&
+                  platform === "discord"
+                ) {
+                  await discardCurrentPreview();
+                  if (!relayStream.visibleTextAcc) part = null;
+                }
                 break;
               }
 
@@ -1590,7 +1655,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
                           adaptSurfaceOperationToRelay("abort-output", await out.abort("skip"));
                         },
                       }),
-                    cleanupSkippedOutput,
+                    () => cleanupSkippedOutput(createdOutputRefs),
                     deleteUnlinkedCheckpointCandidate,
                     relayStop,
                     clearIngressAcknowledgement,
@@ -1671,7 +1736,7 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
                           adaptSurfaceOperationToRelay("abort-output", await out.abort("skip"));
                         },
                       }),
-                    cleanupSkippedOutput,
+                    () => cleanupSkippedOutput(createdOutputRefs),
                     deleteUnlinkedCheckpointCandidate,
                     relayStop,
                     clearIngressAcknowledgement,

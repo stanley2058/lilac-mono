@@ -56,6 +56,7 @@ import {
   type GithubAckState,
 } from "../../../src/github/github-state";
 import {
+  SqliteTranscriptStore,
   TranscriptStoreSqliteDriverFailure,
   type TranscriptStore,
 } from "../../../src/transcript/transcript-store";
@@ -2257,6 +2258,96 @@ describe("bridgeBusToAdapter", () => {
 
     await bridge.stop();
   });
+
+  it.each(["live", "recovered"])(
+    "withdraws a %s Discord preview before the next reply",
+    async (mode) => {
+      const bus = createLilacBus(createInMemoryRawBus());
+      const adapter = new FakeAdapter();
+      const requestId = "discord:chan:skip-preview";
+      const headers = {
+        request_id: requestId,
+        session_id: "chan",
+        request_client: "discord",
+      } as const;
+      const store = new SqliteTranscriptStore(":memory:");
+      const preview: MsgRef = {
+        platform: "discord",
+        channelId: "chan",
+        messageId: mode === "live" ? "m_out_1" : "before_restart",
+      };
+      const firstChunk = { ...preview, messageId: "first_chunk" };
+      const earlierReply = { ...preview, messageId: "earlier_reply" };
+      if (mode === "recovered") {
+        store.linkSurfaceMessagesToRequest({
+          requestId,
+          created: [earlierReply, firstChunk, preview],
+          last: preview,
+        });
+        spyOn(adapter, "planReplyChain").mockImplementation(async (child) => {
+          const parent =
+            child.messageId === preview.messageId
+              ? firstChunk
+              : { ...preview, messageId: "user_followup" };
+          return Result.ok([parent, child]);
+        });
+      }
+      const bridge = await bridgeBusToAdapter({
+        adapter,
+        bus,
+        platform: "discord",
+        subscriptionId: "skip-preview",
+        idleTimeoutMs: 10_000,
+        transcriptStore: store,
+      });
+      try {
+        await bus.publish(lilacEventTypes.EvtRequestReply, {}, { headers });
+        if (mode === "live") {
+          await bus.publish(
+            lilacEventTypes.EvtAgentOutputDeltaReasoning,
+            { delta: "Checking." },
+            { headers },
+          );
+          await bus.publish(
+            lilacEventTypes.EvtAgentOutputDeltaText,
+            { delta: "Draft." },
+            { headers },
+          );
+          expect(adapter.streams[0]?.parts).toContainEqual({ type: "text.delta", delta: "Draft." });
+        } else {
+          expect(adapter.lastStart?.opts?.resumeAt).toEqual(preview);
+        }
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputTextReset,
+          { text: "", discardPreview: true },
+          { headers },
+        );
+        expect(adapter.deletedMsgs).toEqual(mode === "live" ? [preview] : [preview, firstChunk]);
+        expect(store.listSurfaceMessagesForRequest({ requestId })).toEqual(
+          mode === "live" ? [] : [earlierReply],
+        );
+        expect(adapter.streams[1]?.parts).toEqual([]);
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputDeltaText,
+          { delta: "Finished." },
+          { headers },
+        );
+        await bus.publish(
+          lilacEventTypes.EvtAgentOutputResponseText,
+          { finalText: "Finished." },
+          { headers },
+        );
+        expect(adapter.streams[1]?.finished).toBe(true);
+        expect(adapter.streams[1]?.parts).toEqual([
+          { type: "text.delta", delta: "Finished." },
+          { type: "text.set", text: "Finished." },
+        ]);
+      } finally {
+        await bridge.stop();
+        store.close();
+      }
+    },
+  );
 
   it("skips final reply and deletes streamed discord messages", async () => {
     const raw = createInMemoryRawBus();

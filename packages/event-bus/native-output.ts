@@ -58,6 +58,7 @@ export const nativeOutputPayloadSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("reset"),
     previousAttemptId: id,
+    textOnly: z.literal(true).optional(),
     stepId: id.optional(),
     retainThroughOrdinal: position.optional(),
   }),
