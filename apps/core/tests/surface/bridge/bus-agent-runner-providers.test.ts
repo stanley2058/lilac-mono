@@ -17,6 +17,7 @@ import {
   shouldForceUrlDownloadForAnthropicFallback,
   withStableAnthropicUpstreamOrder,
 } from "../../../src/agent/anthropic-fallback-media";
+import { withThoughtSummaryDefaultForGeminiModels } from "../../../src/agent/provider-options";
 import { TEST_BLOB_STORE } from "./bus-agent-runner-test-support";
 import { useTestBlobStore } from "./bus-agent-runner-test-support";
 
@@ -183,6 +184,96 @@ describe("withReasoningSummaryDefaultForOpenAIModels", () => {
     });
 
     expect(next?.openai?.include).toEqual(["reasoning.encrypted_content"]);
+  });
+});
+
+describe("withThoughtSummaryDefaultForGeminiModels", () => {
+  it("does not inject thought summaries when display is none", () => {
+    const next = withThoughtSummaryDefaultForGeminiModels({
+      reasoningDisplay: "none",
+      provider: "google",
+      modelId: "gemini-3.5-flash",
+      providerOptions: undefined,
+    });
+
+    expect(next).toBeUndefined();
+  });
+
+  it("injects includeThoughts for Gemini 2.5+ and latest aliases", () => {
+    for (const modelId of [
+      "gemini-2.5-pro",
+      "gemini-3-pro-preview",
+      "gemini-3.5-flash",
+      "gemini-4-neon",
+      "gemini-flash-latest",
+    ]) {
+      const next = withThoughtSummaryDefaultForGeminiModels({
+        reasoningDisplay: "simple",
+        provider: "google",
+        modelId,
+        providerOptions: undefined,
+      });
+      expect(next).toEqual({ google: { thinkingConfig: { includeThoughts: true } } });
+    }
+  });
+
+  it("skips models that cannot think", () => {
+    for (const modelId of ["gemini-2.0-flash", "gemini-1.5-pro", "gemma-3-27b-it"]) {
+      const next = withThoughtSummaryDefaultForGeminiModels({
+        reasoningDisplay: "simple",
+        provider: "google",
+        modelId,
+        providerOptions: undefined,
+      });
+      expect(next).toBeUndefined();
+    }
+  });
+
+  it("injects for vercel/google/* models and keeps existing options", () => {
+    const next = withThoughtSummaryDefaultForGeminiModels({
+      reasoningDisplay: "detailed",
+      provider: "vercel",
+      modelId: "google/gemini-3.1-pro-preview",
+      providerOptions: {
+        google: {
+          thinkingConfig: { thinkingLevel: "high" },
+          mediaResolution: "MEDIA_RESOLUTION_LOW",
+        },
+        gateway: { order: ["google"] },
+      },
+    });
+
+    expect(next).toEqual({
+      google: {
+        thinkingConfig: { thinkingLevel: "high", includeThoughts: true },
+        mediaResolution: "MEDIA_RESOLUTION_LOW",
+      },
+      gateway: { order: ["google"] },
+    });
+  });
+
+  it("leaves openrouter/google/* models unchanged", () => {
+    const providerOptions = { openrouter: { route: "fallback" } };
+    const next = withThoughtSummaryDefaultForGeminiModels({
+      reasoningDisplay: "simple",
+      provider: "openrouter",
+      modelId: "google/gemini-2.5-pro",
+      providerOptions,
+    });
+
+    expect(next).toBe(providerOptions);
+  });
+
+  it("does not override explicit includeThoughts", () => {
+    const providerOptions = { google: { thinkingConfig: { includeThoughts: false } } };
+    const next = withThoughtSummaryDefaultForGeminiModels({
+      reasoningDisplay: "simple",
+      provider: "google",
+      modelId: "gemini-3.5-flash",
+      providerOptions,
+    });
+
+    expect(next).toBe(providerOptions);
   });
 });
 

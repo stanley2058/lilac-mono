@@ -220,6 +220,50 @@ export function withReasoningSummaryDefaultForOpenAIModels(params: {
   };
 }
 
+// Gemini 2.5 and later think; the SDK forwards thinkingConfig even to models that cannot.
+function isGeminiThinkingModel(provider: string, modelId: string): boolean {
+  if (provider !== "google" && !(provider === "vercel" && modelId.startsWith("google/"))) {
+    return false;
+  }
+  const name = modelId.split("/").at(-1)?.toLowerCase() ?? "";
+  if (/^gemini-[a-z-]+-latest$/.test(name)) return true;
+  const version = /^gemini-(\d+)(?:\.(\d+))?-/.exec(name);
+  if (!version) return false;
+  const major = Number(version[1]);
+  return major > 2 || (major === 2 && Number(version[2] ?? 0) >= 5);
+}
+
+export function withThoughtSummaryDefaultForGeminiModels(params: {
+  reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"];
+  provider: string;
+  modelId: string;
+  providerOptions: { [x: string]: JSONObject } | undefined;
+}): { [x: string]: JSONObject } | undefined {
+  if (params.reasoningDisplay === "none") return params.providerOptions;
+  if (!isGeminiThinkingModel(params.provider, params.modelId)) return params.providerOptions;
+
+  const base = params.providerOptions ?? {};
+  const rawGoogle = base["google"];
+  const existingGoogle: JSONObject =
+    rawGoogle && typeof rawGoogle === "object" && !Array.isArray(rawGoogle)
+      ? (rawGoogle as JSONObject)
+      : {};
+  const rawThinking = existingGoogle["thinkingConfig"];
+  const existingThinking: JSONObject =
+    rawThinking && typeof rawThinking === "object" && !Array.isArray(rawThinking)
+      ? (rawThinking as JSONObject)
+      : {};
+  if ("includeThoughts" in existingThinking) return params.providerOptions;
+
+  return {
+    ...base,
+    google: {
+      ...existingGoogle,
+      thinkingConfig: { ...existingThinking, includeThoughts: true },
+    },
+  };
+}
+
 export function withReasoningDisplayDefaultForAnthropicModels(params: {
   reasoningDisplay: CoreConfig["agent"]["reasoningDisplay"];
   provider: string;

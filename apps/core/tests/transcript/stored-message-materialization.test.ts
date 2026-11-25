@@ -6,6 +6,7 @@ import type { StoredFilePartV1, StoredMessageV1 } from "@stanley2058/lilac-event
 import { Result, type Result as ResultType } from "better-result";
 
 import {
+  RESOURCE_MEDIA_INLINE_MAX_BYTES,
   RESOURCE_MODEL_INLINE_MAX_BYTES,
   ResourceOriginUnavailable,
   ResourceTooLarge,
@@ -824,6 +825,193 @@ describe("stored message materialization", () => {
     });
     expect(resultValue(identityProjection.project(agentClone))).toEqual(storedImageResource);
 
+    resultValue(await blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+  });
+
+  it("adds verified audio and video for a provider with those input modalities", async () => {
+    const cases = [
+      { filename: "clip.mp3", declared: "audio/mpeg", detected: "audio/mpeg", sent: "audio/mpeg" },
+      {
+        filename: "voice.ogg",
+        declared: "audio/ogg",
+        detected: "audio/ogg; codecs=opus",
+        sent: "audio/ogg",
+      },
+      { filename: "clip.mp4", declared: "video/mp4", detected: "video/mp4", sent: "video/mp4" },
+    ];
+    for (const media of cases) {
+      const blobStore = resultValue(await createMemoryBlobStore());
+      const bytes = new Uint8Array([0x00, 0x01, 0x02, 0x03]);
+      let openedWith = 0;
+      const materialized = resultValue(
+        await materializeStoredMessagesV1({
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "resource",
+                  uri: "resource://r1_00000000000000000000000000000001",
+                  filename: media.filename,
+                  mediaType: media.declared,
+                },
+              ],
+            },
+          ],
+          blobStore,
+          identityProjection: createStoredMessageIdentityProjectionV1(),
+          resourceAccess: resourceAccess({
+            bytes,
+            mediaType: media.declared,
+            classification: { kind: "binary", mediaType: media.detected },
+            onOpen: (maxBytes) => {
+              openedWith = maxBytes;
+            },
+          }),
+          resourceTarget: {
+            family: "ai-sdk",
+            supportsImage: true,
+            supportsPdf: true,
+            supportsAudio: true,
+            supportsVideo: true,
+          },
+        }),
+      );
+
+      expect(openedWith).toBe(RESOURCE_MODEL_INLINE_MAX_BYTES);
+      expect(materialized[0]?.content).toEqual([
+        {
+          type: "text",
+          text: `[attachment uri="resource://r1_00000000000000000000000000000001" filename="${media.filename}" mime="${media.declared}"]`,
+        },
+        { type: "file", data: bytes, mediaType: media.sent, filename: media.filename },
+      ]);
+      resultValue(await blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+    }
+  });
+
+  it("keeps audio and video as markers for providers without those modalities", async () => {
+    const blobStore = resultValue(await createMemoryBlobStore());
+    const materialized = resultValue(
+      await materializeStoredMessagesV1({
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "resource",
+                uri: "resource://r1_00000000000000000000000000000001",
+                filename: "clip.mp4",
+                mediaType: "video/mp4",
+              },
+            ],
+          },
+        ],
+        blobStore,
+        identityProjection: createStoredMessageIdentityProjectionV1(),
+        resourceAccess: resourceAccess({
+          bytes: new Uint8Array([0x00]),
+          mediaType: "video/mp4",
+          classification: { kind: "binary", mediaType: "video/mp4" },
+        }),
+        resourceTarget: { family: "ai-sdk", supportsImage: true, supportsPdf: true },
+      }),
+    );
+
+    expect(materialized[0]?.content).toEqual([
+      {
+        type: "text",
+        text: '[attachment uri="resource://r1_00000000000000000000000000000001" filename="clip.mp4" mime="video/mp4"]',
+      },
+    ]);
+    resultValue(await blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+  });
+
+  it("lets verified content override a declared audio type", async () => {
+    const blobStore = resultValue(await createMemoryBlobStore());
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+    let openedWith = 0;
+    const materialized = resultValue(
+      await materializeStoredMessagesV1({
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "resource",
+                uri: "resource://r1_00000000000000000000000000000001",
+                filename: "report.mp3",
+                mediaType: "audio/mpeg",
+              },
+            ],
+          },
+        ],
+        blobStore,
+        identityProjection: createStoredMessageIdentityProjectionV1(),
+        resourceAccess: resourceAccess({
+          bytes,
+          mediaType: "audio/mpeg",
+          classification: { kind: "pdf", mediaType: "application/pdf" },
+          onOpen: (maxBytes) => {
+            openedWith = maxBytes;
+          },
+        }),
+        resourceTarget: { family: "ai-sdk", supportsImage: true, supportsPdf: true },
+      }),
+    );
+
+    expect(openedWith).toBe(RESOURCE_MODEL_INLINE_MAX_BYTES);
+    expect(materialized[0]?.content).toMatchObject([
+      { type: "text" },
+      { type: "file", data: bytes, mediaType: "application/pdf" },
+    ]);
+    resultValue(await blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
+  });
+
+  it("omits audio and video above the 20 MB inline cap", async () => {
+    const blobStore = resultValue(await createMemoryBlobStore());
+    let cancelled = false;
+    const materialized = resultValue(
+      await materializeStoredMessagesV1({
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "resource",
+                uri: "resource://r1_00000000000000000000000000000001",
+                filename: "talk.wav",
+              },
+            ],
+          },
+        ],
+        blobStore,
+        identityProjection: createStoredMessageIdentityProjectionV1(),
+        resourceAccess: resourceAccess({
+          bytes: new Uint8Array(RESOURCE_MEDIA_INLINE_MAX_BYTES + 1),
+          classification: { kind: "binary", mediaType: "audio/wav" },
+          onCancel: () => {
+            cancelled = true;
+          },
+        }),
+        resourceTarget: {
+          family: "ai-sdk",
+          supportsImage: true,
+          supportsPdf: true,
+          supportsAudio: true,
+        },
+      }),
+    );
+
+    expect(cancelled).toBe(true);
+    expect(materialized[0]?.content).toMatchObject([
+      { type: "text", text: expect.stringContaining('filename="talk.wav"') },
+      {
+        type: "text",
+        text: `[resource_inline_error uri="resource://r1_00000000000000000000000000000001" code="too_large" limit=${RESOURCE_MEDIA_INLINE_MAX_BYTES}]`,
+      },
+      { type: "text", text: expect.stringContaining("20 MB") },
+    ]);
     resultValue(await blobStore.close({ deadlineAtMs: Date.now() + 1_000 }));
   });
 

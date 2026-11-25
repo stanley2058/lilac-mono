@@ -129,6 +129,33 @@ function textMediaTypeHint(options: ResourceMimeClassifierOptions): string | und
   return TEXT_EXTENSIONS[extname(options.filename).toLowerCase()];
 }
 
+export type InlineMediaKind = "audio" | "video";
+
+// Formats Gemini documents for inline audio and video input.
+const INLINE_MEDIA_TYPES: ReadonlyMap<string, InlineMediaKind> = new Map([
+  ["audio/aac", "audio"],
+  ["audio/aiff", "audio"],
+  ["audio/flac", "audio"],
+  ["audio/mpeg", "audio"],
+  ["audio/ogg", "audio"],
+  ["audio/wav", "audio"],
+  ["video/3gpp", "video"],
+  ["video/mp4", "video"],
+  ["video/mpeg", "video"],
+  ["video/quicktime", "video"],
+  ["video/webm", "video"],
+  ["video/x-flv", "video"],
+]);
+
+/** The base media type when it is an audio or video format models can take inline. */
+export function inlineMediaType(
+  mediaType: string | undefined,
+): { readonly kind: InlineMediaKind; readonly mediaType: string } | undefined {
+  const normalized = normalizeMediaType(mediaType);
+  const kind = normalized === undefined ? undefined : INLINE_MEDIA_TYPES.get(normalized);
+  return kind && normalized ? { kind, mediaType: normalized } : undefined;
+}
+
 function concatenatePrefix(parts: readonly Uint8Array[], byteLength: number): Uint8Array {
   const prefix = new Uint8Array(byteLength);
   let offset = 0;

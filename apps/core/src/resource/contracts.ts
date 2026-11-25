@@ -75,6 +75,8 @@ export const resourceCacheV1Schema = z.strictObject({
 export type ResourceCacheV1 = z.infer<typeof resourceCacheV1Schema>;
 
 export const RESOURCE_IMAGE_INLINE_MAX_BYTES = 1024 * 1024;
+// Gemini rejects inline audio and video above 20 MB.
+export const RESOURCE_MEDIA_INLINE_MAX_BYTES = 20 * 1000 * 1000;
 
 export const resourceImagePreviewSchema = z.strictObject({
   policyVersion: z.literal(1),

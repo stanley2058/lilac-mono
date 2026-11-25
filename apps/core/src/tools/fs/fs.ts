@@ -51,11 +51,16 @@ import type { ToolResultOutput } from "../../artifacts/tool-result-output-normal
 import { inferMimeTypeFromFilename } from "../../shared/attachment-utils";
 import {
   RESOURCE_MAX_BYTES,
+  RESOURCE_MEDIA_INLINE_MAX_BYTES,
   RESOURCE_MODEL_INLINE_MAX_BYTES,
   type ResourceDescriptor,
 } from "../../resource/contracts";
 import type { ResourceAccessError } from "../../resource/errors";
-import { isResourceTextMediaType } from "../../resource/resource-mime";
+import {
+  inlineMediaType,
+  isResourceTextMediaType,
+  type InlineMediaKind,
+} from "../../resource/resource-mime";
 import type { ResourceAccess, VerifiedResourceRead } from "../../resource/service";
 import { bindTransientResourceAccess, isCoreToolResultResourceUri } from "../../resource/transient";
 import { adaptToolResultToHost } from "../tool-result-adapters";
@@ -825,10 +830,20 @@ function resourceExpectedClassification(
   return hint === "other" ? "any" : hint;
 }
 
-function directMediaDescription(image: boolean, pdf: boolean): string {
-  if (image && pdf) return "supported images and PDFs";
-  if (image) return "supported images";
-  return "PDFs";
+function directMediaDescription(support: {
+  readonly image: boolean;
+  readonly pdf: boolean;
+  readonly audio: boolean;
+  readonly video: boolean;
+}): string {
+  const kinds = [
+    support.image ? "supported images" : null,
+    support.pdf ? "PDFs" : null,
+    support.audio ? "audio" : null,
+    support.video ? "video" : null,
+  ].filter((kind): kind is string => kind !== null);
+  if (kinds.length <= 2) return kinds.join(" and ");
+  return `${kinds.slice(0, -1).join(", ")}, and ${kinds.at(-1)}`;
 }
 
 function resourceFilename(descriptor: ResourceDescriptor): string {
@@ -962,6 +977,8 @@ export function fsTool(
     fsBackend?: FsBackend;
     readFileDirectImageSupported?: boolean;
     readFileDirectPdfSupported?: boolean;
+    readFileDirectAudioSupported?: boolean;
+    readFileDirectVideoSupported?: boolean;
     readRemoteMedia?: ReadRemoteMedia;
     maxOutputBytes?: number;
     maxInlineMediaBytesPerPart?: number;
@@ -985,28 +1002,40 @@ export function fsTool(
   const fsBackend = opts?.fsBackend ?? "node-rg";
   const readFileDirectImageSupported = opts?.readFileDirectImageSupported === true;
   const readFileDirectPdfSupported = opts?.readFileDirectPdfSupported === true;
-  const readFileDirectMediaSupported = readFileDirectImageSupported || readFileDirectPdfSupported;
-  const mediaDescription = directMediaDescription(
-    readFileDirectImageSupported,
-    readFileDirectPdfSupported,
-  );
+  const readFileDirectAudioSupported = opts?.readFileDirectAudioSupported === true;
+  const readFileDirectVideoSupported = opts?.readFileDirectVideoSupported === true;
+  const readFileDirectAudioVideoSupported =
+    readFileDirectAudioSupported || readFileDirectVideoSupported;
+  const readFileDirectMediaSupported =
+    readFileDirectImageSupported || readFileDirectPdfSupported || readFileDirectAudioVideoSupported;
+  const mediaDescription = directMediaDescription({
+    image: readFileDirectImageSupported,
+    pdf: readFileDirectPdfSupported,
+    audio: readFileDirectAudioSupported,
+    video: readFileDirectVideoSupported,
+  });
   const maxOutputBytes = opts?.maxOutputBytes ?? 40 * 1024;
   const maxInlineMediaBytesPerPart = opts?.maxInlineMediaBytesPerPart ?? 10 * 1024 * 1024;
+  const maxInlineAudioVideoBytes = Math.min(
+    maxInlineMediaBytesPerPart,
+    RESOURCE_MEDIA_INLINE_MAX_BYTES,
+  );
   const toolResultArtifactStore = opts?.toolResultArtifacts;
   const transientResourceAccess =
     toolResultArtifactStore && opts?.requestContext?.sessionId
       ? bindTransientResourceAccess(toolResultArtifactStore, opts.requestContext.sessionId)
       : undefined;
+  function readPathDescription(): string {
+    if (!opts?.readRemoteMedia || !readFileDirectMediaSupported) {
+      return "Filesystem path or resource:// URI.";
+    }
+    const media = readFileDirectAudioVideoSupported ? mediaDescription : "a supported image or PDF";
+    return `Filesystem path, resource:// URI, or HTTP(S) URL for ${media}.`;
+  }
   const readFileSchema = createReadFileInputSchema({
     hashlineEnabled,
   }).extend({
-    path: z
-      .string()
-      .describe(
-        opts?.readRemoteMedia && readFileDirectMediaSupported
-          ? "Filesystem path, resource:// URI, or HTTP(S) URL for a supported image or PDF."
-          : "Filesystem path or resource:// URI.",
-      ),
+    path: z.string().describe(readPathDescription()),
   });
   const readFileOutputSchema = buildReadFileOutputZod(hashlineEnabled);
   const grepInputSchema = createGrepInputSchema(hashlineEnabled).extend({
@@ -1035,19 +1064,61 @@ export function fsTool(
     fuzzySearchFallback: "fzf",
   });
 
-  const attachmentExts = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"]);
+  const inlineMediaExts: ReadonlyMap<string, InlineMediaKind> = new Map([
+    [".aac", "audio"],
+    [".aif", "audio"],
+    [".aiff", "audio"],
+    [".flac", "audio"],
+    [".mp3", "audio"],
+    [".oga", "audio"],
+    [".ogg", "audio"],
+    [".opus", "audio"],
+    [".wav", "audio"],
+    [".3gp", "video"],
+    [".flv", "video"],
+    [".mov", "video"],
+    [".mp4", "video"],
+    [".mpeg", "video"],
+    [".mpg", "video"],
+    [".webm", "video"],
+  ]);
+  const attachmentExts = new Set([
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".pdf",
+    ...(readFileDirectAudioVideoSupported ? inlineMediaExts.keys() : []),
+  ]);
 
   const imageMimeTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
   const attachmentMimeTypes = new Set([...imageMimeTypes, "application/pdf"]);
 
+  function inlineMediaKindSupported(kind: InlineMediaKind): boolean {
+    return kind === "audio" ? readFileDirectAudioSupported : readFileDirectVideoSupported;
+  }
+
   function directMediaTypeSupported(mediaType: string): boolean {
     if (imageMimeTypes.has(mediaType)) return readFileDirectImageSupported;
+    const media = inlineMediaType(mediaType);
+    if (media) return inlineMediaKindSupported(media.kind);
     return mediaType === "application/pdf" && readFileDirectPdfSupported;
   }
 
   function directMediaExtensionSupported(extension: string): boolean {
     if (extension === ".pdf") return readFileDirectPdfSupported;
+    const mediaKind = readFileDirectAudioVideoSupported
+      ? inlineMediaExts.get(extension)
+      : undefined;
+    if (mediaKind) return inlineMediaKindSupported(mediaKind);
     return attachmentExts.has(extension) && readFileDirectImageSupported;
+  }
+
+  function inlineMediaMaxBytes(extension: string): number {
+    return readFileDirectAudioVideoSupported && inlineMediaExts.has(extension)
+      ? maxInlineAudioVideoBytes
+      : maxInlineMediaBytesPerPart;
   }
 
   const binaryCacheByToolCallId = new Map<
@@ -1078,18 +1149,35 @@ export function fsTool(
     readonly toolCallId: string;
   }): Promise<ReadFileAttachmentOutput | ReadFileFailureOutput> {
     const detected = await fileTypeFromBuffer(params.bytes);
-    if (!detected || !attachmentMimeTypes.has(detected.mime)) {
+    const detectedMedia = readFileDirectAudioVideoSupported
+      ? inlineMediaType(detected?.mime)
+      : undefined;
+    if (!detected || (!attachmentMimeTypes.has(detected.mime) && !detectedMedia)) {
       return {
         success: false,
         resolvedPath: params.resolvedPath,
         error: {
           code: "UNKNOWN",
-          message: `Cannot attach '${params.filename}': its content is not a supported image or PDF.${params.source === "url" ? " Use fetch for web pages and text URLs." : ""}`,
+          message: `Cannot attach '${params.filename}': its content is not ${readFileDirectAudioVideoSupported ? "supported image, PDF, audio, or video content" : "a supported image or PDF"}.${params.source === "url" ? " Use fetch for web pages and text URLs." : ""}`,
         },
       };
     }
 
-    const mimeType = detected.mime;
+    const mimeType = detectedMedia?.mediaType ?? detected.mime;
+    if (detectedMedia && params.bytes.byteLength > maxInlineAudioVideoBytes) {
+      return {
+        success: false,
+        resolvedPath: params.resolvedPath,
+        error: {
+          code: "UNKNOWN",
+          message: buildInlineMediaLimitMessage({
+            filename: params.filename,
+            mimeType,
+            maxBytes: maxInlineAudioVideoBytes,
+          }),
+        },
+      };
+    }
     if (!directMediaTypeSupported(mimeType)) {
       return {
         success: false,
@@ -1117,6 +1205,15 @@ export function fsTool(
       mimeType,
       bytes: params.reportedBytes ?? params.bytes.byteLength,
     };
+  }
+
+  function resourceDirectMediaSupported(
+    classification: VerifiedResourceRead["classification"],
+    media: ReturnType<typeof inlineMediaType>,
+  ): boolean {
+    if (media) return inlineMediaKindSupported(media.kind);
+    if (classification.kind === "image") return readFileDirectImageSupported;
+    return readFileDirectPdfSupported;
   }
 
   async function executeResourceRead(
@@ -1215,7 +1312,11 @@ export function fsTool(
         : readResourceFailure(uri, "UNKNOWN", consumed.error.message);
     }
 
-    if (read.classification.kind === "binary") {
+    const resourceMedia =
+      read.classification.kind === "binary" && readFileDirectAudioVideoSupported
+        ? inlineMediaType(read.classification.mediaType)
+        : undefined;
+    if (read.classification.kind === "binary" && !resourceMedia) {
       await cancelVerifiedResource(read);
       return {
         success: false,
@@ -1227,11 +1328,11 @@ export function fsTool(
       };
     }
 
-    const mediaType = read.classification.mediaType;
-    const directMediaSupported =
-      read.classification.kind === "image"
-        ? readFileDirectImageSupported
-        : readFileDirectPdfSupported;
+    const mediaType = resourceMedia?.mediaType ?? read.classification.mediaType ?? "";
+    const directMediaSupported = resourceDirectMediaSupported(read.classification, resourceMedia);
+    const resourceInlineMaxBytes = resourceMedia
+      ? Math.min(inlineMaxBytes, maxInlineAudioVideoBytes)
+      : inlineMaxBytes;
     if (!directMediaSupported) {
       await cancelVerifiedResource(read);
       return {
@@ -1243,14 +1344,18 @@ export function fsTool(
         },
       };
     }
-    if (read.blob.byteLength > inlineMaxBytes) {
+    if (read.blob.byteLength > resourceInlineMaxBytes) {
       await cancelVerifiedResource(read);
       return {
         success: false,
         resolvedPath: uri,
         error: {
           code: "UNKNOWN",
-          message: resourceMediaLimitMessage({ descriptor, mediaType, maxBytes: inlineMaxBytes }),
+          message: resourceMediaLimitMessage({
+            descriptor,
+            mediaType,
+            maxBytes: resourceInlineMaxBytes,
+          }),
         },
       };
     }
@@ -1308,7 +1413,7 @@ export function fsTool(
         resolvedPath,
         error: {
           code: "UNKNOWN",
-          message: "This model does not accept images or PDFs as direct input.",
+          message: `This model does not accept ${readFileDirectAudioVideoSupported ? "images, PDFs, audio, or video" : "images or PDFs"} as direct input.`,
         },
       };
     }
@@ -1686,7 +1791,7 @@ export function fsTool(
                   cwd: cwdTarget.cwd,
                   filePath: input.path,
                   denyPaths: remoteDenyPaths,
-                  maxBytes: maxInlineMediaBytesPerPart,
+                  maxBytes: inlineMediaMaxBytes(ext),
                   signal: options.abortSignal,
                 });
                 const bytesError = bytesRes.match({ ok: () => null, err: (error) => error });
@@ -1706,7 +1811,7 @@ export function fsTool(
                       ? buildInlineMediaLimitMessage({
                           filename,
                           mimeType,
-                          maxBytes: maxInlineMediaBytesPerPart,
+                          maxBytes: inlineMediaMaxBytes(ext),
                           detail: bytesOutput.error,
                         })
                       : bytesOutput.error;
@@ -1748,7 +1853,7 @@ export function fsTool(
                 {
                   path: input.path,
                   dangerouslyAllow,
-                  maxBytes: maxInlineMediaBytesPerPart,
+                  maxBytes: inlineMediaMaxBytes(ext),
                 },
                 opCwd,
               );
@@ -1764,7 +1869,7 @@ export function fsTool(
                       message: buildInlineMediaLimitMessage({
                         filename,
                         mimeType,
-                        maxBytes: maxInlineMediaBytesPerPart,
+                        maxBytes: inlineMediaMaxBytes(ext),
                         detail: bytesRes.error.message,
                       }),
                     },
@@ -1942,9 +2047,12 @@ export function fsTool(
         if (bytes) {
           base64 = Buffer.from(bytes).toString("base64");
         } else {
+          const fallbackMaxBytes = inlineMediaType(mimeType)
+            ? maxInlineAudioVideoBytes
+            : maxInlineMediaBytesPerPart;
           const bytesRes = await fileSystem.readFileBytes({
             path: output.resolvedPath,
-            maxBytes: maxInlineMediaBytesPerPart,
+            maxBytes: fallbackMaxBytes,
           });
           if (!bytesRes.success) {
             const message =
@@ -1952,7 +2060,7 @@ export function fsTool(
                 ? buildInlineMediaLimitMessage({
                     filename,
                     mimeType,
-                    maxBytes: maxInlineMediaBytesPerPart,
+                    maxBytes: fallbackMaxBytes,
                     detail: bytesRes.error.message,
                   })
                 : bytesRes.error.message;

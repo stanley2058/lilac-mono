@@ -78,6 +78,8 @@ const coreToolRequestMetadataSchema = z
     readFileDirectAttachmentSupported: z.boolean().optional(),
     readFileDirectImageSupported: z.boolean().optional(),
     readFileDirectPdfSupported: z.boolean().optional(),
+    readFileDirectAudioSupported: z.boolean().optional(),
+    readFileDirectVideoSupported: z.boolean().optional(),
     controlCapability: z.string().optional(),
     onSubagentDelegate: z.custom<DelegateHandler>(isDelegateHandler).optional(),
     onActivity: z.custom<AgentActivityHandler>(isAgentActivityHandler).optional(),
@@ -94,12 +96,16 @@ export function decodeCoreToolRequestMetadata(
 function getReadFileDirectMediaSupport(context: CoreToolBuildContext): {
   readonly image: boolean;
   readonly pdf: boolean;
+  readonly audio: boolean;
+  readonly video: boolean;
 } {
   const metadata = decodeCoreToolRequestMetadata(context.requestContext?.metadata);
   const legacy = metadata.readFileDirectAttachmentSupported === true;
   return {
     image: metadata.readFileDirectImageSupported ?? legacy,
     pdf: metadata.readFileDirectPdfSupported ?? legacy,
+    audio: metadata.readFileDirectAudioSupported === true,
+    video: metadata.readFileDirectVideoSupported === true,
   };
 }
 
@@ -123,6 +129,8 @@ function getFsTools(context: CoreToolBuildContext): ReturnType<typeof fsTool> {
     fsBackend: context.runtime.config?.tools.fsBackend,
     readFileDirectImageSupported: directMediaSupport.image,
     readFileDirectPdfSupported: directMediaSupport.pdf,
+    readFileDirectAudioSupported: directMediaSupport.audio,
+    readFileDirectVideoSupported: directMediaSupport.video,
     readRemoteMedia: canReadRemoteMedia(context) ? readRemoteMedia : undefined,
     maxOutputBytes: context.runtime.config?.tools.output.maxPreviewBytes,
     maxInlineMediaBytesPerPart: context.runtime.config?.tools.media.maxInlineBytesPerPart,

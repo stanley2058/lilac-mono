@@ -230,6 +230,133 @@ describe("read attachments", () => {
     expect(parts[1]!.data).toEqual({ type: "data", data: pngBase64 });
   });
 
+  function wavBytes(dataBytes = 0): Buffer {
+    const u32 = (value: number) => {
+      const bytes = Buffer.alloc(4);
+      bytes.writeUInt32LE(value);
+      return bytes;
+    };
+    return Buffer.concat([
+      Buffer.from("RIFF"),
+      u32(36 + dataBytes),
+      Buffer.from("WAVEfmt "),
+      u32(16),
+      Buffer.from([1, 0, 1, 0]),
+      u32(8000),
+      u32(8000),
+      Buffer.from([1, 0, 8, 0]),
+      Buffer.from("data"),
+      u32(dataBytes),
+      Buffer.alloc(dataBytes),
+    ]);
+  }
+
+  const mp4Bytes = Buffer.concat([
+    Buffer.from([0, 0, 0, 24]),
+    Buffer.from("ftypisom"),
+    Buffer.from([0, 0, 2, 0]),
+    Buffer.from("isomiso2"),
+  ]);
+
+  it("returns audio and video as file tool-result content when the model accepts them", async () => {
+    await writeFile(path.join(baseDir, "voice.wav"), wavBytes());
+    await writeFile(path.join(baseDir, "clip.mp4"), mp4Bytes);
+    const readFile = fsTool(baseDir, {
+      readFileDirectImageSupported: true,
+      readFileDirectAudioSupported: true,
+      readFileDirectVideoSupported: true,
+    }).read;
+
+    expect(getToolDescription(readFile)).toContain(
+      "Analyze supported images, audio, and video already attached to context directly",
+    );
+    for (const [file, mediaType] of [
+      ["voice.wav", "audio/wav"],
+      ["clip.mp4", "video/mp4"],
+    ] as const) {
+      const output = await resolveExecuteResult(
+        readFile.execute!({ path: file }, { toolCallId: file, messages: [], context: {} }),
+      );
+      expect(output).toMatchObject({ success: true, kind: "attachment", mimeType: mediaType });
+      const modelOut = await readFile.toModelOutput!({
+        toolCallId: file,
+        input: { path: file },
+        output,
+      });
+      expect(modelOut).toMatchObject({
+        type: "content",
+        value: [{ type: "text" }, { type: "file", mediaType, filename: file }],
+      });
+    }
+  });
+
+  it("keeps models without video input from attaching local video", async () => {
+    await writeFile(path.join(baseDir, "clip.mp4"), mp4Bytes);
+    const readFile = fsTool(baseDir, {
+      readFileDirectImageSupported: true,
+      readFileDirectAudioSupported: true,
+    }).read;
+    const output = await resolveExecuteResult(
+      readFile.execute!({ path: "clip.mp4" }, { toolCallId: "video", messages: [], context: {} }),
+    );
+    expect(output).toMatchObject({
+      success: false,
+      error: { message: expect.stringContaining("does not accept this file type") },
+    });
+  });
+
+  it("keeps the 20 MB cap when attachment bytes are re-read for model output", async () => {
+    await writeFile(path.join(baseDir, "grown.wav"), wavBytes(20_000_000));
+    const readFile = fsTool(baseDir, {
+      readFileDirectAudioSupported: true,
+      maxInlineMediaBytesPerPart: 64 * 1024 * 1024,
+    }).read;
+    const modelOut = await readFile.toModelOutput!({
+      toolCallId: "uncached",
+      input: { path: "grown.wav" },
+      output: {
+        success: true,
+        kind: "attachment",
+        resolvedPath: path.join(baseDir, "grown.wav"),
+        fileHash: "unused",
+        filename: "grown.wav",
+        mimeType: "audio/wav",
+        bytes: 44,
+      },
+    });
+    expect(modelOut).toMatchObject({
+      type: "error-text",
+      value: expect.stringContaining("20000000-byte media limit"),
+    });
+  });
+
+  it("reads media-named text files normally for models without audio or video input", async () => {
+    await writeFile(path.join(baseDir, "notes.ogg"), "plain text\n");
+    const readFile = fsTool(baseDir, {
+      readFileDirectImageSupported: true,
+      readFileDirectPdfSupported: true,
+    }).read;
+    const output = await resolveExecuteResult(
+      readFile.execute!({ path: "notes.ogg" }, { toolCallId: "ogg", messages: [], context: {} }),
+    );
+    expect(output).toMatchObject({ success: true, content: "plain text\n" });
+  });
+
+  it("caps audio and video at 20 MB even when the per-part media limit is larger", async () => {
+    await writeFile(path.join(baseDir, "long.wav"), wavBytes(20_000_000));
+    const readFile = fsTool(baseDir, {
+      readFileDirectAudioSupported: true,
+      maxInlineMediaBytesPerPart: 64 * 1024 * 1024,
+    }).read;
+    const output = await resolveExecuteResult(
+      readFile.execute!({ path: "long.wav" }, { toolCallId: "long", messages: [], context: {} }),
+    );
+    expect(output).toMatchObject({
+      success: false,
+      error: { message: expect.stringContaining("20000000-byte media limit") },
+    });
+  });
+
   it("returns PDFs as file tool-result content", async () => {
     const pdf = Buffer.from(
       "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<<>>\n%%EOF\n",

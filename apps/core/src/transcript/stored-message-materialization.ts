@@ -19,10 +19,13 @@ import {
   cancelVerifiedResourceRead,
   consumeVerifiedResourceRead,
   hasResourceTextFilenameHint,
+  inlineMediaType,
   RESOURCE_MODEL_INLINE_MAX_BYTES,
   RESOURCE_IMAGE_INLINE_MAX_BYTES,
+  RESOURCE_MEDIA_INLINE_MAX_BYTES,
   type ResourceAccess,
   type ResourceAccessError,
+  type ResourceClassification,
 } from "../resource";
 import {
   defaultStoredBlobFilename,
@@ -48,6 +51,8 @@ export type StoredResourceProviderTarget = {
   readonly family: "ai-sdk" | "claude-code";
   readonly supportsImage: boolean;
   readonly supportsPdf: boolean;
+  readonly supportsAudio?: boolean;
+  readonly supportsVideo?: boolean;
 };
 
 export type StoredMessageIdentityProjectionV1 = {
@@ -720,19 +725,51 @@ function omittedImageParts(part: StoredResourcePartV1): object[] {
   ];
 }
 
-function resourceKindFromMediaType(mediaType: string | undefined): "image" | "pdf" | null {
+type ResourceKind = "image" | "pdf" | "audio" | "video";
+
+function resourceKindFromMediaType(mediaType: string | undefined): ResourceKind | null {
   if (mediaType?.startsWith("image/")) return "image";
   if (mediaType === "application/pdf") return "pdf";
-  return null;
+  return inlineMediaType(mediaType)?.kind ?? null;
 }
 
 function providerSupportsResourceKind(
   target: StoredResourceProviderTarget,
-  resourceKind: "image" | "pdf",
+  resourceKind: ResourceKind,
 ): boolean {
-  return resourceKind === "image"
-    ? target.supportsImage
-    : target.family === "ai-sdk" && target.supportsPdf;
+  switch (resourceKind) {
+    case "image":
+      return target.supportsImage;
+    case "pdf":
+      return target.family === "ai-sdk" && target.supportsPdf;
+    case "audio":
+      return target.family === "ai-sdk" && target.supportsAudio === true;
+    case "video":
+      return target.family === "ai-sdk" && target.supportsVideo === true;
+  }
+}
+
+function verifiedResourceKind(classification: ResourceClassification): ResourceKind | null {
+  if (classification.kind === "image" || classification.kind === "pdf") return classification.kind;
+  if (classification.kind === "binary") return resourceKindFromMediaType(classification.mediaType);
+  return null;
+}
+
+function isInlineMediaKind(kind: ResourceKind | null): kind is "audio" | "video" {
+  return kind === "audio" || kind === "video";
+}
+
+function omittedMediaParts(part: StoredResourcePartV1): object[] {
+  return [
+    { type: "text", text: formatStoredResourceMarkerV1(part) },
+    ...resourceInlineGuidance({
+      part,
+      code: "too_large",
+      limit: RESOURCE_MEDIA_INLINE_MAX_BYTES,
+      guidance:
+        "Audio and video above 20 MB are not sent to the model. Use resource.materialize to save the original, then trim or compress a copy to at most 20 MB.",
+    }),
+  ];
 }
 
 function resourceAccessDecision<T>(
@@ -804,12 +841,15 @@ async function materializeStoredResource(input: {
     descriptor.detectedMediaType ?? descriptor.declaredMediaType ?? input.part.mediaType,
   );
   if (detectedKind && !providerSupportsResourceKind(input.target, detectedKind)) {
+    if (isInlineMediaKind(detectedKind)) return [marker];
     return [marker, ...resourceInlineGuidance({ part: input.part, code: "unsupported_provider" })];
   }
 
   const opened = resourceAccessDecision(
     await input.resourceAccess.open(input.part.uri, {
-      maxBytes: RESOURCE_MODEL_INLINE_MAX_BYTES,
+      maxBytes: isInlineMediaKind(detectedKind)
+        ? RESOURCE_MEDIA_INLINE_MAX_BYTES
+        : RESOURCE_MODEL_INLINE_MAX_BYTES,
       modelImage: input.target.supportsImage,
       expected: "any",
     }),
@@ -817,6 +857,8 @@ async function materializeStoredResource(input: {
   if (opened.kind === "error") {
     if (knownKind === "image" && opened.error._tag === "ResourceTooLarge")
       return omittedImageParts(input.part);
+    if (isInlineMediaKind(detectedKind) && opened.error._tag === "ResourceTooLarge")
+      return omittedMediaParts(input.part);
     return expectedResourceErrorParts({
       marker,
       part: input.part,
@@ -824,16 +866,14 @@ async function materializeStoredResource(input: {
     });
   }
   const read = opened.value;
-  const verifiedKind =
-    read.classification.kind === "image" || read.classification.kind === "pdf"
-      ? read.classification.kind
-      : null;
+  const verifiedKind = verifiedResourceKind(read.classification);
   if (verifiedKind === null) {
     await cancelVerifiedResourceRead(read);
     return [marker];
   }
   if (!providerSupportsResourceKind(input.target, verifiedKind)) {
     await cancelVerifiedResourceRead(read);
+    if (isInlineMediaKind(verifiedKind)) return [marker];
     return [
       marker,
       ...resourceInlineGuidance({
@@ -846,6 +886,10 @@ async function materializeStoredResource(input: {
     await cancelVerifiedResourceRead(read);
     return omittedImageParts(input.part);
   }
+  if (isInlineMediaKind(verifiedKind) && read.blob.byteLength > RESOURCE_MEDIA_INLINE_MAX_BYTES) {
+    await cancelVerifiedResourceRead(read);
+    return omittedMediaParts(input.part);
+  }
 
   const consumed = resourceAccessDecision(await consumeVerifiedResourceRead(read));
   if (consumed.kind === "error") {
@@ -855,7 +899,9 @@ async function materializeStoredResource(input: {
       error: consumed.error,
     });
   }
-  const verifiedMediaType = read.classification.mediaType;
+  const verifiedMediaType = isInlineMediaKind(verifiedKind)
+    ? inlineMediaType(read.classification.mediaType)?.mediaType
+    : read.classification.mediaType;
   if (!verifiedMediaType) {
     return [marker, ...resourceInlineGuidance({ part: input.part, code: "unsupported" })];
   }

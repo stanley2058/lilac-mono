@@ -552,7 +552,7 @@ describe("deferred subagent result", () => {
 });
 
 describe("subagent model selection", () => {
-  it("maps model capabilities to resource image and PDF support", () => {
+  it("maps model capabilities to resource image, PDF, audio, and video support", () => {
     const capability = {
       provider: "test",
       model: "vision",
@@ -565,7 +565,20 @@ describe("subagent model selection", () => {
       family: "ai-sdk",
       supportsImage: true,
       supportsPdf: false,
+      supportsAudio: false,
+      supportsVideo: false,
     });
+    expect(
+      resolveStoredResourceProviderTarget({
+        provider: "google",
+        capability: {
+          ...capability,
+          modalities: {
+            input: ["text" as const, "image" as const, "audio" as const, "video" as const],
+          },
+        },
+      }),
+    ).toMatchObject({ supportsAudio: true, supportsVideo: true });
     expect(
       resolveStoredResourceProviderTarget({
         provider: "claude-code",

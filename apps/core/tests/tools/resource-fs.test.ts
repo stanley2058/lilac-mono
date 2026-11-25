@@ -377,6 +377,37 @@ describe("resource-aware filesystem tools", () => {
     });
   });
 
+  it("attaches verified audio resources only for models with audio input", async () => {
+    const fixture = () =>
+      resourceFixture({
+        bytes: new Uint8Array([1, 2, 3, 4]),
+        classification: { kind: "binary", mediaType: "audio/ogg; codecs=opus" },
+        filename: "voice.ogg",
+        declaredMediaType: "audio/ogg",
+      });
+    const supported = fixture();
+    const supportedOutput = await fsTool(baseDir, {
+      readFileDirectAudioSupported: true,
+      resourceAccess: supported.access,
+    }).read.execute!({ path: URI }, { toolCallId: "audio", messages: [], context: {} });
+    const unsupported = fixture();
+    const unsupportedOutput = await fsTool(baseDir, {
+      readFileDirectImageSupported: true,
+      resourceAccess: unsupported.access,
+    }).read.execute!({ path: URI }, { toolCallId: "audio-unsupported", messages: [], context: {} });
+
+    expect(supportedOutput).toMatchObject({
+      success: true,
+      kind: "attachment",
+      mimeType: "audio/ogg",
+      bytes: 4,
+    });
+    expect(unsupportedOutput).toMatchObject({
+      success: false,
+      error: { message: expect.stringContaining("not supported text, image, or PDF content") },
+    });
+  });
+
   it("supports Claude-style image-only reads while rejecting PDFs", async () => {
     const image = resourceFixture({
       bytes: new Uint8Array([1, 2, 3]),

@@ -62,6 +62,7 @@ import {
   withOpenAIServerCompaction,
   withReasoningDisplayDefaultForAnthropicModels,
   withReasoningSummaryDefaultForOpenAIModels,
+  withThoughtSummaryDefaultForGeminiModels,
   withProviderOptionsOnLastUserMessage,
   ANTHROPIC_PROMPT_CACHE_PROVIDER_OPTIONS,
 } from "./provider-options";
@@ -418,13 +419,19 @@ export function prepareCoreProviderBinding(input: {
     modelId: resolved.modelId,
     providerOptions: providerOptionsWithOpenAIReasoningSummary,
   });
+  const providerOptionsWithGeminiThoughtSummary = withThoughtSummaryDefaultForGeminiModels({
+    reasoningDisplay,
+    provider: resolved.provider,
+    modelId: resolved.modelId,
+    providerOptions: providerOptionsWithReasoningDisplay,
+  });
   const providerOptionsWithPromptCacheKey =
     resolved.provider === "openai" || resolved.provider === "codex"
       ? withOpenAIPromptCacheKey(
-          providerOptionsWithReasoningDisplay,
+          providerOptionsWithGeminiThoughtSummary,
           toOpenAIPromptCacheKey(sessionId),
         )
-      : providerOptionsWithReasoningDisplay;
+      : providerOptionsWithGeminiThoughtSummary;
   const providerOptionsWithServerCompaction = resolved.openaiServerCompaction
     ? withOpenAIServerCompaction(providerOptionsWithPromptCacheKey)
     : providerOptionsWithPromptCacheKey;
@@ -473,6 +480,8 @@ export function resolveStoredResourceProviderTarget(input: {
     family: "ai-sdk",
     supportsImage: supportsAttachments && inputModalities.includes("image"),
     supportsPdf: supportsAttachments && inputModalities.includes("pdf"),
+    supportsAudio: supportsAttachments && inputModalities.includes("audio"),
+    supportsVideo: supportsAttachments && inputModalities.includes("video"),
   };
 }
 

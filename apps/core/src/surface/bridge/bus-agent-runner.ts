@@ -4797,6 +4797,12 @@ export async function startBusAgentRunner(params: {
                 controlCapability: controlCapability ?? undefined,
                 readFileDirectImageSupported: resourceProviderTarget.supportsImage,
                 readFileDirectPdfSupported: resourceProviderTarget.supportsPdf,
+                ...(resourceProviderTarget.supportsAudio
+                  ? { readFileDirectAudioSupported: true }
+                  : {}),
+                ...(resourceProviderTarget.supportsVideo
+                  ? { readFileDirectVideoSupported: true }
+                  : {}),
                 onActivity: (source: "tool" | "subagent") => markRunActivity(source),
                 onSubagentDelegate:
                   workflowSubagentDispatcher &&
