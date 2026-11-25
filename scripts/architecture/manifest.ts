@@ -1881,7 +1881,7 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         },
         category: "projection",
       },
-      ...["readString", "readStringOrNumber"].map((exportName) => ({
+      ...["readString", "readStringOrNumber", "extractNativeProviderError"].map((exportName) => ({
         identity: { module: "ai-error.ts", exportName },
         category: "projection" as const,
       })),
@@ -2047,12 +2047,17 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
       ...[
         "addNormalizedArgFields",
         "normalizeRecordForOpenObserve",
+        "emitTelemetryObservation",
         "captureOpenObserveRequestFailure",
         "signalOpenObservePanic",
       ].map((exportName) => ({
         identity: { module: "logging.ts", exportName },
         category: "projection" as const,
       })),
+      {
+        identity: { module: "transcript-shape.ts", exportName: "summarizePart" },
+        category: "projection" as const,
+      },
       {
         identity: { module: "llm-wire-debug.ts", exportName: "redactValue" },
         category: "projection",
@@ -2400,6 +2405,14 @@ const INTEGRATED_OPAQUE_UNKNOWN = new Map<string, readonly ReasonedSymbolExcepti
           exportName: "normalizeRecordForOpenObserve",
         },
         reason: "Projects a generic logger record into the OpenObserve transport shape.",
+      },
+      {
+        identity: {
+          module: "logging.ts",
+          exportName: "emitTelemetryObservation",
+        },
+        reason:
+          "Projects generic logger arguments into allowlisted telemetry breadcrumb observations.",
       },
       {
         identity: { module: "llm-wire-debug.ts", exportName: "redactValue" },

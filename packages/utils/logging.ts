@@ -11,6 +11,13 @@ import {
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 
 import { captureResultOutcome, isPanic, isRecord, settleSyncResult } from "./runtime-utils";
+import {
+  isTelemetryErrorCaptureActive,
+  observeTelemetryLog,
+  type TelemetryLogFields,
+  type TelemetryLogLevel,
+  type TelemetryPrimitive,
+} from "./telemetry";
 
 function hasTestGlobals(): boolean {
   return "describe" in globalThis && "it" in globalThis;
@@ -704,153 +711,266 @@ function getOpenObserveStream(config: OpenObserveConfig): OpenObserveJsonlStream
   return stream;
 }
 
+function emitTelemetryObservation(
+  level: LogLevel,
+  moduleName: string | undefined,
+  message: unknown,
+  args: readonly unknown[],
+): void {
+  if (!isTelemetryErrorCaptureActive()) return;
+  Result.try({
+    try: () => {
+      const telemetryLevel: TelemetryLogLevel =
+        level === "debug" ||
+        level === "info" ||
+        level === "warn" ||
+        level === "error" ||
+        level === "fatal"
+          ? level
+          : "info";
+
+      let text = "";
+      let errorName: string | undefined;
+      let errorMessage: string | undefined;
+      let errorCode: string | undefined;
+      let errorStack: string | undefined;
+      const fields: Record<string, TelemetryPrimitive | null | undefined> = {};
+      let hasFields = false;
+
+      const candidates: unknown[] = [];
+      if (typeof message === "string") {
+        text = message;
+      } else if (message instanceof Error || isRecord(message)) {
+        if (message instanceof Error) text = message.name;
+        candidates.push(message);
+      } else {
+        text = String(message);
+      }
+      for (const arg of args) candidates.push(arg);
+
+      const absorbError = (err: Error): void => {
+        if (errorStack === undefined && typeof err.stack === "string") {
+          errorStack = err.stack;
+          if (typeof err.message === "string") errorMessage = err.message;
+        }
+        errorName ??= err.name;
+        const errRec = err as Error & { code?: unknown; _tag?: unknown };
+        if (typeof errRec.code === "string") errorCode ??= errRec.code;
+        if (typeof errRec._tag === "string") {
+          fields.errorTag = errRec._tag;
+          hasFields = true;
+        }
+      };
+
+      for (const item of candidates) {
+        if (item instanceof Error) {
+          absorbError(item);
+          continue;
+        }
+        if (!isRecord(item)) continue;
+        for (const [key, val] of Object.entries(item)) {
+          if (val instanceof Error) {
+            absorbError(val);
+            continue;
+          }
+          if (isPrimitive(val)) {
+            fields[key] = val;
+            hasFields = true;
+          }
+        }
+      }
+
+      observeTelemetryLog({
+        level: telemetryLevel,
+        ...(moduleName ? { module: moduleName } : {}),
+        message: text || errorName || "log",
+        ...(hasFields ? { fields: fields as TelemetryLogFields } : {}),
+        ...(errorName ? { errorName } : {}),
+        ...(errorMessage ? { errorMessage } : {}),
+        ...(errorCode ? { errorCode } : {}),
+        ...(errorStack ? { errorStack } : {}),
+      });
+    },
+    catch: () => undefined,
+  });
+}
+
 function createMirroredTimer(
   localTimer: ITimer,
-  mirrorTimer: ITimer,
-  fatalMirrorTimer: ITimer,
+  mirrorTimer: ITimer | undefined,
+  fatalMirrorTimer: ITimer | undefined,
+  getModule: () => string | undefined,
 ): ITimer {
   return {
     log(level, message, ...args) {
+      emitTelemetryObservation(level, getModule(), message, args);
       if (level === "fatal") {
-        fatalMirrorTimer.logError(message, ...args);
+        fatalMirrorTimer?.logError(message, ...args);
         localTimer.log(level, message, ...args);
         return;
       }
 
       localTimer.log(level, message, ...args);
-      mirrorTimer.log(level, message, ...args);
+      mirrorTimer?.log(level, message, ...args);
     },
     logDebug(message, ...args) {
+      emitTelemetryObservation("debug", getModule(), message, args);
       localTimer.logDebug(message, ...args);
-      mirrorTimer.logDebug(message, ...args);
+      mirrorTimer?.logDebug(message, ...args);
     },
     logInfo(message, ...args) {
+      emitTelemetryObservation("info", getModule(), message, args);
       localTimer.logInfo(message, ...args);
-      mirrorTimer.logInfo(message, ...args);
+      mirrorTimer?.logInfo(message, ...args);
     },
     logWarn(message, ...args) {
+      emitTelemetryObservation("warn", getModule(), message, args);
       localTimer.logWarn(message, ...args);
-      mirrorTimer.logWarn(message, ...args);
+      mirrorTimer?.logWarn(message, ...args);
     },
     logError(message, ...args) {
+      emitTelemetryObservation("error", getModule(), message, args);
       localTimer.logError(message, ...args);
-      mirrorTimer.logError(message, ...args);
+      mirrorTimer?.logError(message, ...args);
     },
     logFatal(message, ...args) {
-      fatalMirrorTimer.logError(message, ...args);
+      emitTelemetryObservation("fatal", getModule(), message, args);
+      fatalMirrorTimer?.logError(message, ...args);
       localTimer.logFatal(message, ...args);
     },
     debug(message, ...args) {
+      emitTelemetryObservation("debug", getModule(), message, args);
       localTimer.debug(message, ...args);
-      mirrorTimer.debug(message, ...args);
+      mirrorTimer?.debug(message, ...args);
     },
     info(message, ...args) {
+      emitTelemetryObservation("info", getModule(), message, args);
       localTimer.info(message, ...args);
-      mirrorTimer.info(message, ...args);
+      mirrorTimer?.info(message, ...args);
     },
     warn(message, ...args) {
+      emitTelemetryObservation("warn", getModule(), message, args);
       localTimer.warn(message, ...args);
-      mirrorTimer.warn(message, ...args);
+      mirrorTimer?.warn(message, ...args);
     },
     error(message, ...args) {
+      emitTelemetryObservation("error", getModule(), message, args);
       localTimer.error(message, ...args);
-      mirrorTimer.error(message, ...args);
+      mirrorTimer?.error(message, ...args);
     },
     fatal(message, ...args) {
-      fatalMirrorTimer.error(message, ...args);
+      emitTelemetryObservation("fatal", getModule(), message, args);
+      fatalMirrorTimer?.error(message, ...args);
       localTimer.fatal(message, ...args);
     },
   };
 }
 
 class MirroredLogger extends Logger {
+  private moduleName: string | undefined;
+
   constructor(
     private readonly localLogger: Logger,
-    private readonly mirrorLogger: Logger,
-    private readonly fatalMirrorLogger: Logger,
+    private readonly mirrorLogger?: Logger,
+    private readonly fatalMirrorLogger?: Logger,
+    moduleName?: string,
   ) {
     super({
       logLevel: "fatal",
     });
+    this.moduleName = moduleName;
   }
 
   override log(level: LogLevel, message: unknown, ...args: unknown[]): void {
+    emitTelemetryObservation(level, this.moduleName, message, args);
     if (level === "fatal") {
-      this.fatalMirrorLogger.logError(message, ...args);
+      this.fatalMirrorLogger?.logError(message, ...args);
       this.localLogger.log(level, message, ...args);
       return;
     }
 
     this.localLogger.log(level, message, ...args);
-    this.mirrorLogger.log(level, message, ...args);
+    this.mirrorLogger?.log(level, message, ...args);
   }
 
   override logDebug(message: unknown, ...args: unknown[]): void {
+    emitTelemetryObservation("debug", this.moduleName, message, args);
     this.localLogger.logDebug(message, ...args);
-    this.mirrorLogger.logDebug(message, ...args);
+    this.mirrorLogger?.logDebug(message, ...args);
   }
 
   override logInfo(message: unknown, ...args: unknown[]): void {
+    emitTelemetryObservation("info", this.moduleName, message, args);
     this.localLogger.logInfo(message, ...args);
-    this.mirrorLogger.logInfo(message, ...args);
+    this.mirrorLogger?.logInfo(message, ...args);
   }
 
   override logWarn(message: unknown, ...args: unknown[]): void {
+    emitTelemetryObservation("warn", this.moduleName, message, args);
     this.localLogger.logWarn(message, ...args);
-    this.mirrorLogger.logWarn(message, ...args);
+    this.mirrorLogger?.logWarn(message, ...args);
   }
 
   override logError(message: unknown, ...args: unknown[]): void {
+    emitTelemetryObservation("error", this.moduleName, message, args);
     this.localLogger.logError(message, ...args);
-    this.mirrorLogger.logError(message, ...args);
+    this.mirrorLogger?.logError(message, ...args);
   }
 
   override logFatal(message: unknown, ...args: unknown[]): void {
-    this.fatalMirrorLogger.logError(message, ...args);
+    emitTelemetryObservation("fatal", this.moduleName, message, args);
+    this.fatalMirrorLogger?.logError(message, ...args);
     this.localLogger.logFatal(message, ...args);
   }
 
   override debug(message: unknown, ...args: unknown[]): void {
+    emitTelemetryObservation("debug", this.moduleName, message, args);
     this.localLogger.debug(message, ...args);
-    this.mirrorLogger.debug(message, ...args);
+    this.mirrorLogger?.debug(message, ...args);
   }
 
   override info(message: unknown, ...args: unknown[]): void {
+    emitTelemetryObservation("info", this.moduleName, message, args);
     this.localLogger.info(message, ...args);
-    this.mirrorLogger.info(message, ...args);
+    this.mirrorLogger?.info(message, ...args);
   }
 
   override warn(message: unknown, ...args: unknown[]): void {
+    emitTelemetryObservation("warn", this.moduleName, message, args);
     this.localLogger.warn(message, ...args);
-    this.mirrorLogger.warn(message, ...args);
+    this.mirrorLogger?.warn(message, ...args);
   }
 
   override error(message: unknown, ...args: unknown[]): void {
+    emitTelemetryObservation("error", this.moduleName, message, args);
     this.localLogger.error(message, ...args);
-    this.mirrorLogger.error(message, ...args);
+    this.mirrorLogger?.error(message, ...args);
   }
 
   override fatal(message: unknown, ...args: unknown[]): void {
-    this.fatalMirrorLogger.error(message, ...args);
+    emitTelemetryObservation("fatal", this.moduleName, message, args);
+    this.fatalMirrorLogger?.error(message, ...args);
     this.localLogger.fatal(message, ...args);
   }
 
   override setLogLevel(level: LogLevel): void {
     this.localLogger.setLogLevel(level);
-    this.mirrorLogger.setLogLevel(level);
+    this.mirrorLogger?.setLogLevel(level);
   }
 
   override setModule(module: string): void {
+    this.moduleName = module;
     this.localLogger.setModule(module);
-    this.mirrorLogger.setModule(module);
-    this.fatalMirrorLogger.setModule(module);
+    this.mirrorLogger?.setModule(module);
+    this.fatalMirrorLogger?.setModule(module);
   }
 
   override timer(options?: TimerOptions): ITimer {
     return createMirroredTimer(
       this.localLogger.timer(options),
-      this.mirrorLogger.timer(options),
-      this.fatalMirrorLogger.timer(options),
+      this.mirrorLogger?.timer(options),
+      this.fatalMirrorLogger?.timer(options),
+      () => this.moduleName,
     );
   }
 }
@@ -872,10 +992,11 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
   };
 
   const localLogger = new Logger(localLoggerOptions);
+  const moduleName = typeof rest.module === "string" ? rest.module : undefined;
 
   const openObserve = resolveOpenObserveConfig();
   if (!openObserve) {
-    return localLogger;
+    return new MirroredLogger(localLogger, undefined, undefined, moduleName);
   }
 
   const openObserveStream = getOpenObserveStream(openObserve);
@@ -893,5 +1014,5 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
     logLevel: "error",
   });
 
-  return new MirroredLogger(localLogger, mirrorLogger, fatalMirrorLogger);
+  return new MirroredLogger(localLogger, mirrorLogger, fatalMirrorLogger, moduleName);
 }

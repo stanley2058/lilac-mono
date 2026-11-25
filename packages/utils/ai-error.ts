@@ -26,9 +26,19 @@ export type AiErrorLogDetails = {
   providerParam?: string;
 };
 
+type NativeProviderErrorDetails = {
+  readonly name: string;
+  readonly message: string;
+  readonly statusCode?: number;
+  readonly providerCode?: string | number;
+  readonly providerType?: string;
+  readonly providerParam?: string;
+};
+
 type LocatedAiErrors = {
   apiCallError?: APICallError;
   retryError?: RetryError;
+  nativeError?: NativeProviderErrorDetails;
 };
 
 type ProviderErrorDetails = Pick<
@@ -104,6 +114,41 @@ function parseResponseBody(responseBody: string): ProviderErrorDetails {
   });
 }
 
+function extractNativeProviderError(
+  error: Error,
+  cause: unknown,
+): NativeProviderErrorDetails | undefined {
+  if (!isRecord(cause)) return undefined;
+  let statusCode: number | undefined;
+  if (typeof cause.statusCode === "number") {
+    statusCode = cause.statusCode;
+  } else if (typeof cause.status === "number") {
+    statusCode = cause.status;
+  }
+  const providerCode = readStringOrNumber(cause.code);
+  const providerType = readString(cause.type);
+  const providerParam = readString(cause.param);
+  if (
+    statusCode === undefined &&
+    providerCode === undefined &&
+    providerType === undefined &&
+    providerParam === undefined
+  ) {
+    return undefined;
+  }
+  const message =
+    readString(cause.message) ??
+    (error.message.length > 0 ? sanitizeProviderText(error.message) : "Provider request failed");
+  return {
+    name: error.name || "ProviderError",
+    message,
+    statusCode,
+    providerCode,
+    providerType,
+    providerParam,
+  };
+}
+
 function locateAiErrors(
   value: unknown,
   located: LocatedAiErrors,
@@ -129,6 +174,7 @@ function locateAiErrors(
   }
 
   if (value instanceof Error && value.cause !== undefined) {
+    located.nativeError ??= extractNativeProviderError(value, value.cause);
     locateAiErrors(value.cause, located, seen, depth + 1);
   }
 
@@ -158,7 +204,19 @@ export function extractAiErrorLogDetails(error: unknown): AiErrorLogDetails | un
   const apiCallError = located.apiCallError;
   const retryError = located.retryError;
   const primaryError = retryError ?? apiCallError;
-  if (!primaryError) return undefined;
+  if (!primaryError) {
+    const nativeError = located.nativeError;
+    if (!nativeError) return undefined;
+    return {
+      aiErrorName: nativeError.name,
+      aiErrorMessage: nativeError.message,
+      statusCode: nativeError.statusCode,
+      providerMessage: nativeError.message,
+      providerCode: nativeError.providerCode,
+      providerType: nativeError.providerType,
+      providerParam: nativeError.providerParam,
+    };
+  }
 
   const responseBody = apiCallError?.responseBody;
   const providerDetails = responseBody
