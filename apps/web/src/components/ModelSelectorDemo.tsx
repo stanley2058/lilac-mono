@@ -52,6 +52,14 @@ const models: CatalogModelChoice[] = [
     reasoning: ["provider-default"],
   },
   {
+    id: "google/gemini-3.5-flash",
+    provider: "google",
+    model: "gemini-3.5-flash",
+    label: "Gemini 3.5 Flash",
+    legacy: false,
+    reasoning: ["provider-default", "low", "medium", "high"],
+  },
+  {
     id: "vercel/anthropic/claude-opus-5.5",
     provider: "vercel",
     model: "anthropic/claude-opus-5.5",
@@ -75,7 +83,7 @@ export function ModelSelectorDemo() {
   return (
     <ModelSelectorView
       models={models}
-      providers={["codex", "openai", "claude-code", "anthropic", "vercel"]}
+      providers={["codex", "openai", "claude-code", "anthropic", "google", "vercel"]}
       favorites={favorites}
       modelId={selected.model}
       reasoning={selected.reasoning}

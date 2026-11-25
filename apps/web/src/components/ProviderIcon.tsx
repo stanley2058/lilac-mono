@@ -11,6 +11,7 @@ export function providerName(provider: string): string {
       vercel: "Vercel",
       xai: "xAI",
       groq: "Groq",
+      google: "Google",
       cerebras: "Cerebras",
       openrouter: "OpenRouter",
       "openai-compatible": "OpenAI compatible",
@@ -26,8 +27,11 @@ const logos: Record<string, string> = {
   xai: "xai",
   openrouter: "openrouter",
   groq: "groq",
+  google: "gemini",
   cerebras: "cerebras",
 };
+
+const fullColorLogos = new Set(["anthropic", "gemini"]);
 
 /** Logo files are cropped to their marks; the inset matches the padding inside Lucide glyphs. */
 export function ProviderIcon({
@@ -50,7 +54,7 @@ export function ProviderIcon({
         <img
           src={`/providers/${logo}.svg`}
           alt=""
-          className={`size-[84%] object-contain ${logo === "anthropic" ? "" : "dark:invert"}`}
+          className={`size-[84%] object-contain ${fullColorLogos.has(logo) ? "" : "dark:invert"}`}
           onError={() => fail(true)}
         />
       ) : (
