@@ -541,6 +541,191 @@ export const MODEL_PROVIDER_OPTION_SCHEMAS = {
     },
     additionalProperties: false,
   },
+  google: {
+    type: "object",
+    properties: {
+      audioTimestamp: {
+        type: "boolean",
+      },
+      cachedContent: {
+        type: "string",
+      },
+      imageConfig: {
+        type: "object",
+        properties: {
+          aspectRatio: {
+            type: "string",
+            enum: [
+              "16:9",
+              "1:1",
+              "1:4",
+              "1:8",
+              "21:9",
+              "2:3",
+              "3:2",
+              "3:4",
+              "4:1",
+              "4:3",
+              "4:5",
+              "5:4",
+              "8:1",
+              "9:16",
+            ],
+          },
+          imageOutputOptions: {
+            type: "object",
+            properties: {
+              compressionQuality: {
+                type: "number",
+              },
+              mimeType: {
+                type: "string",
+                enum: ["image/jpeg", "image/png"],
+              },
+            },
+            additionalProperties: false,
+          },
+          imageSize: {
+            type: "string",
+            enum: ["1K", "2K", "4K", "512"],
+          },
+          personGeneration: {
+            type: "string",
+            enum: ["ALLOW_ADULT", "ALLOW_ALL", "ALLOW_NONE", "PERSON_GENERATION_UNSPECIFIED"],
+          },
+          prominentPeople: {
+            type: "string",
+            enum: [
+              "ALLOW_PROMINENT_PEOPLE",
+              "BLOCK_PROMINENT_PEOPLE",
+              "PROMINENT_PEOPLE_UNSPECIFIED",
+            ],
+          },
+        },
+        additionalProperties: false,
+      },
+      labels: {
+        type: "object",
+        properties: {},
+        additionalProperties: {
+          type: "string",
+        },
+      },
+      mediaResolution: {
+        type: "string",
+        enum: [
+          "MEDIA_RESOLUTION_HIGH",
+          "MEDIA_RESOLUTION_LOW",
+          "MEDIA_RESOLUTION_MEDIUM",
+          "MEDIA_RESOLUTION_UNSPECIFIED",
+        ],
+      },
+      requestType: {
+        type: "string",
+        enum: ["shared"],
+      },
+      responseModalities: {
+        type: "array",
+        items: {
+          type: "string",
+          enum: ["IMAGE", "TEXT"],
+        },
+      },
+      retrievalConfig: {
+        type: "object",
+        properties: {
+          latLng: {
+            type: "object",
+            properties: {
+              latitude: {
+                type: "number",
+              },
+              longitude: {
+                type: "number",
+              },
+            },
+            required: ["latitude", "longitude"],
+            additionalProperties: false,
+          },
+        },
+        additionalProperties: false,
+      },
+      safetySettings: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            category: {
+              type: "string",
+              enum: [
+                "HARM_CATEGORY_CIVIC_INTEGRITY",
+                "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "HARM_CATEGORY_HARASSMENT",
+                "HARM_CATEGORY_HATE_SPEECH",
+                "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "HARM_CATEGORY_UNSPECIFIED",
+              ],
+            },
+            threshold: {
+              type: "string",
+              enum: [
+                "BLOCK_LOW_AND_ABOVE",
+                "BLOCK_MEDIUM_AND_ABOVE",
+                "BLOCK_NONE",
+                "BLOCK_ONLY_HIGH",
+                "HARM_BLOCK_THRESHOLD_UNSPECIFIED",
+                "OFF",
+              ],
+            },
+          },
+          required: ["category", "threshold"],
+          additionalProperties: false,
+        },
+      },
+      serviceTier: {
+        type: "string",
+        enum: ["flex", "priority", "standard"],
+      },
+      sharedRequestType: {
+        type: "string",
+        enum: ["flex", "priority", "standard"],
+      },
+      streamFunctionCallArguments: {
+        type: "boolean",
+      },
+      structuredOutputs: {
+        type: "boolean",
+      },
+      thinkingConfig: {
+        type: "object",
+        properties: {
+          includeThoughts: {
+            type: "boolean",
+          },
+          thinkingBudget: {
+            type: "number",
+          },
+          thinkingLevel: {
+            type: "string",
+            enum: ["high", "low", "medium", "minimal"],
+          },
+        },
+        additionalProperties: false,
+      },
+      threshold: {
+        type: "string",
+        enum: [
+          "BLOCK_LOW_AND_ABOVE",
+          "BLOCK_MEDIUM_AND_ABOVE",
+          "BLOCK_NONE",
+          "BLOCK_ONLY_HIGH",
+          "HARM_BLOCK_THRESHOLD_UNSPECIFIED",
+          "OFF",
+        ],
+      },
+    },
+    additionalProperties: false,
+  },
   groq: {
     type: "object",
     properties: {

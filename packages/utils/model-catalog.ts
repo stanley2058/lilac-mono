@@ -31,6 +31,7 @@ const providerCredentials: Record<string, readonly string[]> = {
   openrouter: ["OPENROUTER_API_KEY"],
   vercel: ["AI_GATEWAY_API_KEY"],
   groq: ["GROQ_API_KEY"],
+  google: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
   cerebras: ["CEREBRAS_API_KEY"],
   "openai-compatible": ["OPENAI_COMPATIBLE_BASE_URL"],
 };

@@ -1,4 +1,5 @@
 import type { AnthropicLanguageModelOptions } from "@ai-sdk/anthropic";
+import type { GoogleLanguageModelOptions } from "@ai-sdk/google";
 import type { GroqLanguageModelOptions } from "@ai-sdk/groq";
 import type { OpenAILanguageModelResponsesOptions } from "@ai-sdk/openai";
 import type { OpenAICompatibleLanguageModelChatOptions } from "@ai-sdk/openai-compatible";
@@ -14,6 +15,7 @@ type ClaudeCodeModelOptions = Pick<Options, "taskBudget"> & {
 export type ModelProviderOptionTypes = {
   anthropic: AnthropicLanguageModelOptions;
   "claude-code": ClaudeCodeModelOptions;
+  google: GoogleLanguageModelOptions;
   groq: GroqLanguageModelOptions;
   openai: OpenAILanguageModelResponsesOptions;
   openaiCompatible: OpenAICompatibleLanguageModelChatOptions;

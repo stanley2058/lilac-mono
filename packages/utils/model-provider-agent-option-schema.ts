@@ -39,6 +39,13 @@ const AGENT_BLOCKED_PROVIDER_OPTIONS: {
     "toolStreaming",
   ],
   "claude-code": [],
+  google: [
+    "cachedContent",
+    "labels",
+    "streamFunctionCallArguments",
+    "structuredOutputs",
+    "thinkingConfig",
+  ],
   groq: ["reasoningEffort", "reasoningFormat", "strictJsonSchema", "structuredOutputs", "user"],
   openai: [
     "allowedTools",
