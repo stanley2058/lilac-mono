@@ -925,6 +925,7 @@ describe("Discord authenticated-origin publication", () => {
       adapter: FakeAdapter,
       transcript: unknown = { messages: history },
       withSkip = false,
+      skippedTranscript: unknown = null,
     ) {
       const published: { data: Record<string, unknown>; headers: unknown }[] = [];
       const bus = createLilacBus(createInMemoryRawBus());
@@ -935,6 +936,7 @@ describe("Discord authenticated-origin publication", () => {
         config: parseCoreConfigV1ToUniversal({}),
         transcriptStore: {
           getLatestTranscriptBySession: () => Result.ok(transcript),
+          getRequestTranscript: () => Result.ok(skippedTranscript),
           getDiscordSkippedReply: () =>
             Result.ok(
               withSkip
@@ -994,6 +996,90 @@ describe("Discord authenticated-origin publication", () => {
         expect(prompt.includes("Earlier conversation.")).toBe(hasPrior);
         expect(prompt).toContain(origin.text);
         expect(prompt.split("Waiting for the build.")).toHaveLength(2);
+      } finally {
+        await router.stop();
+      }
+    });
+
+    const toolTurn = (id: string, toolName: string, input: unknown, output: string) => [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: id, toolName, input }] },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: id,
+            toolName,
+            output: { type: "text", value: output },
+          },
+        ],
+      },
+    ];
+    const savedSkip = {
+      requestId: "discord:channel:origin",
+      messages: [
+        ...toolTurn("work", "bash", {}, "Build started."),
+        ...toolTurn("skip-1", "skip_reply", { reason: "Waiting for the build." }, "Reply skipped."),
+      ],
+    };
+
+    it.each([
+      ["its own skipped row", savedSkip],
+      [
+        "another request's skipped row",
+        {
+          requestId: "discord:channel:later",
+          messages: [
+            { role: "assistant", content: "Hidden draft." },
+            ...toolTurn("skip-2", "skip_reply", { reason: "Not for me." }, "Reply skipped."),
+          ],
+        },
+      ],
+    ])("wakes from the saved skipped turn when the latest row is %s", async (_, latest) => {
+      const { router, published } = await startRouter(
+        new FakeAdapter({ "channel:origin": origin }),
+        latest,
+        true,
+        savedSkip,
+      );
+      try {
+        expect(await router.publishJobWake(wakeInput)).toEqual(Result.ok("accepted"));
+        const messages = published[0]?.data.messages as { role: string }[];
+        expect(messages.map((message) => message.role)).toEqual([
+          "user",
+          "assistant",
+          "tool",
+          "assistant",
+          "tool",
+          "user",
+        ]);
+        const prompt = JSON.stringify(messages);
+        expect(prompt.split(origin.text)).toHaveLength(2);
+        expect(prompt).toContain("Build started.");
+        expect(prompt).not.toContain("Hidden draft.");
+        expect(prompt.split("Waiting for the build.")).toHaveLength(2);
+      } finally {
+        await router.stop();
+      }
+    });
+
+    it("keeps the origin's row when its request answered after the skip", async () => {
+      const answered = {
+        requestId: "discord:channel:origin",
+        messages: [...savedSkip.messages, { role: "assistant", content: "Done after all." }],
+      };
+      const { router, published } = await startRouter(
+        new FakeAdapter({ "channel:origin": origin }),
+        answered,
+        true,
+        answered,
+      );
+      try {
+        expect(await router.publishJobWake(wakeInput)).toEqual(Result.ok("accepted"));
+        expect(published[0]?.data.messages).toEqual([
+          ...answered.messages,
+          { role: "user", content: wakeInput.promptText },
+        ]);
       } finally {
         await router.stop();
       }

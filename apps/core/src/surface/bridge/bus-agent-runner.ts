@@ -181,6 +181,8 @@ import {
   completedSkipReply,
   latestDiscordInput,
   saveDiscordSkip,
+  decodeSkipReplyReason,
+  discordResponseStart,
 } from "../../tools/skip-reply";
 import { isPossibleNoReplyPrefix, resolveReplyDeliveryFromFinalText } from "./reply-directive";
 import { formatBridgeLogContext, formatBridgeTaggedErrorForLog } from "./bridge-log";
@@ -5848,6 +5850,33 @@ export async function startBusAgentRunner(params: {
             pendingNoReplyTurnOutputs = [];
             void publishSkipPreviewReset();
           };
+          const finishSkipReplyCall = (
+            event: Extract<AiSdkPiAgentEvent<ToolSet>, { type: "tool_execution_end" }>,
+          ) => {
+            const accepted = !event.isError && acceptedSkipReplyOutput(event.output);
+            const context = {
+              requestId: headers.request_id,
+              sessionId: headers.session_id,
+              toolCallId: event.toolCallId,
+              reason: decodeSkipReplyReason(event),
+            };
+            if (accepted) {
+              logger.info("reply skipped", formatBridgeLogContext(context));
+              retractSkipPreview();
+              return;
+            }
+            logger.warn(
+              "skip_reply rejected",
+              formatBridgeLogContext({
+                ...context,
+                resultPreview: formatToolLogPreview({
+                  toolName: event.toolName,
+                  event,
+                  field: "result",
+                }),
+              }),
+            );
+          };
           const assistantTextPhaseByPartId = new Map<
             string,
             NonNullable<ReturnType<typeof openAIMessagePhase>>
@@ -6377,12 +6406,7 @@ export async function startBusAgentRunner(params: {
               event.toolName === "skip_reply"
             ) {
               turnHasSkipReplyCall = true;
-              if (
-                event.type === "tool_execution_end" &&
-                !event.isError &&
-                acceptedSkipReplyOutput(event.output)
-              )
-                retractSkipPreview();
+              if (event.type === "tool_execution_end") finishSkipReplyCall(event);
               return;
             }
 
@@ -6545,7 +6569,7 @@ export async function startBusAgentRunner(params: {
               ? recoveredQueuedControls
               : [buildResumePrompt(next.recovery.partialText), ...recoveredQueuedControls];
             responseStartIndex = skippedReply
-              ? Math.max(0, checkpoint.length - 2)
+              ? skippedCheckpointResponseStart(checkpoint, next.requestClient)
               : agent.state.messages.length + initialMessages.length;
           } else if (parsedCustomCommand) {
             initialMessages = [...next.messages];
@@ -6908,7 +6932,8 @@ export async function startBusAgentRunner(params: {
           }
 
           const shouldSkipSurfaceReply = delivery === "skip" || isHeartbeatAckOnly;
-          if (shouldSkipSurfaceReply) {
+          // skip_reply already logged its decision with the reason.
+          if (shouldSkipSurfaceReply && !skippedReply) {
             logger.info("agent requested skip reply", {
               requestId: headers.request_id,
               sessionId: headers.session_id,
@@ -6920,9 +6945,18 @@ export async function startBusAgentRunner(params: {
           const skippedDiscordWake = Boolean(
             skippedReply && next.requestClient === "discord" && isJobWakeRequestRaw(next.raw),
           );
+          // Composition replays this row after the skipped Discord input. A compacted run's response
+          // slice is not aligned with its input, so it keeps only the skip decision row.
+          const shouldSaveDiscordSkipTranscript = Boolean(
+            skippedReply &&
+            runProfile === "primary" &&
+            next.requestClient === "discord" &&
+            completedCompactionCount === 0,
+          );
           if (
             transcriptStore &&
             (skippedDiscordWake ||
+              shouldSaveDiscordSkipTranscript ||
               !shouldSkipSurfaceReply ||
               runProfile !== "primary" ||
               next.requestClient === "native")
@@ -8555,6 +8589,15 @@ async function publishLifecycle(params: {
     ok: () => () => undefined,
     err: (error) => () => signalBusAgentRunnerHostFailure(error),
   })();
+}
+
+/** A recovered Discord skip keeps the work after its triggering input, not only the skip pair. */
+function skippedCheckpointResponseStart(
+  checkpoint: readonly ModelMessage[],
+  requestClient: string,
+): number {
+  const start = requestClient === "discord" ? discordResponseStart(checkpoint) : 0;
+  return start > 0 ? start : Math.max(0, checkpoint.length - 2);
 }
 
 export function selectPersistedTranscriptMessages(input: {

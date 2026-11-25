@@ -31,8 +31,9 @@ export const skipReplyTool = tool({
       : { type: "error-text", value: output },
 });
 
-function decodeSkipReplyReason(call: { input: unknown }) {
-  const parsed = skipReplyInput.safeParse(call.input);
+/** Accepts a stored tool call or a runtime tool execution event. */
+export function decodeSkipReplyReason(call: { input: unknown } | { args: unknown }) {
+  const parsed = skipReplyInput.safeParse("input" in call ? call.input : call.args);
   return parsed.success ? parsed.data.reason : undefined;
 }
 
@@ -92,22 +93,32 @@ export function collectSkipReplyKeys(messages: readonly StoredMessageV1[]): stri
   return keys;
 }
 
+function discordInputMessageId(message: ModelMessage | StoredMessageV1) {
+  if (message.role !== "user" || isGeneratedMessage(message)) return;
+  const texts =
+    typeof message.content === "string"
+      ? [message.content]
+      : message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
+  for (const text of texts.toReversed()) {
+    // Discord escapes these tags in user text. A restart notice can quote arbitrary partial output.
+    if (parseSurfaceMetadataLine(text)?.meta.platform !== "discord") continue;
+    for (const line of text.split("\n").toReversed()) {
+      const meta = parseSurfaceMetadataLine(line)?.meta;
+      if (meta?.platform === "discord" && typeof meta.message_id === "string")
+        return meta.message_id;
+    }
+  }
+}
+
+/** Index after the latest Discord input, where that request's own response starts. */
+export function discordResponseStart(messages: readonly (ModelMessage | StoredMessageV1)[]) {
+  return messages.findLastIndex((message) => discordInputMessageId(message) !== undefined) + 1;
+}
+
 export function latestDiscordInput(messages: readonly ModelMessage[]) {
   for (const message of messages.toReversed()) {
-    if (message.role !== "user" || isGeneratedMessage(message)) continue;
-    const texts =
-      typeof message.content === "string"
-        ? [message.content]
-        : message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
-    for (const text of texts.toReversed()) {
-      // Discord escapes these tags in user text. A restart notice can quote arbitrary partial output.
-      if (parseSurfaceMetadataLine(text)?.meta.platform !== "discord") continue;
-      for (const line of text.split("\n").toReversed()) {
-        const meta = parseSurfaceMetadataLine(line)?.meta;
-        if (meta?.platform === "discord" && typeof meta.message_id === "string")
-          return meta.message_id;
-      }
-    }
+    const messageId = discordInputMessageId(message);
+    if (messageId !== undefined) return messageId;
   }
 }
 
@@ -140,6 +151,8 @@ export function discordSkippedReply(
     ?.getDiscordSkippedReply?.(channelId, messageId)
     .match({ ok: (value) => value, err: () => null });
   if (!decision) return;
+  const saved = savedSkipTurn(store, decision);
+  if (saved) return { ...decision, messages: saved };
   const { reason, toolCallId } = decision;
   const messages = [
     {
@@ -159,4 +172,22 @@ export function discordSkippedReply(
     },
   ] satisfies StoredMessageV1[];
   return { ...decision, messages };
+}
+
+/**
+ * Returns the skipped request's work after its last Discord input, through the skip pair. A request
+ * that kept running after the skip, or a pruned transcript, leaves only the decision row.
+ */
+function savedSkipTurn(
+  store: TranscriptStore | undefined,
+  decision: { requestId: string; toolCallId: string; reason: string },
+): StoredMessageV1[] | undefined {
+  const snapshot = store
+    ?.getRequestTranscript?.({ requestId: decision.requestId })
+    .match({ ok: (value) => value, err: () => null });
+  if (!snapshot) return;
+  const messages = snapshot.messages;
+  const found = completedSkipReply(messages);
+  if (!found || skipReplyKey(found) !== skipReplyKey(decision)) return;
+  return messages.slice(discordResponseStart(messages));
 }

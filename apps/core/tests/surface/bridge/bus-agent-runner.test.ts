@@ -16,6 +16,7 @@ import { WorkflowEngine } from "../../../src/workflow/workflow-engine";
 import { subagentTools } from "../../../src/tools/subagent";
 import { generatedMessageMetadata } from "@stanley2058/lilac-agent";
 import { describe, expect, it, jest, spyOn } from "bun:test";
+import { Logger } from "@stanley2058/simple-module-logger";
 import path from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -4341,9 +4342,15 @@ describe("startBusAgentRunner production path", () => {
     "recovered-control",
     "recovered-skip",
     "recovered-skip-follow-up",
+    "after-work",
+    "batched",
   ] as const)("keeps Discord skip history and output consistent for a %s call", async (mode) => {
     const dir = await mkdtemp(path.join(tmpdir(), "discord-skip-"));
     const store = new SqliteTranscriptStore(path.join(dir, "transcripts.db"));
+    const info = spyOn(Logger.prototype, "info");
+    const warn = spyOn(Logger.prototype, "warn");
+    const logged = (spy: typeof info, message: string) =>
+      spy.mock.calls.filter((call) => call[0] === message).length;
     const outputs: string[] = [];
     const bus = createLilacBus(createInMemoryRawBus({ onPublish: (type) => outputs.push(type) }));
     const pluginManager = skipReplyPluginManager();
@@ -4399,7 +4406,15 @@ Alex, can you check?`,
               if (calls === 1 && (mode === "mixed" || mode === "invalid"))
                 return level1TextAndToolCallStep("Already visible.", call);
               if (mode === "recovered-skip-follow-up") return level1TextStep("Normal reply.");
-              const skipOn = mode === "skip-follow-up" ? 2 : 1;
+              if (mode === "after-work" && calls === 1)
+                return level1ToolCallStep([{ toolName: "builtin", toolCallId: "work" }]);
+              if (mode === "batched" && calls === 1)
+                return level1ToolCallStep([
+                  { ...call, toolCallId: "batched-skip" },
+                  { toolName: "builtin", toolCallId: "work" },
+                ]);
+              const skipOn =
+                mode === "skip-follow-up" || mode === "after-work" || mode === "batched" ? 2 : 1;
               return calls === skipOn
                 ? level1ToolCallStep([call], "Private reasoning.")
                 : level1TextStep("Normal reply.");
@@ -4450,6 +4465,23 @@ Alex, can you check?`,
                   ? [...rootMessages, { role: "user", content: inputMessage("102").text }]
                   : [
                       ...rootMessages,
+                      {
+                        role: "assistant",
+                        content: [
+                          { type: "tool-call", toolCallId: "work", toolName: "builtin", input: {} },
+                        ],
+                      },
+                      {
+                        role: "tool",
+                        content: [
+                          {
+                            type: "tool-result",
+                            toolCallId: "work",
+                            toolName: "builtin",
+                            output: { type: "text", value: "builtin" },
+                          },
+                        ],
+                      },
                       {
                         role: "assistant",
                         content: [
@@ -4558,8 +4590,16 @@ Alex, can you check?`,
         mode === "job-event" ||
         mode === "mixed" ||
         mode === "recovered-skip" ||
-        mode === "recovered-skip-follow-up";
-      expect(calls).toBe(mode === "recovered-skip" ? 0 : concurrent || mode === "invalid" ? 2 : 1);
+        mode === "recovered-skip-follow-up" ||
+        mode === "after-work" ||
+        mode === "batched";
+      expect(calls).toBe(
+        mode === "recovered-skip"
+          ? 0
+          : concurrent || mode === "invalid" || mode === "after-work" || mode === "batched"
+            ? 2
+            : 1,
+      );
       expect(discordSkippedReply(store, "channel", "101")?.reason).toBe(
         accepted ? reason : undefined,
       );
@@ -4570,7 +4610,41 @@ Alex, can you check?`,
       expect(discordSkippedReply(store, "channel", "102")?.reason).toBe(
         mode === "skip-follow-up" || mode === "recovered-control" ? reason : undefined,
       );
+      if (
+        mode === "standalone" ||
+        mode === "mixed" ||
+        mode === "job-event" ||
+        mode === "recovered-skip" ||
+        mode === "after-work" ||
+        mode === "batched"
+      ) {
+        const saved = getRequestTranscript(store, { requestId });
+        expect(saved?.finalText).toBe("");
+        expect(discordSkippedReply(store, "channel", "101")?.messages).toEqual(saved?.messages);
+      }
+      // Schema-invalid input emits no tool execution events, and recovered skips ran before restart.
+      const toolSkips =
+        mode === "invalid" || mode === "recovered-skip" || mode === "recovered-skip-follow-up"
+          ? 0
+          : 1;
+      expect(logged(info, "reply skipped")).toBe(toolSkips);
+      expect(logged(info, "agent requested skip reply")).toBe(0);
+      expect(logged(warn, "skip_reply rejected")).toBe(mode === "batched" ? 1 : 0);
+      if (mode === "after-work" || mode === "recovered-skip")
+        expect(
+          discordSkippedReply(store, "channel", "101")?.messages.flatMap((message) =>
+            typeof message.content === "string"
+              ? []
+              : message.content.flatMap((part) =>
+                  part.type === "tool-call" || part.type === "tool-result"
+                    ? [`${part.type}:${part.toolCallId}`]
+                    : [],
+                ),
+          ),
+        ).toEqual(["tool-call:work", "tool-result:work", "tool-call:skip", "tool-result:skip"]);
     } finally {
+      info.mockRestore();
+      warn.mockRestore();
       releaseFirst.resolve(undefined);
       await lifecycle.stop();
       await runner.stop();

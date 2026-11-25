@@ -1,4 +1,9 @@
-import { collectSkipReplyKeys, skipReplyKey, discordSkippedReply } from "../../tools/skip-reply";
+import {
+  collectSkipReplyKeys,
+  completedSkipReply,
+  skipReplyKey,
+  discordSkippedReply,
+} from "../../tools/skip-reply";
 import type { JobWakeDelivery } from "../../jobs/job-service";
 import { createFreshOnlyLineage } from "../../shared/core-primary-lineage";
 import { captureError } from "../../shared/error-capture";
@@ -1870,7 +1875,10 @@ export async function startDiscordRequestRouter(
       input.originMessageId,
     );
     if (!history && !skip) return Result.ok("unavailable");
-    const wakeHistory = [...(history?.messages ?? [])];
+    // A row ending in a skip holds a response nobody saw, possibly to another input. The origin's
+    // own input and saved turn replace it below.
+    const skippedRow = Boolean(skip && history && completedSkipReply(history.messages));
+    const wakeHistory = history && !skippedRow ? [...history.messages] : [];
     if (skip && !collectSkipReplyKeys(wakeHistory).includes(skipReplyKey(skip))) {
       const projection = params.transcriptStore
         ?.getCoreSurfaceProjection?.({
