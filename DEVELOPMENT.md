@@ -15,6 +15,13 @@ Use the Bun version pinned in [package.json](package.json), then install depende
 bun install --frozen-lockfile
 ```
 
+The `ref/` submodules contain upstream reference code. Fresh clones skip them by default. Fetch
+them when you need to inspect the upstream sources:
+
+```sh
+git submodule update --init --checkout --recursive -- ref/
+```
+
 The full checks also use Node.js, Python 3, `rg`, and `fd`. The Node.js version must support
 `--experimental-strip-types`. Building the Linux tool CLI requires Go. Redis-backed integration tests
 need a running Redis server and `REDIS_URL`; [CI](.github/workflows/ci.yml) uses Redis 7.
