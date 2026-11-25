@@ -20,6 +20,6 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "include": ["*.ts", "scripts/*.ts", "__tests__/**/*"],
+  "include": ["*.ts", "scripts/*.ts", "__tests__/**/*", "workers/telemetry-proxy/**/*.ts"],
   "exclude": ["ref/**/*", "node_modules/**/*", "**/dist/**/*", "coverage/**/*", "data/**/*"]
 }

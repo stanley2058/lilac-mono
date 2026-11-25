@@ -1,0 +1,10 @@
+name = "lilac-telemetry-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+[vars]
+POSTHOG_HOST = "https://us.i.posthog.com"
+
+[[routes]]
+pattern = "t.lilac.stw.tw"
+custom_domain = true
