@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import type { ModelMessage } from "ai";
 import { buildTranscriptShapeSnapshot } from "../../packages/utils/transcript-shape";
 import { handleTelemetryProxyRequest } from "./src/index";
 
@@ -349,7 +348,7 @@ describe("telemetry-proxy worker", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof fetch;
 
-    const messages: ModelMessage[] = [
+    const messages: Parameters<typeof buildTranscriptShapeSnapshot>[0]["messages"] = [
       {
         role: "assistant",
         content: [
