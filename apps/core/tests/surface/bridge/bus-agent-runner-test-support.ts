@@ -307,14 +307,24 @@ export function level1PhasedTextStep(finalText = "Final answer.") {
   };
 }
 
-export function level1ToolCallStep(calls: readonly { toolCallId: string; toolName: string }[]) {
+export function level1ToolCallStep(
+  calls: readonly { toolCallId: string; toolName: string; input?: string }[],
+  reasoning?: string,
+) {
   return {
     stream: simulateReadableStream({
       chunks: [
+        ...(reasoning
+          ? [
+              { type: "reasoning-start" as const, id: "thinking" },
+              { type: "reasoning-delta" as const, id: "thinking", delta: reasoning },
+              { type: "reasoning-end" as const, id: "thinking" },
+            ]
+          : []),
         ...calls.map((call) => ({
           type: "tool-call" as const,
           ...call,
-          input: "{}",
+          input: call.input ?? "{}",
         })),
         {
           type: "finish" as const,
@@ -328,7 +338,7 @@ export function level1ToolCallStep(calls: readonly { toolCallId: string; toolNam
 
 export function level1TextAndToolCallStep(
   text: string,
-  call: { toolCallId: string; toolName: string },
+  call: { toolCallId: string; toolName: string; input?: string },
 ) {
   return {
     stream: simulateReadableStream({
@@ -336,7 +346,7 @@ export function level1TextAndToolCallStep(
         { type: "text-start" as const, id: "text" },
         { type: "text-delta" as const, id: "text", delta: text },
         { type: "text-end" as const, id: "text" },
-        { type: "tool-call" as const, ...call, input: "{}" },
+        { type: "tool-call" as const, ...call, input: call.input ?? "{}" },
         {
           type: "finish" as const,
           finishReason: { unified: "tool-calls" as const, raw: "tool-calls" },

@@ -1,3 +1,4 @@
+import { skipReplyTool } from "../../../src/tools/skip-reply";
 import type { JobService } from "../../../src/jobs/job-service";
 import { DurableWorkflowStore } from "../../../src/workflow/durable-workflow-store";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -88,10 +89,13 @@ export function nativeFixtureTextResponse(text: string) {
 
 function fixturePluginManager(questions?: QuestionService): CoreToolPluginManager {
   const toolset: BuiltLevel1Toolset = {
-    tools: questions ? { question: createQuestionTool(questions) } : {},
+    tools: {
+      skip_reply: skipReplyTool,
+      ...(questions ? { question: createQuestionTool(questions) } : {}),
+    },
     specs: new Map(),
     contributionInfo: new Map(),
-    directToolNames: new Set(questions ? ["question"] : []),
+    directToolNames: new Set(["skip_reply", ...(questions ? ["question"] : [])]),
     catalog: [],
     catalogMetadata: {},
     genericOutputNormalizerBypassTools: new Set(),

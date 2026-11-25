@@ -134,7 +134,7 @@ describe("subagent_delegate tool", () => {
     expect(schema.properties?.mode?.description).toContain(
       "give the final answer after every deferred subagent has returned a terminal subagent_result",
     );
-    expect(delegate.description).toContain("reply with exactly NO_REPLY and end the turn");
+    expect(delegate.description).toContain("call skip_reply");
     expect(delegate.description).toContain("Do not call tools only to wait");
     expect(delegate.description).toContain(
       "Wait for all deferred results before you send the final response",

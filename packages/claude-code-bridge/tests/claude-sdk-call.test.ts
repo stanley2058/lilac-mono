@@ -105,6 +105,47 @@ function fixture(frames: SDKMessage[]) {
 }
 
 describe("direct Claude SDK execution", () => {
+  test.each([true, false])(
+    "gates Claude skip permission on the full assistant batch, sibling=%s",
+    async (sibling) => {
+      const f = fixture([]);
+      const settings = claudeRuntime(f.input.model)!.settings;
+      const factory = settings.queryFactory!;
+      let decision: string | undefined;
+      f.input.model = createClaudeCode()("opus", {
+        canUseTool: async (_name, input) => ({ behavior: "allow", updatedInput: input }),
+        queryFactory: (request) => ({
+          ...factory(request),
+          async *[Symbol.asyncIterator]() {
+            const stream = (event: object) => frame({ type: "stream_event", event });
+            yield stream({ type: "message_start" });
+            yield stream({
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "tool_use", name: "mcp__lilac__skip_reply", id: "skip" },
+            });
+            const permission = request.options!.canUseTool!(
+              "mcp__lilac__skip_reply",
+              {},
+              { toolUseID: "skip", requestId: "permission", signal: AbortSignal.timeout(2000) },
+            );
+            if (sibling)
+              yield stream({
+                type: "content_block_start",
+                index: 1,
+                content_block: { type: "tool_use", name: "mcp__lilac__read", id: "read" },
+              });
+            yield stream({ type: "message_stop" });
+            decision = (await permission)?.behavior;
+            yield result();
+          },
+        }),
+      });
+      await executeClaudeSdkCall(f.input);
+      expect(decision).toBe(sibling ? "deny" : "allow");
+    },
+  );
+
   test("preserves a cleanup Panic over an ordinary utility query failure", async () => {
     const panic = new Panic({ message: "cleanup invariant" });
     const model = createClaudeCode()("opus", {

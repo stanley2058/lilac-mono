@@ -461,6 +461,8 @@ export type TurnBoundaryDecision = {
   append?: readonly ModelMessage[];
   /** Continue even when the messages were already present, such as after recovery. */
   forceNextTurn?: boolean;
+  /** A completed terminal tool needs no model acknowledgement. */
+  endAfterTools?: boolean;
 };
 
 export type TurnBoundaryHandler = (

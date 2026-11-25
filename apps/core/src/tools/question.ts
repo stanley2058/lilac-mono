@@ -51,7 +51,7 @@ export function createQuestionTool(service: QuestionService) {
       "Ask the current user one to three questions when their decision is required to continue.",
       "Default mode is deferred: acceptance means the question was created, not answered. Continue independent work.",
       "On native, deferred questions remain pending after your turn finishes and the user replies with a normal message, including attachments. Finish independent work and yield when ready.",
-      "On Discord, when no independent work remains, reply exactly NO_REPLY. The runtime resumes you with question_result.",
+      "On Discord, when no independent work remains, call skip_reply with the reason you are waiting. The runtime resumes you with question_result.",
       "Use mode sync only when you need the answer before the next useful action. Never poll or call tools just to wait.",
       "Cancellation is not consent. Sync questions may expire; deferred questions have no inactivity timeout.",
       "Each question must have a stable ID and two or three mutually exclusive options.",

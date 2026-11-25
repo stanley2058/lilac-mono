@@ -106,7 +106,7 @@ describe("planJobEventBoundary", () => {
 
 describe("wake text", () => {
   it("tells the model it may stay silent", () => {
-    expect(formatJobWakeText([job])).toContain("NO_REPLY");
+    expect(formatJobWakeText([job])).toContain("skip_reply");
     expect(formatJobWakeText([job])).toContain("build exited with code 1");
   });
 });

@@ -1586,7 +1586,9 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     }
 
     const naturallyRequiresNextTurn =
-      input.naturallyRequiresContinuation || boundaryDecision.requiresNextTurn || recoverFromLength;
+      (input.naturallyRequiresContinuation && !boundaryDecision.endAfterTools) ||
+      boundaryDecision.requiresNextTurn ||
+      recoverFromLength;
     if (
       steeringPreparation.status === "failed" ||
       steeringPreparation.status === "external-settled"
@@ -1596,7 +1598,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
       return "break" as const;
     }
 
-    if (input.finishReason !== "tool-calls") {
+    if (input.finishReason !== "tool-calls" || boundaryDecision.endAfterTools) {
       const followUps = takeQueued(this.followUpMode, this.followUpQueue);
       if (followUps.length > 0) {
         const merged = mergeUserMessages(followUps.map((entry) => entry.message));
@@ -2996,7 +2998,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     modelInputMessages: readonly ModelMessage[];
     executedToolCallCount: number;
     signal?: AbortSignal;
-  }): Promise<{ requiresNextTurn: boolean }> {
+  }): Promise<{ requiresNextTurn: boolean; endAfterTools?: boolean }> {
     if (!this.turnBoundaryHandler) return { requiresNextTurn: false };
 
     const getAbortReason = (): TurnAbortReason =>
@@ -3025,6 +3027,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     assertNotAborted();
     for (const message of appended) this.appendMessage(message);
     return {
+      endAfterTools: decision.endAfterTools,
       requiresNextTurn: appended.length > 0 || decision.forceNextTurn === true,
     };
   }

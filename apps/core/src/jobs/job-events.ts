@@ -63,6 +63,6 @@ export function formatJobWakeText(
   return [
     "Background job update:",
     ...lines,
-    "Reply only if this needs the user's attention. Otherwise answer exactly NO_REPLY.",
+    "Reply only if this needs the user's attention. Otherwise call skip_reply with a brief reason.",
   ].join("\n");
 }

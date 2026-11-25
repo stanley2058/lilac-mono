@@ -744,11 +744,17 @@ export async function materializeClaudeCodeRunResult(options: {
   );
   if (!validatedBuiltIns.ok) return Result.err(validatedBuiltIns.error);
   const builtInTools = [...new Set([...validatedBuiltIns.value, "ToolSearch" as const])];
+  const acceptedSkips = new Set<string>();
   const createdBridge = resultOutcome(
     await createClaudeCodeToolBridgeResult({
       tools: options.tools,
       catalogMetadata: options.catalogMetadata,
-      execute: options.execute,
+      execute: async (request) => {
+        const outcome = await options.execute(request);
+        if (request.toolName === "skip_reply" && !outcome.isError)
+          acceptedSkips.add(request.toolCallId);
+        return outcome;
+      },
       builtInTools,
     }),
   );
@@ -1421,7 +1427,20 @@ export async function materializeClaudeCodeRunResult(options: {
         canUseTool: bridge.canUseTool,
         spawnClaudeCodeProcess: spawnTrackedProcess,
         streamingInput: "always",
-        hooks: { Stop: [{ hooks: [stopHook] }] },
+        hooks: {
+          Stop: [{ hooks: [stopHook] }],
+          PostToolUse: [
+            {
+              matcher: "^mcp__lilac__skip_reply$",
+              hooks: [
+                async (input) =>
+                  input.hook_event_name === "PostToolUse" && acceptedSkips.delete(input.tool_use_id)
+                    ? { continue: false }
+                    : {},
+              ],
+            },
+          ],
+        },
         onSdkMessage: observeSdkMessage,
         onStreamStart: (nextInjector) => {
           invoked = true;

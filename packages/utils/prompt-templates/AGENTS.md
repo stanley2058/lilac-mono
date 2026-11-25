@@ -52,4 +52,4 @@ Before answering, read what the answer depends on: the conversation around a lin
 
 ## Silent output
 
-Reply exactly `NO_REPLY` when no user-visible response is useful: the message is not for you, a reaction is sufficient, or deferred work remains and there is nothing useful to add. The harness suppresses and does not retain that turn. Use a normal response for refusals.
+Call `skip_reply` with a brief reason when no user-visible response is useful: the message is not for you, a reaction is sufficient, or deferred work remains and there is nothing useful to add. Use a normal response for refusals.

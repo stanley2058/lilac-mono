@@ -2,7 +2,7 @@ import { Result } from "better-result";
 import { projectNativeOutput } from "../../../src/surface/native/output-projection";
 import { Attachment } from "../../../src/tool-server/tools/attachment";
 import { readFile, rm } from "node:fs/promises";
-import { MockLanguageModelV4 } from "ai/test";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { describe, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -14,6 +14,93 @@ import {
 } from "./integration-fixture";
 import type { NativeStore } from "../../../src/surface/native/store";
 import { serializeCitation } from "@stanley2058/lilac-client-protocol";
+
+test("a skipped reply is silent and the next prompt retains its reason", async () => {
+  const prompts: string[] = [];
+  const reason = "The question was addressed to another participant.";
+  const fixture = await createNativeIntegrationFixture({
+    realBus: true,
+    model: new MockLanguageModelV4({
+      doStream: async ({ prompt }) => {
+        prompts.push(JSON.stringify(prompt));
+        if (prompts.length > 1)
+          return nativeFixtureTextResponse("It was addressed to someone else.");
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "reasoning-start" as const, id: "thinking" },
+              {
+                type: "reasoning-delta" as const,
+                id: "thinking",
+                delta: "Another participant is answering.",
+              },
+              { type: "reasoning-end" as const, id: "thinking" },
+              { type: "text-start" as const, id: "draft" },
+              { type: "text-delta" as const, id: "draft", delta: "Draft reply." },
+              { type: "text-end" as const, id: "draft" },
+              {
+                type: "tool-call" as const,
+                toolName: "skip_reply",
+                toolCallId: "skip-1",
+                input: JSON.stringify({ reason }),
+              },
+              {
+                type: "finish" as const,
+                finishReason: { unified: "tool-calls" as const, raw: "tool-calls" },
+                usage: {
+                  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 0, text: 0, reasoning: 0 },
+                },
+              },
+            ],
+          }),
+        };
+      },
+    }),
+  });
+  try {
+    const { client } = fixture.connect();
+    const thread = await client.threads.create({
+      commandId: crypto.randomUUID(),
+      title: "Silent turn",
+    });
+    const first = await client.inputs.submit(nativePrompt(thread.id, "Alex, can you check?"));
+    await completed(fixture.store, first.inputId);
+    await waitForStore(fixture.store, () => {
+      const snapshot = integrationValue(fixture.store.sync("owner", thread.id));
+      return (
+        snapshot.kind === "window" &&
+        snapshot.slots.some(
+          (slot) =>
+            slot.kind === "ready" && slot.turnId === first.turnId && slot.state === "complete",
+        )
+      );
+    });
+    expect(prompts).toHaveLength(1);
+    const view = await client.threads.sync({ threadId: thread.id });
+    expect(view.kind).toBe("window");
+    if (view.kind === "window") {
+      const parts = view.slots.flatMap((slot) =>
+        slot.kind === "ready"
+          ? slot.messages.filter((m) => m.role === "assistant").flatMap((m) => m.parts)
+          : [],
+      );
+      expect(parts).toContainEqual(
+        expect.objectContaining({
+          type: "data-activity",
+          data: expect.objectContaining({ kind: "thinking", state: "complete" }),
+        }),
+      );
+      expect(parts.filter((part) => part.type === "text")).toEqual([]);
+    }
+    const next = await client.inputs.submit(nativePrompt(thread.id, "Why did you skip that?"));
+    await completed(fixture.store, next.inputId);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]!.split(reason)).toHaveLength(2);
+  } finally {
+    await fixture.close();
+  }
+});
 
 test.each(["prompt", "followup"] as const)(
   "%s expands saved citations for the model while retaining the original display input",

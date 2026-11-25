@@ -586,7 +586,7 @@ export function subagentTools(params: {
     "Use sync mode only when you need the result before the next useful action.",
     "Deferred acceptance means that the subagent started. It does not mean that the task is complete.",
     "After a deferred launch, do all work that does not need the subagent result.",
-    "When no such work remains, reply with exactly NO_REPLY and end the turn.",
+    "When no such work remains, call skip_reply with the reason you are waiting.",
     ...(params.orchestrateAvailable
       ? [
           "The result's workflowRunId identifies this assignment. Pass it to orchestrate to read the subagent's progress, send it a message, or interrupt it.",

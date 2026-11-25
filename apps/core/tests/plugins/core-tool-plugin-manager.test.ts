@@ -374,6 +374,7 @@ describe("core tool plugin manager", () => {
       "grep",
       "patch",
       "read",
+      "skip_reply",
       "subagent_delegate",
     ]);
     expect([...applyPatchTools.genericOutputNormalizerBypassTools].sort()).toEqual([
@@ -381,6 +382,7 @@ describe("core tool plugin manager", () => {
       "grep",
       "patch",
       "read",
+      "skip_reply",
       "subagent_delegate",
     ]);
     expect([...applyPatchTools.aggregateOutputBudgetExemptTools]).toEqual(["read", "grep"]);
@@ -390,6 +392,7 @@ describe("core tool plugin manager", () => {
       "grep",
       "patch",
       "read",
+      "skip_reply",
       "subagent_delegate",
     ]);
     expect(applyPatchTools.tools).not.toHaveProperty("find_tools");
@@ -407,6 +410,7 @@ describe("core tool plugin manager", () => {
       "glob",
       "grep",
       "read",
+      "skip_reply",
       "subagent_delegate",
     ]);
 
@@ -441,6 +445,7 @@ describe("core tool plugin manager", () => {
       "grep",
       "patch",
       "read",
+      "skip_reply",
       "subagent_delegate",
     ]);
 
@@ -518,7 +523,7 @@ describe("core tool plugin manager", () => {
       },
     });
 
-    expect([...restrictedTools.specs.keys()].sort()).toEqual(["bash", "read"]);
+    expect([...restrictedTools.specs.keys()].sort()).toEqual(["bash", "read", "skip_reply"]);
   });
 
   it("threads direct attachment support metadata into read description", async () => {

@@ -1,3 +1,4 @@
+import { discordSkippedReply, skipReplyTool } from "../../../src/tools/skip-reply";
 import {
   AgentRunJournalSqliteFailure,
   type AgentRunCheckpointV1,
@@ -133,6 +134,15 @@ import {
 import { useTestBlobStore } from "./bus-agent-runner-test-support";
 
 useTestBlobStore();
+
+function skipReplyPluginManager() {
+  const toolset = level1TestToolset();
+  return corePrimaryTestPluginManager(undefined, {
+    ...toolset,
+    tools: { ...toolset.tools, skip_reply: skipReplyTool },
+    directToolNames: new Set(["skip_reply"]),
+  });
+}
 
 describe("Claude lifecycle logging", () => {
   it("redacts lifecycle detail and formats TaggedErrors without exposing causes", () => {
@@ -4321,6 +4331,256 @@ describe("startBusAgentRunner production path", () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
+  it.each([
+    "standalone",
+    "mixed",
+    "invalid",
+    "skip-first",
+    "skip-follow-up",
+    "job-event",
+    "recovered-control",
+    "recovered-skip",
+    "recovered-skip-follow-up",
+  ] as const)("keeps Discord skip history and output consistent for a %s call", async (mode) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "discord-skip-"));
+    const store = new SqliteTranscriptStore(path.join(dir, "transcripts.db"));
+    const outputs: string[] = [];
+    const bus = createLilacBus(createInMemoryRawBus({ onPublish: (type) => outputs.push(type) }));
+    const pluginManager = skipReplyPluginManager();
+    const config = parseCoreConfigV2ToUniversal({});
+    config.models.main = { model: "openai/skip-test" };
+    const requestId = "discord:channel:101";
+    const reason = "The discussion is between other participants.";
+    const lifecycle = await observeRequestLifecycle(bus, requestId);
+    const concurrent = mode === "skip-first" || mode === "skip-follow-up";
+    const firstStarted = deferred<void>();
+    const followUpApplied = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const inputMessage = (messageId: string) => ({
+      text: `<LILAC_META:v1>{"platform":"discord","message_id":"${messageId}"}</LILAC_META:v1>
+Alex, can you check?`,
+      raw: {
+        authenticatedOrigin: {
+          platform: "discord",
+          userId: "user",
+          messageRef: { platform: "discord", channelId: "channel", messageId },
+        },
+      },
+    });
+    let calls = 0;
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "test-discord-skip",
+      startPaused: mode === "recovered-skip-follow-up",
+      config,
+      pluginManager,
+      transcriptStore: store,
+      blobStore: transcriptResultValue(await createMemoryBlobStore()),
+      issueControlCapability: () => ({ capability: "test", principal: null }),
+      reportFatalPanic: (panic) => {
+        throw panic;
+      },
+      createAgent: (options) => {
+        const agent = new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "skip-test",
+            doStream: async () => {
+              calls++;
+              if (concurrent && calls === 1) {
+                firstStarted.resolve(undefined);
+                await releaseFirst.promise;
+              }
+              const call = {
+                toolName: "skip_reply",
+                toolCallId: "skip",
+                input: JSON.stringify({ reason: mode === "invalid" ? "" : reason }),
+              };
+              if (calls === 1 && (mode === "mixed" || mode === "invalid"))
+                return level1TextAndToolCallStep("Already visible.", call);
+              if (mode === "recovered-skip-follow-up") return level1TextStep("Normal reply.");
+              const skipOn = mode === "skip-follow-up" ? 2 : 1;
+              return calls === skipOn
+                ? level1ToolCallStep([call], "Private reasoning.")
+                : level1TextStep("Normal reply.");
+            },
+          }),
+        });
+        const followUp = agent.followUp.bind(agent);
+        spyOn(agent, "followUp").mockImplementation((message) => {
+          const id = followUp(message);
+          followUpApplied.resolve(undefined);
+          return id;
+        });
+        return agent;
+      },
+    });
+    try {
+      const root = inputMessage("101");
+      const rootMessages = [{ role: "user" as const, content: root.text }];
+      const lineage = transcriptResultValue(
+        createCorePrimaryLineageFreshOnlyV2("empty-selection", 0),
+      );
+      if (
+        mode === "recovered-control" ||
+        mode === "recovered-skip" ||
+        mode === "recovered-skip-follow-up"
+      ) {
+        const requestDeliveryId = crypto.randomUUID();
+        const accepted = acceptedRunnerDelivery({
+          requestDeliveryId,
+          requestId,
+          sessionId: "channel",
+          requestClient: "discord",
+          queue: "prompt",
+          raw: root.raw,
+          messages: rootMessages,
+          corePrimaryLineage: lineage,
+        });
+        transcriptResultValue(
+          await runner.resumeAcceptedDelivery(accepted, {
+            state: "active",
+            createdAt: 1,
+            updatedAt: 2,
+            handle: { runId: requestDeliveryId, requestId, sessionId: "channel", sequence: 2 },
+            checkpoint: {
+              version: 1,
+              messages:
+                mode === "recovered-control"
+                  ? [...rootMessages, { role: "user", content: inputMessage("102").text }]
+                  : [
+                      ...rootMessages,
+                      {
+                        role: "assistant",
+                        content: [
+                          {
+                            type: "tool-call",
+                            toolCallId: "skip",
+                            toolName: "skip_reply",
+                            input: { reason },
+                          },
+                        ],
+                      },
+                      {
+                        role: "tool",
+                        content: [
+                          {
+                            type: "tool-result",
+                            toolCallId: "skip",
+                            toolName: "skip_reply",
+                            output: { type: "text", value: "Reply skipped." },
+                          },
+                        ],
+                      },
+                    ],
+              currentTurnUserId: "user",
+              loadedCatalogIds: [],
+              retainedRequestDeliveries: [],
+            },
+          }),
+        );
+        if (mode === "recovered-skip-follow-up") {
+          const follow = inputMessage("102");
+          transcriptResultValue(
+            await runner.resumeAcceptedDelivery(
+              acceptedRunnerDelivery({
+                requestId,
+                requestDeliveryId: crypto.randomUUID(),
+                sessionId: "channel",
+                requestClient: "discord",
+                queue: "followUp",
+                raw: follow.raw,
+                messages: [{ role: "user", content: follow.text }],
+              }),
+            ),
+          );
+          runner.activate();
+        }
+      } else {
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          sessionId: "channel",
+          requestClient: "discord",
+          ...root,
+          corePrimaryLineage: lineage,
+          ...(mode === "job-event"
+            ? {
+                messages: [
+                  ...rootMessages,
+                  buildGeneratedMessage({
+                    kind: "job_event",
+                    id: "completed-job",
+                    content: "No action needed.",
+                  }),
+                ],
+              }
+            : {}),
+        });
+      }
+      if (concurrent) {
+        expect(
+          await Promise.race([firstStarted.promise.then(() => "started"), lifecycle.terminal]),
+        ).toBe("started");
+        await publishRunnerRequest({
+          bus,
+          requestId,
+          sessionId: "channel",
+          requestClient: "discord",
+          queue: "followUp",
+          ...inputMessage("102"),
+        });
+        expect(
+          await Promise.race([followUpApplied.promise.then(() => "queued"), lifecycle.terminal]),
+        ).toBe("queued");
+        releaseFirst.resolve(undefined);
+      }
+      expect(await lifecycle.terminal).toBe("resolved");
+      if (mode === "recovered-skip" || mode === "recovered-skip-follow-up") {
+        const reset = outputs.indexOf(lilacEventTypes.EvtAgentOutputTextReset);
+        expect(reset).toBeGreaterThan(outputs.indexOf(lilacEventTypes.EvtRequestReply));
+        if (mode === "recovered-skip-follow-up")
+          expect(reset).toBeLessThan(outputs.indexOf(lilacEventTypes.EvtAgentOutputDeltaText));
+      }
+      if (mode === "standalone")
+        expect(outputs.indexOf(lilacEventTypes.EvtAgentOutputDeltaReasoning)).toBeLessThan(
+          outputs.indexOf(lilacEventTypes.EvtAgentOutputTextReset),
+        );
+      if (mode === "mixed") {
+        expect(outputs).toContain(lilacEventTypes.EvtAgentOutputDeltaText);
+        expect(outputs.indexOf(lilacEventTypes.EvtAgentOutputDeltaText)).toBeLessThan(
+          outputs.indexOf(lilacEventTypes.EvtAgentOutputTextReset),
+        );
+      }
+      const accepted =
+        mode === "standalone" ||
+        mode === "skip-first" ||
+        mode === "job-event" ||
+        mode === "mixed" ||
+        mode === "recovered-skip" ||
+        mode === "recovered-skip-follow-up";
+      expect(calls).toBe(mode === "recovered-skip" ? 0 : concurrent || mode === "invalid" ? 2 : 1);
+      expect(discordSkippedReply(store, "channel", "101")?.reason).toBe(
+        accepted ? reason : undefined,
+      );
+      if (mode === "invalid")
+        expect(getRequestTranscript(store, { requestId })?.finalText).toContain("Already visible.");
+      if (concurrent || mode === "recovered-skip-follow-up")
+        expect(getRequestTranscript(store, { requestId })?.finalText).toBe("Normal reply.");
+      expect(discordSkippedReply(store, "channel", "102")?.reason).toBe(
+        mode === "skip-follow-up" || mode === "recovered-control" ? reason : undefined,
+      );
+    } finally {
+      releaseFirst.resolve(undefined);
+      await lifecycle.stop();
+      await runner.stop();
+      await pluginManager.destroy();
+      await bus.close();
+      store.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("silences an intermediate NO_REPLY turn while preserving its tool exchange", async () => {
     const config = parseCoreConfigV2ToUniversal({});
     config.models.main = { model: "openai/silent-turn" };
@@ -4830,7 +5090,7 @@ describe("deferred questions in the production runner", () => {
     it("parks the request on an await job, then resumes with its event", async () => {
       const harness = jobHarness();
       const bus = createLilacBus(createInMemoryRawBus());
-      const pluginManager = corePrimaryTestPluginManager();
+      const pluginManager = skipReplyPluginManager();
       const requestId = "native:job-await:test";
       const requestDeliveryId = crypto.randomUUID();
       const parked = deferred<void>();
@@ -4883,7 +5143,13 @@ describe("deferred questions in the production runner", () => {
                     throw error;
                   },
                 });
-                return level1TextStep("NO_REPLY");
+                return level1ToolCallStep([
+                  {
+                    toolName: "skip_reply",
+                    toolCallId: "await-skip",
+                    input: JSON.stringify({ reason: "Waiting for the build." }),
+                  },
+                ]);
               },
             }),
           }),
@@ -4908,6 +5174,7 @@ describe("deferred questions in the production runner", () => {
 
         expect(await lifecycle.terminal).toBe("resolved");
         expect(modelCalls).toBe(2);
+        expect(JSON.stringify(secondPrompt)).toContain("Waiting for the build.");
         expect(promptHasJobEvent(secondPrompt, jobId)).toBe(true);
         expect(JSON.stringify(secondPrompt)).toContain("built");
         expect(harness.jobs.hasPendingEvents("native:job-await")).toBe(false);

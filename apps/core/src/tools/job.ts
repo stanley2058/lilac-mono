@@ -130,7 +130,7 @@ export function createJobTool(input: {
       "Run a Bash command in the background. A job_event message tells you when it ends.",
       "",
       "Choose the mode by when you report the job's result:",
-      "- await: in your current reply. The request stays open until the job ends. Do the work that does not need its result, then reply exactly NO_REPLY to end the turn. The job_event resumes you in the same request, where you finish the reply. Use it for a build or test run whose result answers the request.",
+      "- await: in your current reply. The request stays open until the job ends. Do the work that does not need its result, then call skip_reply with the reason you are waiting. The job_event resumes you in the same request, where you finish the reply. Use it for a build or test run whose result answers the request.",
       "- service: in a later turn. Your reply finishes the request, and the job keeps running. When the job ends, its job_event starts a new turn. Use it for a dev server, and for any job you report on after replying, such as a watch on a PR or a site.",
       "",
       "To wait for a condition, start a command that exits when it is true, for example: until curl -sf localhost:3000; do sleep 1; done.",
