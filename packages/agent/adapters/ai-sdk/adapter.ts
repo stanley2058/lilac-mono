@@ -145,6 +145,7 @@ export class ModelCallAgentAdapter<TOOLS extends ToolSet = ToolSet> implements A
     let lengthRecoveryAttempted = false;
     let providerExecutedTool = false;
     let activePersistentAttemptIdentity: string | undefined;
+    host.recordExecutionTransport?.("ai-sdk");
     host.observeExternalTools(() => {
       providerExecutedTool = true;
     });
@@ -209,7 +210,10 @@ export class ModelCallAgentAdapter<TOOLS extends ToolSet = ToolSet> implements A
             modelSpecifier: runtime.modelSpecifier,
           });
           const state = host.readState();
-          host.recordModelView(messages, prepared.step);
+          host.recordModelView(messages, prepared.step, toolSearch.messages, {
+            sendKind: "explicit",
+            adapterTransport: "ai-sdk",
+          });
           phase = "model-call";
           const turn = await this.executeModelCall({
             model: runtime.model,

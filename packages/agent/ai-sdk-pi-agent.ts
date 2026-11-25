@@ -110,6 +110,12 @@ export class AiSdkPiAgent<TOOLS extends ToolSet = ToolSet> {
   ): ReturnType<AgentExecutor<TOOLS>["getLastStepToolSnapshot"]> {
     return this.executor.getLastStepToolSnapshot(...args);
   }
+  getLatestModelView(): ReturnType<AgentExecutor<TOOLS>["getLatestModelView"]> {
+    return this.executor.getLatestModelView();
+  }
+  getLastExecutionTransport(): ReturnType<AgentExecutor<TOOLS>["getLastExecutionTransport"]> {
+    return this.executor.getLastExecutionTransport();
+  }
   setContext(
     ...args: Parameters<AgentExecutor<TOOLS>["setContext"]>
   ): ReturnType<AgentExecutor<TOOLS>["setContext"]> {

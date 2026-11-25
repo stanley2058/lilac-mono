@@ -407,6 +407,7 @@ class OpenAIResponsesExecution implements AgentExecution {
     if (inputIds.length > 0) this.emit({ type: "delivery", status: "returned", inputIds });
   }
   private async execute(signal: AbortSignal): Promise<ResultType<void, AgentAdapterFailure>> {
+    this.context.host.recordExecutionTransport?.("openai-responses");
     this.diagnostics?.log("execution.started", {
       adapter: "responses",
       model: this.options.model,
@@ -517,6 +518,12 @@ class OpenAIResponsesExecution implements AgentExecution {
     this.history = prepared.value.canonicalMessages.map(snapshotAgentMessage);
     this.committedLength = this.history.length;
     this.boundaryDeliveryRequired = false;
+    this.context.host.recordModelView(
+      prepared.value.messages,
+      prepared.value.step,
+      prepared.value.canonicalMessages,
+      { sendKind: "explicit", adapterTransport: "openai-responses" },
+    );
     const state = this.context.host.readState();
     const encoded = resultOutcome(
       await (this.options.requestCodec ?? openAIRequestCodec).request({
@@ -531,7 +538,17 @@ class OpenAIResponsesExecution implements AgentExecution {
     if (!optimized.ok) return Result.err(optimized.error);
     this.pendingRequest = { prepared: prepared.value, request: encoded.value };
     if (this.current?.complete?.calls.length) this.current.continuationSent = true;
-    this.context.host.recordModelView(prepared.value.messages, prepared.value.step);
+    this.context.host.recordModelView(
+      prepared.value.messages,
+      prepared.value.step,
+      prepared.value.canonicalMessages,
+      {
+        sendKind: "explicit",
+        adapterTransport: "openai-responses",
+        usedPreviousResponseId: optimized.value.previous_response_id != null,
+        sentItemCount: optimized.value.input.length,
+      },
+    );
     return this.socket!.send(optimized.value);
   }
   private async continuationRequest(
@@ -789,6 +806,17 @@ class OpenAIResponsesExecution implements AgentExecution {
         delivery: "native",
       });
       this.submitting = { input, parentId: parent.id, prepared: prepared.value };
+      this.context.host.recordModelView(
+        [...parent.prepared.messages, ...(parent.complete?.messages ?? []), ...input.messages],
+        prepared.value.step,
+        prepared.value.canonicalMessages,
+        {
+          sendKind: "steer",
+          adapterTransport: "openai-responses",
+          usedPreviousResponseId: true,
+          sentItemCount: encoded.value.length,
+        },
+      );
       return this.socket!.send({
         type: "response.steer",
         previous_response_id: parent.id,
@@ -1081,6 +1109,17 @@ class OpenAIResponsesExecution implements AgentExecution {
     if (!inherited.ok) return Result.err(inherited.error);
     parent.continuationSent = true;
     this.pendingRequest = { prepared, request: inherited.value, continuationParentId: parent.id };
+    this.context.host.recordModelView(
+      prepared.messages,
+      prepared.step,
+      prepared.canonicalMessages,
+      {
+        sendKind: "continuation",
+        adapterTransport: "openai-responses",
+        usedPreviousResponseId: true,
+        sentItemCount: encoded.value.length,
+      },
+    );
     return this.socket!.send({
       ...parent.request,
       previous_response_id: parent.id,

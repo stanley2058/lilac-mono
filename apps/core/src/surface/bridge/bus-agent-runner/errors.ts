@@ -66,6 +66,10 @@ export class BusAgentRunnerOperationFailed extends TaggedError("BusAgentRunnerOp
   readonly failureKind: "idle-timeout" | "pre-agent-cancelled" | "shutdown-draining" | "other";
   readonly displayMessage: string;
   readonly details?: ReturnType<typeof extractAiErrorLogDetails>;
+  readonly causeTag?: string;
+  readonly errorName?: string;
+  readonly errorCode?: string;
+  readonly errorStack?: string;
   readonly message: string;
 }> {}
 
@@ -97,6 +101,10 @@ export async function captureBusAgentRunnerOperation<T>(
           failureKind,
           displayMessage: formatUnknownErrorForDisplay(cause),
           details: projection.details,
+          ...(projection.causeTag ? { causeTag: projection.causeTag } : {}),
+          ...(projection.errorName ? { errorName: projection.errorName } : {}),
+          ...(projection.errorCode ? { errorCode: projection.errorCode } : {}),
+          ...(projection.errorStack ? { errorStack: projection.errorStack } : {}),
           message: projection.message,
         }),
       );
@@ -114,6 +122,10 @@ export function signalBusAgentRunnerHostFailure(
 export type BusAgentRunnerErrorProjection = {
   readonly message: string;
   readonly details?: ReturnType<typeof extractAiErrorLogDetails>;
+  readonly causeTag?: string;
+  readonly errorName?: string;
+  readonly errorCode?: string;
+  readonly errorStack?: string;
 };
 
 export function projectBusAgentRunnerError(
@@ -123,17 +135,44 @@ export function projectBusAgentRunnerError(
   const projectedCause =
     isRecord(cause) && cause["loaded"] === false && "error" in cause ? cause["error"] : cause;
   const message = opaqueErrorMessage(projectedCause, fallback);
+  const meta = Result.try({
+    try: () => {
+      const causeTag =
+        isRecord(projectedCause) && typeof projectedCause["_tag"] === "string"
+          ? projectedCause["_tag"]
+          : undefined;
+      const errorName =
+        projectedCause instanceof Error && typeof projectedCause.name === "string"
+          ? projectedCause.name
+          : undefined;
+      const errorCode =
+        isRecord(projectedCause) && typeof projectedCause["code"] === "string"
+          ? projectedCause["code"]
+          : undefined;
+      const errorStack =
+        projectedCause instanceof Error && typeof projectedCause.stack === "string"
+          ? projectedCause.stack
+          : undefined;
+      return {
+        ...(causeTag ? { causeTag } : {}),
+        ...(errorName ? { errorName } : {}),
+        ...(errorCode ? { errorCode } : {}),
+        ...(errorStack ? { errorStack } : {}),
+      };
+    },
+    catch: () => ({}),
+  }).match({ ok: (value) => value, err: () => ({}) });
   {
     const attempt = Result.try({
       try: () => {
         const details = extractAiErrorLogDetails(projectedCause);
-        return details ? { message, details } : { message };
+        return details ? { message, details, ...meta } : { message, ...meta };
       },
       catch: captureError,
     });
 
     if (attempt.isErr()) {
-      return { message };
+      return { message, ...meta };
     }
     return attempt.value;
   }

@@ -51,7 +51,10 @@ import type {
 } from "@stanley2058/lilac-utils";
 import {
   AgentProviderOptionsInvalid,
+  captureTelemetryAgentRun,
+  captureTelemetryError,
   CUSTOM_COMMAND_TOOL_NAME,
+  isTelemetryUsageCaptureActive,
   deriveSubagentIdleTimeoutMs,
   parseAgentProviderOptions,
   env,
@@ -88,6 +91,7 @@ import {
   classifyHistoryProviderFamily,
   createAgentRunIdleWatchdog,
   createRetryBackoffBudget,
+  sumLanguageModelUsage,
   type AiSdkPiAgentOptions,
   type AiSdkPiAgentEvent,
   type AgentInputQueueId,
@@ -3415,6 +3419,7 @@ export async function startBusAgentRunner(params: {
     const routerSessionMode = parseRouterSessionModeFromRaw(next.raw);
 
     let activeAgent: AiSdkPiAgent<ToolSet> | null = null;
+    const getActiveAgent = (): AiSdkPiAgent<ToolSet> | null => activeAgent;
     const requiresAgentRecovery = (): boolean => activeAgent?.state.recoveryRequired !== undefined;
     let claudeCodeRun: MaterializedClaudeCodeRun | null = null;
     let coreNamedClaudeRuntime: CoreNamedClaudeRuntime | null = null;
@@ -3922,7 +3927,74 @@ export async function startBusAgentRunner(params: {
     let roundEstimatedCostCount = 0;
 
     let resolvedModelLabel = "unknown";
+    let resolvedModelId: string | undefined;
+    let resolvedProviderName: string | undefined;
+    let resolvedModelSpec: string | undefined;
     let resolvedProviderFamily: HistoryProviderState["lastFamily"] = "ai-sdk";
+    let telemetryTurns = 0;
+    let telemetryToolCallCount = 0;
+    let telemetryDidSwitchModel = false;
+    let telemetryAccumulatedUsage: LanguageModelUsage | undefined;
+    const resolveTelemetryTransport = (provider: string | undefined): string => {
+      const observed = getActiveAgent()?.getLastExecutionTransport();
+      if (observed) return observed;
+      if (provider === "claude-code") return "claude-code";
+      return "ai-sdk";
+    };
+    const emitTelemetryAgentRun = (params: {
+      readonly status: "resolved" | "cancelled" | "failed";
+      readonly durationMs: number;
+      readonly provider?: string;
+      readonly modelId?: string;
+      readonly modelSpec?: string;
+      readonly ttftMs?: number | null;
+      readonly transcriptMessageCount?: number;
+      readonly estimatedCostUsd?: number;
+      readonly errorTag?: string;
+      readonly statusCode?: number;
+    }): void => {
+      if (!isTelemetryUsageCaptureActive()) return;
+      Result.try({
+        try: () => {
+          const surface = isHeartbeatSessionId(headers.session_id)
+            ? "heartbeat"
+            : (headers.request_client ?? "unknown");
+          const usage = telemetryAccumulatedUsage ?? runStats.totalUsage;
+          captureTelemetryAgentRun({
+            status: params.status,
+            surface,
+            isSubagent: runProfile !== "primary",
+            isWorkflow: workflowHint !== null,
+            isHeartbeat: isHeartbeatSessionId(headers.session_id),
+            provider: params.provider,
+            modelId: params.modelId,
+            modelSpec: params.modelSpec,
+            transport: resolveTelemetryTransport(params.provider),
+            didSwitchModel: telemetryDidSwitchModel,
+            durationMs: params.durationMs,
+            ttftMs: params.ttftMs,
+            turns: telemetryTurns,
+            toolCallCount: telemetryToolCallCount,
+            compacted: completedCompactionCount > 0 || transcriptHasCompactionCheckpoint,
+            transcriptMessageCount: params.transcriptMessageCount,
+            inputTokens: usage?.inputTokens,
+            outputTokens: usage?.outputTokens,
+            totalTokens: usage?.totalTokens,
+            noCacheTokens: usage?.inputTokenDetails.noCacheTokens,
+            cacheReadTokens: usage?.inputTokenDetails.cacheReadTokens,
+            cacheWriteTokens: usage?.inputTokenDetails.cacheWriteTokens,
+            textTokens: usage?.outputTokenDetails.textTokens,
+            reasoningTokens: usage?.outputTokenDetails.reasoningTokens,
+            estimatedCostUsd: params.estimatedCostUsd,
+            requestId: headers.request_id,
+            sessionId: headers.session_id,
+            errorTag: params.errorTag,
+            statusCode: params.statusCode,
+          });
+        },
+        catch: () => undefined,
+      });
+    };
     let requestTerminalKind: "completed" | "failed" | "cancelled" = "failed";
     let shouldTerminalizeRequest = true;
     let terminalMarkerAttempted = false;
@@ -4387,6 +4459,9 @@ export async function startBusAgentRunner(params: {
           const initialResolvedModel = modelPlan.head;
           nativeOutput?.model(initialResolvedModel.spec, initialResolvedModel.reasoning);
           resolvedModelLabel = initialResolvedModel.modelId;
+          resolvedModelId = initialResolvedModel.modelId;
+          resolvedProviderName = initialResolvedModel.provider;
+          resolvedModelSpec = initialResolvedModel.spec;
           resolvedProviderFamily = classifyHistoryProviderFamily({
             type: initialResolvedModel.provider,
           });
@@ -4923,10 +4998,14 @@ export async function startBusAgentRunner(params: {
             setCurrentTurnContext(currentTurnUserId, currentTurnMessageRef);
             activeModelIndex = nextFallback.index;
             didSwitchModel = true;
+            telemetryDidSwitchModel = true;
             modelCapabilityInfo = nextBinding.capabilityInfo;
             costEstimateStatus = nextBinding.costEstimateStatus;
             costEstimateReason = nextBinding.costEstimateReason;
             resolvedModelLabel = nextBinding.resolved.modelId;
+            resolvedModelId = nextBinding.resolved.modelId;
+            resolvedProviderName = nextBinding.resolved.provider;
+            resolvedModelSpec = nextBinding.resolved.spec;
             resolvedProviderFamily = classifyHistoryProviderFamily({
               type: nextBinding.resolved.provider,
             });
@@ -5918,6 +5997,17 @@ export async function startBusAgentRunner(params: {
 
             if (event.type === "agent_end") {
               runStats.totalUsage = event.totalUsage;
+              if (isTelemetryUsageCaptureActive()) {
+                Result.try({
+                  try: () => {
+                    telemetryAccumulatedUsage = sumLanguageModelUsage(
+                      telemetryAccumulatedUsage,
+                      event.totalUsage,
+                    );
+                  },
+                  catch: () => undefined,
+                });
+              }
               runStats.finalMessages = event.messages;
             }
 
@@ -5992,6 +6082,7 @@ export async function startBusAgentRunner(params: {
               stablePartialText = state.activeRun?.partialText ?? stablePartialText;
 
               turnEndCount++;
+              telemetryTurns += 1;
               runStats.lastTurnFinishReason = event.finishReason;
               runStats.lastTurnEndAt = Date.now();
 
@@ -6326,6 +6417,7 @@ export async function startBusAgentRunner(params: {
             }
 
             if (event.type === "tool_execution_end") {
+              telemetryToolCallCount += 1;
               runWait.toolEnded(event.toolCallId);
               state.activeRun?.activeTools.delete(event.toolCallId);
               const started = toolStartMs.get(event.toolCallId);
@@ -7188,6 +7280,16 @@ export async function startBusAgentRunner(params: {
             },
             isCancelled ? "cancelled" : "completed",
           );
+          emitTelemetryAgentRun({
+            status: isCancelled ? "cancelled" : "resolved",
+            durationMs: Date.now() - runStartedAt,
+            provider: activeBinding.resolved.provider,
+            modelId: activeBinding.resolved.modelId,
+            modelSpec: activeBinding.resolved.spec,
+            ttftMs,
+            transcriptMessageCount: (runStats.finalMessages ?? agent.state.messages).length,
+            estimatedCostUsd: estimatedCostUsdTotal,
+          });
           logger.info(
             "agent run resolved",
             formatBridgeLogContext({
@@ -7489,6 +7591,63 @@ export async function startBusAgentRunner(params: {
           message: failure.message,
           details: failure.details,
         };
+        const failedDurationMs = Date.now() - runStartedAt;
+        const failedSurface = isHeartbeatSessionId(headers.session_id)
+          ? "heartbeat"
+          : (headers.request_client ?? "unknown");
+        const latestModelView = getActiveAgent()?.getLatestModelView();
+        let telemetryFailureSource = failedSurface;
+        if (next.recovery) telemetryFailureSource = "wal-recovery";
+        else if (completedCompactionCount > 0) telemetryFailureSource = "compaction";
+        emitTelemetryAgentRun({
+          status: "failed",
+          durationMs: failedDurationMs,
+          provider: resolvedProviderName,
+          modelId: resolvedModelId,
+          modelSpec: resolvedModelSpec,
+          estimatedCostUsd: roundEstimatedCostUsdTotal,
+          errorTag: failure.causeTag ?? failure._tag,
+          statusCode: projectedError.details?.statusCode,
+        });
+        const failedTransport = resolveTelemetryTransport(resolvedProviderName);
+        captureTelemetryError({
+          module: "surface:bus-agent-runner",
+          event: "agent run failed",
+          errorTag: failure.causeTag ?? failure._tag,
+          errorName: failure.errorName,
+          errorCode: failure.errorCode,
+          errorStack: failure.errorStack,
+          requestId: headers.request_id,
+          sessionId: headers.session_id,
+          runId: workflowHint?.runId,
+          provider: resolvedProviderName,
+          transport: failedTransport,
+          surface: failedSurface,
+          durationMs: failedDurationMs,
+          aiError: projectedError.details,
+          rawErrorMessage: projectedError.message,
+          ...(latestModelView
+            ? {
+                transcriptContext: {
+                  messages: latestModelView.messages,
+                  preProjectionMessages: latestModelView.preProjectionMessages,
+                  target: {
+                    provider: resolvedProviderName,
+                    transport: failedTransport,
+                    routed:
+                      resolvedProviderName === "openrouter" || resolvedProviderName === "vercel",
+                  },
+                  provenance: {
+                    source: telemetryFailureSource,
+                    compacted: completedCompactionCount > 0 || transcriptHasCompactionCheckpoint,
+                    didSwitchModel: telemetryDidSwitchModel,
+                    step: latestModelView.step,
+                    ...(latestModelView.wireContext ? latestModelView.wireContext : {}),
+                  },
+                },
+              }
+            : {}),
+        });
         logger.error(
           "agent run failed",
           formatBridgeLogContext({

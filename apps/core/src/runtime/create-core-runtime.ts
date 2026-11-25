@@ -14,12 +14,15 @@ import { maintainWorkflowArtifactPublications } from "../workflow/workflow-artif
 import { captureError } from "../shared/error-capture.js";
 import type { LogLevel } from "@stanley2058/simple-module-logger";
 import {
+  configureTelemetry,
   createLogger,
   env,
   errorMessage,
+  flushTelemetry,
   formatTaggedErrorForLog,
   getCoreConfig,
   getOpenObserveDiagnostics,
+  getTelemetryDiagnostics,
   isPanic,
   readCoreConfigVersionResult,
   resolveDiscordDbPath,
@@ -641,6 +644,23 @@ export async function createCoreRuntime(
   const nativeEnabled = initialCoreConfig.surface.native.enabled || Boolean(operatorTokenSha256);
   const discordEnabled =
     !nativeEnabled || Boolean(process.env[initialCoreConfig.surface.discord.tokenEnv]);
+  const syncTelemetryConfig = (config: typeof initialCoreConfig): void => {
+    const enabledSurfaces: string[] = [];
+    if (discordEnabled) enabledSurfaces.push("discord");
+    if (nativeEnabled) enabledSurfaces.push("native");
+    if (env.github.webhookSecret) enabledSurfaces.push("github");
+    configureTelemetry({
+      errors: config.telemetry.errors,
+      usage: config.telemetry.usage,
+      dataDir: env.dataDir,
+      disabled: env.telemetry.disabled,
+      envSnapshot: {
+        surfaces: enabledSurfaces,
+        blobBackend: config.blobStorage.kind,
+      },
+    });
+  };
+  syncTelemetryConfig(initialCoreConfig);
   let nativeInstallation: NativeInstallation | null = null;
   let nativeRuntime: NativeRuntime | null = null;
   let nativeConversationPlanner: ConversationThreadToolService | undefined;
@@ -1485,6 +1505,7 @@ export async function createCoreRuntime(
             memoryDiagnostics: {
               ...surfaceMemoryDiagnostics,
               openObserve: getOpenObserveDiagnostics(),
+              telemetry: getTelemetryDiagnostics(),
             },
           }
         : {}),
@@ -1514,6 +1535,7 @@ export async function createCoreRuntime(
       ok: (config) => async () => {
         activeTranscriptRetention = config.agent.transcriptRetention;
         currentCoreConfig = config;
+        syncTelemetryConfig(config);
         await nativeRuntime?.updateCatalog();
         if (coreConfigValidationHadError) {
           logger.info("core-config hot-reload validation recovered", {
@@ -3367,6 +3389,7 @@ export async function createCoreRuntime(
       await safe("coreConfigWatcher.stop", async () => {
         stopCoreConfigWatcher();
       });
+      await safe("telemetry.flush", () => flushTelemetry(2_000));
       fullCleanupPending = false;
     }
     for (const supervision of residualRouterDoneSupervisions) {

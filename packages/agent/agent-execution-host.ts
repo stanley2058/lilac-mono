@@ -71,6 +71,13 @@ export type AgentExecutionState<TOOLS extends ToolSet = ToolSet> = Omit<
   readonly pendingToolCalls: ReadonlySet<string>;
   readonly debug?: Readonly<NonNullable<AgentState<TOOLS>["debug"]>>;
 };
+export type ModelViewWireContext = {
+  readonly sendKind: "explicit" | "continuation" | "steer";
+  readonly adapterTransport?: "ai-sdk" | "openai-responses";
+  readonly usedPreviousResponseId?: boolean;
+  readonly sentItemCount?: number;
+};
+
 export interface AgentExecutionHost<TOOLS extends ToolSet = ToolSet> extends AgentHostServices {
   controlBoundary(): Promise<"stop" | "again" | "ready">;
   prepareRequest(request: {
@@ -101,7 +108,13 @@ export interface AgentExecutionHost<TOOLS extends ToolSet = ToolSet> extends Age
     projectResult?: ProjectSettledToolResult,
   ): Promise<ResultType<number, ToolBatchExecutionFailed>>;
   readState(): AgentExecutionState<TOOLS>;
-  recordModelView(messages: readonly ModelMessage[], step: number): void;
+  recordExecutionTransport?(transport: "ai-sdk" | "openai-responses"): void;
+  recordModelView(
+    messages: readonly ModelMessage[],
+    step: number,
+    preProjectionMessages?: readonly ModelMessage[],
+    wireContext?: ModelViewWireContext,
+  ): void;
   signal(): AbortSignal | undefined;
   abortReason(): TurnAbortReason;
   publish(event: AgentEvent<ToolSet>): void;

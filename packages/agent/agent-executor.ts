@@ -13,6 +13,8 @@ import type {
 } from "ai";
 import { Panic, Result, type Result as ResultType } from "better-result";
 import { errorMessage } from "@stanley2058/lilac-utils/runtime-utils";
+import { isTelemetryErrorCaptureActive } from "@stanley2058/lilac-utils/telemetry";
+import type { ModelViewWireContext } from "./agent-execution-host";
 import {
   normalizeReplayMessages,
   normalizeAssistantToolCallInputMessage,
@@ -173,6 +175,13 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
 
   private turnCounter = 0;
   private readonly captureModelViewMessages: boolean;
+  private latestModelView: {
+    readonly messages: readonly ModelMessage[];
+    readonly preProjectionMessages?: readonly ModelMessage[];
+    readonly step: number;
+    readonly wireContext?: ModelViewWireContext;
+  } | null = null;
+  private lastExecutionTransport: "ai-sdk" | "openai-responses" | undefined;
 
   private readonly deferredToolNames: (() => readonly string[]) | undefined;
   /** `null` authorizes every tool in the current toolset. */
@@ -308,6 +317,25 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
   /** Snapshot the configured active names, or `null` when unrestricted. */
   getActiveToolNames(): ReadonlySet<string> | null {
     return this.activeToolNames ? new Set(this.activeToolNames) : null;
+  }
+
+  /** Latest outbound model-view messages recorded for the active or last step. */
+  getLatestModelView(): {
+    readonly messages: readonly ModelMessage[];
+    readonly preProjectionMessages?: readonly ModelMessage[];
+    readonly step: number;
+    readonly wireContext?: ModelViewWireContext;
+  } | null {
+    if (!this.captureModelViewMessages && !isTelemetryErrorCaptureActive()) {
+      this.latestModelView = null;
+      return null;
+    }
+    return this.latestModelView;
+  }
+
+  /** Actual execution adapter transport recorded on the most recent model call. */
+  getLastExecutionTransport(): "ai-sdk" | "openai-responses" | undefined {
+    return this.lastExecutionTransport;
   }
 
   /** Return the immutable authority used by the most recent model step. */
@@ -2373,8 +2401,25 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         active();
         return this.snapshotExecutionState();
       },
-      recordModelView: (messages, step) => {
+      recordExecutionTransport: (transport) => {
         active();
+        this.lastExecutionTransport = transport;
+      },
+      recordModelView: (messages, step, preProjectionMessages, wireContext) => {
+        active();
+        if (wireContext?.adapterTransport) {
+          this.lastExecutionTransport = wireContext.adapterTransport;
+        }
+        if (this.captureModelViewMessages || isTelemetryErrorCaptureActive()) {
+          this.latestModelView = {
+            messages,
+            ...(preProjectionMessages ? { preProjectionMessages } : {}),
+            step,
+            ...(wireContext ? { wireContext } : {}),
+          };
+        } else {
+          this.latestModelView = null;
+        }
         if (!this.captureModelViewMessages) return;
         this.state.debug ??= {};
         this.state.debug.lastModelViewMessages = messages.map(snapshotAgentMessage);
@@ -2674,6 +2719,8 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
     this.nativeDeliveryFailure = undefined;
     this.activeAdapterFailure = undefined;
     this.retiredExecution = undefined;
+    this.lastExecutionTransport = undefined;
+    this.latestModelView = null;
     this.activeExecutionFailurePhase = "before-step";
     const constructed = resultOutcome(
       await captureAgentPromise(async () => {
