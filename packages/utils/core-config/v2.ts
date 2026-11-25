@@ -16,6 +16,7 @@ import {
   migrateWebConfigValue,
   routerSchema,
   statsForNerdsSchema,
+  telemetryConfigSchema,
   webExtractConfigValueSchema,
   webFetchModeSchema,
 } from "./v1";
@@ -1686,6 +1687,8 @@ export const coreConfigInputSchemaV2 = z.object({
       "Storage for managed opaque bytes. Omit to use local storage below DATA_DIR. For a custom local location use `{kind: local, root: /var/lib/lilac/blobs}`. For S3 use an existing private bucket and environment-variable names for credentials.",
     ),
 
+  telemetry: telemetryConfigSchema,
+
   tools: toolsSchema.describe(
     "File, web, media, and tool-result settings. Omitted options use the defaults shown on their fields.",
   ),
@@ -1812,6 +1815,7 @@ export function coreConfigV2ShapeToUniversal<
     models: UniversalCoreConfig["models"];
     configVersion: CoreConfigVersion;
     agent: Omit<ParsedCoreConfigV2["agent"], "subagents"> & { subagents: object };
+    telemetry?: UniversalCoreConfig["telemetry"];
   },
 >(
   parsed: T,
@@ -1839,6 +1843,7 @@ export function coreConfigV2ShapeToUniversal<
   return {
     ...isolated,
     blobStorage: isolated.blobStorage ?? { kind: "local" },
+    telemetry: isolated.telemetry ?? { errors: false, usage: false },
     tools: {
       ...tools,
       web: firecrawl

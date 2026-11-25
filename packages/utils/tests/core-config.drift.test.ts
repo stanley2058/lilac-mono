@@ -53,6 +53,7 @@ describe("core config drift coverage", () => {
       "models",
       "plugins",
       "surface",
+      "telemetry",
       "tools",
       "workflows",
     ];
@@ -84,6 +85,7 @@ describe("core config drift coverage", () => {
 
     expect(cfg.configVersion).toBe(3);
     expect(cfg.blobStorage).toEqual({ kind: "local" });
+    expect(cfg.telemetry).toEqual({ errors: false, usage: false });
     expect(cfg.tools.fsBackend).toBe("fff");
     expect(cfg.tools).not.toHaveProperty("inspect");
     expect(cfg.tools.editFile.hashline).toBe(true);

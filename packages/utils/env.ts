@@ -64,6 +64,9 @@ export function parseEnv() {
   );
   const llmWireDebugMaxEvents = parsePositiveInt(env.LILAC_LLM_WIRE_DEBUG_MAX_EVENTS, 400);
 
+  const telemetryDisabled =
+    parseBoolean(env.LILAC_TELEMETRY_DISABLED) || parseBoolean(env.DO_NOT_TRACK);
+
   return {
     logLevel: env.LOG_LEVEL as LogLevel,
     redisUrl: env.REDIS_URL,
@@ -164,6 +167,9 @@ export function parseEnv() {
         maxBodyBytes: llmWireDebugMaxBodyBytes,
         maxEvents: llmWireDebugMaxEvents,
       },
+    },
+    telemetry: {
+      disabled: telemetryDisabled,
     },
   } as const;
 }

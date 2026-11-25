@@ -852,6 +852,26 @@ const DEFAULT_AGENT_RETRY = {
   maxDelayMs: 30_000,
 };
 
+export const telemetryConfigSchema = z
+  .object({
+    errors: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Opt in to sending sanitized error diagnostics (allowlisted breadcrumbs, repo-relative stack frames, and structural transcript shape skeletons on provider 4xx schema failures) with no user text or raw identifiers. Defaults to false.",
+      ),
+    usage: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Opt in to sending anonymous per-run model, surface, latency, and token usage metrics with no prompt or response content. Defaults to false.",
+      ),
+  })
+  .default({ errors: false, usage: false })
+  .describe(
+    "Opt-in anonymous telemetry settings. Both options default to false. Set LILAC_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 to disable telemetry globally.",
+  );
+
 export const coreConfigInputSchemaV1 = z.object({
   configVersion: configVersionSchema.describe(
     "Configuration format version. New files use 3. An omitted version is parsed as version 1; set this explicitly before using newer fields. See docs/core-config-migrations.md for upgrades.",
@@ -1084,6 +1104,8 @@ export const coreConfigInputSchemaV1 = z.object({
       "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt.",
     ),
 
+  telemetry: telemetryConfigSchema,
+
   basePrompt: z
     .string()
     .optional()
@@ -1134,6 +1156,7 @@ function coreConfigV1ToUniversal(
   return {
     ...parsed,
     blobStorage: { kind: "local" },
+    telemetry: parsed.telemetry,
     plugins: parsed.plugins,
     tools: {
       ...toolsRest,

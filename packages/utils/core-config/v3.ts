@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { defaultNativeSurfaceConfig, MODEL_REASONING_EFFORTS } from "./types";
 import { isPermissionProfileName } from "../subagent-profile";
-import { jsonValueSchema } from "./v1";
+import { jsonValueSchema, telemetryConfigSchema } from "./v1";
 import {
   AGENT_DEFAULT_V2,
   agentSchemaFieldsV2,
@@ -470,6 +470,7 @@ export const coreConfigInputSchemaV3 = coreConfigInputSchemaV2.extend({
   surface: surfaceSchemaV3.describe(
     "Communication surfaces, request routing, and autonomous heartbeat settings.",
   ),
+  telemetry: telemetryConfigSchema,
   configVersion: z
     .literal(V3_CORE_CONFIG_VERSION)
     .default(V3_CORE_CONFIG_VERSION)

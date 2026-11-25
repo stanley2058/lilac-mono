@@ -1175,6 +1175,27 @@
           "additionalProperties": false,
           "markdownDescription": "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt."
         },
+        "telemetry": {
+          "default": { "errors": false, "usage": false },
+          "description": "Opt-in anonymous telemetry settings. Both options default to false. Set LILAC_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 to disable telemetry globally.",
+          "type": "object",
+          "properties": {
+            "errors": {
+              "default": false,
+              "description": "Opt in to sending sanitized error diagnostics (allowlisted breadcrumbs, repo-relative stack frames, and structural transcript shape skeletons on provider 4xx schema failures) with no user text or raw identifiers. Defaults to false.",
+              "type": "boolean",
+              "markdownDescription": "Opt in to sending sanitized error diagnostics (allowlisted breadcrumbs, repo-relative stack frames, and structural transcript shape skeletons on provider 4xx schema failures) with no user text or raw identifiers. Defaults to false."
+            },
+            "usage": {
+              "default": false,
+              "description": "Opt in to sending anonymous per-run model, surface, latency, and token usage metrics with no prompt or response content. Defaults to false.",
+              "type": "boolean",
+              "markdownDescription": "Opt in to sending anonymous per-run model, surface, latency, and token usage metrics with no prompt or response content. Defaults to false."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Opt-in anonymous telemetry settings. Both options default to false. Set LILAC_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 to disable telemetry globally."
+        },
         "basePrompt": {
           "description": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts.",
           "type": "string",
@@ -1286,6 +1307,27 @@
             }
           ],
           "markdownDescription": "Storage for managed opaque bytes. Omit to use local storage below DATA_DIR. For a custom local location use `{kind: local, root: /var/lib/lilac/blobs}`. For S3 use an existing private bucket and environment-variable names for credentials."
+        },
+        "telemetry": {
+          "default": { "errors": false, "usage": false },
+          "description": "Opt-in anonymous telemetry settings. Both options default to false. Set LILAC_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 to disable telemetry globally.",
+          "type": "object",
+          "properties": {
+            "errors": {
+              "default": false,
+              "description": "Opt in to sending sanitized error diagnostics (allowlisted breadcrumbs, repo-relative stack frames, and structural transcript shape skeletons on provider 4xx schema failures) with no user text or raw identifiers. Defaults to false.",
+              "type": "boolean",
+              "markdownDescription": "Opt in to sending sanitized error diagnostics (allowlisted breadcrumbs, repo-relative stack frames, and structural transcript shape skeletons on provider 4xx schema failures) with no user text or raw identifiers. Defaults to false."
+            },
+            "usage": {
+              "default": false,
+              "description": "Opt in to sending anonymous per-run model, surface, latency, and token usage metrics with no prompt or response content. Defaults to false.",
+              "type": "boolean",
+              "markdownDescription": "Opt in to sending anonymous per-run model, surface, latency, and token usage metrics with no prompt or response content. Defaults to false."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Opt-in anonymous telemetry settings. Both options default to false. Set LILAC_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 to disable telemetry globally."
         },
         "tools": {
           "description": "File, web, media, and tool-result settings. Omitted options use the defaults shown on their fields.",
@@ -4133,6 +4175,27 @@
             }
           ],
           "markdownDescription": "Storage for managed opaque bytes. Omit to use local storage below DATA_DIR. For a custom local location use `{kind: local, root: /var/lib/lilac/blobs}`. For S3 use an existing private bucket and environment-variable names for credentials."
+        },
+        "telemetry": {
+          "default": { "errors": false, "usage": false },
+          "description": "Opt-in anonymous telemetry settings. Both options default to false. Set LILAC_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 to disable telemetry globally.",
+          "type": "object",
+          "properties": {
+            "errors": {
+              "default": false,
+              "description": "Opt in to sending sanitized error diagnostics (allowlisted breadcrumbs, repo-relative stack frames, and structural transcript shape skeletons on provider 4xx schema failures) with no user text or raw identifiers. Defaults to false.",
+              "type": "boolean",
+              "markdownDescription": "Opt in to sending sanitized error diagnostics (allowlisted breadcrumbs, repo-relative stack frames, and structural transcript shape skeletons on provider 4xx schema failures) with no user text or raw identifiers. Defaults to false."
+            },
+            "usage": {
+              "default": false,
+              "description": "Opt in to sending anonymous per-run model, surface, latency, and token usage metrics with no prompt or response content. Defaults to false.",
+              "type": "boolean",
+              "markdownDescription": "Opt in to sending anonymous per-run model, surface, latency, and token usage metrics with no prompt or response content. Defaults to false."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Opt-in anonymous telemetry settings. Both options default to false. Set LILAC_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 to disable telemetry globally."
         },
         "tools": {
           "description": "File, web, media, and tool-result settings. Omitted options use the defaults shown on their fields.",
