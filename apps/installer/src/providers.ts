@@ -21,8 +21,8 @@ export const PROVIDERS = [
     key: "OPENAI_API_KEY",
     baseEnv: "OPENAI_BASE_URL",
     base: "https://api.openai.com/v1",
-    main: "gpt-5.6-sol",
-    fast: "gpt-5.6-luna",
+    main: "gpt-6.2-sol",
+    fast: "gpt-6-luna",
     mainReasoning: "medium",
     fastReasoning: "low",
   },
@@ -32,8 +32,8 @@ export const PROVIDERS = [
     key: "",
     baseEnv: "",
     base: "",
-    main: "gpt-5.6-sol",
-    fast: "gpt-5.6-luna",
+    main: "gpt-6.2-sol",
+    fast: "gpt-6-luna",
     mainReasoning: "medium",
     fastReasoning: "low",
   },
@@ -43,8 +43,8 @@ export const PROVIDERS = [
     key: "ANTHROPIC_API_KEY",
     baseEnv: "ANTHROPIC_BASE_URL",
     base: "https://api.anthropic.com/v1",
-    main: "opus-5",
-    fast: "sonnet-5",
+    main: "claude-opus-5-5",
+    fast: "claude-haiku-5-5",
     mainReasoning: "medium",
     fastReasoning: "medium",
   },
@@ -54,8 +54,8 @@ export const PROVIDERS = [
     key: "AI_GATEWAY_API_KEY",
     baseEnv: "AI_GATEWAY_BASE_URL",
     base: "https://ai-gateway.vercel.sh/v1",
-    main: "openai/gpt-5.6-sol",
-    fast: "openai/gpt-5.6-luna",
+    main: "openai/gpt-6.2-sol",
+    fast: "openai/gpt-6-luna",
     mainReasoning: "medium",
     fastReasoning: "low",
   },
@@ -65,8 +65,8 @@ export const PROVIDERS = [
     key: "OPENROUTER_API_KEY",
     baseEnv: "OPENROUTER_BASE_URL",
     base: "https://openrouter.ai/api/v1",
-    main: "openai/gpt-5.6-sol",
-    fast: "openai/gpt-5.6-luna",
+    main: "openai/gpt-6.2-sol",
+    fast: "openai/gpt-6-luna",
     mainReasoning: "medium",
     fastReasoning: "low",
   },
@@ -76,10 +76,21 @@ export const PROVIDERS = [
     key: "XAI_API_KEY",
     baseEnv: "XAI_BASE_URL",
     base: "https://api.x.ai/v1",
-    main: "grok-4.6",
+    main: "grok-4.7",
     fast: "grok-4.5",
     mainReasoning: "high",
     fastReasoning: "medium",
+  },
+  {
+    id: "google",
+    label: "Google Gemini API",
+    key: "GEMINI_API_KEY",
+    baseEnv: "GEMINI_BASE_URL",
+    base: "https://generativelanguage.googleapis.com/v1beta",
+    main: "gemini-4-neon",
+    fast: "gemini-4-hydrogen",
+    mainReasoning: "medium",
+    fastReasoning: "low",
   },
   {
     id: "cerebras",
@@ -164,6 +175,10 @@ export async function validateProvider(
     delete headers.Authorization;
     headers["x-api-key"] = key;
     headers["anthropic-version"] = "2023-06-01";
+  }
+  if (id === "google") {
+    delete headers.Authorization;
+    headers["x-goog-api-key"] = key;
   }
   const checkUrl = new URL(`${baseUrl.replace(/\/$/, "")}/${endpoint}`);
   if (checkUrl.hostname === "host.docker.internal") checkUrl.hostname = "localhost";

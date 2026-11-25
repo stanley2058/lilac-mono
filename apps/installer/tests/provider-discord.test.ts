@@ -89,8 +89,12 @@ describe("provider setup", () => {
         select("done"),
       );
       const prompt = new ScriptedPrompt(answers);
-      const requests: { url: string; authorization: string | null; anthropicKey: string | null }[] =
-        [];
+      const requests: {
+        url: string;
+        authorization: string | null;
+        anthropicKey: string | null;
+        googleKey: string | null;
+      }[] = [];
       await configureProviders(prompt, state, {
         fetch: async (url, init) => {
           const headers = new Headers(init?.headers);
@@ -98,6 +102,7 @@ describe("provider setup", () => {
             url,
             authorization: headers.get("Authorization"),
             anthropicKey: headers.get("x-api-key"),
+            googleKey: headers.get("x-goog-api-key"),
           });
           return Response.json({ data: [] });
         },
@@ -115,9 +120,16 @@ describe("provider setup", () => {
       );
       expect(state.secrets[provider.key]).toBe("fixture-key");
       expect(requests).toHaveLength(1);
-      expect(
-        provider.id === "anthropic" ? requests[0]?.anthropicKey : requests[0]?.authorization,
-      ).toBe(provider.id === "anthropic" ? "fixture-key" : "Bearer fixture-key");
+      const credential = {
+        anthropic: requests[0]?.anthropicKey,
+        google: requests[0]?.googleKey,
+      }[provider.id as string];
+      expect(credential ?? requests[0]?.authorization).toBe(
+        provider.id === "anthropic" || provider.id === "google"
+          ? "fixture-key"
+          : "Bearer fixture-key",
+      );
+      if (provider.id === "google") expect(requests[0]?.authorization).toBeNull();
       expect(prompt.notes.join("\n")).not.toContain("fixture-key");
     });
   }
@@ -165,8 +177,8 @@ describe("provider setup", () => {
       select("openai"),
     ]);
     await configureProviders(prompt, state, { fetch: async () => Response.json({}) });
-    expect(state.get(["models", "main", "model"])).toBe("anthropic/opus-5");
-    expect(state.get(["models", "fast", "model"])).toBe("openai/gpt-5.6-luna");
+    expect(state.get(["models", "main", "model"])).toBe("anthropic/claude-opus-5-5");
+    expect(state.get(["models", "fast", "model"])).toBe("openai/gpt-6-luna");
     expect(Object.keys(state.secrets)).toEqual(["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]);
     prompt.done();
   });
@@ -517,7 +529,7 @@ describe("provider setup", () => {
       confirm(false),
     ]);
     await configureProviders(prompt, state, { fetch: async () => Response.json({}) });
-    expect(state.get(["models", "main", "model"])).toBe("openai/gpt-5.6-sol");
+    expect(state.get(["models", "main", "model"])).toBe("openai/gpt-6.2-sol");
     expect(state.get(["models", "main", "options"])).toBeUndefined();
     expect(state.get(["models", "main", "fallback"])).toBeUndefined();
     prompt.done();
