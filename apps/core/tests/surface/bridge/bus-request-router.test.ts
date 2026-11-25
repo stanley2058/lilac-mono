@@ -921,7 +921,11 @@ describe("Discord authenticated-origin publication", () => {
       { role: "assistant" as const, content: "Started." },
     ];
 
-    async function startRouter(adapter: FakeAdapter, transcript: unknown = { messages: history }) {
+    async function startRouter(
+      adapter: FakeAdapter,
+      transcript: unknown = { messages: history },
+      withSkip = false,
+    ) {
       const published: { data: Record<string, unknown>; headers: unknown }[] = [];
       const bus = createLilacBus(createInMemoryRawBus());
       const router = await startBusRequestRouter({
@@ -931,6 +935,16 @@ describe("Discord authenticated-origin publication", () => {
         config: parseCoreConfigV1ToUniversal({}),
         transcriptStore: {
           getLatestTranscriptBySession: () => Result.ok(transcript),
+          getDiscordSkippedReply: () =>
+            Result.ok(
+              withSkip
+                ? {
+                    reason: "Waiting for the build.",
+                    requestId: "discord:channel:origin",
+                    toolCallId: "skip-1",
+                  }
+                : null,
+            ),
         } as never,
         requestDelivery: {
           prepareAndPublish: async ({ envelope }) => {
@@ -966,6 +980,23 @@ describe("Discord authenticated-origin publication", () => {
       expect(messages).toHaveLength(3);
       expect(messages.at(-1)).toEqual({ role: "user", content: wakeInput.promptText });
       await router.stop();
+    });
+
+    it.each([true, false])("wakes after a skip with prior history present=%s", async (hasPrior) => {
+      const { router, published } = await startRouter(
+        new FakeAdapter({ "channel:origin": origin }),
+        hasPrior ? { messages: [{ role: "assistant", content: "Earlier conversation." }] } : null,
+        true,
+      );
+      try {
+        expect(await router.publishJobWake(wakeInput)).toEqual(Result.ok("accepted"));
+        const prompt = JSON.stringify(published[0]?.data.messages);
+        expect(prompt.includes("Earlier conversation.")).toBe(hasPrior);
+        expect(prompt).toContain(origin.text);
+        expect(prompt.split("Waiting for the build.")).toHaveLength(2);
+      } finally {
+        await router.stop();
+      }
     });
 
     it("binds the wake's request ID to the origin message for trust and replies", () => {

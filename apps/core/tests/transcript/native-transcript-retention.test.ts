@@ -109,6 +109,7 @@ test("schema 12 migration pins existing native transcripts before the next globa
   f.age();
   f.store.close();
   const db = new Database(f.path);
+  db.run("DROP TABLE discord_skipped_replies");
   db.run("DROP TABLE core_native_transcript_refs");
   db.run("ALTER TABLE core_resources DROP COLUMN image_preview_json");
   db.run("DELETE FROM transcript_schema_migrations WHERE version>=13");

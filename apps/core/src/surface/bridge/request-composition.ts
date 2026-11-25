@@ -1,3 +1,4 @@
+import { collectSkipReplyKeys, skipReplyKey, discordSkippedReply } from "../../tools/skip-reply";
 import { createFreshOnlyLineage } from "../../shared/core-primary-lineage";
 import { captureError } from "../../shared/error-capture";
 import { isDeepStrictEqual } from "node:util";
@@ -711,10 +712,20 @@ async function composeSelectedDiscordChain(input: {
     const candidateOwnedBlobsByMessageId = new Map<string, readonly CoreOwnedBlobReference[]>();
     let lineageComplete = Boolean(projectionStore);
     const transcriptSnapshotByMessageId = new Map<string, TranscriptSnapshot>();
+    const skipsByMessageId = new Map<string, NonNullable<ReturnType<typeof discordSkippedReply>>>();
     const aliasMessageIdsByRequestId = new Map<string, string[]>();
     if (input.transcriptStore) {
       for (const message of immutableChain) {
-        if (message.authorId !== input.botUserId) continue;
+        if (message.authorId !== input.botUserId) {
+          if (currentMessageIds.has(message.messageId)) continue;
+          const skipped = discordSkippedReply(
+            input.transcriptStore,
+            input.sessionId,
+            message.messageId,
+          );
+          if (skipped) skipsByMessageId.set(message.messageId, skipped);
+          continue;
+        }
         const snapshot = resolveTranscriptSnapshot({
           platform: "discord",
           channelId: input.sessionId,
@@ -865,6 +876,13 @@ async function composeSelectedDiscordChain(input: {
     const seenRequestIds = new Set<string>(
       input.checkpointSelection.checkpoint ? [input.checkpointSelection.checkpoint.requestId] : [],
     );
+    const includedSkips = new Set(
+      skipsByMessageId.size
+        ? [...transcriptSnapshotByMessageId.values(), input.checkpointSelection.checkpoint].flatMap(
+            (snapshot) => collectSkipReplyKeys(snapshot?.messages ?? []),
+          )
+        : [],
+    );
     for (const chunk of merged) {
       const appendSurfaceSegment = (messageIds: readonly string[]): void => {
         if (messageIds.length === 0) return;
@@ -886,15 +904,23 @@ async function composeSelectedDiscordChain(input: {
       };
 
       const pendingSurfaceIds: string[] = [];
+      const flushSurface = () => appendSurfaceSegment(pendingSurfaceIds.splice(0));
+      const appendSurfaceMessage = (messageId: string) => {
+        pendingSurfaceIds.push(messageId);
+        const skipped = skipsByMessageId.get(messageId);
+        if (!skipped || includedSkips.has(skipReplyKey(skipped))) return;
+        flushSurface();
+        segmentInputs.push({ atoms: [], canonicalMessages: skipped.messages });
+        lineageComplete = false;
+      };
       for (const messageId of chunk.messageIds) {
         const snapshot = transcriptSnapshotByMessageId.get(messageId);
         if (!snapshot || snapshot.messages.length === 0) {
-          pendingSurfaceIds.push(messageId);
+          appendSurfaceMessage(messageId);
           continue;
         }
-        appendSurfaceSegment(pendingSurfaceIds.splice(0));
+        flushSurface();
         if (seenRequestIds.has(snapshot.requestId)) continue;
-
         seenRequestIds.add(snapshot.requestId);
         if (
           !appendPersistedSyntheticSuffix({
@@ -945,7 +971,7 @@ async function composeSelectedDiscordChain(input: {
           requestSource: { aliases },
         });
       }
-      appendSurfaceSegment(pendingSurfaceIds);
+      flushSurface();
     }
 
     const messages: StoredMessageV1[] = segmentInputs.flatMap(

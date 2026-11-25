@@ -638,6 +638,18 @@ export function migrateTranscriptSchema(db: Database, host: TranscriptMigrationH
         Date.now(),
       ]);
     }
+    if (version < 15) {
+      db.run(`CREATE TABLE discord_skipped_replies (
+        channel_id TEXT NOT NULL, message_id TEXT NOT NULL, request_id TEXT NOT NULL,
+        tool_call_id TEXT NOT NULL, reason TEXT NOT NULL, updated_ts INTEGER NOT NULL,
+        PRIMARY KEY(channel_id, message_id)
+      ) STRICT`);
+      db.run("CREATE INDEX idx_discord_skipped_replies_age ON discord_skipped_replies(updated_ts)");
+      db.run("INSERT INTO transcript_schema_migrations (version, applied_ts) VALUES (?, ?)", [
+        15,
+        Date.now(),
+      ]);
+    }
     // Retention pruning filters by age; without these indexes it scans every transcript row.
     db.run(`
       CREATE INDEX IF NOT EXISTS idx_request_transcripts_updated

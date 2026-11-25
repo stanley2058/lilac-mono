@@ -879,6 +879,98 @@ describe("Core primary lineage composition", () => {
     store.close();
   });
 
+  it.each(["reply", "mention"] as const)(
+    "replays a skipped decision after its user message for a %s",
+    async (mode) => {
+      const { store } = await createStore();
+      try {
+        const root = surfaceMessage({ id: "101", text: "Original question", ts: 1000 });
+        const followup = surfaceMessage({
+          id: "102",
+          text: "<@bot> About my original question",
+          ts: 2000,
+          ...(mode === "reply"
+            ? { raw: { reference: { messageId: "101", channelId: "channel" } } }
+            : {}),
+        });
+        const adapter = new MutableAdapter([root, followup]);
+        const call = {
+          type: "tool-call",
+          toolCallId: "skipped",
+          toolName: "skip_reply",
+          input: { reason: "Someone else answered." },
+        } as const;
+        const output = {
+          type: "tool-result",
+          toolCallId: "skipped",
+          toolName: "skip_reply",
+          output: { type: "text", value: "Reply skipped." },
+        } as const;
+        const messages = [
+          { role: "assistant", content: [call] },
+          { role: "tool", content: [output] },
+        ] satisfies StoredMessageV1[];
+        resultValue(
+          store.saveDiscordSkippedReply("channel", "101", {
+            requestId: "discord:channel:099",
+            toolCallId: "skipped",
+            reason: call.input.reason,
+          }),
+        );
+        resultValue(
+          store.saveRequestTranscript({
+            requestClient: "discord",
+            sessionId: "channel",
+            requestId: "discord:channel:101",
+            finalText: "",
+            messages,
+          }),
+        );
+        resultValue(
+          store.saveRequestTranscript({
+            requestClient: "discord",
+            sessionId: "channel",
+            requestId: "discord:channel:101:wake:later",
+            finalText: "",
+            messages,
+          }),
+        );
+        const options = {
+          platform: "discord",
+          botUserId: "bot",
+          botName: "lilac",
+          transcriptStore: store,
+          currentMessageIds: ["102"],
+        } as const;
+        const composed =
+          mode === "reply"
+            ? await composeRequestMessages(adapter, {
+                ...options,
+                trigger: { type: "mention", msgRef: followup.ref },
+              })
+            : await composeRecentChannelMessages(adapter, {
+                ...options,
+                sessionId: "channel",
+                limit: 10,
+                triggerType: "mention",
+                triggerMsgRef: followup.ref,
+              });
+        expect(composed.messages.map((message) => message.role)).toEqual([
+          "user",
+          "assistant",
+          "tool",
+          "user",
+        ]);
+        expect(composed.messages.slice(1, 3)).toEqual(messages);
+        expect(
+          decodeCorePrimaryLineageV2(composed.corePrimaryLineage, composed.messages).status,
+        ).toBe("ok");
+      } finally {
+        store.close();
+      }
+    },
+  );
+
   it("restores a persisted synthetic input suffix before its request atom", async () => {
     const { store } = await createStore();
     const firstInput = surfaceMessage({ id: "input-1", text: "first", ts: 1 });

@@ -42,6 +42,7 @@ import {
   inferBuiltinSurfaceToolRequestTarget,
 } from "../../surface/builtin-surface-protocols";
 import type { RequestContext } from "../types";
+import { discordSkippedReply } from "../../tools/skip-reply";
 import type { RecentAgentWriteSnapshot, TranscriptStore } from "../../transcript/transcript-store";
 import { isHeartbeatSessionId } from "../../transcript/heartbeat-handoff";
 import { preserveToolPanic } from "../../tools/tool-result-adapters";
@@ -646,7 +647,12 @@ function toPreviewText(text: string, maxChars = 128): { preview: string; truncat
 
 function toCompactMessage(
   msg: SurfaceMessage,
-  opts: { includeRaw: boolean; includeAttachments: boolean; referenced?: SurfaceMessage },
+  opts: {
+    includeRaw: boolean;
+    includeAttachments: boolean;
+    referenced?: SurfaceMessage;
+    skipReasonFor?: (message: SurfaceMessage) => string | undefined;
+  },
 ): Record<string, unknown> {
   const discord = msg.session.platform === "discord" ? projectDiscordMessage(msg) : undefined;
   const out: Record<string, unknown> = {
@@ -657,6 +663,8 @@ function toCompactMessage(
     ts: msg.ts,
   };
 
+  const reason = opts.skipReasonFor?.(msg);
+  if (reason) out["skippedReply"] = { reason };
   if (msg.replyTo) out["replyToMessageId"] = msg.replyTo.messageId;
 
   if (typeof msg.editedTs === "number") out["editedTs"] = msg.editedTs;
@@ -700,6 +708,7 @@ function toCompactMessage(
 
   if (opts.referenced) {
     out["referenced"] = toCompactMessage(opts.referenced, {
+      skipReasonFor: opts.skipReasonFor,
       includeRaw: opts.includeRaw,
       includeAttachments: opts.includeAttachments,
     });
@@ -748,6 +757,7 @@ function buildMessagesReadOutput(params: {
   cfg?: CoreConfig;
   message: SurfaceMessage | null;
   referenced?: SurfaceMessage | null;
+  skipReasonFor?: (message: SurfaceMessage) => string | undefined;
   includeRaw: boolean;
 }): {
   meta: {
@@ -765,6 +775,7 @@ function buildMessagesReadOutput(params: {
           includeRaw: params.includeRaw,
           includeAttachments: true,
           referenced: params.referenced ?? undefined,
+          skipReasonFor: params.skipReasonFor,
         })
       : null,
   };
@@ -1709,6 +1720,7 @@ export class Surface implements ServerTool {
     const resolveAdapter = this.resolveAdapter.bind(this);
     const resolveSessionTarget = this.resolveSessionTarget.bind(this);
     const discordSearch = this.params.discordSearch;
+    const transcripts = this.params.transcriptStore;
     return Result.gen(async function* () {
       const resolved = yield* resolveAdapter(decodedInput.client, ctx);
       const sessionInput = yield* withDefaultSessionId(decodedInput, ctx);
@@ -1787,6 +1799,13 @@ export class Surface implements ServerTool {
           session: target.sessionRef,
           cfg: target.cfg,
           message: msg,
+          skipReasonFor: ({ ref }) =>
+            ref.platform === "discord" &&
+            ctx?.requestClient === "discord" &&
+            (ctx.sessionId ?? inferBuiltinSurfaceToolRequestTarget(ctx.requestId)?.sessionId) ===
+              ref.channelId
+              ? discordSkippedReply(transcripts, ref.channelId, ref.messageId)?.reason
+              : undefined,
           referenced,
           includeRaw: input.includeRaw ?? false,
         }),

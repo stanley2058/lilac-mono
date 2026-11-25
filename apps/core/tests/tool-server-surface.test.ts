@@ -1035,6 +1035,15 @@ describe("tool-server surface", () => {
       {
         [channelId]: [
           {
+            ref: { platform: "discord", channelId, messageId: "m2" },
+            session: { platform: "discord", channelId },
+            userId: "u",
+            text: "Follow-up",
+            ts: 1,
+            raw: { reference: { messageId: "m1", channelId, type: 0 } },
+          },
+
+          {
             ref: { platform: "discord", channelId, messageId: "m1" },
             session: { platform: "discord", channelId },
             userId: "u",
@@ -1045,17 +1054,43 @@ describe("tool-server surface", () => {
       },
     );
 
-    const tool = new Surface({ adapter, config: cfg });
-    const ctx: RequestContext = {
-      requestId: `discord:${channelId}:m1`,
-      requestClient: "discord",
-    };
-
-    const msg = (await tool.call("surface.messages.read", {}, { context: ctx })) as {
-      message: { messageId: string } | null;
-    };
-
-    expect(msg.message?.messageId).toBe("m1");
+    const transcriptStore = new SqliteTranscriptStore(":memory:");
+    try {
+      const ctx: RequestContext = {
+        requestId: `discord:${channelId}:m1`,
+        requestClient: "discord",
+      };
+      const reason = "Another participant answered.";
+      expect(
+        transcriptStore
+          .saveDiscordSkippedReply(channelId, "m1", {
+            requestId: ctx.requestId!,
+            toolCallId: "skip",
+            reason,
+          })
+          .isOk(),
+      ).toBe(true);
+      const tool = new Surface({ adapter, config: cfg, transcriptStore });
+      expect(await tool.call("surface.messages.read", {}, { context: ctx })).toMatchObject({
+        message: { messageId: "m1", skippedReply: { reason } },
+      });
+      expect(
+        await tool.call("surface.messages.read", { messageId: "m2" }, { context: ctx }),
+      ).toMatchObject({
+        message: { messageId: "m2", referenced: { messageId: "m1", skippedReply: { reason } } },
+      });
+      const outside = await tool.call(
+        "surface.messages.read",
+        { sessionId: channelId, messageId: "m1" },
+        {
+          context: { ...ctx, sessionId: "another-channel" },
+        },
+      );
+      expect(outside).toMatchObject({ message: { messageId: "m1" } });
+      expect(outside).not.toHaveProperty("message.skippedReply");
+    } finally {
+      transcriptStore.close();
+    }
   });
 
   it("omits read raw payload by default and includes it on demand", async () => {

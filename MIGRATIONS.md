@@ -23,7 +23,7 @@ matter when upgrading an older installation.
    Verify native deployment settings and subagent authority after adopting v3.
 
 Rollback uses the matching pre-upgrade databases and blob storage together. Current workflow schema
-29, transcript schema 14, and native schema 7 are not readable by older builds. Strict record codecs
+29, transcript schema 15, and native schema 7 are not readable by older builds. Strict record codecs
 can also change within a schema version; a matching version number alone does not establish downgrade
 compatibility. Keep producers stopped while restoring. Never remove migration markers to force an
 older binary to open current data.
@@ -332,7 +332,7 @@ Use `--dry-run` for a read-only preflight. The normal command preflights and the
 invocation. It accepts only supported legacy schemas, verifies every copied object's SHA-256 and byte
 length, rewrites each database only after its required objects exist, and removes replaced legacy byte
 columns and files. The offline command emits transcript schema 6 and workflow schema 26; current Core
-then applies transcript schemas 7 through 14 and workflow schemas 27 through 29 during startup. Databases below
+then applies transcript schemas 7 through 15 and workflow schemas 27 through 29 during startup. Databases below
 those blob baselines, including partially migrated legacy databases, stop startup with the migration command.
 
 The migration copies durable transcript, projection, lineage, and workflow artifact content. It discards
@@ -456,7 +456,7 @@ streams remain tail-only, and supported trimming preserves all managed pending f
 
 ### Transcript storage
 
-Current `agent-transcripts.db` uses schema 14. Schemas below the managed-blob baseline of 6 require
+Current `agent-transcripts.db` uses schema 15. Schemas below the managed-blob baseline of 6 require
 the offline command above. Startup applies supported later migrations in a transaction and validates
 foreign keys. These migrations retain canonical history and add resource/ownership references,
 deferred-tool snapshots, deleted-output aliases, native retention, and image-preview metadata.
@@ -464,7 +464,8 @@ deferred-tool snapshots, deleted-output aliases, native retention, and image-pre
 Native ownership in schemas 12/13 prevents global transcript pruning from deleting native history
 behind the surface. Rewind, deletion, and configured native retention release those references.
 Schema 14 adds nullable image-preview metadata; originals and resource IDs remain unchanged, and
-missing previews regenerate on demand. Restore a pre-upgrade backup for older binaries.
+missing previews regenerate on demand. Schema 15 adds Discord skip decisions keyed by channel and
+user message. Restore a pre-upgrade backup for older binaries.
 
 Prefix-lineage tool snapshots replace the old session-wide `session_loaded_tools` union. That table
 is dropped because its selection cannot be assigned to a branch safely. Existing descendants inherit

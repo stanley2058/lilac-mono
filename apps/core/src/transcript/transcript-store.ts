@@ -1019,7 +1019,17 @@ export type TranscriptDiscoveryRecord = {
   surfaceRefs: MsgRef[];
 };
 
+export type DiscordSkippedReply = { requestId: string; toolCallId: string; reason: string };
 export type TranscriptStore = {
+  saveDiscordSkippedReply?(
+    channelId: string,
+    messageId: string,
+    decision: DiscordSkippedReply,
+  ): ResultType<void, TranscriptStoreSqliteDriverFailure>;
+  getDiscordSkippedReply?(
+    channelId: string,
+    messageId: string,
+  ): ResultType<DiscordSkippedReply | null, TranscriptStoreSqliteDriverFailure>;
   saveRequestTranscript(input: {
     requestId: string;
     sessionId: string;
@@ -1647,6 +1657,11 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
     if (finalized.isErr()) return Result.err(finalized.error);
     const events = finalized.value;
     this.emitDeferredTranscriptEvents(events);
+    this.pruneAfterSave(now);
+    return Result.ok(undefined);
+  }
+
+  private pruneAfterSave(now: number): void {
     this.pruneRetentionAfterSave(now).match({
       ok: (pruned) => this.emitDeferredTranscriptEvents(pruned),
       err: (error) =>
@@ -1655,7 +1670,6 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
           code: error.code,
         }),
     });
-    return Result.ok(undefined);
   }
 
   /** Prunes in its own transaction so retention work never holds or fails a transcript save. */
@@ -3784,6 +3798,29 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
     return this.finalizeTranscriptRead(read);
   }
 
+  saveDiscordSkippedReply(channelId: string, messageId: string, decision: DiscordSkippedReply) {
+    const now = Date.now();
+    const saved = this.readFromSqlite("save-discord-skipped-reply", () => {
+      this.db.run(
+        `INSERT INTO discord_skipped_replies(channel_id, message_id, request_id, tool_call_id, reason, updated_ts)
+        VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(channel_id, message_id) DO UPDATE SET
+        request_id=excluded.request_id, tool_call_id=excluded.tool_call_id, reason=excluded.reason, updated_ts=excluded.updated_ts`,
+        [channelId, messageId, decision.requestId, decision.toolCallId, decision.reason, now],
+      );
+    });
+    return saved.map(() => this.pruneAfterSave(now));
+  }
+
+  getDiscordSkippedReply(channelId: string, messageId: string) {
+    return this.readFromSqlite("get-discord-skipped-reply", () =>
+      this.db
+        .query<DiscordSkippedReply, [string, string]>(
+          "SELECT request_id AS requestId, tool_call_id AS toolCallId, reason FROM discord_skipped_replies WHERE channel_id = ? AND message_id = ?",
+        )
+        .get(channelId, messageId),
+    );
+  }
+
   getRequestTranscript(input: {
     requestId: string;
   }): ResultType<TranscriptSnapshot | null, TranscriptStoreReadError> {
@@ -5755,6 +5792,7 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
     }
     if (retention.maxAgeMs.kind === "bounded") {
       const cutoff = now - retention.maxAgeMs.value;
+      this.db.run("DELETE FROM discord_skipped_replies WHERE updated_ts < ?", [cutoff]);
       this.db.run(
         `DELETE FROM surface_message_to_request
          WHERE deleted_ts < ?
@@ -5780,6 +5818,10 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
 
     // Clamp max rows by deleting oldest.
     if (retention.maxRequests.kind === "bounded") {
+      this.db.run(
+        "DELETE FROM discord_skipped_replies WHERE rowid IN (SELECT rowid FROM discord_skipped_replies ORDER BY updated_ts DESC, rowid DESC LIMIT -1 OFFSET ?)",
+        [retention.maxRequests.value],
+      );
       const countRow = this.db
         .query<{ c: number }, []>("SELECT COUNT(1) as c FROM request_transcripts")
         .get();
