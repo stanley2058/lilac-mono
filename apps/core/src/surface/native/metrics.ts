@@ -102,7 +102,7 @@ export function createNativeMetrics(
     const requests = new Map<string, { rpcId: string; threadId?: string; cached: boolean }>();
     let receivedBytes = 0;
     let sentBytes = 0;
-    function received(message: string | Uint8Array, inflight: number) {
+    function received(message: string | Uint8Array) {
       const bytes = byteLength(message);
       receivedBytes += bytes;
       if (typeof message !== "string") return;
@@ -115,23 +115,11 @@ export function createNativeMetrics(
       const request = { rpcId: randomUUID(), threadId: frame.threadId, cached: frame.cached };
       requests.set(frame.id, request);
       if (requests.size > 128) requests.delete(requests.keys().next().value!);
-      emit("connection.request", {
-        connectionId,
-        rpcId: request.rpcId,
-        threadId: request.threadId,
-        bytes,
-        inflight,
-      });
     }
-    function sent(
-      message: string | ArrayBufferLike | Uint8Array,
-      result: number,
-      bufferedBytes: number,
-    ) {
+    function sent(message: string | ArrayBufferLike | Uint8Array, result: number) {
       const enqueuedAt = now();
       const bytes = byteLength(message);
       if (result !== 0) sentBytes += bytes;
-      emit("connection.send", { connectionId, bytes, bufferedBytes, accepted: result !== 0 });
       if (typeof message !== "string") return;
       const frame = decodeMetricResponse(message);
       if (!frame) return;

@@ -74,6 +74,8 @@ const MAX_INLINE_SOURCE_VALUE_CHARS = 1024;
 const QUIET_PUBLISH_TYPES = new Set<string>([
   lilacEventTypes.EvtAgentOutputDeltaReasoning,
   lilacEventTypes.EvtAgentOutputDeltaText,
+  lilacEventTypes.EvtAgentOutputToolCall,
+  lilacEventTypes.EvtNativeOutput,
 ]);
 const STRING_HEADERS_SCHEMA = z.record(z.string(), z.string());
 const REDIS_STREAM_ID_PATTERN = /^\d+-\d+$/;

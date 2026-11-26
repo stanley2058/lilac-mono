@@ -2386,8 +2386,10 @@ export class SqliteTranscriptStore implements TranscriptStore, ResourceStore {
         );
       }
       deleted += 1;
+    }
+    if (deleted > 0) {
       logger.info("core_retention.orphans_pruned", {
-        ownedBlobCount: 1,
+        ownedBlobCount: deleted,
         reason: "unreferenced-owned-blob",
       });
     }

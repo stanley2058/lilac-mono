@@ -558,14 +558,6 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
       if (requestClient !== platform) {
         const relay = activeRelays.get(requestId);
         if (relay) return correlationError(msg.type);
-        logger.debug("relay.event.ignored", {
-          requestId,
-          sessionId,
-          platform,
-          requestClient,
-          reason: "platform_mismatch",
-          messageType: msg.type,
-        });
         return Result.ok(undefined);
       }
 
@@ -641,14 +633,6 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
       if (requestClient !== platform) {
         const relay = activeRelays.get(requestId);
         if (relay) return correlationError(msg.type);
-        logger.debug("relay.event.ignored", {
-          requestId,
-          sessionId,
-          platform,
-          requestClient,
-          reason: "platform_mismatch",
-          messageType: msg.type,
-        });
         return Result.ok(undefined);
       }
 
@@ -770,14 +754,6 @@ export async function bridgeBusToAdapter<P extends RegisteredSurfacePlatform>(pa
         if (activeRelays.has(requestId) || terminalLifecycleByRequestId.has(requestId)) {
           return correlationError(msg.type);
         }
-        logger.debug("relay.event.ignored", {
-          requestId,
-          sessionId,
-          platform,
-          requestClient,
-          reason: "platform_mismatch",
-          messageType: msg.type,
-        });
         return Result.ok(undefined);
       }
 

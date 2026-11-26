@@ -573,7 +573,7 @@ export function createNativeGateway(options: NativeGatewayOptions) {
       socket.close(4408, "Connection limit exceeded");
       return;
     }
-    data.metrics.received(message, data.inflight);
+    data.metrics.received(message);
     const valid = validateNativeFrame(message).match({ ok: () => true, err: () => false });
     if (!valid) {
       socket.close(4400, "Socket protocol failed");
@@ -650,7 +650,7 @@ export function createNativeGateway(options: NativeGatewayOptions) {
                     }
                   }
                   const sent = socket.send(message);
-                  socket.data.metrics.sent(message, sent, socket.getBufferedAmount());
+                  socket.data.metrics.sent(message, sent);
                   if (socket.data.ending) {
                     socket.data.ending = false;
                     setImmediate(() => socket.close(4401, "Session ended"));

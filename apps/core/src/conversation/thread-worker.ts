@@ -393,16 +393,18 @@ export function startConversationThreadSummarizationWorker(params: {
         const durationMs = job ? Date.now() - job.startedAt : undefined;
 
         if (response.ok) {
-          logger.debug("conversation thread summarization job completed", {
-            jobId: response.id,
-            wait: job?.wait,
-            dryRun: job?.dryRun,
-            threadId: job?.threadId,
-            durationMs,
-            eligible: response.result.eligible,
-            summarized: response.result.summarized,
-            failed: response.result.failed,
-          });
+          if (response.result.eligible > 0) {
+            logger.debug("conversation thread summarization job completed", {
+              jobId: response.id,
+              wait: job?.wait,
+              dryRun: job?.dryRun,
+              threadId: job?.threadId,
+              durationMs,
+              eligible: response.result.eligible,
+              summarized: response.result.summarized,
+              failed: response.result.failed,
+            });
+          }
           waiter?.resolve(
             Result.ok({ ...response.result, jobId: response.id, status: "completed" as const }),
           );
@@ -456,17 +458,6 @@ export function startConversationThreadSummarizationWorker(params: {
         dryRun: input.dryRun === true,
         clear: input.clear === true,
         threadId: input.threadId,
-      });
-      logger.debug("conversation thread summarization job queued", {
-        jobId,
-        wait,
-        dryRun: input.dryRun === true,
-        clear: input.clear === true,
-        threadId: input.threadId,
-        beforeTs: input.beforeTs,
-        afterTs: input.afterTs,
-        limit: input.limit,
-        trigger: input.trigger ?? "manual",
       });
       const request = {
         id: jobId,
@@ -552,7 +543,6 @@ export function startConversationThreadWorker(params: {
             return;
           }
 
-          logger.debug("conversation thread summarization tick started");
           const run = await params.runner.runSummarization({
             wait: true,
             limit: cfg.conversation.thread.summarization.batchSize,
@@ -565,15 +555,7 @@ export function startConversationThreadWorker(params: {
                 formatTaggedErrorForLog(error),
               );
             },
-            ok: (result) => {
-              logger.debug("conversation thread summarization tick completed", {
-                eligible: result.eligible,
-                eligibleTotal: result.eligibleTotal,
-                summarized: result.summarized,
-                failed: result.failed,
-                refreshed: result.refreshed,
-              });
-            },
+            ok: () => undefined,
           });
         },
         catch: captureError,

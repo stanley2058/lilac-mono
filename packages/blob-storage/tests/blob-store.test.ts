@@ -198,19 +198,7 @@ describe("blob storage contract", () => {
     );
     expect(failure(await failed.completion)).toBeInstanceOf(BlobUploadFailed);
 
-    expect(debug.map((entry) => entry.message)).toEqual([
-      "blob upload reservation started",
-      "blob upload started",
-      "blob upload sink opened",
-      "blob upload source consumed",
-      "blob upload content committed",
-      "blob upload reference published",
-      "blob upload completed",
-      "blob upload reservation started",
-      "blob upload started",
-      "blob upload sink opened",
-      "blob upload source consumed",
-    ]);
+    expect(debug.map((entry) => entry.message)).toEqual(["blob upload completed"]);
     expect(errors.map((entry) => entry.message)).toEqual([
       "blob upload length verification failed",
       "blob upload failed",
