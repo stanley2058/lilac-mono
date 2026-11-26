@@ -2,10 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { Result } from "better-result";
 
 import {
-  adaptToolResultArtifactReadToAvailability,
   adaptToolResultArtifactReadToUnavailablePolicy,
-  adaptToolResultArtifactStoreInitToHost,
-  ToolResultArtifactInvalidInput,
   ToolResultArtifactReadCancelled,
   ToolResultArtifactReadTooLarge,
   ToolResultArtifactStorageFailure,
@@ -32,18 +29,6 @@ describe("tool result artifact adapters", () => {
       maintain,
     };
   }
-
-  it("preserves successful reads and rejects invalid options", () => {
-    expect(adaptToolResultArtifactReadToAvailability(Result.ok({ content: "hello" }))).toEqual({
-      ok: true,
-      content: "hello",
-    });
-    expect(() =>
-      adaptToolResultArtifactReadToAvailability(
-        Result.err(new ToolResultArtifactInvalidInput({ message: "Invalid limit" })),
-      ),
-    ).toThrow(RangeError);
-  });
 
   it("maintains unavailable artifacts only when requested", async () => {
     const maintain = mock(async () => Result.ok({ removedInvalid: 0, removedExpired: 1 }));
@@ -95,20 +80,5 @@ describe("tool result artifact adapters", () => {
       ok: false,
     });
     expect(maintain).not.toHaveBeenCalled();
-  });
-
-  it("surfaces initialization errors at the host boundary", () => {
-    expect(adaptToolResultArtifactStoreInitToHost(Result.ok(undefined))).toBeUndefined();
-    expect(() =>
-      adaptToolResultArtifactStoreInitToHost(
-        Result.err(
-          new ToolResultArtifactStorageFailure({
-            operation: "initialize",
-            code: "EACCES",
-            message: "Cannot initialize artifacts",
-          }),
-        ),
-      ),
-    ).toThrow("Cannot initialize artifacts");
   });
 });

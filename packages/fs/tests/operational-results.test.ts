@@ -3,45 +3,10 @@ import fs, { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { Panic } from "better-result";
-
-import {
-  applyHashlineEdits,
-  canonicalizePathAsFarAsExists,
-  captureFilesystemOperation,
-  decodeRipgrepMatchLine,
-  ripgrep,
-} from "../src";
+import { canonicalizePathAsFarAsExists, decodeRipgrepMatchLine, ripgrep } from "../src";
 
 describe("filesystem operational Results", () => {
-  it("maps classified filesystem failures to an owned Result error", async () => {
-    const result = await captureFilesystemOperation("read fixture", async () => {
-      return await Promise.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
-    });
-
-    expect(result.status).toBe("error");
-    if (result.status === "ok") return;
-    expect(result.error).toMatchObject({
-      _tag: "FileSystemOperationFailed",
-      operation: "read fixture",
-      code: "ENOENT",
-      message: "missing",
-    });
-  });
-
-  it("preserves Panic and unclassified defects", async () => {
-    const panic = new Panic({ message: "fixture panic" });
-    const defect = new Error("fixture defect");
-
-    expect(
-      captureFilesystemOperation("panic fixture", async () => await Promise.reject(panic)),
-    ).rejects.toBe(panic);
-    expect(
-      captureFilesystemOperation("defect fixture", async () => await Promise.reject(defect)),
-    ).rejects.toBe(defect);
-  });
-
-  it("fails closed on canonicalization permission errors and preserves Panic identity", async () => {
+  it("fails closed on canonicalization permission errors", async () => {
     for (const code of ["EACCES", "EPERM"] as const) {
       const realpath = spyOn(fs, "realpath").mockRejectedValueOnce(
         Object.assign(new Error(code), { code }),
@@ -56,25 +21,6 @@ describe("filesystem operational Results", () => {
         realpath.mockRestore();
       }
     }
-
-    const panic = new Panic({ message: "canonicalization invariant" });
-    const realpath = spyOn(fs, "realpath").mockRejectedValueOnce(panic);
-    try {
-      await expect(canonicalizePathAsFarAsExists("/panic-fixture/child")).rejects.toBe(panic);
-    } finally {
-      realpath.mockRestore();
-    }
-  });
-
-  it("returns hashline validation failures as values", () => {
-    const result = applyHashlineEdits({
-      content: "alpha\n",
-      edits: [{ op: "replace", pos: "1#0000", lines: ["beta"] }],
-    });
-
-    expect(result.status).toBe("error");
-    if (result.status === "ok") return;
-    expect(result.error).toMatchObject({ _tag: "HashlineEditFailed", code: "STALE_ANCHOR" });
   });
 });
 

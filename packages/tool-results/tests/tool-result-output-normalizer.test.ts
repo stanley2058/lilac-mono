@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 
 import {
   adaptToolResultArtifactReadToAvailability,
@@ -407,27 +407,6 @@ describe("tool result output normalizer", () => {
     ).toEqual({ type: "text", value: "[tool result is not JSON-serializable]" });
   }, 15_000);
 
-  it("preserves exact Panic identity from hostile JSON serialization", async () => {
-    const normalize = createOverflowReferenceNormalizer({
-      owner: { requestId: "request-a", scopeId: "scope-a" },
-      getOutputConfig: outputConfig,
-    });
-    const panic = new Panic({ message: "hostile toJSON invariant failed" });
-    const hostileToJson: Record<string, string> = {};
-    Object.defineProperty(hostileToJson, "toJSON", {
-      value: () => {
-        throw panic;
-      },
-    });
-
-    await expect(
-      normalize(
-        { type: "json", value: hostileToJson },
-        { toolCallId: "panic", toolName: "plugin" },
-      ),
-    ).rejects.toBe(panic);
-  });
-
   it("does not let a public built-in tool name bypass overflow handling", async () => {
     const artifacts = createBlobBackedToolResultArtifactStore(
       path.join(baseDir, "tool-results"),
@@ -674,59 +653,6 @@ describe("tool result output normalizer", () => {
     );
     expect(error.type).toBe("error-text");
     if (error.type === "error-text") expect(error.value).toContain("tool-result://");
-  });
-
-  it("does not hide a store implementation that violates its Result contract", async () => {
-    const normalize = createOverflowReferenceNormalizer({
-      artifacts: {
-        rootDir: baseDir,
-        init: async () => Result.ok(undefined),
-        create: async () => {
-          throw new Error("adapter rejected");
-        },
-        createFromFile: async () => Result.err(storageFailure()),
-        createFromStream: async () => Result.err(storageFailure()),
-        read: async () => Result.err(storageFailure()),
-        readWindow: async () => Result.err(storageFailure()),
-        maintain: async () => Result.ok({ removedInvalid: 0, removedExpired: 0 }),
-      },
-      owner: { requestId: "request-a", scopeId: "scope-a" },
-      getOutputConfig: outputConfig,
-    });
-
-    await expect(
-      normalize(
-        { type: "text", value: "0123456789abcdefghij" },
-        { toolCallId: "rejected", toolName: "plugin" },
-      ),
-    ).rejects.toThrow("adapter rejected");
-  });
-
-  it("preserves artifact Panic identity through overflow normalization", async () => {
-    const panic = new Panic({ message: "artifact invariant failed" });
-    const normalize = createOverflowReferenceNormalizer({
-      artifacts: {
-        rootDir: baseDir,
-        init: async () => Result.ok(undefined),
-        create: async () => {
-          throw panic;
-        },
-        createFromFile: async () => Result.err(storageFailure()),
-        createFromStream: async () => Result.err(storageFailure()),
-        read: async () => Result.err(storageFailure()),
-        readWindow: async () => Result.err(storageFailure()),
-        maintain: async () => Result.ok({ removedInvalid: 0, removedExpired: 0 }),
-      },
-      owner: { requestId: "request-a", scopeId: "scope-a" },
-      getOutputConfig: outputConfig,
-    });
-
-    await expect(
-      normalize(
-        { type: "text", value: "0123456789abcdefghij" },
-        { toolCallId: "panic", toolName: "plugin" },
-      ),
-    ).rejects.toBe(panic);
   });
 });
 

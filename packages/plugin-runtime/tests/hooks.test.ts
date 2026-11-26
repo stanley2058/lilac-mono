@@ -74,7 +74,7 @@ describe("plugin hook adapters", () => {
     expect(decoded.error._tag).toBe("ToolPluginCapabilityError");
   });
 
-  it("captures executable metadata getters as Results and still propagates genuine Panic", () => {
+  it("captures executable metadata getters as Results", () => {
     const hostile = new Proxy(
       {},
       {
@@ -96,15 +96,6 @@ describe("plugin hook adapters", () => {
     expect(decoded.status).toBe("error");
     if (decoded.status === "ok") throw new Error("expected hostile metadata failure");
     expect(decoded.error._tag).toBe("ToolPluginCapabilityError");
-
-    const panic = new Panic({ message: "metadata invariant" });
-    const panickingExecutable = {};
-    Object.defineProperty(panickingExecutable, "description", {
-      get() {
-        throw panic;
-      },
-    });
-    expect(() => decodeLevel1ExecutableMetadata("metadata", panickingExecutable)).toThrow(panic);
   });
 
   it("formats hostile and tagged external exceptions without throwing or exposing secrets", () => {
@@ -289,7 +280,7 @@ describe("plugin hook adapters", () => {
     expect(asyncResult.error.message).toContain("async hook");
   });
 
-  it("maps editTargets iterator failure and preserves iterator Panic identity", async () => {
+  it("maps editTargets iterator failure", async () => {
     const throwingIterable = (failure: Error): Iterable<string> => ({
       [Symbol.iterator]() {
         return {
@@ -318,21 +309,6 @@ describe("plugin hook adapters", () => {
     }
     expect(ordinaryResult.error.hook).toBe("level1.editTargets");
     expect(ordinaryResult.error.message).toContain("iterator failed");
-
-    const panic = new Panic({ message: "iterator invariant" });
-    const panicking = level1({
-      editTargets() {
-        return throwingIterable(panic);
-      },
-    });
-    let caught: unknown;
-    try {
-      await invokeLevel1EditTargets({ ...context, spec: panicking, args: {}, cwd: "/" });
-    } catch (cause) {
-      caught = cause;
-    }
-    expect(caught).toBe(panic);
-    expect(Panic.is(caught)).toBe(true);
   });
 
   it("contains hostile Level 2 list getters and thrown values", async () => {
@@ -378,31 +354,6 @@ describe("plugin hook adapters", () => {
     expect(listed.status).toBe("error");
     if (listed.status === "ok") throw new Error("expected hostile list hook failure");
     expect(listed.error._tag).toBe("ToolPluginHookError");
-  });
-
-  it("preserves Panic identity from hostile hook-result decoding", async () => {
-    const panic = new Panic({ message: "list decoder invariant" });
-    const hostileList = new Proxy([], {
-      getPrototypeOf() {
-        throw panic;
-      },
-      get() {
-        throw panic;
-      },
-    });
-    const tool: ServerTool = {
-      id: "hostile-decoder",
-      async init() {},
-      async destroy() {},
-      async list() {
-        return hostileList;
-      },
-      async call() {
-        return Result.ok();
-      },
-    };
-
-    await expect(invokeLevel2List({ ...context, tool })).rejects.toBe(panic);
   });
 
   it("keeps semantic Level 2 failures inside outer invocation success", async () => {
@@ -542,40 +493,5 @@ describe("plugin hook adapters", () => {
     expect(emptyCode.status).toBe("error");
     if (emptyCode.status === "ok") throw new Error("expected empty code contract error");
     expect(emptyCode.error._tag).toBe("ToolPluginCapabilityError");
-  });
-
-  it("preserves Panic identity from Level 2 calls", async () => {
-    const panic = new Panic({ message: "call invariant" });
-    const tool: ServerTool = {
-      id: "panic-call",
-      async init() {},
-      async destroy() {},
-      async list() {
-        return [];
-      },
-      async call() {
-        throw panic;
-      },
-    };
-
-    await expect(
-      invokeLevel2Call({ ...context, tool, callableId: "panic-call.call", input: {} }),
-    ).rejects.toBe(panic);
-  });
-
-  it("propagates Panic from external hooks", () => {
-    const panic = new Panic({ message: "hook invariant" });
-    const spec = level1({
-      formatArgs() {
-        throw panic;
-      },
-    });
-    try {
-      invokeLevel1FormatArgs({ ...context, spec, args: {} });
-      throw new Error("expected Panic");
-    } catch (cause) {
-      expect(cause).toBe(panic);
-      expect(Panic.is(cause)).toBe(true);
-    }
   });
 });

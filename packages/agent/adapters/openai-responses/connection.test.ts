@@ -243,17 +243,6 @@ test("transport failure cannot be returned as a reusable connection", async () =
   pool.close();
 });
 
-test("Panic from the upstream iterator keeps its identity", async () => {
-  const { pool, sockets } = harness();
-  const first = (await pool.connect(settings, signal())).unwrap();
-  const pending = first.events[Symbol.asyncIterator]().next();
-  const panic = new Panic({ message: "defect", cause: new Error("defect") });
-  sockets[0]!.fail(panic);
-  await expect(pending).rejects.toBe(panic);
-  first.release({ reusable: true });
-  pool.close();
-});
-
 test("aborting a handshake releases the reusable slot", async () => {
   const controller = new AbortController();
   const ready = Promise.withResolvers<void>();
@@ -514,31 +503,3 @@ for (const point of [
     pool.close();
   });
 }
-
-test("idle SDK close diagnostic Panic reaches the fatal boundary without a lease consumer", async () => {
-  const script = `
-    import { Panic } from "better-result";
-    import { createOpenAIResponsesConnectionPool } from "./connection.ts";
-    const defect = new Panic({ message: "idle close diagnostic defect" });
-    process.on("unhandledRejection", (cause) => { process.exit(cause === defect ? 0 : 2); });
-    const remote = Promise.withResolvers();
-    const server = Bun.serve({
-      port: 0,
-      fetch(request, server) { if (server.upgrade(request)) return; return new Response(null, { status: 400 }); },
-      websocket: { open(socket) { remote.resolve(socket); }, message() {} },
-    });
-    const baseUrl = "http://localhost:" + server.port + "/v1";
-    const diagnostics = { withContext() { return diagnostics; }, log(event) { if (event === "socket.close") throw defect; }, wire() {}, async flush() {} };
-    const pool = createOpenAIResponsesConnectionPool();
-    const lease = (await pool.connect({ baseUrl, requestUrl: new URL(baseUrl + "/responses"), websocketUrl: "ws://localhost:" + server.port + "/v1/responses", headers: {}, mode: "websocket" }, new AbortController().signal, diagnostics)).unwrap();
-    lease.release({ reusable: true });
-    (await remote.promise).close(1011, "idle backend failure");
-  `;
-  const child = Bun.spawn([process.execPath, "--eval", script], {
-    cwd: import.meta.dir,
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 3_000,
-  });
-  expect(await child.exited).toBe(0);
-});

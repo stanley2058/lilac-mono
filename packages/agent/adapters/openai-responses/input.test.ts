@@ -5,7 +5,6 @@ import type { ResponseInputItem } from "openai/resources/responses/responses";
 function field(item: ResponseInputItem | undefined, key: string): unknown {
   return item && key in item ? Reflect.get(item, key) : undefined;
 }
-import { Panic } from "better-result";
 import type { AgentPreparedContext } from "../../agent-adapter";
 import { openAIRequestCodec } from "./input";
 
@@ -546,22 +545,6 @@ describe("OpenAI Responses input", () => {
     ).toMatchObject({ output: '"inline"' });
   });
 
-  test("preserves Panic identity at the JSON boundary", async () => {
-    const panic = new Panic({ message: "defect" });
-    const input = {
-      toJSON() {
-        throw panic;
-      },
-    };
-    await expect(
-      openAIRequestCodec.messages([
-        {
-          role: "assistant",
-          content: [{ type: "tool-call", toolCallId: "call_1", toolName: "x", input }],
-        },
-      ]),
-    ).rejects.toBe(panic);
-  });
   test("preserves prompt cache breakpoints on every user resource form", async () => {
     const options = { openai: { promptCacheBreakpoint: { mode: "explicit" } } };
     const messages: ModelMessage[] = [

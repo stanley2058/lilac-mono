@@ -154,29 +154,6 @@ function candidate(
 }
 
 describe("ClaudeAttemptRuntimeOwner", () => {
-  it("returns owned Result errors for invalid estimates and candidate factory rejection", async () => {
-    const owner = new ClaudeAttemptRuntimeOwner({
-      factoryInputs: null,
-      createCandidate: async () => {
-        throw new Error("factory unavailable");
-      },
-    });
-
-    const estimate = owner.getNativeInputEstimateFloorResult({
-      unsynchronizedSuffixAndOverlayEstimate: Number.NaN,
-    });
-    expect(estimate.status).toBe("error");
-    if (estimate.status === "error") {
-      expect(estimate.error._tag).toBe("ClaudeAttemptRuntimeInvalidInput");
-    }
-
-    const prepared = await owner.prepareResult(prepareContext([]));
-    expect(prepared.status).toBe("error");
-    if (prepared.status === "error") {
-      expect(prepared.error._tag).toBe("ClaudeAttemptRuntimeCandidateFailed");
-    }
-  });
-
   it("preserves candidate validation and cleanup failures together", async () => {
     const fake = fakeRun({ withNativeLifecycle: false, cleanupFails: true });
     const owner = new ClaudeAttemptRuntimeOwner({

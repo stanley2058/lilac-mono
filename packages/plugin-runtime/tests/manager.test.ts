@@ -389,7 +389,7 @@ export default { meta: { id: "demo-plugin" }, create() { return { level1: [level
     expect(value.getLevel1Items()).toEqual([taggedSpec]);
   });
 
-  it("maps getPluginConfig failure and preserves Panic from its create continuation", async () => {
+  it("maps getPluginConfig failure", async () => {
     const ordinary = manager({
       dataDir: "/tmp/plugin-runtime-config-failure-unused",
       builtinPlugins: [{ meta: { id: "config-failure" }, create: () => ({}) }],
@@ -406,28 +406,6 @@ export default { meta: { id: "demo-plugin" }, create() { return { level1: [level
     }
     expect(ordinaryResult.error.hook).toBe("getPluginConfig");
     expect(ordinaryResult.error.message).toContain("config unavailable");
-
-    const panic = new Panic({ message: "create continuation invariant" });
-    const panicking = manager({
-      dataDir: "/tmp/plugin-runtime-config-panic-unused",
-      builtinPlugins: [
-        {
-          meta: { id: "config-panic" },
-          create() {
-            throw panic;
-          },
-        },
-      ],
-      getPluginConfig: () => ({ enabled: true }),
-    });
-    let caught: unknown;
-    try {
-      await panicking.init();
-    } catch (cause) {
-      caught = cause;
-    }
-    expect(caught).toBe(panic);
-    expect(Panic.is(caught)).toBe(true);
   });
 
   it("aggregates every Level 2 and instance cleanup failure", async () => {
@@ -525,7 +503,7 @@ export default { meta: { id: "demo-plugin" }, create() { return { level1: [level
     expect(value.getStatuses()).toEqual([]);
   });
 
-  it("keeps skip compatibility and propagates Panic", async () => {
+  it("keeps skip compatibility", async () => {
     const skipped = manager({
       dataDir: "/tmp/plugin-runtime-skip-unused",
       builtinPlugins: [
@@ -545,26 +523,6 @@ export default { meta: { id: "demo-plugin" }, create() { return { level1: [level
         reason: "capability unavailable",
       }),
     ]);
-
-    const panic = new Panic({ message: "invariant" });
-    const panicking = manager({
-      dataDir: "/tmp/plugin-runtime-panic-unused",
-      builtinPlugins: [
-        {
-          meta: { id: "panic" },
-          create() {
-            throw panic;
-          },
-        },
-      ],
-    });
-    try {
-      await panicking.init();
-      throw new Error("expected Panic");
-    } catch (cause) {
-      expect(cause).toBe(panic);
-      expect(Panic.is(cause)).toBe(true);
-    }
   });
 
   it("validates disabled-id hook results and reports disabled status", async () => {

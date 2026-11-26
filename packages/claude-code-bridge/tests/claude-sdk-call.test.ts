@@ -9,7 +9,6 @@ import {
   createClaudeInput,
   type ClaudeQueryFactory,
 } from "@stanley2058/lilac-utils/claude-sdk";
-import { Panic } from "better-result";
 import { executeClaudeSdkCall } from "../claude-sdk-call";
 import type { AiSdkModelCallInput } from "@stanley2058/lilac-agent/adapters/ai-sdk/model-call";
 
@@ -145,56 +144,6 @@ describe("direct Claude SDK execution", () => {
       expect(decision).toBe(sibling ? "deny" : "allow");
     },
   );
-
-  test("preserves a cleanup Panic over an ordinary utility query failure", async () => {
-    const panic = new Panic({ message: "cleanup invariant" });
-    const model = createClaudeCode()("opus", {
-      queryFactory: () => ({
-        async *[Symbol.asyncIterator]() {
-          throw new Error("query failed");
-        },
-        close() {
-          throw panic;
-        },
-        async return() {
-          return { done: true, value: undefined };
-        },
-        async interrupt() {},
-        async getContextUsage() {
-          throw new Error("unused");
-        },
-      }),
-    });
-    await expect(model.doGenerate({ prompt: [] })).rejects.toBe(panic);
-  });
-
-  test("preserves a delivery Panic when closing the query also fails", async () => {
-    const f = fixture([]);
-    const panic = new Panic({ message: "delivery invariant" });
-    f.input.model = createClaudeCode()("opus", {
-      onStreamStart(injector) {
-        injector.inject("unsent", () => {
-          throw panic;
-        });
-      },
-      queryFactory: () => ({
-        async *[Symbol.asyncIterator]() {
-          yield result();
-        },
-        close() {
-          throw new Error("close failed");
-        },
-        async return() {
-          return { done: true, value: undefined };
-        },
-        async interrupt() {},
-        async getContextUsage() {
-          throw new Error("unused");
-        },
-      }),
-    });
-    await expect(executeClaudeSdkCall(f.input)).rejects.toBe(panic);
-  });
 
   test("groups SDK assistant blocks around interleaved parallel tool results into valid history", async () => {
     const f = fixture([

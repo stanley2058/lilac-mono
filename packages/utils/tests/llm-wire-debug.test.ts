@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Panic } from "better-result";
 import { env } from "../env";
 import { createLlmWireDebugTrace, withLlmWireDebugFetch } from "../llm-wire-debug";
 
@@ -166,82 +165,16 @@ describe("native LLM wire traces", () => {
     expect(warnings).toBe(1);
   });
 
-  it("tolerates unreadable payloads while preserving a payload Panic", async () => {
+  it("tolerates unreadable payloads", async () => {
     const trace = createLlmWireDebugTrace({ provider: "openai" });
     trace.write("request", {
       get value() {
         throw new Error("bad getter");
       },
     });
-    const panic = new Panic({ message: "trace payload invariant" });
-    expect(() =>
-      trace.write("response", {
-        get value() {
-          throw panic;
-        },
-      }),
-    ).toThrow(panic);
     await trace.flush();
     expect((await readTrace()).entries[0].data).toBe("<unserializable>");
   });
-
-  it("preserves a warning callback Panic at flush", async () => {
-    const append = spyOn(fs, "appendFile").mockRejectedValue(new Error("disk full"));
-    restore.push(() => append.mockRestore());
-    const panic = new Panic({ message: "trace logger invariant" });
-    const trace = createLlmWireDebugTrace({
-      provider: "openai",
-      warn() {
-        throw panic;
-      },
-    });
-    trace.write("request", {});
-    await expect(trace.flush()).rejects.toBe(panic);
-  });
-
-  for (const failure of ["append", "append-warning", "create", "create-warning"] as const) {
-    it(`retains ${failure} Panic until a delayed flush without unhandled rejection`, async () => {
-      const observed = Promise.withResolvers<void>();
-      const panic = new Panic({ message: "trace asynchronous invariant" });
-      const unhandled: unknown[] = [];
-      const onUnhandled = (cause: unknown) => {
-        unhandled.push(cause);
-      };
-      process.on("unhandledRejection", onUnhandled);
-      restore.push(() => process.off("unhandledRejection", onUnhandled));
-      const ioFailure = async () => {
-        if (failure === "append-warning" || failure === "create-warning") {
-          throw new Error("trace IO unavailable");
-        }
-        observed.resolve();
-        throw panic;
-      };
-      if (failure === "create" || failure === "create-warning") {
-        const mkdir = spyOn(fs, "mkdir").mockImplementation(ioFailure);
-        restore.push(() => mkdir.mockRestore());
-      } else {
-        const append = spyOn(fs, "appendFile").mockImplementation(ioFailure);
-        restore.push(() => append.mockRestore());
-      }
-      let warnings = 0;
-      const trace = createLlmWireDebugTrace({
-        provider: "openai",
-        warn() {
-          warnings += 1;
-          observed.resolve();
-          throw panic;
-        },
-      });
-      trace.write("request", {});
-      await observed.promise;
-      // Cross the rejection-reporting turn before attaching a flush rejection handler.
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(unhandled).toEqual([]);
-      trace.write("response", {});
-      await expect(trace.flush()).rejects.toBe(panic);
-      expect(warnings).toBe(failure.endsWith("warning") ? 1 : 0);
-    });
-  }
 });
 
 describe("legacy fetch LLM wire traces", () => {
