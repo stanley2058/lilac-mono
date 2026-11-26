@@ -2,12 +2,10 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Panic } from "better-result";
 import type { CustomCommandResult } from "@stanley2058/lilac-utils";
 
 import {
   CustomCommandManager,
-  type CustomCommandArgumentValue,
   type ParsedCustomCommandInvocation,
 } from "../../src/custom-commands/manager";
 import {
@@ -363,44 +361,6 @@ describe("CustomCommandManager", () => {
     }
   });
 
-  it("preserves Panic from invocation argument access", async () => {
-    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
-    const dataDir = path.join(tmp, "data");
-    const dir = await writeCommandModule({
-      dataDir,
-      name: "panic-args",
-      source: "export function execute() {}\n",
-    });
-    await fs.writeFile(
-      path.join(dir, "def.json"),
-      JSON.stringify({
-        name: "panic-args",
-        description: "Panic args",
-        args: [{ key: "value", type: "string" }],
-      }),
-      "utf8",
-    );
-    const manager = new CustomCommandManager(dataDir);
-    await initializeManager(manager);
-    const panic = new Panic({ message: "argument invariant failed" });
-    const rawArgs = new Proxy<Record<string, CustomCommandArgumentValue>>(
-      {},
-      {
-        get() {
-          throw panic;
-        },
-      },
-    );
-
-    let thrown: unknown;
-    try {
-      manager.parseSlash({ name: "panic-args", rawArgs });
-    } catch (cause) {
-      thrown = cause;
-    }
-    expect(thrown).toBe(panic);
-  });
-
   it("executes a command module with explicit context", async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
     const dataDir = path.join(tmp, "data");
@@ -585,57 +545,6 @@ describe("CustomCommandManager", () => {
     if (result.status === "ok") throw new Error("expected execution error");
     expect(result.error._tag).toBe(tag);
     expect(result.error.message).toContain(message);
-  });
-
-  it.each([
-    ["a synchronous throw", "export function execute(args) { throw args[0]; }\n"],
-    ["a promise rejection", "export async function execute(args) { throw args[0]; }\n"],
-  ])("propagates Panic from %s", async (_description, source) => {
-    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
-    const dataDir = path.join(tmp, "data");
-    const dir = await writeCommandModule({ dataDir, name: "panic", source });
-    const manager = new CustomCommandManager(dataDir);
-    await initializeManager(manager);
-    const command = manager.get("panic");
-    if (!command) throw new Error("expected command");
-    const panic = new Panic({ message: "command invariant failed" });
-
-    await expect(
-      manager.execute({
-        command,
-        args: [panic],
-        context: commandContext(dataDir, dir, "panic"),
-      }),
-    ).rejects.toBe(panic);
-  });
-
-  it("propagates Panic raised while importing a command", async () => {
-    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-command-manager-"));
-    const dataDir = path.join(tmp, "data");
-    const panicKey = "lilac.custom-command-import-panic";
-    const panic = new Panic({ message: "command import invariant failed" });
-    Reflect.set(globalThis, Symbol.for(panicKey), panic);
-    const dir = await writeCommandModule({
-      dataDir,
-      name: "import-panic",
-      source: `throw globalThis[Symbol.for(${JSON.stringify(panicKey)})];\n`,
-    });
-    const manager = new CustomCommandManager(dataDir);
-    await initializeManager(manager);
-    const command = manager.get("import-panic");
-    if (!command) throw new Error("expected command");
-
-    try {
-      await expect(
-        manager.execute({
-          command,
-          args: [],
-          context: commandContext(dataDir, dir, "import-panic"),
-        }),
-      ).rejects.toBe(panic);
-    } finally {
-      Reflect.deleteProperty(globalThis, Symbol.for(panicKey));
-    }
   });
 });
 

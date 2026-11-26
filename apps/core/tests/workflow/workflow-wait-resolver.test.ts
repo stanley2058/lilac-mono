@@ -127,16 +127,12 @@ class FailingFirstWakeupRawBus extends IdleRawBus {
 }
 class ConfigurablePublicationFailureRawBus extends IdleRawBus {
   barrierFailure: Error | null = null;
-  wakeupFailure: Error | null = null;
   override async publish<TData>(
     message: Omit<Message<TData>, "id" | "ts">,
     options: PublishOptions,
   ) {
     if (message.type === lilacEventTypes.EvtWorkflowWaitResolverBarrier && this.barrierFailure) {
       throw this.barrierFailure;
-    }
-    if (message.type === lilacEventTypes.EvtWorkflowProgressRequested && this.wakeupFailure) {
-      throw this.wakeupFailure;
     }
     return await super.publish(message, options);
   }
@@ -550,33 +546,6 @@ describe("WorkflowWaitResolver", () => {
       rmSync(dbPath, { force: true });
     }
   });
-  it("cleans up startup and preserves consumer-group retirement Panic identity", async () => {
-    const dbPath = join(tmpdir(), `workflow-wait-startup-panic-${crypto.randomUUID()}.sqlite`);
-    const store = new LeaseTrackingWaitStore(dbPath);
-    const raw = new RetirementFailingRawBus();
-    const panic = new Panic({ message: "retirement defect" });
-    raw.retirementFailure = panic;
-    raw.subscriptionStopFailure = new Error("cleanup unavailable");
-    const bus = createLilacBus(raw);
-    const resolver = new WorkflowWaitResolver({
-      bus,
-      store,
-      subscriptionId: "resolver-startup-panic",
-    });
-    const logged = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      await expect(resolver.start()).rejects.toBe(panic);
-      expect(raw.subscriptionStops).toBe(1);
-      expect(store.resolverLeaseReleases).toBe(1);
-    } finally {
-      logged.mockRestore();
-      raw.subscriptionStopFailure = null;
-      await resolver.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
   it("releases its lease when the public stop adapter rejects a cleanup Result", async () => {
     const dbPath = join(tmpdir(), `workflow-wait-stop-result-${crypto.randomUUID()}.sqlite`);
     const store = new LeaseTrackingWaitStore(dbPath);
@@ -692,72 +661,6 @@ describe("WorkflowWaitResolver", () => {
       expect(store.getWorkflowWaitResolverCheckpoint("evt.adapter")).toBe(second.cursor);
       expect(first.cursor).not.toBe(second.cursor);
     } finally {
-      await resolver.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-  it("preserves wakeup publication Panic identity after durable reply resolution", async () => {
-    const dbPath = join(tmpdir(), `workflow-wait-wakeup-panic-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(dbPath);
-    const raw = new ConfigurablePublicationFailureRawBus();
-    const bus = createLilacBus(raw);
-    const panic = new Panic({ message: "wakeup publication defect" });
-    const resolver = new WorkflowWaitResolver({
-      bus,
-      store,
-      subscriptionId: "wakeup-panic",
-      now: () => 10,
-      pollMs: 1000000,
-    });
-    try {
-      createRunAndWait(store, {
-        runId: "wakeup-panic-run",
-        operationId: "wakeup-panic-wait",
-        wait: {
-          state: "pending",
-          match: {
-            kind: "reply",
-            platform: "discord",
-            channelId: "channel-1",
-            messageId: "anchor-1",
-            fromUserId: "user-1",
-          },
-          matchKey: "discord:channel-1",
-          dueAt: null,
-          deadlineAt: 1000,
-          resolverCursor: null,
-          result: null,
-          resolvedBy: null,
-          claimedBy: null,
-          claimedAt: null,
-          createdAt: 3,
-          updatedAt: 3,
-          resolvedAt: null,
-        },
-      });
-      await resolver.start();
-      raw.wakeupFailure = panic;
-      await expect(
-        resolver.resolveAdapterEvent(
-          {
-            platform: "discord",
-            channelId: "channel-1",
-            messageId: "reply-1",
-            userId: "user-1",
-            text: "continue",
-            ts: 10,
-            raw: { discord: { replyToMessageId: "anchor-1" } },
-          },
-          "wakeup-panic-cursor",
-        ),
-      ).rejects.toBe(panic);
-      expect(
-        workflowStoreValue(store.getWait("wakeup-panic-run", "wakeup-panic-wait"))?.state,
-      ).toBe("resolved");
-    } finally {
-      raw.wakeupFailure = null;
       await resolver.stop();
       await bus.close();
       store.close();

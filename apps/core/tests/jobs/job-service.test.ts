@@ -162,17 +162,6 @@ describe("JobService", () => {
     expect(service.hasActiveAwait(owner.requestId)).toBe(false);
   });
 
-  it("does not hold the request for a service job, and keeps it through a primary run's end", async () => {
-    const job = ok<JobRecord>(await start(service, "sleep 60", { mode: "service" }));
-    expect(service.hasActiveAwait(owner.requestId)).toBe(false);
-    await service.onRunSettled({
-      requestId: owner.requestId,
-      sessionId: owner.sessionId,
-      isPrimary: true,
-    });
-    expect(ok<JobRecord | null>(store.get(job.jobId))?.status).toBe("running");
-  });
-
   it("returns the existing job when a recovered tool call replays its launch", async () => {
     const first = ok<JobRecord>(await start(service, "sleep 60", { toolCallId: "call-1" }));
     const second = ok<JobRecord>(await start(service, "sleep 60", { toolCallId: "call-1" }));

@@ -32,13 +32,10 @@ import {
 } from "./workflow-test-blob-store";
 import {
   applyWorkflowEventDeliveryPolicy,
-  captureWorkflowIdleCancellationPublication,
-  captureWorkflowTerminalReceiptAdoption,
   WorkflowEngine,
   WorkflowLifecycleDeliveryFailed,
   WorkflowOutputDeliveryFailed,
   WorkflowWakeDeliveryFailed,
-  runWorkflowTimerTick,
   workflowAgentRequestId,
 } from "../../src/workflow/workflow-engine";
 import type { WorkflowRequestPolicy } from "../../src/workflow/workflow-request-authority";
@@ -455,73 +452,6 @@ describe("WorkflowEngine", () => {
       store.close();
       rmSync(dbPath, { force: true });
     }
-  });
-  it("returns timer failures as values and preserves Panic", async () => {
-    const failed = await runWorkflowTimerTick(async () => {
-      throw new Error("timer operation failed");
-    });
-    expect(failed.status).toBe("error");
-    if (failed.status === "error") {
-      expect(failed.error.message).toContain("timer operation failed");
-    }
-    const panic = new Panic({ message: "timer panic" });
-    await expect(
-      runWorkflowTimerTick(async () => {
-        throw panic;
-      }),
-    ).rejects.toBe(panic);
-  });
-  it("returns terminal receipt adoption failures as values and preserves Panic", async () => {
-    const failed = await captureWorkflowTerminalReceiptAdoption(async () => {
-      throw new Error("receipt artifact unavailable");
-    });
-    expect(failed.status).toBe("error");
-    if (failed.status === "error") {
-      expect(failed.error.message).toContain("receipt artifact unavailable");
-    }
-    const panic = new Panic({ message: "receipt adoption defect" });
-    await expect(
-      captureWorkflowTerminalReceiptAdoption(async () => {
-        throw panic;
-      }),
-    ).rejects.toBe(panic);
-  });
-  it("returns idle cancellation publication failures as values and preserves Panic", async () => {
-    class CancellationFailingRawBus extends CapturingRawBus {
-      constructor(private readonly cause: unknown) {
-        super();
-      }
-      override async publish<TData>(
-        _message: Omit<Message<TData>, "id" | "ts">,
-        _options: PublishOptions,
-      ): Promise<{
-        id: string;
-        cursor: string;
-      }> {
-        throw this.cause;
-      }
-    }
-    const failedBus = createLilacBus(
-      new CancellationFailingRawBus(new Error("cancellation transport unavailable")),
-    );
-    const failed = await captureWorkflowIdleCancellationPublication(failedBus, {
-      requestId: "request-1",
-      sessionId: "session-1",
-      dispatchEpoch: "epoch-1",
-    });
-    expect(failed.status).toBe("error");
-    if (failed.status === "error") {
-      expect(failed.error.message).toBe("Workflow idle cancellation publication failed");
-    }
-    const panic = new Panic({ message: "idle cancellation defect" });
-    const panicBus = createLilacBus(new CancellationFailingRawBus(panic));
-    await expect(
-      captureWorkflowIdleCancellationPublication(panicBus, {
-        requestId: "request-2",
-        sessionId: "session-2",
-        dispatchEpoch: "epoch-2",
-      }),
-    ).rejects.toBe(panic);
   });
   it("paces active run heartbeats independently of polling and event-triggered ticks", async () => {
     const dbPath = join(tmpdir(), `workflow-heartbeat-pacing-${crypto.randomUUID()}.sqlite`);

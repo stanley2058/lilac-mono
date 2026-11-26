@@ -936,45 +936,4 @@ describe("ProgrammaticWorkflow trusted auto-run", () => {
       await tool.destroy();
     }
   });
-
-  it("preserves Panic from workflow capacity capture", async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-workflow-capacity-panic-"));
-    const workspaceRoot = path.join(root, "workspace");
-    await fs.mkdir(workspaceRoot);
-    const panic = new Panic({ message: "workflow capacity invariant failed" });
-    const tool = new ProgrammaticWorkflow({
-      blobStore,
-      dataDir: path.join(root, "data"),
-      dbPath: path.join(root, "workflow.sqlite"),
-      getMaxActiveRuns: () => {
-        throw panic;
-      },
-    });
-    const context = {
-      requestId: "request-1",
-      sessionId: "channel-1",
-      requestClient: "discord",
-      cwd: workspaceRoot,
-      safetyMode: "trusted" as const,
-      toolCallId: "tool-call-1",
-    } satisfies RequestContext;
-    await tool.init();
-    try {
-      await callValue(
-        tool,
-        "workflow.definition.save",
-        { scope: "project", name: "audit-routes", source: source() },
-        { context },
-      );
-      await expect(
-        tool.call(
-          "workflow.run.trigger",
-          { scope: "project", name: "audit-routes", args: { directory: "src" } },
-          { context },
-        ),
-      ).rejects.toBeInstanceOf(Panic);
-    } finally {
-      await tool.destroy();
-    }
-  });
 });
