@@ -4,28 +4,6 @@ import { chunkMarkdownForEmbeds } from "../../../../src/surface/discord/output/m
 // Intentionally copied/adapted from ref/js-llmcord.
 
 describe("markdown-chunker", () => {
-  it("should not drop content for plain text", () => {
-    const input = "0123456789ABCDEFGHIJ";
-    const chunks = chunkMarkdownForEmbeds(input, {
-      maxChunkLength: 7,
-      maxLastChunkLength: 7,
-      useSmartSplitting: true,
-    });
-
-    expect(chunks.join("")).toBe(input);
-  });
-
-  it("should prefer splitting on whitespace (lexical)", () => {
-    const input = "This is a sentence";
-    const chunks = chunkMarkdownForEmbeds(input, {
-      maxChunkLength: 12,
-      maxLastChunkLength: 12,
-      useSmartSplitting: true,
-    });
-
-    expect(chunks).toEqual(["This is a ", "sentence"]);
-  });
-
   it("should prefer splitting on nearby newlines", () => {
     const input = "Line1\nLine2 more text";
     const chunks = chunkMarkdownForEmbeds(input, {

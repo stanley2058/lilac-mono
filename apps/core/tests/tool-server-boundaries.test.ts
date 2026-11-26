@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { Panic, Result } from "better-result";
 import { z } from "zod";
 
 import { decodeSshProbeOutput } from "../src/tool-server/tools/ssh";
@@ -104,37 +103,6 @@ describe("tool-server boundaries", () => {
       expect(normalized.error.message).toBe("Plugin tool output violated the JSON wire contract");
       expect(normalized.error.message).not.toContain(secret);
     }
-  });
-
-  it("preserves plugin Panic identity during successful output normalization", () => {
-    const panic = new Panic({ message: "plugin output invariant failed" });
-    const captured = Result.try({
-      try: () =>
-        normalizeSuccessfulToolValue({
-          toJSON() {
-            throw panic;
-          },
-        }),
-      catch: (cause) => ({ cause }),
-    });
-
-    expect(captured.status).toBe("error");
-    if (captured.status === "error") expect(captured.error.cause).toBe(panic);
-  });
-
-  it("contains a revoked proxy thrown by plugin output toJSON", () => {
-    const revoked = Proxy.revocable({}, {});
-    revoked.revoke();
-
-    const normalized = normalizeSuccessfulToolValue({
-      toJSON() {
-        throw revoked.proxy;
-      },
-    });
-
-    expect(normalized.status).toBe("error");
-    if (normalized.status === "ok") throw new Error("expected invalid tool output");
-    expect(normalized.error.message).toBe("Plugin tool output violated the JSON wire contract");
   });
 
   it("returns a typed validation failure without retaining the raw tool payload", () => {

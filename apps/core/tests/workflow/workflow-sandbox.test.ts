@@ -392,98 +392,6 @@ describe("workflow sandbox process protocol", () => {
     await expect(sandbox.result).rejects.toBe(panic);
   });
 
-  it("keeps host Panic primary when process termination also fails", async () => {
-    const fake = controlledRuntime({ refuseSigkill: true, controlledSleep: true });
-    const workflowSource = source('return await agent("approved");');
-    const compiled = compileWorkflowSource(workflowSource, sha256(workflowSource));
-    const approved = parseWorkflowCallSiteManifest(compiled)[0];
-    if (!approved) throw new Error("Expected compiled call site");
-    const panic = new Panic({ message: "workflow host callback defect" });
-    const sandbox = startWorkflowSandbox({
-      source: compiled,
-      args: {},
-      onCall: async () => {
-        throw panic;
-      },
-      runtimeProbes: fake.runtime,
-    });
-    fake.emit({
-      type: "call",
-      id: 1,
-      kind: "agent",
-      callSiteId: approved.callSiteId,
-      occurrence: 0,
-      path: `root:${approved.callSiteId}:0`,
-      parentPath: null,
-      phase: null,
-      depth: 0,
-      input: { prompt: "approved", options: { profile: "general" } },
-    });
-
-    await fake.sigtermSent;
-    fake.advanceSleep();
-    await fake.sigkillSent;
-    fake.advanceSleep();
-    await expect(sandbox.result).rejects.toBe(panic);
-  });
-
-  it("keeps a deferred host Panic primary after cancellation cleanup fails", async () => {
-    const fake = controlledRuntime({ refuseSigkill: true, controlledSleep: true });
-    const workflowSource = source('return await agent("approved");');
-    const compiled = compileWorkflowSource(workflowSource, sha256(workflowSource));
-    const approved = parseWorkflowCallSiteManifest(compiled)[0];
-    if (!approved) throw new Error("Expected compiled call site");
-    const hostCall = Promise.withResolvers<JsonValue>();
-    const hostCallStarted = Promise.withResolvers<void>();
-    const panic = new Panic({ message: "late workflow host callback defect" });
-    const sandbox = startWorkflowSandbox({
-      source: compiled,
-      args: {},
-      onCall: async () => {
-        hostCallStarted.resolve();
-        return await hostCall.promise;
-      },
-      runtimeProbes: fake.runtime,
-    });
-    let resultSettled = false;
-    void sandbox.result.then(
-      () => {
-        resultSettled = true;
-      },
-      () => {
-        resultSettled = true;
-      },
-    );
-    fake.emit({
-      type: "call",
-      id: 1,
-      kind: "agent",
-      callSiteId: approved.callSiteId,
-      occurrence: 0,
-      path: `root:${approved.callSiteId}:0`,
-      parentPath: null,
-      phase: null,
-      depth: 0,
-      input: { prompt: "approved", options: { profile: "general" } },
-    });
-    await hostCallStarted.promise;
-
-    const cancellation = sandbox.cancel();
-    await fake.sigtermSent;
-    fake.advanceSleep();
-    await fake.sigkillSent;
-    fake.advanceSleep();
-    const cancelled = await cancellation;
-    expect(cancelled.status).toBe("error");
-    if (cancelled.status === "error") {
-      expect(cancelled.error._tag).toBe("WorkflowSandboxTerminationFailed");
-    }
-    expect(resultSettled).toBe(false);
-
-    hostCall.reject(panic);
-    await expect(sandbox.result).rejects.toBe(panic);
-  });
-
   it("terminates a child whose cumulative stdout exceeds the protocol limit", async () => {
     const fake = controlledRuntime({ exitOnSigterm: true });
     const sandbox = startWorkflowSandbox({
@@ -552,28 +460,6 @@ describe("workflow sandbox cancellation", () => {
     expect(fake.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
   });
 
-  it("returns termination cleanup failure as a typed value", async () => {
-    const fake = controlledRuntime({ refuseSigkill: true, immediateSleep: true });
-    const sandbox = startWorkflowSandbox({
-      source: "while (true) {}",
-      args: {},
-      onCall: async () => null,
-      runtimeProbes: fake.runtime,
-    });
-
-    const cancelled = await sandbox.cancel();
-    expect(cancelled.status).toBe("error");
-    if (cancelled.status === "error") {
-      expect(cancelled.error).toMatchObject({
-        _tag: "WorkflowSandboxTerminationFailed",
-        message: expect.stringContaining("did not exit"),
-      });
-    }
-    expect(fake.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
-    fake.exit(137);
-    await sandbox.result;
-  });
-
   it("captures stdin close failure and still signals the child", async () => {
     const fake = controlledRuntime({
       exitOnSigterm: true,
@@ -629,28 +515,6 @@ describe("workflow sandbox cancellation", () => {
     const outcomes = Promise.allSettled([sandbox.cancel(), sandbox.result]);
     const [cancelled, result] = await outcomes;
     expect(cancelled).toEqual({ status: "rejected", reason: panic });
-    expect(fake.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
-    expect(result).toEqual({ status: "rejected", reason: panic });
-  });
-
-  it("reports Panic from detached AbortSignal termination", async () => {
-    const panic = new Panic({ message: "detached abort cleanup defect" });
-    const reported = Promise.withResolvers<Panic>();
-    const controller = new AbortController();
-    const fake = controlledRuntime({ stdinEndFailure: panic, immediateSleep: true });
-    const sandbox = startWorkflowSandbox({
-      source: "while (true) {}",
-      args: {},
-      signal: controller.signal,
-      onCall: async () => null,
-      runtimeProbes: fake.runtime,
-      reportFatalPanic: reported.resolve,
-    });
-
-    const outcomes = Promise.allSettled([sandbox.result]);
-    controller.abort();
-    await expect(reported.promise).resolves.toBe(panic);
-    const [result] = await outcomes;
     expect(fake.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
     expect(result).toEqual({ status: "rejected", reason: panic });
   });

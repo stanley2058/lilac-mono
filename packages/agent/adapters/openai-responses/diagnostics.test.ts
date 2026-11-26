@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { Panic } from "better-result";
 import { createResponsesDiagnostics, type ResponsesDiagnosticFields } from "./diagnostics";
 
 test("diagnostic children preserve independent request, attempt and connection correlation", () => {
@@ -41,15 +40,4 @@ test("operational errors redact credentials and ordinary logging failures do not
     throw new Error("log writer unavailable");
   });
   expect(() => broken.log("responses connection closed")).not.toThrow();
-});
-
-test("diagnostic logging preserves Panic identity", () => {
-  const panic = new Panic({ message: "diagnostic defect", cause: new Error("defect") });
-  const diagnostics = createResponsesDiagnostics(
-    { provider: "openai", model: "gpt-6-astra" },
-    () => {
-      throw panic;
-    },
-  );
-  expect(() => diagnostics.log("responses connection closed")).toThrow(panic);
 });

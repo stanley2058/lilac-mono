@@ -2,10 +2,10 @@ import { expect, it } from "bun:test";
 import { join } from "node:path";
 import { z } from "zod";
 import { env } from "@stanley2058/lilac-utils";
-import { createRealCoreBusFixture, withBusDeadline } from "../../helpers/real-core-bus";
+import { createRealCoreBusFixture, withBusDeadline } from "../../../helpers/real-core-bus";
 
-const worker = join(import.meta.dir, "fixtures/request-process-worker.ts");
-const phases = ["prepared", "published", "accepted", "output-persisted", "completed"] as const;
+const worker = join(import.meta.dir, "request-process-worker.ts");
+export type CrashPhase = "prepared" | "published" | "accepted" | "output-persisted" | "completed";
 const barrierSchema = z.object({
   kind: z.literal("barrier"),
   phase: z.string(),
@@ -26,7 +26,11 @@ const recoveredSchema = z.object({
   recoveryTerminalized: z.number(),
 });
 
-for (const phase of phases) {
+/**
+ * Kills a worker at one durable request phase and checks a fresh process recovers it. Each phase has
+ * its own test file so parallel test runs spread the slow process restarts across workers.
+ */
+export function testRecoveryAfterKillAt(phase: CrashPhase): void {
   it(`recovers durable execution after SIGKILL at ${phase}`, async () => {
     const f = await createRealCoreBusFixture();
     const deliveryId = crypto.randomUUID();

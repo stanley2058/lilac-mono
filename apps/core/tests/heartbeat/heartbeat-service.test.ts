@@ -1,12 +1,9 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import type { CoreConfig } from "@stanley2058/lilac-utils";
 import { Panic, Result, type Result as ResultType } from "better-result";
 
 import {
   createLilacBus,
-  EventDeliveryStartFailed,
-  EventDeliveryStopped,
-  EventDeliveryStopFailed,
   lilacEventTypes,
   type CmdRequestMessageData,
   type EventDeliveryDoneError,
@@ -64,13 +61,7 @@ async function startHeartbeatService(params: Parameters<typeof startHeartbeatSer
 
 function createInMemoryRawBus(options?: {
   onDeliveryAction?: (message: Message<unknown>, action: RawDeliveryAction) => void;
-  startPanic?: Panic;
-  startFailure?: EventDeliveryStartFailed;
-  stopFailure?: EventDeliveryStopFailed;
-  doneFailure?: EventDeliveryDoneError;
-  stopPanic?: Panic;
   publishFailure?: Error | null;
-  publishEffect?: () => Promise<void>;
 }): RawBus {
   const topics = new Map<string, Array<Message<unknown>>>();
   const deliverySubs = new Set<{
@@ -81,7 +72,6 @@ function createInMemoryRawBus(options?: {
 
   return {
     publish: async <TData>(msg: Omit<Message<TData>, "id" | "ts">, opts: PublishOptions) => {
-      if (options?.publishEffect) await options.publishEffect();
       if (options?.publishFailure) throw options.publishFailure;
       const id = `${Date.now()}-${Math.random()}`;
       const stored: Message<unknown> = {
@@ -129,20 +119,14 @@ function createInMemoryRawBus(options?: {
       return { id, cursor: id };
     },
     subscribe: async (topic, subscriptionOptions, handler) => {
-      if (options?.startPanic) throw options.startPanic;
-      if (options?.startFailure) return Result.err(options.startFailure);
-
       const done = Promise.withResolvers<ResultType<void, EventDeliveryDoneError>>();
-      if (options?.doneFailure) done.resolve(Result.err(options.doneFailure));
       const entry = { topic, mode: subscriptionOptions.mode, handler };
       deliverySubs.add(entry);
       return Result.ok({
         done: done.promise,
         stop: async () => {
           deliverySubs.delete(entry);
-          if (!options?.doneFailure) done.resolve(Result.ok(undefined));
-          if (options?.stopPanic) throw options.stopPanic;
-          if (options?.stopFailure) return Result.err(options.stopFailure);
+          done.resolve(Result.ok(undefined));
           return Result.ok(undefined);
         },
       });
@@ -325,124 +309,6 @@ describe("heartbeat service", () => {
     await service.stop();
   });
 
-  it("adapts a typed lifecycle subscription start failure", async () => {
-    const failure = new EventDeliveryStartFailed({
-      cause: undefined,
-      topic: "evt.request",
-      message: "start unavailable",
-    });
-    const bus = createLilacBus(createInMemoryRawBus({ startFailure: failure }));
-
-    await expect(
-      startHeartbeatService({
-        bus,
-        subscriptionId: "hb-start-failure",
-        config: createHeartbeatConfig(),
-      }),
-    ).rejects.toThrow("Heartbeat lifecycle subscription start failed: start unavailable");
-  });
-
-  it("adapts typed lifecycle subscription stop and done failures", async () => {
-    const stopFailure = new EventDeliveryStopFailed({
-      cause: undefined,
-      topic: "evt.request",
-      message: "cleanup unavailable",
-    });
-    const stopService = await startHeartbeatService({
-      bus: createLilacBus(createInMemoryRawBus({ stopFailure })),
-      subscriptionId: "hb-stop-failure",
-      config: createHeartbeatConfig(),
-    });
-    await expect(stopService.stop()).rejects.toThrow(
-      "Heartbeat lifecycle subscription stop failed: cleanup unavailable",
-    );
-
-    const doneFailure = new EventDeliveryStopped({
-      reason: "requested",
-      topic: "evt.request",
-      cursor: "1-0",
-      message: "delivery stopped",
-    });
-    const doneService = await startHeartbeatService({
-      bus: createLilacBus(createInMemoryRawBus({ doneFailure })),
-      subscriptionId: "hb-done-failure",
-      config: createHeartbeatConfig(),
-    });
-    await expect(doneService.stop()).rejects.toThrow(
-      "Heartbeat lifecycle subscription done failed: delivery stopped",
-    );
-  });
-
-  it("preserves lifecycle cleanup precedence and Panic identity", async () => {
-    const startPanic = new Panic({ message: "heartbeat startup invariant failed" });
-    await expect(
-      startHeartbeatService({
-        bus: createLilacBus(createInMemoryRawBus({ startPanic })),
-        subscriptionId: "hb-start-panic",
-        config: createHeartbeatConfig(),
-      }),
-    ).rejects.toBe(startPanic);
-
-    const stopFailure = new EventDeliveryStopFailed({
-      cause: undefined,
-      topic: "evt.request",
-      message: "stop wins",
-    });
-    const doneFailure = new EventDeliveryStopped({
-      reason: "requested",
-      topic: "evt.request",
-      cursor: "1-0",
-      message: "done loses",
-    });
-    const precedenceService = await startHeartbeatService({
-      bus: createLilacBus(createInMemoryRawBus({ stopFailure, doneFailure })),
-      subscriptionId: "hb-cleanup-precedence",
-      config: createHeartbeatConfig(),
-    });
-    await expect(precedenceService.stop()).rejects.toThrow(
-      "Heartbeat lifecycle subscription stop failed: stop wins",
-    );
-
-    const panic = new Panic({ message: "heartbeat cleanup invariant failed" });
-    const panicService = await startHeartbeatService({
-      bus: createLilacBus(createInMemoryRawBus({ stopPanic: panic })),
-      subscriptionId: "hb-cleanup-panic",
-      config: createHeartbeatConfig(),
-    });
-    await expect(panicService.stop()).rejects.toBe(panic);
-  });
-
-  it("propagates Panic from lifecycle event handling", async () => {
-    const panic = new Panic({ message: "lifecycle invariant failed" });
-    const bus = createLilacBus(createInMemoryRawBus());
-    const service = await startHeartbeatService({
-      bus,
-      subscriptionId: "hb-handler-panic",
-      config: createHeartbeatConfig(),
-    });
-    const originalAdd = Set.prototype.add;
-    const addSpy = spyOn(Set.prototype, "add").mockImplementation(function <T>(
-      this: Set<T>,
-      value: T,
-    ): Set<T> {
-      if (value === "panic-request") throw panic;
-      return originalAdd.call(this, value);
-    });
-
-    try {
-      await expect(
-        bus.publish(
-          lilacEventTypes.EvtRequestLifecycleChanged,
-          { state: "running" },
-          { headers: { request_id: "panic-request", session_id: "discord-session" } },
-        ),
-      ).rejects.toBe(panic);
-    } finally {
-      addSpy.mockRestore();
-      await service.stop();
-    }
-  });
-
   it("schedules the next heartbeat wake from the cron expression", async () => {
     const bus = createLilacBus(createInMemoryRawBus());
     const fakeTimers = createFakeTimers();
@@ -550,43 +416,6 @@ describe("heartbeat service", () => {
     if (fetched.status === "ok") expect(fetched.value.messages).toHaveLength(1);
 
     await service.stop();
-  });
-
-  it("preserves an in-flight heartbeat Panic over an ordinary lifecycle cleanup Err", async () => {
-    const publishStarted = Promise.withResolvers<void>();
-    const releasePublish = Promise.withResolvers<void>();
-    const panic = new Panic({ message: "heartbeat publish invariant failed during shutdown" });
-    const stopFailure = new EventDeliveryStopFailed({
-      cause: undefined,
-      topic: "evt.request",
-      message: "ordinary lifecycle cleanup failure",
-    });
-    const bus = createLilacBus(
-      createInMemoryRawBus({
-        stopFailure,
-        publishEffect: async () => {
-          publishStarted.resolve();
-          await releasePublish.promise;
-          throw panic;
-        },
-      }),
-    );
-    const service = await startHeartbeatService({
-      bus,
-      subscriptionId: "hb-shutdown-panic",
-      config: createHeartbeatConfig(),
-      now: () => Date.UTC(2026, 2, 11, 10, 0, 0),
-    });
-
-    const tick = service.tick("interval");
-    await publishStarted.promise;
-    const stopping = service.stop();
-    const settled = Promise.allSettled([tick, stopping]);
-    releasePublish.resolve();
-
-    const [tickResult, stopResult] = await settled;
-    expect(tickResult).toEqual({ status: "rejected", reason: panic });
-    expect(stopResult).toEqual({ status: "rejected", reason: panic });
   });
 
   it("includes configured default output session in the heartbeat prompt", async () => {

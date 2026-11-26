@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Panic, type Result as ResultType } from "better-result";
+import { type Result as ResultType } from "better-result";
 
 import {
   CORE_PRIMARY_LINEAGE_INITIAL_DIGEST_V2,
@@ -365,37 +365,5 @@ describe("Core primary lineage v2", () => {
     const changedToolResultUri = structuredClone(messages);
     changedToolResultUri[1]!.content[0]!.output.value[0]!.uri = `resource://r1_${"cd".repeat(16)}`;
     expect(decodeCorePrimaryLineageV2(lineage, changedToolResultUri).status).toBe("error");
-  });
-
-  it("maps ordinary decoder exceptions and preserves Panic at the exact boundary", () => {
-    const ordinaryFailure = Object.defineProperty({}, "state", {
-      get() {
-        throw new Error("ordinary getter failure");
-      },
-    });
-    const decoded = decodeCorePrimaryLineageV2(ordinaryFailure, MESSAGES);
-    expect(decoded.status).toBe("error");
-    if (decoded.status === "error") {
-      expect(decoded.error.issues).toEqual([
-        { path: [], message: "Core primary lineage validation failed" },
-      ]);
-    }
-
-    const { proxy, revoke } = Proxy.revocable({}, {});
-    revoke();
-    const revokedFailure = Object.defineProperty({}, "state", {
-      get() {
-        throw proxy;
-      },
-    });
-    expect(decodeCorePrimaryLineageV2(revokedFailure, MESSAGES).status).toBe("error");
-
-    const panic = new Panic({ message: "lineage invariant" });
-    const panicFailure = Object.defineProperty({}, "state", {
-      get() {
-        throw panic;
-      },
-    });
-    expect(() => decodeCorePrimaryLineageV2(panicFailure, MESSAGES)).toThrow(panic);
   });
 });

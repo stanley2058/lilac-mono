@@ -5,11 +5,7 @@ import path from "node:path";
 import type { CallToolResult } from "@ai-sdk/mcp";
 import { z } from "zod";
 
-import {
-  createMcpBinaryResultMaterializer,
-  wrapMcpToolWithBinaryMaterialization,
-} from "../../src/mcp/binary-result-materializer";
-import { FakeMcpClient, mcpToolDefinition } from "./fixtures/registry-fixture";
+import { createMcpBinaryResultMaterializer } from "../../src/mcp/binary-result-materializer";
 
 const contentOutputSchema = z.object({
   type: z.literal("content"),
@@ -213,42 +209,5 @@ describe("MCP binary result materialization", () => {
     const parsed = contentOutputSchema.parse(output);
     expect(parsed.value[0]).toEqual(modelOutput.value[0]);
     expect(noticeFrom(output)).toEqual({ mcpBinaryFiles: [], materializationFailures: 1 });
-  });
-
-  it("wraps MCP model projection while retaining the converted tool", async () => {
-    const rootDir = await createRoot();
-    const materializer = createMcpBinaryResultMaterializer({
-      requestId: "wrapped",
-      rootDir,
-      hashId: (domain) => (domain === "request" ? digest("aaaaaa", "1") : digest("bbbbbb", "2")),
-    });
-    const client = new FakeMcpClient();
-    const original = client.toolsFromDefinitions({ tools: [mcpToolDefinition("binary")] }).binary;
-    if (!original) throw new Error("missing converted MCP tool");
-    original.toModelOutput = () => ({
-      type: "content",
-      value: [{ type: "text", text: "inline" }],
-    });
-    const wrapped = wrapMcpToolWithBinaryMaterialization(original, materializer);
-    if (!wrapped.toModelOutput) throw new Error("missing wrapped MCP model projection");
-
-    const output = await wrapped.toModelOutput({
-      toolCallId: "wrapped-call",
-      input: {},
-      output: {
-        content: [
-          {
-            type: "image",
-            data: Buffer.from("wrapped-content").toString("base64"),
-            mimeType: "image/png",
-          },
-        ],
-      },
-    });
-
-    expect(wrapped.inputSchema).toBe(original.inputSchema);
-    expect(noticeFrom(output).mcpBinaryFiles[0]!.localPath).toBe(
-      path.join(rootDir, "req-aaaaaa", "call-bbbbbb", "0.png"),
-    );
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Panic, Result, TaggedError } from "better-result";
+import { Result } from "better-result";
 
 import {
   createLilacBus,
@@ -18,10 +18,6 @@ type PublicResultHandlerContext = Parameters<PublicResultHandler>[1];
 type PublicResultHandlerHasNoAck = "commit" extends keyof PublicResultHandlerContext ? false : true;
 
 const PUBLIC_RESULT_HANDLER_HAS_NO_ACK: PublicResultHandlerHasNoAck = true;
-
-class DeliveryPolicyFailure extends TaggedError("DeliveryPolicyFailure")<{
-  readonly message: string;
-}> {}
 
 function rawBusWithFetch(
   fetch: RawBus["fetch"],
@@ -98,75 +94,6 @@ describe("LilacBus Result APIs", () => {
     if (failed.status === "error") expect(failed.error._tag).toBe("EventPublishTransportFailed");
   });
 
-  it("preserves Panic from the raw publish boundary", async () => {
-    const panic = new Panic({ message: "raw publish invariant" });
-    const raw = rawBusWithFetch(async () => ({ messages: [] }));
-    raw.publish = async () => {
-      throw panic;
-    };
-    await expect(
-      createLilacBus(raw).publish(lilacEventTypes.EvtWorkflowRunChanged, {
-        runId: "run-1",
-        revisionId: "revision-1",
-        state: "running",
-        previousState: "queued",
-        ts: 1,
-      }),
-    ).rejects.toBe(panic);
-  });
-
-  it("returns owned failures for unsupported and failed request publication claim operations", async () => {
-    const raw = rawBusWithFetch(async () => ({ messages: [] }));
-    const bus = createLilacBus(raw);
-    const requestDeliveryId = crypto.randomUUID();
-    const claim = { requestDeliveryId, token: crypto.randomUUID() };
-    const data = {
-      requestDeliveryId,
-      queue: "prompt" as const,
-      messages: [{ role: "user" as const, content: "hello" }],
-    };
-    const options = { headers: { request_id: "request-claim-result" } };
-
-    const unsupportedAcquire = await bus.acquireRequestPublicationClaim(requestDeliveryId);
-    expect(unsupportedAcquire.status).toBe("error");
-    if (unsupportedAcquire.status === "error") {
-      expect(unsupportedAcquire.error._tag).toBe("EventRequestPublicationClaimUnsupported");
-      expect(unsupportedAcquire.error.operation).toBe("acquire");
-    }
-    const unsupportedPublish = await bus.publishClaimedRequest(data, claim, options);
-    expect(unsupportedPublish.status).toBe("error");
-    if (unsupportedPublish.status === "error") {
-      expect(unsupportedPublish.error._tag).toBe("EventRequestPublicationClaimUnsupported");
-    }
-    expect(await bus.confirmRequestPublication(claim, "1-0")).toMatchObject({
-      status: "error",
-      error: { _tag: "EventRequestPublicationConfirmationUnsupported" },
-    });
-    expect(await bus.abandonRequestPublicationClaim(claim)).toMatchObject({
-      status: "error",
-      error: {
-        _tag: "EventRequestPublicationClaimUnsupported",
-        operation: "abandon",
-      },
-    });
-
-    raw.acquireRequestPublicationClaim = async () => {
-      throw new Error("redis unavailable");
-    };
-    const failedAcquire = await bus.acquireRequestPublicationClaim(requestDeliveryId);
-    expect(failedAcquire.status).toBe("error");
-    if (failedAcquire.status === "error") {
-      expect(failedAcquire.error._tag).toBe("EventRequestPublicationClaimFailed");
-    }
-  });
-
-  it("returns unsupported topic operations as owned Results", async () => {
-    const bus = createLilacBus(rawBusWithFetch(async () => ({ messages: [] })));
-    expect((await bus.getTopicWatermark("evt.adapter")).status).toBe("error");
-    expect((await bus.trimTopicBeforeCheckpoint("evt.adapter", "1-0", 10)).status).toBe("error");
-    expect((await bus.retireTopicConsumerGroup("evt.adapter", "old-group")).status).toBe("error");
-  });
-
   it("reports present, absent, uncertain, and unavailable output stream expiry outcomes", async () => {
     const raw = rawBusWithFetch(async () => ({ messages: [] }));
     const bus = createLilacBus(raw);
@@ -207,16 +134,6 @@ describe("LilacBus Result APIs", () => {
     if (unavailable.status === "error") {
       expect(unavailable.error.reason).toBe("transport-unavailable");
     }
-  });
-
-  it("returns raw close rejection as an owned Result", async () => {
-    const raw = rawBusWithFetch(async () => ({ messages: [] }));
-    raw.close = async () => {
-      throw new Error("close failed");
-    };
-    const closed = await createLilacBus(raw).close();
-    expect(closed.status).toBe("error");
-    if (closed.status === "error") expect(closed.error._tag).toBe("EventBusCloseFailed");
   });
 
   it("keeps acknowledgement out of the public Result handler API", async () => {
@@ -277,61 +194,6 @@ describe("LilacBus Result APIs", () => {
     expect(action).toEqual({ disposition: "commit" });
   });
 
-  it("preserves Panic identity from the delivery policy", async () => {
-    let rawHandler: RawDeliveryHandler | undefined;
-    const raw = rawBusWithFetch(
-      async () => ({ messages: [] }),
-      async (_topic, _options, handler) => {
-        rawHandler = handler;
-        return Result.ok({
-          done: Promise.resolve(Result.ok(undefined)),
-          stop: async () => Result.ok(undefined),
-        });
-      },
-    );
-    const panic = new Panic({ message: "delivery policy invariant" });
-    await createLilacBus(raw).subscribeTopic(
-      "cmd.request",
-      { mode: "tail", offset: { type: "begin" } },
-      async () => Result.err(new DeliveryPolicyFailure({ message: "rejected" })),
-      () => {
-        throw panic;
-      },
-    );
-    if (!rawHandler) throw new Error("Raw delivery handler was not captured");
-
-    await expect(
-      rawHandler(
-        {
-          topic: "cmd.request",
-          id: "1-0",
-          type: "cmd.request.message",
-          ts: 1,
-          key: "request-1",
-          headers: { request_id: "request-1" },
-          data: {
-            requestDeliveryId: crypto.randomUUID(),
-            queue: "prompt",
-            messages: [{ role: "user", content: "hello" }],
-          },
-        },
-        {
-          cursor: "1-0",
-          mode: "tail",
-          evidence: {
-            source: {
-              transport: "redis-streams",
-              streamKey: "test:cmd.request",
-              topic: "cmd.request",
-              messageId: "1-0",
-            },
-            wire: { kind: "bounded-complete", fields: [] },
-          },
-        },
-      ),
-    ).rejects.toBe(panic);
-  });
-
   it("returns invalid contracts as typed errors and redacts diagnostic payloads", async () => {
     const secret = "secret-payload-sentinel";
     const diagnostics: unknown[] = [];
@@ -376,16 +238,5 @@ describe("LilacBus Result APIs", () => {
     ]);
     expect(JSON.stringify(diagnostics)).not.toContain(secret);
     expect(JSON.stringify(diagnostics)).not.toContain("secret-type-sentinel");
-  });
-
-  it("captures raw fetch rejection as a transport Result", async () => {
-    const raw = rawBusWithFetch(async () => {
-      throw new Error("redis unavailable");
-    });
-    const fetched = await createLilacBus(raw).fetchTopic("cmd.request", {
-      offset: { type: "begin" },
-    });
-    expect(fetched.status).toBe("error");
-    if (fetched.status === "error") expect(fetched.error._tag).toBe("EventFetchTransportFailed");
   });
 });

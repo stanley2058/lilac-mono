@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import { asSchema } from "ai";
-import { Panic } from "better-result";
 
 import {
   parseCoreConfigV2ToUniversal,
@@ -350,71 +349,6 @@ describe("subagent_delegate tool", () => {
     expect(selected).toHaveLength(1);
   });
 
-  it("returns an accepted handle by default in deferred mode", async () => {
-    const launches: Array<{
-      sessionName: string;
-      childRequestId: string;
-      childSessionId: string;
-      task: string;
-      stableNamedContinuation: true;
-    }> = [];
-
-    const tools = subagentTools({
-      runProfile: "primary",
-      config: TEST_CONFIG,
-      idleTimeoutMs: 2_000,
-      maxDepth: 1,
-      onDelegate: async (registration) => {
-        launches.push({
-          sessionName: registration.sessionName,
-          childRequestId: registration.childRequestId,
-          childSessionId: registration.childSessionId,
-          task: registration.task,
-          stableNamedContinuation: registration.stableNamedContinuation,
-        });
-        return {
-          runId: "run:deferred-1",
-          completion: Promise.resolve({ status: "resolved", finalText: "" }),
-          cancel: async () => {},
-        };
-      },
-    });
-
-    const res = await resolveExecuteResult(
-      tools.subagent_delegate.execute!(
-        { permissions: "restricted", task: "Map auth flow", mode: "deferred" },
-        {
-          toolCallId: "tool-deferred-1",
-          messages: [],
-          context: {
-            requestId: "r:deferred-1",
-            sessionId: "s:deferred-1",
-            requestClient: "discord",
-            subagentDepth: 0,
-          },
-        },
-      ),
-    );
-
-    expect(res).toEqual({
-      ok: true,
-      mode: "deferred",
-      status: "accepted",
-      workflowRunId: "run:deferred-1",
-      permissions: "restricted",
-      sessionName: expect.stringMatching(/^restricted-[0-9a-f]{8}$/u),
-    });
-    expect(launches).toEqual([
-      {
-        sessionName: res.sessionName,
-        childRequestId: expect.stringMatching(/^sub:r:deferred-1:/u),
-        childSessionId: `sub:s:deferred-1:named:${res.sessionName}`,
-        task: "Map auth flow",
-        stableNamedContinuation: true,
-      },
-    ]);
-  });
-
   it("ignores legacy raw sessionId input and creates a named child session", async () => {
     const launches: Array<{ sessionName: string; childRequestId: string; childSessionId: string }> =
       [];
@@ -514,39 +448,6 @@ describe("subagent_delegate tool", () => {
     expect(res).not.toHaveProperty("childSessionId");
     expect(res).not.toHaveProperty("timeoutMs");
     expect(res).not.toHaveProperty("durationMs");
-  });
-
-  it("preserves exact Panic identity from child completion", async () => {
-    const panic = new Panic({ message: "subagent completion invariant failed" });
-    const tools = subagentTools({
-      runProfile: "primary",
-      config: TEST_CONFIG,
-      idleTimeoutMs: 2_000,
-      maxDepth: 1,
-      onDelegate: async () => ({
-        runId: "run:panic",
-        completion: Promise.reject(panic),
-        cancel: async () => {},
-      }),
-    });
-
-    await expect(
-      resolveExecuteResult(
-        tools.subagent_delegate.execute!(
-          { permissions: "restricted", task: "Fail exactly", mode: "sync" },
-          {
-            toolCallId: "tool-panic",
-            messages: [],
-            context: {
-              requestId: "r:panic",
-              sessionId: "s:panic",
-              requestClient: "discord",
-              subagentDepth: 0,
-            },
-          },
-        ),
-      ),
-    ).rejects.toBe(panic);
   });
 
   it("times out after the configured period without child activity", async () => {

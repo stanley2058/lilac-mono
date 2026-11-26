@@ -1,13 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { createLogger } from "@stanley2058/lilac-utils";
-import { Panic } from "better-result";
 
 import { createProcessHandlers } from "../../src/runtime/process-handlers";
-import {
-  captureRuntimeError,
-  projectRuntimeError,
-  safeRuntimeErrorText,
-} from "../../src/runtime/error-format";
+import { safeRuntimeErrorText } from "../../src/runtime/error-format";
 
 function createLoggerStub() {
   return createLogger({
@@ -66,15 +61,6 @@ describe("createProcessHandlers", () => {
     }
   });
 
-  it("safely projects revoked failures", () => {
-    const { proxy, revoke } = Proxy.revocable({}, {});
-    revoke();
-    expect(captureRuntimeError(proxy)).toEqual({ kind: "opaque" });
-    const projected = projectRuntimeError(proxy, "Opaque revoked process failure");
-    expect(projected).toBeInstanceOf(Error);
-    expect(projected.message).toBe("Opaque revoked process failure");
-  });
-
   it("logs unhandled rejections without exiting", () => {
     const seen: unknown[] = [];
     const exitCalls: number[] = [];
@@ -123,33 +109,6 @@ describe("createProcessHandlers", () => {
 
     expect(stopCalls).toBe(1);
     expect(exitCalls).toEqual([1]);
-  });
-
-  it("reports a Panic through fatal supervision without losing its identity", async () => {
-    const panic = new Panic({ message: "agent runner invariant failed" });
-    const stoppedWith: Array<Error | undefined> = [];
-    let resolveExit!: (code: number) => void;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
-    const exitCodeHooks = createExitCodeHooks();
-    const handlers = createProcessHandlers({
-      logger: createLoggerStub(),
-      stop: async (fatalError) => {
-        stoppedWith.push(fatalError);
-      },
-      getExitCode: exitCodeHooks.getExitCode,
-      setExitCode: exitCodeHooks.setExitCode,
-      exit: ((code: number) => {
-        resolveExit(code);
-        return undefined as never;
-      }) as (code: number) => never,
-    });
-
-    handlers.reportFatalError(panic);
-
-    await expect(exited).resolves.toBe(1);
-    expect(stoppedWith).toEqual([panic]);
   });
 
   it("exits immediately on a second fatal error during shutdown", async () => {

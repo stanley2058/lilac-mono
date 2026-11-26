@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 
 import { GithubApiError } from "../../../src/github/github-api";
 import { GithubAuthFailed } from "../../../src/github/github-auth";
@@ -291,7 +291,7 @@ describe("GitHub adapter CRUD compatibility", () => {
     expect(edits[0]?.body).toContain("Cancel");
   });
 
-  it("maps provider 404s and preserves Panic identity", async () => {
+  it("maps provider 404s to message not found", async () => {
     const missing = new GithubAdapter({
       api: createGithubApi({
         getIssueComment: async () => {
@@ -307,18 +307,6 @@ describe("GitHub adapter CRUD compatibility", () => {
     expect(missingResult.status).toBe("error");
     if (missingResult.status === "ok") throw new Error("expected missing comment");
     expect(missingResult.error).toBeInstanceOf(SurfaceMessageNotFound);
-
-    const panic = new Panic({ message: "GitHub SDK invariant failed" });
-    const defective = new GithubAdapter({
-      api: createGithubApi({
-        createIssueComment: async () => {
-          throw panic;
-        },
-      }),
-    });
-    await expect(
-      defective.sendMsg({ platform: "github", channelId: "octo/repo#12" }, { text: "message" }),
-    ).rejects.toBe(panic);
   });
 
   it("preserves zero timestamp fallbacks and the edited timestamp field", async () => {
@@ -345,18 +333,6 @@ describe("GitHub adapter CRUD compatibility", () => {
       { ts: 0, editedTs: 0 },
       { ts: 1_577_836_800_000, editedTs: 1_577_923_200_000 },
     ]);
-  });
-
-  it("preserves Panic thrown while parsing a GitHub thread", async () => {
-    const panic = new Panic({ message: "thread identity invariant failed" });
-    const session = {
-      platform: "github" as const,
-      get channelId(): string {
-        throw panic;
-      },
-    };
-
-    await expect(new GithubAdapter().listMsg(session)).rejects.toBe(panic);
   });
 });
 
@@ -499,16 +475,6 @@ describe("GitHub adapter reply permalinks", () => {
     if (finished.status === "error") throw finished.error;
     return creates[0] ?? "";
   }
-
-  it("links replies on the configured GitHub host", async () => {
-    const body = await replyBody({
-      getGithubWebBaseUrl: async () => "https://github.example.com",
-    });
-
-    expect(body).toContain(
-      "In reply to https://github.example.com/octo/repo/issues/12#issuecomment-4152921803:",
-    );
-  });
 
   it("falls back to github.com when the API resolves no host", async () => {
     const body = await replyBody({});

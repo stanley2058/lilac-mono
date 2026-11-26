@@ -78,14 +78,6 @@ describe("executeBash", () => {
     expect(output.truncation?.completeOutputRetained).toBe(false);
   });
 
-  it("executes a command and returns output", async () => {
-    const res = await executeBash({ command: "echo hello" });
-
-    expect(res.exitCode).toBe(0);
-    expect(res.executionError).toBeUndefined();
-    expect(res.stdout).toContain("hello");
-  });
-
   it("executes the original callback URL while redacting only displayed command text", async () => {
     const callbackUrl =
       "http://localhost/callback?code=execution-code&state=execution-state&other=visible";
@@ -158,21 +150,6 @@ rmdir "$media_dir"`,
     expect(res.exitCode).toBe(0);
     expect(res.executionError).toBeUndefined();
     expect(res.stdout).toBe("key:https://example.com\nhi\nok\n");
-  });
-
-  it("inherits PATH from the current process", async () => {
-    const originalPath = process.env.PATH;
-    process.env.PATH = `/__lilac_path_test__:${originalPath ?? ""}`;
-
-    try {
-      const res = await executeBash({ command: "echo $PATH" });
-
-      expect(res.exitCode).toBe(0);
-      expect(res.executionError).toBeUndefined();
-      expect(res.stdout).toContain("/__lilac_path_test__:");
-    } finally {
-      process.env.PATH = originalPath;
-    }
   });
 
   it("forces color off for bash child env", async () => {

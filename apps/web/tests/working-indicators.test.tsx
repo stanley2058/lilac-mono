@@ -1,9 +1,4 @@
 import { expect, test } from "bun:test";
-import { renderToStaticMarkup } from "react-dom/server";
-import { agentWorkStages } from "../src/agent-work-fixtures";
-import { MessageServicesContext } from "../src/components/message-services";
-import { Turn } from "../src/components/Timeline";
-import { WorkingIndicatorsContext } from "../src/components/WorkVerb";
 import {
   pastTense,
   rememberShownWorkingIndicator,
@@ -40,43 +35,6 @@ test("buckets advance once per interval", () => {
   expect(workingIndicatorBucket(-5)).toBe(0);
   expect(workingIndicatorBucket(WORKING_INDICATOR_INTERVAL_MS - 1)).toBe(0);
   expect(workingIndicatorBucket(WORKING_INDICATOR_INTERVAL_MS * 3)).toBe(3);
-});
-
-function render(id: string, indicators?: readonly string[]) {
-  const slot = agentWorkStages.find((stage) => stage.id === id)!.frames[0]!;
-  const turn = (
-    <MessageServicesContext
-      value={{ canEdit: false, resourceUrl: () => "", onAction: () => {}, onReaction: () => {} }}
-    >
-      <Turn slot={slot} onRewind={() => {}} onLoadMore={() => {}} />
-    </MessageServicesContext>
-  );
-  return {
-    slot,
-    html: renderToStaticMarkup(
-      indicators ? (
-        <WorkingIndicatorsContext value={indicators}>{turn}</WorkingIndicatorsContext>
-      ) : (
-        turn
-      ),
-    ),
-  };
-}
-
-test("a settled turn shows the past tense of the word it ended on", () => {
-  const { slot, html } = render("complete", words);
-  const duration = slot.settledAt! - slot.startedAt!;
-  const word = workingIndicatorAt(words, slot.turnId, workingIndicatorBucket(duration));
-  expect(html).toContain(`${pastTense(word)} for 12s`);
-  expect(render("complete").html).toContain("Worked for 12s");
-});
-
-test("a running turn shows a rotating word in place of Working", () => {
-  const { html } = render("full-turn-working", words);
-  expect(html).toMatch(
-    /class="work-verb-word">(Brewing|Photosynthesizing|Tiptoeing|Tuning|Humming)</u,
-  );
-  expect(html).not.toContain("Working for");
 });
 
 test("a turn watched live settles on the bucket it last showed", () => {

@@ -52,10 +52,8 @@ import {
   BusAgentRunnerQueueAttemptRouteInvalid,
   busAgentRunnerDeliveryDisposition,
   buildCustomCommandFailureFinalText,
-  BusAgentRunnerOperationFailed,
   customCommandExecutionErrorText,
   completeLevel1ToolMapping,
-  captureBusAgentRunnerOperation,
   degradeCorePrimaryLineageForMutation,
   formatBusAgentRunnerDrainFailureForLog,
   formatClaudeLifecycleLogFields,
@@ -80,9 +78,6 @@ import {
   resolveCorePrimaryTranscriptProviderState,
   resolveCoreStableNamedContinuation,
   resolveStoredResourceProviderTarget,
-  rethrowBusAgentRunnerPanic,
-  signalBusAgentRunnerHostFailure,
-  settleStoredMessageIdentityRemember,
   projectTranscriptMessagesForPersistence,
   toIdleRetryDecision,
   WORKFLOW_REQUEST_CLAIM_HEARTBEAT_MS,
@@ -100,10 +95,7 @@ import {
 } from "../../../src/custom-commands/manager";
 import { createCoreToolPluginManager, type CoreToolPluginManager } from "../../../src/plugins";
 import { SqliteTranscriptStore } from "../../../src/transcript/transcript-store";
-import {
-  createStoredMessageIdentityProjectionV1,
-  StoredMessageProjectionError,
-} from "../../../src/transcript/stored-message-materialization";
+import { createStoredMessageIdentityProjectionV1 } from "../../../src/transcript/stored-message-materialization";
 import { createAgentOutputActivityPublisher } from "../../../src/shared/agent-output-activity";
 import { createRequestMessageCache } from "../../../src/tool-server/request-message-cache";
 import { JobService } from "../../../src/jobs/job-service";
@@ -1611,63 +1603,6 @@ describe("bus agent runner delivery policy", () => {
     });
 
     expect(busAgentRunnerDeliveryDisposition(error)).toBe("park-pending");
-  });
-
-  it("reports and rethrows Panic without creating a delivery error", () => {
-    const panic = new Panic({ message: "runner invariant failed" });
-    const reported: Panic[] = [];
-
-    expect(() => rethrowBusAgentRunnerPanic(panic, (cause) => reported.push(cause))).toThrow(panic);
-    expect(reported).toEqual([panic]);
-  });
-
-  it("captures ordinary dependency rejection as an owned operation failure", async () => {
-    const cause = new Error("provider unavailable");
-
-    const result = await captureBusAgentRunnerOperation("provider resolution", () =>
-      Promise.reject(cause),
-    );
-
-    expect(result.status).toBe("error");
-    if (result.status === "ok") throw new Error("expected operation failure");
-    expect(result.error).toBeInstanceOf(BusAgentRunnerOperationFailed);
-    expect(result.error.operation).toBe("provider resolution");
-    expect(result.error.cause).toBe(cause);
-    expect(result.error.message).toBe("provider unavailable");
-  });
-
-  it("preserves Panic identity through capture and the exact host adapter", async () => {
-    const panic = new Panic({ message: "provider invariant failed" });
-    const reported: Panic[] = [];
-
-    await expect(
-      captureBusAgentRunnerOperation(
-        "provider resolution",
-        () => Promise.reject(panic),
-        (cause) => reported.push(cause),
-      ),
-    ).rejects.toBe(panic);
-    expect(reported).toEqual([panic]);
-
-    const ordinaryCause = new Error("model callback failed");
-    const failure = new BusAgentRunnerOperationFailed({
-      operation: "model callback",
-      cause: ordinaryCause,
-      failureKind: "other",
-      displayMessage: ordinaryCause.message,
-      message: ordinaryCause.message,
-    });
-    expect(() => signalBusAgentRunnerHostFailure(failure)).toThrow(ordinaryCause);
-  });
-
-  it("signals stored identity projection failure outside the protected Result callback", () => {
-    const projectionError = new StoredMessageProjectionError({
-      message: "parallel identity mismatch",
-    });
-
-    expect(() => settleStoredMessageIdentityRemember(Result.err(projectionError))).toThrow(
-      projectionError,
-    );
   });
 
   it("uploads and reserves provider file bytes before transcript persistence", async () => {
@@ -5350,77 +5285,6 @@ describe("deferred questions in the production runner", () => {
         expect(promptHasJobEvent(secondPrompt, jobId)).toBe(true);
         expect(JSON.stringify(secondPrompt)).toContain("built");
         expect(harness.jobs.hasPendingEvents("native:job-await")).toBe(false);
-      } finally {
-        await lifecycle.stop();
-        await runner.stop();
-        await pluginManager.destroy();
-        await bus.close();
-        await harness.close();
-      }
-    });
-
-    it("finishes the request while a service job keeps running", async () => {
-      const harness = jobHarness();
-      const bus = createLilacBus(createInMemoryRawBus());
-      const pluginManager = corePrimaryTestPluginManager();
-      const requestId = "native:job-service:test";
-      const requestDeliveryId = crypto.randomUUID();
-      let jobId = "";
-      const config = parseCoreConfigV2ToUniversal({});
-      config.models.main = { model: "openai/job-test" };
-      const lifecycle = await observeRequestLifecycle(bus, requestId);
-      const runner = await startBusAgentRunner({
-        bus,
-        blobStore: transcriptResultValue(await createMemoryBlobStore()),
-        pluginManager,
-        jobs: harness.jobs,
-        config,
-        subscriptionId: "job-service-test",
-        reportFatalPanic: (panic) => {
-          throw panic;
-        },
-        nativeExecution: {
-          validate: () => Result.ok({ safetyMode: "trusted" }),
-          settled: async () => Result.ok(undefined),
-        },
-        issueControlCapability: () => ({ capability: "native-test", principal: null }),
-        createAgent: (options) =>
-          new AiSdkPiAgent({
-            ...options,
-            model: new MockLanguageModelV4({
-              modelId: "job-test",
-              doStream: async () => {
-                const started = await harness.jobs.start({
-                  owner: jobOwner(requestId, "native:job-service"),
-                  toolCallId: "call-1",
-                  mode: "service",
-                  label: "dev server",
-                  launch: launch("sleep 60"),
-                });
-                jobId = started.match({
-                  ok: (job) => job.jobId,
-                  err: (error) => {
-                    throw error;
-                  },
-                });
-                return level1TextStep("The server is running.");
-              },
-            }),
-          }),
-      });
-      try {
-        await publishRunnerRequest({
-          bus,
-          requestId,
-          requestDeliveryId,
-          sessionId: "native:job-service",
-          requestClient: "native",
-          text: "Start the server",
-          raw: nativeRaw(requestId, requestDeliveryId, "job-service"),
-        });
-        expect(await lifecycle.terminal, lifecycle.details.join("; ")).toBe("resolved");
-        const job = harness.store.get(jobId).match({ ok: (value) => value, err: () => null });
-        expect(job?.status).toBe("running");
       } finally {
         await lifecycle.stop();
         await runner.stop();

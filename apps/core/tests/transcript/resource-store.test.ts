@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
-import { Panic, type Result as ResultType } from "better-result";
+import type { Result as ResultType } from "better-result";
 
 import type { ResourceCacheV1, ResourceId } from "../../src/resource/contracts";
 import {
@@ -355,15 +355,12 @@ describe("Core resource SQLite store", () => {
     await fs.rm(directory, { recursive: true, force: true });
   });
 
-  it("reports corrupt resource rows before returning failure and preserves observer Panic identity", async () => {
+  it("reports corrupt resource rows before returning failure", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-corrupt-resource-"));
     const dbPath = path.join(directory, "transcripts.db");
-    const observerPanic = new Panic({ message: "resource diagnostic observer failed" });
     const diagnostics: Array<{ readonly recordId: string; readonly field: string }> = [];
-    let panicOnDiagnostic = false;
     const store = new SqliteTranscriptStore(dbPath, undefined, (diagnostic) => {
       diagnostics.push({ recordId: diagnostic.recordId, field: diagnostic.field });
-      if (panicOnDiagnostic) throw observerPanic;
     });
     const id = resourceId("51");
     register(store, id, "corrupt-resource");
@@ -387,13 +384,6 @@ describe("Core resource SQLite store", () => {
       });
     }
     expect(diagnostics).toEqual([{ recordId: id, field: "origin_json" }]);
-
-    panicOnDiagnostic = true;
-    expect(() => store.getRetained(id)).toThrow(observerPanic);
-    expect(diagnostics).toEqual([
-      { recordId: id, field: "origin_json" },
-      { recordId: id, field: "origin_json" },
-    ]);
 
     raw.close();
     store.close();

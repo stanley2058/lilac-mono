@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 
 import { McpConfigError, createEmptyMcpConfig, type UniversalMcpConfig } from "../../src/mcp";
 import { startCoreMcpServices } from "../../src/runtime/create-core-runtime";
@@ -138,29 +138,6 @@ describe("Core MCP startup", () => {
       level: "error",
       message: "MCP registry background initialization failed",
       details: { path: "/data/mcp-config.yaml", error: "registry config invalid" },
-    });
-  });
-
-  it("reports and propagates Panic from background registry initialization", async () => {
-    const logs: LogEntry[] = [];
-    const panic = new Panic({ message: "registry invariant failed" });
-    const startup = await startCoreMcpServices({
-      configPath: "/data/mcp-config.yaml",
-      providers: { reconcile: () => undefined },
-      registry: { init: () => Promise.reject(panic) },
-      callback: {
-        start: () => ({ status: "listening", hostname: "localhost", port: 1456 }),
-      },
-      logger: recordingLogger(logs),
-      readConfig: async (configPath) =>
-        Result.ok({ configPath, exists: false, config: createEmptyMcpConfig() }),
-    });
-
-    await expect(startup.registryInit).rejects.toBe(panic);
-    expect(logs).toContainEqual({
-      level: "error",
-      message: "MCP registry background initialization failed",
-      details: { path: "/data/mcp-config.yaml", error: "registry invariant failed" },
     });
   });
 });

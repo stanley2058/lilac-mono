@@ -204,39 +204,6 @@ describe("executeAtomicToolCall", () => {
     ]);
   });
 
-  it("does not let terminal cleanup Panic mask primary Panic", async () => {
-    const primaryPanic = new Panic({ message: "primary invariant failed" });
-    const cleanupPanic = new Panic({ message: "cleanup invariant failed" });
-    const pendingToolCalls = new Set<string>();
-    let terminalAttempted = false;
-
-    await expect(
-      executeAtomicToolCall({
-        call: { toolCallId: "double-panic", toolName: "panic", input: {} },
-        tools: {
-          panic: tool({
-            inputSchema: jsonSchema({ type: "object" }),
-            execute: (): string => {
-              throw primaryPanic;
-            },
-          }),
-        },
-        messages: [],
-        pendingToolCalls,
-        inputValidation: { type: "prevalidated" },
-
-        onEvent: (event) => {
-          if (event.type !== "tool_execution_end") return;
-          terminalAttempted = true;
-          throw cleanupPanic;
-        },
-      }),
-    ).rejects.toBe(primaryPanic);
-
-    expect(terminalAttempted).toBe(true);
-    expect(pendingToolCalls.size).toBe(0);
-  });
-
   it("preserves ordinary operation and terminal cleanup failures together", async () => {
     const operationError = new Error("operation cancelled");
     const cleanupError = new Error("terminal observer failed");

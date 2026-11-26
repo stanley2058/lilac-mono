@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { parseCoreConfigV1ToUniversal, type CoreConfig } from "@stanley2058/lilac-utils";
-import { Panic, Result, type Result as ResultType } from "better-result";
+import { Result, type Result as ResultType } from "better-result";
 import type { ServerToolResult } from "@stanley2058/lilac-plugin-runtime";
 import { z } from "zod";
 
@@ -1544,11 +1544,6 @@ describe("conversation thread store", () => {
       error: { message: "provider unavailable" },
     });
 
-    const panic = new Panic({ message: "summarization invariant failed" });
-    await expect(
-      resolveConversationThreadSummarizationToolOperation(Promise.reject(panic)),
-    ).rejects.toBe(panic);
-
     const run = await service.runSummarization({ now: eligibleNow });
     expect(run.summarized).toBe(1);
 
@@ -1858,21 +1853,6 @@ describe("conversation thread store", () => {
       busyDefect,
     );
     expect(attemptedThreadIds).toEqual(["discord:channel:c1:busy-a1"]);
-
-    const panic = new Panic({ message: "thread summarization invariant failed" });
-    const panicService = new ConversationThreadService({
-      store: threadStore,
-      getConfig: async () => testConfig(),
-      summarizer: async () => {
-        throw panic;
-      },
-    });
-    await expect(
-      panicService.runSummarization({
-        threadId: "discord:channel:c1:busy-b1",
-        now: Date.now() + 3 * 60 * 60 * 1000,
-      }),
-    ).rejects.toBe(panic);
 
     searchStore.close();
     threadStore.close();

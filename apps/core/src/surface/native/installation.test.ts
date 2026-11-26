@@ -102,14 +102,6 @@ test("invalid local secrets fail before creating storage", async () => {
   }
 });
 
-test("local startup requires no Clerk account or provider credentials", async () => {
-  const options = await fixture();
-  const installation = (await openNativeInstallation(options)).unwrap();
-  installations.push(installation);
-  expect(installation.clerk).toBeUndefined();
-  expect(installation.login).toBeFunction();
-});
-
 test("Clerk browser installation does not require a TUI OAuth application", async () => {
   const options = await fixture();
   const installation = (

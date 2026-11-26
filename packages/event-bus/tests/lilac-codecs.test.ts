@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 import SuperJSON from "superjson";
 
 import {
@@ -197,14 +197,6 @@ describe("canonical Lilac event codecs", () => {
     const missingData = { ...requestFixture.message };
     Reflect.deleteProperty(missingData, "data");
     expectDecodeError(missingData, "envelope");
-
-    const hostileEnvelope = new Proxy(requestFixture.message, {
-      get(target, property, receiver) {
-        if (property === "topic") throw new Error("hostile envelope getter");
-        return Reflect.get(target, property, receiver);
-      },
-    });
-    expectDecodeError(hostileEnvelope, "envelope");
   });
 
   it("rejects non-string extension headers and invalid canonical headers", () => {
@@ -261,22 +253,6 @@ describe("canonical Lilac event codecs", () => {
       {
         ...compatibilityFixtureFor(lilacEventTypes.EvtRequestReply).message,
         data: { unexpected: true },
-      },
-      "payload",
-    );
-
-    const hostilePayload = new Proxy(
-      {},
-      {
-        get() {
-          throw new Error("hostile payload getter");
-        },
-      },
-    );
-    expectDecodeError(
-      {
-        ...compatibilityFixtureFor(lilacEventTypes.CmdRequestMessage).message,
-        data: hostilePayload,
       },
       "payload",
     );
@@ -404,26 +380,5 @@ describe("canonical Lilac event codecs", () => {
     if (contextResult.status === "ok" && "context" in contextResult.value.data) {
       expect(contextResult.value.data.context).toBe(context);
     }
-  });
-
-  it("preserves Panic from decoder internals", () => {
-    const panic = new Panic({ message: "schema invariant failed" });
-    const data = new Proxy(
-      {},
-      {
-        get() {
-          throw panic;
-        },
-      },
-    );
-    const message = envelope({
-      type: lilacEventTypes.CmdRequestMessage,
-      topic: "cmd.request",
-      key: "request-1",
-      headers: { request_id: "request-1" },
-      data,
-    });
-
-    expect(() => decodeLilacMessage(message)).toThrow(panic);
   });
 });

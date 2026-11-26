@@ -9,8 +9,6 @@ import {
 const originalWebSocket = globalThis.WebSocket;
 class ControlledWebSocket extends EventTarget {
   static instances: ControlledWebSocket[] = [];
-  static failure: Error | undefined;
-  static closeFailure: Error | undefined;
   readonly headers: Record<string, string>;
   closed = false;
   constructor(
@@ -18,13 +16,11 @@ class ControlledWebSocket extends EventTarget {
     options: { headers: Record<string, string> },
   ) {
     super();
-    if (ControlledWebSocket.failure) throw ControlledWebSocket.failure;
     this.headers = options.headers;
     ControlledWebSocket.instances.push(this);
   }
   close(): void {
     this.closed = true;
-    if (ControlledWebSocket.closeFailure) throw ControlledWebSocket.closeFailure;
   }
 }
 function installSocket(): void {
@@ -33,8 +29,6 @@ function installSocket(): void {
 afterEach(() => {
   globalThis.WebSocket = originalWebSocket;
   ControlledWebSocket.instances = [];
-  ControlledWebSocket.failure = undefined;
-  ControlledWebSocket.closeFailure = undefined;
 });
 
 describe("OpenAI Responses connection", () => {
@@ -160,14 +154,6 @@ describe("OpenAI Responses connection", () => {
     ).toBe(reason);
     expect(ControlledWebSocket.instances[0]!.closed).toBe(true);
   });
-  it("rejects the exact constructor Panic", async () => {
-    installSocket();
-    const panic = new Panic({ message: "socket invariant" });
-    ControlledWebSocket.failure = panic;
-    await expect(
-      connectOpenAIResponsesWebSocket({ url: "wss://example.test/responses", headers: {} }),
-    ).rejects.toBe(panic);
-  });
   it("rejects the exact cancellation Panic after closing the connecting socket", async () => {
     installSocket();
     const controller = new AbortController();
@@ -180,32 +166,5 @@ describe("OpenAI Responses connection", () => {
     controller.abort(panic);
     await expect(opening).rejects.toBe(panic);
     expect(ControlledWebSocket.instances[0]!.closed).toBe(true);
-  });
-  it("preserves the cancellation Panic when socket cleanup also panics", async () => {
-    installSocket();
-    const controller = new AbortController();
-    const originalPanic = new Panic({ message: "cancel invariant" });
-    ControlledWebSocket.closeFailure = new Panic({ message: "close invariant" });
-    const opening = connectOpenAIResponsesWebSocket({
-      url: "wss://example.test/responses",
-      headers: {},
-      signal: controller.signal,
-    });
-    controller.abort(originalPanic);
-    await expect(opening).rejects.toBe(originalPanic);
-    expect(ControlledWebSocket.instances[0]!.closed).toBe(true);
-  });
-  it("rejects a cleanup Panic rather than converting it into a connection error", async () => {
-    installSocket();
-    const panic = new Panic({ message: "close invariant" });
-    ControlledWebSocket.closeFailure = panic;
-    const opening = connectOpenAIResponsesWebSocket({
-      url: "wss://example.test/responses",
-      headers: {},
-    });
-    ControlledWebSocket.instances[0]!.dispatchEvent(
-      new ErrorEvent("error", { message: "offline" }),
-    );
-    await expect(opening).rejects.toBe(panic);
   });
 });

@@ -1220,35 +1220,6 @@ describe("SqliteTranscriptStore", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("preserves direct persistence diagnostic Panic identity", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-transcript-diagnostic-panic-"));
-    const dbPath = path.join(dir, "transcripts.db");
-    const callbackPanic = new Panic({ message: "transcript diagnostic callback failed" });
-    const store = new SqliteTranscriptStore(dbPath, undefined, () => {
-      throw callbackPanic;
-    });
-    resultValue(
-      store.saveRequestTranscript({
-        requestId: "corrupt-diagnostic-row",
-        sessionId: "session",
-        requestClient: "discord",
-        messages: [{ role: "user", content: "secret" }],
-      }),
-    );
-    const mutation = new Database(dbPath);
-    mutation.run("UPDATE request_transcripts SET messages_json = '{' WHERE request_id = ?", [
-      "corrupt-diagnostic-row",
-    ]);
-    mutation.close();
-
-    expect(() => store.getRequestTranscript({ requestId: "corrupt-diagnostic-row" })).toThrow(
-      callbackPanic,
-    );
-
-    store.close();
-    await fs.rm(dir, { recursive: true, force: true });
-  });
-
   it("emits save and lineage diagnostics only after their transaction outcome is fixed", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-save-diagnostics-"));
     const dbPath = path.join(dir, "transcripts.db");

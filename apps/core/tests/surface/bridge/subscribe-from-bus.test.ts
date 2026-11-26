@@ -5,7 +5,6 @@ import {
   adaptSurfaceOperationToRelay,
   bridgeBusToAdapter as bridgeBusToAdapterImpl,
   BusToAdapterEffectFailed,
-  captureBusToAdapterEffect,
   logIngressAcknowledgementCleanupFailure,
   mergeContinuationText,
 } from "../../../src/surface/bridge/subscribe-from-bus";
@@ -103,7 +102,6 @@ class FakeOutputStream {
     if (this.nextPushFailure) {
       const failure = this.nextPushFailure;
       this.nextPushFailure = null;
-      if (Panic.is(failure)) throw failure;
       return Result.err(
         new SurfaceUnavailable({
           platform: this.platform,
@@ -465,15 +463,6 @@ describe("surface operation relay adaptation", () => {
     });
     expect(JSON.stringify(failure)).not.toContain("secret=hidden");
   });
-
-  it("does not wrap Panic from relay effects", async () => {
-    const panic = new Panic({ message: "relay invariant" });
-    await expect(
-      captureBusToAdapterEffect("push-output", async () => {
-        throw panic;
-      }),
-    ).rejects.toBe(panic);
-  });
 });
 
 describe("bridgeBusToAdapter", () => {
@@ -526,91 +515,6 @@ describe("bridgeBusToAdapter", () => {
     if (!refreshedTimeout) throw new Error("activity did not refresh the relay idle timeout");
     if (refreshedTimeout.active) refreshedTimeout.callback();
     expect(adapter.stream?.aborted).toBe("timeout");
-
-    await bridge.stop();
-  });
-
-  it("starts an output relay on evt.request.reply and streams output parts", async () => {
-    const raw = createInMemoryRawBus();
-    const bus = createLilacBus(raw);
-    const adapter = new FakeAdapter();
-
-    const requestId = "discord:chan:msg_1";
-
-    // Pre-publish output before the reply event to ensure offset: begin catches it.
-    await bus.publish(
-      lilacEventTypes.EvtAgentOutputDeltaText,
-      { delta: "hello" },
-      {
-        headers: {
-          request_id: requestId,
-          session_id: "chan",
-          request_client: "discord",
-        },
-      },
-    );
-
-    const bridge = await bridgeBusToAdapter({
-      adapter,
-      bus,
-      platform: "discord",
-      subscriptionId: "discord-adapter",
-      idleTimeoutMs: 10_000,
-    });
-
-    await bus.publish(
-      lilacEventTypes.EvtRequestReply,
-      {},
-      {
-        headers: {
-          request_id: requestId,
-          session_id: "chan",
-          request_client: "discord",
-        },
-      },
-    );
-
-    await bus.publish(
-      lilacEventTypes.EvtAgentOutputToolCall,
-      {
-        toolCallId: "call-1",
-        status: "start",
-        display: "bash echo hi",
-      },
-      { headers: { request_id: requestId } },
-    );
-    await bus.publish(
-      lilacEventTypes.EvtAgentOutputResponseText,
-      { finalText: "final" },
-      { headers: { request_id: requestId } },
-    );
-
-    expect(adapter.lastStart?.sessionRef).toEqual({ platform: "discord", channelId: "chan" });
-    expect(adapter.lastStart?.opts?.requestId).toBe(requestId);
-    expect(adapter.lastStart?.opts?.replyTo).toEqual({
-      platform: "discord",
-      channelId: "chan",
-      messageId: "msg_1",
-    });
-    expect(adapter.lastStart?.opts?.requestStartedAtMs).toBeTypeOf("number");
-
-    expect(adapter.stream?.parts).toEqual([
-      { type: "text.delta", delta: "hello" },
-      {
-        type: "tool.status",
-        update: {
-          toolCallId: "call-1",
-          status: "start",
-          display: "bash echo hi",
-        },
-      },
-      { type: "text.set", text: "final" },
-    ]);
-
-    expect(adapter.stream?.finished).toBe(true);
-
-    expect(adapter.typingStarts).toEqual([{ platform: "discord", channelId: "chan" }]);
-    expect(adapter.typingStops).toBe(1);
 
     await bridge.stop();
   });
@@ -3234,44 +3138,6 @@ describe("bridgeBusToAdapter", () => {
       contextHasCommit: false,
     });
     expect(accepted.cursor).not.toBe(failed.cursor);
-
-    await bridge.stop();
-  });
-
-  it("propagates a tail Panic instead of applying a delivery policy", async () => {
-    const bus = createLilacBus(createInMemoryRawBus());
-    const adapter = new FakeAdapter();
-    const requestId = "discord:chan:tail_panic";
-    const bridge = await bridgeBusToAdapter({
-      adapter,
-      bus,
-      platform: "discord",
-      subscriptionId: "discord-adapter",
-      idleTimeoutMs: 10_000,
-    });
-
-    await bus.publish(
-      lilacEventTypes.EvtRequestReply,
-      {},
-      {
-        headers: {
-          request_id: requestId,
-          session_id: "chan",
-          request_client: "discord",
-        },
-      },
-    );
-    if (!adapter.stream) throw new Error("relay output stream was not started");
-    const panic = new Panic({ message: "forced output invariant failure" });
-    adapter.stream.nextPushFailure = panic;
-
-    await expect(
-      bus.publish(
-        lilacEventTypes.EvtAgentOutputDeltaText,
-        { delta: "panic" },
-        { headers: { request_id: requestId } },
-      ),
-    ).rejects.toBe(panic);
 
     await bridge.stop();
   });

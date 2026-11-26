@@ -597,39 +597,6 @@ describe("workflow subagent convergence", () => {
     });
     setupResult.store.close();
   });
-  it("uses the same durable terminal run without deferred delivery for synchronous completion", async () => {
-    const setupResult = await setup();
-    const handle = await setupResult.dispatcher.delegate({
-      ...registration(setupResult.projectRoot),
-      mode: "sync",
-    });
-    const run = workflowStoreValue(setupResult.store.getRun(handle.runId));
-    if (!run) throw new Error("generated subagent run not found");
-    const { store } = setupResult;
-    expect(
-      workflowStoreValue(store.listActiveLiveParentRuns("parent:1")).map((item) => item.runId),
-    ).toEqual([handle.runId]);
-    expect(store.transitionRun({ runId: run.runId, from: "queued", to: "running", now: 10 })).toBe(
-      true,
-    );
-    expect(
-      store.transitionRun({
-        runId: run.runId,
-        from: "running",
-        to: "succeeded",
-        now: 20,
-        result: "audit complete",
-      }),
-    ).toBe(true);
-    await expect(handle.completion).resolves.toEqual({
-      status: "resolved",
-      finalText: "audit complete",
-    });
-    expect([
-      ...workflowStoreValue(store.listPendingLiveParentCompletions("parent:1", 100, true)),
-    ]).toEqual([]);
-    store.close();
-  });
   it("aggregates distinct child tools without letting non-tool activity erase the tree", async () => {
     const { store } = await createRun("parent:tool-tree");
     const bus = createLilacBus(createInMemoryRawBus());

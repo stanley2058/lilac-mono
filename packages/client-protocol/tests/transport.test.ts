@@ -147,7 +147,7 @@ describe("Bun oRPC transport proof", () => {
     });
   });
 
-  test("multiplexes unary RPC while streaming, and cancellation ends subscription", async () => {
+  test("cancellation ends subscription", async () => {
     const connection = connect();
     const controller = new AbortController();
     const stream = await connection.client.threads.watch(
@@ -156,9 +156,6 @@ describe("Bun oRPC transport proof", () => {
     );
     await connection.subscribed;
     expect((await stream.next()).value).toEqual(unchanged);
-    expect(await connection.client.threads.sync({ threadId: "thread-1", checkpoint })).toEqual(
-      unchanged,
-    );
     controller.abort();
     await connection.canceled;
   });

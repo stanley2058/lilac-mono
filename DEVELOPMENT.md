@@ -139,8 +139,8 @@ the installation; that directory is its default storage location.
 Use the root scripts for repository checks:
 
 ```sh
-bun run check              # concurrent repository gates
-bun run ci                 # conservative serial CI sequence
+bun run check              # every repository gate, concurrently, reusing unchanged passes
+bun run ci                 # the same gates without reuse; CI splits them with --group and --shard
 bun run test:core          # Core, Tool Bridge, and shared dependencies
 bun run test:all           # all tests, including architecture and lint rules
 bun run lint
@@ -149,7 +149,14 @@ bun run fmt:check
 ```
 
 Use focused workspace tests and typechecks while iterating. Run `bun run check` against the final
-changes before every commit. Architecture-controlled changes also need the checks and registrations
+changes before every commit.
+
+`check` sizes its concurrency from the CPU count and skips a gate whose inputs match a run that
+already passed. A workspace's typecheck and tests read that workspace, the workspaces it declares or
+reaches by relative import or quoted file path, and every file outside `apps/` and `packages/`
+except Markdown and `.github/`.
+Other gates read the whole repository. Passes are recorded under `node_modules/.cache/lilac-gates/`.
+`bun scripts/run-gates.ts check --no-reuse` runs everything again. Architecture-controlled changes also need the checks and registrations
 described in [the architecture gate guide](scripts/architecture/README.md).
 
 ### Bus contract tests
@@ -188,8 +195,9 @@ adding an event, and add producer/consumer integration coverage when introducing
 The ordinary workspace tests also exercise process death, competing consumers, bounded load, and
 retained-state upgrades:
 
-- `apps/core/tests/surface/bridge/request-process-crash.test.ts` kills a Bun worker at durable
-  request boundaries and recovers through a separate worker with the same Redis and disk state.
+- `apps/core/tests/surface/bridge/request-process-crash-*.test.ts` kill a Bun worker at durable
+  request boundaries, one boundary per file, and recover through a separate worker with the same
+  Redis and disk state.
 - `packages/event-bus/tests/competing-consumers.test.ts` verifies that a replacement consumer fences
   a stale handler after lease takeover.
 - `apps/core/tests/surface/bridge/bus-agent-runner-load.test.ts` and

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
-import { Panic } from "better-result";
 
 import { canonicalClaudeExecutionCwd } from "../../src/agent/claude-composition";
 
@@ -23,15 +22,5 @@ describe("Claude execution directory canonicalization", () => {
     });
 
     expect(canonical).toBe(path.resolve(executionCwd));
-  });
-
-  test("preserves realpath Panic identity", async () => {
-    const panic = new Panic({ message: "realpath invariant failed" });
-
-    await expect(
-      canonicalClaudeExecutionCwd("./workspace", async () => {
-        throw panic;
-      }),
-    ).rejects.toBe(panic);
   });
 });

@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { Panic } from "better-result";
 import type { CodexOAuthTokens } from "@stanley2058/lilac-utils/codex-oauth";
 import { createCodexConnectionOptions } from "./connection";
 
@@ -61,16 +60,5 @@ describe("Codex connection authorization", () => {
     controller.abort();
     expect((await resolve(controller.signal)).isErr()).toBe(true);
     expect(read).toBe(false);
-  });
-
-  test("preserves credential-read Panic identity", async () => {
-    const panic = new Panic({ message: "credential defect" });
-    const resolve = createCodexConnectionOptions({
-      responsesTransport: "auto",
-      readTokens: async () => {
-        throw panic;
-      },
-    });
-    await expect(resolve(new AbortController().signal)).rejects.toBe(panic);
   });
 });

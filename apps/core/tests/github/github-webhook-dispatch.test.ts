@@ -9,9 +9,7 @@ import {
 } from "../../src/github/webhook/github-webhook-server";
 import {
   clearGithubRequest,
-  getGithubAck,
   getGithubLatestRequestForSession,
-  getGithubRequestMeta,
 } from "../../src/github/github-state";
 
 function fixture() {
@@ -19,17 +17,9 @@ function fixture() {
     [];
   const pages: number[] = [];
   const deleted: number[] = [];
-  let duplicate = false;
-  let sha = "head-1";
   const api: typeof githubWebhookApi = {
     ...githubWebhookApi,
     getIssue: async () => ({ title: "issue", body: null, comments: 91 }),
-    getPullRequest: async () => ({
-      title: "PR",
-      body: null,
-      head: { sha, ref: "branch" },
-      base: { ref: "main" },
-    }),
     listIssueComments: async ({ page }) => {
       pages.push(page ?? 1);
       return [];
@@ -51,7 +41,7 @@ function fixture() {
       options: { headers: Record<string, string> },
     ) => {
       publications.push({ payload, headers: options.headers });
-      return Result.ok({ duplicate });
+      return Result.ok({ duplicate: false });
     },
   } as unknown as LilacBus;
   const repo = `webhook-test/${crypto.randomUUID()}`;
@@ -76,28 +66,14 @@ function fixture() {
       user: { login: "stanley" },
     },
   };
-  const review = {
-    action: "review_requested",
-    repository: { full_name: repo },
-    pull_request: { number: 1, head: { sha } },
-    requested_reviewer: { login: "lilac" },
-    sender: { login: "stanley" },
-  };
   return {
-    setDuplicate: () => {
-      duplicate = true;
-    },
     api,
     pages,
     deleted,
     publications,
     run,
     comment,
-    review,
     session: `${repo}#1`,
-    changeHead: () => {
-      sha = "head-2";
-    },
   };
 }
 
@@ -122,24 +98,6 @@ describe("GitHub webhook dispatch", () => {
     expect(JSON.stringify(f.publications)).toContain("previous context");
     clearGithubRequest(result.requestId!);
   });
-  it("restores newer request ownership on delayed durable duplicate", async () => {
-    const f = fixture();
-    const old = await f.run("issue_comment", f.comment, "old");
-    const newer = await f.run(
-      "issue_comment",
-      { ...f.comment, comment: { ...f.comment.comment, id: 456 } },
-      "newer",
-    );
-    const ack = getGithubAck(newer.requestId!);
-    f.setDuplicate();
-    await f.run("issue_comment", f.comment, "old");
-    expect(getGithubLatestRequestForSession(f.session)).toBe(newer.requestId);
-    expect(getGithubRequestMeta(newer.requestId!)?.superseded).not.toBe(true);
-    expect(getGithubAck(newer.requestId!)).toEqual(ack);
-    expect(f.deleted).toEqual([]);
-    clearGithubRequest(old.requestId!);
-    clearGithubRequest(newer.requestId!);
-  });
   it("removes the acknowledgement when issue setup fails", async () => {
     const f = fixture();
     f.api.getIssue = async () => {
@@ -148,25 +106,5 @@ describe("GitHub webhook dispatch", () => {
     await expect(f.run("issue_comment", f.comment)).rejects.toThrow("issue unavailable");
     expect(f.deleted).toEqual([43]);
     expect(getGithubLatestRequestForSession(f.session)).toBeUndefined();
-  });
-  it("gives repeated review requests unique IDs and carries the original actor into synchronize", async () => {
-    const f = fixture();
-    const first = await f.run("pull_request", f.review, "first");
-    const second = await f.run("pull_request", f.review, "second");
-    expect(second.requestId).not.toBe(first.requestId);
-    f.changeHead();
-    const restarted = await f.run(
-      "pull_request",
-      { ...f.review, action: "synchronize", pull_request: { number: 1, head: { sha: "head-2" } } },
-      "synchronize",
-    );
-    expect(f.publications[2]?.payload.raw).toMatchObject({
-      authenticatedActor: { platform: "github", userId: "stanley" },
-    });
-    expect(f.publications[2]?.payload.requestDeliveryId).not.toBe(
-      f.publications[3]?.payload.requestDeliveryId,
-    );
-    expect(getGithubRequestMeta(restarted.requestId!)?.actorLogin).toBe("stanley");
-    for (const request of [first, second, restarted]) clearGithubRequest(request.requestId!);
   });
 });

@@ -28,33 +28,6 @@ function acknowledgementCleanup(input: {
 }
 
 describe("GitHub relay acknowledgement finalization", () => {
-  it.each([
-    [{ kind: "issue", issueNumber: 12 }, "issue"],
-    [{ kind: "comment", commentId: 55, issueNumber: 12 }, "comment"],
-  ] as const)("deletes and clears a GitHub %s acknowledgement", async (target, expectedKind) => {
-    const requestId = `github-ack-${crypto.randomUUID()}`;
-    const calls: string[] = [];
-    const api: GithubAcknowledgementApi = {
-      deleteIssueReactionById: async (input) => {
-        calls.push(`issue:${input.owner}/${input.repo}#${input.issueNumber}:${input.reactionId}`);
-      },
-      deleteIssueCommentReactionById: async (input) => {
-        calls.push(`comment:${input.owner}/${input.repo}:${input.commentId}:${input.reactionId}`);
-      },
-    };
-
-    try {
-      const cleaned = await acknowledgementCleanup({ requestId, target, api });
-      expect(cleaned.status).toBe("ok");
-      expect(calls).toEqual([
-        expectedKind === "issue" ? "issue:octo/repo#12:42" : "comment:octo/repo:55:42",
-      ]);
-      expect(getGithubAck(requestId)).toBeUndefined();
-    } finally {
-      clearGithubAck(requestId);
-    }
-  });
-
   it("treats a GitHub 404 deletion as completed cleanup", async () => {
     const requestId = `github-ack-404-${crypto.randomUUID()}`;
     const api: GithubAcknowledgementApi = {

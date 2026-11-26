@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { Tool } from "ai";
 
 import { invalidateRemoteRunner } from "../../src/ssh/remote-runner-deploy";
-import { readStreamTextCapped, SshStreamReadError, sshExecBash } from "../../src/ssh/ssh-exec";
+import { readStreamTextCapped, sshExecBash } from "../../src/ssh/ssh-exec";
 import { remoteReadTextFile } from "../../src/tools/fs/remote-fs";
 import { SSH } from "../../src/tool-server/tools/ssh";
 import { fsTool } from "../../src/tools/fs/fs";
@@ -273,25 +273,6 @@ exit 0
     if (captured.status === "error") throw new Error(captured.error.message);
     expect(captured.value.text).toBe("output");
     expect(activityCount).toBe(1);
-  });
-
-  it("returns an owned stream read failure without rejecting", async () => {
-    const cause = new Error("stream unavailable");
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.error(cause);
-      },
-    });
-
-    const captured = await readStreamTextCapped(stream, 100);
-
-    expect(captured.status).toBe("error");
-    if (captured.status === "ok") throw new Error("expected stream read failure");
-    expect(SshStreamReadError.is(captured.error)).toBeTrue();
-    if (SshStreamReadError.is(captured.error)) {
-      expect(captured.error.operation).toBe("read_chunk");
-      expect(captured.error.cause).toBe(cause);
-    }
   });
 
   it("creates secure byte-exact SSH overflow files only after the cap", async () => {

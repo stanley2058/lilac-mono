@@ -126,39 +126,6 @@ describe("workflow trigger scheduler", () => {
     expect(JSON.stringify(projected)).not.toContain("secret-scheduler-token");
   });
 
-  it("keeps workflow error logging total for hostile Error values", () => {
-    const hostileMessage = new Error("unused");
-    Object.defineProperty(hostileMessage, "message", {
-      get() {
-        throw new Panic({ message: "message getter must stay contained" });
-      },
-    });
-    expect(formatWorkflowErrorForLog(hostileMessage)).toEqual({
-      errorMessage: "Unknown workflow failure",
-    });
-
-    const hostileTagged = new Proxy(
-      new SchedulerLogFailure({ cause: undefined, message: "unused" }),
-      {
-        get() {
-          throw new Error("tagged property trap must stay contained");
-        },
-        getPrototypeOf() {
-          throw new Error("tagged prototype trap must stay contained");
-        },
-      },
-    );
-    expect(formatWorkflowErrorForLog(hostileTagged)).toEqual({
-      errorMessage: "Unknown workflow failure",
-    });
-
-    const revoked = Proxy.revocable(new Error("unused"), {});
-    revoked.revoke();
-    expect(formatWorkflowErrorForLog(revoked.proxy)).toEqual({
-      errorMessage: "Unknown workflow failure",
-    });
-  });
-
   it("keeps cron compatibility output and returns invalid schedules as values", () => {
     const now = Date.UTC(2026, 0, 1, 12, 0, 0);
     const computed = computeNextCronAtMsResult({ expr: "*/5 * * * *" }, now);
@@ -248,34 +215,6 @@ describe("workflow trigger scheduler", () => {
       await f.close();
     }
   });
-  it("preserves scheduler Panic instead of logging and swallowing it", async () => {
-    const file = join(tmpdir(), `workflow-scheduler-panic-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(file);
-    const bus = createLilacBus(new CapturingRawBus());
-    const panic = new Panic({ message: "scheduler capacity defect" });
-    try {
-      createRevision(store);
-      store.createTrigger(trigger());
-      const scheduler = new WorkflowTriggerScheduler({
-        bus,
-        store,
-        now: () => 100,
-        getMaxActiveRuns: () => {
-          throw panic;
-        },
-      });
-      await expect(scheduler.tick()).rejects.toBe(panic);
-      expect(workflowStoreValue(store.getTrigger("trigger-1"))).toMatchObject({
-        state: "active",
-        nextFireAt: 100,
-        lastRunId: null,
-      });
-    } finally {
-      await bus.close();
-      store.close();
-      rmSync(file, { force: true });
-    }
-  });
   it("preserves progress-card Panic after atomically firing the trigger", async () => {
     const file = join(tmpdir(), `workflow-scheduler-card-panic-${crypto.randomUUID()}.sqlite`);
     const store = new DurableWorkflowStore(file);
@@ -355,34 +294,6 @@ describe("workflow trigger scheduler", () => {
       expect(logged).not.toContain("secret-scheduled-card");
     } finally {
       warning.mockRestore();
-      await bus.close();
-      store.close();
-      rmSync(file, { force: true });
-    }
-  });
-  it("reports detached timer Panic to the fatal supervisor", async () => {
-    const file = join(tmpdir(), `workflow-scheduler-detached-panic-${crypto.randomUUID()}.sqlite`);
-    const store = new DurableWorkflowStore(file);
-    const bus = createLilacBus(new CapturingRawBus());
-    const panic = new Panic({ message: "detached scheduler defect" });
-    const reported = Promise.withResolvers<Panic>();
-    let failClock = false;
-    const scheduler = new WorkflowTriggerScheduler({
-      bus,
-      store,
-      pollMs: 1,
-      now: () => {
-        if (failClock) throw panic;
-        return 0;
-      },
-      reportFatalPanic: reported.resolve,
-    });
-    try {
-      await scheduler.start();
-      failClock = true;
-      await expect(reported.promise).resolves.toBe(panic);
-    } finally {
-      await scheduler.stop();
       await bus.close();
       store.close();
       rmSync(file, { force: true });

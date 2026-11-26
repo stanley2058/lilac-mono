@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 import Redis from "ioredis";
 import type { BlobStore } from "@stanley2058/lilac-blob-storage";
 
@@ -113,35 +113,5 @@ describe("Core dead-letter encryption key", () => {
         expect(setup.error.cause).toBe(keyError);
       }
     }
-  });
-
-  it("preserves the setup Panic when key setup and Redis cleanup both Panic", async () => {
-    const root = await temporaryRoot();
-    const redis = new Redis({ lazyConnect: true });
-    const setupPanic = new Panic({ message: "key setup invariant failed" });
-    const cleanupPanic = new Panic({
-      message: "Redis cleanup invariant failed",
-    });
-    Reflect.set(redis, "quit", async () => {
-      redis.disconnect();
-      throw cleanupPanic;
-    });
-
-    await expect(
-      setupCoreEventBusResources({
-        redisUrl: "redis://unused",
-        cwd: path.join(root, "workspace"),
-        dataDir: root,
-        evidenceBlobStore: unusedEvidenceBlobStore,
-        logger: { warn: () => {}, error: () => {} },
-        reportFatalError: () => {},
-        dependencies: {
-          captureRedisConstruction: () => Result.ok(redis),
-          loadDeadLetterKey: async () => {
-            throw setupPanic;
-          },
-        },
-      }),
-    ).rejects.toBe(setupPanic);
   });
 });

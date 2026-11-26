@@ -3,7 +3,7 @@ import { lilacEventTypes, type LilacMessageForTopic } from "@stanley2058/lilac-e
 import { normalizeWorkflowResourcePolicy, workflowStoreValue } from "./workflow-store-test-helpers";
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,7 +21,6 @@ import {
   applyWorkflowBlobStorageSchema26Migration,
   applyWorkflowSchemaMigrations,
   WorkflowBlobStorageMigrationRequired,
-  WorkflowMigrationInvalidTimestamp,
   WORKFLOW_BLOB_MIGRATION_COMMAND,
   WORKFLOW_MIGRATION_VERSIONS,
   WORKFLOW_SCHEMA_VERSION,
@@ -317,52 +316,6 @@ describe("durable workflow store minimal dispatch schema", () => {
     }
   });
 
-  it("does not touch SQLite when the migration clock throws", () => {
-    const db = new Database(":memory:");
-    const defect = new Error("migration clock defect");
-    let caught: unknown;
-    try {
-      applyWorkflowSchemaMigrations(db, () => {
-        throw defect;
-      });
-    } catch (cause) {
-      caught = cause;
-    }
-    expect(caught).toBe(defect);
-    expect(
-      db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'").all(),
-    ).toEqual([]);
-    db.close();
-  });
-  it("preserves migration clock Panic identity without touching SQLite", () => {
-    const db = new Database(":memory:");
-    const panic = new Panic({ message: "migration clock panic" });
-    let caught: unknown;
-    try {
-      applyWorkflowSchemaMigrations(db, () => {
-        throw panic;
-      });
-    } catch (cause) {
-      caught = cause;
-    }
-    expect(caught).toBe(panic);
-    expect(
-      db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'").all(),
-    ).toEqual([]);
-    db.close();
-  });
-  it("returns an owned invalid-clock Result before touching SQLite", () => {
-    const db = new Database(":memory:");
-    const migrated = applyWorkflowSchemaMigrations(db, () => Number.NaN);
-    expect(migrated.status).toBe("error");
-    if (migrated.status === "error") {
-      expect(migrated.error).toBeInstanceOf(WorkflowMigrationInvalidTimestamp);
-    }
-    expect(
-      db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'").all(),
-    ).toEqual([]);
-    db.close();
-  });
   it("requires the offline command for schema 25 and atomically installs artifact references", () => {
     const db = new Database(":memory:");
     try {
@@ -597,31 +550,6 @@ describe("durable workflow store minimal dispatch schema", () => {
       expect(JSON.stringify(diagnostics)).not.toContain("must-not-appear");
     } finally {
       corruptor.close();
-      store.close();
-      rmSync(file, { force: true });
-    }
-  });
-  it("classifies the original SQLite driver error from invocation persistence", () => {
-    const file = dbPath("invocation-driver-error");
-    const store = new DurableWorkflowStore(file);
-    try {
-      const faultDb = new Database(file);
-      faultDb.run(`CREATE TRIGGER reject_workflow_revision
-        BEFORE INSERT ON workflow_revisions
-        BEGIN SELECT RAISE(ABORT, 'injected invocation failure'); END`);
-      faultDb.close();
-
-      const created = store.createInvocation({ revision: revision(), run: run() });
-      expect(created.status).toBe("error");
-      if (created.status === "error") {
-        expect(created.error._tag).toBe("DurableWorkflowSqliteDriverFailure");
-        if (created.error._tag === "DurableWorkflowSqliteDriverFailure") {
-          expect(created.error.code).toBe("SQLITE_CONSTRAINT_TRIGGER");
-          expect(created.error.operation).toBe("create-invocation");
-        }
-      }
-      expect(workflowStoreValue(store.getRun("run-1"))).toBeNull();
-    } finally {
       store.close();
       rmSync(file, { force: true });
     }

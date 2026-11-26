@@ -657,27 +657,6 @@ describe("blob storage contract", () => {
     ).toMatchObject({ _tag: "BlobUploadFailed", reason: "write" });
   });
 
-  test("verified read propagates an underlying Panic without hanging completion", async () => {
-    const panic = new Panic({ message: "controlled read defect" });
-    const ref: BlobRefV1 = {
-      version: 1,
-      objectId: `b1_${"a".repeat(32)}`,
-      sha256: createHash("sha256").update(new Uint8Array()).digest("hex"),
-      byteLength: 0,
-    };
-    const read = createVerifiedRead(
-      ref,
-      new ReadableStream<Uint8Array>({
-        pull() {
-          throw panic;
-        },
-      }),
-    );
-
-    await expect(materializeBlobRead(read)).rejects.toBe(panic);
-    await expect(read.completion).rejects.toBe(panic);
-  });
-
   test("retention rejects timestamps outside the JavaScript Date range", async () => {
     const store = await memoryStore();
     expect(

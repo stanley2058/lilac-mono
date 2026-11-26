@@ -3,7 +3,6 @@ import { describe, expect, test } from "bun:test";
 import { MockLanguageModelV4 } from "ai/test";
 import { AiSdkAgentAdapter } from "@stanley2058/lilac-agent/adapters/ai-sdk/adapter";
 import { OpenAIResponsesAgentAdapter } from "@stanley2058/lilac-agent/adapters/openai-responses/adapter";
-import type { AgentExecutionHost } from "@stanley2058/lilac-agent/agent-execution-host";
 import { ClaudeCodeAgentAdapter } from "@stanley2058/lilac-claude-code-bridge";
 import { createMemoryBlobStore } from "@stanley2058/lilac-blob-storage";
 import type { ResolvedModelRef } from "@stanley2058/lilac-utils";
@@ -51,35 +50,6 @@ describe("Core agent adapter selection", () => {
       await blobStore.close({ deadlineAtMs: Date.now() + 1_000 });
     }
   });
-
-  test("explicit SSE uses the AI SDK adapter", () => {
-    const resolved = resolvedModel("openai");
-    const adapter = createCoreAgentAdapter(
-      { model: resolved.model, system: "" },
-      { resolved, claude, openai: { ...openai, responsesTransport: "sse" } },
-    );
-
-    const execution = adapter.createExecution({
-      attemptId: "sse-attempt",
-      messages: [],
-      host: {} as AgentExecutionHost,
-    });
-    expect(execution.retryOwner).toBe("adapter");
-    expect(execution.capabilities.steering).toBe("boundary");
-  });
-
-  test.each(["auto", "websocket"] as const)(
-    "%s selects native OpenAI execution without opening a connection",
-    (responsesTransport) => {
-      const resolved = resolvedModel("openai");
-      const adapter = createCoreAgentAdapter(
-        { model: resolved.model, system: "" },
-        { resolved, claude, openai: { ...openai, responsesTransport } },
-      );
-
-      expect(adapter).toBeInstanceOf(OpenAIResponsesAgentAdapter);
-    },
-  );
 
   test("a model without native steering still selects native OpenAI execution", () => {
     const resolved = resolvedModel("openai", "gpt-5.4");

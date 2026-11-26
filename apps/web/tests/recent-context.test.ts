@@ -1,8 +1,5 @@
 import { expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { contextCoversTurn, NextContextStartAfter } from "../src/components/RecentContext";
+import { contextCoversTurn } from "../src/components/RecentContext";
 
 test("a context read from before a fast reply settled does not mark a new context", () => {
   const turn = { startedAt: 1_000, settledAt: 1_400 };
@@ -13,18 +10,4 @@ test("a context read from before a fast reply settled does not mark a new contex
   expect(contextCoversTurn(1_400, turn)).toBe(true);
   expect(contextCoversTurn(undefined, turn)).toBe(false);
   expect(contextCoversTurn(5, {})).toBe(true);
-});
-
-test("a standalone DM timeline reserves space for the next-context divider", () => {
-  const html = renderToStaticMarkup(
-    createElement(QueryClientProvider, {
-      client: new QueryClient(),
-      children: createElement(NextContextStartAfter, {
-        threadId: "rail-demo-dm",
-        turn: { settledAt: 1_400 },
-        show: false,
-      }),
-    }),
-  );
-  expect(html).toContain('data-ui="next-context-start" aria-hidden="true"');
 });

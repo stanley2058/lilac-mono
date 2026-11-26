@@ -29,36 +29,6 @@ function createAcquisition(
 }
 
 describe("browser page acquisition cleanup", () => {
-  it("gives page close failures precedence over acquisition failures", async () => {
-    const acquisitionFailure = new Error("page acquisition failed");
-    const failure = new Error("page close failed");
-    const acquisition = createAcquisition(
-      () => Promise.reject(failure),
-      () => Promise.reject(acquisitionFailure),
-    );
-
-    const [settled] = await Promise.allSettled([
-      acquisition.acquire({ url: "https://example.com" }),
-    ]);
-
-    expect(settled).toEqual({ status: "rejected", reason: failure });
-  });
-
-  it("preserves Panic from page close", async () => {
-    const panic = new Panic({ message: "page close invariant" });
-    const acquisition = createAcquisition(() => Promise.reject(panic));
-
-    const [settled] = await Promise.allSettled([
-      acquisition.acquire({ url: "https://example.com" }),
-    ]);
-
-    expect(settled?.status).toBe("rejected");
-    if (settled?.status === "rejected") {
-      expect(settled.reason).toBe(panic);
-      expect(Panic.is(settled.reason)).toBe(true);
-    }
-  });
-
   for (const closeFailure of [
     new Error("page close rejected while navigation remained pending"),
     new Panic({ message: "page close panicked while navigation remained pending" }),

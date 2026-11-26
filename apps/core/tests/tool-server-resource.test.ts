@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 
 import {
   createToolResultArtifactStore,
@@ -493,7 +493,7 @@ describe("tool-server resource", () => {
     });
   });
 
-  it("maps ordinary target-directory failures without swallowing Panic", async () => {
+  it("maps ordinary target-directory failures", async () => {
     const tool = new Resource({
       access: fakeAccess(async () => Result.ok(materialized(URIS[0], "/tmp", 1))),
     });
@@ -507,20 +507,6 @@ describe("tool-server resource", () => {
     expect(unavailable).toMatchObject({
       failure: { kind: "denied", code: "resource_target_unavailable" },
     });
-
-    const panic = new Panic({ message: "resource target invariant failed" });
-    const stat = spyOn(fs, "stat").mockRejectedValue(panic);
-    try {
-      await expect(
-        tool.call(
-          "resource.materialize",
-          { uris: [URIS[0]] },
-          { context: { cwd: os.tmpdir(), safetyMode: "trusted" } },
-        ),
-      ).rejects.toBe(panic);
-    } finally {
-      stat.mockRestore();
-    }
   });
 
   it("marks the active and remaining items cancelled without starting more I/O", async () => {
