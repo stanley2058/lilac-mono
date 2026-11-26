@@ -904,7 +904,11 @@ export async function createCoreRuntime(
     try: () => {
       const store = new SqliteJobStore({ dbPath: path.join(env.dataDir, "background-jobs.db") });
       jobStore = store;
-      return new JobService({ store, logDir: path.join(env.dataDir, "background-jobs") });
+      return new JobService({
+        store,
+        logDir: path.join(env.dataDir, "background-jobs"),
+        reportPanic: reportFatalError,
+      });
     },
     catch: captureRuntimeError,
   }).mapError((captured) =>

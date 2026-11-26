@@ -33,6 +33,7 @@ import {
 } from "../mcp/fixtures/registry-fixture";
 import { getTestBlobStore } from "../helpers/blob-store";
 import type { ResourceAccess } from "../../src/resource";
+import type { JobService } from "../../src/jobs/job-service";
 
 function createCoreToolPluginManager(
   params: Parameters<typeof createCoreToolPluginManagerResult>[0],
@@ -526,6 +527,79 @@ describe("core tool plugin manager", () => {
     expect([...restrictedTools.specs.keys()].sort()).toEqual(["bash", "read", "skip_reply"]);
   });
 
+  it("lets job and bash background follow bash and the surface's wake support", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const cfg = testConfigV3({
+      configVersion: 3,
+      agent: { subagents: { permissions: { noexec: { execution: false } } } },
+    });
+    const jobs = {
+      supports: (platform: string) => ["discord", "native", "github", "unknown"].includes(platform),
+    } as unknown as JobService;
+    const manager = createCoreToolPluginManager({
+      runtime: {
+        bus: {} as LilacBus,
+        surfaceAdapterResolver: TEST_SURFACE_ADAPTER_RESOLVER,
+        discovery: {} as DiscoveryService,
+        conversationThreads: {} as ConversationThreadToolService,
+        config: cfg,
+        jobs,
+      },
+      dataDir,
+    });
+    await manager.init();
+
+    const build = (input: {
+      runProfile: string;
+      requestClient?: string;
+      safetyMode?: "trusted" | "restricted";
+    }) =>
+      manager.buildLevel1Toolset({
+        cwd: dataDir,
+        runProfile: input.runProfile,
+        editingToolMode: "none",
+        subagentDepth: input.runProfile === "primary" ? 0 : 1,
+        subagentConfig: cfg.agent.subagents,
+        requestContext: {
+          requestId: "req:jobs",
+          requestDeliveryId: "delivery:jobs",
+          sessionId: "session",
+          requestClient: input.requestClient ?? "native",
+          subagentDepth: input.runProfile === "primary" ? 0 : 1,
+          subagentProfile: input.runProfile,
+          safetyMode: input.safetyMode ?? "trusted",
+        },
+      });
+    const bashDescription = (toolset: Awaited<ReturnType<typeof build>>) =>
+      (toolset.tools["bash"] as { description?: string } | undefined)?.description ?? "";
+
+    const native = await build({ runProfile: "primary" });
+    expect(native.specs.has("job")).toBe(true);
+    expect(bashDescription(native)).toContain("- service:");
+
+    const github = await build({ runProfile: "primary", requestClient: "github" });
+    expect(github.specs.has("job")).toBe(true);
+    expect(bashDescription(github)).toContain("- await:");
+    expect(bashDescription(github)).not.toContain("- service:");
+
+    const restrictedSession = await build({ runProfile: "primary", safetyMode: "restricted" });
+    expect(restrictedSession.specs.has("job")).toBe(true);
+    expect(bashDescription(restrictedSession)).not.toContain("- service:");
+
+    // The built-in restricted profile lists neither job nor its plugin, but it has bash.
+    const restrictedProfile = await build({ runProfile: "restricted" });
+    expect(restrictedProfile.specs.has("job")).toBe(true);
+
+    const noExecution = await build({ runProfile: "noexec" });
+    expect(noExecution.specs.has("bash")).toBe(false);
+    expect(noExecution.specs.has("job")).toBe(false);
+
+    const slack = await build({ runProfile: "primary", requestClient: "slack" });
+    expect(slack.specs.has("job")).toBe(false);
+    expect(bashDescription(slack)).not.toContain("Set background");
+  });
+
   it("threads direct attachment support metadata into read description", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
     const dataDir = path.join(tmpRoot, "data");
@@ -933,6 +1007,59 @@ describe("core tool plugin manager", () => {
         expect.objectContaining({ pluginId: "surface", state: "skipped" }),
       ]),
     );
+  });
+
+  it("keeps an external tool named job behind its own plugin allowlist", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-core-plugin-manager-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const cfg = testConfigV3({ configVersion: 3 });
+    await writeExternalPlugin({
+      dataDir,
+      pluginId: "fixture-job",
+      entryBody: `export default {
+  meta: { id: "fixture-job" },
+  create() {
+    return {
+      level1: [{
+        name: "job",
+        createTool() { return { description: "External job", execute() { return { ok: true }; } }; },
+        isEnabled() { return true; },
+      }],
+      level2: [],
+    };
+  },
+};`,
+    });
+    const manager = createCoreToolPluginManager({
+      runtime: {
+        bus: {} as LilacBus,
+        surfaceAdapterResolver: TEST_SURFACE_ADAPTER_RESOLVER,
+        discovery: {} as DiscoveryService,
+        config: cfg,
+      },
+      dataDir,
+    });
+    await manager.init();
+
+    const primary = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "primary",
+      editingToolMode: "none",
+      subagentDepth: 0,
+      subagentConfig: cfg.agent.subagents,
+    });
+    expect([...primary.specs.keys()].filter((name) => name.includes("job"))).toHaveLength(1);
+
+    // The built-in restricted profile allows bash but not the fixture plugin.
+    const restricted = await manager.buildLevel1Toolset({
+      cwd: dataDir,
+      runProfile: "restricted",
+      editingToolMode: "none",
+      subagentDepth: 1,
+      subagentConfig: cfg.agent.subagents,
+    });
+    expect(restricted.specs.has("bash")).toBe(true);
+    expect([...restricted.specs.keys()].filter((name) => name.includes("job"))).toEqual([]);
   });
 
   it("loads an external plugin that contributes both Level 1 and Level 2 tools", async () => {

@@ -68,6 +68,7 @@ async function harness() {
         mode: "service",
         label: "dev server",
         launch: {
+          kind: "process" as const,
           args: ["bash", "-c", "sleep 60"],
           cwd: tmpdir(),
           env: process.env,

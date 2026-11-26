@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, readdirSync, readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Result } from "better-result";
+import { Panic, Result } from "better-result";
 
 import { JOB_LIMITS, type JobOwner, type JobRecord } from "../../src/jobs/job-domain";
 import { JobService, type JobWakeDelivery } from "../../src/jobs/job-service";
@@ -20,6 +20,7 @@ const owner: JobOwner = {
 
 function launch(command: string, literalSecrets: readonly string[] = []) {
   return {
+    kind: "process" as const,
     args: ["bash", "-c", command],
     cwd: tmpdir(),
     env: process.env,
@@ -345,6 +346,78 @@ describe("JobService", () => {
     });
   });
 
+  function startInProcess(
+    target: JobService,
+    run: (signal: AbortSignal) => Promise<{ stdout: string; stderr: string; exitCode: number }>,
+  ) {
+    return target.start({
+      owner,
+      toolCallId: crypto.randomUUID(),
+      mode: "await",
+      label: "in-process job",
+      launch: { kind: "in-process", cwd: "/workspace", redactedCommand: "echo", run },
+    });
+  }
+
+  it("runs an in-process command and records its output when it ends", async () => {
+    const job = ok<JobRecord>(
+      await startInProcess(service, async () => ({ stdout: "out", stderr: "err", exitCode: 2 })),
+    );
+    expect(job.pid).toBeNull();
+    const ended = await untilEnded(service, job.jobId);
+    expect(ended.status).toBe("exited");
+    expect(ended.exitCode).toBe(2);
+    const read = ok<{ output: { output: string } }>(
+      await service.read(owner.sessionId, job.jobId, {}),
+    );
+    expect(read.output.output).toBe("out\nerr");
+    expect(service.hasActiveAwait(owner.requestId)).toBe(false);
+  });
+
+  it("aborts an in-process command when the job is stopped", async () => {
+    const aborted = Promise.withResolvers<void>();
+    const job = ok<JobRecord>(
+      await startInProcess(
+        service,
+        (signal) =>
+          new Promise((resolve) => {
+            signal.addEventListener("abort", () => {
+              aborted.resolve();
+              resolve({ stdout: "", stderr: "aborted", exitCode: 130 });
+            });
+          }),
+      ),
+    );
+    expect(service.hasActiveAwait(owner.requestId)).toBe(true);
+    const stopped = ok<JobRecord>(await service.stop(owner.sessionId, job.jobId));
+    await aborted.promise;
+    expect(stopped.status).toBe("stopped");
+    expect(stopped.stopReason).toBe("job_stop");
+  });
+
+  it("reports an in-process command that throws as a failed exit", async () => {
+    const job = ok<JobRecord>(
+      await startInProcess(service, () => Promise.reject(new Error("sandbox broke"))),
+    );
+    const ended = await untilEnded(service, job.jobId);
+    expect(ended.status).toBe("exited");
+    expect(ended.exitCode).toBe(-1);
+  });
+
+  it("reports an in-process defect instead of recording it as an exit", async () => {
+    const reported = Promise.withResolvers<Panic>();
+    const reporting = new JobService({
+      store,
+      logDir: path.join(dir, "logs"),
+      reportPanic: (panic) => reported.resolve(panic),
+    });
+    services.push(reporting);
+    const defect = new Panic({ message: "invariant broke" });
+    const job = ok<JobRecord>(await startInProcess(reporting, () => Promise.reject(defect)));
+    expect(await reported.promise).toBe(defect);
+    expect(ok<JobRecord | null>(store.get(job.jobId))?.status).toBe("running");
+  });
+
   describe("wakes", () => {
     type Delivered = { wakeId: string; sessionId: string; jobIds: string[] };
 
@@ -434,6 +507,35 @@ describe("JobService", () => {
       const job = ok<JobRecord>(await start(wakes.service, "true", { mode: "service" }));
       await received;
       await untilDelivery(job.jobId, "suppressed");
+    });
+
+    it("leaves events pending on a platform that cannot start a turn", async () => {
+      const wakes = wakeService({});
+      const githubOwner: JobOwner = { ...owner, sessionId: "github:o/r#1", platform: "github" };
+      const job = ok<JobRecord>(await start(wakes.service, "true", { owner: githubOwner }));
+      await untilEnded(wakes.service, job.jobId);
+      // A native wake scheduled afterwards fires after the GitHub session's flush has run.
+      const received = wakes.next();
+      const native = ok<JobRecord>(await start(wakes.service, "true", { mode: "service" }));
+      expect((await received).jobIds).toEqual([native.jobId]);
+      expect(wakes.delivered.map((entry) => entry.sessionId)).toEqual([owner.sessionId]);
+      expect(wakes.service.hasPendingEvents(githubOwner.sessionId)).toBe(true);
+    });
+
+    it("leaves an await job's event for its request instead of waking the session", async () => {
+      const wakes = wakeService({});
+      const awaited = ok<JobRecord>(await start(wakes.service, "true", { mode: "await" }));
+      await untilEnded(wakes.service, awaited.jobId);
+      // A service wake scheduled afterwards fires after the await job's flush has run.
+      const received = wakes.next();
+      const service = ok<JobRecord>(
+        await start(wakes.service, "true", {
+          mode: "service",
+          owner: { ...owner, sessionId: "native:other" },
+        }),
+      );
+      expect((await received).jobIds).toEqual([service.jobId]);
+      expect(wakes.service.hasPendingEvents(owner.sessionId)).toBe(true);
     });
 
     it("retries a wake that could not be delivered, without spending more budget", async () => {

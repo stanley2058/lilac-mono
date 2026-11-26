@@ -21,8 +21,16 @@ export const JOB_LIMITS = {
 export const jobModeSchema = z.enum(["await", "service"]);
 export type JobMode = z.output<typeof jobModeSchema>;
 
-export const jobPlatformSchema = z.enum(["discord", "native"]);
+/** `unknown` is the request client of heartbeat runs. */
+export const jobPlatformSchema = z.enum(["discord", "native", "github", "unknown"]);
 export type JobPlatform = z.output<typeof jobPlatformSchema>;
+
+/** Platforms whose surface can start a turn when a job ends after its request. */
+const JOB_WAKE_PLATFORMS: ReadonlySet<JobPlatform> = new Set(["discord", "native"]);
+
+export function canWakeJobPlatform(platform: JobPlatform): boolean {
+  return JOB_WAKE_PLATFORMS.has(platform);
+}
 
 export const jobStatusSchema = z.enum([
   "starting",

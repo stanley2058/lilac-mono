@@ -53,6 +53,8 @@ import {
   formatSubagentDelegateToolArgs,
 } from "../../tools/tool-args-display";
 import { defineLevel1Tool } from "./define-level1-tool";
+import { resolveBackgroundJobModes } from "./job";
+import { LOCAL_TOOLS_PLUGIN_ID } from "./plugin-ids";
 import { type CoreLevel1ToolSpec, type CoreToolPlugin } from "../types";
 import { isWebFetchAllowedForNativeProfile } from "../profile-authority";
 
@@ -376,7 +378,14 @@ export const BUILTIN_LEVEL1_TOOLS = {
       const controlCapability = decodeCoreToolRequestMetadata(
         requestContext?.metadata,
       ).controlCapability;
+      // The plugin generation can lag the config, so offer background only beside a loaded `job`.
+      const backgroundModes = context.getLevel1ToolSpecs().has("job")
+        ? resolveBackgroundJobModes(context)
+        : null;
       return bashToolWithCwd(cwd, {
+        ...(backgroundModes && runtime.jobs
+          ? { background: { service: runtime.jobs, modes: backgroundModes, runProfile } }
+          : {}),
         artifacts: runtime.toolResultArtifacts,
         outputConfig: runtime.config?.tools.output,
         onActivity: onActivity ? () => onActivity("tool") : undefined,
@@ -520,7 +529,7 @@ export function createLocalToolSpecs(): CoreLevel1ToolSpec[] {
 export function createBuiltinLocalToolsPlugin(): CoreToolPlugin {
   return {
     meta: {
-      id: "builtin-local-tools",
+      id: LOCAL_TOOLS_PLUGIN_ID,
       name: "Built-in Local Tools",
     },
     create() {

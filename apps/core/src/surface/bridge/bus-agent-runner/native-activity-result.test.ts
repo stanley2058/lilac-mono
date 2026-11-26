@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 
-import { nativeToolActivityDetail, nativeToolActivityResult } from "./native-activity-result";
+import {
+  nativeToolActivityDetail,
+  nativeToolActivityLabel,
+  nativeToolActivityResult,
+} from "./native-activity-result";
 
 function activityResult(toolName: string, result: unknown) {
   return nativeToolActivityResult({ toolName, event: { result } });
@@ -101,4 +105,14 @@ test("edit details list every changed path", () => {
   expect(
     nativeToolActivityDetail({ toolName: "edit", event: { args: { path: "src/c.ts" } } }),
   ).toEqual({ detail: "edit src/c.ts" });
+});
+
+test("a bash activity label never shows a secret from the command", () => {
+  const token = `ghp_${"a".repeat(36)}`;
+  const label = nativeToolActivityLabel({
+    toolName: "bash",
+    event: { args: { command: `GH_TOKEN=${token} bun dev`, background: "service" } },
+  });
+  expect(label).toStartWith("bash ");
+  expect(label).not.toContain("ghp_aaaa");
 });

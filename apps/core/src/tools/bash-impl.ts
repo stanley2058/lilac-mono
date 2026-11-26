@@ -34,6 +34,8 @@ import {
 } from "./bash-output-sanitizer";
 import { loadToolEnv } from "./tool-env";
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
+import type { JobProcessLaunch } from "../jobs/job-service";
+import type { JobSummary } from "./job";
 import { captureRuntimeError, projectCapturedRuntimeError } from "../runtime/error-format";
 import { adaptToolResultToHost, preserveToolPanic } from "./tool-result-adapters";
 
@@ -140,6 +142,8 @@ export type BashToolOutput = {
    * This is distinct from a command failure, which is represented by a non-zero exitCode.
    */
   executionError?: BashExecutionError;
+  /** The job a background call started. */
+  job?: JobSummary;
   truncation?: {
     artifactUri?: string;
     message: string;
@@ -878,26 +882,18 @@ function buildLocalSpawnArgs(command: string, stdinMode: BashStdinMode): string[
 }
 
 export type BackgroundBashLaunch =
-  | {
-      readonly kind: "blocked";
-      readonly message: string;
-      readonly reason: string;
-      readonly segment: string | null;
-    }
-  | {
-      readonly kind: "ready";
-      readonly launch: {
-        readonly args: readonly string[];
-        readonly cwd: string;
-        readonly env: NodeJS.ProcessEnv;
-        readonly literalSecrets: readonly string[];
-        readonly redactedCommand: string;
-      };
-    };
+  | { readonly kind: "blocked"; readonly output: BashToolOutput }
+  | { readonly kind: "unsupported"; readonly message: string }
+  | { readonly kind: "ready"; readonly launch: JobProcessLaunch };
 
 /** Applies foreground Bash's guardrails and environment to a command that runs as a job. */
 export async function prepareBackgroundBashLaunch(
-  { command, cwd, dangerouslyAllow }: Pick<BashToolInput, "command" | "cwd" | "dangerouslyAllow">,
+  {
+    command,
+    cwd,
+    stdinMode,
+    dangerouslyAllow,
+  }: Pick<BashToolInput, "command" | "cwd" | "stdinMode" | "dangerouslyAllow">,
   {
     context,
     toolCallId,
@@ -918,12 +914,7 @@ export async function prepareBackgroundBashLaunch(
 ): Promise<BackgroundBashLaunch> {
   const cwdTarget = parseSshCwdTarget(cwd);
   if (cwdTarget.kind === "ssh") {
-    return {
-      kind: "blocked",
-      message: "Background jobs cannot run on SSH targets.",
-      reason: "ssh_target",
-      segment: null,
-    };
+    return { kind: "unsupported", message: "Background commands cannot run on SSH targets." };
   }
   const resolvedCwd = cwdTarget.cwd ? expandTilde(cwdTarget.cwd) : process.cwd();
   if (!dangerouslyAllow) {
@@ -934,15 +925,24 @@ export async function prepareBackgroundBashLaunch(
     if (blocked) {
       return {
         kind: "blocked",
-        reason: blocked.reason,
-        segment: blocked.segment ? redactSecrets(blocked.segment) : null,
-        message: formatBlockedMessage({
-          reason: blocked.reason,
-          hint: blocked.hint,
-          command,
-          segment: blocked.segment,
-          redact: redactSecrets,
-        }),
+        output: {
+          stdout: "",
+          stderr: formatBlockedMessage({
+            reason: blocked.reason,
+            hint: blocked.hint,
+            command,
+            segment: blocked.segment,
+            redact: redactSecrets,
+          }),
+          exitCode: -1,
+          executionError: {
+            type: "blocked",
+            code: blocked.code,
+            reason: blocked.reason,
+            hint: blocked.hint,
+            ...(blocked.segment ? { segment: redactSecrets(blocked.segment) } : {}),
+          },
+        },
       };
     }
   }
@@ -952,7 +952,8 @@ export async function prepareBackgroundBashLaunch(
   return {
     kind: "ready",
     launch: {
-      args: buildLocalSpawnArgs(command, DEFAULT_BASH_STDIN_MODE),
+      kind: "process",
+      args: buildLocalSpawnArgs(command, stdinMode ?? DEFAULT_BASH_STDIN_MODE),
       cwd: resolvedCwd,
       env: buildBashChildEnv({
         toolEnv,

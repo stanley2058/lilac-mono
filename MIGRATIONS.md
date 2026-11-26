@@ -702,6 +702,29 @@ using the existing retention period. Previously this ran only during restart rec
 The job schema is unchanged. Export retained output before it reaches the retention limit;
 deleted output cannot be recovered by downgrading.
 
+### Background jobs move into bash
+
+`bash` starts background jobs through new optional `background` (`await` or `service`) and `label`
+fields, and its result adds an optional `job` summary. The `job` tool keeps only `list`, `read`, and
+`stop`; a `start` call now fails input validation, and the updated descriptions point the agent to
+`bash`. Existing jobs and their events are unchanged. `job` and background starts follow `bash` in
+subagent permission profiles, so the built-in `restricted` profile and custom profiles that allow
+`bash` gain them without a config change. Remove `bash` from a profile, or set its `execution` to
+`false`, to keep background jobs from it. The built-in `restricted` defaults no longer list the
+retired `batch` tool; a configured list that still names it is unaffected. Only `service` jobs wake an idle
+session now. An `await` job lost in a restart reports to its recovered request or the session's next
+run. Disabling `builtin-job` or `builtin-local-tools` in `plugins.disabled` removes both `job` and
+`bash`'s `background` field.
+
+GitHub requests, heartbeat runs, and restricted sessions can now start `await` jobs. Restricted
+sessions and profiles with restricted execution run jobs in restricted Bash inside Core. The first
+start of `background-jobs.db` without the widened platform check rebuilds the `background_jobs`
+table in one transaction to accept `github` and `unknown` owners, keeping every row. Startup then
+recreates the table's indexes.
+An older build rejects any row with a `github` or `unknown` owner, running or ended, which breaks
+`job list` and restart reconciliation. Roll back with the pre-upgrade `background-jobs.db`, or drain
+work and delete those rows first.
+
 ## MCP and computer-use integration
 
 ### MCP subagent access defaults to disabled

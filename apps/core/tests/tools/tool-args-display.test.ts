@@ -22,6 +22,15 @@ describe("formatToolArgsForDisplay", () => {
     ).toBe(" echo 1234567890123456789012...");
   });
 
+  it("redacts secrets in a bash command before truncating it", () => {
+    const token = `ghp_${"a".repeat(36)}`;
+    const display = formatBuiltinArgs("bash", {
+      command: `GH_TOKEN=${token} bun dev`,
+      background: "service",
+    });
+    expect(display).not.toContain("ghp_aaaa");
+  });
+
   it("formats read path with middle truncation (14 ... 13)", () => {
     expect(
       formatBuiltinArgs("read", {

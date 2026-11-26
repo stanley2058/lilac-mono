@@ -280,16 +280,19 @@ test("a mention reply to the running output steers the run with the user's autho
       message.role === "tool" ? message.output : message.text,
     );
     if (texts.some(isJobEvent)) return { text: "Job finished." };
-    if (model.lastToolResults.some((result) => result.name === "job"))
+    if (
+      model.lastToolResults.some(
+        (result) => result.name === "bash" && result.output.includes("Started background job"),
+      )
+    )
       return { text: "Steered reply about penguins." };
     if (model.userTexts.some((text) => text.includes("Also mention penguins")))
       return {
         toolCalls: [
           {
-            name: "job",
+            name: "bash",
             args: {
-              action: "start",
-              mode: "service",
+              background: "service",
               // The wake request is built from the transcript; the label routes it here.
               label: `${tag} penguins`,
               command: jobGate.command.replace("released:", "job-done:"),

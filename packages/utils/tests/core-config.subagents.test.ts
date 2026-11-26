@@ -20,7 +20,7 @@ describe("coreConfigSchema agent.subagents", () => {
     expect(parsed.agent.subagents.defaultPermissions).toBe("full");
     expect(parsed.agent.subagents.permissions.restricted).toEqual({
       level1: {
-        tools: ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+        tools: ["bash", "read", "glob", "grep", "fuzzy_search"],
         plugins: ["builtin-local-tools"],
       },
       level2: expect.objectContaining({ plugins: expect.arrayContaining(["web", "skills"]) }),

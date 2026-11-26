@@ -194,7 +194,7 @@ export const profileLevel2Schema = z.object({
 const EXPLORE_PROFILE_DEFAULT: SubagentProfileConfigV2 = {
   modelSlot: "main",
   level1: {
-    tools: ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+    tools: ["bash", "read", "glob", "grep", "fuzzy_search"],
     plugins: ["builtin-local-tools"],
   },
   level2: {

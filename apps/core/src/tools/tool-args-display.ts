@@ -12,6 +12,7 @@ import { Result } from "better-result";
 import { captureRuntimeError, projectCapturedRuntimeError } from "../runtime/error-format";
 import { formatRemoteDisplayPath, parseSshCwdTarget } from "../ssh/ssh-cwd";
 import { bashInputSchema } from "./bash";
+import { redactSecrets } from "./bash-safety/format";
 import { preserveToolPanic } from "./tool-result-adapters";
 
 function safeValidateSync(
@@ -171,7 +172,8 @@ export const formatReadFileToolArgs: ToolArgsFormatter = (args) => {
 };
 
 function formatBashCommand(command: string, cwd: string, maxLength: number): string {
-  const cmd = command.replace(/\s+/g, " ").trim();
+  // Redact before truncating, so a cut cannot leave part of a secret the redactor would miss.
+  const cmd = redactSecrets(command).replace(/\s+/g, " ").trim();
   if (!cmd) return "";
   const cwdTarget = parseSshCwdTarget(cwd.trim());
   const display =

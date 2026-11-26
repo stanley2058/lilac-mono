@@ -2863,7 +2863,7 @@
                   "explore": {
                     "modelSlot": "main",
                     "level1": {
-                      "tools": ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+                      "tools": ["bash", "read", "glob", "grep", "fuzzy_search"],
                       "plugins": ["builtin-local-tools"]
                     },
                     "level2": {
@@ -2936,7 +2936,7 @@
                     "explore": {
                       "modelSlot": "main",
                       "level1": {
-                        "tools": ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+                        "tools": ["bash", "read", "glob", "grep", "fuzzy_search"],
                         "plugins": ["builtin-local-tools"]
                       },
                       "level2": {
@@ -2987,7 +2987,7 @@
                       "default": {
                         "modelSlot": "main",
                         "level1": {
-                          "tools": ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+                          "tools": ["bash", "read", "glob", "grep", "fuzzy_search"],
                           "plugins": ["builtin-local-tools"]
                         },
                         "level2": {
@@ -3107,7 +3107,7 @@
                         },
                         "level1": {
                           "default": {
-                            "tools": ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+                            "tools": ["bash", "read", "glob", "grep", "fuzzy_search"],
                             "plugins": ["builtin-local-tools"]
                           },
                           "description": "Direct model-callable tool and plugin allowlists. Entries must also be globally enabled; MCP servers additionally require `allowSubagents: true` in mcp-config.yaml.",
@@ -5485,7 +5485,7 @@
                   },
                   "restricted": {
                     "level1": {
-                      "tools": ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+                      "tools": ["bash", "read", "glob", "grep", "fuzzy_search"],
                       "plugins": ["builtin-local-tools"]
                     },
                     "level2": {
@@ -5547,7 +5547,7 @@
                     },
                     "restricted": {
                       "level1": {
-                        "tools": ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+                        "tools": ["bash", "read", "glob", "grep", "fuzzy_search"],
                         "plugins": ["builtin-local-tools"]
                       },
                       "level2": {
@@ -5674,7 +5674,7 @@
                     "restricted": {
                       "default": {
                         "level1": {
-                          "tools": ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+                          "tools": ["bash", "read", "glob", "grep", "fuzzy_search"],
                           "plugins": ["builtin-local-tools"]
                         },
                         "level2": {
@@ -5716,7 +5716,7 @@
                         },
                         "level1": {
                           "default": {
-                            "tools": ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+                            "tools": ["bash", "read", "glob", "grep", "fuzzy_search"],
                             "plugins": ["builtin-local-tools"]
                           },
                           "description": "Direct model-callable tool and plugin allowlists. Entries must also be globally enabled; MCP servers additionally require `allowSubagents: true` in mcp-config.yaml.",
@@ -5828,7 +5828,7 @@
                       },
                       "level1": {
                         "default": {
-                          "tools": ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+                          "tools": ["bash", "read", "glob", "grep", "fuzzy_search"],
                           "plugins": ["builtin-local-tools"]
                         },
                         "description": "Direct model-callable tool and plugin allowlists. Entries must also be globally enabled; MCP servers additionally require `allowSubagents: true` in mcp-config.yaml.",

@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { mkdtemp, open } from "node:fs/promises";
+import path from "node:path";
 import {
   FakeGithub,
   startE2E,
@@ -65,6 +67,22 @@ async function answered(input: {
     `${input.label} acknowledgement removal`,
   );
   return { reaction, reply, removal };
+}
+
+/** A FIFO the agent's bash command blocks on until the test writes to it. */
+async function barrier() {
+  const directory = await mkdtemp(path.join(e2e.layout.directory, "barrier-"));
+  const fifo = path.join(directory, "go");
+  const made = Bun.spawnSync(["mkfifo", fifo]);
+  if (made.exitCode !== 0) throw new Error("mkfifo failed");
+  return {
+    command: `read line < ${fifo}; echo "released:$line"`,
+    async release(value = "ok") {
+      const handle = await open(fifo, "w");
+      await handle.write(`${value}\n`);
+      await handle.close();
+    },
+  };
 }
 
 const JWT = /^Bearer [\w-]+\.[\w-]+\.[\w-]+$/u;
@@ -145,6 +163,60 @@ test("a mention on an issue runs the agent and replies once on the issue", async
   expect(github.commentsOn(REPO, 7).map((stored) => stored.user.login)).toEqual([
     "octo-maintainer",
     github.botLogin,
+  ]);
+}, 60_000);
+
+test("an await job started on an issue holds the run and its result reaches the one reply", async () => {
+  github.addIssue({
+    repo: REPO,
+    number: 11,
+    title: "Flaky build",
+    body: "The build fails sometimes.",
+    author: "octo-reporter",
+  });
+  const gate = await barrier();
+  const skipped = Promise.withResolvers<void>();
+  const isJobEvent = (text: string) =>
+    text.includes('"tool":"job"') && text.includes("released:gh-build-ok");
+  const tag = e2e.model.script("gh-await-job", (_request, model) => {
+    if (model.userTexts.some(isJobEvent)) return { text: "The build passed: gh-build-ok" };
+    if (model.step === 0)
+      return {
+        toolCalls: [
+          { name: "bash", args: { command: gate.command, background: "await", label: "build" } },
+        ],
+      };
+    expect(model.result("bash")).toContain("(await)");
+    skipped.resolve();
+    return { toolCalls: [{ name: "skip_reply", args: { reason: "Waiting for the build." } }] };
+  });
+  const { payload, comment } = github.issueCommentCreated({
+    repo: REPO,
+    number: 11,
+    author: "octo-maintainer",
+    association: "OWNER",
+    body: `@${github.botLogin} ${tag} run the build`,
+  });
+  const start = github.calls.length;
+  expect(
+    await github.deliver({ url: webhookUrl, secret: SECRET, event: "issue_comment", payload }),
+  ).toEqual({ status: 200, body: { ok: true } });
+
+  // The job is still running when the model skips its reply, so the result must reach the same run.
+  await skipped.promise;
+  await gate.release("gh-build-ok");
+  const reactionPath = `/repos/${REPO}/issues/comments/${comment.id}/reactions`;
+  const { reply } = await answered({ issue: 11, reactionPath, after: start, label: "await job" });
+  expect((reply.body as { body: string }).body).toContain("The build passed: gh-build-ok");
+  expect(
+    github.calls.slice(start).filter(isPost(`/repos/${REPO}/issues/11/comments`)),
+  ).toHaveLength(1);
+  // The job's event reached the same request after skip_reply.
+  const requests = e2e.model.forScenario("gh-await-job");
+  expect(requests.map((entry) => entry.reply?.toolCalls?.[0]?.name ?? entry.reply?.text)).toEqual([
+    "bash",
+    "skip_reply",
+    "The build passed: gh-build-ok",
   ]);
 }, 60_000);
 

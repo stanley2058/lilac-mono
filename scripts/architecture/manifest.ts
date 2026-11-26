@@ -1372,6 +1372,10 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         category: "request" as const,
       })),
       {
+        identity: { module: "src/tools/bash-background.ts", exportName: "startBackgroundBash" },
+        category: "request",
+      },
+      {
         identity: { module: "src/tools/orchestrate.ts", exportName: "formatOrchestrateToolArgs" },
         category: "request",
       },
@@ -3177,12 +3181,15 @@ const CORE_SQLITE_TRANSACTION_CONSUMERS = [
     module: "src/question/question-store.ts",
     exportName,
   })),
-  ...["SqliteJobStore.reserve", "SqliteJobStore.finish", "SqliteJobStore.claimWake"].map(
-    (exportName) => ({
-      module: "src/jobs/job-store.ts",
-      exportName,
-    }),
-  ),
+  ...[
+    "SqliteJobStore.migratePlatformSchema",
+    "SqliteJobStore.reserve",
+    "SqliteJobStore.finish",
+    "SqliteJobStore.claimWake",
+  ].map((exportName) => ({
+    module: "src/jobs/job-store.ts",
+    exportName,
+  })),
 ].map(
   (identity): SqliteTransactionConsumerRegistration => ({
     identity,

@@ -36,7 +36,19 @@ export const DEFAULT_BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set([
 
 // Map prevents Object.prototype lookups (e.g. "constructor", "toString").
 const BUILTIN_TOOL_ARG_KEYS = new Map<string, ReadonlySet<string>>([
-  ["bash", new Set(["command", "cwd", "timeoutMs", "timeout", "description", "runInBackground"])],
+  [
+    "bash",
+    new Set([
+      "command",
+      "cwd",
+      "timeoutMs",
+      "timeout",
+      "description",
+      "runInBackground",
+      "background",
+      "label",
+    ]),
+  ],
   ["read", new Set(["path", "filePath", "offset", "limit", "startLine", "endLine", "pages"])],
   ["write", new Set(["path", "filePath", "content"])],
   ["edit", new Set(["path", "filePath", "oldString", "newString", "replaceAll", "edits"])],
@@ -82,7 +94,21 @@ const BUILTIN_TOOL_ARG_KEYS = new Map<string, ReadonlySet<string>>([
       "commandId",
     ]),
   ],
-  ["job", new Set(["action", "command", "cwd", "mode", "jobId", "timeoutMs", "offset", "limit"])],
+  [
+    "job",
+    new Set([
+      "action",
+      "command",
+      "cwd",
+      "mode",
+      "jobId",
+      "timeoutMs",
+      "offset",
+      "limit",
+      "tailBytes",
+      "fromByte",
+    ]),
+  ],
   ["question", new Set(["action", "questions", "mode", "timeoutMs"])],
   ["model_catalog", new Set(["query", "model", "provider", "limit"])],
   ["web_search", new Set(["query", "limit", "domain"])],

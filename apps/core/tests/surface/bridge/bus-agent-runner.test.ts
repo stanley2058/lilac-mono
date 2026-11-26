@@ -5182,6 +5182,7 @@ describe("deferred questions in the production runner", () => {
     });
 
     const launch = (command: string) => ({
+      kind: "process" as const,
       args: ["bash", "-c", command],
       cwd: tmpdir(),
       env: process.env,

@@ -48,6 +48,7 @@ import {
 } from "just-bash";
 
 import type { ToolResultArtifactStore } from "../artifacts/tool-result-artifact-store";
+import type { JobInProcessLaunch } from "../jobs/job-service";
 import { captureRuntimeError, projectCapturedRuntimeError } from "../runtime/error-format";
 import { resolveRestrictedSessionTmpDir } from "../shared/attachment-utils";
 import { parseSshCwdTarget } from "../ssh/ssh-cwd";
@@ -58,6 +59,7 @@ import {
   type BashToolOutput,
 } from "./bash-impl";
 import { sanitizeBashOutputText } from "./bash-output-sanitizer";
+import { redactSecrets } from "./bash-safety/format";
 import { adaptToolResultToHost, preserveToolPanic } from "./tool-result-adapters";
 
 const WORKSPACE_MOUNT = "/workspace";
@@ -175,7 +177,7 @@ function toRestrictedTerminationError(
   }
 }
 
-type RestrictedBashContext = {
+export type RestrictedBashContext = {
   requestId?: string;
   requestDeliveryId?: string;
   sessionId?: string;
@@ -1293,4 +1295,79 @@ export async function executeRestrictedBash(
     },
     ok: (value) => () => value,
   })();
+}
+
+export type RestrictedBackgroundLaunch =
+  | { readonly kind: "blocked"; readonly output: BashToolOutput }
+  | { readonly kind: "ready"; readonly launch: JobInProcessLaunch };
+
+/**
+ * Prepares a restricted Bash command to run as a job. It keeps the foreground sandbox and replaces
+ * the 3-minute wall-clock cap with the job's time limit.
+ */
+export function prepareRestrictedBackgroundLaunch(
+  { command, cwd }: Pick<BashToolInput, "command" | "cwd">,
+  options: {
+    workspaceRoot: string;
+    context: RestrictedBashContext;
+    toolCallId: string;
+  },
+): RestrictedBackgroundLaunch {
+  const context = { ...options.context, toolCallId: options.toolCallId };
+  const workspaceRoot = path.resolve(expandTilde(options.workspaceRoot));
+  const sessionTmpDir = resolveRestrictedSessionTmpDir(context.sessionId);
+  const resolvedCwd = captureRestrictedBashSync({
+    operation: "resolve_cwd",
+    run: () => resolveRestrictedCwd({ cwd, workspaceRoot, sessionTmpDir }),
+  });
+  if (resolvedCwd.isErr()) {
+    return {
+      kind: "blocked",
+      output: {
+        stdout: "",
+        stderr: resolvedCwd.error.message,
+        exitCode: -1,
+        executionError: {
+          type: "blocked",
+          code: "restricted_cwd",
+          reason: resolvedCwd.error.message,
+          hint: "Choose a cwd inside the approved workspace or the restricted session /tmp.",
+        },
+      },
+    };
+  }
+  const restrictedCwd = resolvedCwd.value;
+  return {
+    kind: "ready",
+    launch: {
+      kind: "in-process",
+      cwd: restrictedCwd,
+      redactedCommand: redactSecrets(command),
+      run: async (signal) => {
+        // As in the foreground path, initialize the Result adapter before just-bash locks down
+        // dynamic constructors.
+        await captureRestrictedBashOperation({
+          operation: "initialize_result_adapter",
+          run: () => Promise.resolve(),
+        });
+        const bash = await getRestrictedBash({
+          requestId: context.requestId,
+          workspaceRoot,
+          sessionTmpDir,
+          context,
+          classifyTermination: () => (signal.aborted ? "aborted" : undefined),
+        });
+        const result = await bash.exec(command, {
+          cwd: restrictedCwd,
+          replaceEnv: false,
+          signal,
+        });
+        return {
+          stdout: sanitizeBashOutputText(result.stdout),
+          stderr: sanitizeBashOutputText(result.stderr),
+          exitCode: result.exitCode,
+        };
+      },
+    },
+  };
 }

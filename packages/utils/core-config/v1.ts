@@ -1273,7 +1273,7 @@ function coreConfigV1ToUniversal(
               ? { promptOverlay: subagents.profiles.explore.promptOverlay }
               : {}),
             level1: {
-              tools: ["read", "glob", "grep", "fuzzy_search", "batch"],
+              tools: ["read", "glob", "grep", "fuzzy_search"],
               plugins: ["builtin-local-tools"],
             },
             level2: {

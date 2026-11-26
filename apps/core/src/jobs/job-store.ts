@@ -183,7 +183,7 @@ export class SqliteJobStore {
         request_id TEXT NOT NULL,
         request_delivery_id TEXT,
         tool_call_id TEXT NOT NULL,
-        platform TEXT NOT NULL CHECK (platform IN ('discord', 'native')),
+        platform TEXT NOT NULL CHECK (platform IN ('discord', 'native', 'github', 'unknown')),
         owner_user_id TEXT,
         origin_message_id TEXT,
         run_profile TEXT NOT NULL,
@@ -204,17 +204,45 @@ export class SqliteJobStore {
         created_at INTEGER NOT NULL,
         ended_at INTEGER
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS background_job_wake_budgets (
+        session_id TEXT PRIMARY KEY NOT NULL,
+        consecutive_wakes INTEGER NOT NULL
+      ) STRICT;
+    `);
+    adaptToolResultToHost(this.migratePlatformSchema());
+    this.#database.run(`
       CREATE INDEX IF NOT EXISTS background_jobs_session_idx
         ON background_jobs(session_id, created_at);
       CREATE INDEX IF NOT EXISTS background_jobs_request_idx
         ON background_jobs(request_id, mode, status);
       CREATE INDEX IF NOT EXISTS background_jobs_delivery_idx
         ON background_jobs(delivery, session_id);
-      CREATE TABLE IF NOT EXISTS background_job_wake_budgets (
-        session_id TEXT PRIMARY KEY NOT NULL,
-        consecutive_wakes INTEGER NOT NULL
-      ) STRICT;
     `);
+  }
+
+  /** Widens the platform check of a table created before GitHub and heartbeat runs could own jobs. */
+  private migratePlatformSchema(): ResultType<void, JobStoreError> {
+    return runBunSqliteTransaction(
+      this.#database,
+      () => {
+        const schema = this.#database
+          .query<{ sql: string }, []>(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='background_jobs'",
+          )
+          .get();
+        const legacyCheck = "platform IN ('discord', 'native')";
+        if (!schema || !schema.sql.includes(legacyCheck)) return Result.ok(undefined);
+        // The renamed table keeps its indexes, so dropping it drops them; the caller recreates them.
+        this.#database.run("ALTER TABLE background_jobs RENAME TO background_jobs_legacy");
+        this.#database.run(
+          schema.sql.replace(legacyCheck, "platform IN ('discord', 'native', 'github', 'unknown')"),
+        );
+        this.#database.run("INSERT INTO background_jobs SELECT * FROM background_jobs_legacy");
+        this.#database.run("DROP TABLE background_jobs_legacy");
+        return Result.ok(undefined);
+      },
+      (cause) => storeFailure("migrate-platform-schema", cause),
+    );
   }
 
   close(): void {
@@ -283,7 +311,7 @@ export class SqliteJobStore {
 
   markRunning(
     jobId: string,
-    input: { readonly pid: number; readonly processStartTicks: string | null },
+    input: { readonly pid: number | null; readonly processStartTicks: string | null },
   ): ResultType<void, JobStoreError> {
     return captureStoreOperation("mark-running", () => {
       this.#database

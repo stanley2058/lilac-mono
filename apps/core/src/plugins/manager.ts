@@ -31,6 +31,7 @@ import {
 } from "@stanley2058/lilac-utils";
 
 import { createBuiltinCoreToolPlugins } from "./builtin";
+import { JOB_PLUGIN_ID, LOCAL_TOOLS_PLUGIN_ID } from "./builtin/plugin-ids";
 import {
   buildUnifiedToolCatalogResult,
   catalogCandidateExecutable,
@@ -69,6 +70,19 @@ function isStructurallyAllowed(
   if (params.runProfile === "primary") return true;
   if (!contribution) return false;
   const profile = resolveSubagentPermissionProfile(config, params.runProfile);
+  // `job` lists, reads, and stops the background commands that `bash` starts, so it follows `bash`.
+  // Only the built-in tool does; an external plugin's tool named `job` keeps its own allowlists.
+  if (
+    specName === "job" &&
+    contribution.source === "builtin" &&
+    contribution.pluginId === JOB_PLUGIN_ID
+  ) {
+    return (
+      profileIncludes(profile.level1.plugins, LOCAL_TOOLS_PLUGIN_ID) &&
+      profileIncludes(profile.level1.tools, "bash") &&
+      profile.execution !== false
+    );
+  }
   if (!profileIncludes(profile.level1.plugins, contribution.pluginId)) return false;
   if (!profileIncludes(profile.level1.tools, specName)) return false;
   if (specName === "bash" && profile.execution === false) return false;

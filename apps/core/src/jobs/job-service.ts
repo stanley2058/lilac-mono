@@ -3,14 +3,17 @@ import { open, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { createLogger, formatTaggedErrorForLog } from "@stanley2058/lilac-utils";
-import { Result, TaggedError, type Result as ResultType } from "better-result";
+import { Result, TaggedError, type Panic, type Result as ResultType } from "better-result";
 
 import { captureRuntimeError, projectCapturedRuntimeError } from "../runtime/error-format";
 import { createBashOutputSanitizer } from "../tools/bash-output-sanitizer";
+import { redactSecrets } from "../tools/bash-safety/format";
 import { preserveToolPanic } from "../tools/tool-result-adapters";
 import {
   JOB_LIMITS,
+  canWakeJobPlatform,
   isJobActive,
+  jobPlatformSchema,
   jobLogFileName,
   type JobEvent,
   type JobMode,
@@ -49,13 +52,31 @@ export type JobServiceError =
   | JobNotFound
   | JobOutputReadFailed;
 
-export type JobLaunch = {
+/** A host process in its own process group, started with native Bash's environment. */
+export type JobProcessLaunch = {
+  readonly kind: "process";
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly literalSecrets: readonly string[];
   readonly redactedCommand: string;
 };
+
+export type JobInProcessOutput = {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number;
+};
+
+/** A command Core runs itself, such as restricted Bash. It ends when `signal` aborts. */
+export type JobInProcessLaunch = {
+  readonly kind: "in-process";
+  readonly cwd: string;
+  readonly redactedCommand: string;
+  readonly run: (signal: AbortSignal) => Promise<JobInProcessOutput>;
+};
+
+export type JobLaunch = JobProcessLaunch | JobInProcessLaunch;
 
 export type StartJobInput = {
   readonly owner: JobOwner;
@@ -92,8 +113,10 @@ type RequestedStop = {
 
 type RunningJob = {
   readonly jobId: string;
-  readonly pid: number;
-  readonly child: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  /** Asks the command to end. A process gets SIGTERM, and an in-process command is aborted. */
+  readonly terminate: () => void;
+  /** Ends a process that ignored `terminate`. In-process commands have nothing more to force. */
+  readonly kill: () => void;
   readonly done: Promise<void>;
   requestedStop: RequestedStop | null;
   deadlineTimer: ReturnType<typeof setTimeout> | null;
@@ -151,6 +174,7 @@ export class JobService {
   readonly #wakeRetries = new Map<string, number>();
   readonly #wakeRetryDelaysMs: readonly number[];
   readonly #maxOutputBytes: number;
+  readonly #reportPanic: (panic: Panic) => void;
   #wakePort: JobWakePort | null = null;
   #isSessionBusy: (sessionId: string) => boolean = () => false;
   #closing = false;
@@ -162,7 +186,11 @@ export class JobService {
     readonly now?: () => number;
     readonly wakeRetryDelaysMs?: readonly number[];
     readonly maxOutputBytes?: number;
+    /** Receives defects from in-process commands, which Core treats as fatal. */
+    readonly reportPanic?: (panic: Panic) => void;
   }) {
+    this.#reportPanic =
+      input.reportPanic ?? ((panic) => logger.error("job defect", formatTaggedErrorForLog(panic)));
     this.#wakeRetryDelaysMs = input.wakeRetryDelaysMs ?? JOB_LIMITS.wakeRetryDelaysMs;
     this.#maxOutputBytes = input.maxOutputBytes ?? JOB_LIMITS.maxOutputBytes;
     this.#store = input.store;
@@ -172,7 +200,7 @@ export class JobService {
   }
 
   supports(platform: string): platform is JobPlatform {
-    return platform === "discord" || platform === "native";
+    return (jobPlatformSchema.options as readonly string[]).includes(platform);
   }
 
   /**
@@ -437,7 +465,7 @@ export class JobService {
     this.#wakeTimers.clear();
     const running = [...this.#running.values()];
     for (const job of running) {
-      signalProcessGroup(job.pid, "SIGTERM");
+      job.terminate();
       this.#scheduleHardKill(job);
     }
     await Promise.all(running.map((job) => job.done));
@@ -479,18 +507,60 @@ export class JobService {
     const running = this.#running.get(jobId);
     if (!running) return;
     running.requestedStop ??= stop;
-    signalProcessGroup(running.pid, "SIGTERM");
+    running.terminate();
     this.#scheduleHardKill(running);
     await running.done;
   }
 
   #scheduleHardKill(job: RunningJob): void {
     if (job.hardKillTimer) return;
-    job.hardKillTimer = setTimeout(
-      () => signalProcessGroup(job.pid, "SIGKILL"),
-      JOB_LIMITS.hardKillDelayMs,
-    );
+    job.hardKillTimer = setTimeout(job.kill, JOB_LIMITS.hardKillDelayMs);
     job.hardKillTimer.unref?.();
+  }
+
+  /** Registers a started command and arms its time limit. */
+  #track(input: {
+    readonly job: JobRecord;
+    readonly timeoutMs: number;
+    readonly terminate: () => void;
+    readonly kill: () => void;
+    readonly supervise: (running: RunningJob) => Promise<void>;
+  }): void {
+    let resolveDone: () => void = () => undefined;
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    const running: RunningJob = {
+      jobId: input.job.jobId,
+      terminate: input.terminate,
+      kill: input.kill,
+      done,
+      requestedStop: null,
+      deadlineTimer: null,
+      hardKillTimer: null,
+    };
+    this.#running.set(input.job.jobId, running);
+    running.deadlineTimer = setTimeout(() => {
+      running.requestedStop ??= {
+        status: "timed_out",
+        stopReason: "time_limit",
+        delivery: "pending",
+      };
+      running.terminate();
+      this.#scheduleHardKill(running);
+    }, input.timeoutMs);
+    running.deadlineTimer.unref?.();
+    void input.supervise(running).finally(resolveDone);
+  }
+
+  #currentJob(jobId: string): ResultType<JobRecord, JobServiceError> {
+    return this.#store
+      .get(jobId)
+      .andThen((current) =>
+        current
+          ? Result.ok(current)
+          : Result.err(new JobNotFound({ message: `Job ${jobId} is missing after launch` })),
+      );
   }
 
   async #spawn(
@@ -505,16 +575,35 @@ export class JobService {
     });
     if (opened.isErr()) return this.#failSpawn(job, "Could not create the job output file");
     const logHandle = opened.value;
+    const { launch } = input;
+    switch (launch.kind) {
+      case "process":
+        return this.#spawnProcess({ job, launch, logHandle, timeoutMs });
+      case "in-process":
+        return this.#startInProcess({ job, launch, logHandle, timeoutMs });
+      default: {
+        const exhaustive: never = launch;
+        return exhaustive;
+      }
+    }
+  }
 
+  async #spawnProcess(input: {
+    readonly job: JobRecord;
+    readonly launch: JobProcessLaunch;
+    readonly logHandle: FileHandle;
+    readonly timeoutMs: number;
+  }): Promise<ResultType<JobRecord, JobServiceError>> {
+    const { job, launch, logHandle, timeoutMs } = input;
     const spawned = Result.try({
       try: () =>
-        Bun.spawn([...input.launch.args], {
-          cwd: input.launch.cwd,
+        Bun.spawn([...launch.args], {
+          cwd: launch.cwd,
           stdout: "pipe",
           stderr: "pipe",
           stdin: "ignore",
           detached: true,
-          env: input.launch.env,
+          env: launch.env,
         }),
       catch: captureRuntimeError,
     });
@@ -539,46 +628,49 @@ export class JobService {
       return Result.err(markedError);
     }
 
-    let resolveDone: () => void = () => undefined;
-    const done = new Promise<void>((resolve) => {
-      resolveDone = resolve;
-    });
-    const running: RunningJob = {
-      jobId: job.jobId,
-      pid: child.pid,
-      child,
-      done,
-      requestedStop: null,
-      deadlineTimer: null,
-      hardKillTimer: null,
-    };
-    this.#running.set(job.jobId, running);
-    running.deadlineTimer = setTimeout(() => {
-      running.requestedStop ??= {
-        status: "timed_out",
-        stopReason: "time_limit",
-        delivery: "pending",
-      };
-      signalProcessGroup(running.pid, "SIGTERM");
-      this.#scheduleHardKill(running);
-    }, timeoutMs);
-    running.deadlineTimer.unref?.();
-    logger.info("job spawned", { ...jobLogFields(job), pid: child.pid, timeoutMs });
-
-    void this.#superviseJob({
+    this.#track({
       job,
-      running,
-      logHandle,
-      literalSecrets: input.launch.literalSecrets,
-    }).finally(resolveDone);
+      timeoutMs,
+      terminate: () => signalProcessGroup(child.pid, "SIGTERM"),
+      kill: () => signalProcessGroup(child.pid, "SIGKILL"),
+      supervise: (running) =>
+        this.#superviseProcess({
+          job,
+          running,
+          child,
+          logHandle,
+          literalSecrets: launch.literalSecrets,
+        }),
+    });
+    logger.info("job spawned", { ...jobLogFields(job), pid: child.pid, timeoutMs });
+    return this.#currentJob(job.jobId);
+  }
 
-    return this.#store
-      .get(job.jobId)
-      .andThen((current) =>
-        current
-          ? Result.ok(current)
-          : Result.err(new JobNotFound({ message: `Job ${job.jobId} is missing after launch` })),
-      );
+  async #startInProcess(input: {
+    readonly job: JobRecord;
+    readonly launch: JobInProcessLaunch;
+    readonly logHandle: FileHandle;
+    readonly timeoutMs: number;
+  }): Promise<ResultType<JobRecord, JobServiceError>> {
+    const { job, launch, logHandle, timeoutMs } = input;
+    const marked = this.#store.markRunning(job.jobId, { pid: null, processStartTicks: null });
+    const markedError = marked.match({ ok: () => null, err: (error) => error });
+    if (markedError) {
+      await Result.tryPromise({ try: () => logHandle.close(), catch: captureRuntimeError });
+      return Result.err(markedError);
+    }
+
+    const controller = new AbortController();
+    this.#track({
+      job,
+      timeoutMs,
+      terminate: () => controller.abort(),
+      kill: () => undefined,
+      supervise: (running) =>
+        this.#superviseInProcess({ job, running, logHandle, launch, signal: controller.signal }),
+    });
+    logger.info("job started in process", { ...jobLogFields(job), timeoutMs });
+    return this.#currentJob(job.jobId);
   }
 
   #failSpawn(job: JobRecord, message: string): ResultType<JobRecord, JobServiceError> {
@@ -595,29 +687,107 @@ export class JobService {
       .andThen(() => Result.err(new JobSpawnFailed({ message })));
   }
 
-  async #superviseJob(input: {
+  async #superviseProcess(input: {
     readonly job: JobRecord;
     readonly running: RunningJob;
+    readonly child: Bun.Subprocess<"ignore", "pipe", "pipe">;
     readonly logHandle: FileHandle;
     readonly literalSecrets: readonly string[];
   }): Promise<void> {
-    const { job, running, logHandle, literalSecrets } = input;
+    const { job, running, child, logHandle, literalSecrets } = input;
     const capture = { bytes: 0, truncated: false };
     const streams = Promise.all(
-      [running.child.stdout, running.child.stderr].map((stream) =>
+      [child.stdout, child.stderr].map((stream) =>
         this.#captureStream({ stream, literalSecrets, logHandle, capture }),
       ),
     );
-    const exitCode = await running.child.exited;
+    const exitCode = await child.exited;
     if (running.deadlineTimer) clearTimeout(running.deadlineTimer);
 
     // Children left behind by the command hold its pipes open and would keep running unowned.
-    signalProcessGroup(running.pid, "SIGTERM");
+    signalProcessGroup(child.pid, "SIGTERM");
     this.#scheduleHardKill(running);
     await Promise.race([streams, Bun.sleep(JOB_LIMITS.streamDrainMs)]);
     if (running.hardKillTimer) clearTimeout(running.hardKillTimer);
-    signalProcessGroup(running.pid, "SIGKILL");
+    signalProcessGroup(child.pid, "SIGKILL");
     await Result.tryPromise({ try: () => logHandle.close(), catch: captureRuntimeError });
+    this.#recordEnd({ job, running, exitCode, capture });
+  }
+
+  /** Restricted Bash cannot stream, so its output reaches the log when the command ends. */
+  async #superviseInProcess(input: {
+    readonly job: JobRecord;
+    readonly running: RunningJob;
+    readonly logHandle: FileHandle;
+    readonly launch: JobInProcessLaunch;
+    readonly signal: AbortSignal;
+  }): Promise<void> {
+    const { job, running, logHandle, launch, signal } = input;
+    const ran = await Result.tryPromise({
+      try: () => launch.run(signal),
+      catch: captureRuntimeError,
+    });
+    if (running.deadlineTimer) clearTimeout(running.deadlineTimer);
+    const settled = ran.match<
+      | { readonly kind: "output"; readonly output: JobInProcessOutput }
+      | { readonly kind: "panic"; readonly panic: Panic }
+    >({
+      ok: (output) => ({ kind: "output", output }),
+      err: (captured) =>
+        captured.kind === "panic"
+          ? { kind: "panic", panic: captured.panic }
+          : {
+              kind: "output",
+              output: {
+                stdout: "",
+                stderr: redactSecrets(
+                  projectCapturedRuntimeError(captured, "Background command failed").message,
+                ),
+                exitCode: -1,
+              },
+            },
+    });
+    if (settled.kind === "panic") {
+      return this.#abandonOnPanic({ job, logHandle, panic: settled.panic });
+    }
+    const { output } = settled;
+    const capture = { bytes: 0, truncated: false };
+    const text = [output.stdout, output.stderr].filter((part) => part.length > 0).join("\n");
+    const bytes = Buffer.from(text, "utf8");
+    const kept =
+      bytes.byteLength > this.#maxOutputBytes ? bytes.subarray(0, this.#maxOutputBytes) : bytes;
+    capture.bytes = kept.byteLength;
+    capture.truncated = kept.byteLength < bytes.byteLength;
+    const written = await Result.tryPromise({
+      try: () => logHandle.appendFile(kept),
+      catch: captureRuntimeError,
+    });
+    if (written.isErr()) logger.warn("job output capture ended early");
+    await Result.tryPromise({ try: () => logHandle.close(), catch: captureRuntimeError });
+    this.#recordEnd({ job, running, exitCode: output.exitCode, capture });
+  }
+
+  /**
+   * A defect is not a command failure. The job stays active in the store, so the next start reports
+   * it lost.
+   */
+  async #abandonOnPanic(input: {
+    readonly job: JobRecord;
+    readonly logHandle: FileHandle;
+    readonly panic: Panic;
+  }): Promise<void> {
+    await Result.tryPromise({ try: () => input.logHandle.close(), catch: captureRuntimeError });
+    this.#running.delete(input.job.jobId);
+    this.#reportPanic(input.panic);
+  }
+
+  #recordEnd(input: {
+    readonly job: JobRecord;
+    readonly running: RunningJob;
+    readonly exitCode: number;
+    readonly capture: { readonly bytes: number; readonly truncated: boolean };
+  }): void {
+    const { job, running, exitCode, capture } = input;
     this.#running.delete(job.jobId);
     if (this.#closing) return;
 
@@ -736,7 +906,13 @@ export class JobService {
     // A busy session drains events at its next turn boundary. Its settlement reschedules this.
     if (!port || this.#closing || this.#isSessionBusy(sessionId)) return;
     const pending = this.#listPending(sessionId, "wake-list");
-    const wakeable = pending.filter((job) => job.runProfile === "primary");
+    // Only service jobs report after their request. An await job's event, including one lost in a
+    // restart, waits for its recovered request or the session's next run, as do events on platforms
+    // that cannot start a turn.
+    const wakeable = pending.filter(
+      (job) =>
+        job.runProfile === "primary" && job.mode === "service" && canWakeJobPlatform(job.platform),
+    );
     if (wakeable.length === 0) return;
 
     const unclaimed = wakeable.filter((job) => job.wakeId === null);

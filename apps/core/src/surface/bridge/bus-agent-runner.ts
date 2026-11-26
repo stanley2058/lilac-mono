@@ -6882,6 +6882,13 @@ export async function startBusAgentRunner(params: {
               if (cancelledByRequestId.has(headers.request_id)) break;
               continue;
             }
+            // A job that ended after the drain above left an event this request has not seen.
+            if (
+              continuationSignalVersion !== continuationWaitVersion &&
+              params.jobs?.hasPendingEvents(next.sessionId)
+            ) {
+              continue;
+            }
             if (!deferredWaitState?.hasOutstandingRuns || !liveParentSession) {
               // A control applied while the checks above awaited may have started another turn.
               if (agent.state.isStreaming) continue;

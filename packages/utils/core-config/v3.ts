@@ -41,7 +41,7 @@ const FULL_PERMISSIONS_DEFAULT: SubagentPermissionProfileConfig = {
 
 const RESTRICTED_PERMISSIONS_DEFAULT: SubagentPermissionProfileConfig = {
   level1: {
-    tools: ["bash", "read", "glob", "grep", "fuzzy_search", "batch"],
+    tools: ["bash", "read", "glob", "grep", "fuzzy_search"],
     plugins: ["builtin-local-tools"],
   },
   level2: {
