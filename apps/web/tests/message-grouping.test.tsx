@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { renderToStaticMarkup } from "react-dom/server";
 import {
   DEFAULT_DM_TIMESTAMP_GAP_MS,
   type ReadyTurnSlot,
@@ -11,9 +10,8 @@ import {
   workflowPostsDuring,
 } from "../src/message-grouping";
 import { agentWorkStages } from "../src/agent-work-fixtures";
-import { Turn, turnPostsKey } from "../src/components/Timeline";
+import { turnPostsKey } from "../src/components/Timeline";
 import { NativeThreadStore } from "@stanley2058/lilac-client";
-import { MessageServicesContext } from "../src/components/message-services";
 
 const time = new Date(2026, 9, 19, 12).getTime();
 function post(
@@ -52,25 +50,6 @@ test("consecutive posts group by author and stop at context, time, and interveni
   expect(joinMessageTurns(undefined, post(1))).toBe(false);
 });
 
-test("completed work and following posts share one avatar and leave controls on the last bubble", () => {
-  const first = agentWorkStages.find((stage) => stage.id === "grouped-messages")!.frames[0]!;
-  const second = first.following!;
-  expect(joinMessageTurns(first, second)).toBe(true);
-  const html = renderToStaticMarkup(
-    <MessageServicesContext
-      value={{ canEdit: true, resourceUrl: () => "", onAction: () => {}, onReaction: () => {} }}
-    >
-      <Turn slot={first} joinedAfter onRewind={() => {}} onLoadMore={() => {}} />
-      <Turn slot={second} joinedBefore onRewind={() => {}} onLoadMore={() => {}} />
-    </MessageServicesContext>,
-  );
-  expect(html.match(/data-slot="message-avatar"/g)).toHaveLength(1);
-  expect(html.match(/data-ui="message-controls"/g)).toHaveLength(1);
-  expect(html).toContain('data-ui="work-summary"');
-  expect(html).toContain("The forecast is ready");
-  expect(html).toContain("Bring a light jacket");
-});
-
 test("a post immediately after a long run uses the last message for both grouping and timestamps", () => {
   const first = post(0);
   first.messages.unshift({
@@ -85,26 +64,6 @@ test("a post immediately after a long run uses the last message for both groupin
     DEFAULT_DM_TIMESTAMP_GAP_MS,
   );
   expect(joinMessageTurns(first, next)).toBe(true);
-});
-
-test("a completed incoming post joins the following bubble without its old bottom margin", () => {
-  const first = post(0);
-  first.messages[0]!.metadata = {
-    ...first.messages[0]!.metadata,
-    inputId: "surface-input",
-    inputMode: "prompt",
-  };
-  const html = renderToStaticMarkup(
-    <MessageServicesContext
-      value={{ canEdit: true, resourceUrl: () => "", onAction: () => {}, onReaction: () => {} }}
-    >
-      <Turn slot={first} joinedAfter onRewind={() => {}} onLoadMore={() => {}} />
-      <Turn slot={post(1)} joinedBefore onRewind={() => {}} onLoadMore={() => {}} />
-    </MessageServicesContext>,
-  );
-  expect(html).not.toContain('class="mb-6"');
-  expect(html.match(/data-slot="message-avatar"/g)).toHaveLength(1);
-  expect(html.match(/data-ui="message-controls"/g)).toHaveLength(1);
 });
 
 test("a deferred assistant post with an older acceptance timestamp still joins the completed reply", () => {

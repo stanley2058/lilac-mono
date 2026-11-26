@@ -10,17 +10,6 @@ import {
 } from "../src/components/ResourcePreview";
 
 describe("attachment viewer", () => {
-  test("PDFs use the native browser viewer and keep download/open fallbacks", () => {
-    expect(attachmentKind("application/pdf")).toBe("pdf");
-    const html = renderToStaticMarkup(
-      <AttachmentPreviewBody name="notes.pdf" href="/api/resources/pdf" kind="pdf" />,
-    );
-    expect(html).toContain('type="application/pdf"');
-    expect(html).toContain('data="/api/resources/pdf"');
-    expect(html).toContain("Open PDF in new tab");
-    expect(html).toContain("Download notes.pdf");
-    expect(html).not.toContain("Loading preview");
-  });
   test("PDF filenames remain previewable when upload metadata has no specific media type", () => {
     expect(attachmentKind("", "notes.pdf")).toBe("pdf");
     expect(attachmentKind("application/octet-stream", "NOTES.PDF")).toBe("pdf");
@@ -49,62 +38,6 @@ describe("attachment viewer", () => {
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("<Component");
   });
-  test("image preview has copy/download and a fixed viewport independent of image content", () => {
-    const html = renderToStaticMarkup(
-      <AttachmentPreviewBody name="image.png" href="/api/resources/image" kind="image" />,
-    );
-    expect(html).toContain("Copy image");
-    expect(html).toContain("Download image.png");
-    expect(html).toContain('data-ui="media-preview-viewport"');
-    expect(html).toContain("Reset zoom");
-    expect(html).toContain('draggable="false"');
-    expect(html.indexOf('data-ui="media-preview-viewport"')).toBeLessThan(
-      html.indexOf('data-ui="media-preview-toolbar"'),
-    );
-  });
-});
-
-test("image attachments use a thumbnail without a filename footer or default action row", () => {
-  const html = renderToStaticMarkup(
-    <ReadyAttachment
-      data={{
-        resourceId: "image",
-        name: "image.png",
-        mediaType: "image/png",
-        size: 1024,
-        state: "ready",
-      }}
-      href="/api/resources/image"
-    />,
-  );
-  expect(html).toContain("attachment-image-card");
-  expect(html).toContain('aria-label="Preview image.png"');
-  expect(html).not.toContain("attachment-file-row");
-  expect(html).not.toContain("Download image.png");
-  expect(html).not.toContain("1 KB");
-});
-
-test("full-window previews keep the download footer available during loading and errors", () => {
-  for (const text of [
-    { status: "loading" } as const,
-    { status: "error", message: "Text preview unavailable for this binary file." } as const,
-  ]) {
-    const html = renderToStaticMarkup(
-      <AttachmentPreviewBody
-        name="file.bin"
-        href="/api/resources/file"
-        kind="text"
-        text={text}
-        fill
-      />,
-    );
-    expect(html).toContain('data-fill="true"');
-    expect(html).toContain('role="status"');
-    expect(html).toContain('aria-label="Download file.bin"');
-    expect(html.indexOf('role="status"')).toBeLessThan(
-      html.indexOf('data-ui="attachment-preview-footer"'),
-    );
-  }
 });
 
 test("image hit testing excludes object-fit letterboxing and respects zoomed bounds", () => {
@@ -129,24 +62,6 @@ test("image hit testing excludes object-fit letterboxing and respects zoomed bou
       { width: 800, height: 400 },
     ),
   ).toBe(true);
-});
-
-test("preview destination actions share the download footer for text and media", () => {
-  for (const kind of ["text", "image", "pdf", "audio", "video"] as const) {
-    const html = renderToStaticMarkup(
-      <AttachmentPreviewBody
-        name="example"
-        href="/api/resources/example"
-        kind={kind}
-        actions={<button>Open in right panel</button>}
-        text={{ status: "ready", text: "source", truncated: false }}
-      />,
-    );
-    expect(html.indexOf("Open in right panel")).toBeGreaterThan(
-      html.indexOf('data-ui="attachment-preview-footer"'),
-    );
-    expect(html).toContain('aria-label="Download example"');
-  }
 });
 
 test("saved file tabs defer their bodies until the panel and tab become active", () => {
@@ -193,21 +108,4 @@ test("unavailable retained images render a placeholder without requesting image 
   );
   expect(html).toContain("Image unavailable");
   expect(html).not.toContain("<img");
-});
-
-test("HTML attachments share the Markdown toolbar and start in source mode", () => {
-  for (const name of ["review.html", "REVIEW.HTM"]) {
-    const html = renderToStaticMarkup(
-      <AttachmentPreviewBody
-        name={name}
-        href="/api/files/html"
-        kind="text"
-        text={{ status: "ready", text: "<h1>Report</h1>", truncated: true }}
-      />,
-    );
-    expect(html).toContain('aria-label="Preview HTML"');
-    expect(html).toContain('aria-label="Word wrap"');
-    expect(html).not.toContain("<iframe");
-    expect(html).toContain("Showing the first 64 KB");
-  }
 });

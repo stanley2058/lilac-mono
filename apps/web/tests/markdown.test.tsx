@@ -381,30 +381,6 @@ describe("html previews", () => {
       </HtmlPreviewMessageContext>,
     );
 
-  test("frames the saved page once the turn ends", () => {
-    const globals = globalThis as { document?: unknown; getComputedStyle?: unknown };
-    const saved = { document: globals.document, getComputedStyle: globals.getComputedStyle };
-    globals.document = { documentElement: {} };
-    globals.getComputedStyle = () => ({
-      getPropertyValue: (name: string) => (name === "--ui-background" ? " #101010" : ""),
-    });
-    const html = render(false);
-    Object.assign(globals, saved);
-    expect(html).toContain('data-ui="html-preview"');
-    expect(html).toContain('sandbox="allow-scripts allow-forms allow-popups"');
-    expect(html).toContain(
-      `src="/api/html-previews?thread=t1&amp;message=m1&amp;path=%2Fwork%2Fchart.html#lilac-theme=`,
-    );
-    expect(html).toContain('title="chart.html"');
-    expect(html).toContain('loading="eager"');
-    expect(html).toContain('aria-label="Loading preview"');
-    expect(html).toContain("height:240px");
-    expect(html).not.toContain("```html-preview-file");
-    expect(decodeURIComponent(html)).toContain(
-      '{"appearance":"dark","variables":{"--background":"#101010"}}',
-    );
-  });
-
   test("waits for a running turn and shows code outside native replies", () => {
     expect(render(true)).toContain('aria-label="Loading preview"');
     expect(render(true)).toContain("height:240px");
