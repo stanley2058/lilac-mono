@@ -14,8 +14,58 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: Source checks
+  # Each job runs one group of `scripts/run-gates.ts` gates, so CI and `bun run check` share one list.
+  static:
+    name: Lint, typecheck and static tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up the workspace
+        uses: ./.github/actions/setup-workspace
+
+      - name: Run static gates
+        run: bun scripts/run-gates.ts ci --group=static
+
+  core-tests:
+    name: Core tests (${{ matrix.shard }}/3)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up the workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          rust: "true"
+          go: "true"
+          system-tools: "true"
+
+      # apps/core/test-timings.json balances the shards by recorded file durations.
+      - name: Run Core tests
+        run: bun scripts/run-gates.ts ci --group=core --shard=${{ matrix.shard }}/3
+
+  workspace-tests:
+    name: Workspace tests
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
@@ -47,45 +97,16 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Set up the workspace
+        uses: ./.github/actions/setup-workspace
         with:
-          bun-version-file: package.json
-
-      - name: Setup Go for tools CLI boundary tests
-        uses: actions/setup-go@v6
-        with:
-          go-version: stable
-
-      # apps/remote-runner/rust-toolchain.toml pins the compiler, rustfmt and targets.
-      - name: Setup Rust for the remote runner
-        run: rustup toolchain install
-        working-directory: apps/remote-runner
-
-      - name: Cache the remote runner build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/remote-runner
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fd-find ripgrep
-          sudo ln -sf /usr/bin/fdfind /usr/local/bin/fd
-
-      # GitHub has no Debian runners. Match the GNU coreutils in the Debian images.
-      - name: Use GNU coreutils
-        run: |
-          sudo apt-get install -y --allow-remove-essential coreutils-from-gnu coreutils-from-uutils-
-          cat --version | grep -F 'GNU coreutils'
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+          rust: "true"
+          go: "true"
+          system-tools: "true"
 
       - name: Create the S3 test bucket
         run: >-
@@ -94,14 +115,60 @@ jobs:
           --user "$LILAC_BLOB_S3_TEST_ACCESS_KEY_ID:$LILAC_BLOB_S3_TEST_SECRET_ACCESS_KEY"
           -X PUT "$LILAC_BLOB_S3_TEST_ENDPOINT/$LILAC_BLOB_S3_TEST_BUCKET"
 
-      - name: Run CI script
-        run: bun run ci
+      - name: Run workspace tests
+        run: bun scripts/run-gates.ts ci --group=tests
 
       - name: Test process and Redis resilience
         run: bun run test:resilience
 
+  e2e:
+    name: End-to-end scenarios (${{ matrix.shard }}/2)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up the workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          rust: "true"
+          system-tools: "true"
+
       - name: Run end-to-end agent scenarios
-        run: bun run test:e2e
+        run: bun run test:e2e -- --shard=${{ matrix.shard }}/2
+
+  # Keeps one stable status for the whole source pipeline.
+  source-checks:
+    name: Source checks
+    if: always()
+    needs: [static, core-tests, workspace-tests, e2e]
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Require every source job to pass
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then exit 1; fi
+          done
 
   docker-image:
     name: Docker image smoke
