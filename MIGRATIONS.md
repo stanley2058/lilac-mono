@@ -99,12 +99,18 @@ or history is deleted by this change.
 ### Batch retirement
 
 The `batch` tool and tool-call expansion API are removed. Ordinary model-issued calls run concurrently
-in received-order groups separated by `write`, `edit`, and `patch` calls, including their legacy
-aliases. Each mutation waits for the preceding group and finishes before the following group starts.
-Bash calls may race. The Claude MCP bridge applies barriers in request-receipt order; Claude owns when
-it submits those requests. Existing `tools.batch.maxCalls`, `supportsBatch`, and `editTargets` fields
-remain accepted for configuration/plugin compatibility but no longer control execution. Remove them
-from maintained configurations and plugins. Old transcripts remain replayable; a newly attempted
+in received-order groups. Core classifies each call by tool name, ignoring an `mcp__lilac__` prefix:
+`read`, `read_file`, `grep`, `glob`, `fuzzy_search`, and `model_catalog` are read-only; `write`,
+`write_file`, `edit`, `edit_file`, `patch`, and `apply_patch` are exclusive; every other call, including
+Bash, is side-effecting. Adjacent read-only calls share a group, adjacent side-effecting calls share a
+group, and each exclusive call runs alone. Each group waits for the preceding group to finish. Adjacent
+Bash calls may race. The Claude MCP bridge receives calls one at a time and queues them in receipt order.
+When a group finishes, it starts calls from the head of the queue until the next call cannot join that
+group. A new call joins a running group only when its class matches, the class is not exclusive, and no
+call is waiting ahead of it. Claude owns when it submits those requests. Existing
+`tools.batch.maxCalls`, `supportsBatch`, and `editTargets` fields remain accepted for
+configuration/plugin compatibility but no longer control execution. Remove them from maintained
+configurations and plugins. Old transcripts remain replayable; a newly attempted
 `batch` call receives the ordinary unknown-tool error.
 
 ### Skill read tool replacement

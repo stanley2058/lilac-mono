@@ -1751,13 +1751,15 @@ test("native search snapshots use original results even when the model view is t
   await run;
 });
 
-test("native calls execute in parallel groups separated by write barriers", async () => {
+test("native calls run reads after side effects and mutations alone", async () => {
   const first = Promise.withResolvers<void>();
   const bothStarted = Promise.withResolvers<void>();
   const patch = Promise.withResolvers<void>();
   const patchStarted = Promise.withResolvers<void>();
   const starts: string[] = [];
-  const names = ["read", "bash", "patch", "grep", "read"];
+  const bash = Promise.withResolvers<void>();
+  const bashStarted = Promise.withResolvers<void>();
+  const names = ["read", "grep", "bash", "read", "patch", "read"];
   const tools = Object.fromEntries(
     [...new Set(names)].map((name) => [
       name,
@@ -1767,6 +1769,11 @@ test("native calls execute in parallel groups separated by write barriers", asyn
           starts.push(toolCallId);
           if (starts.length === 2) bothStarted.resolve();
           if (toolCallId === "0" || toolCallId === "1") await first.promise;
+          if (name === "bash") {
+            bashStarted.resolve();
+            await bash.promise;
+            starts.push("2:end");
+          }
           if (name === "patch") {
             patchStarted.resolve();
             await patch.promise;
@@ -1795,11 +1802,14 @@ test("native calls execute in parallel groups separated by write barriers", asyn
   await bothStarted.promise;
   expect(starts).toEqual(["0", "1"]);
   first.resolve();
-  await patchStarted.promise;
+  await bashStarted.promise;
   expect(starts).toEqual(["0", "1", "2"]);
+  bash.resolve();
+  await patchStarted.promise;
+  expect(starts).toEqual(["0", "1", "2", "2:end", "3", "4"]);
   patch.resolve();
   const continuation = await socket.nextSend();
-  expect(starts).toEqual(["0", "1", "2", "3", "4"]);
+  expect(starts).toEqual(["0", "1", "2", "2:end", "3", "4", "5"]);
   expect(continuation.input).toEqual(
     names.map((_, index) => ({
       type: "function_call_output",

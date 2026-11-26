@@ -198,7 +198,7 @@ plugins:
 - Media and provider-reference content parts are not converted into text artifacts.
 - Truncation does not change whether the tool execution succeeded or failed.
 - `batch` is retired. `supportsBatch` and `editTargets` remain accepted for compatibility but do not affect scheduling.
-- Native calls execute in received order as parallel groups separated by `write`, `edit`, and `patch` barriers. Bash calls may run concurrently.
+- Native calls execute in received order as parallel groups. Core classifies each call by tool name, ignoring an `mcp__lilac__` prefix. Read-only calls are `read`, `read_file`, `grep`, `glob`, `fuzzy_search`, and `model_catalog`. Exclusive calls are `write`, `write_file`, `edit`, `edit_file`, `patch`, and `apply_patch`. Every other call, including Bash and plugin tools, is side-effecting. Adjacent read-only calls share a group, adjacent side-effecting calls share a group, and each exclusive call runs alone. A group starts after the previous group finishes, so a read sees the effects of an earlier Bash call. Adjacent Bash calls may run concurrently.
 - A Level 1 spec may implement `summarizeFailure({ isError, result })` to classify a model-visible
   result. It returns `{ ok: true }` for success or `{ ok: false, ... }` for failure. `failureKind`
   (`hard` or `soft`) and `error` remain optional compatibility fields. Structured failures may also
