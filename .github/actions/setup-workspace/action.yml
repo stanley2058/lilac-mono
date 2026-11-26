@@ -25,6 +25,9 @@ runs:
       uses: actions/setup-go@v6
       with:
         go-version: stable
+        # There is no go.mod, so key the build cache on the launcher source. A cold cache compiles
+        # the standard library for every launcher target.
+        cache-dependency-path: apps/tool-bridge/*.go
 
     # apps/remote-runner/rust-toolchain.toml pins the compiler, rustfmt and targets.
     - name: Setup Rust for the remote runner
