@@ -84,6 +84,14 @@
   .thread-card:has(.thread-card-actions):focus-within .thread-card-meta time {
     visibility: hidden;
   }
+  /* Actions overlay the meta, so it must be at least as wide or they cover the title. */
+  .thread-card:is(:hover, :focus-within) .thread-card-meta:has(.thread-card-actions) {
+    min-width: var(--ui-control-compact);
+  }
+  .thread-card:is(:hover, :focus-within)
+    .thread-card-meta:has(.thread-card-actions > :nth-child(2)) {
+    min-width: calc(var(--ui-control-compact) * 2);
+  }
 }
 @media (hover: none) {
   /* Touch rows keep the title whole on the first line and put time and Settle beneath it. */
