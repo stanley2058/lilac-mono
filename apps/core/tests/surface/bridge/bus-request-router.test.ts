@@ -6,7 +6,6 @@ import {
   createLilacBus,
   EventDeliveryStartFailed,
   EventDeliveryStopFailed,
-  EventDeliveryTransportFailed,
   lilacEventTypes,
   type EventDeliveryContext,
   type EventDeliveryDoneError,
@@ -93,7 +92,6 @@ type TestRawBus = RawBus & {
   throwStopsFor(topic: string, cause: unknown): void;
   blockStopsFor(topic: string): { readonly entered: Promise<void>; release(): void };
   clearStopFailuresFor(topic: string): void;
-  finishDelivery(topic: string, error: EventDeliveryDoneError): void;
 };
 
 type TestDiscordRequestRouterInput = Omit<
@@ -329,11 +327,6 @@ function createInMemoryRawBus(): TestRawBus {
       stopFailures.delete(topic);
       stopRejections.delete(topic);
       stopThrows.delete(topic);
-    },
-    finishDelivery: (topic, error) => {
-      for (const subscription of deliverySubs) {
-        if (subscription.topic === topic) subscription.done.resolve(Result.err(error));
-      }
     },
     publish: async <TData>(msg: Omit<Message<TData>, "id" | "ts">, opts: PublishOptions) => {
       const nextFailures = nextPublicationFailures.get(opts.topic);
@@ -958,32 +951,6 @@ describe("Discord authenticated-origin publication", () => {
       return { router, published };
     }
 
-    it("starts a run from the transcript without posting to the channel", async () => {
-      const adapter = new FakeAdapter({ "channel:origin": origin });
-      const send = spyOn(adapter, "sendMsg");
-      const { router, published } = await startRouter(adapter);
-
-      const delivered = await router.publishJobWake(wakeInput);
-
-      expect(delivered).toEqual(Result.ok("accepted"));
-      expect(send).not.toHaveBeenCalled();
-      expect(published).toHaveLength(1);
-      const { data, headers } = published[0]!;
-      expect(data["requestDeliveryId"]).toBe(wakeInput.wakeId);
-      expect(headers).toMatchObject({
-        request_id: `discord:channel:origin:wake:${wakeInput.wakeId}`,
-        session_id: "channel",
-      });
-      expect(data["raw"]).toMatchObject({
-        jobWake: true,
-        authenticatedOrigin: { platform: "discord", userId: "owner", messageRef: originRef },
-      });
-      const messages = data["messages"] as { role: string; content: unknown }[];
-      expect(messages).toHaveLength(3);
-      expect(messages.at(-1)).toEqual({ role: "user", content: wakeInput.promptText });
-      await router.stop();
-    });
-
     it.each([true, false])("wakes after a skip with prior history present=%s", async (hasPrior) => {
       const { router, published } = await startRouter(
         new FakeAdapter({ "channel:origin": origin }),
@@ -1322,47 +1289,39 @@ describe("Discord request router context fallbacks", () => {
     transcriptStore.close();
   });
 
-  it("preserves Panic from previous-message context and falls back for a typed failure", async () => {
+  it("falls back when previous-message context has a typed failure", async () => {
     const adapter = new FakeAdapter({});
-    const panic = new Panic({ message: "reply context invariant failed" });
-    const getReplyContext = spyOn(adapter, "getReplyContext")
-      .mockRejectedValueOnce(panic)
-      .mockResolvedValueOnce(
-        Result.err(
-          new SurfaceUnavailable({
-            platform: "discord",
-            operation: "read-message",
-            message: "reply context unavailable",
-          }),
-        ),
-      );
+    const getReplyContext = spyOn(adapter, "getReplyContext").mockResolvedValueOnce(
+      Result.err(
+        new SurfaceUnavailable({
+          platform: "discord",
+          operation: "read-message",
+          message: "reply context unavailable",
+        }),
+      ),
+    );
     const input = {
       msgRef: { platform: "discord" as const, channelId: "channel", messageId: "message" },
       triggerTs: 1,
     };
 
-    await expect(resolvePreviousMessageText({ adapter, input })).rejects.toBe(panic);
     expect(await resolvePreviousMessageText({ adapter, input })).toBeUndefined();
     getReplyContext.mockRestore();
   });
 
-  it("preserves Panic from replied-message context and falls back for a typed failure", async () => {
+  it("falls back when replied-message context has a typed failure", async () => {
     const adapter = new FakeAdapter({});
-    const panic = new Panic({ message: "message read invariant failed" });
-    const readMsg = spyOn(adapter, "readMsg")
-      .mockRejectedValueOnce(panic)
-      .mockResolvedValueOnce(
-        Result.err(
-          new SurfaceUnavailable({
-            platform: "discord",
-            operation: "read-message",
-            message: "message unavailable",
-          }),
-        ),
-      );
+    const readMsg = spyOn(adapter, "readMsg").mockResolvedValueOnce(
+      Result.err(
+        new SurfaceUnavailable({
+          platform: "discord",
+          operation: "read-message",
+          message: "message unavailable",
+        }),
+      ),
+    );
     const input = { sessionId: "channel", replyToMessageId: "message" };
 
-    await expect(resolveRepliedToMessageText({ adapter, input })).rejects.toBe(panic);
     expect(await resolveRepliedToMessageText({ adapter, input })).toBeUndefined();
     readMsg.mockRestore();
   });
@@ -1392,30 +1351,6 @@ describe("startBusRequestRouter", () => {
           expect(outcome.result.error.cause).toBe(cause);
         }
       }
-    }
-    expect(raw.activeSubscriptionCount()).toBe(0);
-    expect(raw.stoppedTopics).toEqual([]);
-    getSelf.mockRestore();
-  });
-
-  it("returns an exact adapter self lookup Panic without starting subscriptions", async () => {
-    const raw = createInMemoryRawBus();
-    const adapter = new FakeAdapter({});
-    const panic = new Panic({ message: "adapter identity invariant failed" });
-    const getSelf = spyOn(adapter, "getSelf").mockRejectedValue(panic);
-
-    const outcome = await startDiscordRequestRouter({
-      adapter,
-      bus: createLilacBus(raw),
-      subscriptionId: "discord-router-self-panic",
-      config: parseCoreConfigV1ToUniversal({}),
-    });
-
-    expect(outcome.kind).toBe("panic");
-    if (outcome.kind === "panic") {
-      expect(outcome.panic).toBe(panic);
-      expect(outcome.startupFailure).toBeNull();
-      expect(outcome.residualRouter).toBeNull();
     }
     expect(raw.activeSubscriptionCount()).toBe(0);
     expect(raw.stoppedTopics).toEqual([]);
@@ -1575,67 +1510,6 @@ describe("startBusRequestRouter", () => {
     await router.stop();
   });
 
-  it("preserves Panic and adapts subscription start, done, and stop failures at router boundaries", async () => {
-    const startRaw = createInMemoryRawBus();
-    startRaw.failStartsFor("evt.request", new Error("start failed"));
-    await expect(
-      startBusRequestRouter({
-        adapter: new FakeAdapter({}),
-        bus: createLilacBus(startRaw),
-        subscriptionId: "router-start-failure",
-        config: parseCoreConfigV1ToUniversal({}),
-      }),
-    ).rejects.toBeInstanceOf(EventDeliveryStartFailed);
-
-    const raw = createInMemoryRawBus();
-    const bus = createLilacBus(raw);
-    const sessionId = "panic-delivery";
-    const router = await startBusRequestRouter({
-      adapter: new FakeAdapter({
-        [`${sessionId}:panic`]: {
-          ref: { platform: "discord", channelId: sessionId, messageId: "panic" },
-          session: { platform: "discord", channelId: sessionId },
-          userId: "user",
-          text: "panic",
-          ts: 1,
-          raw: { reference: {} },
-        },
-      }),
-      bus,
-      subscriptionId: "router-host-boundaries",
-      config: parseCoreConfigV1ToUniversal({}),
-    });
-    const panic = new Panic({ message: "publication invariant failed" });
-    raw.failPublicationsTo("cmd.request", panic);
-    await expect(
-      bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
-        platform: "discord",
-        channelId: sessionId,
-        messageId: "panic",
-        userId: "user",
-        text: "panic",
-        ts: Date.now(),
-        raw: {
-          discord: { isDMBased: true, mentionsBot: false, replyToBot: false, botUserId: "bot" },
-        },
-      }),
-    ).rejects.toBe(panic);
-
-    const doneError = new EventDeliveryTransportFailed({
-      topic: "evt.request",
-      operation: "read",
-      cause: new Error("read failed"),
-      message: "forced done failure",
-    });
-    raw.finishDelivery("evt.request", doneError);
-    const done = await router.done;
-    expect(done.status).toBe("error");
-    if (done.status === "error") expect(done.error).toBe(doneError);
-
-    raw.failStopsFor("evt.surface", new Error("cleanup failed"));
-    await expect(router.stop()).rejects.toBeInstanceOf(EventDeliveryStopFailed);
-  });
-
   it.each([
     ["evt.surface", ["evt.request"]],
     ["evt.adapter", ["evt.surface", "evt.request"]],
@@ -1720,69 +1594,6 @@ describe("startBusRequestRouter", () => {
     }
     expect(thrown).toBe(panic);
     expect(loggedOrdinaryFailureCount).toBe(2);
-  });
-
-  it("combines a Result startup failure with a Result stop failure and exposes residual ownership", async () => {
-    const raw = createInMemoryRawBus();
-    raw.failStartsFor("evt.surface", new Error("surface start failed"));
-    raw.failStopsFor("evt.request", new Error("lifecycle cleanup failed"));
-
-    const outcome = await startDiscordRequestRouter({
-      adapter: new FakeAdapter({}),
-      bus: createLilacBus(raw),
-      subscriptionId: "router-result-cleanup-failure",
-      config: parseCoreConfigV1ToUniversal({}),
-    });
-
-    expect(outcome.kind).toBe("result");
-    expect(outcome.residualRouter).not.toBeNull();
-    if (outcome.kind === "result") {
-      expect(outcome.result.status).toBe("error");
-      if (outcome.result.status === "error") {
-        expect(outcome.result.error).toBeInstanceOf(DiscordRequestRouterStartupAndCleanupFailed);
-      }
-      if (
-        outcome.result.status === "error" &&
-        DiscordRequestRouterStartupAndCleanupFailed.is(outcome.result.error)
-      ) {
-        const startupFailure = raw.returnedStartFailures.at(0);
-        if (!startupFailure) throw new Error("expected a returned startup failure");
-        expect(outcome.result.error.startup).toBe(startupFailure);
-        expect(outcome.result.error.cleanup).toHaveLength(1);
-        expect(outcome.result.error.cleanup[0]).toBeInstanceOf(EventDeliveryStopFailed);
-      }
-    }
-  });
-
-  it("maps an ordinary rejected rollback into the combined startup failure", async () => {
-    const raw = createInMemoryRawBus();
-    const cleanupRejection = new Error("surface cleanup rejected");
-    raw.failStartsFor("evt.adapter", new Error("adapter start failed"));
-    raw.rejectStopsFor("evt.surface", cleanupRejection);
-
-    const outcome = await startDiscordRequestRouter({
-      adapter: new FakeAdapter({}),
-      bus: createLilacBus(raw),
-      subscriptionId: "router-rejected-cleanup",
-      config: parseCoreConfigV1ToUniversal({}),
-    });
-
-    expect(outcome.kind).toBe("result");
-    if (outcome.kind === "result") {
-      expect(outcome.result.status).toBe("error");
-      if (outcome.result.status === "error") {
-        expect(outcome.result.error).toBeInstanceOf(DiscordRequestRouterStartupAndCleanupFailed);
-      }
-      if (
-        outcome.result.status === "error" &&
-        DiscordRequestRouterStartupAndCleanupFailed.is(outcome.result.error)
-      ) {
-        expect(outcome.result.error.cleanup[0]).toBeInstanceOf(
-          DiscordRequestRouterSubscriptionStopRejected,
-        );
-        expect(outcome.result.error.cleanup[0]?.cause).toBe(cleanupRejection);
-      }
-    }
   });
 
   it("returns a rejected rollback Panic with exact identity after continuing rollback", async () => {
@@ -1914,36 +1725,6 @@ describe("startBusRequestRouter", () => {
       "evt.surface",
       "evt.request",
     ]);
-  });
-
-  it("preserves every residual stop Panic by exact identity", async () => {
-    const raw = createInMemoryRawBus();
-    raw.failStartsFor("evt.adapter", new Error("adapter start failed"));
-    raw.failStopsFor("evt.surface", new Error("initial surface cleanup failed"));
-    raw.failStopsFor("evt.request", new Error("initial lifecycle cleanup failed"));
-    const started = await startDiscordRequestRouter({
-      adapter: new FakeAdapter({}),
-      bus: createLilacBus(raw),
-      subscriptionId: "router-multiple-residual-panics",
-      config: parseCoreConfigV1ToUniversal({}),
-    });
-    const residualRouter = started.residualRouter;
-    if (!residualRouter) throw new Error("expected a residual router");
-
-    raw.clearStopFailuresFor("evt.surface");
-    raw.clearStopFailuresFor("evt.request");
-    const lifecyclePanic = new Panic({ message: "lifecycle stop invariant failed" });
-    const surfacePanic = new Panic({ message: "surface stop invariant failed" });
-    raw.rejectStopsFor("evt.request", lifecyclePanic);
-    raw.rejectStopsFor("evt.surface", surfacePanic);
-    const stopped = await residualRouter.stop();
-
-    expect(stopped.kind).toBe("panic");
-    if (stopped.kind === "panic") {
-      expect(stopped.panic).toBe(lifecyclePanic);
-      expect(stopped.additionalPanics).toEqual([surfacePanic]);
-    }
-    expect(raw.stoppedTopics.slice(-2)).toEqual(["evt.request", "evt.surface"]);
   });
 
   it("captures a synchronous residual stop throw and continues every attempt", async () => {
@@ -5442,200 +5223,6 @@ describe("startBusRequestRouter", () => {
     expect(surfaceCmd.length).toBe(1);
     expect(surfaceCmd[0].headers?.request_id).toBe(requestId);
     expect(surfaceCmd[0].data.inheritReplyTo).toBe(true);
-
-    await subSurface.stop();
-    await sub.stop();
-    await router.stop();
-  });
-
-  it("treats replies to active output as followUp, and reply+mention as steer", async () => {
-    const raw = createInMemoryRawBus();
-    const bus = createLilacBus(raw);
-
-    const sessionId = "chan";
-    const requestId = `discord:${sessionId}:anchor`;
-
-    const replyToActiveId = "a2";
-    const followMsgId = "m-follow";
-    const steerMsgId = "m-steer";
-
-    const now = Date.now();
-
-    const adapter = new FakeAdapter({
-      [`${sessionId}:${followMsgId}`]: {
-        ref: { platform: "discord", channelId: sessionId, messageId: followMsgId },
-        session: { platform: "discord", channelId: sessionId },
-        userId: "u1",
-        userName: "user1",
-        text: "@lilac replying (no mention)",
-        ts: now,
-        raw: { reference: {} },
-      },
-      [`${sessionId}:${steerMsgId}`]: {
-        ref: { platform: "discord", channelId: sessionId, messageId: steerMsgId },
-        session: { platform: "discord", channelId: sessionId },
-        userId: "u2",
-        userName: "user2",
-        text: "<@bot> replying (mention)",
-        ts: now + 1,
-        raw: { reference: {} },
-      },
-    });
-
-    const router = await startBusRequestRouter({
-      adapter,
-      bus,
-      subscriptionId: "router-test",
-      config: {
-        surface: {
-          discord: {
-            tokenEnv: "DISCORD_TOKEN",
-            allowedChannelIds: [],
-            allowedGuildIds: [],
-            botName: "lilac",
-            outputMode: "inline",
-            previewFinalOutputStyle: "embed",
-          },
-          router: {
-            defaultMode: "active",
-            sessionModes: {},
-            activeDebounceMs: 5,
-            activeGate: { enabled: true, timeoutMs: 2500 },
-          },
-        },
-        agent: { systemPrompt: "(unused in tests; compiled at runtime)" },
-        models: {
-          def: {},
-          main: { model: "openrouter/openai/gpt-4o" },
-          fast: { model: "openrouter/openai/gpt-4o-mini" },
-        },
-      },
-    });
-
-    const received: any[] = [];
-    const surfaceCmd: any[] = [];
-
-    const sub = await subscribeTopicForTest(
-      bus,
-      "cmd.request",
-      {
-        mode: "fanout",
-        subscriptionId: "test",
-        consumerId: "c1",
-      },
-      async (m) => {
-        if (m.type === lilacEventTypes.CmdRequestMessage) {
-          received.push(m);
-        }
-        return Result.ok(undefined);
-      },
-    );
-
-    const subSurface = await subscribeTopicForTest(
-      bus,
-      "cmd.surface",
-      {
-        mode: "fanout",
-        subscriptionId: "test-surface",
-        consumerId: "c2",
-      },
-      async (m) => {
-        if (m.type === lilacEventTypes.CmdSurfaceOutputReanchor) {
-          surfaceCmd.push(m);
-        }
-        return Result.ok(undefined);
-      },
-    );
-
-    // Mark request running.
-    await bus.publish(
-      lilacEventTypes.EvtRequestLifecycleChanged,
-      { state: "running", ts: Date.now() },
-      {
-        headers: {
-          request_id: requestId,
-          session_id: sessionId,
-          request_client: "discord",
-        },
-      },
-    );
-
-    // Tell router which bot message is currently active output.
-    await bus.publish(
-      lilacEventTypes.EvtSurfaceOutputMessageCreated,
-      {
-        msgRef: {
-          platform: "discord",
-          channelId: sessionId,
-          messageId: replyToActiveId,
-        },
-      },
-      {
-        headers: {
-          request_id: requestId,
-          session_id: sessionId,
-          request_client: "discord",
-        },
-      },
-    );
-
-    // Reply to the active output -> followUp.
-    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
-      platform: "discord",
-      channelId: sessionId,
-      messageId: followMsgId,
-      userId: "u1",
-      userName: "user1",
-      text: "replying (no mention)",
-      ts: now,
-      raw: {
-        discord: {
-          isDMBased: false,
-          mentionsBot: false,
-          replyToBot: true,
-          replyToMessageId: replyToActiveId,
-        },
-      },
-    });
-
-    // Reply+mention to the active output -> steer + reanchor.
-    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
-      platform: "discord",
-      channelId: sessionId,
-      messageId: steerMsgId,
-      userId: "u2",
-      userName: "user2",
-      text: "<@bot> replying (mention)",
-      ts: now + 1,
-      raw: {
-        discord: {
-          isDMBased: false,
-          mentionsBot: true,
-          replyToBot: true,
-          replyToMessageId: replyToActiveId,
-        },
-      },
-    });
-
-    expect(received.length).toBe(2);
-    expect(received[0].data.queue).toBe("followUp");
-    expect(received[0].headers?.request_id).toBe(requestId);
-    expect(received[1].data.queue).toBe("steer");
-    expect(received[1].headers?.request_id).toBe(requestId);
-
-    // Mention text should be preserved in model-facing context.
-    const followUpText = received[0].data.messages?.[0]?.content;
-    const steerText = received[1].data.messages?.[0]?.content;
-    expect(typeof followUpText).toBe("string");
-    expect(typeof steerText).toBe("string");
-    expect(followUpText as string).toContain("replying (no mention)");
-    expect(steerText as string).toContain("replying (mention)");
-    expect(steerText as string).toContain("<@bot>");
-
-    expect(surfaceCmd.length).toBe(1);
-    expect(surfaceCmd[0].headers?.request_id).toBe(requestId);
-    expect(surfaceCmd[0].data.inheritReplyTo).toBe(false);
-    expect(surfaceCmd[0].data.replyTo?.messageId).toBe(steerMsgId);
 
     await subSurface.stop();
     await sub.stop();

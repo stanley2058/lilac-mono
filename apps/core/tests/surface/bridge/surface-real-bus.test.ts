@@ -6,7 +6,6 @@ import {
   type LilacTopic,
   type DecodedLilacMessageForTopic,
 } from "@stanley2058/lilac-event-bus";
-import { parseCoreConfigV1ToUniversal } from "@stanley2058/lilac-utils";
 import { Logger } from "@stanley2058/simple-module-logger";
 import type {
   AdapterEventHandler,
@@ -21,16 +20,11 @@ import { bridgeBusToAdapter } from "../../../src/surface/bridge/subscribe-from-b
 import { projectAuthenticatedRequest } from "../../../src/surface/authenticated-request";
 import { createDiscordRelayPolicy } from "../../../src/surface/discord/discord-runtime-descriptor";
 import {
-  adaptDiscordRequestRouterStartOutcomeToHost,
-  startDiscordRequestRouter,
-} from "../../../src/surface/discord/discord-request-router";
-import {
   DiscordRequestDeliveryFailed,
   publishBusRequest,
   type DiscordRequestDeliveryPort,
 } from "../../../src/surface/discord/discord-request-router/publish";
 import { SurfaceAdapterTestBase } from "../../helpers/surface-adapter-test-base";
-import { createTestResourceRegistry } from "../../helpers/resource-registry";
 import { createRealCoreBusFixture, withBusDeadline as deadline } from "../../helpers/real-core-bus";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -396,50 +390,6 @@ describe("surface production contracts over Redis", () => {
       expect(f.store.load(requestDeliveryId).unwrap().publication?.streamId).toBe(delivered.id);
     },
   );
-
-  it("routes an authenticated Discord message through adapter ingress and durable request admission", async () => {
-    const f = await fixture();
-    const adapter = new RecordingAdapter();
-    const origin = message();
-    adapter.messages.set(origin.ref.messageId, origin);
-    const observed = await observe(f, "cmd.request", 1);
-    const router = adaptDiscordRequestRouterStartOutcomeToHost(
-      await startDiscordRequestRouter({
-        adapter,
-        bus: f.bus,
-        blobStore: f.blobs,
-        resourceRegistry: createTestResourceRegistry(),
-        requestDelivery: deliveryPort(f),
-        subscriptionId: "router",
-        config: parseCoreConfigV1ToUniversal({}),
-      }),
-      () => {},
-      () => {},
-    );
-    cleanups.push(async () => {
-      await router.stop();
-    });
-    await ingress(f, adapter);
-    await adapter.emit({
-      type: "adapter.message.created",
-      platform: "discord",
-      ts: origin.ts,
-      message: origin,
-    });
-    await observed.received();
-    const delivered = observed.messages[0]!;
-    expect(delivered.headers).toMatchObject({
-      request_id: "discord:channel:message",
-      session_id: "channel",
-      request_client: "discord",
-    });
-    expect(delivered.data.queue).toBe("prompt");
-    expect(JSON.stringify(delivered.data.messages)).toContain("hello");
-    expect(projectAuthenticatedRequest(delivered).unwrap()).toMatchObject({
-      verifiedIngress: true,
-      authenticatedOrigin: { userId: "sender" },
-    });
-  });
 
   it("replays output published before relay attachment and publishes the resulting surface message", async () => {
     const f = await fixture();

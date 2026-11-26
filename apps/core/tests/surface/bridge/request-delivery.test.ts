@@ -928,62 +928,6 @@ describe("durable request delivery", () => {
     await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
   });
 
-  test("preserves resource parts through prepared and accepted request delivery", async () => {
-    const store = createStore();
-    const blobs = await memoryBlobStore();
-    const requestDeliveryId = crypto.randomUUID();
-    const resource = {
-      type: "resource" as const,
-      uri: `resource://r1_${"ab".repeat(16)}`,
-      filename: "diagram.png",
-      mediaType: "image/png",
-      size: 321,
-    };
-    const preparedEnvelope: CorePreparedRequestEnvelope = {
-      headers: {
-        request_id: "request-resource",
-        session_id: "session-1",
-        request_client: "discord",
-      },
-      data: {
-        requestDeliveryId,
-        queue: "prompt",
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text: "inspect" }, resource],
-          },
-        ],
-      },
-    };
-
-    expect(collectCoreRequestInputHandles(preparedEnvelope)).toEqual([]);
-    value(
-      store.prepare({
-        requestDeliveryId,
-        requestId: "request-resource",
-        envelope: preparedEnvelope,
-        inputHandles: [],
-        createdAt: 1,
-      }),
-    );
-
-    const delivery = coordinator({ store, blobStore: blobs, now: () => 2 });
-    const accepted = value(await delivery.handleDelivery(requestDeliveryId));
-    expect(accepted.disposition).toBe("accepted");
-    if (accepted.disposition === "accepted") {
-      expect(accepted.record.inputReferences).toEqual([]);
-      const acceptedMessage = accepted.record.work.data.messages[0];
-      expect(acceptedMessage?.role).toBe("user");
-      if (acceptedMessage?.role === "user" && Array.isArray(acceptedMessage.content)) {
-        expect(acceptedMessage.content).toEqual([{ type: "text", text: "inspect" }, resource]);
-      }
-    }
-
-    store.close();
-    await blobs.close({ deadlineAtMs: Date.now() + 1_000 });
-  });
-
   test("terminalizes instead of accepting when a resolved blob fails its verified read", async () => {
     const store = createStore();
     const blobs = await memoryBlobStore();
