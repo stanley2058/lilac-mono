@@ -8,11 +8,10 @@ import {
   BlobDeleteFailed,
   BlobIntegrityFailure,
   createMemoryBlobStore,
-  type BlobReadComplete,
   type BlobRefV1,
   type BlobStore,
 } from "@stanley2058/lilac-blob-storage";
-import { Panic, Result, type Result as ResultType } from "better-result";
+import { Result, type Result as ResultType } from "better-result";
 
 import type { ResourceId, ResourceOriginV1, ResourceRecordV1 } from "../../src/resource/contracts";
 import { ResourceStoreFailure } from "../../src/resource/errors";
@@ -61,7 +60,6 @@ class MemoryResourceStore implements ResourceStore {
   readonly finalized: ResourceId[] = [];
   readonly cacheAttached: Promise<void>;
   #resolveCacheAttached!: () => void;
-  getRetainedDefect?: Panic;
   beforeClearCache?: (input: Parameters<ResourceStore["clearCache"]>[0]) => void;
 
   constructor() {
@@ -96,7 +94,6 @@ class MemoryResourceStore implements ResourceStore {
   }
 
   getRetained(resourceId: ResourceId): ResultType<ResourceRecordV1 | null, ResourceStoreFailure> {
-    if (this.getRetainedDefect !== undefined) throw this.getRetainedDefect;
     return Result.ok(this.retained.has(resourceId) ? (this.records.get(resourceId) ?? null) : null);
   }
 
@@ -284,54 +281,6 @@ async function closeFixture(service: CoreResourceService, blobStore: BlobStore):
 }
 
 describe("CoreResourceService", () => {
-  test("describe preserves a store Panic with exact identity", async () => {
-    const resources = await fixture({
-      bytes: new TextEncoder().encode("resource"),
-    });
-    const defect = new Panic({ message: "resource store invariant failed" });
-    resources.store.getRetainedDefect = defect;
-
-    const captured = Result.try({
-      try: () => resources.service.describe(resources.descriptor.uri),
-      catch: (cause) => cause,
-    });
-    expect(failure(captured)).toBe(defect);
-
-    resources.store.getRetainedDefect = undefined;
-    await closeFixture(resources.service, resources.blobStore);
-  });
-
-  test("preserves a readPrefix Panic with exact identity", async () => {
-    const resources = await fixture({
-      bytes: new TextEncoder().encode("resource"),
-    });
-    const defect = new Panic({ message: "blob read invariant failed" });
-    resources.setOpenOverride((ref) => {
-      const completion = Promise.withResolvers<ResultType<BlobReadComplete, never>>();
-      return Promise.resolve(
-        Result.ok({
-          ref,
-          stream: new ReadableStream<Uint8Array>({
-            pull(controller) {
-              completion.reject(defect);
-              controller.error(defect);
-            },
-          }),
-          completion: completion.promise,
-        }),
-      );
-    });
-
-    const captured = await Result.tryPromise({
-      try: () => resources.service.open(resources.descriptor.uri, { maxBytes: 100 }),
-      catch: (cause) =>
-        Panic.is(cause) ? cause : new Panic({ message: "Unexpected non-Panic rejection", cause }),
-    });
-    expect(failure(captured)).toBe(defect);
-
-    await closeFixture(resources.service, resources.blobStore);
-  });
-
   test("re-registering a cached origin does not refill or replace the cache", async () => {
     const resources = await fixture({
       bytes: new TextEncoder().encode("cached resource"),

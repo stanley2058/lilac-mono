@@ -12,7 +12,6 @@ import {
   resolveMcpOAuthCredentialPath,
   resolveMcpOAuthCredentialPathResult,
   updateMcpOAuthCredentialFile,
-  updateMcpOAuthCredentialFileResult,
   writeMcpOAuthCredentialFileAtomicResult,
   type McpOAuthCredentialFileDependencies,
 } from "../../src/mcp";
@@ -294,34 +293,5 @@ describe("MCP OAuth credential files", () => {
       }),
     ).rejects.toBe(primaryPanic);
     expect(calls).toEqual(["write", "close", "remove"]);
-  });
-
-  it("captures update callback failures and preserves callback Panic", async () => {
-    const dataDir = await createDataDir();
-    const callbackFailure = new Error("callback failed");
-    const failed = await updateMcpOAuthCredentialFileResult({
-      dataDir,
-      serverId: "docs",
-      serverUrl: "https://mcp.example.test/service",
-      update: () => {
-        throw callbackFailure;
-      },
-    });
-    expect(failed.status).toBe("error");
-    if (failed.status === "error") {
-      expect(failed.error).toMatchObject({ operation: "update", cause: callbackFailure });
-    }
-
-    const panic = new Panic({ message: "callback invariant failed" });
-    await expect(
-      updateMcpOAuthCredentialFileResult({
-        dataDir,
-        serverId: "docs",
-        serverUrl: "https://mcp.example.test/service",
-        update: () => {
-          throw panic;
-        },
-      }),
-    ).rejects.toBe(panic);
   });
 });

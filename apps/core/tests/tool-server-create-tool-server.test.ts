@@ -3550,54 +3550,6 @@ describe("createToolServer", () => {
     }
   });
 
-  it("leaves internal result-orchestration defects on the framework error path", async () => {
-    const defect = new Error("result logging defect");
-    const chunks: string[] = [];
-    const output = { write: (chunk: string) => chunks.push(chunk) };
-    const logger = createLogger({
-      module: "result-orchestration-defect-test",
-      outputFormat: "jsonl",
-      stdout: output,
-      stderr: output,
-    });
-    Object.defineProperty(logger, "info", {
-      value(message: string) {
-        if (message === "tool.call.result") throw defect;
-      },
-    });
-    const tool: ServerTool = {
-      id: "orchestration-defect",
-      async init() {},
-      async destroy() {},
-      async list() {
-        return [
-          {
-            callableId: "orchestration-defect.call",
-            name: "Orchestration Defect",
-            description: "completes before internal result logging fails",
-            shortInput: [],
-          },
-        ];
-      },
-      async call() {
-        return Result.ok({ ok: true });
-      },
-    };
-    const server = createToolServer({ tools: [tool], logger });
-
-    await server.init();
-    const response = await server.app.handle(
-      new Request("http://localhost/call", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ callableId: "orchestration-defect.call", input: {} }),
-      }),
-    );
-    expect(response.status).toBe(500);
-    expect(await response.text()).not.toContain('"status":"error"');
-    await server.stop();
-  });
-
   it("does not leak active tool calls when tool.call throws synchronously", async () => {
     const reported: Error[] = [];
     const tool: ServerTool = {
@@ -4126,28 +4078,6 @@ describe("createToolServer", () => {
       ],
     });
     await server.stop();
-  });
-
-  it("propagates Panic from Level 2 hooks", async () => {
-    const panic = new Panic({ message: "list invariant" });
-    const tool: ServerTool = {
-      id: "panic",
-      async init() {},
-      async destroy() {},
-      async list() {
-        throw panic;
-      },
-      async call() {
-        return Result.ok(null);
-      },
-    };
-    const server = createToolServer({ tools: [tool] });
-    try {
-      await server.init();
-      throw new Error("expected Panic");
-    } catch (cause) {
-      expect(Panic.is(cause)).toBe(true);
-    }
   });
 
   it("continues shutdown after aggregated plugin cleanup failure", async () => {

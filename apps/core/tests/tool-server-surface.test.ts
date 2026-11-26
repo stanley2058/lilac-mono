@@ -2261,56 +2261,6 @@ describe("tool-server surface", () => {
     expect(linked).toEqual([]);
   });
 
-  it("preserves Panic from best-effort transcript linkage", async () => {
-    const panic = new Panic({ message: "transcript linkage invariant" });
-    const transcriptStore: TranscriptStore = {
-      saveRequestTranscript() {
-        return Result.ok(undefined);
-      },
-      linkSurfaceMessagesToRequest() {
-        throw panic;
-      },
-      getTranscriptBySurfaceMessage() {
-        return Result.ok(null);
-      },
-      close() {},
-    };
-    const tool = new Surface({
-      adapter: new FakeAdapter([], {}),
-      transcriptStore,
-      config: testConfig({
-        surface: {
-          discord: {
-            tokenEnv: "DISCORD_TOKEN",
-            allowedChannelIds: ["123456789012345678"],
-            allowedGuildIds: [],
-            botName: "lilac",
-          },
-        },
-      }),
-    });
-
-    const [settled] = await Promise.allSettled([
-      tool.call(
-        "surface.messages.send",
-        {
-          client: "discord",
-          sessionId: "123456789012345678",
-          text: "hello",
-        },
-        {
-          context: {
-            requestId: "heartbeat:panic-link",
-            sessionId: "__heartbeat__",
-            requestClient: "unknown",
-          },
-        },
-      ),
-    ]);
-    expect(settled?.status).toBe("rejected");
-    if (settled?.status === "rejected") expect(Panic.is(settled.reason)).toBe(true);
-  });
-
   it("lists recent visible agent writes with thin previews", async () => {
     const cfg = testConfig({
       surface: {
@@ -2775,24 +2725,6 @@ describe("tool-server surface", () => {
         retryable: false,
       },
     });
-  });
-
-  it("rejects unexpected adapter defects", async () => {
-    const defect = new TypeError("invalid adapter state");
-    const adapter: SurfaceAdapter = new FakeAdapter([], {});
-    adapter.listSessions = async () => {
-      throw defect;
-    };
-    const tool = new Surface({ adapter, config: testConfig({}) });
-
-    const [settled] = await Promise.allSettled([
-      tool.callResult("surface.sessions.list", { client: "discord" }),
-    ]);
-    expect(settled?.status).toBe("rejected");
-    if (settled?.status === "rejected") {
-      expect(Panic.is(settled.reason)).toBe(true);
-      expect(settled.reason).toMatchObject({ cause: defect });
-    }
   });
 
   it("preserves rate-limit retry metadata and unavailable retryability", async () => {

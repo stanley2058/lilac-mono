@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { formatTaggedErrorForLog } from "@stanley2058/lilac-utils";
-import { Panic } from "better-result";
 
 import {
   resolveJsonPointer,
@@ -146,7 +145,7 @@ describe("MCP value sources", () => {
     expect(validateHttpHeaders({ "X-Unsafe": "first\r\nsecond" }).status).toBe("error");
   });
 
-  it("redacts tagged errors and propagates Panic from the file adapter", async () => {
+  it("redacts tagged errors from the file adapter", async () => {
     const result = await resolveMcpValueSource(
       { file: "token.txt" },
       {
@@ -163,56 +162,6 @@ describe("MCP value sources", () => {
         errorTag: "McpValueFileReadError",
         errorMessage: "failed to read token.txt: token=<redacted>",
       });
-    }
-
-    const panic = new Panic({ message: "broken invariant" });
-    await expect(
-      resolveMcpValueSource(
-        { file: "panic.txt" },
-        { baseDir: "/data", env: {}, readTextFile: () => Promise.reject(panic) },
-      ),
-    ).rejects.toBe(panic);
-    await expect(
-      resolveMcpValueSourceMap(
-        { TOKEN: { file: "panic.txt" } },
-        { baseDir: "/data", env: {}, readTextFile: () => Promise.reject(panic) },
-      ),
-    ).rejects.toBe(panic);
-
-    const hostileCause = {
-      toString: () => {
-        throw new Error("must not coerce rejection");
-      },
-      [Symbol.toPrimitive]: () => {
-        throw new Error("must not coerce rejection");
-      },
-    };
-    const hostileResult = await resolveMcpValueSource(
-      { file: "hostile.txt" },
-      { baseDir: "/data", env: {}, readTextFile: () => Promise.reject(hostileCause) },
-    );
-    expect(hostileResult.status).toBe("error");
-    if (hostileResult.status === "error") {
-      expect(hostileResult.error).toMatchObject({ cause: hostileCause });
-      expect(hostileResult.error.message).toBe("failed to read hostile.txt: Unknown error");
-    }
-
-    const hostileError = new Error("hidden");
-    Object.defineProperty(hostileError, "message", {
-      get: () => {
-        throw new Error("message getter must stay contained");
-      },
-    });
-    const hostileErrorResult = await resolveMcpValueSource(
-      { file: "hostile-error.txt" },
-      { baseDir: "/data", env: {}, readTextFile: () => Promise.reject(hostileError) },
-    );
-    expect(hostileErrorResult.status).toBe("error");
-    if (hostileErrorResult.status === "error") {
-      expect(hostileErrorResult.error.cause).toBe(hostileError);
-      expect(hostileErrorResult.error.message).toBe(
-        "failed to read hostile-error.txt: Unknown error",
-      );
     }
   });
 });

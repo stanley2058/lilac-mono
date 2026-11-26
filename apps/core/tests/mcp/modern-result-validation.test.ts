@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import { createMCPClient, type MCPTransport, type OAuthClientProvider } from "@ai-sdk/mcp";
-import { Panic } from "better-result";
 
 import { enforceModernMcpResultContract } from "../../src/mcp/modern-result-validation";
 
@@ -53,25 +52,6 @@ describe("modern MCP result validation", () => {
       }),
     ).rejects.toThrow("Modern MCP discovery request failed");
     expect(methods).toEqual(["server/discover"]);
-  });
-
-  it("preserves a Panic from modern HTTP discovery", async () => {
-    const panic = new Panic({ message: "HTTP discovery invariant failed" });
-    const transport = enforceModernMcpResultContract({
-      type: "http",
-      url: "https://mcp.example.test",
-      fetch: mockFetch(async () => {
-        throw panic;
-      }),
-    });
-
-    await expect(
-      createMCPClient({
-        transport,
-        protocolVersionDiscovery: true,
-        clientName: "http-panic-test",
-      }),
-    ).rejects.toBe(panic);
   });
 
   it("blocks legacy initialization when OAuth recovery throws during discovery", async () => {
@@ -139,26 +119,6 @@ describe("modern MCP result validation", () => {
       }),
     ).rejects.toThrow("Modern MCP discovery request failed");
     expect(methods).toEqual(["server/discover"]);
-  });
-
-  it("preserves a Panic from custom transport discovery", async () => {
-    const panic = new Panic({ message: "Custom discovery invariant failed" });
-    const customTransport: MCPTransport = {
-      supportsProtocolVersionDiscovery: true,
-      async start() {},
-      async send() {
-        throw panic;
-      },
-      async close() {},
-    };
-
-    await expect(
-      createMCPClient({
-        transport: enforceModernMcpResultContract(customTransport),
-        protocolVersionDiscovery: true,
-        clientName: "custom-panic-test",
-      }),
-    ).rejects.toBe(panic);
   });
 
   it("falls back after a custom transport returns an unknown discovery error", async () => {

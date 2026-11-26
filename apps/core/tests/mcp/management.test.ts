@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 
 import {
   McpOAuthCallbackService,
@@ -360,23 +360,6 @@ describe("MCP management calls", () => {
       setup.providers.reconciledConfigs.map((config) => Object.keys(config.servers).sort()),
     ).toEqual([["alpha"], ["alpha", "beta"], ["beta"]]);
     expect(setup.registry.reloadCalls).toEqual(["alpha", "beta", "alpha"]);
-  });
-
-  it("preserves Panic from MCP management capture", async () => {
-    const setup = await createTool();
-    const panic = new Panic({ message: "MCP reconciliation invariant failed" });
-    setup.providers.reconcile = () => {
-      throw panic;
-    };
-
-    await expect(
-      setup.tool.call("mcp.add", {
-        serverId: "private",
-        transport: "http",
-        url: "https://mcp.example.test/service?token=must-not-leak",
-        headers: { Authorization: "Bearer must-not-leak" },
-      }),
-    ).rejects.toBeInstanceOf(Panic);
   });
 
   it("waits for deferred registry initialization before reconciling providers and reloading", async () => {

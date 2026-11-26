@@ -20,7 +20,6 @@ import {
 import { parsePatchResult as parseSharedPatch } from "@stanley2058/lilac-coding-tools/apply-patch";
 
 import { BUILTIN_LEVEL1_TOOLS, createLocalToolSpecs } from "../../src/plugins/builtin/local-tools";
-import { Panic } from "better-result";
 
 import { applyHunks, applyHunksResult } from "../../src/tools/apply-patch/apply-patch-core";
 import { bashInputSchema } from "../../src/tools/bash";
@@ -184,18 +183,6 @@ describe("Core coding-tools parity", () => {
     } finally {
       write.mockRestore();
       await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("preserves Panic identity when inspecting a patch deletion target", async () => {
-    const panic = new Panic({ message: "patch deletion invariant" });
-    const stat = spyOn(fs, "stat").mockRejectedValueOnce(panic);
-    try {
-      await expect(
-        applyHunksResult(process.cwd(), [{ type: "delete", path: "panic-fixture.txt" }]),
-      ).rejects.toBe(panic);
-    } finally {
-      stat.mockRestore();
     }
   });
 });

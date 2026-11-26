@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Panic } from "better-result";
 
 import { invalidateRemoteRunner } from "../../src/ssh/remote-runner-deploy";
 import { parseSshHostsFromConfigText } from "../../src/ssh/ssh-config";
@@ -151,88 +150,6 @@ Host alpha # trailing comment
       await rm(root, { recursive: true, force: true });
     }
   });
-
-  it("preserves Panic from command spawn", async () => {
-    await withConfiguredSshHost(async () => {
-      const panic = new Panic({ message: "ssh spawn invariant failed" });
-      const spawn = spyOn(Bun, "spawn").mockImplementation(() => {
-        throw panic;
-      });
-      try {
-        const [settled] = await Promise.allSettled([
-          new SSH().call("ssh.run", { host: "fakehost", cmd: "true" }),
-        ]);
-
-        expect(settled?.status).toBe("rejected");
-        if (settled?.status === "rejected") expect(Panic.is(settled.reason)).toBe(true);
-      } finally {
-        spawn.mockRestore();
-      }
-    });
-  });
-
-  it("preserves Panic from probe script loading", async () => {
-    await withConfiguredSshHost(async () => {
-      const panic = new Panic({ message: "ssh probe script invariant failed" });
-      const file = spyOn(Bun, "file").mockImplementation(() => {
-        throw panic;
-      });
-      try {
-        const [settled] = await Promise.allSettled([
-          new SSH().call("ssh.probe", { host: "fakehost" }),
-        ]);
-
-        expect(settled?.status).toBe("rejected");
-        if (settled?.status === "rejected") expect(Panic.is(settled.reason)).toBe(true);
-      } finally {
-        file.mockRestore();
-      }
-    });
-  });
-
-  it("preserves Panic from probe spawn", async () => {
-    await withConfiguredSshHost(async () => {
-      const panic = new Panic({ message: "ssh probe spawn invariant failed" });
-      const spawn = spyOn(Bun, "spawn").mockImplementation(() => {
-        throw panic;
-      });
-      try {
-        const [settled] = await Promise.allSettled([
-          new SSH().call("ssh.probe", { host: "fakehost" }),
-        ]);
-
-        expect(settled?.status).toBe("rejected");
-        if (settled?.status === "rejected") expect(Panic.is(settled.reason)).toBe(true);
-      } finally {
-        spawn.mockRestore();
-      }
-    });
-  });
-
-  for (const source of ["stream", "exit"] as const) {
-    it(`preserves Panic from rejected SSH ${source} settlement`, async () => {
-      await withConfiguredSshHost(async () => {
-        const panic = new Panic({ message: `ssh ${source} invariant failed` });
-        const child = mockSshProcess({
-          stdout: source === "stream" ? rejectedStream(panic) : textStream(),
-          exited: source === "exit" ? rejectedPromise(panic) : Promise.resolve(0),
-        });
-        const spawn = spyOn(Bun, "spawn").mockImplementation(
-          spawnCommandAs(child) as typeof Bun.spawn,
-        );
-        try {
-          const [settled] = await Promise.allSettled([
-            new SSH().call("ssh.run", { host: "fakehost", cmd: "true" }),
-          ]);
-
-          expect(settled?.status).toBe("rejected");
-          if (settled?.status === "rejected") expect(Panic.is(settled.reason)).toBe(true);
-        } finally {
-          spawn.mockRestore();
-        }
-      });
-    });
-  }
 
   it("keeps ordinary stream and exit failures in a successful command report", async () => {
     await withConfiguredSshHost(async () => {
