@@ -493,7 +493,7 @@ Persisted formats are trust boundaries. Their codecs distinguish current, migrat
 - Core's Level 2 server has no public authentication contract and must remain on a trusted network.
 - Plugins, native tools, workflow agent processes, and other same-user processes are trusted code with service-user authority unless an explicit restricted or OS-isolated boundary says otherwise.
 
-Run `bun run lint:architecture` for the semantic and production-syntax architecture gate. The root `bun run check` overlaps generated-code, lint, tests, typecheck, architecture, and format gates; `bun run ci` runs the conservative serial sequence.
+Run `bun run lint:architecture` for the semantic and production-syntax architecture gate. The root `bun run check` runs the generated-code, lint, test, typecheck, architecture, and format gates concurrently and skips gates whose inputs match a recorded pass; `bun run ci` runs the same gates without reuse, split across CI jobs by `scripts/run-gates.ts --group` and `--shard`.
 
 ## Proactive heartbeat
 
