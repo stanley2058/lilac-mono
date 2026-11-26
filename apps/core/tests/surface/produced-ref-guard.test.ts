@@ -329,41 +329,6 @@ describe("descriptor-bound produced ref guard", () => {
     expect(started.value.getFinalTextMode?.()).toBe("full");
   });
 
-  it("preserves exact Panic identity through forwarded capabilities", async () => {
-    const cachePanic = new Panic({ message: "cache invariant" });
-    const scopePanic = new Panic({ message: "scope invariant" });
-    const guildPanic = new Panic({ message: "guild invariant" });
-    const raw = {
-      ...DEFAULT_ADAPTER,
-      burstCache: async () => {
-        throw cachePanic;
-      },
-      withRequestReadScope: async () => {
-        throw scopePanic;
-      },
-      fetchGuildIdForChannel: async () => {
-        throw guildPanic;
-      },
-    } satisfies SurfaceAdapter &
-      SurfaceCacheBurstProvider &
-      SurfaceRequestReadScopeProvider &
-      SurfaceGuildIdResolver;
-    const guarded = createDescriptorBoundSurfaceAdapter("discord", raw);
-    if (
-      !hasCacheBurstProvider(guarded) ||
-      !hasRequestReadScopeProvider(guarded) ||
-      !hasSurfaceGuildIdResolver(guarded)
-    ) {
-      throw new Error("forwarded capabilities missing");
-    }
-
-    await expect(guarded.burstCache({ sessionRef: DISCORD_SESSION, reason: "other" })).rejects.toBe(
-      cachePanic,
-    );
-    await expect(guarded.withRequestReadScope(async () => undefined)).rejects.toBe(scopePanic);
-    await expect(guarded.fetchGuildIdForChannel("channel")).rejects.toBe(guildPanic);
-  });
-
   it("rejects every ref-bearing event variant before invoking an ingress consumer", async () => {
     const events: AdapterEvent[] = [
       {

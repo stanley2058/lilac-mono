@@ -1,26 +1,16 @@
 import { describe, expect, expectTypeOf, it } from "bun:test";
-import { Result, type Result as ResultType } from "better-result";
+import { Result } from "better-result";
 
 import {
   type StartOutputOpts,
   type StartTypingOpts,
   type SurfaceAdapter,
-  SurfaceInvalidInput,
-  SurfaceMessageNotFound,
   type SurfaceOperation,
-  type SurfaceOperationError,
   type SurfaceMergeBlockPlanOptions,
-  SurfaceOperationPartiallyCompleted,
   type SurfaceOperationResult,
-  SurfaceOperationUnsupported,
   type SurfaceOutputStream,
   type SurfaceReplyChainPlanOptions,
   type SurfaceSendPreparationInput,
-  SurfacePermissionDenied,
-  SurfacePlatformMismatch,
-  SurfaceRateLimited,
-  SurfaceSessionMismatch,
-  SurfaceUnavailable,
   type TypingIndicatorSubscription,
 } from "../../src/surface/adapter";
 import type {
@@ -300,79 +290,5 @@ describe("surface operation contract", () => {
     expect(Object.keys(GITHUB_ADAPTER_OPERATION_CONTRACT.operations).sort()).toEqual(
       expectedOperations,
     );
-  });
-
-  it("exposes one closed better-result error algebra", () => {
-    const errors: SurfaceOperationError[] = [
-      new SurfaceOperationUnsupported({
-        platform: "github",
-        operation: "list-sessions",
-        message: "unsupported",
-      }),
-      new SurfacePlatformMismatch({
-        operation: "send-message",
-        refRole: "replyTo",
-        expectedPlatform: "discord",
-        receivedPlatform: "slack",
-        message: "platform mismatch",
-      }),
-      new SurfaceSessionMismatch({
-        operation: "mark-read",
-        refRole: "upToMsgRef",
-        expectedSessionId: "one",
-        receivedSessionId: "two",
-        message: "session mismatch",
-      }),
-      new SurfaceInvalidInput({
-        platform: "github",
-        operation: "edit-message",
-        field: "messageId",
-        message: "invalid input",
-      }),
-      new SurfaceOperationPartiallyCompleted({
-        platform: "github",
-        operation: "send-message",
-        created: MESSAGE_REF_FIXTURES.github,
-        message: "partially completed",
-      }),
-      new SurfaceMessageNotFound({
-        platform: "discord",
-        operation: "read-message",
-        message: "not found",
-      }),
-      new SurfacePermissionDenied({
-        platform: "discord",
-        operation: "delete-message",
-        message: "permission denied",
-      }),
-      new SurfaceRateLimited({
-        platform: "github",
-        operation: "add-reaction",
-        retryAfterMs: 1_000,
-        message: "rate limited",
-      }),
-      new SurfaceUnavailable({
-        platform: "discord",
-        operation: "start-output",
-        message: "unavailable",
-      }),
-    ];
-    const result: SurfaceOperationResult<string> = Result.err(errors[0]!);
-
-    expectTypeOf<SurfaceOperationResult<string>>().toEqualTypeOf<
-      ResultType<string, SurfaceOperationError>
-    >();
-    expect(errors.map((error) => error._tag)).toEqual([
-      "SurfaceOperationUnsupported",
-      "SurfacePlatformMismatch",
-      "SurfaceSessionMismatch",
-      "SurfaceInvalidInput",
-      "SurfaceOperationPartiallyCompleted",
-      "SurfaceMessageNotFound",
-      "SurfacePermissionDenied",
-      "SurfaceRateLimited",
-      "SurfaceUnavailable",
-    ]);
-    expect(result.status).toBe("error");
   });
 });

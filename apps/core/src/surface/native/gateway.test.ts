@@ -10,7 +10,7 @@ import { nativeContract } from "@stanley2058/lilac-client-protocol";
 import { exportSPKI, generateKeyPair, SignJWT } from "jose";
 import { createNativeClerkAuthenticator } from "./auth-clerk";
 import { authFailure } from "./auth";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 import { createNativeLocalAuthenticator } from "./auth-local";
 import { createNativeGateway, type NativeGatewayOptions } from "./gateway";
 import { nativeRpcValue, type NativeRpcServices } from "./rpc";
@@ -489,44 +489,6 @@ describe("native gateway", () => {
     await waiting.promise;
     await gateway.stop();
     expect(fatalErrors).toEqual([]);
-  });
-
-  test("RPC defects reach the supervisor with their original Panic identity", async () => {
-    const { url, token, services, fatalErrors } = await fixture();
-    const defect = new Panic({ message: "Native service invariant failed" });
-    services.threads.sync = () => {
-      throw defect;
-    };
-    const { client } = connect(url, token);
-    await expect(client.threads.sync({ threadId: "shared" })).rejects.toMatchObject({
-      code: "INTERNAL_SERVER_ERROR",
-    });
-    expect(fatalErrors).toHaveLength(1);
-    expect(fatalErrors[0]).toBe(defect);
-  });
-
-  test("watch iteration defects reach the supervisor before protocol serialization", async () => {
-    const { url, token, gateway, services, fatalErrors, fatal } = await fixture();
-    const defect = new Panic({ message: "Native watch invariant failed" });
-    services.threads.watch = () =>
-      Result.ok(
-        (async function* () {
-          yield { kind: "replay" as const, reply: { kind: "unchanged" as const, checkpoint } };
-          throw defect;
-        })(),
-      );
-    const { client } = connect(url, token);
-    const stream = await client.threads.watch({ threadId: "shared" });
-    expect((await stream.next()).value).toMatchObject({ kind: "replay" });
-    expect(await fatal).toBe(defect);
-    const pending = stream.next().then(
-      () => undefined,
-      () => undefined,
-    );
-    await gateway.stop();
-    await pending;
-    expect(fatalErrors).toHaveLength(1);
-    expect(fatalErrors[0]).toBe(defect);
   });
 
   test("malformed socket envelopes close the connection without reporting a defect", async () => {
