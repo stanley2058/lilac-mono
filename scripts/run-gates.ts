@@ -7,7 +7,7 @@ import path from "node:path";
  * that already passed. `ci` never reuses results; `--group` and `--shard` split it across CI jobs.
  */
 
-export type GateGroup = "static" | "core" | "tests";
+export type GateGroup = "static" | "architecture" | "core" | "tests";
 
 export type Gate = {
   readonly id: string;
@@ -57,7 +57,8 @@ export function gateSettings(mode: Options["mode"], cpus = CPUS) {
     // Six concurrent gates saturated a 32-core machine; more ran slower.
     pool: clamp(cpus / 5, 2, 6),
     coreTestWorkers: mode === "ci" ? clamp(cpus, 2, 16) : clamp(cpus / 2, 2, 16),
-    architectureWorkers: clamp(cpus / 8, 1, 4),
+    // In CI the architecture lint has a runner to itself and no warm cache.
+    architectureWorkers: mode === "ci" ? clamp(cpus, 1, 4) : clamp(cpus / 8, 1, 4),
   };
 }
 
@@ -108,7 +109,7 @@ export function buildGates(
     script("lint oxlint", "static", "lint:oxlint", 30),
     {
       id: "lint architecture",
-      group: "static",
+      group: "architecture",
       command: [
         "bun",
         "scripts/architecture/runner.ts",
@@ -280,7 +281,6 @@ const RESOLVE_SUFFIXES = ["", ".ts", ".tsx", ".js", ".mjs", ".json", "/index.ts"
 async function referencedWorkspaces(
   dir: string,
   byWorkspace: ReadonlyMap<string, readonly string[]>,
-  byDir: ReadonlyMap<string, Workspace>,
   dirByPackage: ReadonlyMap<string, string>,
 ): Promise<string[]> {
   const files = byWorkspace.get(dir) ?? [];
@@ -349,7 +349,7 @@ export async function workspaceInputs(
   const dirByPackage = new Map(workspaces.map((workspace) => [workspace.name, workspace.dir]));
   const references = new Map<string, string[]>();
   for (const dir of byDir.keys())
-    references.set(dir, await referencedWorkspaces(dir, byWorkspace, byDir, dirByPackage));
+    references.set(dir, await referencedWorkspaces(dir, byWorkspace, dirByPackage));
   return new Map([...byDir.keys()].map((dir) => [dir, workspaceClosure([dir], byDir, references)]));
 }
 
@@ -503,17 +503,22 @@ async function recordDurations(
   await writeFile(path.join(CACHE_DIR, "durations.json"), `${JSON.stringify(durations)}\n`);
 }
 
+const GATE_GROUPS: readonly GateGroup[] = ["static", "architecture", "core", "tests"];
+
+function isGateGroup(value: string): value is GateGroup {
+  return (GATE_GROUPS as readonly string[]).includes(value);
+}
+
 export function parseOptions(argv: readonly string[]): Options {
   const [mode, ...flags] = argv;
   if (mode !== "check" && mode !== "ci")
     throw new Error(
-      "Usage: run-gates.ts check|ci [--group=static|core|tests] [--shard=N/M] [--no-reuse]",
+      "Usage: run-gates.ts check|ci [--group=static|architecture|core|tests] [--shard=N/M] [--no-reuse]",
     );
   const value = (name: string) =>
     flags.find((flag) => flag.startsWith(`--${name}=`))?.slice(name.length + 3);
   const group = value("group");
-  if (group !== undefined && group !== "static" && group !== "core" && group !== "tests")
-    throw new Error(`Unknown gate group: ${group}`);
+  if (group !== undefined && !isGateGroup(group)) throw new Error(`Unknown gate group: ${group}`);
   const shard = value("shard");
   if (shard !== undefined && !/^\d+\/\d+$/u.test(shard))
     throw new Error(`Shard must look like 1/3: ${shard}`);

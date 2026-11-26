@@ -29,6 +29,21 @@ jobs:
       - name: Run static gates
         run: bun scripts/run-gates.ts ci --group=static
 
+  # The architecture lint takes most of the static time on a cold runner, so it gets its own.
+  architecture:
+    name: Architecture lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up the workspace
+        uses: ./.github/actions/setup-workspace
+
+      - name: Run the architecture lint
+        run: bun scripts/run-gates.ts ci --group=architecture
+
   core-tests:
     name: Core tests (${{ matrix.shard }}/3)
     runs-on: ubuntu-26.04
@@ -158,7 +173,7 @@ jobs:
   source-checks:
     name: Source checks
     if: always()
-    needs: [static, core-tests, workspace-tests, e2e]
+    needs: [static, architecture, core-tests, workspace-tests, e2e]
     runs-on: ubuntu-26.04
     steps:
       - name: Require every source job to pass

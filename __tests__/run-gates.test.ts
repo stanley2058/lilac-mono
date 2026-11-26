@@ -40,7 +40,7 @@ describe("check gates", () => {
       coreTestWorkers: 16,
       architectureWorkers: 4,
     });
-    expect(gateSettings("ci", 4)).toEqual({ pool: 2, coreTestWorkers: 4, architectureWorkers: 1 });
+    expect(gateSettings("ci", 4)).toEqual({ pool: 2, coreTestWorkers: 4, architectureWorkers: 4 });
   });
 });
 
