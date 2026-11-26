@@ -45,6 +45,7 @@ const CACHE_DIR = path.join(ROOT, "node_modules/.cache/lilac-gates");
 const CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const WORKSPACE_ROOTS = ["apps", "packages"] as const;
 // Inputs that change a test's behavior without changing a file.
+const SHARED_EXCLUDE = /(?:^\.github\/|\.md$)/u;
 const KEY_ENV = /^(REDIS_URL|LILAC_[A-Z0-9_]+)$/u;
 
 const CPUS = availableParallelism();
@@ -354,7 +355,10 @@ async function gateKeys(
   workspaces: readonly Workspace[],
 ): Promise<Map<Gate, string>> {
   const digests = await digestFiles(await inputFiles());
-  const { byWorkspace, shared } = groupByWorkspace(digests.keys());
+  const grouped = groupByWorkspace(digests.keys());
+  const { byWorkspace } = grouped;
+  // No workspace reads root Markdown or workflow files; repository-wide gates still hash them.
+  const shared = grouped.shared.filter((file) => !SHARED_EXCLUDE.test(file));
   const inputs = await workspaceInputs(workspaces, digests.keys());
   const environment = Object.entries(process.env)
     .filter(([name]) => KEY_ENV.test(name))

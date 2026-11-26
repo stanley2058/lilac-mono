@@ -153,7 +153,8 @@ changes before every commit.
 
 `check` sizes its concurrency from the CPU count and skips a gate whose inputs match a run that
 already passed. A workspace's typecheck and tests read that workspace, the workspaces it declares or
-reaches by relative import or quoted file path, and every file outside `apps/` and `packages/`.
+reaches by relative import or quoted file path, and every file outside `apps/` and `packages/`
+except Markdown and `.github/`.
 Other gates read the whole repository. Passes are recorded under `node_modules/.cache/lilac-gates/`.
 `bun scripts/run-gates.ts check --no-reuse` runs everything again. Architecture-controlled changes also need the checks and registrations
 described in [the architecture gate guide](scripts/architecture/README.md).
