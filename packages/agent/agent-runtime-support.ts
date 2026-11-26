@@ -293,6 +293,8 @@ export type AgentEvent<TOOLS extends ToolSet = ToolSet> =
       messages: ModelMessage[];
       previousMessageCount: number;
     }
+  /** Queued steering, follow-up, or interrupt inputs were appended to the transcript. */
+  | { type: "inputs_applied"; inputIds: AgentInputQueueId[] }
   /** A message was appended to the transcript (or assistant streaming started). */
   | { type: "message_start"; message: ModelMessage }
   /** Incremental assistant updates (text/reasoning/toolcall deltas). */

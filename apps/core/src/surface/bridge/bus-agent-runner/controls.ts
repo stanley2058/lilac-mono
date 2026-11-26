@@ -75,6 +75,7 @@ export async function applyToRunningAgent(
 
   const promptWhileIdle = () => {
     retainAppliedControl({ kind: "canonical" });
+    activeRun?.nativeOutput?.input(userInputText(entry.messages));
     void observePrompt();
     notifyWaiters?.();
 
@@ -135,6 +136,7 @@ export async function applyToRunningAgent(
           // Earlier controls in this session may have held the queue until the run ended.
           if (!target.isCurrent() || !target.acceptsInput()) return target.dropEnded();
           retainAppliedControl({ kind: "canonical" });
+          activeRun?.nativeOutput?.input(userInputText(entry.messages));
           await agent.interrupt(merged);
           notifyWaiters?.();
         });
@@ -185,6 +187,21 @@ export async function applyToRunningAgent(
       return _exhaustive;
     }
   }
+}
+
+/** The text of a request's user messages, as the native output shows a prompt or steer. */
+export function userInputText(messages: readonly ModelMessage[]): string {
+  return messages
+    .filter((message) => message.role === "user")
+    .map((message) =>
+      typeof message.content === "string"
+        ? message.content
+        : message.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join(""),
+    )
+    .join("\n\n");
 }
 
 export function mergeToSingleUserMessage(messages: ModelMessage[]): ModelMessage {

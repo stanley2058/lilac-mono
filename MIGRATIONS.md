@@ -304,6 +304,16 @@ Before rollback, let the upgraded consumers finish pending resets and stop the p
 the matching pre-upgrade Redis and database backups together if an older consumer would replay
 retained reset events carrying either field.
 
+### Subagent steers in native output
+
+`evt.native.output` adds an `input` payload. Core publishes it when a subagent run takes a steer or
+follow-up mid-response, and the native projection shows it as a steer in the subagent panel. Older
+strict decoders reject the new payload type, so drain native work and upgrade the projection consumer
+with the runner. Opening an ended subagent panel also inserts the steers its stored stream lacks from
+the saved transcript, rewriting that stream once. Native schema versions are unchanged. Before rollback,
+stop producers and restore matching Redis backups if an older consumer would replay retained `input`
+events.
+
 ### Native computer viewer through Core
 
 `computer.read.desktop.url` can now be a root-relative `/computer.html?...` URL. Native web resolves

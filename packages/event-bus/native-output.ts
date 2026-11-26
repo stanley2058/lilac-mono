@@ -33,6 +33,12 @@ export const nativeOutputPayloadSchema = z.discriminatedUnion("type", [
     incomplete: z.boolean(),
   }),
   z.strictObject({
+    type: z.literal("input"),
+    stepId: id,
+    position,
+    text: z.string(),
+  }),
+  z.strictObject({
     type: z.literal("activity"),
     activityId: id,
     stepId: id,

@@ -1,4 +1,5 @@
 import { discordSkippedReply, skipReplyTool } from "../../../src/tools/skip-reply";
+import { createNativeOutputPublisher } from "../../../src/surface/native/output";
 import {
   AgentRunJournalSqliteFailure,
   type AgentRunCheckpointV1,
@@ -27,6 +28,7 @@ import {
   lilacEventTypes,
   outReqTopic,
   type CoreLineageManifestV2,
+  type NativeOutputEvent,
   type Message,
 } from "@stanley2058/lilac-event-bus";
 import { createLogger, parseCoreConfigV2ToUniversal } from "@stanley2058/lilac-utils";
@@ -2749,6 +2751,89 @@ describe("startBusAgentRunner production path", () => {
       await lifecycle.stop();
       await runner.stop();
       await requestMessageCache.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+
+  it("shows a steer in native output where the agent reads it", async () => {
+    const config = parseCoreConfigV2ToUniversal({});
+    config.models.main = { model: "openai/steer-native-output" };
+    const bus = createLilacBus(createInMemoryRawBus());
+    const toolEntered = deferred<void>();
+    const releaseTool = deferred<void>();
+    const pluginManager = corePrimaryTestPluginManager(
+      undefined,
+      level1TestToolset({
+        builtinExecute: async () => {
+          toolEntered.resolve(undefined);
+          await releaseTool.promise;
+          return "tool complete";
+        },
+      }),
+    );
+    const payloads: NativeOutputEvent["payload"][] = [];
+    let modelCalls = 0;
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "steer-native-output",
+      reportFatalPanic: () => undefined,
+      config,
+      pluginManager,
+      issueControlCapability: () => ({ capability: "steer-capability", principal: null }),
+      createNativeOutput: ({ requestId }) =>
+        createNativeOutputPublisher({
+          requestId,
+          threadId: "thread",
+          turnId: "turn",
+          generation: 0,
+          attemptId: "attempt",
+          mode: "complete",
+          publish: async (event) => {
+            payloads.push(event.payload);
+            return Result.ok(undefined);
+          },
+        }),
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          model: new MockLanguageModelV4({
+            modelId: "steer-native-output",
+            doStream: async () => {
+              modelCalls += 1;
+              return modelCalls === 1
+                ? level1ToolCallStep([{ toolCallId: "active-tool", toolName: "builtin" }])
+                : level1TextStep("steered response");
+            },
+          }),
+        }),
+    });
+    const sessionId = "steer-native-output";
+    const requestId = `github:${sessionId}:input`;
+    const lifecycle = await observeRequestLifecycle(bus, requestId);
+    try {
+      await publishRunnerRequest({ bus, requestId, sessionId, text: "run the tool" });
+      await toolEntered.promise;
+      await publishRunnerRequest({
+        bus,
+        requestId,
+        sessionId,
+        queue: "steer",
+        text: "use the result carefully",
+      });
+      releaseTool.resolve(undefined);
+
+      await expect(lifecycle.terminal).resolves.toBe("resolved");
+      const order = payloads.flatMap((payload) => {
+        if (payload.type === "activity" && payload.state !== "start") return ["tool"];
+        if (payload.type === "input" || payload.type === "text") return [payload.text];
+        return [];
+      });
+      expect(order).toEqual(["tool", "use the result carefully", "steered response"]);
+    } finally {
+      releaseTool.resolve(undefined);
+      await lifecycle.stop();
+      await runner.stop();
       await pluginManager.destroy();
       await bus.close();
     }

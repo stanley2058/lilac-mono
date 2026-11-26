@@ -803,6 +803,10 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     }
     return {
       ...publisher,
+      // The store adds a thread's own steers to its turn when it accepts them.
+      input: (text: string) => {
+        if (active.delegated) publisher.input(text);
+      },
       textStart: (part: Parameters<NativeOutputPublisher["textStart"]>[0]) => {
         publisher.textStart(part);
         reply.start(part.partId, part.stepId);

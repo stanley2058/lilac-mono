@@ -778,3 +778,37 @@ test("completed activity carries reasoning text, tool output, exit code, and dur
   expect(command?.type === "data-activity" && command.data.output?.length).toBe(4096);
   for (const message of tool.slot.messages) displayMessageSchema.parse(message);
 });
+
+test("delegated input shows as a steer that step resets keep and completion segments by", () => {
+  const steer: NativeOutputPayload = {
+    type: "input",
+    stepId: "native:thread:request:input",
+    position: 2,
+    text: "Also adjust the time",
+  };
+  let current = projectNativeOutput(slot(), event(text(1, "Initial answer", "step-1"), "a", 1));
+  current = projectNativeOutput(current.slot, event(steer, "a", 2), current.projection);
+  current = projectNativeOutput(
+    current.slot,
+    event(text(3, "Draft", "step-2"), "a", 3),
+    current.projection,
+  );
+  current = projectNativeOutput(
+    current.slot,
+    event({ type: "reset", previousAttemptId: "a", stepId: "step-2", textOnly: true }, "b", 1),
+    current.projection,
+  );
+  current = projectNativeOutput(
+    current.slot,
+    event(text(4, "Updated answer", "step-2"), "b", 2),
+    current.projection,
+  );
+  const shown = current.slot.messages.slice(1);
+  expect(shown.map((message) => [message.role, message.metadata?.inputMode])).toEqual([
+    ["assistant", undefined],
+    ["user", "steer"],
+    ["assistant", undefined],
+  ]);
+  expect(outputText(current.slot)).toBe("HelloInitial answerAlso adjust the timeUpdated answer");
+  expect(displayMessageSchema.parse(shown[1])).toEqual(shown[1]!);
+});

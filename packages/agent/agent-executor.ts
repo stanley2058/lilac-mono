@@ -390,7 +390,13 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
   }
 
   private recordCanonicalInputs(entries: readonly { readonly id: AgentInputQueueId }[]): void {
-    for (const entry of entries) this.canonicalInputIdsSinceCheckpoint.push(entry.id);
+    this.markInputsCanonical(entries.map((entry) => entry.id));
+  }
+
+  private markInputsCanonical(inputIds: readonly AgentInputQueueId[]): void {
+    if (inputIds.length === 0) return;
+    this.canonicalInputIdsSinceCheckpoint.push(...inputIds);
+    this.emit({ type: "inputs_applied", inputIds: [...inputIds] });
   }
 
   /** Execute a provider-originated tool call through the same atomic path as local calls. */
@@ -1335,7 +1341,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
         return "stop";
       }
       for (const message of pendingInterrupt.messages) this.appendMessage(message);
-      this.canonicalInputIdsSinceCheckpoint.push(...pendingInterrupt.inputIds);
+      this.markInputsCanonical(pendingInterrupt.inputIds);
 
       this.beginFreshPostInterruptPhase();
     } else if (this.abortController?.signal.aborted) {
@@ -1708,7 +1714,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
           return "break";
         }
         for (const message of interruptMessages.messages) this.appendMessage(message);
-        this.canonicalInputIdsSinceCheckpoint.push(...interruptMessages.inputIds);
+        this.markInputsCanonical(interruptMessages.inputIds);
 
         this.beginFreshPostInterruptPhase();
 
@@ -2936,6 +2942,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
       case "tool_execution_end":
       case "agent_start":
       case "agent_end":
+      case "inputs_applied":
       case "steering_delivery_failed":
       case "messages_reset":
         return;
@@ -2954,7 +2961,7 @@ export class AgentExecutor<TOOLS extends ToolSet = ToolSet> {
       case "history-commit":
         for (const message of event.messages) this.appendMessage(cloneMessage(message));
         this.recoveryCheckpoint = null;
-        this.canonicalInputIdsSinceCheckpoint.push(...event.inputIds);
+        this.markInputsCanonical(event.inputIds);
         this.steeringQueue = this.steeringQueue.filter(
           (entry) => !event.inputIds.includes(entry.id),
         );

@@ -166,6 +166,12 @@ export function createNativeOutputPublisher(options: {
     emit({ type: "activity", ...input, position: activityPosition });
   }
 
+  /** Shows input the run took mid-response, in its own step so step resets never remove it. */
+  function input(text: string): void {
+    if (settled || text.length === 0) return;
+    emit({ type: "input", stepId: `${options.requestId}:input`, position: ++position, text });
+  }
+
   function resource(
     input: Omit<Extract<NativeOutputPayload, { type: "resource" }>, "type" | "position">,
   ): Promise<NativeOutputPublication> {
@@ -246,6 +252,7 @@ export function createNativeOutputPublisher(options: {
     hasPendingText,
     currentStepId: () => currentStepId,
     resource,
+    input,
     captureCheckpoint,
     textStart,
     textDelta,

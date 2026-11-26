@@ -8,6 +8,7 @@ import {
 import type { ModelMessage } from "ai";
 import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
 import { Result } from "better-result";
+import { isGeneratedMessage } from "@stanley2058/lilac-agent";
 import type { DurableWorkflowStore, SubagentFollowUp } from "../../workflow/durable-workflow-store";
 import type { WorkflowRun } from "../../workflow/workflow-domain";
 import type { TranscriptStore } from "../../transcript/transcript-store";
@@ -224,6 +225,162 @@ function startsAtOwnPrompt(
     .filter((message) => message.role === "user")
     .map((message) => text(subagentMessages([message])[0]));
   return text(first) !== opening && later.includes(text(first));
+}
+
+type SavedMessage = StoredMessageV1 | ModelMessage;
+type Alignment = { readonly anchor: number; readonly replyLength: number };
+
+function savedText(message: SavedMessage) {
+  if (typeof message.content === "string") return message.content;
+  return message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+}
+
+function shownText(message: DisplayMessage) {
+  return message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+}
+
+/** Text without whitespace, which chunking, batching steers, and trimming change. */
+const squashed = (text: string) => text.replace(/\s+/gu, "");
+
+function shownToolCall(messages: readonly DisplayMessage[], toolCallId: string) {
+  const id = digest(toolCallId);
+  return messages.findIndex((message) =>
+    message.parts.some((part) => part.type === "data-activity" && part.id === id),
+  );
+}
+
+/** The last of the consecutive user messages from `first` that together hold `text`, or -1. */
+function shownUserMessage(messages: readonly DisplayMessage[], first: number, text: string) {
+  const target = squashed(text);
+  let shown = "";
+  for (let last = first; messages[last]?.role === "user"; last++) {
+    shown += squashed(shownText(messages[last]!));
+    if (shown === target) return last;
+    if (!target.startsWith(shown)) return -1;
+  }
+  return -1;
+}
+
+const isReplyText = (message: DisplayMessage | undefined) =>
+  message?.role === "assistant" &&
+  message.parts.length > 0 &&
+  message.parts.every((part) => part.type === "text");
+
+/** The end of the only run of stream reply messages that holds `text`, or -1. */
+function uniqueShownReply(messages: readonly DisplayMessage[], text: string) {
+  const target = squashed(text);
+  if (target.length === 0) return -1;
+  const ends = messages.flatMap((_, first) => {
+    let shown = "";
+    for (let last = first; isReplyText(messages[last]); last++) {
+      shown += squashed(shownText(messages[last]!));
+      if (shown === target) return [last];
+      if (!target.startsWith(shown)) return [];
+    }
+    return [];
+  });
+  return ends.length === 1 ? ends[0]! : -1;
+}
+
+/**
+ * Moves past an assistant message: to its latest shown tool call, counting reply text since.
+ * Before any anchor, as after compaction drops the prompt, a reply the stream shows exactly once
+ * anchors instead.
+ */
+function alignAssistant(
+  messages: readonly DisplayMessage[],
+  message: Extract<SavedMessage, { role: "assistant" }>,
+  aligned: Alignment,
+): Alignment {
+  const parts =
+    typeof message.content === "string"
+      ? [{ type: "text" as const, text: message.content }]
+      : message.content;
+  let { anchor, replyLength } = aligned;
+  for (const part of parts) {
+    if (part.type === "text") replyLength += squashed(part.text).length;
+    if (part.type !== "tool-call") continue;
+    const found = shownToolCall(messages, part.toolCallId);
+    if (found <= anchor) continue;
+    anchor = found;
+    replyLength = 0;
+  }
+  if (anchor >= 0) return { anchor, replyLength };
+  const reply = uniqueShownReply(messages, savedText(message));
+  return reply < 0 ? { anchor, replyLength } : { anchor: reply, replyLength: 0 };
+}
+
+/**
+ * Whether a message can sit where a transcript user message belongs: a user message, or a reply
+ * an interrupt cut short, which the stream keeps and the transcript drops.
+ */
+const isUserSpot = (message: DisplayMessage | undefined) =>
+  message?.role === "user" ||
+  (message?.role === "assistant" && message.metadata?.incomplete === true);
+
+const isThinking = (message: DisplayMessage) =>
+  message.parts.every((part) => part.type === "data-activity" && part.data.kind === "thinking");
+
+/** Where a steer goes after its anchor: past the reply text, and its thinking, ahead of it. */
+function steerPosition(messages: readonly DisplayMessage[], { anchor, replyLength }: Alignment) {
+  let position = anchor + 1;
+  let covered = 0;
+  while (covered < replyLength) {
+    const message = messages[position];
+    if (message?.role !== "assistant") break;
+    position++;
+    if (isThinking(message)) continue;
+    if (message.parts.some((part) => part.type !== "text")) return position - 1;
+    covered += squashed(shownText(message)).length;
+  }
+  return position;
+}
+
+/**
+ * Adds the steers a run's saved transcript holds and its stream lacks, since streams once
+ * showed only output. Each belongs after the stream's copy of what preceded it in the transcript:
+ * the latest tool call or user message, then the reply text that followed. A user message matches
+ * only among the stream's user messages at that spot, so a later one with the same text cannot
+ * stand in for it. User messages the stream lacks ahead of every match, such as a compaction
+ * summary, stay out. Null when nothing is missing.
+ */
+function withTranscriptSteers(
+  shown: readonly DisplayMessage[],
+  saved: readonly SavedMessage[],
+): DisplayMessage[] | null {
+  const messages = [...shown];
+  let aligned: Alignment = { anchor: -1, replyLength: 0 };
+  let added = false;
+  for (const [index, message] of saved.entries()) {
+    if (message.role === "system" || message.role === "tool") continue;
+    if (message.role === "assistant") {
+      aligned = alignAssistant(messages, message, aligned);
+      continue;
+    }
+    const text = savedText(message);
+    const position = steerPosition(messages, aligned);
+    let match = -1;
+    for (let first = position; isUserSpot(messages[first]) && match < 0; first++)
+      if (messages[first]!.role === "user") match = shownUserMessage(messages, first, text);
+    if (match >= 0) {
+      aligned = { anchor: match, replyLength: 0 };
+      continue;
+    }
+    // Generated messages are runtime context; they align when a projection shows them, never insert.
+    if (isGeneratedMessage(message) || aligned.anchor < 0 || squashed(text).length === 0) continue;
+    const parts: DisplayPart[] = [];
+    for (let offset = 0; offset < text.length; offset += MAX_REPLAY_TEXT_LENGTH)
+      parts.push({ type: "text", text: text.slice(offset, offset + MAX_REPLAY_TEXT_LENGTH) });
+    messages.splice(position, 0, {
+      id: `steer_${digest(`${index}:${text}`)}`,
+      role: "user",
+      metadata: { inputMode: "steer" },
+      parts,
+    });
+    aligned = { anchor: position, replyLength: 0 };
+    added = true;
+  }
+  return added ? messages : null;
 }
 
 function transcriptActivity(
@@ -449,7 +606,13 @@ export class NativeSubagents {
   private openExisting(threadId: string, run: WorkflowRun, stream: NativeAgentStreamRecord) {
     return Result.gen(function* () {
       yield* this.settle(run, stream);
-      yield* this.backfillHistory(threadId, run);
+      if (workflowDisplayState(run.state) === "running") return Result.ok(stream);
+      const saved = yield* this.runTranscript(run.runId);
+      yield* this.backfillHistory(threadId, run, saved?.messages);
+      if (saved)
+        yield* this.options.native.rewriteAgentStream(run.runId, (messages) =>
+          withTranscriptSteers(messages, saved.messages),
+        );
       return Result.ok((yield* this.options.native.findAgentStream(run.runId)) ?? stream);
     }, this);
   }
@@ -506,18 +669,20 @@ export class NativeSubagents {
    * in a stream left empty by a run canceled before it started. The rewritten stream no longer
    * matches either case, so this runs once.
    */
-  private backfillHistory(threadId: string, run: WorkflowRun) {
+  private backfillHistory(
+    threadId: string,
+    run: WorkflowRun,
+    saved: readonly SavedMessage[] | undefined,
+  ) {
     return Result.gen(function* () {
-      if (workflowDisplayState(run.state) === "running") return Result.ok(undefined);
       const shown = yield* this.options.native.agentStreamMessages(run.runId);
       if (!shown) return Result.ok(undefined);
-      const saved = yield* this.runTranscript(run.runId);
       const legacy = (messages: readonly DisplayMessage[]) =>
-        !!saved && startsAtOwnPrompt(messages, saved.messages);
+        !!saved && startsAtOwnPrompt(messages, saved);
       if (shown.length > 0 && !legacy(shown)) return Result.ok(undefined);
       const history =
         shown.length === 0 && saved
-          ? withReplyPhases(subagentMessages(saved.messages), run.state === "succeeded")
+          ? withReplyPhases(subagentMessages(saved), run.state === "succeeded")
           : yield* this.previousHistory(threadId, run);
       if (history.length === 0) return Result.ok(undefined);
       return this.options.native.rewriteAgentStream(run.runId, (messages) => {

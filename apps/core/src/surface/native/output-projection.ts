@@ -61,6 +61,13 @@ function messagePosition(message: DisplayMessage): number | undefined {
 }
 
 function createMessage(event: NativeOutputEvent, payload: PositionedPayload): DisplayMessage {
+  if (payload.type === "input")
+    return {
+      id: messageIdentity(event, payload),
+      role: "user",
+      metadata: { createdAt: Math.floor(event.occurredAt), inputMode: "steer" },
+      parts: [],
+    };
   const metadata: NonNullable<DisplayMessage["metadata"]> = {
     createdAt: Math.floor(event.occurredAt),
     authorId: "lilac",
@@ -293,6 +300,7 @@ function projectEvent(slot: ReadyTurnSlot, event: NativeOutputEvent): ProjectedT
         },
       });
     case "text":
+    case "input":
       return projectText(projection, messageId, payload.text);
     case "activity":
       return projectActivity(projection, messageId, payload);
