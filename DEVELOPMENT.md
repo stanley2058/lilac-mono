@@ -188,8 +188,9 @@ adding an event, and add producer/consumer integration coverage when introducing
 The ordinary workspace tests also exercise process death, competing consumers, bounded load, and
 retained-state upgrades:
 
-- `apps/core/tests/surface/bridge/request-process-crash.test.ts` kills a Bun worker at durable
-  request boundaries and recovers through a separate worker with the same Redis and disk state.
+- `apps/core/tests/surface/bridge/request-process-crash-*.test.ts` kill a Bun worker at durable
+  request boundaries, one boundary per file, and recover through a separate worker with the same
+  Redis and disk state.
 - `packages/event-bus/tests/competing-consumers.test.ts` verifies that a replacement consumer fences
   a stale handler after lease takeover.
 - `apps/core/tests/surface/bridge/bus-agent-runner-load.test.ts` and
