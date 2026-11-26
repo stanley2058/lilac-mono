@@ -7,6 +7,7 @@ import { citationStore, dismissCitation, revealCitation } from "../citation-stor
 import { resolveCitationRange, highlightCitation } from "../assistant-selection";
 import { attempt } from "./ui";
 import { toast } from "./ui/toast";
+import { aroundTurnGap, isTurnLeadIn } from "../turn-gap";
 
 export async function loadCitationSource({
   threadId,
@@ -22,18 +23,22 @@ export async function loadCitationSource({
   current: () => boolean;
 }): Promise<string | undefined> {
   const attempted = new Set<string>();
+  const cited = (messages: readonly { id: string; role: string }[]) =>
+    messages.some((message) => message.id === messageId && message.role === "assistant");
   while (current()) {
     const source = store.slotIds.find((id) => {
       const slot = store.get(id);
-      return (
-        slot?.kind === "ready" &&
-        slot.messages.some((message) => message.id === messageId && message.role === "assistant")
-      );
+      return slot?.kind === "ready" && cited(aroundTurnGap(slot.messages, isTurnLeadIn));
     });
     if (source) {
       return source;
     }
-    const candidate = [...store.slotIds].reverse().find((id) => {
+    // A turn renders a message a page loaded into its gap only once the gap closes.
+    const held = store.slotIds.find((id) => {
+      const slot = store.get(id);
+      return slot?.kind === "ready" && cited(slot.messages);
+    });
+    const candidate = [...(held ? [held] : []), ...[...store.slotIds].reverse()].find((id) => {
       const slot = store.get(id);
       const cursor = slot?.kind === "ready" ? slot.partsCursor : slot?.kind;
       return cursor && !attempted.has(`${id}:${cursor}`);

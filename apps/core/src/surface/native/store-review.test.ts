@@ -4,6 +4,7 @@ import { replayReplySchema, turnPageSchema } from "@stanley2058/lilac-client-pro
 import { NativeThreadStore } from "../../../../../packages/client/src/thread-store";
 import type { NativeInput, ReadyTurnSlot, TurnPage } from "@stanley2058/lilac-client-protocol";
 import { NativeStore } from "./store";
+import { wireActivityPart } from "./activity-text";
 
 function fixture() {
   const store = new NativeStore(new Database(":memory:"));
@@ -93,7 +94,7 @@ describe("native store adversarial regressions", () => {
           if (slot?.kind !== "ready") throw new Error("missing turn");
           if (!slot.partsCursor) {
             expect(slot.messages.find((message) => message.id === "assistant")?.parts).toEqual(
-              parts,
+              parts.map(wireActivityPart),
             );
             store.close();
             return;
@@ -153,7 +154,9 @@ describe("native store adversarial regressions", () => {
       const slot = client.get(receipt.turnId!);
       if (slot?.kind !== "ready") throw new Error("missing turn");
       if (!slot.partsCursor) {
-        expect(slot.messages.find((message) => message.id === "assistant")?.parts).toEqual(parts);
+        expect(slot.messages.find((message) => message.id === "assistant")?.parts).toEqual(
+          parts.map(wireActivityPart),
+        );
         store.close();
         return;
       }

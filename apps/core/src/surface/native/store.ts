@@ -13,6 +13,7 @@ import { isNativeServiceMessage } from "./message-ownership";
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  ActivityText,
   NativeQuestion,
   NativeDeploymentSettings,
   SidebarPreferences,
@@ -60,6 +61,7 @@ import { nativeUserDisplay } from "./identity";
 import { TURN_CREATED_AT, turnCompletedAtSql } from "./turn-timing";
 import { nativeFailure, type NativeStoreFailure } from "./errors";
 import { NATIVE_UPLOAD_STAGING_MS } from "./upload-staging";
+import { wireActivityPart, wireChange, wireMessage } from "./activity-text";
 
 export type NativeStoreError = NativeStoreFailure | PersistedDataError;
 export type NativeStoreResult<T> = ResultType<T, NativeStoreError>;
@@ -67,6 +69,8 @@ const REPLAY_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const REPLAY_BYTE_CAP = 128 * 1024 * 1024;
 const WINDOW_BYTES = 224 * 1024;
 const WINDOW_TURNS = 5;
+// One below the slot's message limit, so a turn's first message can rejoin its newest ones.
+const WINDOW_TURN_MESSAGES = 127;
 const encoder = new TextEncoder();
 const sidebarActivity = `COALESCE((SELECT MAX(a.updated_at) FROM native_records a WHERE a.thread_id=r.id AND a.kind IN ('turn','input')),json_extract(r.data_json,'$.value.createdAt'))`;
 
@@ -596,11 +600,7 @@ export class NativeStore {
           const turn = yield* this.readRecord("turn", existing.value.turnId);
           if (turn?.kind !== "turn" || turn.value.messages.length || !input.messages.length)
             return Result.ok(existing.value);
-          this.writeRecord(
-            turn.value.turnId,
-            { ...turn, value: { ...turn.value, messages: input.messages } },
-            id,
-          );
+          this.writeAgentStreamTurns(existing.value, turn, input.messages);
           return Result.ok(this.bump(existing.value, "reset", turn.value.turnId));
         }
         const value: NativeAgentStreamRecord = {
@@ -628,9 +628,9 @@ export class NativeStore {
           position: 0,
           state: input.state,
           startedAt: input.startedAt,
-          messages: input.messages,
+          messages: [],
         };
-        this.writeRecord(slot.turnId, { kind: "turn", value: slot }, id);
+        this.writeAgentStreamTurns(value, { kind: "turn", value: slot }, input.messages);
         return Result.ok(this.bump(value, "turn", slot.turnId));
       }, this),
     );
@@ -643,17 +643,24 @@ export class NativeStore {
     );
   }
 
-  /** The messages a subagent run's stream showed, or null when it has no stream. */
+  /**
+   * The messages a subagent run's stream showed across its turns, or null when it has no stream.
+   */
   agentStreamMessages(runId: string): NativeStoreResult<DisplayMessage[] | null> {
     return Result.gen(function* () {
       const stream = yield* this.findAgentStream(runId);
       if (!stream) return Result.ok(null);
-      const turn = yield* this.readRecord("turn", stream.turnId);
-      return Result.ok(turn?.kind === "turn" ? turn.value.messages : null);
+      const turns = yield* this.agentStreamTurns(stream);
+      if (!turns.some((turn) => turn.value.turnId === stream.turnId)) return Result.ok(null);
+      return Result.ok(turns.flatMap((turn) => turn.value.messages));
     }, this);
   }
 
-  /** Rewrites a subagent run's stream messages in one transaction; null leaves them unchanged. */
+  /**
+   * Rewrites a subagent run's stream messages in one transaction and splits them into exchanges
+   * again. A null rewrite leaves the messages unchanged, but still splits an ended stream that
+   * holds several exchanges in one turn.
+   */
   rewriteAgentStream(
     runId: string,
     rewrite: (messages: readonly DisplayMessage[]) => DisplayMessage[] | null,
@@ -661,18 +668,67 @@ export class NativeStore {
     return nativeStoreTransaction(this.db, () =>
       Result.gen(function* () {
         const stream = yield* this.findAgentStream(runId);
-        const turn = stream ? yield* this.readRecord("turn", stream.turnId) : null;
-        if (!stream || turn?.kind !== "turn") return Result.ok(undefined);
-        const messages = rewrite(turn.value.messages);
+        if (!stream) return Result.ok(undefined);
+        const turns = yield* this.agentStreamTurns(stream);
+        const live = turns.find((turn) => turn.value.turnId === stream.turnId);
+        if (!live) return Result.ok(undefined);
+        const shown = turns.flatMap((turn) => turn.value.messages);
+        // Streams written before exchanges had their own turns hold every exchange in one.
+        const messages =
+          rewrite(shown) ??
+          (turns.length < streamExchanges(shown).length && live.value.state !== "running"
+            ? shown
+            : null);
         if (!messages) return Result.ok(undefined);
-        this.writeRecord(
-          turn.value.turnId,
-          { ...turn, value: { ...turn.value, messages } },
-          stream.id,
-        );
-        this.bump(stream, "reset", turn.value.turnId);
+        this.writeAgentStreamTurns(stream, live, messages);
+        this.bump(stream, "reset", stream.turnId);
         return Result.ok(undefined);
       }, this),
+    );
+  }
+
+  private agentStreamTurns(stream: NativeAgentStreamRecord) {
+    return this.readRows(
+      "SELECT * FROM native_records WHERE kind='turn' AND thread_id=? ORDER BY position",
+      [stream.id],
+    ).map((records) => records.flatMap((record) => (record.kind === "turn" ? [record] : [])));
+  }
+
+  /**
+   * Stores a stream's messages as one turn per exchange, so viewers load earlier exchanges only as
+   * they reach them. The run's own turn, where its output lands, holds the last exchange.
+   */
+  private writeAgentStreamTurns(
+    stream: NativeAgentStreamRecord,
+    live: Extract<NativeRecord, { kind: "turn" }>,
+    messages: readonly DisplayMessage[],
+  ): void {
+    const exchanges = streamExchanges(messages);
+    const history = exchanges.slice(0, -1);
+    this.db
+      .query("DELETE FROM native_records WHERE kind='turn' AND thread_id=? AND id<>?")
+      .run(stream.id, live.value.turnId);
+    for (const [position, exchange] of history.entries()) {
+      const turnId = `${stream.id}_x${position}`;
+      const slot: ReadyTurnSlot = {
+        kind: "ready",
+        slotId: turnId,
+        turnId,
+        position,
+        state: "complete",
+        messages: exchange,
+      };
+      this.writeRecord(turnId, { kind: "turn", value: slot }, stream.id, position);
+    }
+    const position = history.length;
+    this.writeRecord(
+      live.value.turnId,
+      {
+        ...live,
+        value: { ...live.value, position, messages: exchanges.at(-1) ?? [] },
+      },
+      stream.id,
+      position,
     );
   }
 
@@ -803,6 +859,59 @@ export class NativeStore {
         this.pageConversation(stream, input),
       ),
     );
+  }
+
+  activityText(
+    actorId: string,
+    input: { threadId: string; turnId: string; partId: string },
+  ): NativeStoreResult<ActivityText> {
+    return nativeStoreTransaction(this.db, () =>
+      this.authorizeThread(actorId, input.threadId).andThen((thread) =>
+        this.conversationActivityText(thread.id, input),
+      ),
+    );
+  }
+
+  agentStreamActivityText(
+    actorId: string,
+    parentThreadId: string,
+    streamId: string,
+    input: { turnId: string; partId: string },
+  ): NativeStoreResult<ActivityText> {
+    return nativeStoreTransaction(this.db, () =>
+      this.authorizeAgentStream(actorId, parentThreadId, streamId).andThen((stream) =>
+        this.conversationActivityText(stream.id, input),
+      ),
+    );
+  }
+
+  private conversationActivityText(
+    conversationId: string,
+    input: { turnId: string; partId: string },
+  ): NativeStoreResult<ActivityText> {
+    return Result.gen(function* () {
+      const owner = this.db
+        .query<{ thread_id: string }, [string]>(
+          "SELECT thread_id FROM native_records WHERE kind='turn' AND id=?",
+        )
+        .get(input.turnId);
+      const record = yield* this.readRecord("turn", input.turnId);
+      const part =
+        record?.kind === "turn" && owner?.thread_id === conversationId
+          ? record.value.messages
+              .flatMap((message) => message.parts)
+              .find(
+                (candidate) => candidate.type === "data-activity" && candidate.id === input.partId,
+              )
+          : undefined;
+      if (part?.type !== "data-activity")
+        return Result.err(nativeFailure("not-found", "Activity is unavailable"));
+      const { detail, output } = part.data;
+      return Result.ok({
+        ...(detail === undefined ? {} : { detail }),
+        ...(output === undefined ? {} : { output }),
+      });
+    }, this);
   }
 
   authorizeThread(
@@ -1314,14 +1423,15 @@ export class NativeStore {
     changes: LiveUpdate["changes"] = [],
   ): T {
     const next = { ...thread, revision: thread.revision + 1, updatedAt: this.now() };
+    const wired = changes.map(wireChange);
     if ("parentThreadId" in next)
       this.writeRecord(next.id, { kind: "agent-stream", value: next }, next.parentThreadId);
     else this.writeRecord(next.id, { kind: "thread", value: next }, next.id);
     const boundedChanges =
-      encoder.encode(JSON.stringify(changes)).byteLength < WINDOW_BYTES &&
-      changes.length <= 128 &&
-      changes.every(isBoundedReplayChange)
-        ? changes
+      encoder.encode(JSON.stringify(wired)).byteLength < WINDOW_BYTES &&
+      wired.length <= 128 &&
+      wired.every(isBoundedReplayChange)
+        ? wired
         : [];
     const replay: NativeRecord = {
       kind: "replay",
@@ -1338,7 +1448,7 @@ export class NativeStore {
         next.historyGeneration,
         next.updatedAt,
         encoder.encode(data).byteLength,
-        boundedChanges === changes ? kind : "reset",
+        boundedChanges === wired ? kind : "reset",
         recordId,
         data,
       );
@@ -1825,8 +1935,9 @@ export class NativeStore {
             ok: (records) => records,
             err: () => null,
           });
+          // Rows written before activity text was left out still hold it.
           const changes = (decoded ?? []).flatMap((record) =>
-            record.value.kind === "replay" ? record.value.value.changes : [],
+            record.value.kind === "replay" ? record.value.value.changes.map(wireChange) : [],
           );
           const complete = decoded !== null && rows.every((row) => row.kind !== "reset");
           if (
@@ -3931,9 +4042,16 @@ export class NativeStore {
           )
           .get(target.threadId, target.threadId, target.messageId);
         if (!turn) return Result.err(nativeFailure("not-found", "Message is unavailable"));
-        if (turn.thread_id !== target.threadId)
-          yield* this.authorizeAgentStream(actorId, target.threadId, turn.thread_id);
-        const record = yield* this.readRecord("html-preview", htmlPreviewKey(turn.id, target.path));
+        let previewTurnId = turn.id;
+        if (turn.thread_id !== target.threadId) {
+          const stream = yield* this.authorizeAgentStream(actorId, target.threadId, turn.thread_id);
+          // A stream's previews belong to its run's own turn, which its earlier exchanges left.
+          previewTurnId = stream.turnId;
+        }
+        const record = yield* this.readRecord(
+          "html-preview",
+          htmlPreviewKey(previewTurnId, target.path),
+        );
         if (record?.kind !== "html-preview" || record.value.threadId !== target.threadId)
           return Result.err(nativeFailure("not-found", "Preview is unavailable"));
         return Result.ok(record.value);
@@ -3943,12 +4061,12 @@ export class NativeStore {
 
   private boundedTurn(slot: ReadyTurnSlot): ReadyTurnSlot {
     const indexed = slot.messages.map((message, position) => ({
-      ...message,
+      ...wireMessage(message),
       metadata: { ...message.metadata, position },
     }));
     if (
       encoder.encode(JSON.stringify(indexed)).byteLength < WINDOW_BYTES &&
-      indexed.length <= 128 &&
+      indexed.length <= WINDOW_TURN_MESSAGES + 1 &&
       indexed.every((message) => message.parts.length <= 128)
     )
       return { ...slot, messages: indexed };
@@ -3968,11 +4086,15 @@ export class NativeStore {
         partBytes += size;
       }
       const candidate = { ...message, parts };
+      const cut = parts.length !== message.parts.length;
+      // Only a newest message too large for the window arrives cut, so clients can tell from
+      // message positions whether the turn lacks the messages after its first or its newest tail.
+      if (cut && selected.length > 0) break;
       const size = encoder.encode(JSON.stringify(candidate)).byteLength;
-      if (bytes + size > WINDOW_BYTES - 2048 || selected.length >= 32) break;
+      if (bytes + size > WINDOW_BYTES - 2048 || selected.length >= WINDOW_TURN_MESSAGES) break;
       selected.unshift(candidate);
       bytes += size;
-      if (parts.length !== message.parts.length) break;
+      if (cut) break;
     }
     const first = indexed[0];
     if (
@@ -4061,8 +4183,9 @@ export class NativeStore {
           bytes += size;
         }
         while (partIndex < message.parts.length) {
-          const part = message.parts[partIndex];
-          if (!part) break;
+          const stored = message.parts[partIndex];
+          if (!stored) break;
+          const part = wireActivityPart(stored);
           const serialized = JSON.stringify(part);
           const oversized = encoder.encode(serialized).byteLength > WINDOW_BYTES - 8192;
           if (fragmentOffset > serialized.length || (!oversized && fragmentOffset !== 0))
@@ -4424,6 +4547,24 @@ export class NativeStore {
       return Result.ok(undefined);
     }, this);
   }
+}
+
+/**
+ * A subagent stream's messages grouped by exchange. A prompt opens one; steers and the
+ * consecutive user messages of a chunked prompt stay in the exchange they join.
+ */
+function streamExchanges(messages: readonly DisplayMessage[]): DisplayMessage[][] {
+  const exchanges: DisplayMessage[][] = [];
+  for (const [index, message] of messages.entries()) {
+    const opens =
+      index === 0 ||
+      (message.role === "user" &&
+        message.metadata?.inputMode !== "steer" &&
+        messages[index - 1]?.role !== "user");
+    if (opens) exchanges.push([message]);
+    else exchanges.at(-1)?.push(message);
+  }
+  return exchanges;
 }
 
 function messageText(message: DisplayMessage) {

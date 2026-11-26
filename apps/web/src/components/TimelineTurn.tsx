@@ -10,6 +10,7 @@ import { AddReaction, MessageReactions } from "./MessageReactions";
 import { CopyReferenceButton, copyReferenceLink, useConversation } from "./ConversationReference";
 import {
   Activity,
+  ActivitySourceContext,
   ActivityTimesContext,
   ElapsedTime,
   LiveThinkingRow,
@@ -61,6 +62,7 @@ import {
   type DisplayPart,
 } from "@stanley2058/lilac-client-protocol";
 import { rewindRestrictionReason, rewindTooltipText } from "../rewind-policy";
+import { aroundTurnGap, isIncoming, isPrompt, isTurnLeadIn, unloadedPlace } from "../turn-gap";
 import { IconButton, attempt } from "./ui";
 import { WorkVerb, useSettledWorkVerb } from "./WorkVerb";
 import { ResourceAttachment } from "./ResourceAttachment";
@@ -150,27 +152,24 @@ export function AgentTurn(props: TurnProps) {
       return next;
     });
   }, []);
-  const firstUser = slot.messages.find(
-    (message) => message.role === "user" && message.metadata?.inputMode !== "steer",
+  const messages = useMemo(
+    () => (slot.partsCursor ? aroundTurnGap(slot.messages, isTurnLeadIn) : slot.messages),
+    [slot.messages, slot.partsCursor],
   );
-  const incomingMessage = slot.messages.find(
-    (message) =>
-      message.role === "assistant" &&
-      message.metadata?.inputId &&
-      message.metadata.inputMode !== "steer",
-  );
+  const firstUser = messages.find(isPrompt);
+  const incomingMessage = messages.find(isIncoming);
   const settled = slot.state === "complete" || slot.state === "failed" || slot.state === "canceled";
   const completed = slot.state === "complete";
   const rawRemaining = useMemo(
     () =>
-      slot.messages.filter(
+      messages.filter(
         (message) => message.id !== firstUser?.id && message.id !== incomingMessage?.id,
       ),
-    [slot.messages, firstUser?.id, incomingMessage?.id],
+    [messages, firstUser?.id, incomingMessage?.id],
   );
   // Start times never change, so one stable map keeps streaming updates from rerendering every row.
   const [times] = useState(() => new Map<string, number>());
-  recordActivityTimes(times, slot.messages);
+  recordActivityTimes(times, messages);
   const identities = useContext(MessageIdentityContext);
   const startedAt =
     slot.startedAt ?? firstUser?.metadata?.createdAt ?? incomingMessage?.metadata?.createdAt;
@@ -222,6 +221,26 @@ export function AgentTurn(props: TurnProps) {
   const incomingContinues = sameMessageAuthor(incomingMessage, firstRemaining);
   const incomingSpacing = incomingContinues ? "mb-2" : "mb-4";
   const hasLeadIn = !!firstUser || !!incomingMessage;
+  const displayStream = useContext(DisplayStreamContext);
+  const timelineThreadId = useContext(TimelineContext)?.threadId;
+  const activitySource = useMemo(() => {
+    const target =
+      displayStream ??
+      (timelineThreadId ? { kind: "thread" as const, threadId: timelineThreadId } : undefined);
+    return target ? { target, turnId: slot.turnId } : undefined;
+  }, [displayStream, timelineThreadId, slot.turnId]);
+  const loadMore = slot.partsCursor ? (
+    <Button
+      variant="ghost"
+      className="mb-4 text-primary py-2 px-3 text-sm"
+      type="button"
+      data-ui="turn-load-more"
+      onClick={onLoadMore}
+    >
+      Load more of this turn
+    </Button>
+  ) : null;
+  const gap = slot.partsCursor ? unloadedPlace(slot.messages) : undefined;
   return (
     <article
       className={`turn px-6 max-workspace:px-4 ${props.joinedBefore ? "pt-0" : "pt-1"} ${props.joinedAfter ? "pb-0" : "pb-8 max-workspace:pb-7"}`}
@@ -229,6 +248,7 @@ export function AgentTurn(props: TurnProps) {
       data-joined-after={props.joinedAfter || undefined}
       data-turn-id={slot.turnId}
     >
+      {gap === "top" ? loadMore : null}
       {firstUser ? (
         <div
           className={`user-turn ml-12 max-workspace:ml-6 ${active || hasRemaining ? "mb-10" : ""}`}
@@ -287,78 +307,81 @@ export function AgentTurn(props: TurnProps) {
           />
         </div>
       ) : null}
+      {gap === "after-first" ? loadMore : null}
       <RequestActiveContext value={!settled}>
-        <LiveTailContext value={tail}>
-          <ActivityTimesContext value={times}>
-            <div className="agent-response flex flex-col gap-2">
-              {completedSegments ? (
-                <CompletedTurnSegments
-                  segments={completedSegments}
-                  expandedSegments={expandedSegments}
-                  onToggleSegment={toggleSegment}
-                  settledVerb={settledVerb}
-                  agent={identities.agent}
-                  animateArrivals={props.animateArrivals ?? true}
-                  joinedBefore={props.joinedBefore}
-                  joinedAfter={props.joinedAfter}
-                  hasLeadIn={hasLeadIn}
-                  incomingContinues={incomingContinues}
-                  posts={props.posts}
-                />
-              ) : (
-                <>
-                  {!incomingContinues &&
-                  (!props.joinedBefore || hasLeadIn) &&
-                  (waiting ||
-                    (remaining.length > 0 &&
-                      (settled ||
-                        remaining.find((message) => message.role !== "system")?.role ===
-                          "assistant"))) ? (
-                    <AuthorAvatar author={identities.agent} role="Agent" />
-                  ) : null}
-                  {active ? (
-                    <div
-                      data-ui="work-summary"
-                      className="work-summary flex items-center gap-2 border-b border-border/60 pt-1 pb-2 text-sm text-muted-foreground tabular-nums"
-                    >
-                      {startedAt === undefined ? (
-                        "Working…"
-                      ) : (
-                        <span>
-                          <WorkVerb seed={slot.turnId} startedAt={startedAt} /> for{" "}
-                          <ElapsedTime since={startedAt} />
-                        </span>
-                      )}
-                      <TurnParticipants messages={slot.messages} />
-                    </div>
-                  ) : null}
-                  <TurnMessages
-                    messages={intermediate}
-                    live={!settled}
-                    showFirstAvatar={false}
-                    inResponse
-                    hasFollowing={
-                      !!props.posts?.length || waiting || thinkingAfter || finals.length > 0
-                    }
+        <ActivitySourceContext value={activitySource}>
+          <LiveTailContext value={tail}>
+            <ActivityTimesContext value={times}>
+              <div className="agent-response flex flex-col gap-2">
+                {completedSegments ? (
+                  <CompletedTurnSegments
+                    segments={completedSegments}
+                    expandedSegments={expandedSegments}
+                    onToggleSegment={toggleSegment}
+                    settledVerb={settledVerb}
+                    agent={identities.agent}
+                    animateArrivals={props.animateArrivals ?? true}
+                    joinedBefore={props.joinedBefore}
+                    joinedAfter={props.joinedAfter}
+                    hasLeadIn={hasLeadIn}
+                    incomingContinues={incomingContinues}
+                    posts={props.posts}
                   />
-                  {props.posts?.map((post) => {
-                    const workflow = workflowCardMessage(post);
-                    return workflow ? <WorkflowCard key={post.slotId} {...workflow} /> : null;
-                  })}
-                  {waiting || thinkingAfter ? <LiveThinkingRow /> : null}
-                  <TurnMessages
-                    messages={finals}
-                    live={props.animateArrivals ?? true}
-                    showFirstAvatar={!settled && intermediate.at(-1)?.role === "user"}
-                    finalMessageId={settled && !props.joinedAfter ? finals.at(-1)?.id : undefined}
-                    finalText={finals.map(messageText).filter(Boolean).join("\n\n")}
-                    inResponse
-                  />
-                </>
-              )}
-            </div>
-          </ActivityTimesContext>
-        </LiveTailContext>
+                ) : (
+                  <>
+                    {!incomingContinues &&
+                    (!props.joinedBefore || hasLeadIn) &&
+                    (waiting ||
+                      (remaining.length > 0 &&
+                        (settled ||
+                          remaining.find((message) => message.role !== "system")?.role ===
+                            "assistant"))) ? (
+                      <AuthorAvatar author={identities.agent} role="Agent" />
+                    ) : null}
+                    {active ? (
+                      <div
+                        data-ui="work-summary"
+                        className="work-summary flex items-center gap-2 border-b border-border/60 pt-1 pb-2 text-sm text-muted-foreground tabular-nums"
+                      >
+                        {startedAt === undefined ? (
+                          "Working…"
+                        ) : (
+                          <span>
+                            <WorkVerb seed={slot.turnId} startedAt={startedAt} /> for{" "}
+                            <ElapsedTime since={startedAt} />
+                          </span>
+                        )}
+                        <TurnParticipants messages={slot.messages} />
+                      </div>
+                    ) : null}
+                    <TurnMessages
+                      messages={intermediate}
+                      live={!settled}
+                      showFirstAvatar={false}
+                      inResponse
+                      hasFollowing={
+                        !!props.posts?.length || waiting || thinkingAfter || finals.length > 0
+                      }
+                    />
+                    {props.posts?.map((post) => {
+                      const workflow = workflowCardMessage(post);
+                      return workflow ? <WorkflowCard key={post.slotId} {...workflow} /> : null;
+                    })}
+                    {waiting || thinkingAfter ? <LiveThinkingRow /> : null}
+                    <TurnMessages
+                      messages={finals}
+                      live={props.animateArrivals ?? true}
+                      showFirstAvatar={!settled && intermediate.at(-1)?.role === "user"}
+                      finalMessageId={settled && !props.joinedAfter ? finals.at(-1)?.id : undefined}
+                      finalText={finals.map(messageText).filter(Boolean).join("\n\n")}
+                      inResponse
+                    />
+                  </>
+                )}
+              </div>
+            </ActivityTimesContext>
+          </LiveTailContext>
+        </ActivitySourceContext>
       </RequestActiveContext>
       {slot.state === "failed" || slot.state === "canceled" ? (
         <p
@@ -374,16 +397,7 @@ export function AgentTurn(props: TurnProps) {
           {slot.state === "failed" ? "Run failed" : "Stopped"}
         </p>
       ) : null}
-      {slot.partsCursor ? (
-        <Button
-          variant="ghost"
-          className="text-primary py-2 px-3 text-sm"
-          type="button"
-          onClick={onLoadMore}
-        >
-          Load more of this turn
-        </Button>
-      ) : null}
+      {gap === "end" ? loadMore : null}
     </article>
   );
 }

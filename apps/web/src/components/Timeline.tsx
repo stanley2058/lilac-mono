@@ -63,6 +63,7 @@ import {
   useMessageServicesValue,
 } from "./timeline-context";
 import { Turn, messageArrivalIds } from "./TimelineTurn";
+import { loadTurnGap } from "../turn-gap";
 
 export function useLatestReadableTurn(store: NativeThreadStore) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
@@ -537,8 +538,12 @@ const SlotRow = memo(function SlotRow(props: {
   const loadSlotId =
     stored?.kind === "ready" ? props.slotId : (props.fallback?.slotId ?? props.slotId);
   const loadMore = useCallback(
-    () => void client.loadTurnPage(threadId, loadSlotId),
-    [client, threadId, loadSlotId],
+    () =>
+      void loadTurnGap(
+        () => client.loadTurnPage(threadId, loadSlotId),
+        () => props.store.get(loadSlotId),
+      ),
+    [client, threadId, loadSlotId, props.store],
   );
   const slot = stored?.kind === "ready" ? stored : (props.fallback ?? stored);
   if (!slot || posts.folded) return null;

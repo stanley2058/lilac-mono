@@ -275,8 +275,8 @@ test("follow-up subagent runs name the run that started their session", () => {
 
 function agentStreamMessages(f: ReturnType<typeof fixture>, streamId: string) {
   const replay = f.native.syncAgentStream("owner", f.thread.id, streamId).unwrap();
-  const slot = replay.kind === "window" ? replay.slots[0] : undefined;
-  return slot?.kind === "ready" ? slot.messages : [];
+  const slots = replay.kind === "window" ? replay.slots : [];
+  return slots.flatMap((slot) => (slot.kind === "ready" ? slot.messages : []));
 }
 
 function prepareFollowUp(f: ReturnType<typeof fixture>, followUp: ReturnType<typeof addFollowUp>) {
@@ -1059,4 +1059,143 @@ test("steer backfill finds a live interrupt input past the reply it cut short", 
     { role: "assistant", content: "Done" },
   ]);
   expect(texts(open())).toEqual(["Research", "Half a", "Hurry", "Done"]);
+});
+
+function streamSlots(f: ReturnType<typeof fixture>, streamId: string) {
+  const replay = f.native.syncAgentStream("owner", f.thread.id, streamId).unwrap();
+  if (replay.kind !== "window") throw new Error("Expected a window");
+  return replay.slots.map((slot) =>
+    slot.kind === "ready" ? [slot.state, texts(slot.messages)] : [slot.kind],
+  );
+}
+
+function prompt(text: string, steer = false): DisplayMessage {
+  return {
+    id: `user_${createHash("sha256").update(text).digest("hex").slice(0, 24)}`,
+    role: "user",
+    ...(steer ? { metadata: { inputMode: "steer" as const } } : {}),
+    parts: [{ type: "text", text }],
+  };
+}
+
+test("a follow-up stream keeps each exchange in its own turn and runs in the last", () => {
+  const f = fixture();
+  f.setSaved([
+    { role: "user", content: "Research" },
+    { role: "assistant", content: "Done" },
+  ]);
+  const stream = prepareFollowUp(f, addFollowUp(f));
+  expect(streamSlots(f, stream.id)).toEqual([
+    ["complete", ["Research", "Done"]],
+    ["running", ["Next"]],
+  ]);
+  const replay = f.native.syncAgentStream("owner", f.thread.id, stream.id).unwrap();
+  expect(replay.kind === "window" ? replay.slots.at(-1)?.slotId : undefined).toBe(stream.turnId);
+});
+
+test("steers and a chunked prompt stay in the exchange they join", () => {
+  const f = fixture();
+  const open = endedStream(f, [
+    prompt("Research"),
+    prompt("more of the prompt"),
+    reply("np_a", "Looking."),
+    prompt("Hurry", true),
+    reply("np_b", "Done"),
+    prompt("Next"),
+    reply("np_c", "Also done"),
+  ]);
+  open();
+  const stream = f.native.findAgentStream(f.run.runId).unwrap()!;
+  expect(streamSlots(f, stream.id)).toEqual([
+    ["complete", ["Research", "more of the prompt", "Looking.", "Hurry", "Done"]],
+    ["complete", ["Next", "Also done"]],
+  ]);
+});
+
+test("a stream from before exchanges had their own turns splits when an ended run opens", () => {
+  const f = fixture();
+  const open = endedStream(f, [
+    prompt("Research"),
+    reply("np_a", "Done"),
+    prompt("Next"),
+    reply("np_b", "Also done"),
+  ]);
+  const stream = f.native.findAgentStream(f.run.runId).unwrap()!;
+  const db = databases.at(-1)!;
+  const rows = db
+    .query<{ data_json: string }, [string]>(
+      "SELECT data_json FROM native_records WHERE kind='turn' AND thread_id=? ORDER BY position",
+    )
+    .all(stream.id)
+    .map((row) => JSON.parse(row.data_json));
+  const legacy = rows.at(-1);
+  legacy.value = {
+    ...legacy.value,
+    position: 0,
+    messages: rows.flatMap((row) => row.value.messages),
+  };
+  db.query("DELETE FROM native_records WHERE kind='turn' AND thread_id=?").run(stream.id);
+  db.query(
+    "INSERT INTO native_records(kind,id,thread_id,position,updated_at,format_version,data_json) VALUES('turn',?,?,0,0,1,?)",
+  ).run(stream.turnId, stream.id, JSON.stringify(legacy));
+  expect(streamSlots(f, stream.id)).toEqual([
+    ["complete", ["Research", "Done", "Next", "Also done"]],
+  ]);
+  open();
+  expect(streamSlots(f, stream.id)).toEqual([
+    ["complete", ["Research", "Done"]],
+    ["complete", ["Next", "Also done"]],
+  ]);
+});
+
+test("earlier exchanges past the replay window load on demand", () => {
+  const f = fixture();
+  const exchanges = Array.from({ length: 7 }, (_, index) => [
+    prompt(`Prompt ${index}`),
+    reply(`np_${index}`, `Reply ${index}`),
+  ]).flat();
+  const open = endedStream(f, exchanges);
+  open();
+  const stream = f.native.findAgentStream(f.run.runId).unwrap()!;
+  const slots = streamSlots(f, stream.id);
+  expect(slots[0]).toEqual(["deferred"]);
+  expect(slots.at(-1)).toEqual(["complete", ["Prompt 6", "Reply 6"]]);
+  const replay = f.native.syncAgentStream("owner", f.thread.id, stream.id).unwrap();
+  const deferred = replay.kind === "window" ? replay.slots[0] : undefined;
+  if (deferred?.kind !== "deferred") throw new Error("Expected a deferred range");
+  const hydration = f.native
+    .hydrateAgentStream("owner", f.thread.id, stream.id, {
+      threadId: stream.id,
+      historyGeneration: replay.checkpoint.historyGeneration,
+      projectionRevision: replay.checkpoint.projectionRevision,
+      slotId: deferred.slotId,
+    })
+    .unwrap();
+  expect(
+    hydration.slots.flatMap((slot) => (slot.kind === "ready" ? texts(slot.messages) : [])),
+  ).toEqual(["Prompt 0", "Reply 0", "Prompt 1", "Reply 1"]);
+});
+
+test("a stream's previews stay readable from messages in its earlier exchanges", () => {
+  const f = fixture();
+  const open = endedStream(f, [
+    prompt("Research"),
+    reply("np_a", "See the page."),
+    prompt("Next"),
+    reply("np_b", "Done"),
+  ]);
+  open();
+  const stream = f.native.findAgentStream(f.run.runId).unwrap()!;
+  f.native
+    .saveHtmlPreview({
+      threadId: f.thread.id,
+      turnId: stream.turnId,
+      path: "/tmp/page.html",
+      error: "missing",
+    })
+    .unwrap();
+  const preview = f.native
+    .readHtmlPreview("owner", { threadId: f.thread.id, messageId: "np_a", path: "/tmp/page.html" })
+    .unwrap();
+  expect(preview.turnId).toBe(stream.turnId);
 });

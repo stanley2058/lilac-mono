@@ -378,8 +378,8 @@ describe("cache and catalog", () => {
   });
 });
 
-test("projection keys discard version 1 records while scope keys stay stable", () => {
-  expect(JSON.parse(cacheProjectionKey(scope))).toEqual(["install", "owner", 1, 2]);
+test("projection keys discard earlier projection records while scope keys stay stable", () => {
+  expect(JSON.parse(cacheProjectionKey(scope))).toEqual(["install", "owner", 1, 3]);
   expect(JSON.parse(cacheScopeKey(scope))).toEqual(["install", "owner", 1, 1]);
 });
 test("an invalid fragment publishes a restart cursor", () => {

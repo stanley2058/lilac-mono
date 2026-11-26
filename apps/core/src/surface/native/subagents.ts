@@ -609,10 +609,9 @@ export class NativeSubagents {
       if (workflowDisplayState(run.state) === "running") return Result.ok(stream);
       const saved = yield* this.runTranscript(run.runId);
       yield* this.backfillHistory(threadId, run, saved?.messages);
-      if (saved)
-        yield* this.options.native.rewriteAgentStream(run.runId, (messages) =>
-          withTranscriptSteers(messages, saved.messages),
-        );
+      yield* this.options.native.rewriteAgentStream(run.runId, (messages) =>
+        saved ? withTranscriptSteers(messages, saved.messages) : null,
+      );
       return Result.ok((yield* this.options.native.findAgentStream(run.runId)) ?? stream);
     }, this);
   }

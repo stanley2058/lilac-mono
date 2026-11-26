@@ -23,7 +23,10 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react";
-import type { SubagentSummary } from "@stanley2058/lilac-client-protocol";
+import type { DisplayStreamTarget, SubagentSummary } from "@stanley2058/lilac-client-protocol";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { activityTextOptions } from "../queries";
+import { useOptionalWorkspace } from "../workspace-context";
 import {
   activityCommand,
   activityEditedPaths,
@@ -61,6 +64,10 @@ export type { ActivityPart };
 export const RequestActiveContext = createContext<boolean | undefined>(undefined);
 export const LiveTailContext = createContext<string | undefined>(undefined);
 export const ActivityTimesContext = createContext<ReadonlyMap<string, number>>(new Map());
+/** The turn whose activity rows load the text Core left out of them. */
+export const ActivitySourceContext = createContext<
+  { target: DisplayStreamTarget; turnId: string } | undefined
+>(undefined);
 
 const kindIcons: Record<ActivityRowKind | "mixed", LucideIcon> = {
   thinking: Brain,
@@ -328,13 +335,36 @@ function SubagentItem({
   );
 }
 
-function ActivityDetails({ part }: { part: ActivityPart }) {
+/** The part with the text Core left out, once it loads. */
+function useActivityText(part: ActivityPart) {
+  const source = useContext(ActivitySourceContext);
+  const client = useOptionalWorkspace()?.client;
+  const { omitted } = part.data;
+  const query = useQuery({
+    ...activityTextOptions(client, source, part),
+    placeholderData: keepPreviousData,
+  });
+  if (!omitted) return { part, missing: false, failed: false };
+  if (!query.data) return { part, missing: true, failed: query.isError || !source || !client };
+  return {
+    part: { ...part, data: { ...part.data, ...query.data } },
+    missing: false,
+    failed: false,
+  };
+}
+
+function ActivityDetails({ part: sent }: { part: ActivityPart }) {
+  const { part, missing, failed } = useActivityText(sent);
   const kind = activityRowKind(part);
   const { detail, output, exitCode, state } = part.data;
+  const loading = missing && !failed ? <Skeleton className="h-16 w-full rounded-md" /> : null;
+  const unavailable = failed ? (
+    <span className="text-xs text-muted-foreground">Details unavailable</span>
+  ) : null;
   if (kind === "thinking")
     return (
       <div className="activity-thought ms-8 mb-2 max-h-96 overflow-auto py-1 text-sm text-foreground select-text">
-        <Markdown text={detail ?? ""} />
+        {missing ? (loading ?? unavailable) : <Markdown text={detail ?? ""} />}
       </div>
     );
   const input = detailInput(part, kind);
@@ -343,6 +373,7 @@ function ActivityDetails({ part }: { part: ActivityPart }) {
       {input ? <pre className={blockClass}>{input}</pre> : null}
       {part.data.file ? <ActivityFile {...part.data.file} /> : null}
       {output ? <pre className={blockClass}>{formatActivityOutput(output)}</pre> : null}
+      {missing && part.data.omitted?.output !== undefined ? (loading ?? unavailable) : null}
       {exitCode !== undefined ? (
         <span className={`text-xs ${exitCode === 0 ? "text-success" : "text-danger"}`}>
           Process exited with code {exitCode}
@@ -369,8 +400,8 @@ function detailInput(part: ActivityPart, kind: ActivityRowKind): string | undefi
 }
 
 function hasDetails(part: ActivityPart): boolean {
-  const { detail, output, exitCode, file } = part.data;
-  return !!detail?.trim() || !!output?.trim() || exitCode !== undefined || !!file;
+  const { detail, output, exitCode, file, omitted } = part.data;
+  return !!detail?.trim() || !!output?.trim() || exitCode !== undefined || !!file || !!omitted;
 }
 
 /** Resolved on expand so collapsed rows never fetch files. */

@@ -9,6 +9,7 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import type { NativeClient } from "@stanley2058/lilac-client";
+import type { DisplayPart, DisplayStreamTarget } from "@stanley2058/lilac-client-protocol";
 
 import { cacheScopeKey, type CacheScope } from "@stanley2058/lilac-client";
 import type { AppProps } from "./types";
@@ -261,6 +262,43 @@ export function profileOptions(client: NativeClient) {
     queryKey: ["profile"],
     queryFn: ({ signal }) => queryNativeRPC(client, (rpc) => rpc.profile.get({}, { signal })),
     refetchOnWindowFocus: true,
+  });
+}
+
+/**
+ * The full text of an activity part Core sent without it. The part's state and left-out lengths are
+ * part of the key, so an activity that grows or settles loads again.
+ */
+export function activityTextOptions(
+  client: NativeClient | undefined,
+  source: { target: DisplayStreamTarget; turnId: string } | undefined,
+  part: Extract<DisplayPart, { type: "data-activity" }>,
+) {
+  const target = source?.target;
+  const partId = part.id;
+  const { omitted, state } = part.data;
+  return queryOptions({
+    queryKey: [
+      "activity-text",
+      target?.threadId,
+      target?.kind === "subagent" ? target.agentId : null,
+      source?.turnId,
+      partId,
+      state,
+      omitted?.detail ?? null,
+      omitted?.output ?? null,
+    ],
+    queryFn:
+      client && source && omitted
+        ? ({ signal }) =>
+            queryNativeRPC(client, (rpc) =>
+              rpc.streams.activity(
+                { target: source.target, turnId: source.turnId, partId },
+                { signal },
+              ),
+            )
+        : skipToken,
+    staleTime: Infinity,
   });
 }
 

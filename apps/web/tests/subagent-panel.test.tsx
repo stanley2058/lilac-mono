@@ -12,6 +12,8 @@ import {
 import { nestedAgentsLabel, subagentTitle } from "../src/components/NestedAgents";
 import { ActivityItem } from "../src/components/ActivityLog";
 import { createPanelStore, defaultRightPanel } from "../src/panel-store";
+import { NativeThreadStore } from "@stanley2058/lilac-client";
+import type { ReadyTurnSlot } from "@stanley2058/lilac-client-protocol";
 
 const actions = { onSelect: () => {} };
 const slot = agentWorkStages.find((stage) => stage.id === "subagents-working")!.frames[0]!;
@@ -354,4 +356,61 @@ test("tied follow-ups pick the run no other run continues", () => {
   const older = followUp("older", first!.id);
   const newest = followUp("newest", older.id);
   expect(subagentRelations([older, newest, first!]).latest.get(first!.id)).toBe(newest);
+});
+
+test("an agent's stream shows each loaded exchange and holds a place for earlier ones", () => {
+  const selected = { ...agents[0]!, state: "complete" as const };
+  const store = new NativeThreadStore();
+  const exchange = (position: number, prompt: string, answer: string): ReadyTurnSlot => ({
+    kind: "ready",
+    slotId: `turn_${position}`,
+    turnId: `turn_${position}`,
+    position,
+    state: "complete",
+    messages: [
+      { id: `prompt_${position}`, role: "user", parts: [{ type: "text", text: prompt }] },
+      {
+        id: `answer_${position}`,
+        role: "assistant",
+        metadata: { phase: "final" },
+        parts: [{ type: "text", text: answer }],
+      },
+    ],
+  });
+  const latest = exchange(4, "Check Sunday too", "Closed on Sunday.");
+  store.replay({
+    kind: "window",
+    checkpoint: { protocolVersion: 1, historyGeneration: 0, projectionRevision: 1, cursor: "c" },
+    slots: [
+      { kind: "deferred", slotId: "range_0_0_3", position: 0, endPosition: 3 },
+      exchange(3, "Research the hours", "Open until nine."),
+      latest,
+    ],
+  });
+  const client = {
+    hydrateStream: async () => {},
+    loadStreamTurnPage: async () => {},
+    subscribe: () => () => {},
+  };
+  const html = renderToStaticMarkup(
+    <SubagentPanelView
+      items={agents}
+      selected={selected}
+      messages={latest.messages}
+      stream={{
+        client,
+        store,
+        slotIds: store.slotIds,
+        target: { kind: "subagent", threadId: "thread", agentId: selected.id },
+      }}
+      {...actions}
+    />,
+  );
+  expect(html).toContain("Loading earlier messages");
+  const order = ["Research the hours", "Open until nine.", "Check Sunday too", "Closed on Sunday."];
+  expect(order.map((text) => html.indexOf(text))).toEqual(
+    order.map((text) => html.indexOf(text)).toSorted((a, b) => a - b),
+  );
+  expect(order.every((text) => html.includes(text))).toBe(true);
+  expect(html).not.toContain("Waiting for the first message");
 });

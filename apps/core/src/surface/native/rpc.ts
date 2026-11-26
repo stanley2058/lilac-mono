@@ -132,6 +132,9 @@ export function createNativeRouter(
       turnPage: secured.streams.turnPage.handler(async ({ input, context, signal }) =>
         nativeRpcValue(await services.streams.turnPage(context.principal, input, signal)),
       ),
+      activity: secured.streams.activity.handler(async ({ input, context, signal }) =>
+        nativeRpcValue(await services.streams.activity(context.principal, input, signal)),
+      ),
     },
     computer: {
       read: secured.computer.read.handler(async ({ input, context, signal }) =>

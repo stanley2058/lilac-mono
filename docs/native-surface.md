@@ -196,6 +196,13 @@ blank-line boundaries. Full publishes the buffered text at model-step completion
 Compaction and activity remain explicit display events. Native structured questions use web question
 cards; the TUI has no answer controls.
 
+Activity rows leave tool output on the server and carry only the first 256 characters of thinking
+text, which titles the row. The row records the full length of what it left out in `omitted`, and
+opening the row loads the text with `streams.activity`. Tool details stay in the row because row
+titles are built from them. A
+subagent's stream stores each exchange as its own turn, so its panel loads earlier exchanges as the
+reader scrolls up to them.
+
 Old-message selection and storage retention are separate settings:
 `oldMessageSelectionMaxAgeMs` and `storageRetentionMaxAgeMs`. Both default to `null`, which disables
 them. Replay history has its own bounded retention; an expired replay cursor replaces the visible

@@ -2,7 +2,9 @@ import "./design-system.css";
 import { AppearanceSettings } from "./components/AppearanceSettings";
 import { ReconnectionDemo } from "./components/ReconnectionDemo";
 import lilacLogo from "./assets/logo.svg";
-import { ActivityItem } from "./components/ActivityLog";
+import { ActivityItem, ActivitySourceContext } from "./components/ActivityLog";
+import { activityTextOptions } from "./queries";
+import type { DisplayPart } from "@stanley2058/lilac-client-protocol";
 import { LinkPreviewAnchor } from "./components/LinkWithFavicon";
 import { setThemeMode } from "./theme/theme";
 import { Link, useLocation } from "@tanstack/react-router";
@@ -42,13 +44,43 @@ import {
   DeploymentSettingsDemo,
   NotificationSettingsDemo,
 } from "./design-system/SettingsDemos";
+const deferredSource = {
+  target: { kind: "thread" as const, threadId: "design-system" },
+  turnId: "design-system",
+};
+const deferredOutput = [...Array(24).keys()]
+  .map((line) => `SETTING_${line}=value-${line}`)
+  .join("\n");
+function deferredActivity(id: string): Extract<DisplayPart, { type: "data-activity" }> {
+  return {
+    type: "data-activity",
+    id,
+    data: {
+      kind: "tool",
+      label: "bash env | sort",
+      detail: "bash env | sort",
+      state: "complete",
+      exitCode: 0,
+      omitted: { output: deferredOutput.length },
+    },
+  };
+}
+const loadedActivity = deferredActivity("deferred-loaded");
+const unavailableActivity = deferredActivity("deferred-unavailable");
+
 export default function DesignSystem() {
   const returnThreadId = useLocation({ select: (location) => location.state.chatThreadId });
   const returnDraftId = useLocation({ select: (location) => location.state.draftThreadId });
 
-  const [queries] = useState(
-    () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
-  );
+  const [queries] = useState(() => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // The gallery has no Core, so the loaded specimen starts with its fetched text cached.
+    client.setQueryData(activityTextOptions(undefined, deferredSource, loadedActivity).queryKey, {
+      detail: "bash env | sort",
+      output: deferredOutput,
+    });
+    return client;
+  });
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme ?? "system");
   useEffect(() => {
     const previous = document.documentElement.dataset.theme;
@@ -211,6 +243,12 @@ export default function DesignSystem() {
                         },
                       }}
                     />
+                  </Specimen>
+                  <Specimen title="Activity output loaded on expand">
+                    <ActivitySourceContext value={deferredSource}>
+                      <ActivityItem part={loadedActivity} />
+                      <ActivityItem part={unavailableActivity} />
+                    </ActivitySourceContext>
                   </Specimen>
                   <Markdown text={richText} />
                   <Specimen title="Table with Markdown and CSV copy">

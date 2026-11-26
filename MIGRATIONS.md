@@ -314,6 +314,19 @@ the saved transcript, rewriting that stream once. Native schema versions are unc
 stop producers and restore matching Redis backups if an older consumer would replay retained `input`
 events.
 
+### Activity text on demand and per-exchange subagent turns
+
+Display activity parts gain an optional `omitted` field, and `streams.activity` returns the text it
+names. Core leaves tool output, and thinking text past its first 256 characters, out of replay
+windows, deltas, hydration and turn pages. Stored turns keep the full text. Older strict clients reject the new
+field, so deploy Core, web and TUI together and reload open tabs. The client cache projection version
+moves to 3, which discards cached rows that still hold the full text.
+
+Subagent streams now store one turn per exchange; the run's own turn holds the last one. Opening an
+ended subagent's panel splits a stream stored as one turn, once. Native schema versions are unchanged.
+An older Core reads only the run's own turn, so after rollback a split stream shows only its last
+exchange. Restore the pre-upgrade native database to keep earlier exchanges visible in older builds.
+
 ### Native computer viewer through Core
 
 `computer.read.desktop.url` can now be a root-relative `/computer.html?...` URL. Native web resolves

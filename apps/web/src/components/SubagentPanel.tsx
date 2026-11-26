@@ -4,16 +4,18 @@ import { AgentAvatar } from "./AgentAvatar";
 import { LoadingSpinner } from "./ui/loading-spinner";
 import { defaultRightPanel } from "../panel-store";
 import {
+  memo,
   useContext,
   useMemo,
   useEffect,
   useCallback,
+  useRef,
   useSyncExternalStore,
-  useState,
   type ReactNode,
 } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useStore } from "zustand";
+import type { NativeClient, NativeThreadStore } from "@stanley2058/lilac-client";
 import { Bot, CircleAlert, CircleCheck, PanelRightClose, PanelRightOpen } from "lucide-react";
 import type {
   DisplayMessage,
@@ -43,6 +45,7 @@ import {
 import { MessageIdentityContext } from "./message-identity";
 import type { ActorIdentity } from "./ActorAvatar";
 import { Turn, useSlot, useSlotIds } from "./Timeline";
+import { loadTurnGap } from "../turn-gap";
 import {
   DisplayStreamContext,
   MessageServicesContext,
@@ -203,15 +206,10 @@ export function NativeSubagentPanel({
   const missing =
     targetId && !target && !resolving ? "Subagent is no longer available." : undefined;
   const error = list.error?.message ?? streamError ?? missing;
-  const [loadingHistory, setLoadingHistory] = useState(false);
-  const moreHistory = !!turn?.partsCursor;
-  const loadHistory = () => {
-    if (!turn || loadingHistory) return;
-    setLoadingHistory(true);
-    void client
-      .loadStreamTurnPage(targetStream, turn.slotId)
-      .finally(() => setLoadingHistory(false));
-  };
+  const stream = useMemo(
+    () => (agentId ? { client, store, slotIds, target: targetStream } : undefined),
+    [agentId, client, store, slotIds, targetStream],
+  );
   const actions = panels.getState();
   return (
     <SubagentPanelView
@@ -219,18 +217,14 @@ export function NativeSubagentPanel({
       items={items}
       selected={selected}
       messages={turn?.messages}
-      streamedTurn={turn}
+      stream={stream}
       resourceUrl={resourceUrl}
-      streamTarget={targetStream}
       loading={loading}
       error={error}
       onSelect={(agent) => actions.openAgent(threadId, agentTabTarget(agent), agent.activityId)}
-      hasMore={agentId ? moreHistory : list.hasNextPage}
-      loadingMore={agentId ? loadingHistory : list.isFetchingNextPage}
-      onMore={() => {
-        if (agentId) loadHistory();
-        else void list.fetchNextPage();
-      }}
+      hasMore={!agentId && list.hasNextPage}
+      loadingMore={list.isFetchingNextPage}
+      onMore={() => void list.fetchNextPage()}
     />
   );
 }
@@ -268,8 +262,7 @@ export function SubagentPanelView({
   items,
   selected,
   messages = [],
-  streamedTurn,
-  streamTarget,
+  stream,
   resourceUrl = transcriptServices.resourceUrl,
   loading,
   error,
@@ -283,8 +276,8 @@ export function SubagentPanelView({
   items: readonly SubagentSummary[];
   selected?: SubagentSummary;
   messages?: readonly DisplayMessage[];
-  streamedTurn?: ReadyTurnSlot;
-  streamTarget?: DisplayStreamTarget;
+  /** The agent's display stream, whose turns replace `messages` once it opens. */
+  stream?: AgentStream;
   resourceUrl?: MessageServices["resourceUrl"];
   loading?: boolean;
   error?: string;
@@ -313,8 +306,7 @@ export function SubagentPanelView({
     [identity, parent, relations, selected?.id, selected?.parentId, selected?.profile],
   );
   const turn = useMemo<ReadyTurnSlot | undefined>(() => {
-    if (streamedTurn) return streamedTurn;
-    if (!selected) return undefined;
+    if (!selected || stream) return undefined;
     // The transcript splits long prompts into consecutive user messages.
     const firstResponse = messages.findIndex((message) => message.role !== "user");
     const promptChunks = messages.slice(0, firstResponse < 0 ? messages.length : firstResponse);
@@ -343,9 +335,9 @@ export function SubagentPanelView({
           : message,
       ),
     };
-  }, [selected, messages, streamedTurn]);
+  }, [selected, messages, stream]);
   const more =
-    hasMore && !streamedTurn ? (
+    hasMore && !stream ? (
       <Button variant="ghost" disabled={loadingMore} onClick={onMore}>
         {selected ? "Load older messages" : "Load more agents"}
       </Button>
@@ -389,15 +381,23 @@ export function SubagentPanelView({
                 Transcript unavailable.
               </p>
             ) : null}
-            {!loading && !unavailable && messages.length === 0 ? (
+            {!loading &&
+            !unavailable &&
+            messages.length === 0 &&
+            (stream?.slotIds.length ?? 0) <= 1 ? (
               <p className="subagent-notice p-3 text-muted-foreground text-sm">
                 Waiting for the first message…
               </p>
             ) : null}
-            <DisplayStreamContext value={streamTarget}>
+            <DisplayStreamContext value={stream?.target}>
               <MessageIdentityContext value={transcriptIdentity}>
                 <MessageServicesContext value={services}>
-                  {turn && messages.length > 0 ? (
+                  {stream
+                    ? stream.slotIds.map((slotId) => (
+                        <StreamSlot key={slotId} stream={stream} slotId={slotId} />
+                      ))
+                    : null}
+                  {!stream && turn && messages.length > 0 ? (
                     <Turn
                       key={turn.turnId}
                       slot={turn}
@@ -462,6 +462,84 @@ export function SubagentPanelView({
         </div>
       )}
     </aside>
+  );
+}
+
+type AgentStream = {
+  client: Pick<NativeClient, "hydrateStream" | "loadStreamTurnPage" | "subscribe">;
+  store: NativeThreadStore;
+  slotIds: readonly string[];
+  target: DisplayStreamTarget;
+};
+
+/** One exchange of an agent's stream, or a range of earlier ones that loads once it is in view. */
+// Memoized so a streamed update to the newest exchange leaves the loaded earlier ones alone.
+const StreamSlot = memo(function StreamSlot({
+  stream,
+  slotId,
+}: {
+  stream: AgentStream;
+  slotId: string;
+}) {
+  const slot = useSlot(stream.store, slotId);
+  const { client, target } = stream;
+  const loadPage = useCallback(
+    () =>
+      void loadTurnGap(
+        () => client.loadStreamTurnPage(target, slotId),
+        () => stream.store.get(slotId),
+      ),
+    [client, target, slotId, stream.store],
+  );
+  if (!slot) return null;
+  if (slot.kind === "deferred") return <DeferredStreamSlot stream={stream} slotId={slotId} />;
+  if (slot.kind === "failed")
+    return (
+      <div className="subagent-notice flex items-center justify-center gap-3 p-3 text-sm text-muted-foreground">
+        <span>{slot.message}</span>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => void client.hydrateStream(target, slotId)}
+        >
+          Retry history
+        </Button>
+      </div>
+    );
+  if (slot.messages.length === 0) return null;
+  return (
+    <Turn slot={slot} animateArrivals={false} onRewind={ignoreTurnAction} onLoadMore={loadPage} />
+  );
+});
+
+function DeferredStreamSlot({ stream, slotId }: { stream: AgentStream; slotId: string }) {
+  const { client, target } = stream;
+  const placeholder = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = placeholder.current;
+    if (!element) return;
+    let visible = false;
+    const load = () => {
+      if (visible) void client.hydrateStream(target, slotId);
+    };
+    const observer = new IntersectionObserver((entries) => {
+      visible = entries.some((entry) => entry.isIntersecting);
+      load();
+    });
+    observer.observe(element);
+    // A range that came into view offline loads once the connection returns.
+    const stop = client.subscribe((event) => {
+      if (event.kind === "bootstrap") load();
+    });
+    return () => {
+      observer.disconnect();
+      stop();
+    };
+  }, [client, target, slotId]);
+  return (
+    <div ref={placeholder}>
+      <SkeletonRows label="Loading earlier messages" rows={2} avatar />
+    </div>
   );
 }
 

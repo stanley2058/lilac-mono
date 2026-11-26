@@ -144,7 +144,8 @@ test("thread and child subscriptions share display projection, deltas, completed
     const serialized = JSON.stringify(store.at(0));
     expect(serialized).toContain("Checking the source");
     expect(serialized).toContain("cat report.md");
-    expect(serialized).toContain("Source text");
+    expect(serialized).not.toContain("Source text");
+    expect(serialized).toContain('"omitted":{"output":11}');
     expect(serialized).toContain('"durationMs":12');
     expect(serialized).toContain('"phase":"final"');
     expect(
@@ -454,6 +455,47 @@ test("rewinding a later parent turn preserves an earlier child's subscription", 
   } finally {
     controller.abort();
     await events?.return?.();
+    await f.close();
+  }
+}, 15000);
+
+test("child activity text left out of replay loads through the child stream", async () => {
+  const f = await fixture();
+  try {
+    const output = "line\n".repeat(200);
+    f.publisher.activity({
+      activityId: "bash",
+      stepId: "step",
+      kind: "tool",
+      state: "complete",
+      label: "bash cat report.md",
+      detail: "bash cat report.md",
+      output,
+      exitCode: 0,
+    });
+    integrationValue(await f.publisher.captureBarrier());
+    const reply = await f.client.streams.sync({ target: f.target });
+    const slot = reply.kind === "window" ? reply.slots.findLast((s) => s.kind === "ready") : null;
+    if (slot?.kind !== "ready") throw new Error("Missing child turn");
+    const part = slot.messages
+      .flatMap((message) => message.parts)
+      .find((candidate) => candidate.type === "data-activity" && candidate.data.kind === "tool");
+    if (part?.type !== "data-activity") throw new Error("Missing tool activity");
+    expect(part.data.output).toBeUndefined();
+    expect(part.data.omitted).toEqual({ output: output.length });
+    const read = { turnId: slot.turnId, partId: part.id };
+    expect(await f.client.streams.activity({ target: f.target, ...read })).toEqual({
+      detail: "bash cat report.md",
+      output,
+    });
+    const other = await f.client.threads.create({ commandId: crypto.randomUUID(), title: "Other" });
+    await expect(
+      f.client.streams.activity({ target: { ...f.target, threadId: other.id }, ...read }),
+    ).rejects.toThrow();
+    await expect(
+      f.client.streams.activity({ target: { kind: "thread", threadId: f.thread.id }, ...read }),
+    ).rejects.toThrow();
+  } finally {
     await f.close();
   }
 }, 15000);

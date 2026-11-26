@@ -1,7 +1,7 @@
 import type { ReplayCheckpoint, TurnSlot } from "@stanley2058/lilac-client-protocol";
 
 // The shared decoder owns the effective projection version. Callers keep their existing scope shape.
-export const CACHE_PROJECTION_VERSION = 2;
+export const CACHE_PROJECTION_VERSION = 3;
 
 export type CacheScope = {
   installationId: string;

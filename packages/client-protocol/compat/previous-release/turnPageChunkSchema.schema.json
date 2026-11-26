@@ -241,7 +241,15 @@
                   "required": ["path", "mediaType"],
                   "additionalProperties": false
                 },
-                "durationMs": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+                "durationMs": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                "omitted": {
+                  "type": "object",
+                  "properties": {
+                    "detail": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                    "output": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+                  },
+                  "additionalProperties": false
+                }
               },
               "required": ["kind", "label", "state"],
               "additionalProperties": false

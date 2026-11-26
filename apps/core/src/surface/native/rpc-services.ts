@@ -694,6 +694,21 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
           }),
         );
       },
+      activity(principal, input) {
+        const { turnId, partId } = input;
+        if (input.target.kind === "thread")
+          return store.activityText(principal.userId, {
+            threadId: input.target.threadId,
+            turnId,
+            partId,
+          });
+        return resolveStream(principal, input.target).andThen((id) =>
+          store.agentStreamActivityText(principal.userId, input.target.threadId, id, {
+            turnId,
+            partId,
+          }),
+        );
+      },
     },
     links: {
       async preview(_principal, input, signal) {

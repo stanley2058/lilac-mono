@@ -11,6 +11,7 @@ import type { DurableWorkflowStore } from "../../../src/workflow/durable-workflo
 import { seedNativeWorkflowRun } from "./workflow-fixture";
 import { seedNativeSubagent } from "./subagent-fixture";
 import type { SqliteTranscriptStore } from "../../../src/transcript/transcript-store";
+import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
 import { createHash } from "node:crypto";
 
 const HTML_PREVIEW_ICON =
@@ -504,14 +505,47 @@ function seedBrowserAgentFollowUps(
     ["Reply with the token and the value plus 10.", "ORCHID-739 27"],
   ] as const;
   const title = "Orchestrate follow-up configuration smoke test with a long title";
-  const history: { role: "user" | "assistant"; content: string }[] = [];
+  const history: StoredMessageV1[] = [];
+  // A long command result, which the panel loads only when its row opens.
+  const work: StoredMessageV1[] = [
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "browser-follow-up-env",
+          toolName: "bash",
+          input: { command: "env | sort" },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "browser-follow-up-env",
+          toolName: "bash",
+          output: {
+            type: "text",
+            value: Array.from({ length: 40 }, (_, line) => `SETTING_${line}=value-${line}`).join(
+              "\n",
+            ),
+          },
+        },
+      ],
+    },
+  ];
   const runs = exchanges.map(([prompt, reply], index) => {
     const child = seedNativeSubagent(store, workflows, thread.id, {
       id: `browser-follow-up-${index}`,
       childSessionId: "child-session-browser-follow-up",
       title,
     });
-    history.push({ role: "user", content: prompt }, { role: "assistant", content: reply });
+    history.push({ role: "user", content: prompt }, ...(index === 0 ? work : []), {
+      role: "assistant",
+      content: reply,
+    });
     transcripts
       .saveRequestTranscript({
         requestId: child.requestId,

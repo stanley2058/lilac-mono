@@ -605,6 +605,22 @@
                                                     "type": "integer",
                                                     "minimum": 0,
                                                     "maximum": 9007199254740991
+                                                  },
+                                                  "omitted": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "detail": {
+                                                        "type": "integer",
+                                                        "minimum": 0,
+                                                        "maximum": 9007199254740991
+                                                      },
+                                                      "output": {
+                                                        "type": "integer",
+                                                        "minimum": 0,
+                                                        "maximum": 9007199254740991
+                                                      }
+                                                    },
+                                                    "additionalProperties": false
                                                   }
                                                 },
                                                 "required": ["kind", "label", "state"],
@@ -1737,6 +1753,22 @@
                                               "type": "integer",
                                               "minimum": 0,
                                               "maximum": 9007199254740991
+                                            },
+                                            "omitted": {
+                                              "type": "object",
+                                              "properties": {
+                                                "detail": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "output": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "additionalProperties": false
                                             }
                                           },
                                           "required": ["kind", "label", "state"],
@@ -2747,6 +2779,22 @@
                                         "type": "integer",
                                         "minimum": 0,
                                         "maximum": 9007199254740991
+                                      },
+                                      "omitted": {
+                                        "type": "object",
+                                        "properties": {
+                                          "detail": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "output": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "additionalProperties": false
                                       }
                                     },
                                     "required": ["kind", "label", "state"],
@@ -3874,6 +3922,22 @@
                                                 "type": "integer",
                                                 "minimum": 0,
                                                 "maximum": 9007199254740991
+                                              },
+                                              "omitted": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "detail": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                  },
+                                                  "output": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                  }
+                                                },
+                                                "additionalProperties": false
                                               }
                                             },
                                             "required": ["kind", "label", "state"],
@@ -5057,6 +5121,22 @@
                                                 "type": "integer",
                                                 "minimum": 0,
                                                 "maximum": 9007199254740991
+                                              },
+                                              "omitted": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "detail": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                  },
+                                                  "output": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                  }
+                                                },
+                                                "additionalProperties": false
                                               }
                                             },
                                             "required": ["kind", "label", "state"],
@@ -6128,6 +6208,22 @@
                                           "type": "integer",
                                           "minimum": 0,
                                           "maximum": 9007199254740991
+                                        },
+                                        "omitted": {
+                                          "type": "object",
+                                          "properties": {
+                                            "detail": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "output": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "additionalProperties": false
                                         }
                                       },
                                       "required": ["kind", "label", "state"],
@@ -7106,6 +7202,22 @@
                                     "type": "integer",
                                     "minimum": 0,
                                     "maximum": 9007199254740991
+                                  },
+                                  "omitted": {
+                                    "type": "object",
+                                    "properties": {
+                                      "detail": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "output": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "additionalProperties": false
                                   }
                                 },
                                 "required": ["kind", "label", "state"],
@@ -8165,6 +8277,22 @@
                                             "type": "integer",
                                             "minimum": 0,
                                             "maximum": 9007199254740991
+                                          },
+                                          "omitted": {
+                                            "type": "object",
+                                            "properties": {
+                                              "detail": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "output": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              }
+                                            },
+                                            "additionalProperties": false
                                           }
                                         },
                                         "required": ["kind", "label", "state"],

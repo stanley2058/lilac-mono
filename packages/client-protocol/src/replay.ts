@@ -156,6 +156,13 @@ export const displayPartSchema = z.discriminatedUnion("type", [
         })
         .optional(),
       durationMs: revisionSchema.optional(),
+      /**
+       * Full lengths of the `detail` and `output` text Core left out of this part. Clients load the
+       * full text with `streams.activity` when the row opens.
+       */
+      omitted: z
+        .strictObject({ detail: revisionSchema.optional(), output: revisionSchema.optional() })
+        .optional(),
     }),
   }),
   z.strictObject({

@@ -111,3 +111,40 @@ test("stops when loading makes no progress or the navigation is canceled", async
   expect(await loadCitationSource({ ...options, current: () => false })).toBeUndefined();
   expect(calls).toBe(1);
 });
+
+test("keeps paging while the cited message waits behind a turn's gap", async () => {
+  const at = (position: number) => ({
+    id: `m${position}`,
+    role: "assistant" as const,
+    metadata: { position },
+    parts: [{ type: "text" as const, text: `Message ${position}` }],
+  });
+  const store = new NativeThreadStore();
+  store.replay({
+    kind: "window",
+    checkpoint,
+    slots: [{ ...ready(0), messages: [at(0), at(9)], partsCursor: "page_0" }],
+  });
+  const pages = [
+    { messages: [1, 2, 3].map(at), nextCursor: "page_1" },
+    { messages: [4, 5, 6, 7, 8].map(at), nextCursor: undefined },
+  ];
+  let calls = 0;
+  const client = {
+    hydrate: async () => {},
+    loadTurnPage: async (_threadId: string, slotId: string) => {
+      const page = pages[calls]!;
+      store.turnPage(slotId, `page_${calls++}`, { ...checkpoint, turnId: "turn_0", ...page });
+    },
+  };
+  expect(
+    await loadCitationSource({
+      threadId: "thread",
+      messageId: "m2",
+      store,
+      client,
+      current: () => true,
+    }),
+  ).toBe("slot_0");
+  expect(calls).toBe(2);
+});
