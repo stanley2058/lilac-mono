@@ -9,6 +9,7 @@ import {
 } from "../../../../../packages/client/src/index";
 import {
   bootstrapReplySchema,
+  type ActivityText,
   type BootstrapReply,
   type DisplayStreamTarget,
   type NativeInput,
@@ -49,19 +50,7 @@ export function renderTurn(slot: Extract<TurnSlot, { kind: "ready" }>): Rendered
     state: slot.state,
     user: text("user"),
     assistant: text("assistant"),
-    activities: parts.flatMap((part) =>
-      part.type === "data-activity"
-        ? [
-            {
-              kind: part.data.kind,
-              label: part.data.label,
-              state: part.data.state,
-              ...(part.data.output !== undefined ? { output: part.data.output } : {}),
-              ...(part.data.detail !== undefined ? { detail: part.data.detail } : {}),
-            },
-          ]
-        : [],
-    ),
+    activities: renderActivities(parts),
     questions: parts.filter((part) => part.type === "data-question"),
     workflows: parts.flatMap((part) => (part.type === "data-workflow" ? [part.data] : [])),
     inputStates: parts.flatMap((part) =>
@@ -69,6 +58,28 @@ export function renderTurn(slot: Extract<TurnSlot, { kind: "ready" }>): Rendered
     ),
     messages: slot.messages,
   };
+}
+
+type ActivityPart = Extract<DisplayPart, { type: "data-activity" }>;
+
+function renderActivities(
+  parts: DisplayPart[],
+  texts: ReadonlyMap<string, ActivityText> = new Map(),
+): RenderedTurn["activities"] {
+  return parts.flatMap((part) => {
+    if (part.type !== "data-activity") return [];
+    const output = texts.get(part.id)?.output ?? part.data.output;
+    const detail = texts.get(part.id)?.detail ?? part.data.detail;
+    return [
+      {
+        kind: part.data.kind,
+        label: part.data.label,
+        state: part.data.state,
+        ...(output !== undefined ? { output } : {}),
+        ...(detail !== undefined ? { detail } : {}),
+      },
+    ];
+  });
 }
 
 export function renderStore(store: NativeThreadStore): RenderedTurn[] {
@@ -215,6 +226,34 @@ export class NativeSession {
       typeof target === "string" ? { kind: "thread", threadId: target } : target;
     this.releases.push(this.client.observeStream(resolved));
     return this.client.stream(resolved);
+  }
+
+  /** Loads the activity text Core left out of the turns, as a client does when a row opens. */
+  async withActivityText(
+    target: DisplayStreamTarget | string,
+    turns: RenderedTurn[],
+  ): Promise<RenderedTurn[]> {
+    const resolved: DisplayStreamTarget =
+      typeof target === "string" ? { kind: "thread", threadId: target } : target;
+    return Promise.all(
+      turns.map(async (turn) => {
+        const parts = turn.messages.flatMap((message) => message.parts);
+        const omitted = parts.filter(
+          (part): part is ActivityPart => part.type === "data-activity" && !!part.data.omitted,
+        );
+        const texts = new Map<string, ActivityText>();
+        for (const part of omitted)
+          texts.set(
+            part.id,
+            await this.rpc.streams.activity({
+              target: resolved,
+              turnId: turn.turnId,
+              partId: part.id,
+            }),
+          );
+        return { ...turn, activities: renderActivities(parts, texts) };
+      }),
+    );
   }
 
   async send(

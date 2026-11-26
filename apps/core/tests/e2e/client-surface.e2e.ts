@@ -24,7 +24,7 @@ async function roundTrip(session: NativeSession, text: string) {
   const threadId = await session.createThread(text);
   const store = session.watch(threadId);
   await session.send(threadId, `${tag} ${text}`);
-  const [turn] = await session.settled(store, 1);
+  const [turn] = await session.withActivityText(threadId, await session.settled(store, 1));
   expect(turn!.state).toBe("complete");
   expect(turn!.assistant).toBe(`Echo: ${text}`);
   expect(turn!.activities).toEqual([

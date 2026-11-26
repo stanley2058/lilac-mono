@@ -149,7 +149,10 @@ afterAll(async () => {
 test("conversations written by the previous release render the same", async () => {
   const session = await e2e.session({ style: "web" });
   for (const name of ["tools", "question", "subagent"]) {
-    const turns = await session.settled(session.watch(threads[name]!), 1, `${name} after upgrade`);
+    const turns = await session.withActivityText(
+      threads[name]!,
+      await session.settled(session.watch(threads[name]!), 1, `${name} after upgrade`),
+    );
     expect({ name, turns: comparable(turns) }).toEqual({ name, turns: comparable(before[name]!) });
   }
   const listed = await session.rpc.subagents.list({ threadId: threads.subagent! });

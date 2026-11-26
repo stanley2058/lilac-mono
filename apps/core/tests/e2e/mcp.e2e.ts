@@ -78,7 +78,7 @@ test("the agent finds and calls tools from stdio and HTTP MCP servers", async ()
   const threadId = await session.createThread("MCP");
   const store = session.watch(threadId);
   await session.send(threadId, `${tag} Use the MCP tools.`);
-  const [turn] = await session.settled(store, 1);
+  const [turn] = await session.withActivityText(threadId, await session.settled(store, 1));
   expect(turn!.assistant).toBe("MCP done.");
   expect(
     turn!.activities

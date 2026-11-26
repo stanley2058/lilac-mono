@@ -164,7 +164,8 @@ test("a client whose connection drops mid run resumes without gaps or duplicates
         rendered[0]!.assistant.includes("Finished after the drop."),
       "caught up after reconnect",
     );
-    expect(turns[0]!.activities.map((activity) => [activity.state, activity.output])).toEqual([
+    const loaded = await session.withActivityText(threadId, turns);
+    expect(loaded[0]!.activities.map((activity) => [activity.state, activity.output])).toEqual([
       ["complete", expect.stringContaining("before-drop")],
       ["complete", expect.stringContaining("during-drop")],
     ]);

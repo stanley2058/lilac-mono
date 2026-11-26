@@ -59,13 +59,15 @@ test("a sync subagent runs as its own agent and returns its result to the parent
   expect(JSON.stringify(read.messages)).toContain("child-sync-output");
 
   // The client's subagent stream renders the child's work under the id the list returned.
-  const childStore = session.watch({ kind: "subagent", threadId, agentId: agent.id });
-  const childTurns = await session.waitForTurns(
+  const childTarget = { kind: "subagent", threadId, agentId: agent.id } as const;
+  const childStore = session.watch(childTarget);
+  const childRendered = await session.waitForTurns(
     childStore,
     (rendered) =>
       rendered.some((candidate) => candidate.assistant.includes("Child result: child-sync-output")),
     "child stream rendered",
   );
+  const childTurns = await session.withActivityText(childTarget, childRendered);
   expect(childTurns.flatMap((candidate) => candidate.activities)).toEqual([
     expect.objectContaining({
       state: "complete",
