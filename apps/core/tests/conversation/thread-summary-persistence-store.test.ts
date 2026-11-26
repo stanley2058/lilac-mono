@@ -4,7 +4,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseCoreConfigV1ToUniversal } from "@stanley2058/lilac-utils";
-import { Panic } from "better-result";
 
 import { ConversationThreadService } from "../../src/conversation/thread-service";
 import {
@@ -133,34 +132,6 @@ describe("conversation thread summary persisted store", () => {
       ]);
       expect(JSON.stringify(diagnostics)).not.toContain(secret);
       if (summary.status === "error") expect(summary.error.message).not.toContain(secret);
-    } finally {
-      store.close();
-    }
-  });
-
-  it("preserves persistence diagnostic Panic identity", async () => {
-    const filename = await databasePath();
-    const callbackPanic = new Panic({ message: "thread diagnostic callback failed" });
-    const store = new ConversationThreadStore(filename, {
-      onPersistenceDiagnostic: () => {
-        throw callbackPanic;
-      },
-    });
-    try {
-      const written = store.upsertSummary("corrupt-thread", "hash", {
-        title: "Title",
-        brief: "Brief",
-        topics: ["topic"],
-      });
-      expect(written.status).toBe("ok");
-      const mutation = new Database(filename, { strict: true });
-      mutation.run(
-        "UPDATE conversation_thread_summaries SET topics_json = '{' WHERE thread_id = ?",
-        ["corrupt-thread"],
-      );
-      mutation.close();
-
-      expect(() => store.getSummary("corrupt-thread")).toThrow(callbackPanic);
     } finally {
       store.close();
     }

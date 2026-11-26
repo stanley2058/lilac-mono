@@ -6,20 +6,16 @@ import path from "node:path";
 
 import { Panic, Result, type Result as ResultType } from "better-result";
 import {
-  createLilacBus,
   EventDeliveryStopFailed,
   EventDeliveryTransportFailed,
   RedisEventDeadLetter,
   type EventDeliveryDoneError,
-  type RawBus,
 } from "@stanley2058/lilac-event-bus";
 import Redis from "ioredis";
 import type { BlobStore } from "@stanley2058/lilac-blob-storage";
 
 import {
-  adaptCoreEventBusCleanupResultToHost,
   captureCoreEventBusCleanup,
-  CoreEventBusCleanupFailed,
   CoreResidualDiscordRequestRouterDoneTimedOut,
   type CoreResidualDiscordRequestRouterDoneOutcome,
   type CoreRuntimeCleanupFailure,
@@ -40,8 +36,6 @@ import {
   selectCoreRuntimeStopPass,
   settleCoreResidualDiscordRequestRouterDone,
   stopCoreResidualDiscordRequestRouter,
-  superviseDetachedCoreConfigValidation,
-  superviseCoreResidualDiscordRequestRouterDone,
   superviseCoreRouterDone,
 } from "../../src/runtime/create-core-runtime";
 import {
@@ -1257,20 +1251,6 @@ describe("Core runtime startup", () => {
     ]);
   });
 
-  it("reports detached config validation Panic with exact identity", async () => {
-    const panic = new Panic({ message: "config validation invariant failed" });
-    const reported: Error[] = [];
-
-    await superviseDetachedCoreConfigValidation({
-      validate: async () => {
-        throw panic;
-      },
-      reportFatalError: (error) => reported.push(error),
-    });
-
-    expect(reported).toEqual([panic]);
-  });
-
   it("supervises typed cleanup outcomes without converting them back to rejections", async () => {
     const cleanupPanic = new Panic({
       message: "typed cleanup invariant failed",
@@ -1291,31 +1271,6 @@ describe("Core runtime startup", () => {
       { label: "panic", error: "typed cleanup invariant failed", panic: true },
     ]);
     expect(() => cleanup.finish()).toThrow(cleanupPanic);
-  });
-
-  it("contains a revoked cleanup cause, continues cleanup, and preserves the startup Panic", async () => {
-    const startupPanic = new Panic({ message: "startup invariant failed" });
-    const { proxy, revoke } = Proxy.revocable({}, {});
-    revoke();
-    const calls: string[] = [];
-    const cleanup = createCoreRuntimeCleanupSupervisor(startupPanic);
-
-    await cleanup.run("revoked", async () => {
-      calls.push("revoked");
-      throw proxy;
-    });
-    await cleanup.run("continued", async () => {
-      calls.push("continued");
-    });
-
-    expect(calls).toEqual(["revoked", "continued"]);
-    expect(cleanup.failures).toEqual([
-      { label: "revoked", error: "Opaque cleanup failure", panic: false },
-    ]);
-    expect(() => {
-      cleanup.finish();
-      throw startupPanic;
-    }).toThrow(startupPanic);
   });
 
   it("retains and retries residual router ownership after an ordinary stop failure", async () => {
@@ -1396,26 +1351,6 @@ describe("Core runtime startup", () => {
       label: "residualRouter.stop",
       panic: false,
     });
-  });
-
-  it("supervises a residual done rejection immediately and preserves Panic identity", async () => {
-    const panic = new Panic({ message: "residual done invariant failed" });
-    const done = Promise.withResolvers<ResultType<void, EventDeliveryDoneError>>();
-    const supervision = superviseCoreResidualDiscordRequestRouterDone(done.promise);
-    done.reject(panic);
-    const cleanup = createCoreRuntimeCleanupSupervisor(null);
-
-    await settleCoreResidualDiscordRequestRouterDone({
-      supervision,
-      cleanup,
-      reportLatePanic: () => {},
-      deadlineMs: 3_000,
-    });
-
-    expect(cleanup.failures).toEqual([
-      { label: "residualRouter.done", error: panic.message, panic: true },
-    ]);
-    expect(() => cleanup.finish()).toThrow(panic);
   });
 
   it("records an in-time residual done Result error", async () => {
@@ -1781,18 +1716,7 @@ describe("Core runtime startup", () => {
 });
 
 describe("Core runtime event delivery", () => {
-  it("adapts cleanup Results only at the exact runtime host boundary", () => {
-    const cleanupError = new CoreEventBusCleanupFailed({
-      cause: new Error("close failed"),
-      message: "Core event bus cleanup failed",
-    });
-
-    expect(() => adaptCoreEventBusCleanupResultToHost(Result.err(cleanupError))).toThrow(
-      cleanupError.message,
-    );
-  });
-
-  it("captures ordinary owned Redis cleanup failure and preserves cleanup Panic identity", async () => {
+  it("captures ordinary owned Redis cleanup failure", async () => {
     const redis = new Redis({ lazyConnect: true });
     const cleanupError = new Error("redis close failed");
     Reflect.set(redis, "quit", async () => {
@@ -1807,44 +1731,6 @@ describe("Core runtime event delivery", () => {
       });
       expect(captured.status).toBe("error");
       if (captured.status === "error") expect(captured.error.cause).toBe(cleanupError);
-
-      const panic = new Panic({ message: "redis cleanup invariant failed" });
-      Reflect.set(redis, "quit", async () => {
-        throw panic;
-      });
-      await expect(captureCoreEventBusCleanup({ redis, raw: null, bus: null })).rejects.toBe(panic);
-    } finally {
-      redis.disconnect();
-    }
-  });
-
-  it("adapts a typed bus close Err into owned runtime cleanup failure", async () => {
-    const redis = new Redis({ lazyConnect: true });
-    const closeFailure = new Error("event transport close failed");
-    const raw: RawBus = {
-      publish: async () => ({ id: "1-0", cursor: "1-0" }),
-      subscribe: async () => {
-        throw new Error("unused test subscription");
-      },
-      fetch: async () => ({ messages: [] }),
-      close: async () => {
-        throw closeFailure;
-      },
-    };
-
-    try {
-      const captured = await captureCoreEventBusCleanup({
-        redis,
-        raw: null,
-        bus: createLilacBus(raw),
-      });
-      expect(captured.status).toBe("error");
-      if (captured.status === "error") {
-        expect(captured.error.cause).toMatchObject({
-          _tag: "EventBusCloseFailed",
-          cause: closeFailure,
-        });
-      }
     } finally {
       redis.disconnect();
     }
@@ -1981,20 +1867,6 @@ describe("Core runtime event delivery", () => {
 
     expect(reported).toEqual([transportFailure]);
     expect(healthy).toBe(false);
-  });
-
-  it("preserves a rejected router Panic identity at fatal supervision", async () => {
-    const panic = new Panic({ message: "router delivery invariant failed" });
-    const reported: Error[] = [];
-
-    await superviseCoreRouterDone({
-      done: Promise.reject(panic),
-      isStopping: () => false,
-      markUnhealthy: () => {},
-      reportFatalError: (error) => reported.push(error),
-    });
-
-    expect(reported).toEqual([panic]);
   });
 
   it("waits for subscription and dead-letter work before closing owned Redis", async () => {

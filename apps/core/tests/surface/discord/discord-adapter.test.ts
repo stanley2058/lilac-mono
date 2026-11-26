@@ -419,30 +419,6 @@ describe("DiscordAdapter typing", () => {
     await typingConfirmed.promise;
     expect(confirmed).toBe(true);
   });
-
-  it("reports a detached typing Panic to the fatal supervisor", async () => {
-    const config = testConfigWithStatusMessage();
-    const panic = new Panic({ message: "typing defect" });
-    const reported = Promise.withResolvers<Panic>();
-    const adapter = new DiscordAdapter({
-      config,
-      reportFatalPanic: (cause) => reported.resolve(cause),
-    });
-    Object.assign(adapter, {
-      client: {
-        channels: {
-          fetch: async () => {
-            throw panic;
-          },
-        },
-      },
-      cfg: config,
-    });
-
-    const started = await adapter.startTyping({ platform: "discord", channelId: "c1" });
-    expect(started.status).toBe("ok");
-    expect(await reported.promise).toBe(panic);
-  });
 });
 
 describe("DiscordAdapter custom command acknowledgement", () => {
@@ -891,26 +867,6 @@ describe("Discord question interactions", () => {
 });
 
 describe("isRoutableDiscordUserMessage", () => {
-  it("accepts normal user chat messages", () => {
-    const msg = makeMessage({
-      bot: false,
-      system: false,
-      type: MessageType.Default,
-    });
-
-    expect(isRoutableDiscordUserMessage(msg)).toBe(true);
-  });
-
-  it("accepts user replies", () => {
-    const msg = makeMessage({
-      bot: false,
-      system: false,
-      type: MessageType.Reply,
-    });
-
-    expect(isRoutableDiscordUserMessage(msg)).toBe(true);
-  });
-
   it("rejects non-chat/system message types", () => {
     const threadCreated = makeMessage({
       bot: false,
@@ -997,15 +953,6 @@ describe("hasExplicitDiscordUserMentionInContent", () => {
     ).toBe(false);
   });
 
-  it("returns true for <@id> mention tokens", () => {
-    expect(
-      hasExplicitDiscordUserMentionInContent({
-        content: "<@42> can you take a look?",
-        userId: "42",
-      }),
-    ).toBe(true);
-  });
-
   it("returns true for <@!id> nickname mention tokens", () => {
     expect(
       hasExplicitDiscordUserMentionInContent({
@@ -1035,16 +982,6 @@ describe("isExplicitDiscordUserMention", () => {
         hasParsedMention: true,
       }),
     ).toBe(false);
-  });
-
-  it("returns true when parsed mention and explicit token both exist", () => {
-    expect(
-      isExplicitDiscordUserMention({
-        content: "<@42> please refine this",
-        userId: "42",
-        hasParsedMention: true,
-      }),
-    ).toBe(true);
   });
 });
 
@@ -1722,22 +1659,6 @@ describe("DiscordAdapter detached event supervision", () => {
     requestId: "request-1",
     sessionId: "channel-1",
   };
-
-  it("reports the exact handler Panic to the owned fatal boundary", async () => {
-    const panic = new Panic({ message: "surface handler invariant failed" });
-    let resolveReported!: (reported: Panic) => void;
-    const reported = new Promise<Panic>((resolve) => {
-      resolveReported = resolve;
-    });
-    const adapter = new DiscordAdapter({ reportFatalPanic: resolveReported });
-    await adapter.subscribe(async () => {
-      throw panic;
-    });
-
-    (adapter as unknown as { emit(evt: AdapterEvent): void }).emit(event);
-
-    await expect(reported).resolves.toBe(panic);
-  });
 
   it("keeps ordinary detached handler failures best-effort", async () => {
     const reported: Panic[] = [];

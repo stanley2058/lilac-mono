@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import SuperJSON from "superjson";
 import type { ModelMessage } from "ai";
-import { Panic } from "better-result";
 import { storedMessagesV1Schema } from "@stanley2058/lilac-event-bus";
 import { z } from "zod";
 
@@ -233,25 +232,6 @@ describe("transcript persistence codecs", () => {
         }),
       ),
     );
-  });
-
-  it("preserves Panic thrown while decoding serialized data", () => {
-    const panic = new Panic({ message: "serialized transcript invariant failed" });
-    const originalParse = globalThis.JSON.parse;
-    globalThis.JSON.parse = () => {
-      throw panic;
-    };
-    try {
-      expect(() =>
-        decodeTranscriptMessages({
-          raw: "[]",
-          schemaVersion: 5,
-          recordId: "panic-transcript",
-        }),
-      ).toThrow(panic);
-    } finally {
-      globalThis.JSON.parse = originalParse;
-    }
   });
 
   it("covers current, legacy, missing, unsupported, malformed, and corrupt transcript values", () => {

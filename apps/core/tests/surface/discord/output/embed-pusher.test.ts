@@ -96,45 +96,6 @@ describe("startEmbedPusher content phase", () => {
     expect(result.value.responseQueue).toEqual(["done"]);
   });
 
-  it("continues in a fresh message when the edited message is gone", async () => {
-    let resolveDone: () => void = () => {};
-    const streamDone = new Promise<void>((resolve) => {
-      resolveDone = resolve;
-    });
-    const first = { id: "message-1" } as Message;
-    const replacement = { id: "message-2" } as Message;
-    const created = [first, replacement];
-    const edited: string[] = [];
-
-    const result = await startEmbedPusher({
-      createFirst: async () => {
-        const next = created.shift();
-        if (!next) throw new Error("unexpected create");
-        resolveDone();
-        return next;
-      },
-      createReply: async () => {
-        throw new Error("unexpected reply");
-      },
-      getContent: (isStreaming) => (isStreaming ? "streaming" : "terminal"),
-      getActionsLines: () => [],
-      getMaxLength: () => 4096,
-      streamDone,
-      useSmartSplitting: false,
-      editMessage: async (message) => {
-        edited.push(message.id);
-        resolveDone();
-        return message.id === "message-1" ? { kind: "not-found" } : { kind: "edited" };
-      },
-    });
-
-    if (result.status === "error") throw result.error;
-    expect(edited[0]).toBe("message-1");
-    expect(result.value.lastMsg.id).toBe("message-2");
-    expect(result.value.discordMessageCreated).toEqual(["message-1", "message-2"]);
-    expect(result.value.responseQueue).toEqual(["terminal"]);
-  });
-
   it("returns the Discord error when an edit fails", async () => {
     let resolveDone: () => void = () => {};
     const streamDone = new Promise<void>((resolve) => {

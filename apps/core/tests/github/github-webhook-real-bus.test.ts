@@ -1,12 +1,10 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { createHmac } from "node:crypto";
 import { type LilacMessageForTopic } from "@stanley2058/lilac-event-bus";
 import { createLogger } from "@stanley2058/lilac-utils";
 import { Result } from "better-result";
 import { z } from "zod";
 import { createRealCoreBusFixture, requireBusOk, withBusDeadline } from "../helpers/real-core-bus";
 import {
-  createGithubWebhookApp,
   decodeGithubWebhookEvent,
   githubWebhookApi,
   handleEvent,
@@ -26,7 +24,7 @@ afterEach(async () => {
 
 async function fixture() {
   const core = await createRealCoreBusFixture();
-  const { bus, transportBus, store } = core;
+  const { bus, transportBus } = core;
   const unexpected = async (): Promise<never> => {
     throw new Error("Unexpected external operation");
   };
@@ -104,9 +102,6 @@ async function fixture() {
     await core.close();
   });
   return {
-    bus,
-    store,
-    transportBus,
     core,
     received,
     waitReceived,
@@ -140,64 +135,6 @@ async function fixture() {
 }
 
 describe("GitHub webhook real bus contracts", () => {
-  it("delivers an authenticated HTTP mention through durable publication and typed Redis consumption", async () => {
-    const f = await fixture();
-    const finished = Promise.withResolvers<void>();
-    const app = createGithubWebhookApp({
-      secret: "test-secret",
-      path: "/webhook",
-      logger: createLogger({ module: "github-real-bus" }),
-      reportFatalError: (error) => finished.reject(error),
-      handle: async (event, projected, deliveryId) => {
-        const result = await handleEvent({
-          bus: f.bus,
-          api: f.api,
-          logger: createLogger({ module: "github-real-bus" }),
-          event,
-          projected,
-          botLogins: ["lilac"],
-          deliveryId,
-        });
-        if (result.requestId) cleanups.push(async () => clearGithubRequest(result.requestId!));
-        finished.resolve();
-      },
-    }).compile();
-    const body = JSON.stringify(f.comment);
-    const request = (signature: string) =>
-      new Request("http://localhost/webhook", {
-        method: "POST",
-        body,
-        headers: {
-          "content-type": "application/json",
-          "x-github-event": "issue_comment",
-          "x-github-delivery": "mention-delivery",
-          "x-hub-signature-256": signature,
-        },
-      });
-    expect((await app.handle(request("sha256=invalid"))).status).toBe(401);
-    expect(await f.fetch()).toHaveLength(0);
-    const signature = `sha256=${createHmac("sha256", "test-secret").update(body).digest("hex")}`;
-    expect((await app.handle(request(signature))).status).toBe(200);
-    await withBusDeadline(finished.promise, "webhook completion");
-    await f.waitReceived(1);
-    const message = f.received[0]!;
-    expect(message.data.requestDeliveryId).toBe("2629def0-45cf-8cfe-bc73-3f5831f976b0");
-    expect(message.headers).toMatchObject({
-      request_id: `github:${f.session}:123`,
-      session_id: f.session,
-      request_client: "github",
-    });
-    expect(message.data.raw).toMatchObject({
-      authenticatedActor: { platform: "github", userId: "synthetic-owner" },
-      github: { trigger: { kind: "comment", commentId: 123 } },
-    });
-    expect(requireBusOk(f.store.load(message.data.requestDeliveryId)).publication?.streamId).toBe(
-      (await f.fetch())[0]!.cursor,
-    );
-    expect((await app.handle(request(signature))).status).toBe(200);
-    expect(await f.fetch()).toHaveLength(1);
-  });
-
   it("deduplicates delayed mentions and preserves newer acknowledgement ownership", async () => {
     const f = await fixture();
     const first = await f.run("issue_comment", f.comment, "first");

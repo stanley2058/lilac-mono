@@ -148,8 +148,8 @@ codecs and architecture checks. Full repository checks are repeated before imple
 `apps/core/tests/surface/native/browser-fixture.ts` provides deterministic browser data and the real
 native service/runner path. `clerk-browser-fixture.ts` in the same directory loads ignored credential
 configuration at runtime and takes `TEST_NATIVE_CLERK_OWNER_ID`; it does not change normal Core
-configuration. The full native-only startup proof is
-`apps/core/tests/runtime/native-startup.test.ts`. Combined-mode composition coverage is in
+configuration. The e2e suite in `apps/core/tests/e2e/` is the full native-only startup proof: its
+harness boots Core native-only with isolated Redis unless a scenario adds a surface. Combined-mode composition coverage is in
 `apps/core/tests/runtime/compose-builtin-surface-runtimes.test.ts`.
 
 Debug events in `surface:native:metrics` report application-frame bytes, replay resets, bootstrap

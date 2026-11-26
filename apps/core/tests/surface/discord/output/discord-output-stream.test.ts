@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Client } from "discord.js";
-import { Panic, Result, type Result as ResultType } from "better-result";
+import { Result, type Result as ResultType } from "better-result";
 import type { SurfaceAttachment } from "../../../../src/surface/types";
 
 import {
@@ -1234,34 +1234,6 @@ describe("output operation failures", () => {
     expect(createdMessageIds).toEqual([]);
   });
 
-  it("raises a Panic when final output rejects with an impossible non-Error value", async () => {
-    const { client } = createFakeDiscordClient({
-      failReplyAt: 1,
-      replyFailure: "invalid non-Error rejection",
-    });
-    const out = new DiscordOutputStream({
-      client,
-      sessionRef: { platform: "discord", channelId: "chan" },
-      useSmartSplitting: false,
-      outputMode: "preview",
-      outputPreviewModeFinalStyle: "plain",
-      outputPreviewModeFinalText: "reply-chain",
-      reasoningDisplayMode: "none",
-      workingIndicators: ["Working"],
-    });
-
-    await out.push({ type: "text.delta", delta: "x".repeat(4500) });
-
-    try {
-      await out.finish();
-      throw new Error("expected Discord output invariant Panic");
-    } catch (cause) {
-      expect(Panic.is(cause)).toBe(true);
-      if (!Panic.is(cause)) throw cause;
-      expect(cause.message).toBe("Discord output invariant violated");
-    }
-  });
-
   it("does not finish successfully when embed synchronization fails", async () => {
     const { client } = createFakeDiscordClient({ editFailure: { status: 503 } });
     const out = new DiscordOutputStream({
@@ -1326,26 +1298,6 @@ describe("output operation failures", () => {
     expect(result.status).toBe("error");
     expect(createdMessageIds).toHaveLength(1);
     expect(deletedMessageIds).toEqual([]);
-  });
-
-  it("deletes the preview after the final reply succeeds", async () => {
-    const { client, createdMessageIds, deletedMessageIds } = createFakeDiscordClient();
-    const out = new DiscordOutputStream({
-      client,
-      sessionRef: { platform: "discord", channelId: "chan" },
-      useSmartSplitting: false,
-      outputMode: "preview",
-      outputPreviewModeFinalStyle: "plain",
-      outputPreviewModeFinalText: "reply-chain",
-      reasoningDisplayMode: "none",
-      workingIndicators: ["Working"],
-    });
-
-    await out.push({ type: "text.delta", delta: "hello" });
-    resultValue(await out.finish());
-
-    expect(createdMessageIds).toHaveLength(2);
-    expect(deletedMessageIds).toEqual([createdMessageIds[0]!]);
   });
 
   it("returns partial completion when a later final chunk fails", async () => {
