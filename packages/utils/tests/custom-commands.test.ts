@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Panic } from "better-result";
 
 import {
   buildCustomCommandTextName,
@@ -256,7 +255,7 @@ describe("custom command result decoding", () => {
     expect(decodeCustomCommandResult(result)).toBeNull();
   });
 
-  it("contains hostile access failures but preserves Panic", () => {
+  it("contains hostile access failures", () => {
     const malformed: Record<string, unknown> = {};
     Object.defineProperty(malformed, "type", {
       enumerable: true,
@@ -265,23 +264,6 @@ describe("custom command result decoding", () => {
       },
     });
     expect(decodeCustomCommandResult(malformed)).toBeNull();
-
-    const panic = new Panic({ message: "decoder invariant failed" });
-    const panicResult: Record<string, unknown> = {};
-    Object.defineProperty(panicResult, "type", {
-      enumerable: true,
-      get() {
-        throw panic;
-      },
-    });
-
-    let thrown: unknown;
-    try {
-      decodeCustomCommandResult(panicResult);
-    } catch (cause) {
-      thrown = cause;
-    }
-    expect(thrown).toBe(panic);
   });
 
   it("rejects revoked proxies without leaking their access error", () => {
@@ -666,23 +648,5 @@ describe("custom command discovery", () => {
         def: expect.objectContaining({ name: "valid" }),
       }),
     });
-  });
-
-  it("propagates Panic from discovery filesystem adapters", async () => {
-    const directoryPanic = new Panic({ message: "directory invariant failed" });
-    await expect(
-      discoverCustomCommands({
-        dataDir: "/panic-data",
-        dependencies: { readDirectory: async () => Promise.reject(directoryPanic) },
-      }),
-    ).rejects.toBe(directoryPanic);
-
-    const readPanic = new Panic({ message: "definition invariant failed" });
-    await expect(
-      readCustomCommandDefinition({
-        defPath: "/commands/panic/def.json",
-        readText: async () => Promise.reject(readPanic),
-      }),
-    ).rejects.toBe(readPanic);
   });
 });

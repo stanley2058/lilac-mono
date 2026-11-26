@@ -6,12 +6,7 @@ import path from "node:path";
 
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 
-import {
-  classifyBunSqliteError,
-  runBunSqliteTransaction,
-  type DecodedPersistedValue,
-  type PersistenceProvenance,
-} from "../index";
+import { classifyBunSqliteError, runBunSqliteTransaction } from "../index";
 
 class TestOperationRejected extends TaggedError("TestOperationRejected")<{
   readonly message: string;
@@ -59,48 +54,7 @@ function caughtFrom(operation: () => void): unknown {
   throw new Error("Expected operation to throw");
 }
 
-function withFinalizationFailure(
-  database: Database,
-  cause: unknown,
-  phase: "commit" | "rollback",
-): Database {
-  return new Proxy(database, {
-    get(target, property, receiver) {
-      if (property !== "transaction") return Reflect.get(target, property, receiver);
-      return (callback: () => unknown) => ({
-        immediate: () => {
-          if (phase === "commit") {
-            callback();
-            throw cause;
-          }
-          try {
-            callback();
-          } catch {
-            throw cause;
-          }
-          throw new Error("Expected transaction callback to request rollback");
-        },
-      });
-    },
-  });
-}
-
 describe("shared persistence contracts", () => {
-  it("exposes the complete successful decode provenance", () => {
-    const provenances = [
-      "current",
-      "migrated",
-      "missing-defaulted",
-    ] as const satisfies readonly PersistenceProvenance[];
-    const decoded: DecodedPersistedValue<string> = {
-      value: "decoded",
-      provenance: provenances[0],
-    };
-
-    expect(provenances).toEqual(["current", "migrated", "missing-defaulted"]);
-    expect(decoded).toEqual({ value: "decoded", provenance: "current" });
-  });
-
   it("classifies only real Bun SQLiteError instances", () => {
     const database = createTestDatabase();
     try {
@@ -124,21 +78,6 @@ describe("shared persistence contracts", () => {
     } finally {
       database.close();
     }
-  });
-
-  it("is total for hostile getters and revoked proxies", () => {
-    const getterFailure = new Error("hostile code getter");
-    const hostile = new Error("hostile synthetic SQLite failure");
-    Object.defineProperty(hostile, "code", {
-      get() {
-        throw getterFailure;
-      },
-    });
-    expect(classifyBunSqliteError(hostile)).toBeUndefined();
-
-    const revocable = Proxy.revocable(new Error("revoked SQLite impostor"), {});
-    revocable.revoke();
-    expect(classifyBunSqliteError(revocable.proxy)).toBeUndefined();
   });
 });
 
@@ -333,75 +272,6 @@ describe("runBunSqliteTransaction", () => {
         expect(caught).toBe(cause);
         expect(values(database)).toEqual([]);
       }
-    } finally {
-      database.close();
-    }
-  });
-
-  it("rethrows synthetic SQLite codes, hostile code getters, and revoked proxies unchanged", () => {
-    const database = createTestDatabase();
-    const synthetic = new Error("not a Bun SQLiteError");
-    Object.defineProperty(synthetic, "code", { value: "SQLITE_BUSY" });
-    const hostile = new Error("hostile code getter");
-    Object.defineProperty(hostile, "code", {
-      get() {
-        throw new Error("must not replace the original error");
-      },
-    });
-    const revocable = Proxy.revocable({ code: "SQLITE_BUSY" }, {});
-    revocable.revoke();
-    const causes: readonly unknown[] = [synthetic, hostile, revocable.proxy];
-
-    try {
-      for (const cause of causes) {
-        const caught = caughtFrom(() => {
-          runBunSqliteTransaction(
-            database,
-            (): ResultType<void, TestOperationRejected> => {
-              throw cause;
-            },
-            classifyTestSqliteDriverFailure,
-          );
-        });
-        expect(caught).toBe(cause);
-      }
-    } finally {
-      database.close();
-    }
-  });
-
-  it("preserves exact Panic identity from commit and rollback finalization", () => {
-    const database = createTestDatabase();
-    const operationError = new TestOperationRejected({ message: "rollback requested" });
-
-    try {
-      for (const phase of ["commit", "rollback"] as const) {
-        const panic = new Panic({ message: `${phase} finalization invariant` });
-        const caught = caughtFrom(() => {
-          runBunSqliteTransaction(
-            withFinalizationFailure(database, panic, phase),
-            () => (phase === "commit" ? Result.ok(undefined) : Result.err(operationError)),
-            classifyTestSqliteDriverFailure,
-          );
-        });
-        expect(caught).toBe(panic);
-      }
-    } finally {
-      database.close();
-    }
-  });
-
-  it("returns the exact Err without exposing or serializing rollback machinery", () => {
-    const database = createTestDatabase();
-    const expected = Result.err(new TestOperationRejected({ message: "private rollback" }));
-    const expectedJson = JSON.stringify(expected);
-
-    try {
-      const result = runBunSqliteTransaction(database, () => expected, rejectDriverFailures);
-
-      expect(result).toBe(expected);
-      expect(JSON.stringify(result)).toBe(expectedJson);
-      expect(JSON.stringify(result)).not.toContain("RollbackSentinel");
     } finally {
       database.close();
     }

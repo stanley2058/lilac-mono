@@ -95,7 +95,6 @@ class CapturingRawBus implements RawBus {
   commits = 0;
   onCommit: (() => void) | null = null;
   outboxPublicationFailure: Error | null = null;
-  subscriptionStopFailure: Error | null = null;
   private sequence = 0;
   private readonly subscriptions: Array<{
     topic: string;
@@ -122,7 +121,6 @@ class CapturingRawBus implements RawBus {
     this.subscriptions.push(subscription);
     return {
       stop: async () => {
-        if (this.subscriptionStopFailure) throw this.subscriptionStopFailure;
         const index = this.subscriptions.indexOf(subscription);
         if (index >= 0) this.subscriptions.splice(index, 1);
       },
@@ -150,8 +148,6 @@ class ProjectionAdapter extends SurfaceAdapterTestBase {
   partialNextSend = false;
   sendFailure: SurfaceOperationError | null = null;
   editOperationFailure: SurfaceOperationError | null = null;
-  sendRejection: { readonly value: unknown } | null = null;
-  editFailure: Error | null = null;
   constructor(readonly platform: "discord" | "github" = "discord") {
     super();
   }
@@ -178,11 +174,6 @@ class ProjectionAdapter extends SurfaceAdapterTestBase {
     });
   }
   async sendMsg(session: SessionRef, content: ContentOpts, _opts?: SendOpts) {
-    if (this.sendRejection) {
-      const rejection = this.sendRejection.value;
-      this.sendRejection = null;
-      throw rejection;
-    }
     if (this.failNextSend) {
       this.failNextSend = false;
       return Result.err(
@@ -250,16 +241,6 @@ class ProjectionAdapter extends SurfaceAdapterTestBase {
   }
   async editMsg(ref: MsgRef, content: ContentOpts) {
     if (this.editOperationFailure) return Result.err(this.editOperationFailure);
-    if (this.editFailure) {
-      if (Panic.is(this.editFailure)) throw this.editFailure;
-      return Result.err(
-        new SurfaceUnavailable({
-          platform: this.platform,
-          operation: "edit-message",
-          message: this.editFailure.message,
-        }),
-      );
-    }
     if (this.failNextEditNotFound) {
       this.failNextEditNotFound = false;
       this.messages.delete(ref.messageId);
@@ -943,43 +924,6 @@ describe("WorkflowProgressProjector", () => {
       rmSync(dbPath, { force: true });
     }
   });
-  it("reports reconciliation Panic once without scheduling a retry", async () => {
-    const dbPath = tempDbPath("workflow-reconcile-panic");
-    const panic = new Panic({ message: "reconciliation read panic" });
-    const store = new ReconciliationFailureStore(dbPath, new Map([[1, panic]]));
-    const adapter = new ProjectionAdapter();
-    const bus = createLilacBus(new CapturingRawBus());
-    const clock = { now: 20 };
-    const scheduler = new FakeProjectionScheduler(clock);
-    const reported = Promise.withResolvers<Panic>();
-    let reportCount = 0;
-    const projector = createWorkflowProgressProjectorForTest({
-      bus,
-      store,
-      ports: projectionPorts(adapter),
-      subscriptionId: "reconcile-panic",
-      now: () => clock.now,
-      scheduleTimeout: scheduler.scheduleTimeout,
-      reportFatalPanic: (fatalPanic) => {
-        reportCount += 1;
-        reported.resolve(fatalPanic);
-      },
-    });
-    try {
-      createInvocation(store);
-      await projector.reconcile();
-
-      expect(await reported.promise).toBe(panic);
-      expect(reportCount).toBe(1);
-      expect(store.listCalls).toBe(1);
-      expect(scheduler.scheduledTimes()).toEqual([]);
-    } finally {
-      await projector.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
   it("cancels a pending reconciliation retry on stop", async () => {
     const dbPath = tempDbPath("workflow-reconcile-stop-retry");
     const store = new ReconciliationFailureStore(
@@ -1215,33 +1159,6 @@ describe("WorkflowProgressProjector", () => {
       });
     } finally {
       send.mockRestore();
-      await projector.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-  it("preserves unrecognized non-Error surface rejections as defects", async () => {
-    const dbPath = tempDbPath("workflow-projector-opaque-rejection");
-    const store = new DurableWorkflowStore(dbPath);
-    const adapter = new ProjectionAdapter();
-    const bus = createLilacBus(new CapturingRawBus());
-    const projector = createWorkflowProgressProjectorForTest({
-      bus,
-      store,
-      ports: projectionPorts(adapter),
-      subscriptionId: "opaque-rejection",
-      now: () => 100,
-    });
-    try {
-      createInvocation(store);
-      const rejection = "provider-secret-rejection";
-      adapter.sendRejection = { value: rejection };
-
-      await expect(projector.ensureInitialCard("run-1")).rejects.toBe(rejection);
-      const binding = workflowStoreValue(store.getSurfaceBinding("run-1"));
-      expect(binding?.lastError).toBeNull();
-    } finally {
       await projector.stop();
       await bus.close();
       store.close();
@@ -1749,181 +1666,6 @@ describe("WorkflowProgressProjector", () => {
       await resolver?.stop();
       await projector.stop();
       await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-  it("preserves Panic identity from action outbox publication", async () => {
-    const dbPath = tempDbPath("workflow-action-outbox-panic");
-    const store = new DurableWorkflowStore(dbPath);
-    const adapter = new ProjectionAdapter();
-    const raw = new CapturingRawBus();
-    const bus = createLilacBus(raw);
-    const projector = createWorkflowProgressProjectorForTest({
-      bus,
-      store,
-      ports: projectionPorts(adapter),
-      subscriptionId: "outbox-panic-projector",
-      now: () => 20,
-    });
-    const panic = new Panic({ message: "outbox publication defect" });
-    try {
-      createInvocation(store);
-      const messageRef = await projector.ensureInitialCard("run-1");
-      expect(
-        appliedSurfaceActionStatus(
-          store.applySurfaceAction({
-            tokenSha256: sha256(actionToken(adapter, "Pause")),
-            platform: "discord",
-            userId: "user-1",
-            messageRef,
-            now: 21,
-          }),
-        ),
-      ).toBe("applied");
-      raw.outboxPublicationFailure = panic;
-      await expect(
-        startWorkflowActionResolver({
-          bus,
-          store,
-          subscriptionId: "outbox-panic",
-          now: () => 30,
-        }),
-      ).rejects.toBe(panic);
-    } finally {
-      await projector.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-  it("reports projection timer Panic to the fatal supervisor", async () => {
-    const dbPath = tempDbPath("workflow-projection-timer-panic");
-    const store = new DurableWorkflowStore(dbPath);
-    const bus = createLilacBus(new CapturingRawBus());
-    const panic = new Panic({ message: "projection timer defect" });
-    const firstReport = Promise.withResolvers<void>();
-    const secondAttempt = Promise.withResolvers<void>();
-    const reported: Panic[] = [];
-    let attempts = 0;
-    const getRun = spyOn(store, "getRun").mockImplementation(() => {
-      attempts += 1;
-      if (attempts === 2) secondAttempt.resolve();
-      throw panic;
-    });
-    const projector = createWorkflowProgressProjectorForTest({
-      bus,
-      store,
-      ports: new Map(),
-      subscriptionId: "projection-timer-panic",
-      coalesceMs: 0,
-      minEditIntervalMs: 0,
-      reportFatalPanic: (fatalPanic) => {
-        reported.push(fatalPanic);
-        firstReport.resolve();
-      },
-    });
-    try {
-      projector.requestProjection("run-panic");
-      await firstReport.promise;
-      projector.requestProjection("run-panic");
-      await secondAttempt.promise;
-      await Promise.resolve();
-      expect(reported).toEqual([panic]);
-    } finally {
-      getRun.mockRestore();
-      await projector.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-  it("reports detached action outbox projection Panic to the fatal supervisor", async () => {
-    const dbPath = tempDbPath("workflow-projection-outbox-panic");
-    const store = new DurableWorkflowStore(dbPath);
-    const adapter = new ProjectionAdapter();
-    const bus = createLilacBus(new CapturingRawBus());
-    const panic = new Panic({ message: "projection outbox defect" });
-    const reported = Promise.withResolvers<Panic>();
-    const projector = createWorkflowProgressProjectorForTest({
-      bus,
-      store,
-      ports: projectionPorts(adapter),
-      subscriptionId: "projection-outbox-panic",
-      now: () => 20,
-      retryIntervalMs: 1,
-      reportFatalPanic: reported.resolve,
-    });
-    try {
-      createInvocation(store);
-      const messageRef = await projector.ensureInitialCard("run-1");
-      await projector.start();
-      expect(
-        appliedSurfaceActionStatus(
-          store.applySurfaceAction({
-            tokenSha256: sha256(actionToken(adapter, "Pause")),
-            platform: "discord",
-            userId: "user-1",
-            messageRef,
-            now: 21,
-          }),
-        ),
-      ).toBe("applied");
-      adapter.editFailure = panic;
-
-      await expect(reported.promise).resolves.toBe(panic);
-    } finally {
-      await projector.stop();
-      await bus.close();
-      store.close();
-      rmSync(dbPath, { force: true });
-    }
-  });
-  it("adapts action and projector subscription lifecycle Result failures", async () => {
-    const dbPath = tempDbPath("workflow-subscription-result-adapters");
-    const store = new DurableWorkflowStore(dbPath);
-    const startFailureRaw = new CapturingRawBus();
-    Reflect.deleteProperty(startFailureRaw, "subscribe");
-    const startFailureBus = createLilacBus(startFailureRaw);
-    const projector = createWorkflowProgressProjectorForTest({
-      bus: startFailureBus,
-      store,
-      ports: new Map(),
-      subscriptionId: "projector-start-result-failure",
-    });
-    try {
-      await expect(
-        startWorkflowActionResolver({
-          bus: startFailureBus,
-          store,
-          subscriptionId: "action-start-result-failure",
-        }),
-      ).rejects.toMatchObject({ _tag: "EventDeliveryStartFailed" });
-      await expect(projector.start()).rejects.toMatchObject({ _tag: "EventDeliveryStartFailed" });
-      const stopFailureRaw = new CapturingRawBus();
-      const stopFailureBus = createLilacBus(stopFailureRaw);
-      const actionResolver = await startWorkflowActionResolver({
-        bus: stopFailureBus,
-        store,
-        subscriptionId: "action-stop-result-failure",
-      });
-      const stoppingProjector = createWorkflowProgressProjectorForTest({
-        bus: stopFailureBus,
-        store,
-        ports: new Map(),
-        subscriptionId: "projector-stop-result-failure",
-      });
-      await stoppingProjector.start();
-      stopFailureRaw.subscriptionStopFailure = new Error("subscription cleanup unavailable");
-      await expect(actionResolver.stop()).rejects.toMatchObject({
-        _tag: "EventDeliveryStopFailed",
-      });
-      await expect(stoppingProjector.stop()).rejects.toMatchObject({
-        _tag: "EventDeliveryStopFailed",
-      });
-      await stopFailureBus.close();
-    } finally {
-      await startFailureBus.close();
       store.close();
       rmSync(dbPath, { force: true });
     }

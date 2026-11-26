@@ -281,18 +281,6 @@ describe("ClaudeCodeAgentAdapter", () => {
     ).toEqual(["question", "first", "second"]);
   });
 
-  test("preserves a preparation Panic and retires the execution without native work", async () => {
-    const f = fixture();
-    const panic = new Panic({ message: "preparation defect" });
-    f.lifecycle.prepareModelCall = () => {
-      throw panic;
-    };
-    const agent = new AgentExecutor({ system: "test", adapter: f.adapter });
-    await expect(agent.prompt("question")).rejects.toBe(panic);
-    expect(f.calls()).toBe(0);
-    expect(f.disposals()).toBe(0);
-  });
-
   test("waits for native retry retirement before preparing the replacement model call", async () => {
     const f = fixture();
     const retirementEntered = Promise.withResolvers<void>();

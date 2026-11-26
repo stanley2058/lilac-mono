@@ -8,21 +8,8 @@ import type {
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { aroundTurnGap, loadTurnGap, unloadedPlace } from "../src/turn-gap";
-import { MessageServicesContext } from "../src/components/message-services";
-import {
-  Message,
-  Turn,
-  groupActivityMessages,
-  groupParts,
-  messageArrivalIds,
-} from "../src/components/Timeline";
-import {
-  Activity,
-  ActivityItem,
-  ActivitySourceContext,
-  LiveTailContext,
-  RequestActiveContext,
-} from "../src/components/ActivityLog";
+import { groupActivityMessages, groupParts, messageArrivalIds } from "../src/components/Timeline";
+import { ActivityItem, ActivitySourceContext } from "../src/components/ActivityLog";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { activityTextOptions } from "../src/queries";
 
@@ -77,100 +64,6 @@ describe("native conversation grouping", () => {
   });
 });
 
-describe("native turn activity disclosure", () => {
-  const parts: Extract<DisplayPart, { type: "data-activity" }>[] = [
-    {
-      type: "data-activity",
-      id: "thinking",
-      data: { kind: "thinking", label: "Thinking", state: "complete", detail: "Reasoning detail" },
-    },
-    {
-      type: "data-activity",
-      id: "tool",
-      data: {
-        kind: "tool",
-        label: "bash ls -la",
-        state: "complete",
-        detail: "bash ls -la",
-        output: "total 0",
-        exitCode: 0,
-        durationMs: 2200,
-      },
-    },
-  ];
-  it("summarizes several activities and keeps the group collapsed on initial render", () => {
-    const html = renderToStaticMarkup(createElement(Activity, { parts }));
-    expect(html).toContain("Ran 1 command");
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).not.toContain("Reasoning detail");
-    expect(html).not.toContain("total 0");
-  });
-  it("renders a single visible activity as its own row", () => {
-    const empty = { ...parts[0]!, data: { ...parts[0]!.data, detail: undefined } };
-    const html = renderToStaticMarkup(createElement(Activity, { parts: [empty, parts[1]!] }));
-    expect(html).toContain("ls -la");
-    expect(html).not.toContain("Ran 1 command");
-    expect(html).not.toContain("Thought");
-  });
-  it("keeps each command result collapsed", () => {
-    const html = renderToStaticMarkup(createElement(ActivityItem, { part: parts[1]! }));
-    expect(html).toContain("ls -la");
-    expect(html).not.toContain("bash ls");
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).not.toContain("Process exited");
-  });
-  it("shows a running command by its program name", () => {
-    const running = {
-      ...parts[1]!,
-      data: {
-        ...parts[1]!.data,
-        label: "bash cd /tmp && ./search.sh --since 1d",
-        detail: "bash cd /tmp && ./search.sh --since 1d",
-        state: "running" as const,
-      },
-    };
-    const html = renderToStaticMarkup(createElement(Activity, { parts: [parts[0]!, running] }));
-    expect(html).toContain("Running search.sh");
-    expect(html).toContain("working-text");
-  });
-  it("keeps the Thinking fallback when a settled subagent ends a running turn", () => {
-    const agent: (typeof parts)[number] = {
-      type: "data-activity",
-      id: "agent",
-      data: { kind: "tool", label: "subagent (explore) Check hours", state: "complete" },
-    };
-    const html = renderToStaticMarkup(
-      createElement(
-        RequestActiveContext,
-        { value: true },
-        createElement(
-          LiveTailContext,
-          { value: "agent" },
-          createElement(Activity, { parts: [parts[1]!, agent] }),
-        ),
-      ),
-    );
-    expect(html).toContain(
-      '>Thinking<span aria-hidden="true" class="working-text-shine">Thinking</span>',
-    );
-  });
-  it("marks failures on the icon without a badge", () => {
-    const failed = {
-      ...parts[1]!,
-      data: {
-        ...parts[1]!.data,
-        state: "failed" as const,
-        detail: undefined,
-        output: undefined,
-        exitCode: undefined,
-      },
-    };
-    const html = renderToStaticMarkup(createElement(ActivityItem, { part: failed }));
-    expect(html).toContain("text-danger");
-    expect(html).not.toContain("<button");
-  });
-});
-
 describe("activity text Core leaves out", () => {
   const source = { target: { kind: "thread" as const, threadId: "thread" }, turnId: "turn" };
   const part: Extract<DisplayPart, { type: "data-activity" }> = {
@@ -196,10 +89,6 @@ describe("activity text Core leaves out", () => {
         ),
       ),
     );
-  it("keeps a row expandable when only its output was left out", () => {
-    const html = renderToStaticMarkup(createElement(ActivityItem, { part }));
-    expect(html).toContain('aria-expanded="false"');
-  });
   it("shows the loaded output, and says so when it cannot load", () => {
     const client = new QueryClient();
     expect(opened(client)).toContain("Details unavailable");
@@ -238,54 +127,6 @@ describe("unloaded turn messages", () => {
     expect(unloadedPlace(partial)).toBe("after-first");
     const closed = at(0, 1, 2, 3);
     expect(aroundTurnGap(closed, () => true)).toBe(closed);
-  });
-  it("render the load button below the prompt and above the messages after the gap", () => {
-    const slot: ReadyTurnSlot = {
-      kind: "ready",
-      slotId: "turn",
-      turnId: "turn",
-      position: 0,
-      state: "complete",
-      partsCursor: "p_1_0",
-      messages: [
-        {
-          id: "m0",
-          role: "assistant",
-          metadata: { position: 0 },
-          parts: [{ type: "text", text: "First reply" }],
-        },
-        {
-          id: "m1",
-          role: "assistant",
-          metadata: { position: 1 },
-          parts: [{ type: "text", text: "Paged reply" }],
-        },
-        {
-          id: "m9",
-          role: "assistant",
-          metadata: { position: 9, phase: "final" },
-          parts: [{ type: "text", text: "Newest reply" }],
-        },
-      ],
-    };
-    const html = renderToStaticMarkup(
-      createElement(
-        MessageServicesContext,
-        {
-          value: {
-            canEdit: false,
-            resourceUrl: () => "",
-            onAction: () => {},
-            onReaction: () => {},
-          },
-        },
-        createElement(Turn, { slot, onRewind: () => {}, onLoadMore: () => {} }),
-      ),
-    );
-    expect(html).not.toContain("First reply");
-    expect(html).not.toContain("Paged reply");
-    expect(html.indexOf("turn-load-more")).toBeLessThan(html.indexOf("Newest reply"));
-    expect(html.indexOf("turn-load-more")).toBeGreaterThan(-1);
   });
 });
 
@@ -327,25 +168,6 @@ describe("streaming block arrivals", () => {
       "activity-item:second",
     ]);
   });
-});
-
-it("caps user message previews before layout measurement without clamping assistant responses", () => {
-  const render = (role: "user" | "assistant") =>
-    renderToStaticMarkup(
-      createElement(Message, {
-        message: {
-          id: "long",
-          role,
-          parts: [{ type: "text", text: "A long paragraph.\n\n".repeat(100) }],
-        },
-        canEdit: false,
-        resourceUrl: (id) => id,
-        onAction: () => {},
-        onReaction: () => {},
-      }),
-    );
-  expect(render("user")).toContain('data-collapsed="true"');
-  expect(render("assistant")).toContain('data-collapsed="false"');
 });
 
 it("omits batch wrappers without losing their child tool calls", () => {

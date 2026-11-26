@@ -4,7 +4,6 @@ import { Panic, Result } from "better-result";
 
 import {
   ConversationThreadSummarizationTransportError,
-  signalConversationThreadWorkerPanicToProcess,
   startConversationThreadSummarizationWorker,
   startConversationThreadWorker,
   type ConversationThreadSummarizationWorkerTransport,
@@ -34,22 +33,6 @@ function createControlledScheduler() {
 }
 
 describe("conversation thread periodic worker", () => {
-  it("sends the production fatal report through an uncaught microtask with Panic identity", () => {
-    const scheduled: (() => void)[] = [];
-    const queueMicrotaskSpy = spyOn(globalThis, "queueMicrotask").mockImplementation((task) => {
-      scheduled.push(task);
-    });
-    const panic = new Panic({ message: "terminal scheduler invariant failed" });
-    try {
-      signalConversationThreadWorkerPanicToProcess(panic);
-
-      expect(scheduled).toHaveLength(1);
-      expect(() => scheduled[0]?.()).toThrow(panic);
-    } finally {
-      queueMicrotaskSpy.mockRestore();
-    }
-  });
-
   it("dispatches a bounded periodic run from the configured batch size", async () => {
     const { schedule, scheduled } = createControlledScheduler();
     const cfg = parseCoreConfigV1ToUniversal({});

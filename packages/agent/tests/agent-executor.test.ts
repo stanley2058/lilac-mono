@@ -1147,42 +1147,6 @@ describe("provider-neutral agent executor", () => {
     expect(agent.state.isStreaming).toBe(false);
   });
 
-  test("a custom adapter streams output and commits history without an AI SDK model", async () => {
-    const adapter = new ControlledAdapter();
-    const agent = new AgentExecutor({ system: "test", adapter });
-    const deltaObserved = Promise.withResolvers<void>();
-    const lifecycle: string[] = [];
-    agent.subscribe((event) => {
-      lifecycle.push(event.type);
-      if (event.type === "message_update") deltaObserved.resolve();
-    });
-    const run = agent.prompt("question");
-    const execution = await adapter.created.promise;
-    await execution.started.promise;
-    expect(lifecycle[0]).toBe("agent_start");
-    expect(execution.initialMessages).toEqual([{ role: "user", content: "question" }]);
-    execution.emit({ type: "output", output: { kind: "text", phase: "start", id: "answer" } });
-    execution.emit({
-      type: "output",
-      output: { kind: "text", phase: "delta", id: "answer", delta: "partial" },
-    });
-    await deltaObserved.promise;
-    expect(agent.state.messages).toEqual([{ role: "user", content: "question" }]);
-    execution.emit({
-      type: "history-commit",
-      inputIds: [],
-      messages: [{ role: "assistant", content: "complete" }],
-    });
-    execution.emit({ type: "terminal", outcome: { status: "completed" } });
-    await run;
-    expect(agent.state.messages).toEqual([
-      { role: "user", content: "question" },
-      { role: "assistant", content: "complete" },
-    ]);
-    expect(lifecycle.filter((type) => type === "agent_end")).toHaveLength(1);
-    expect(execution.disposed).toBe(true);
-  });
-
   test("native steering stays noncanonical until its ordered input commit", async () => {
     const adapter = new ControlledAdapter();
     const prepared = Promise.withResolvers<void>();

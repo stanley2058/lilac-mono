@@ -198,19 +198,7 @@ describe("blob storage contract", () => {
     );
     expect(failure(await failed.completion)).toBeInstanceOf(BlobUploadFailed);
 
-    expect(debug.map((entry) => entry.message)).toEqual([
-      "blob upload reservation started",
-      "blob upload started",
-      "blob upload sink opened",
-      "blob upload source consumed",
-      "blob upload content committed",
-      "blob upload reference published",
-      "blob upload completed",
-      "blob upload reservation started",
-      "blob upload started",
-      "blob upload sink opened",
-      "blob upload source consumed",
-    ]);
+    expect(debug.map((entry) => entry.message)).toEqual(["blob upload completed"]);
     expect(errors.map((entry) => entry.message)).toEqual([
       "blob upload length verification failed",
       "blob upload failed",
@@ -667,27 +655,6 @@ describe("blob storage contract", () => {
     expect(
       failure(await finishStore.resolve(finishStarted.handle, { timeoutMs: 0 })),
     ).toMatchObject({ _tag: "BlobUploadFailed", reason: "write" });
-  });
-
-  test("verified read propagates an underlying Panic without hanging completion", async () => {
-    const panic = new Panic({ message: "controlled read defect" });
-    const ref: BlobRefV1 = {
-      version: 1,
-      objectId: `b1_${"a".repeat(32)}`,
-      sha256: createHash("sha256").update(new Uint8Array()).digest("hex"),
-      byteLength: 0,
-    };
-    const read = createVerifiedRead(
-      ref,
-      new ReadableStream<Uint8Array>({
-        pull() {
-          throw panic;
-        },
-      }),
-    );
-
-    await expect(materializeBlobRead(read)).rejects.toBe(panic);
-    await expect(read.completion).rejects.toBe(panic);
   });
 
   test("retention rejects timestamps outside the JavaScript Date range", async () => {

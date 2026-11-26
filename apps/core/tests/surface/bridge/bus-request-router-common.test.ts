@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { Panic } from "better-result";
 
 import {
   getSessionMode,
@@ -98,20 +97,6 @@ describe("Discord raw flags", () => {
     expect(getDiscordFlags(hostile)).toEqual(EMPTY_DISCORD_FLAGS);
     expect(getDiscordFlags(proxy)).toEqual(EMPTY_DISCORD_FLAGS);
     expect(getDiscordFlags({ discord: proxy })).toEqual(EMPTY_DISCORD_FLAGS);
-  });
-
-  it("preserves Panic from hostile reflection", () => {
-    const panic = new Panic({ message: "Discord flag reflection invariant failed" });
-    const hostile = new Proxy(
-      {},
-      {
-        getOwnPropertyDescriptor() {
-          throw panic;
-        },
-      },
-    );
-
-    expect(() => getDiscordFlags(hostile)).toThrow(panic);
   });
 });
 

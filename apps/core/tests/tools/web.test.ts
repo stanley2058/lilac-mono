@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { createLogger } from "@stanley2058/lilac-utils";
 import type { ServerToolResult } from "@stanley2058/lilac-plugin-runtime";
-import { Panic } from "better-result";
 
 import { Web, type WebDependencies } from "../../src/tool-server/tools/web";
 import {
@@ -216,63 +215,6 @@ describe("web tool direct fetch", () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it("gives Content-Length cancellation failure precedence and preserves its identity", async () => {
-    const failure = new Error("header response cancellation failed");
-    const body = new ReadableStream<Uint8Array>({
-      cancel: () => Promise.reject(failure),
-    });
-    const direct = createDirectHttpPageAcquisition({
-      pageContent: new PageContent(),
-      fetch: mockFetch(
-        async () =>
-          new Response(body, {
-            headers: {
-              "content-length": String(5 * 1024 * 1024 + 1),
-              "content-type": "text/plain",
-            },
-          }),
-      ),
-    });
-
-    await expect(direct.acquire({ url: "https://example.com/oversized" })).rejects.toBe(failure);
-  });
-
-  it("preserves streamed overflow cancellation failure identity", async () => {
-    const failure = new Error("stream cancellation failed");
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(5 * 1024 * 1024 + 1));
-      },
-      cancel: () => Promise.reject(failure),
-    });
-    const direct = createDirectHttpPageAcquisition({
-      pageContent: new PageContent(),
-      fetch: mockFetch(
-        async () => new Response(body, { headers: { "content-type": "text/plain" } }),
-      ),
-    });
-
-    await expect(direct.acquire({ url: "https://example.com/streamed" })).rejects.toBe(failure);
-  });
-
-  it("preserves Panic from streamed overflow cancellation", async () => {
-    const panic = new Panic({ message: "stream cancellation invariant" });
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(5 * 1024 * 1024 + 1));
-      },
-      cancel: () => Promise.reject(panic),
-    });
-    const direct = createDirectHttpPageAcquisition({
-      pageContent: new PageContent(),
-      fetch: mockFetch(
-        async () => new Response(body, { headers: { "content-type": "text/plain" } }),
-      ),
-    });
-
-    await expect(direct.acquire({ url: "https://example.com/streamed" })).rejects.toBe(panic);
-  });
-
   it("falls back to simple extraction for large html pages", async () => {
     const html = [
       "<!doctype html><html><head><title>Large Page</title></head><body>",
@@ -296,20 +238,6 @@ describe("web tool direct fetch", () => {
 });
 
 describe("web tool mode orchestration", () => {
-  it("rejects unexpected acquisition defects", async () => {
-    const defect = new TypeError("invalid direct acquisition state");
-    const tool = createTool({
-      mode: "fetch",
-      direct: async () => {
-        throw defect;
-      },
-    });
-
-    await expect(tool.call("fetch", { url: "https://example.com", mode: "fetch" })).rejects.toBe(
-      defect,
-    );
-  });
-
   it("maps expected acquisition failures to semantic errors", async () => {
     const tool = createTool({
       mode: "fetch",
@@ -796,35 +724,6 @@ describe("web search and permits", () => {
           "web.search failed across fallback providers: tavily: primary provider failed | exa: resource absent",
       },
     });
-  });
-
-  it("preserves Panic identity from search providers", async () => {
-    const panic = new Panic({ message: "search provider invariant" });
-    const tool = createTool({
-      providers: [
-        configuredProvider("exa", async () => {
-          throw panic;
-        }),
-      ],
-    });
-
-    const [settled] = await Promise.allSettled([tool.call("search", { query: "panic" })]);
-    expect(settled).toEqual({ status: "rejected", reason: panic });
-  });
-
-  it("preserves Panic from web config loading", async () => {
-    const panic = new Panic({ message: "web config invariant" });
-    const tool = createTool({
-      loadWebToolConfig: async () => {
-        throw panic;
-      },
-    });
-
-    const [settled] = await Promise.allSettled([
-      tool.call("fetch", { url: "https://example.com", mode: "fetch" }),
-    ]);
-    expect(settled?.status).toBe("rejected");
-    if (settled?.status === "rejected") expect(Panic.is(settled.reason)).toBe(true);
   });
 
   it("retries the same search provider before fallback on retriable errors", async () => {

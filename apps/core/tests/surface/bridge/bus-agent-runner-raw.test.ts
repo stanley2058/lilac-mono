@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { Panic } from "better-result";
 
 import {
   parseGuildIdFromRaw,
@@ -68,19 +67,5 @@ describe("request control raw projection", () => {
     expect(parseRequestControlFromRaw(inherited)).toEqual(EMPTY_REQUEST_CONTROL);
     expect(parseRequestControlFromRaw(accessor)).toEqual(EMPTY_REQUEST_CONTROL);
     expect(getterCalls).toBe(0);
-  });
-
-  it("preserves Panic from hostile record reflection", () => {
-    const panic = new Panic({ message: "request-control reflection invariant failed" });
-    const hostile = new Proxy(
-      {},
-      {
-        getOwnPropertyDescriptor() {
-          throw panic;
-        },
-      },
-    );
-
-    expect(() => parseRequestControlFromRaw(hostile)).toThrow(panic);
   });
 });

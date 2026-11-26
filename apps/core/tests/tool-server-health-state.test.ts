@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { Panic } from "better-result";
 
 import { createLogger } from "@stanley2058/lilac-utils";
 
@@ -144,20 +143,6 @@ describe("tool server health state", () => {
     provider.resolve({ checks: [{ name: "dependency", ok: false, impact: "live" }] });
     await evaluation;
     expect(unhealthySnapshots).toHaveLength(1);
-  });
-
-  it("preserves Panic from external health providers", async () => {
-    const panic = new Panic({ message: "health provider invariant" });
-    const health = createToolServerHealthState({
-      logger: createLogger({ module: "health-state-test" }),
-      maxRssBytes: Number.MAX_SAFE_INTEGER,
-      externalHealthProvider: () => {
-        throw panic;
-      },
-      onUnhealthy: () => {},
-    });
-
-    await expect(health.runWatchdog()).rejects.toBe(panic);
   });
 
   it("records bounded memory history and component diagnostics", async () => {

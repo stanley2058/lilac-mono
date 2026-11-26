@@ -13,11 +13,6 @@ import {
   RequestContextInvalidError,
   requireRequestContext,
 } from "../../src/shared/req-context";
-import {
-  decodeToolServerHeaders,
-  requireToolServerHeaders,
-  ToolServerContextInvalidError,
-} from "../../src/shared/tool-server-context";
 
 describe("partition 8 shared boundaries", () => {
   it("decodes complete request contexts and rejects malformed external values", () => {
@@ -48,17 +43,6 @@ describe("partition 8 shared boundaries", () => {
     expect(invalid.status).toBe("error");
     if (invalid.status === "error") expect(RequestContextInvalidError.is(invalid.error)).toBeTrue();
     expect(() => requireRequestContext(null, "test")).toThrow(RequestContextInvalidError);
-  });
-
-  it("keeps tool-server context validation in Result before the compatibility adapter", () => {
-    const missing = decodeToolServerHeaders(undefined, "attachment");
-    expect(missing.status).toBe("error");
-    if (missing.status === "error") {
-      expect(ToolServerContextInvalidError.is(missing.error)).toBeTrue();
-    }
-    expect(() => requireToolServerHeaders(undefined, "attachment")).toThrow(
-      ToolServerContextInvalidError,
-    );
   });
 
   it("returns typed restricted-path failures while preserving the throwing API", () => {

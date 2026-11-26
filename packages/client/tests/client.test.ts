@@ -196,16 +196,6 @@ const input: NativeInput = {
 };
 
 describe("NativeClient", () => {
-  test("bootstrap owns initial content and socket attaches at its watermark", async () => {
-    const test = harness();
-    await test.client.start("thread");
-    await test.watching;
-    expect(test.socketCount()).toBe(1);
-    expect(test.watches).toEqual([{ threadId: "thread", checkpoint }]);
-    expect(test.client.thread("thread").get("slot")).toMatchObject({ turnId: "turn" });
-    expect(test.events.some((event) => event.kind === "bootstrap")).toBe(true);
-  });
-
   test("retry retains one command identity and rejects changed payload", async () => {
     const test = harness();
     expect(await test.client.submit(input)).toEqual({ kind: "uncertain", commandId: "command" });

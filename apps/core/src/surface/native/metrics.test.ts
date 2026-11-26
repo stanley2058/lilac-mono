@@ -24,7 +24,7 @@ test("native transport metrics correlate byte counts and commits without logging
       b: { json: { threadId: "thread_1", checkpoint, text: "private-input" } },
     },
   });
-  connection.received(request, 2);
+  connection.received(request);
   metrics.committed("thread_1", 3, 0, "request_1");
   time = 14;
   metrics.committed("thread_1", 3, 0, "request_1");
@@ -41,7 +41,7 @@ test("native transport metrics correlate byte counts and commits without logging
       },
     },
   });
-  connection.sent(reply, -1, 43);
+  connection.sent(reply, -1);
   connection.closed(1000);
   expect(events.find((item) => item.event === "replay.enqueue")?.fields).toMatchObject({
     threadId: "thread_1",
@@ -55,10 +55,8 @@ test("native transport metrics correlate byte counts and commits without logging
     sentBytes: Buffer.byteLength(reply),
     durationMs: 4,
   });
-  expect(events.find((item) => item.event === "connection.send")?.fields).toMatchObject({
-    bufferedBytes: 43,
-    accepted: true,
-  });
+  expect(events.map((item) => item.event)).not.toContain("connection.send");
+  expect(events.map((item) => item.event)).not.toContain("connection.request");
   const serialized = JSON.stringify(events);
   for (const secret of ["private-rpc-id", "private-token", "private-input", "private-output"])
     expect(serialized).not.toContain(secret);
@@ -70,17 +68,15 @@ test("mismatched replay revisions and rejected sends never report commit latency
   const connection = metrics.connection();
   connection.received(
     JSON.stringify({ i: "1", p: { u: "/threads/sync", b: { json: { threadId: "thread_1" } } } }),
-    0,
   );
   metrics.committed("thread_1", 4, 0, "newer_request");
   const reply = JSON.stringify({ i: "1", p: { b: { json: { kind: "window", checkpoint } } } });
-  connection.sent(reply, 0, 0);
+  connection.sent(reply, 0);
   expect(events.some((item) => item.event === "replay.enqueue")).toBe(false);
   connection.received(
     JSON.stringify({ i: "1", p: { u: "/threads/sync", b: { json: { threadId: "thread_1" } } } }),
-    0,
   );
-  connection.sent(reply, 12, 0);
+  connection.sent(reply, 12);
   const replay = events.find((item) => item.event === "replay.enqueue")?.fields;
   expect(replay?.commitToSocketEnqueueMs).toBeUndefined();
   expect(replay?.requestId).toBeUndefined();

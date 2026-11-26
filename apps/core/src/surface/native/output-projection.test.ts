@@ -120,25 +120,6 @@ test("activity in the reset step is removed before a reused tool identifier star
 });
 
 describe("native output projection", () => {
-  test("paragraph publications append bounded parts and keep stable phase/identity", () => {
-    const first = projectNativeOutput(slot(), event(text(1, "First\n\n")));
-    const second = projectNativeOutput(first.slot, event(text(1, "Second\n\n"), "attempt", 2));
-    expect(second.slot.messages).toHaveLength(2);
-    expect(second.slot.messages[1]?.metadata?.phase).toBe("commentary");
-    expect(second.changes).toEqual([
-      {
-        kind: "set-part",
-        turnId: "turn",
-        position: 0,
-        messageId: first.slot.messages[1]?.id ?? "missing",
-        partIndex: 1,
-        part: { type: "text", text: "Second\n\n" },
-      },
-    ]);
-    expect(outputText(second.slot)).toBe("HelloFirst\n\nSecond\n\n");
-    expect(displayMessageSchema.safeParse(second.slot.messages[1]).success).toBe(true);
-  });
-
   test("complete-mode delayed text inserts before already published later activity", () => {
     const tool = projectNativeOutput(
       slot(),

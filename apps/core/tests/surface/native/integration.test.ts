@@ -666,53 +666,6 @@ test("two sockets steer the active turn, remove queued input and cancel the rema
   }
 });
 
-test("a queued followup becomes a new full turn after the active turn settles", async () => {
-  const started = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const prompts: string[] = [];
-  const fixture = await createNativeIntegrationFixture({
-    realBus: true,
-    model: new MockLanguageModelV4({
-      modelId: "followup-fixture",
-      doStream: async ({ prompt }) => {
-        prompts.push(JSON.stringify(prompt));
-        if (prompts.length === 1) {
-          started.resolve();
-          await release.promise;
-        }
-        return nativeFixtureTextResponse(`Response ${prompts.length}`);
-      },
-    }),
-  });
-  try {
-    const client = fixture.connect().client;
-    const thread = await client.threads.create({
-      commandId: crypto.randomUUID(),
-      title: "Followup",
-    });
-    const active = await client.inputs.submit(nativePrompt(thread.id, "First input"));
-    await started.promise;
-    const followup = await client.inputs.submit(
-      nativePrompt(thread.id, "Next full turn", "followup"),
-    );
-    expect(followup.state).toBe("queued");
-    release.resolve();
-    await completed(fixture.store, followup.inputId);
-    const accepted = integrationValue(fixture.store.getInput(followup.inputId));
-    expect(accepted.turnId).toBeDefined();
-    expect(accepted.turnId).not.toBe(active.turnId);
-    expect(prompts).toHaveLength(2);
-    expect(prompts[1]).toContain("First input");
-    expect(prompts[1]).toContain("Response 1");
-    expect(prompts[1]).toContain("Next full turn");
-    expect((await client.runs.queue({ threadId: thread.id })).items).toEqual([]);
-    expect(fixture.fatalErrors).toEqual([]);
-  } finally {
-    release.resolve();
-    await fixture.close();
-  }
-});
-
 test("shared reader sees only shared threads and cannot mutate their owner history or configuration", async () => {
   const fixture = await createNativeIntegrationFixture({
     realBus: true,

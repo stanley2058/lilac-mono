@@ -172,16 +172,6 @@ async function runJob(request: ThreadSummarizationWorkerRequest): Promise<void> 
   let surfaceStore: DiscordSurfaceStore | null = null;
   const operation = await runThreadSummarizationWorkerOperation({
     async run() {
-      logger.debug("conversation thread summarization worker job started", {
-        jobId: request.id,
-        dryRun: request.input.dryRun === true,
-        force: request.input.force === true,
-        clear: request.input.clear === true,
-        threadId: request.input.threadId,
-        beforeTs: request.input.beforeTs,
-        afterTs: request.input.afterTs,
-        queuedJobs: jobQueue.depth,
-      });
       const cfg = await getCoreConfig({ forceReload: true });
       const getEmbeddingAdapter = createConversationThreadEmbeddingAdapterResolver(() =>
         getCoreConfig(),
@@ -206,10 +196,6 @@ async function runJob(request: ThreadSummarizationWorkerRequest): Promise<void> 
         attachmentHydrator: hydrateAttachments,
       });
       const result = await service.runSummarization({ ...request.input, jobId: request.id });
-      logger.debug("conversation thread summarization worker job completed", {
-        jobId: request.id,
-        durationMs: Date.now() - startedAt,
-      });
       respond({ id: request.id, ok: true, result });
     },
     cleanups: [
@@ -245,12 +231,7 @@ async function runJob(request: ThreadSummarizationWorkerRequest): Promise<void> 
   })();
 }
 
-const jobQueue = createSerialJobQueue<ThreadSummarizationWorkerRequest>({
-  run: runJob,
-  onIdle() {
-    logger.debug("conversation thread summarization worker queue idle");
-  },
-});
+const jobQueue = createSerialJobQueue<ThreadSummarizationWorkerRequest>({ run: runJob });
 
 self.addEventListener("message", (event: MessageEvent<unknown>) => {
   const decoded = decodeThreadSummarizationParentMessage(event.data);
@@ -272,11 +253,6 @@ self.addEventListener("message", (event: MessageEvent<unknown>) => {
         return;
       }
       jobQueue.enqueue(request);
-      logger.debug("conversation thread summarization worker job enqueued", {
-        jobId: request.id,
-        queueDepth: jobQueue.depth,
-        running: jobQueue.running,
-      });
     },
   });
 });

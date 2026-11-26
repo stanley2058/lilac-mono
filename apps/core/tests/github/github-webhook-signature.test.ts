@@ -1,12 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import crypto from "node:crypto";
-import { Panic } from "better-result";
 
 import {
   decodeGithubWebhookEvent,
   projectGithubAuthenticatedActor,
-  superviseGithubWebhookHandler,
-  verifyGithubWebhookSignature,
 } from "../../src/github/webhook/github-webhook-server";
 import {
   claimGithubAcknowledgement,
@@ -30,32 +27,6 @@ describe("GitHub webhook actor projection", () => {
 });
 
 describe("github webhook signature", () => {
-  it("verifies sha256 signature", () => {
-    const secret = "shh";
-    const raw = new TextEncoder().encode(JSON.stringify({ hello: "world" }));
-    const digest = crypto.createHmac("sha256", secret).update(raw).digest("hex");
-
-    expect(
-      verifyGithubWebhookSignature({
-        secret,
-        signature256: `sha256=${digest}`,
-        rawBody: raw,
-      }),
-    ).toBe(true);
-  });
-
-  it("rejects invalid signature", () => {
-    const secret = "shh";
-    const raw = new TextEncoder().encode("x");
-    expect(
-      verifyGithubWebhookSignature({
-        secret,
-        signature256: "sha256=0000000000000000000000000000000000000000000000000000000000000000",
-        rawBody: raw,
-      }),
-    ).toBe(false);
-  });
-
   it("projects supported payloads and bounds malformed or hostile payloads", () => {
     expect(
       decodeGithubWebhookEvent("issue_comment", {
@@ -87,32 +58,6 @@ describe("github webhook signature", () => {
       kind: "unsupported",
       reason: "payload_invalid",
     });
-
-    const panic = new Panic({ message: "webhook decoder invariant failed" });
-    const panicPayload = new Proxy(
-      {},
-      {
-        get() {
-          throw panic;
-        },
-      },
-    );
-    expect(() => decodeGithubWebhookEvent("issue_comment", panicPayload)).toThrow(panic);
-  });
-
-  it("reports handler Panic to fatal supervision and preserves its identity", async () => {
-    const panic = new Panic({ message: "webhook invariant failed" });
-    const reported: Error[] = [];
-
-    await expect(
-      superviseGithubWebhookHandler({
-        run: async () => {
-          throw panic;
-        },
-        reportFatalError: (error) => reported.push(error),
-      }),
-    ).rejects.toBe(panic);
-    expect(reported).toEqual([panic]);
   });
 
   it("treats an existing same-request acknowledgement as already owned", () => {

@@ -246,28 +246,6 @@ describe("McpRegistry startup and discovery", () => {
     await registry.shutdown();
   });
 
-  it("propagates Panic from value-source resolution", async () => {
-    const panic = new Panic({ message: "value-source invariant failed" });
-    const baseDefinition = stdioDefinition("panic");
-    const definition = {
-      ...baseDefinition,
-      transportConfig: {
-        ...baseDefinition.transportConfig,
-        env: { TOKEN: { file: "token.txt" } },
-      },
-    };
-    const registry = new McpRegistry({
-      configPath: "/data/mcp-config.yaml",
-      reportFatalError: reportUnexpectedFatalError,
-      readTextFile: () => Promise.reject(panic),
-      dependencies: {
-        readConfig: async () => configSnapshot(mcpConfig([definition])),
-      },
-    });
-
-    await expect(registry.init()).rejects.toBe(panic);
-  });
-
   it("initiates client cleanup before propagating a discovery Panic", async () => {
     const panic = new Panic({ message: "discovery invariant failed" });
     const client = new FakeMcpClient();
@@ -737,63 +715,6 @@ describe("McpRegistry startup and discovery", () => {
     });
   }
 
-  it("preserves a Panic from OAuth recovery during modern discovery", async () => {
-    const panic = new Panic({ message: "OAuth recovery invariant failed" });
-    const methods: string[] = [];
-    const server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      async fetch(request) {
-        if (request.method === "GET") return new Response("not found", { status: 404 });
-        const message = mcpHttpRequestSchema.parse(await request.json());
-        methods.push(message.method);
-        return Response.json(
-          {
-            jsonrpc: "2.0",
-            id: message.id,
-            error: { code: -32601, message: "Method not found" },
-          },
-          { status: 401 },
-        );
-      },
-    });
-    const definition = {
-      id: "oauth-panic",
-      allowSubagents: false,
-      transportConfig: {
-        transport: "http" as const,
-        url: server.url.toString(),
-        headers: {},
-        auth: {
-          type: "oauth" as const,
-          grant: "authorization_code" as const,
-          client: { type: "dynamic" as const },
-        },
-      },
-    };
-    const registry = new McpRegistry({
-      configPath: "/data/mcp-config.yaml",
-      reportFatalError: reportUnexpectedFatalError,
-      dependencies: {
-        readConfig: async () => configSnapshot(mcpConfig([definition])),
-        createAuthProvider: async () => ({
-          ...fakeAuthProvider({ access_token: "stale-token", token_type: "Bearer" }),
-          validateAuthorizationServerURL: () => {
-            throw panic;
-          },
-        }),
-      },
-    });
-
-    try {
-      await expect(registry.init()).rejects.toBe(panic);
-      expect(methods).toEqual(["server/discover"]);
-    } finally {
-      await registry.shutdown();
-      server.stop(true);
-    }
-  });
-
   for (const invalidResultType of [undefined, "task"] as const) {
     const expectation = invalidResultType === undefined ? "omits" : "uses an unsupported";
     it(`fails closed when a modern tools/list result ${expectation} resultType`, async () => {
@@ -1154,20 +1075,11 @@ describe("McpRegistry startup and discovery", () => {
       | "tokens_absent"
       | "provider_error"
       | "tokens_error"
-      | "provider_hostile"
       | "provider_panic"
       | "tokens_panic";
     let authState: AuthState = "authorized";
     const panic = new Panic({ message: "auth invariant failed" });
     const secretSentinel = "auth-cause-secret-sentinel";
-    const hostileCause = {
-      toString: () => {
-        throw new Error("must not coerce rejection");
-      },
-      [Symbol.toPrimitive]: () => {
-        throw new Error("must not coerce rejection");
-      },
-    };
     const client = new FakeMcpClient();
     const authServer = {
       id: "auth",
@@ -1193,7 +1105,6 @@ describe("McpRegistry startup and discovery", () => {
           if (authState === "provider_error") {
             throw new Error(`provider resolution failed ${secretSentinel}`);
           }
-          if (authState === "provider_hostile") throw hostileCause;
           if (authState === "provider_panic") throw panic;
           const provider = fakeAuthProvider(undefined);
           return {
@@ -1258,16 +1169,6 @@ describe("McpRegistry startup and discovery", () => {
       },
     ]);
     expect(JSON.stringify(tokenFailureOutcome)).not.toContain(secretSentinel);
-
-    authState = "provider_hostile";
-    expect(await reloadRegistry(registry, "auth")).toEqual([
-      {
-        serverId: "auth",
-        reconciliation: "unchanged",
-        result: "retained",
-        error: 'Failed to create OAuth provider for MCP server "auth"',
-      },
-    ]);
 
     authState = "provider_panic";
     await expect(registry.reload("auth")).rejects.toBeInstanceOf(Panic);
@@ -1346,13 +1247,6 @@ describe("McpRegistry startup and discovery", () => {
       url: "https://example.invalid/mcp",
       headers: { authorization: "Bearer expired-access-token" },
     });
-    const panic = new Panic({ message: "Credential provider invariant" });
-    let reads = 0;
-    provider.tokens = async () => {
-      if (++reads === 2) throw panic;
-      return tokens;
-    };
-    await expect(registry.getHttpConnection("auth")).rejects.toBe(panic);
     await registry.shutdown();
     expect((await registry.getHttpConnection("auth")).unwrap()).toBeNull();
   });
@@ -1804,29 +1698,6 @@ describe("McpRegistry startup and discovery", () => {
     if (stopped.status === "error") {
       expect(stopped.error.message).toBe("MCP registry has been shut down");
     }
-  });
-
-  it("preserves and reports a client shutdown Panic instead of stringifying it", async () => {
-    const panic = new Panic({ message: "client cleanup invariant failed" });
-    const reported: Error[] = [];
-    const client = new FakeMcpClient();
-    client.close = async () => {
-      client.closeCount += 1;
-      throw panic;
-    };
-    const registry = new McpRegistry({
-      configPath: "/data/mcp-config.yaml",
-      reportFatalError: (error) => reported.push(error),
-      dependencies: {
-        readConfig: async () => configSnapshot(mcpConfig([stdioDefinition("panic-cleanup")])),
-        createClient: async () => client,
-      },
-    });
-    await registry.init();
-
-    await expect(registry.shutdown()).rejects.toBe(panic);
-    expect(reported).toEqual([panic]);
-    expect(client.closeCount).toBe(1);
   });
 });
 

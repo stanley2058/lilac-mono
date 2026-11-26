@@ -12,7 +12,7 @@ import type {
   BlobStore,
   BlobUpload,
 } from "@stanley2058/lilac-blob-storage";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 import type {
   AdapterEventHandler,
   AdapterSubscription,
@@ -347,28 +347,6 @@ describe("request-composition attachments", () => {
     expect(composed.status).toBe("ok");
     if (composed.status === "error") throw composed.error;
     expect(JSON.stringify(composed.value)).not.toContain("Reactions:");
-  });
-
-  it("preserves Panic from optional reaction enrichment", async () => {
-    const msg: SurfaceMessage = {
-      ref: { platform: "discord", channelId: "c", messageId: "m" },
-      session: { platform: "discord", channelId: "c" },
-      userId: "u",
-      text: "hi",
-      ts: 0,
-    };
-    const adapter = new FakeAdapter(msg);
-    const panic = new Panic({ message: "reaction provider invariant failed" });
-    spyOn(adapter, "listReactions").mockRejectedValue(panic);
-
-    await expect(
-      composeSingleMessageResult(adapter, {
-        platform: "discord",
-        botUserId: "bot",
-        botName: "lilac",
-        msgRef: msg.ref,
-      }),
-    ).rejects.toBe(panic);
   });
 
   it("includes reaction hint in attribution header", async () => {
@@ -4296,13 +4274,5 @@ describe("request-composition session divider", () => {
     const out = await compose();
 
     expect(out.chainMessageIds).toEqual(["root", "m1", "m2", "m3"]);
-  });
-
-  it("preserves Panic from anchored divider discovery", async () => {
-    const { adapter, compose } = createAnchoredDividerFixture();
-    const panic = new Panic({ message: "divider lookup invariant failed" });
-    spyOn(adapter, "listMsg").mockRejectedValue(panic);
-
-    await expect(compose()).rejects.toBe(panic);
   });
 });

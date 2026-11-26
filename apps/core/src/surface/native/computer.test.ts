@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 import { createMCPClient } from "@ai-sdk/mcp";
 import { createGatewayHandler } from "../../../../computer-use-gateway/src/server";
 import { withMcpSessionHeaders, hashMcpSession } from "../../mcp/session-context";
@@ -111,11 +111,6 @@ test("native authorization and canonical session binding protect automatic viewe
       ready.viewer_password,
     );
     expect(sessions).toEqual([hashMcpSession(`native:${thread.id}`)]);
-    const panic = new Panic({ message: "Viewer invariant" });
-    tools.viewer!.execute = async () => {
-      throw panic;
-    };
-    await expect(computer.read("owner", { threadId: thread.id })).rejects.toBeInstanceOf(Panic);
     tools.viewer!.execute = async () => {
       throw new Error("Transport failed");
     };

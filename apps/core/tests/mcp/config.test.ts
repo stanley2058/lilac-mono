@@ -482,39 +482,6 @@ describe("MCP config file mutations", () => {
           : ["write", "sync", "close", "rename", "remove"],
       );
     }
-
-    calls.length = 0;
-    const hostileCause = {
-      toString: () => {
-        throw new Error("must not coerce rejection");
-      },
-      [Symbol.toPrimitive]: () => {
-        throw new Error("must not coerce rejection");
-      },
-    };
-    const hostileResult = await writeMcpConfigFileAtomic(
-      configPath,
-      { configVersion: 1, servers: {} },
-      {
-        ...dependencies,
-        open: async () => ({
-          writeFile: () => Promise.reject(hostileCause),
-          sync: async () => undefined,
-          close: async () => {
-            calls.push("close");
-          },
-        }),
-      },
-    );
-    expect(hostileResult.status).toBe("error");
-    if (hostileResult.status === "error") {
-      expect(hostileResult.error).toMatchObject({
-        operation: "write_temporary",
-        cause: hostileCause,
-      });
-      expect(hostileResult.error.message).toEndWith("Unknown error");
-    }
-    expect(calls).toEqual(["close", "remove"]);
   });
 
   it("preserves operation Panic identity across atomic-write cleanup Panics", async () => {

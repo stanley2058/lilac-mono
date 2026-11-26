@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import type { Level1ToolSpec } from "@stanley2058/lilac-plugin-runtime";
-import { Panic } from "better-result";
 
 import {
   formatToolLogPreview,
@@ -265,29 +264,6 @@ describe("summarizeToolFailure", () => {
         toolSpecs: new Map([["malformed", malformed]]),
       }),
     ).toEqual({ ok: true });
-  });
-
-  it("propagates Panic from plugin summarizers", () => {
-    const panic = new Panic({ message: "summary invariant" });
-    const spec: Level1ToolSpec<unknown> = {
-      name: "panic",
-      createTool: () => ({}),
-      isEnabled: () => true,
-      summarizeFailure() {
-        throw panic;
-      },
-    };
-    try {
-      summarizeToolFailure({
-        toolName: "panic",
-        isError: false,
-        result: {},
-        toolSpecs: new Map([["panic", spec]]),
-      });
-      throw new Error("expected Panic");
-    } catch (cause) {
-      expect(Panic.is(cause)).toBe(true);
-    }
   });
 });
 

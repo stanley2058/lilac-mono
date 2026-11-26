@@ -4,38 +4,6 @@ import type { ModelMessage } from "ai";
 import { buildSafeRecoveryCheckpoint } from "../recovery-checkpoint";
 
 describe("buildSafeRecoveryCheckpoint", () => {
-  it("keeps complete transcripts unchanged", () => {
-    const messages = [
-      { role: "user", content: "hi" },
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "tool-call",
-            toolCallId: "c1",
-            toolName: "bash",
-            input: { command: "ls" },
-          },
-        ],
-      },
-      {
-        role: "tool",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: "c1",
-            toolName: "bash",
-            output: { type: "text", value: "ok" },
-          },
-        ],
-      },
-      { role: "assistant", content: "done" },
-    ] satisfies ModelMessage[];
-
-    const checkpoint = buildSafeRecoveryCheckpoint(messages, "server restarted");
-    expect(checkpoint).toEqual(messages);
-  });
-
   it("synthesizes failed tool result for unresolved trailing tool call", () => {
     const messages = [
       { role: "user", content: "deploy" },

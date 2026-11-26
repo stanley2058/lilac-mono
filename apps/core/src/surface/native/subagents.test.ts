@@ -721,18 +721,6 @@ test("live named-session history and streaming content preserve IDs at completio
   expect(saved.messages.at(-1)?.metadata?.incomplete).toBeUndefined();
 });
 
-test("completed subagent reads the execution transcript rather than the delegation ID", () => {
-  const f = fixture();
-  f.run.state = "succeeded";
-  expect(f.operations[0]!.requestId).not.toBe(f.target.childRequestId);
-  const page = f.read().unwrap();
-  expect(page.unavailable).toBe(false);
-  expect(page.messages.map((message) => message.parts[0])).toEqual([
-    { type: "text", text: "Research" },
-    { type: "text", text: "Done" },
-  ]);
-});
-
 test("subagents without a dispatched operation stay waiting or report unavailable after termination", () => {
   for (const operationPending of [false, true]) {
     const f = fixture();

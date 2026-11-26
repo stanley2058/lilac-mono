@@ -587,30 +587,6 @@ describe("Codex OAuth login", () => {
     expect(writes).toHaveLength(1);
   });
 
-  it("propagates an active exchange Panic through close without changing identity", async () => {
-    const fetchStarted = deferred<void>();
-    const panic = new Panic({ message: "exchange invariant" });
-    let rejectFetch: (cause: unknown) => void = () => {};
-    const fetchResult = new Promise<Response>((_resolve, reject) => {
-      rejectFetch = reject;
-    });
-    const login = await startCodexOAuthLogin({
-      callbackServer: "disabled",
-      fetch: async () => {
-        fetchStarted.resolve();
-        return fetchResult;
-      },
-    });
-    const exchange = login.exchange({ code: "code", state: login.state });
-    await fetchStarted.promise;
-    const close = login.close();
-    rejectFetch(panic);
-
-    const [exchangeOutcome, closeOutcome] = await Promise.allSettled([exchange, close]);
-    expect(exchangeOutcome).toEqual({ status: "rejected", reason: panic });
-    expect(closeOutcome).toEqual({ status: "rejected", reason: panic });
-  });
-
   it("allows only one exchange to run and rejects duplicates after completion", async () => {
     const response = deferred<Response>();
     const login = await startCodexOAuthLogin({

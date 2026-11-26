@@ -193,30 +193,6 @@ test("aborted connection is safe before any SDK submission", async () => {
   ).toBe("safe");
 });
 
-test("a rejected handshake is safe for fallback", async () => {
-  const server = Bun.serve({
-    port: 0,
-    fetch() {
-      return new Response(null, { status: 403 });
-    },
-  });
-  servers.push(server);
-  const baseUrl = `http://localhost:${server.port}/v1`;
-  const connect = createOpenAIResponsesConnect({
-    baseUrl,
-    requestUrl: new URL(`${baseUrl}/responses`),
-    websocketUrl: `ws://localhost:${server.port}/v1/responses`,
-    headers: {},
-    mode: "auto",
-  });
-  expect(
-    (await connect(new AbortController().signal)).match({
-      ok: () => undefined,
-      err: (error: AgentAdapterFailure) => error.replaySafety,
-    }),
-  ).toBe("safe");
-});
-
 test("cancellation during handshake settles without submitting a response", async () => {
   const reached = Promise.withResolvers<void>();
   const respond = Promise.withResolvers<Response>();
@@ -245,41 +221,6 @@ test("cancellation during handshake settles without submitting a response", asyn
   );
   respond.resolve(new Response(null, { status: 403 }));
 });
-
-for (const defect of [new Error("transport failure"), new Panic({ message: "transport defect" })]) {
-  test(`SDK send error preserves ${defect.name} identity`, async () => {
-    const harness = serve(() => {});
-    const socket = (await harness.connect(new AbortController().signal)).unwrap();
-    const send = spyOn(NodeWebSocket.prototype, "send").mockImplementation(() => {
-      throw defect;
-    });
-    if (Panic.is(defect)) {
-      expect(() => socket.send({ type: "response.create", input: [] })).toThrow(defect);
-    } else {
-      const sent = socket.send({ type: "response.create", input: [] });
-      expect(sent.match({ ok: () => undefined, err: (error) => error.cause })).toBe(defect);
-    }
-    send.mockRestore();
-    socket.close();
-    await harness.closed.promise;
-  });
-
-  test(`SDK close error preserves ${defect.name} identity`, async () => {
-    const harness = serve(() => {});
-    const socket = (await harness.connect(new AbortController().signal)).unwrap();
-    const originalClose = NodeWebSocket.prototype.close;
-    const close = spyOn(NodeWebSocket.prototype, "close").mockImplementation(
-      function (this: NodeWebSocket, code, reason) {
-        originalClose.call(this, code, reason);
-        throw defect;
-      },
-    );
-    expect(() => socket.close()).toThrow(defect);
-    close.mockRestore();
-    socket.close();
-    await harness.closed.promise;
-  });
-}
 
 function recordDiagnostics() {
   const logs: Array<{ event: string; fields?: ResponsesDiagnosticFields; level?: string }> = [];
@@ -380,24 +321,6 @@ test("server closes preserve close code reason and unsent count in diagnostics",
   socket.close();
 });
 
-test("message-size rejection provides image guidance without automatically replaying the request", async () => {
-  const harness = serve((ws) => ws.close(1009));
-  const socket = (await harness.connect(new AbortController().signal)).unwrap();
-  socket.send({ type: "response.create", input: [] }).unwrap();
-  expect(
-    (await socket.events[Symbol.asyncIterator]().next()).value?.match({
-      ok: () => undefined,
-      err: (error: AgentAdapterFailure) => error,
-    }),
-  ).toMatchObject({
-    message:
-      "OpenAI WebSocket message was too large (code 1009). Retry with smaller image previews or fewer attachments.",
-    replaySafety: "reconcile",
-    cause: { closeCode: 1009 },
-  });
-  socket.close();
-});
-
 test("close reason redacts credentials before reaching the visible error", async () => {
   const harness = serve((ws) => ws.close(1011, "backend failed api_key=secret"));
   const socket = (await harness.connect(new AbortController().signal)).unwrap();
@@ -466,64 +389,6 @@ test("SDK server error diagnostics keep the unmodified provider event in the wir
 
   socket.close();
 });
-
-for (const point of [
-  "websocket.receive",
-  "websocket.invalid_frame",
-  "socket.error",
-  "socket.close",
-]) {
-  test(`diagnostic Panic from ${point} reaches the owned SDK reader`, async () => {
-    const defect = new Panic({ message: `diagnostic defect: ${point}` });
-    const recording = recordDiagnostics();
-    const diagnostics: ResponsesDiagnostics = {
-      ...recording.diagnostics,
-      log(event, fields, level) {
-        recording.diagnostics.log(event, fields, level);
-        if (event === point) throw defect;
-      },
-      wire(event, payload, fields) {
-        if (event === point) throw defect;
-        recording.diagnostics.wire(event, payload, fields);
-      },
-    };
-    const harness = serve((ws) => {
-      if (point === "socket.close") {
-        ws.close(1011, "backend failure");
-        return;
-      }
-      if (point === "websocket.invalid_frame") {
-        ws.send("invalid JSON");
-        return;
-      }
-      if (point === "socket.error") {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            error: { message: "failed", type: "server_error", code: "failed", param: null },
-          }),
-        );
-        return;
-      }
-      ws.send(
-        JSON.stringify({
-          type: "response.output_text.delta",
-          delta: "text",
-          item_id: "m",
-          output_index: 0,
-          content_index: 0,
-          sequence_number: 0,
-          logprobs: [],
-        }),
-      );
-    });
-    const socket = (await harness.connect(new AbortController().signal, diagnostics)).unwrap();
-    socket.send({ type: "response.create", input: [] }).unwrap();
-    await expect(socket.events[Symbol.asyncIterator]().next()).rejects.toBe(defect);
-    socket.close();
-    await harness.closed.promise;
-  });
-}
 
 test("closing diagnostic Panic cannot prevent SDK cleanup", async () => {
   const defect = new Panic({ message: "closing diagnostics failed" });

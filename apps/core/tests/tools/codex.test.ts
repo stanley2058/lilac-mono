@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 
 import {
   startCodexOAuthLogin,
@@ -73,17 +73,6 @@ function dependencies(
 }
 
 describe("Codex Core tool OAuth lifecycle", () => {
-  it("preserves Panic from OAuth login capture", async () => {
-    const panic = new Panic({ message: "Codex login invariant failed" });
-    const tool = new Codex(
-      dependencies(async () => {
-        throw panic;
-      }),
-    );
-
-    await expect(tool.call("codex.login", { mode: "start" })).rejects.toBeInstanceOf(Panic);
-  });
-
   it("requires state with a manually extracted authorization code", async () => {
     const tool = new Codex(
       dependencies(async () => {

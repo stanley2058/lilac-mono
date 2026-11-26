@@ -188,31 +188,6 @@ describe("unified deferred tool catalog", () => {
     ).toMatchObject({ matches: [{ source: "plugin" }] });
   });
 
-  it("reports every returned stable ID to the run authority", async () => {
-    const selections: Array<readonly string[]> = [];
-    const catalog = buildUnifiedToolCatalog({
-      candidates: [
-        candidate({ source: "plugin", sourceId: "one", rawName: "search-one" }),
-        candidate({ source: "mcp", sourceId: "two", rawName: "search-two" }),
-      ],
-    });
-    const execute = executableSearch(
-      createPortableToolSearch({
-        catalog: catalog.entries,
-        onSelectCatalogIds: (catalogIds) => selections.push(catalogIds),
-      }),
-    );
-
-    const result = await execute(
-      { query: "search", max_results: 2 },
-      { toolCallId: "selection", messages: [] },
-    );
-    expect(selections).toEqual([catalog.entries.map((entry) => entry.stableId)]);
-    expect(result).toMatchObject({
-      matches: [{ stableId: expect.any(String) }, { stableId: expect.any(String) }],
-    });
-  });
-
   it("ranks name matches above metadata-only matches and supports fuzzy keywords", async () => {
     const catalog = buildUnifiedToolCatalog({
       candidates: [

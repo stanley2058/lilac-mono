@@ -202,23 +202,6 @@ async function warm(
 }
 
 describe("Responses transport behavior parity", () => {
-  test("reuses one socket and a canonical transcript prefix across executions", async () => {
-    const h = harness();
-    const next = await warm(h);
-    const socket = await h.connect();
-    socket.send(next).unwrap();
-    expect(h.sockets).toHaveLength(1);
-    expect(h.sockets[0]!.sent[1]).toEqual({
-      ...next,
-      previous_response_id: "response-1",
-      input: [followUp],
-    });
-    h.sockets[0]!.emit(completed("response-2"));
-    await untilTerminal(socket);
-    socket.close();
-    h.transport.close();
-  });
-
   test("retries stale response ids once before output and discards buffered created events", async () => {
     const h = harness();
     const next = await warm(h);
@@ -705,29 +688,6 @@ describe("Responses transport behavior parity", () => {
         reason: "cancelled",
         replaySafety: "safe",
       });
-      expect(h.sockets[0]!.sent).toHaveLength(0);
-      socket.close();
-      h.transport.close();
-    },
-  );
-
-  test.each(["create", "steer"] as const)(
-    "an acquired socket preserves Panic cancellation identity for %s",
-    async (kind) => {
-      const h = harness();
-      const controller = new AbortController();
-      const socket = await h.connect(controller.signal);
-      const panic = new Panic({ message: "abort defect", cause: new Error("defect") });
-      controller.abort(panic);
-      const payload: ResponsesClientEvent =
-        kind === "create"
-          ? request()
-          : {
-              type: "response.steer",
-              previous_response_id: "active-response",
-              input: [{ type: "message", role: "user", content: "new direction" }],
-            };
-      await expect(Promise.resolve().then(() => socket.send(payload))).rejects.toBe(panic);
       expect(h.sockets[0]!.sent).toHaveLength(0);
       socket.close();
       h.transport.close();

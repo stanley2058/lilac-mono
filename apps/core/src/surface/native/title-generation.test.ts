@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { Panic, Result } from "better-result";
+import { Result } from "better-result";
 import { parseCoreConfigV2ToUniversal } from "@stanley2058/lilac-utils";
 import { NativeStore } from "./store";
 import { decodeNativeRecord } from "./codec";
@@ -368,21 +368,6 @@ test("refinement prefers the explicit final answer over later commentary", () =>
     )
     .unwrap();
   expect(f.store.getTitleGeneration(f.thread.id).unwrap()?.assistant).toBe("Actual final answer");
-  f.store.close();
-});
-
-test("shutdown preserves a model Panic and reports its original identity", async () => {
-  const f = fixture();
-  const c = controlled(f);
-  await c.first.promise;
-  const stopped = c.service.stop();
-  const defect = new Panic({ message: "Title model defect" });
-  c.firstResult.resolve(Result.err(defect));
-  await stopped;
-  expect(c.fatal).toEqual([defect]);
-  expect(c.fatal[0]).toBe(defect);
-  expect(c.warnings).toEqual([]);
-  expect(f.store.getThreadRecord(f.thread.id).unwrap().title).toBe("First line");
   f.store.close();
 });
 

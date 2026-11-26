@@ -1554,10 +1554,6 @@ export function createToolServer(options: ToolServerOptions) {
         cwd: ctx.cwd,
         inputBytes,
         timeoutMs,
-      });
-
-      logger.debug("tool call input", {
-        callableId: body.callableId,
         input: safeToolInputPreview(body.callableId, input),
       });
 

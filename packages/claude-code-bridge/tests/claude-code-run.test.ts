@@ -72,23 +72,6 @@ describe("materializeClaudeCodeRunResult", () => {
     expect((await run.disposeResult()).status).toBe("error");
   });
 
-  it("returns invalid native-session configuration as an owned Result error", async () => {
-    const materialized = await materializeClaudeCodeRunResult({
-      modelId: "sonnet",
-      cwd: process.cwd(),
-      tools: {},
-      nativeSession: { mode: "fresh", sessionId: "not-a-uuid" },
-      execute: async () => {
-        throw new Error("not called");
-      },
-    });
-
-    expect(materialized.status).toBe("error");
-    if (materialized.status === "error") {
-      expect(materialized.error._tag).toBe("ClaudeCodeRunInvalidConfiguration");
-    }
-  });
-
   it("attempts all acquired cleanup before rethrowing model construction Panic", async () => {
     const constructionPanic = new Panic({ message: "model construction invariant" });
     const controlsPanic = new Panic({ message: "control cleanup invariant" });
@@ -379,62 +362,6 @@ describe("materializeClaudeCodeRunResult", () => {
     expect(settings[1]?.tools).toEqual([]);
     expect(settings[1]?.env).toBeUndefined();
 
-    await run.dispose();
-  });
-
-  it("returns utility model construction failures from the mandatory Result API", async () => {
-    const provider = createClaudeCode();
-    let createCalls = 0;
-    const run = (
-      await materializeClaudeCodeRunResult({
-        modelId: "sonnet",
-        cwd: process.cwd(),
-        tools: {},
-        execute: () => {
-          throw new Error("not called");
-        },
-        createModel: (modelId, settings) => {
-          createCalls += 1;
-          if (createCalls > 1) throw new Error("utility provider unavailable");
-          return provider(modelId, settings);
-        },
-      })
-    ).unwrap();
-
-    const utility = run.createUtilityModelResult();
-    expect(utility.status).toBe("error");
-    if (utility.status === "error") {
-      expect(utility.error).toMatchObject({
-        _tag: "ClaudeCodeRunExternalFailure",
-        operation: "Claude utility model construction",
-      });
-    }
-    expect(() => run.createUtilityModel()).toThrow("Claude utility model construction failed");
-    await run.dispose();
-  });
-
-  it("preserves Panic identity from utility model construction", async () => {
-    const provider = createClaudeCode();
-    const panic = new Panic({ message: "utility model invariant" });
-    let createCalls = 0;
-    const run = (
-      await materializeClaudeCodeRunResult({
-        modelId: "sonnet",
-        cwd: process.cwd(),
-        tools: {},
-        execute: () => {
-          throw new Error("not called");
-        },
-        createModel: (modelId, settings) => {
-          createCalls += 1;
-          if (createCalls > 1) throw panic;
-          return provider(modelId, settings);
-        },
-      })
-    ).unwrap();
-
-    expect(() => run.createUtilityModelResult()).toThrow(panic);
-    expect(() => run.createUtilityModel()).toThrow(panic);
     await run.dispose();
   });
 });

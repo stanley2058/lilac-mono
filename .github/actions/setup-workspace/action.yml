@@ -1,0 +1,64 @@
+name: Set up the workspace
+description: Install Bun dependencies and the toolchains a CI job's gates need.
+
+inputs:
+  rust:
+    description: Install the pinned Rust toolchain for the remote runner build.
+    default: "false"
+  go:
+    description: Install Go for the tools CLI build.
+    default: "false"
+  system-tools:
+    description: Install fd, ripgrep and GNU coreutils to match the Debian images.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version-file: package.json
+
+    - name: Setup Go for tools CLI boundary tests
+      if: inputs.go == 'true'
+      uses: actions/setup-go@v6
+      with:
+        go-version: stable
+        # There is no go.mod, so key the build cache on the launcher source. A cold cache compiles
+        # the standard library for every launcher target.
+        cache-dependency-path: apps/tool-bridge/*.go
+
+    # apps/remote-runner/rust-toolchain.toml pins the compiler, rustfmt and targets.
+    - name: Setup Rust for the remote runner
+      if: inputs.rust == 'true'
+      shell: bash
+      run: rustup toolchain install
+      working-directory: apps/remote-runner
+
+    - name: Cache the remote runner build
+      if: inputs.rust == 'true'
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: apps/remote-runner
+        shared-key: remote-runner
+
+    - name: Install system dependencies
+      if: inputs.system-tools == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y fd-find ripgrep
+        sudo ln -sf /usr/bin/fdfind /usr/local/bin/fd
+
+    # GitHub has no Debian runners. Match the GNU coreutils in the Debian images.
+    - name: Use GNU coreutils
+      if: inputs.system-tools == 'true'
+      shell: bash
+      run: |
+        sudo apt-get install -y --allow-remove-essential coreutils-from-gnu coreutils-from-uutils-
+        cat --version | grep -F 'GNU coreutils'
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile

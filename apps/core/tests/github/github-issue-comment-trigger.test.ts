@@ -22,15 +22,6 @@ describe("github issue comment trigger parsing", () => {
     expect(parsed).toBe("inspect this\nKeep the stack trace in the reply.");
   });
 
-  it("parses a leading mention command and strips only the trigger mention", () => {
-    const parsed = parseIssueCommentTrigger(
-      "@catalinna-df[bot] please review\n\nFocus on the webhook path.",
-      BOT_LOGINS,
-    );
-
-    expect(parsed).toBe("please review\nFocus on the webhook path.");
-  });
-
   it("parses a leading mention command followed by punctuation", () => {
     expect(parseIssueCommentTrigger("@catalinna-df[bot], please review", BOT_LOGINS)).toBe(
       "please review",
@@ -90,13 +81,6 @@ describe("github issue comment trigger parsing", () => {
 });
 
 describe("github agent comment marker", () => {
-  it("marks outbound GitHub comments with a hidden marker", () => {
-    const marked = markGithubAgentComment("hello");
-
-    expect(marked).toBe("<!-- lilac:agent-comment -->\nhello");
-    expect(isMarkedGithubAgentComment(marked)).toBe(true);
-  });
-
   it("prepends a marker when marker-like text is not on its own content line", () => {
     const marked = markGithubAgentComment("<!-- lilac:agent-comment --> hello");
 

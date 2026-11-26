@@ -386,14 +386,6 @@ export class SupervisedBlobStore implements BlobStore {
       phase: "reserving",
     };
     this.#active.set(objectId, active);
-    this.#debug("blob upload reservation started", {
-      objectId,
-      retention: reservation.retention.kind,
-      ...(input.expectedByteLength === undefined
-        ? {}
-        : { expectedByteLength: input.expectedByteLength }),
-      expectedSha256: input.expectedSha256 !== undefined,
-    });
 
     const created = await reservationCreated;
     if (created.isErr()) {
@@ -413,10 +405,6 @@ export class SupervisedBlobStore implements BlobStore {
 
     if (active.phase === "reserving") {
       active.phase = "uploading";
-      this.#debug("blob upload started", {
-        objectId,
-        durationMs: Date.now() - reservation.createdAt,
-      });
       void this.#superviseUpload(active);
     }
 
@@ -1223,10 +1211,6 @@ export class SupervisedBlobStore implements BlobStore {
       return this.#recordUploadFailure(active, "write", sinkOutcome.failure);
     }
     active.sink = sinkOutcome.sink;
-    this.#debug("blob upload sink opened", {
-      objectId: active.reservation.objectId,
-      durationMs: Date.now() - active.reservation.createdAt,
-    });
     const hash = createHash("sha256");
     let byteLength = 0;
     const writeChunk = async (chunk: Uint8Array): Promise<ResultType<void, BlobWriteError>> => {
@@ -1329,11 +1313,6 @@ export class SupervisedBlobStore implements BlobStore {
     active.contentWritesSettled = true;
     const sha256 = hash.digest("hex");
     active.observedByteLength = byteLength;
-    this.#debug("blob upload source consumed", {
-      objectId: active.reservation.objectId,
-      byteLength,
-      durationMs: Date.now() - active.reservation.createdAt,
-    });
     if (active.expectedSha256 !== undefined && active.expectedSha256 !== sha256) {
       this.#error("blob upload digest verification failed", {
         objectId: active.reservation.objectId,
@@ -1429,11 +1408,6 @@ export class SupervisedBlobStore implements BlobStore {
             );
       }
       active.contentWritesSettled = true;
-      this.#debug("blob upload content committed", {
-        objectId: active.reservation.objectId,
-        byteLength,
-        durationMs: Date.now() - active.reservation.createdAt,
-      });
       const afterCommitPhase = this.#uploadPhase(active);
       if (afterCommitPhase === "interrupted" || afterCommitPhase === "deleted") {
         await this.#backend.deleteKeys([contentKey, metadataKey(contentKey)]);
@@ -1476,10 +1450,6 @@ export class SupervisedBlobStore implements BlobStore {
         err: (failure) => ({ ok: false, failure }),
       });
       if (publishState.ok && publishState.applied) {
-        this.#debug("blob upload reference published", {
-          objectId: active.reservation.objectId,
-          durationMs: Date.now() - active.reservation.createdAt,
-        });
         return Result.ok(ref);
       }
       if (!publishState.ok) {

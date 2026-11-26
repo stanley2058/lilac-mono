@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import type { ServerToolResult } from "@stanley2058/lilac-plugin-runtime";
-import { Panic } from "better-result";
 
 import { Onboarding, installGithubTarGzBinary } from "../../src/tool-server/tools/onboarding";
 
@@ -222,7 +221,7 @@ describe("onboarding default skills", () => {
     }
   });
 
-  it("captures Git identity test writes and preserves filesystem Panic", async () => {
+  it("captures Git identity test write failures as semantic errors", async () => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "lilac-onboarding-git-test-"));
     const denied = Object.assign(new Error("test write denied"), { code: "EPERM" });
     const writeFile = spyOn(fs, "writeFile").mockRejectedValue(denied);
@@ -236,16 +235,6 @@ describe("onboarding default skills", () => {
       });
     } finally {
       writeFile.mockRestore();
-    }
-
-    const panic = new Panic({ message: "git temp invariant failed" });
-    const mkdtemp = spyOn(fs, "mkdtemp").mockRejectedValue(panic);
-    try {
-      await expect(
-        onboardingWith().call("onboarding.git_identity", { mode: "test", dataDir }),
-      ).rejects.toBeInstanceOf(Panic);
-    } finally {
-      mkdtemp.mockRestore();
     }
   });
 

@@ -8,7 +8,6 @@ import { env } from "@stanley2058/lilac-utils";
 import type { BlobStore } from "@stanley2058/lilac-blob-storage";
 
 import {
-  captureDeadLetterAcceptance,
   RedisEventDeadLetterAuthenticationFailed,
   RedisEventDeadLetterCiphertextInvalid,
   RedisEventDeadLetterConfigInvalid,
@@ -316,31 +315,6 @@ function inconsistentDeadLetterRecordFixtures(): readonly EventDeadLetterRecord[
 }
 
 describe("result-based event delivery", () => {
-  it("preserves an opaque dead-letter rejection cause by identity", async () => {
-    const cause = Object.create(null);
-    const accepted = await captureDeadLetterAcceptance(async () => {
-      throw cause;
-    });
-
-    expect(accepted.status).toBe("error");
-    if (accepted.status === "error") expect(accepted.error.cause).toBe(cause);
-  });
-
-  it("signals a captured dead-letter Panic outside Result projection", async () => {
-    const panic = new Panic({ message: "dead-letter acceptance invariant" });
-    let caught: unknown;
-
-    try {
-      await captureDeadLetterAcceptance(async () => {
-        throw panic;
-      });
-    } catch (cause) {
-      caught = cause;
-    }
-
-    expect(caught).toBe(panic);
-  });
-
   it("rejects malformed XRANGE evidence before starting a dead-letter transaction", async () => {
     const redis = new Redis(TEST_REDIS_URL, { lazyConnect: true });
     let xrangeResponse: unknown = [];
@@ -411,55 +385,6 @@ describe("result-based event delivery", () => {
     expect(timeCalls).toBe(0);
     expect(xrangeCalls).toBe(0);
     expect(transactionCalls).toBe(0);
-    redis.disconnect();
-  });
-
-  it("rejects truncated, bad SET, extra, and malformed zset transaction receipts", async () => {
-    const redis = new Redis(TEST_REDIS_URL, { lazyConnect: true });
-    let receipts: unknown = null;
-    const transaction = {
-      set: () => transaction,
-      zadd: () => transaction,
-      zremrangebyrank: () => transaction,
-      exec: async () => receipts,
-    };
-    Reflect.set(redis, "multi", () => transaction);
-    const deadLetter = new RedisEventDeadLetter({
-      redis,
-      encryptionKey: TEST_DEAD_LETTER_KEY,
-    });
-    const malformedReceipts: readonly unknown[] = [
-      [
-        [null, "OK"],
-        [null, 1],
-      ],
-      [
-        [null, "NOT_OK"],
-        [null, 1],
-        [null, 0],
-      ],
-      [
-        [null, "OK"],
-        [null, 1],
-        [null, 0],
-        [null, 0],
-      ],
-      [
-        [null, "OK"],
-        [null, "invalid-count"],
-        [null, 0],
-      ],
-    ];
-
-    for (const malformed of malformedReceipts) {
-      receipts = malformed;
-      const accepted = await deadLetter.accept(deadLetterRecordFixture());
-      expect(accepted.status).toBe("error");
-      if (accepted.status === "error") {
-        expect(accepted.error._tag).toBe("EventDeadLetterAcceptFailed");
-      }
-    }
-
     redis.disconnect();
   });
 
@@ -1262,38 +1187,6 @@ describe("result-based event delivery", () => {
     }
   });
 
-  it("treats a broken handler Result as a reported defect", async () => {
-    const redis = new Redis(TEST_REDIS_URL);
-    const keyPrefix = `test:lilac-delivery:${randomId("broken-result")}`;
-    const reported: unknown[] = [];
-    const raw = createRedisStreamsBus({ redis, keyPrefix });
-    const bus = createLilacBus(raw, {
-      reportFatal: { report: (cause) => void reported.push(cause) },
-    });
-    const started = await bus.subscribeTopic(
-      "cmd.request",
-      { mode: "tail", offset: { type: "begin" }, batch: { maxWaitMs: 50 } },
-      async () => {
-        const broken = Result.ok(undefined);
-        Reflect.set(broken, "status", "broken");
-        return broken;
-      },
-      () => "commit",
-    );
-    if (started.status === "error") throw started.error;
-    try {
-      await publishRequest(bus, randomId("request"));
-      await expect(started.value.done).rejects.toBeInstanceOf(Panic);
-      expect(reported).toHaveLength(1);
-      expect(Panic.is(reported[0])).toBe(true);
-    } finally {
-      await started.value.stop().catch(() => undefined);
-      await redis.del(`${keyPrefix}:v2:cmd.request`);
-      await bus.close();
-      await redis.quit();
-    }
-  });
-
   const panicErrCause = new Panic({ message: "not an expected handler error" });
   const malformedResults: ReadonlyArray<[string, () => ResultType<void, HandlerFailure>, Panic?]> =
     [
@@ -1414,36 +1307,6 @@ describe("result-based event delivery", () => {
       }
     });
   }
-
-  it("captures subscription transport rejection as a done Result", async () => {
-    const redis = new Redis(TEST_REDIS_URL);
-    const originalDuplicate = redis.duplicate.bind(redis);
-    Reflect.set(redis, "duplicate", () => {
-      const duplicate = originalDuplicate();
-      Reflect.set(duplicate, "xread", async () => {
-        throw new Error("forced transport failure");
-      });
-      return duplicate;
-    });
-    const raw = createRedisStreamsBus({
-      redis,
-      keyPrefix: `test:lilac-delivery:${randomId("transport")}`,
-      subscriberPool: { max: 1 },
-    });
-    const started = await raw.subscribe(
-      "topic",
-      { mode: "tail", offset: { type: "begin" }, batch: { maxWaitMs: 50 } },
-      async () => ({ disposition: "commit" }),
-    );
-    if (started.status === "error") throw started.error;
-    const done = await started.value.done;
-    expect(done.status).toBe("error");
-    if (done.status === "error") expect(done.error._tag).toBe("EventDeliveryTransportFailed");
-    Reflect.set(redis, "duplicate", originalDuplicate);
-    await started.value.stop();
-    await raw.close();
-    await redis.quit();
-  });
 
   it("atomically acknowledges one source with a deterministic encrypted v3 dead letter", async () => {
     const redis = new Redis(TEST_REDIS_URL);

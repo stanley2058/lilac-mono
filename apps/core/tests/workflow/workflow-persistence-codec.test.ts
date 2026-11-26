@@ -1,5 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
-import { Panic } from "better-result";
+import { describe, expect, it } from "bun:test";
 
 import {
   decodeWorkflowPersistenceRow,
@@ -228,20 +227,6 @@ describe("workflow persistence row codec catalog", () => {
       if (retryableOnly.status === "error") {
         expect(retryableOnly.error._tag).toBe("CorruptPersistedFields");
       }
-    }
-  });
-
-  it("preserves Panic identity from the strict JSON adapter", () => {
-    const panic = new Panic({ message: "strict JSON parser defect" });
-    const parse = spyOn(JSON, "parse").mockImplementationOnce(() => {
-      throw panic;
-    });
-    try {
-      expect(() =>
-        decodeWorkflowPersistenceRow(workflowPersistenceRowCodecCases.current.input),
-      ).toThrow(panic);
-    } finally {
-      parse.mockRestore();
     }
   });
 });

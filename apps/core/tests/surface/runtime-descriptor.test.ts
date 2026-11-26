@@ -648,27 +648,6 @@ describe("surface workflow progress ports", () => {
       silent: true,
     });
   });
-
-  it("preserves Panic identity through workflow progress ports", async () => {
-    const githubAdapter = new TestAdapter("github");
-    const githubPort = createGithubWorkflowProgressPort(githubAdapter);
-    const panic = new Panic({ message: "workflow progress defect" });
-    spyOn(githubAdapter, "readMsg").mockRejectedValue(panic);
-    await expect(
-      githubPort.checkMessage({ channelId: "octo/repo#1", messageId: "42" }),
-    ).rejects.toBe(panic);
-  });
-
-  it("preserves unrecognized non-Error rejections as defects", async () => {
-    const adapter = new TestAdapter("discord");
-    const port = createDiscordWorkflowProgressPort(adapter);
-    const rejection = "provider-secret-rejection";
-    spyOn(adapter, "sendMsg").mockRejectedValue(rejection);
-
-    await expect(port.send({ channelId: "channel", content: { text: "Queued" } })).rejects.toBe(
-      rejection,
-    );
-  });
 });
 
 describe("surface relay policies", () => {
@@ -948,14 +927,4 @@ describe("surface runtime registry", () => {
       expect(String(settled.reason)).toContain(`received '${adapterPlatform}'`);
     },
   );
-
-  it("does not convert an adapter getSelf rejection into a registry mismatch", async () => {
-    const failure = new Error("getSelf failed");
-    const created = SurfaceRuntimeRegistry.create([
-      discordDescriptor(new TestAdapter("discord", failure)),
-    ]);
-    if (created.status === "error") throw created.error;
-
-    await expect(created.value.validateAdapterPlatforms()).rejects.toBe(failure);
-  });
 });

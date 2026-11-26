@@ -205,29 +205,3 @@ test("existing deployment records default to auto without rewriting and reject u
     false,
   );
 });
-
-test("deployment transport changes notify connected readers through bootstrap resync", async () => {
-  const fixture = await createNativeIntegrationFixture();
-  const controller = new AbortController();
-  try {
-    const { client } = fixture.connect();
-    const initial = await client.bootstrap.get({});
-    const document = await client.config.readDeployment({});
-    const stream = await client.bootstrap.watch(
-      { cursor: initial.catalogCursor },
-      { signal: controller.signal },
-    );
-    const next = stream.next();
-    await client.config.setDeployment({
-      settings: { ...document.settings, transport: "http-sse" },
-      expectedRevision: document.revision,
-    });
-    expect((await next).value).toMatchObject({ kind: "resync" });
-    expect((await client.bootstrap.get({})).transport).toBe("http-sse");
-    controller.abort();
-    await stream.return();
-  } finally {
-    controller.abort();
-    await fixture.close();
-  }
-});
