@@ -56,12 +56,19 @@ describe("reused results", () => {
     expect([...inputs.get("apps/core")!]).toEqual(
       expect.arrayContaining(["packages/client", "packages/computer-use-runner"]),
     );
+    // A utils test imports `../../agent/...`, which names no workspace root.
+    expect(inputs.get("packages/utils")).toContain("packages/agent");
   });
 
   test("ignore workspace paths named in comments and test strings", () => {
-    // apps/web mentions apps/core in a comment; client-protocol and utils tests use its paths as data.
-    expect(inputs.get("apps/web")).not.toContain("apps/core");
+    // client-protocol and utils tests use Core paths as data; tui mentions none.
     expect(inputs.get("packages/client-protocol")).not.toContain("apps/core");
     expect(inputs.get("packages/utils")).not.toContain("apps/core");
+    expect(inputs.get("apps/tui")).not.toContain("apps/core");
+  });
+
+  test("ignore paths into ignored build output", () => {
+    // Core serves `apps/web/dist`, which is built output rather than a gate input.
+    expect(inputs.get("apps/core")).not.toContain("apps/web");
   });
 });

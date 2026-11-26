@@ -266,21 +266,24 @@ function workspaceClosure(
   return seen;
 }
 
-// A whole quoted string that is a path into a workspace, such as an import specifier or a fixture.
-const QUOTED_WORKSPACE_PATH = /["'`]((?:\.\.\/)*(?:apps|packages)\/[\w./-]+)["'`]/gu;
+// A whole quoted string that is a relative path or a root-relative workspace path, such as an
+// import specifier or a fixture.
+const QUOTED_PATH = /["'`]((?:\.\.?\/)[\w./@-]+|(?:apps|packages)\/[\w./-]+)["'`]/gu;
 const PACKAGE_SPECIFIER = /["'](@stanley2058\/lilac-[\w-]+)/gu;
-const RESOLVE_SUFFIXES = ["", ".ts", ".tsx", ".js", ".mjs", ".json", "/index.ts"];
+const RESOLVE_SUFFIXES = ["", ".ts", ".tsx", ".js", ".mjs", ".json", "/index.ts", "/index.tsx"];
 
 /**
  * Workspaces a workspace's own source and tests reach outside its declared dependencies. Comments,
- * test strings and `scripts/` output paths do not count; a path must name an existing file.
+ * test strings, `scripts/` output paths and ignored build output do not count; a path must name
+ * an input file or a directory holding one.
  */
 async function referencedWorkspaces(
   dir: string,
-  files: readonly string[],
+  byWorkspace: ReadonlyMap<string, readonly string[]>,
   byDir: ReadonlyMap<string, Workspace>,
   dirByPackage: ReadonlyMap<string, string>,
 ): Promise<string[]> {
+  const files = byWorkspace.get(dir) ?? [];
   const found = new Set<string>();
   for (const file of files) {
     if (file.startsWith(`${dir}/scripts/`) || !/\.(?:[cm]?[jt]sx?)$/u.test(file)) continue;
@@ -291,8 +294,8 @@ async function referencedWorkspaces(
       const target = dirByPackage.get(name!);
       if (target) found.add(target);
     }
-    for (const [, literal] of text.matchAll(QUOTED_WORKSPACE_PATH)) {
-      const target = await resolveWorkspacePath(literal!, file, byDir);
+    for (const [, literal] of text.matchAll(QUOTED_PATH)) {
+      const target = resolveWorkspacePath(literal!, file, dir, byWorkspace);
       if (target) found.add(target);
     }
   }
@@ -300,21 +303,24 @@ async function referencedWorkspaces(
   return [...found];
 }
 
-async function resolveWorkspacePath(
+function resolveWorkspacePath(
   literal: string,
   fromFile: string,
-  byDir: ReadonlyMap<string, Workspace>,
-): Promise<string | undefined> {
-  const relative = literal.startsWith("../")
+  ownDir: string,
+  byWorkspace: ReadonlyMap<string, readonly string[]>,
+): string | undefined {
+  // Sibling-relative paths such as `../../agent/index` name no workspace root, so resolve first.
+  const relative = literal.startsWith(".")
     ? path.relative(ROOT, path.resolve(ROOT, path.dirname(fromFile), literal))
     : literal.replace(/\/$/u, "");
   const target = workspaceOf(relative);
   // A bare workspace root names the workspace rather than reading from it.
-  if (!target || !byDir.has(target) || relative === target) return undefined;
-  for (const suffix of RESOLVE_SUFFIXES) {
-    if (await stat(path.join(ROOT, `${relative}${suffix}`)).catch(() => undefined)) return target;
-  }
-  return undefined;
+  if (!target || target === ownDir || relative === target) return undefined;
+  const files = byWorkspace.get(target) ?? [];
+  const named = (file: string) =>
+    file.startsWith(`${relative}/`) ||
+    RESOLVE_SUFFIXES.some((suffix) => file === `${relative}${suffix}`);
+  return files.some(named) ? target : undefined;
 }
 
 function groupByWorkspace(files: Iterable<string>) {
@@ -343,10 +349,7 @@ export async function workspaceInputs(
   const dirByPackage = new Map(workspaces.map((workspace) => [workspace.name, workspace.dir]));
   const references = new Map<string, string[]>();
   for (const dir of byDir.keys())
-    references.set(
-      dir,
-      await referencedWorkspaces(dir, byWorkspace.get(dir) ?? [], byDir, dirByPackage),
-    );
+    references.set(dir, await referencedWorkspaces(dir, byWorkspace, byDir, dirByPackage));
   return new Map([...byDir.keys()].map((dir) => [dir, workspaceClosure([dir], byDir, references)]));
 }
 
