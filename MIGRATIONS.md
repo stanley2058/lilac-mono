@@ -37,6 +37,17 @@ you want to keep explicit breakpoints. The new default uses five-minute automati
 first-party Anthropic agent calls. See [Core configuration upgrades](docs/core-config-migrations.md#anthropic-prompt-caching)
 for opt-out and rollback instructions.
 
+### MCP OAuth callback through the native gateway
+
+When `surface.native.enabled` is true, MCP OAuth redirects to
+`<surface.native.publicUrl>/api/mcp/oauth/callback` and Core no longer listens on
+`localhost:1456`. This also applies when `publicUrl` keeps its `http://localhost:8789` default. Add
+the new redirect URL to each static OAuth client (`client.type: static`) before signing in again;
+tokens already stored keep refreshing. Dynamic clients now record `redirect_uris` in their credential
+file. The next sign-in after the callback URL changes registers a replacement client and saves it
+with the new tokens; older builds ignore the field. `config.mcpStatus` gains `oauthCallbackUrl` and
+the owner-only `config.authorizeMcp` procedure is new, so deploy Core and web together.
+
 ### Native transport selection
 
 Native deployment settings add `transport`, with `auto`, `websocket`, and `http-sse` values.

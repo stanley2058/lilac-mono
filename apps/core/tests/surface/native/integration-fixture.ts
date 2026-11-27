@@ -137,6 +137,8 @@ export async function createNativeIntegrationFixture(
   options: {
     realBus?: boolean;
     mcpRegistry?: NativeRuntimeOptions["mcpRegistry"];
+    mcpOAuth?: NativeRuntimeOptions["mcpOAuth"];
+    mcpOAuthCallback?: NativeRuntimeOptions["mcpOAuthCallback"];
     port?: number;
     operatorTokenSha256?: string;
     password?: string;
@@ -386,6 +388,8 @@ export async function createNativeIntegrationFixture(
           return "failed" as const;
         }),
       operatorTokenSha256: options.operatorTokenSha256,
+      ...(options.mcpOAuth ? { mcpOAuth: options.mcpOAuth } : {}),
+      ...(options.mcpOAuthCallback ? { mcpOAuthCallback: options.mcpOAuthCallback } : {}),
       reportFatalError: (error) => {
         fatalErrors.push(error);
       },

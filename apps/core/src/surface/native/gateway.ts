@@ -14,6 +14,7 @@ import { z } from "zod";
 import { createNativeMetrics, type NativeMetrics } from "./metrics";
 import { captureError } from "../../shared/error-capture";
 import { handleRemoteImage } from "./remote-image";
+import { MCP_OAUTH_NATIVE_CALLBACK_PATH } from "../../mcp/oauth-provider";
 import type { NativeAuthenticator, NativeAuthError, NativeLogin, NativePrincipal } from "./auth";
 import {
   createNativeRouter,
@@ -42,6 +43,7 @@ export type NativeGatewayOptions = {
   resources?: { handle: (request: Request, actorId: string) => Promise<Response | undefined> };
   webRoot?: string;
   operatorSession?: (request: Request) => Promise<Response>;
+  mcpOAuthCallback?: { handleRequest(request: Request): Promise<Response> };
 };
 type HttpContext = NativeRpcContext & { http: { streaming: boolean; finish: () => void } };
 
@@ -501,6 +503,9 @@ export function createNativeGateway(options: NativeGatewayOptions) {
       return options.operatorSession(request);
     if (url.pathname === "/api/auth/info" && request.method === "GET")
       return privateJson(options.publicAuth);
+    // The OAuth state and the PKCE verifier held by Core authenticate this browser redirect.
+    if (url.pathname === MCP_OAUTH_NATIVE_CALLBACK_PATH && options.mcpOAuthCallback)
+      return options.mcpOAuthCallback.handleRequest(request);
     if (url.pathname === "/api/auth/login" && request.method === "POST") {
       if (!options.login) return privateJson({ error: "Local login is disabled" }, 404);
       const login = await options.login(request, running.requestIP(original)?.address ?? "unknown");

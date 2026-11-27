@@ -47,6 +47,7 @@ import { NativeSurfaceAdapter, nativeSurfaceError } from "./adapter";
 import { agentIdentity } from "./identity";
 import { NativeCatalogService } from "./catalogs";
 import { NativeConfigService } from "./config-service";
+import type { McpOAuthControl } from "../../mcp/oauth-control";
 import { createNativeExecution, type NativeRunnerControl } from "./execution";
 import { nativeFailure } from "./errors";
 import { createNativeGateway } from "./gateway";
@@ -119,6 +120,8 @@ export type NativeRuntimeOptions = {
   warn: (message: string, error: Error) => void;
   publishableKey?: string;
   operatorTokenSha256?: string;
+  mcpOAuthCallback?: { handleRequest(request: Request): Promise<Response> };
+  mcpOAuth?: McpOAuthControl;
 };
 
 export async function createNativeRuntime(options: NativeRuntimeOptions) {
@@ -324,6 +327,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     dataDir: options.dataDir,
     ownerId: options.getConfig().surface.native.auth.ownerId,
     registry: options.mcpRegistry,
+    ...(options.mcpOAuth ? { mcpOAuth: options.mcpOAuth } : {}),
   });
   const nativeConfig = options.getConfig().surface.native;
   const subagents = new NativeSubagents({
@@ -381,6 +385,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
       ...(options.publishableKey ? { publishableKey: options.publishableKey } : {}),
     },
     ...(login ? { login } : {}),
+    ...(options.mcpOAuthCallback ? { mcpOAuthCallback: options.mcpOAuthCallback } : {}),
     services,
     getViewer: (id) => store.getUser(id).map(nativeViewer),
     resources: {

@@ -26,6 +26,7 @@ import { configSchema } from "../../config-ui/schemas";
 import { ConfigFieldRow } from "./ConfigFieldRow";
 import { ConfigText } from "./ConfigText";
 import { choiceLabel, useAliasLabel } from "./config-controls";
+import { McpAddServerButton } from "./McpServerStatus";
 import {
   ConfigScopeContext,
   splitPath,
@@ -131,7 +132,10 @@ export const ConfigCollection = memo(function ConfigCollection({
           />
         ))}
       </div>
-      {adding === undefined ? (
+      {entry.addDialog === "mcpServer" ? (
+        <McpAddServerButton takenIds={keys} disabled={scope.disabled} />
+      ) : null}
+      {!entry.addDialog && adding === undefined ? (
         <div>
           <Button
             variant="ghost"
@@ -146,7 +150,8 @@ export const ConfigCollection = memo(function ConfigCollection({
             Add {entry.itemNoun}
           </Button>
         </div>
-      ) : (
+      ) : null}
+      {!entry.addDialog && adding !== undefined ? (
         <div className="grid gap-1">
           <div className="flex items-center gap-1.5">
             <InputGroup className="w-64 flex-none">
@@ -180,7 +185,7 @@ export const ConfigCollection = memo(function ConfigCollection({
           </div>
           {error ? <p className="text-xs text-danger">{error}</p> : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
 });

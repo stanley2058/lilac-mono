@@ -6,13 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import { Result } from "better-result";
 import { NativeConfigService } from "../../../src/surface/native/config-service";
+import { McpOAuthControlError, type McpOAuthControl } from "../../../src/mcp/oauth-control";
 
 const dirs: string[] = [];
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
-async function fixture() {
+async function fixture(options: { mcpOAuth?: McpOAuthControl } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "native-config-"));
   dirs.push(dataDir);
   await fs.writeFile(path.join(dataDir, "core-config.yaml"), "configVersion: 2\n");
@@ -37,6 +38,7 @@ async function fixture() {
         },
       ],
     },
+    ...options,
   });
   return { dataDir, service, reloads: () => reloads };
 }
@@ -149,4 +151,45 @@ it("lets the owner create an absent MCP config", async () => {
   });
   expect(saved.isOk()).toBe(true);
   expect(await fs.readFile(path.join(dataDir, "mcp-config.yaml"), "utf8")).toContain("created");
+});
+
+it("reconciles OAuth providers before reload and starts owner sign-in", async () => {
+  const calls: string[] = [];
+  const { service } = await fixture({
+    mcpOAuth: {
+      callbackUrl: "https://lilac.example/api/mcp/oauth/callback",
+      reconcile: async () => {
+        calls.push("reconcile");
+      },
+      authorize: async (serverId) => {
+        calls.push(`authorize:${serverId}`);
+        if (serverId === "missing")
+          return Result.err(
+            new McpOAuthControlError({ code: "not-found", message: "not saved with OAuth" }),
+          );
+        return Result.ok({
+          status: "authorization_required",
+          authorizationUrl: "https://auth.example/authorize?state=s",
+          callbackUrl: "https://lilac.example/api/mcp/oauth/callback",
+        });
+      },
+    },
+  });
+
+  expect((await service.reloadMcp("owner")).isOk()).toBe(true);
+  expect(service.mcpStatus("owner").unwrap().oauthCallbackUrl).toBe(
+    "https://lilac.example/api/mcp/oauth/callback",
+  );
+  expect((await service.authorizeMcp("participant", "docs")).isErr()).toBe(true);
+  expect((await service.authorizeMcp("owner", "docs")).unwrap()).toMatchObject({
+    status: "authorization_required",
+    authorizationUrl: "https://auth.example/authorize?state=s",
+  });
+  expect(
+    (await service.authorizeMcp("owner", "missing")).match({
+      ok: () => undefined,
+      err: (error) => ({ code: error.code, message: error.message }),
+    }),
+  ).toEqual({ code: "not-found", message: "not saved with OAuth" });
+  expect(calls).toEqual(["reconcile", "authorize:docs", "authorize:missing"]);
 });

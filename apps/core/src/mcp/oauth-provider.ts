@@ -15,6 +15,7 @@ import { Result, TaggedError, type Result as ResultType } from "better-result";
 import {
   readMcpOAuthCredentialFile,
   updateMcpOAuthCredentialFile,
+  type McpOAuthClientInformation,
   type McpOAuthCredential,
 } from "./credential-file";
 import {
@@ -23,10 +24,20 @@ import {
   type McpValueSource,
   type UniversalMcpConfig,
 } from "./config-types";
-import { rethrowPanic } from "./error-format";
+import { rethrowPanic, safeMcpErrorText } from "./error-format";
 import { resolveMcpValueSource, type McpValueResolutionContext } from "./value-source";
 
 export const MCP_OAUTH_CALLBACK_URL = "http://localhost:1456/mcp/oauth/callback";
+export const MCP_OAUTH_NATIVE_CALLBACK_PATH = "/api/mcp/oauth/callback";
+
+export function resolveMcpOAuthCallbackUrl(native: {
+  readonly enabled: boolean;
+  readonly publicUrl: string;
+}): string {
+  if (!native.enabled) return MCP_OAUTH_CALLBACK_URL;
+  return new URL(MCP_OAUTH_NATIVE_CALLBACK_PATH, native.publicUrl).href;
+}
+
 const MAX_PENDING_AUTHORIZATIONS = 32;
 const PENDING_AUTHORIZATION_TTL_MS = 15 * 60 * 1000;
 
@@ -38,6 +49,11 @@ type PendingAuthorization = {
   status: "starting" | "pending" | "completing";
   codeVerifier?: string;
   authorizationUrl?: string;
+  /** Set when the stored dynamic client was registered for another callback URL. */
+  replacingClient?: boolean;
+  /** The replacement registration, saved with the tokens once the code exchange succeeds. */
+  stagedClient?: OAuthClientInformation;
+  stagedServerInformation?: OAuthAuthorizationServerInformation;
 };
 
 function bindClientInformationToAuthorizationServer(
@@ -94,7 +110,9 @@ export class McpOAuthProviderError extends TaggedError("McpOAuthProviderError")<
     }
     super({
       ...options,
-      message: `Could not ${action} for server ${JSON.stringify(options.serverId)}`,
+      message: `Could not ${action} for server ${JSON.stringify(options.serverId)}${
+        options.cause === undefined ? "" : `: ${safeMcpErrorText(options.cause)}`
+      }`,
     });
   }
 }
@@ -154,6 +172,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     readonly authConfig: McpAuthorizationCodeAuth;
     readonly dataDir: string;
     readonly valueContext: McpValueResolutionContext;
+    readonly redirectUrl?: string;
     readonly fetchFn?: OAuthFetchFunction;
     readonly now?: () => number;
   }) {
@@ -164,7 +183,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     this.valueContext = options.valueContext;
     this.fetchFn = options.fetchFn;
     this.now = options.now ?? Date.now;
-    this.redirectUrl = MCP_OAUTH_CALLBACK_URL;
+    this.redirectUrl = options.redirectUrl ?? MCP_OAUTH_CALLBACK_URL;
   }
 
   get clientMetadata(): OAuthClientMetadata {
@@ -219,7 +238,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   private async clientInformationForAuthorization(): Promise<
-    ResultType<OAuthClientInformation | undefined, McpOAuthCredentialResolutionError>
+    ResultType<McpOAuthClientInformation | undefined, McpOAuthCredentialResolutionError>
   > {
     if (this.authConfig.client.type === "dynamic") {
       const information = (await this.readCredential())?.clientInformation;
@@ -253,7 +272,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     })();
   }
 
-  private async clientInformationForSdkAttempt(): Promise<OAuthClientInformation | undefined> {
+  private async clientInformationForSdkAttempt(): Promise<McpOAuthClientInformation | undefined> {
     const result = await this.clientInformationForAuthorization();
     return result.match({
       ok: (value) => () => value,
@@ -261,6 +280,29 @@ export class McpOAuthProvider implements OAuthClientProvider {
         throw oauthProviderError(this.serverId, "credentials", error);
       },
     })();
+  }
+
+  /**
+   * The client for an authorization attempt. A dynamic client registered for another callback
+   * URL would be rejected, so the attempt registers a replacement and hides the old client's
+   * tokens. The stored client and tokens stay usable until the new sign-in completes.
+   */
+  private async attemptClientInformation(
+    pending: PendingAuthorization,
+  ): Promise<OAuthClientInformation | undefined> {
+    if (pending.stagedClient) return pending.stagedClient;
+    const information = await this.clientInformationForSdkAttempt();
+    if (this.authConfig.client.type !== "dynamic" || !information) return information;
+    // Registrations saved before redirect_uris was stored used the loopback callback.
+    const registered = information.redirect_uris ?? [MCP_OAUTH_CALLBACK_URL];
+    if (registered.includes(this.redirectUrl)) return information;
+    pending.replacingClient = true;
+    return undefined;
+  }
+
+  private async attemptTokens(pending: PendingAuthorization): Promise<OAuthTokens | undefined> {
+    await this.attemptClientInformation(pending);
+    return pending.replacingClient ? undefined : this.tokens();
   }
 
   private async resolveStaticCredential(
@@ -445,11 +487,15 @@ export class McpOAuthProvider implements OAuthClientProvider {
     const attemptProvider = {
       redirectUrl: this.redirectUrl,
       clientMetadata: this.clientMetadata,
-      tokens: () => this.tokens(),
+      tokens: () => this.attemptTokens(pending),
       saveTokens: async (tokens: OAuthTokens) => {
         this.assertActive(pending, "complete");
+        const staged = pending.stagedClient;
+        const stagedServer = pending.stagedServerInformation;
         await this.updateCredentialForAttempt(pending, "complete", (credential) => ({
           ...credential,
+          ...(staged ? { clientInformation: staged } : {}),
+          ...(stagedServer ? { authorizationServerInformation: stagedServer } : {}),
           tokens,
         }));
       },
@@ -481,19 +527,28 @@ export class McpOAuthProvider implements OAuthClientProvider {
         }
         return pending.codeVerifier;
       },
-      clientInformation: () => this.clientInformationForSdkAttempt(),
+      clientInformation: () => this.attemptClientInformation(pending),
       saveClientInformation: async (clientInformation: OAuthClientInformation) => {
         this.assertActive(pending, "start");
+        if (pending.replacingClient) {
+          pending.stagedClient = clientInformation;
+          return;
+        }
         await this.updateCredentialForAttempt(pending, "start", (credential) => ({
           ...credential,
           clientInformation,
         }));
       },
-      authorizationServerInformation: () => this.authorizationServerInformation(),
+      authorizationServerInformation: async () =>
+        pending.stagedServerInformation ?? (await this.authorizationServerInformation()),
       saveAuthorizationServerInformation: async (
         authorizationServerInformation: OAuthAuthorizationServerInformation,
       ) => {
         this.assertActive(pending, "start");
+        if (pending.replacingClient) {
+          pending.stagedServerInformation = authorizationServerInformation;
+          return;
+        }
         await this.updateCredentialForAttempt(pending, "start", (credential) =>
           bindClientInformationToAuthorizationServer(credential, authorizationServerInformation),
         );
@@ -597,6 +652,7 @@ type ProviderEntry = {
 export class McpOAuthProviderService {
   private readonly dataDir: string;
   private readonly valueContext: McpValueResolutionContext;
+  private readonly redirectUrl: string;
   private readonly fetchFn?: OAuthFetchFunction;
   private readonly now: () => number;
   private readonly providers = new Map<string, ProviderEntry>();
@@ -605,10 +661,12 @@ export class McpOAuthProviderService {
     readonly dataDir: string;
     readonly configBaseDir?: string;
     readonly env?: Readonly<Record<string, string | undefined>>;
+    readonly redirectUrl?: string;
     readonly fetchFn?: OAuthFetchFunction;
     readonly now?: () => number;
   }) {
     this.dataDir = options.dataDir;
+    this.redirectUrl = options.redirectUrl ?? MCP_OAUTH_CALLBACK_URL;
     this.valueContext = {
       baseDir: options.configBaseDir ?? options.dataDir,
       env: options.env ?? process.env,
@@ -623,7 +681,7 @@ export class McpOAuthProviderService {
       const oauth = authorizationCodeOAuthOptions(definition);
       if (!oauth) continue;
       configured.add(definition.id);
-      const fingerprint = JSON.stringify([oauth.serverUrl, oauth.authConfig]);
+      const fingerprint = oauthFingerprint(oauth);
       const existing = this.providers.get(definition.id);
       if (existing?.fingerprint === fingerprint) continue;
       existing?.provider.discardPendingAuthorizations();
@@ -636,6 +694,7 @@ export class McpOAuthProviderService {
           authConfig: oauth.authConfig,
           dataDir: this.dataDir,
           valueContext: this.valueContext,
+          redirectUrl: this.redirectUrl,
           ...(this.fetchFn ? { fetchFn: this.fetchFn } : {}),
           now: this.now,
         }),
@@ -651,6 +710,17 @@ export class McpOAuthProviderService {
 
   getProvider(serverId: string): McpOAuthProvider | undefined {
     return this.providers.get(serverId)?.provider;
+  }
+
+  /**
+   * The provider for exactly this server definition. A provider reconciled from another read of
+   * the file may hold tokens for a different URL, so a mismatch returns none.
+   */
+  getProviderForDefinition(definition: McpServerDefinition): McpOAuthProvider | undefined {
+    const oauth = authorizationCodeOAuthOptions(definition);
+    const entry = this.providers.get(definition.id);
+    if (!oauth || !entry || entry.fingerprint !== oauthFingerprint(oauth)) return undefined;
+    return entry.provider;
   }
 
   getProviderForState(state: string): McpOAuthProvider | undefined {
@@ -677,6 +747,13 @@ export class McpOAuthProviderService {
     if (!provider) return Result.err(oauthProviderError(serverId, "start"));
     return await provider.startAuthorizationResult();
   }
+}
+
+function oauthFingerprint(oauth: {
+  readonly serverUrl: string;
+  readonly authConfig: McpAuthorizationCodeAuth;
+}): string {
+  return JSON.stringify([oauth.serverUrl, oauth.authConfig]);
 }
 
 function authorizationCodeOAuthOptions(definition: McpServerDefinition):

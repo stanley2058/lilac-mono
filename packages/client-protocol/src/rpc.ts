@@ -49,6 +49,7 @@ import {
   toolModeSchema,
   mcpReloadReplySchema,
   mcpStatusReplySchema,
+  mcpAuthorizeReplySchema,
   sidebarSectionSchema,
   sidebarPreferencesSchema,
   sidebarPageSchema,
@@ -539,6 +540,9 @@ export const nativeContract = {
       .output(configDocumentSchema),
     reloadMcp: procedure.input(z.strictObject({})).output(mcpReloadReplySchema),
     mcpStatus: procedure.input(z.strictObject({})).output(mcpStatusReplySchema),
+    authorizeMcp: procedure
+      .input(z.strictObject({ serverId: z.string().min(1).max(256) }))
+      .output(mcpAuthorizeReplySchema),
   },
   references: {
     range: procedure.input(conversationReferenceSchema).output(conversationReferenceSchema),

@@ -13,6 +13,7 @@ import { seedNativeSubagent } from "./subagent-fixture";
 import type { SqliteTranscriptStore } from "../../../src/transcript/transcript-store";
 import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
 import { createHash } from "node:crypto";
+import { createFixtureMcp } from "./mcp-fixture";
 
 const HTML_PREVIEW_ICON =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>';
@@ -688,8 +689,15 @@ export async function startNativeBrowserFixture(
   const port = options.port ?? Number(process.env.TEST_NATIVE_PORT ?? 8789);
   const clerk = options.clerk;
   let threads: ReturnType<typeof seedNativeBrowserFixture> | undefined;
+  let fixtureDataDir = "";
+  const simulated = mcpRegistry
+    ? undefined
+    : createFixtureMcp({ dataDir: () => fixtureDataDir, publicUrl: `http://127.0.0.1:${port}` });
   const fixture = await createNativeIntegrationFixture({
-    mcpRegistry,
+    mcpRegistry: mcpRegistry ?? simulated?.registry,
+    ...(simulated
+      ? { mcpOAuth: simulated.mcpOAuth, mcpOAuthCallback: simulated.mcpOAuthCallback }
+      : {}),
     // Prompts that mention an HTML preview get a reply with a saved chart page.
     model: new MockLanguageModelV4({ modelId: "native-fixture", doStream: fixtureStream }),
     questions: true,
@@ -719,6 +727,7 @@ export async function startNativeBrowserFixture(
           ],
         }),
     async prepare({ workspaceRoot, dataDir, config }) {
+      fixtureDataDir = dataDir;
       threads = await restoreNativeBrowserSnapshot(dataDir);
       // Snapshot thread IDs repeat; a fresh cache scope prevents replaying an earlier dev session.
       config.surface.native.installationId = `native-browser-fixture-${crypto.randomUUID()}`;
@@ -796,6 +805,7 @@ export async function startNativeBrowserFixture(
     },
   });
   if (!threads) throw new Error("Browser fixture data was not seeded");
+  await simulated?.registry.reload();
   seedBrowserWorkflowViews(fixture.store, fixture.workflows);
   seedBrowserWorkflowHistory(fixture.workflows);
   const seeded = {

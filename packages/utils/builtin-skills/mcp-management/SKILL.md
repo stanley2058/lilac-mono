@@ -97,12 +97,14 @@ multi-round-trip client input fails that tool call without removing the server's
 
 ## Browser OAuth flow
 
+The owner can also add a server and sign in from Settings > MCP in the web UI. The callback URL depends on the native gateway. When `surface.native.enabled` is true, the native gateway serves the callback at `<surface.native.publicUrl>/api/mcp/oauth/callback`. Otherwise Core listens on `http://localhost:1456/mcp/oauth/callback`. `mcp.auth` returns the URL in `callbackUrl`. A static OAuth client must have that exact URL registered with its provider. Core registers a new dynamic client when the stored registration names a different callback URL.
+
 1. Run `tools mcp.auth <server-id>` and send the returned authorization URL to the user.
 2. The user opens the URL and completes authorization in their browser.
-3. If the browser can reach Core's loopback callback, completion happens directly.
-4. In a container deployment, the browser may fail to reach its own `localhost` callback. The user must copy the complete final callback URL from the address bar and paste it back, including its path, code, and state.
+3. If the browser can reach the callback URL, completion happens directly. A public native URL is reachable from any browser that can open the web UI.
+4. With the loopback callback in a container deployment, the browser may fail to reach its own `localhost` callback. The user must copy the complete final callback URL from the address bar and paste it back, including its path, code, and state.
 5. Run `curl '<complete-callback-url>'` inside the Core container or host namespace.
-6. Run `tools mcp.reload <server-id>` after the callback succeeds.
+6. Core reloads the server after the callback stores tokens. Check `tools mcp.status <server-id>`.
 
 Never accept a bare authorization code; only the complete callback URL with matching state is valid. The agent-assisted copy/paste flow exposes callback material to the agent transcript. Use it only when the user accepts that leakage; prefer direct browser callback completion when reachable.
 

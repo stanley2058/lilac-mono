@@ -39,6 +39,7 @@ async function fixture(
   webRoot?: string,
   resources?: NativeGatewayOptions["resources"],
   computer?: NativeGatewayOptions["computer"],
+  mcpOAuthCallback?: NativeGatewayOptions["mcpOAuthCallback"],
 ) {
   const measurements: { event: string; fields: Parameters<NativeMetricSink>[1] }[] = [];
   const metrics = createNativeMetrics((event, fields) => measurements.push({ event, fields }));
@@ -117,6 +118,7 @@ async function fixture(
     port: 0,
     webRoot,
     resources,
+    mcpOAuthCallback,
     auth,
     login: auth.login,
     services,
@@ -333,6 +335,24 @@ describe("native gateway", () => {
       502,
     );
   });
+  test("MCP OAuth callbacks reach Core without native credentials", async () => {
+    const callbacks: string[] = [];
+    const { url } = await fixture(undefined, undefined, undefined, {
+      async handleRequest(request) {
+        callbacks.push(request.url);
+        return new Response("OAuth authorization completed.\n");
+      },
+    });
+
+    const response = await fetch(new URL("api/mcp/oauth/callback?code=code&state=state", url));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("OAuth authorization completed.\n");
+    expect(callbacks).toHaveLength(1);
+    expect(new URL(callbacks[0]!).search).toBe("?code=code&state=state");
+    expect((await fetch(new URL("api/mcp/oauth/other", url))).status).toBe(401);
+  });
+
   test("link metadata uses the authenticated RPC contract", async () => {
     const { url, token, services } = await fixture();
     let viewer: string | undefined;

@@ -55,7 +55,7 @@ export type NativeRpcServiceOptions = {
   workingIndicators?: () => readonly string[];
   catalogs: Pick<NativeCatalogService, "get" | "subscribe"> &
     Partial<Pick<NativeCatalogService, "selection" | "models">>;
-  config: Pick<NativeConfigService, "read" | "save" | "reloadMcp" | "mcpStatus">;
+  config: Pick<NativeConfigService, "read" | "save" | "reloadMcp" | "mcpStatus" | "authorizeMcp">;
   titles?: Pick<NativeTitleGeneration, "regenerate">;
   execution: Pick<
     NativeExecution,
@@ -1123,8 +1123,8 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
         }));
       },
       mcpStatus(principal) {
-        return config.mcpStatus(principal.userId).map((statuses) => ({
-          servers: statuses.map((status) =>
+        return config.mcpStatus(principal.userId).map(({ servers, oauthCallbackUrl }) => ({
+          servers: servers.map((status) =>
             status.status === "available"
               ? {
                   name: status.serverId,
@@ -1139,7 +1139,15 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
                   error: status.error.slice(0, 4096),
                 },
           ),
+          ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
         }));
+      },
+      async authorizeMcp(principal, input) {
+        return (await config.authorizeMcp(principal.userId, input.serverId)).map((result) =>
+          result.status === "authorized"
+            ? { status: result.status }
+            : { status: result.status, authorizationUrl: result.authorizationUrl },
+        );
       },
     },
     references: {

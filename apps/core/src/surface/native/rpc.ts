@@ -348,6 +348,9 @@ export function createNativeRouter(
       mcpStatus: secured.config.mcpStatus.handler(async ({ input, context, signal }) =>
         nativeRpcValue(await services.config.mcpStatus(context.principal, input, signal)),
       ),
+      authorizeMcp: secured.config.authorizeMcp.handler(async ({ input, context, signal }) =>
+        nativeRpcValue(await services.config.authorizeMcp(context.principal, input, signal)),
+      ),
     },
     search: {
       query: secured.search.query.handler(async ({ input, context, signal }) =>

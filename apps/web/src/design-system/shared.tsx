@@ -19,6 +19,7 @@ export const sections = [
   ["keybindings", "Keybindings"],
   ["deployment", "Deployment settings"],
   ["config-form", "Configuration form"],
+  ["mcp-server-setup", "MCP server setup"],
   ["composer", "Composer"],
   ["citations", "Citations"],
   ["reconnection", "Reconnection"],

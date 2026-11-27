@@ -28,7 +28,11 @@ const oauthTokensSchema: z.ZodType<OAuthTokens> = z.strictObject({
   token_endpoint: z.url().optional(),
 });
 
-const oauthClientInformationSchema: z.ZodType<OAuthClientInformation> = z.object({
+export type McpOAuthClientInformation = OAuthClientInformation & {
+  readonly redirect_uris?: string[];
+};
+
+const oauthClientInformationSchema: z.ZodType<McpOAuthClientInformation> = z.object({
   client_id: z.string(),
   client_secret: z.string().optional(),
   client_id_issued_at: z.number().optional(),
@@ -36,6 +40,7 @@ const oauthClientInformationSchema: z.ZodType<OAuthClientInformation> = z.object
   issuer: z.url().optional(),
   authorization_server: z.url().optional(),
   token_endpoint: z.url().optional(),
+  redirect_uris: z.array(z.string()).optional(),
 });
 
 const authorizationServerInformationSchema: z.ZodType<OAuthAuthorizationServerInformation> =

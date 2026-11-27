@@ -142,6 +142,12 @@ selected file, using revisions to reject concurrent edits. Core keeps its existi
 Save writes the document; Reload applies it through the existing MCP registry. The UI does not edit
 `.env` or credential files. Listener and authentication settings take effect when Core restarts.
 
+Add server in the MCP editor walks through the connection, its credentials (none, an access token
+header, or OAuth for remote servers; environment variables for local commands), and a connection
+check. It writes only the new `servers.<id>` entry and keeps other unsaved form edits. For OAuth servers,
+and for saved OAuth servers that need sign-in, the owner opens the provider's page from the dialog. Core
+receives the callback at `<publicUrl>/api/mcp/oauth/callback`, stores the tokens, and reloads that server.
+
 The owner can change the agent's display name and upload a PNG, JPEG, WebP or GIF avatar up to 2 MiB.
 These settings persist in the native service-user record; the service identity remains `lilac`.
 Authenticated participants see the same identity across threads. Avatar URLs include a content

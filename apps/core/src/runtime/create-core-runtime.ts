@@ -197,6 +197,8 @@ import {
   readMcpConfigFile,
   rethrowPanic,
   resolveMcpConfigPath,
+  resolveMcpOAuthCallbackUrl,
+  createMcpOAuthControl,
   type McpOAuthCallbackListenerStatus,
   type McpRegistry,
   type McpRegistryOptionsInvalid,
@@ -1210,12 +1212,43 @@ export async function createCoreRuntime(
   let requestMessageCache: RequestMessageCache | null = null;
   const requestControlAuthority = new RequestControlAuthority();
   const mcpConfigPath = resolveMcpConfigPath({ dataDir: env.dataDir });
+  const mcpOAuthCallbackUrl = resolveMcpOAuthCallbackUrl(initialCoreConfig.surface.native);
   const mcpOAuthProviders = new McpOAuthProviderService({
     dataDir: env.dataDir,
     configBaseDir: path.dirname(mcpConfigPath),
+    redirectUrl: mcpOAuthCallbackUrl,
   });
   const mcpOAuthCallback = new McpOAuthCallbackService({
     providers: mcpOAuthProviders,
+    callbackUrl: mcpOAuthCallbackUrl,
+    listener: !initialCoreConfig.surface.native.enabled,
+    // New tokens take effect without a manual MCP reload.
+    onAuthorized: (serverId) => void reloadAuthorizedMcpServer(serverId),
+  });
+  async function reloadAuthorizedMcpServer(serverId: string): Promise<void> {
+    const reloaded = await Result.tryPromise({
+      try: () => mcpRegistry.reload(serverId),
+      catch: captureError,
+    });
+    reloaded.match({
+      err: ({ cause }) => reportFatalError(cause),
+      ok: (outcome) =>
+        outcome.match({
+          ok: () => undefined,
+          err: (error) =>
+            logger.warn("MCP reload after OAuth failed", {
+              serverId,
+              ...formatTaggedErrorForLog(error),
+            }),
+        }),
+    });
+  }
+
+  const mcpOAuthControl = createMcpOAuthControl({
+    configPath: mcpConfigPath,
+    callbackUrl: mcpOAuthCallbackUrl,
+    providers: mcpOAuthProviders,
+    callback: mcpOAuthCallback,
   });
   const mcpRegistryCreated = createMcpRegistryResult({
     configPath: mcpConfigPath,
@@ -1228,7 +1261,7 @@ export async function createCoreRuntime(
     },
     reportFatalError,
     dependencies: {
-      createAuthProvider: ({ server }) => mcpOAuthProviders.getProvider(server.id),
+      createAuthProvider: ({ server }) => mcpOAuthProviders.getProviderForDefinition(server),
     },
   });
   let mcpRegistry: McpRegistry;
@@ -1938,6 +1971,8 @@ export async function createCoreRuntime(
                 warn: (message, error) => logger.warn(message, { error: error.message }),
                 publishableKey: env.native.clerkPublishableKey,
                 operatorTokenSha256,
+                mcpOAuthCallback,
+                mcpOAuth: mcpOAuthControl,
               }),
             );
             nativeRuntimeResultToHost(await nativeRuntime.startOutput());

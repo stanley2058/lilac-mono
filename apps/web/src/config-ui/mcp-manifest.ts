@@ -22,6 +22,7 @@ export const mcpManifest: Manifest<P> = {
               collection: "servers",
               label: "Servers",
               itemNoun: "server",
+              addDialog: "mcpServer",
               keyLabel: "Server ID",
               keyPlaceholder: "github",
               newItem: { transport: "stdio", command: "" },

@@ -290,8 +290,17 @@ export const mcpStatusReplySchema = z.strictObject({
       }),
     )
     .max(256),
+  oauthCallbackUrl: z.url().max(2048).optional(),
 });
 export type McpStatusReply = z.infer<typeof mcpStatusReplySchema>;
+export const mcpAuthorizeReplySchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.literal("authorized") }),
+  z.strictObject({
+    status: z.literal("authorization_required"),
+    authorizationUrl: z.url().max(8192),
+  }),
+]);
+export type McpAuthorizeReply = z.infer<typeof mcpAuthorizeReplySchema>;
 export type ConfigDocument = z.infer<typeof configDocumentSchema>;
 
 export const resourcePreviewSchema = z.strictObject({

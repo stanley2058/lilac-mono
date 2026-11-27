@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { UnauthorizedError } from "@ai-sdk/mcp";
 
 import {
+  createMcpOAuthControl,
+  mcpOAuthCallbackResponse,
   MCP_OAUTH_CALLBACK_URL,
   McpOAuthCallbackService,
   McpOAuthProviderService,
   readMcpOAuthCredentialFile,
+  resolveMcpOAuthCallbackUrl,
   resolveMcpOAuthCredentialPath,
   writeMcpOAuthCredentialFileAtomic,
   type UniversalMcpConfig,
@@ -17,6 +20,7 @@ import {
 
 const SERVER_URL = "https://mcp.example.test/service";
 const ISSUER = "https://auth.example.test";
+const PUBLIC_CALLBACK_URL = "https://lilac.example/api/mcp/oauth/callback";
 const temporaryDirectories: string[] = [];
 const callbackServices: McpOAuthCallbackService[] = [];
 
@@ -72,9 +76,10 @@ function oauthFetch(options: { tokenRequests: URLSearchParams[]; rejectRefresh?:
         });
       }
       if (url.href === `${ISSUER}/register`) {
+        const registration = JSON.parse(String(init?.body)) as { redirect_uris: string[] };
         return Response.json({
           client_id: "registered-client",
-          redirect_uris: [MCP_OAUTH_CALLBACK_URL],
+          redirect_uris: registration.redirect_uris,
           grant_types: ["authorization_code", "refresh_token"],
           response_types: ["code"],
           token_endpoint_auth_method: "none",
@@ -276,6 +281,33 @@ describe("Core-owned MCP OAuth", () => {
     expect(explicit.status).toBe("authorization_required");
   });
 
+  it("includes the authorization failure reason in the start error", async () => {
+    const dataDir = await createDataDir();
+    const baseFetch = oauthFetch({ tokenRequests: [] });
+    const fetchFn = Object.assign(
+      async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const response = await baseFetch(input, init);
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.href !== `${ISSUER}/.well-known/oauth-authorization-server`) return response;
+        const { registration_endpoint: _, ...metadata } = (await response.json()) as Record<
+          string,
+          unknown
+        >;
+        return Response.json(metadata);
+      },
+      { preconnect: fetch.preconnect },
+    );
+    const providers = new McpOAuthProviderService({ dataDir, fetchFn });
+    providers.reconcile(oauthConfig());
+
+    const started = await providers.startAuthorizationResult("docs");
+    if (started.status !== "error") throw new Error("Expected OAuth start to fail");
+    expect(started.error.message).toStartWith(
+      'Could not start MCP OAuth authorization for server "docs": ',
+    );
+    expect(started.error.message).toContain("dynamic client registration");
+  });
+
   it("returns owned Results for missing providers and invalid callback state", async () => {
     const dataDir = await createDataDir();
     const providers = new McpOAuthProviderService({ dataDir });
@@ -355,6 +387,98 @@ describe("Core-owned MCP OAuth", () => {
       authorization_server: `${ISSUER}/`,
       token_endpoint: `${ISSUER}/token`,
     });
+  });
+
+  it("uses the native public URL for callbacks only when the native gateway is enabled", () => {
+    expect(resolveMcpOAuthCallbackUrl({ enabled: false, publicUrl: "https://lilac.example" })).toBe(
+      MCP_OAUTH_CALLBACK_URL,
+    );
+    expect(resolveMcpOAuthCallbackUrl({ enabled: true, publicUrl: "https://lilac.example/" })).toBe(
+      PUBLIC_CALLBACK_URL,
+    );
+  });
+
+  it("registers a new dynamic client when the callback URL changes", async () => {
+    const dataDir = await createDataDir();
+    await writeMcpOAuthCredentialFileAtomic({
+      dataDir,
+      serverId: "docs",
+      credential: {
+        version: 1,
+        serverUrl: SERVER_URL,
+        clientInformation: { client_id: "legacy-registered-client" },
+        tokens: {
+          access_token: "legacy-access",
+          refresh_token: "legacy-refresh",
+          token_type: "Bearer",
+        },
+      },
+    });
+    const legacy = await readMcpOAuthCredentialFile({ dataDir, serverId: "docs" });
+    const tokenRequests: URLSearchParams[] = [];
+    const providers = new McpOAuthProviderService({
+      dataDir,
+      redirectUrl: PUBLIC_CALLBACK_URL,
+      fetchFn: oauthFetch({ tokenRequests }),
+    });
+    providers.reconcile(oauthConfig());
+    expect((await providers.getProvider("docs")?.clientInformation())?.client_id).toBe(
+      "legacy-registered-client",
+    );
+
+    const started = await providers.startAuthorization("docs");
+    if (started.status !== "authorization_required") throw new Error("Expected OAuth redirect");
+    const authorizationUrl = new URL(started.authorizationUrl);
+    expect(started.callbackUrl).toBe(PUBLIC_CALLBACK_URL);
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(PUBLIC_CALLBACK_URL);
+    expect(authorizationUrl.searchParams.get("client_id")).toBe("registered-client");
+    // The old refresh token is not tried with the new client, and an abandoned sign-in
+    // leaves the working credential untouched.
+    expect(tokenRequests).toEqual([]);
+    const pending = await readMcpOAuthCredentialFile({ dataDir, serverId: "docs" });
+    expect(pending?.clientInformation).toEqual(legacy?.clientInformation);
+    expect(pending?.authorizationServerInformation).toBeUndefined();
+    expect(pending?.tokens).toEqual(legacy?.tokens);
+
+    const callbacks = new McpOAuthCallbackService({
+      providers,
+      callbackUrl: PUBLIC_CALLBACK_URL,
+      listener: false,
+    });
+    callbackServices.push(callbacks);
+    expect(callbacks.start()).toEqual({
+      status: "listening",
+      hostname: "lilac.example",
+      port: 443,
+    });
+    const response = await callbacks.handleRequest(
+      new Request(
+        `${PUBLIC_CALLBACK_URL}?code=callback-code&state=${authorizationUrl.searchParams.get("state")}`,
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(tokenRequests[0]?.get("redirect_uri")).toBe(PUBLIC_CALLBACK_URL);
+    expect(tokenRequests[0]?.get("client_id")).toBe("registered-client");
+    const replaced = await readMcpOAuthCredentialFile({ dataDir, serverId: "docs" });
+    expect(replaced?.clientInformation).toMatchObject({
+      client_id: "registered-client",
+      redirect_uris: [PUBLIC_CALLBACK_URL],
+    });
+    expect(replaced?.tokens?.access_token).toBe("saved-access-token");
+    expect(replaced?.authorizationServerInformation?.issuer).toBe(ISSUER);
+  });
+
+  it("returns a provider only for the server definition it was reconciled from", () => {
+    const providers = new McpOAuthProviderService({ dataDir: "/unused" });
+    const config = oauthConfig();
+    providers.reconcile(config);
+    const docs = config.servers.docs!;
+    expect(providers.getProviderForDefinition(docs)).toBe(providers.getProvider("docs"));
+    const moved = {
+      ...docs,
+      transportConfig: { ...docs.transportConfig, url: "https://other.example.test/mcp" },
+    } as typeof docs;
+    expect(providers.getProviderForDefinition(moved)).toBeUndefined();
   });
 
   it("expires abandoned authorization states without affecting new explicit flows", async () => {
@@ -703,6 +827,103 @@ describe("Core-owned MCP OAuth", () => {
       port: 1456,
       error: "OAuth callback listener is stopped",
     });
+  });
+
+  it("reports the server after a completed callback stores tokens", async () => {
+    const flow = await startFlow();
+    const authorized: string[] = [];
+    const callbacks = new McpOAuthCallbackService({
+      providers: flow.providers,
+      onAuthorized: (serverId) => authorized.push(serverId),
+    });
+    callbackServices.push(callbacks);
+
+    const rejected = await callbacks.handleRequest(
+      new Request(`${MCP_OAUTH_CALLBACK_URL}?code=code&state=unknown`),
+    );
+    expect(rejected.status).toBe(400);
+    expect(authorized).toEqual([]);
+
+    const response = await callbacks.handleRequest(
+      new Request(`${MCP_OAUTH_CALLBACK_URL}?code=callback-code&state=${flow.state}`),
+    );
+    expect(response.status).toBe(200);
+    expect(authorized).toEqual(["docs"]);
+  });
+
+  it("shows browsers a page naming the server, and keeps text for other clients", async () => {
+    const flow = await startFlow();
+    const html = { accept: "text/html,application/xhtml+xml" };
+
+    const invalid = await flow.callbacks.handleRequest(
+      new Request(`${MCP_OAUTH_CALLBACK_URL}?code=code&state=unknown`, { headers: html }),
+    );
+    expect(invalid.status).toBe(400);
+    expect(await invalid.text()).toContain("This sign-in link is no longer valid");
+
+    const completed = await flow.callbacks.handleRequest(
+      new Request(`${MCP_OAUTH_CALLBACK_URL}?code=callback-code&state=${flow.state}`, {
+        headers: html,
+      }),
+    );
+    expect(completed.status).toBe(200);
+    expect(completed.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(completed.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(completed.headers.get("content-security-policy")).toContain("default-src 'none'");
+    const page = await completed.text();
+    expect(page).toContain("Signed in to docs");
+    expect(page).not.toContain("callback-code");
+
+    const text = await flow.callbacks.handleRequest(
+      new Request(`${MCP_OAUTH_CALLBACK_URL}?code=code&state=unknown`, {
+        headers: { accept: "*/*" },
+      }),
+    );
+    expect(await text.text()).toBe("Invalid OAuth callback.\n");
+  });
+
+  it("escapes server names in the callback page", async () => {
+    const page = await mcpOAuthCallbackResponse(
+      new Request("http://localhost/", { headers: { accept: "text/html" } }),
+      { outcome: "failed", serverId: "<b>x</b>" },
+    ).text();
+    expect(page).toContain("Could not sign in to &#60;b&#62;x&#60;/b&#62;");
+    expect(page).not.toContain("<b>x</b>");
+  });
+
+  it("starts sign-in from the saved configuration file", async () => {
+    const dataDir = await createDataDir();
+    const configPath = path.join(dataDir, "mcp-config.yaml");
+    const providers = new McpOAuthProviderService({
+      dataDir,
+      fetchFn: oauthFetch({ tokenRequests: [] }),
+    });
+    let listener: "listening" | "unavailable" = "unavailable";
+    const control = createMcpOAuthControl({
+      configPath,
+      callbackUrl: MCP_OAUTH_CALLBACK_URL,
+      providers,
+      callback: {
+        start: () =>
+          listener === "listening"
+            ? { status: "listening", hostname: "localhost", port: 1456 }
+            : { status: "unavailable", hostname: "localhost", port: 1456, error: "in use" },
+      },
+    });
+    await writeFile(
+      configPath,
+      `configVersion: 1\nservers:\n  docs:\n    transport: http\n    url: ${SERVER_URL}\n    auth:\n      type: oauth\n      grant: authorization_code\n      client:\n        type: dynamic\n  plain:\n    transport: http\n    url: ${SERVER_URL}\n`,
+    );
+
+    expect((await control.authorize("docs")).isErr()).toBe(true);
+    expect(providers.getProvider("docs")).toBeUndefined();
+
+    listener = "listening";
+    const plain = await control.authorize("plain");
+    expect(plain.match({ ok: () => undefined, err: (error) => error.code })).toBe("not-found");
+    const started = (await control.authorize("docs")).unwrap();
+    expect(started.status).toBe("authorization_required");
+    expect(providers.getProvider("docs")).toBeDefined();
   });
 
   it("drops providers on removal without deleting their credential file", async () => {

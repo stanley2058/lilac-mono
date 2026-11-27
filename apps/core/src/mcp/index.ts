@@ -6,6 +6,7 @@ export * from "./config-types";
 export * from "./config";
 export * from "./credential-file";
 export * from "./oauth-callback";
+export * from "./oauth-control";
 export * from "./oauth-provider";
 export * from "./registry-types";
 export * from "./registry";

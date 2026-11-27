@@ -15,6 +15,12 @@ import type { NativeDeploymentSettings } from "@stanley2058/lilac-client-protoco
 import { toast } from "../components/ui/toast";
 import { Button } from "../components/ui/button";
 import { DeploymentSettingsForm } from "../components/DeploymentSettings";
+import { Result } from "better-result";
+import {
+  McpServerSetupDialog,
+  type McpServerState,
+  type McpSetupApi,
+} from "../components/config/McpServerSetup";
 
 export function KeybindingsDemo() {
   const [store] = useState(() => createKeybindings());
@@ -137,3 +143,76 @@ export function ConfigFormDemo() {
 }
 
 const CONFIG_DEMO_SCOPE = { kind: "core", base: [], disabled: false } as const;
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Simulated Core: hosts containing "fail" do not connect; OAuth completes 3s after sign-in opens. */
+function demoMcpApi(): McpSetupApi {
+  const servers = new Map<string, { url?: string; oauth: boolean; signedInAt?: number }>([
+    ["linear", { url: "https://mcp.linear.app/mcp", oauth: true }],
+  ]);
+  const state = (id: string): McpServerState => {
+    const server = servers.get(id);
+    if (!server) return { state: "missing" };
+    if (server.url?.includes("fail"))
+      return { state: "unavailable", error: "fetch failed: ECONNREFUSED" };
+    if (server.oauth && (!server.signedInAt || Date.now() < server.signedInAt))
+      return { state: "authentication_required" };
+    return { state: "available", toolCount: server.url ? 7 : 3 };
+  };
+  return {
+    callbackUrl: "https://lilac.example/api/mcp/oauth/callback",
+    async save(id, server) {
+      await pause(400);
+      servers.set(id, {
+        ...(typeof server.url === "string" ? { url: server.url } : {}),
+        oauth: server.auth !== undefined,
+      });
+      return Result.ok();
+    },
+    async connect(id) {
+      await pause(700);
+      return Result.ok(state(id));
+    },
+    async status(id) {
+      return Result.ok(state(id));
+    },
+    async authorize(id) {
+      await pause(300);
+      const server = servers.get(id);
+      if (server) server.signedInAt = Date.now() + 3_000;
+      return Result.ok({
+        status: "authorization_required",
+        authorizationUrl: "https://example.com/",
+      });
+    },
+  };
+}
+
+const ADD_MODE = { kind: "add", takenIds: ["github", "linear"] } as const;
+const SIGN_IN_MODE = { kind: "signIn", serverId: "linear" } as const;
+
+export function McpServerSetupDemo() {
+  const [open, setOpen] = useState<"add" | "signIn">();
+  const [api] = useState(demoMcpApi);
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Button variant="outline" onClick={() => setOpen("add")}>
+        Add MCP server
+      </Button>
+      <Button variant="outline" onClick={() => setOpen("signIn")}>
+        Sign in to linear
+      </Button>
+      {open ? (
+        <McpServerSetupDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) setOpen(undefined);
+          }}
+          mode={open === "add" ? ADD_MODE : SIGN_IN_MODE}
+          api={api}
+        />
+      ) : null}
+    </div>
+  );
+}

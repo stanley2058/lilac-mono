@@ -97,6 +97,8 @@ type CollectionFields = {
   readonly newItem?: ConfigValue;
   /** Item keys are Discord channel IDs; show their aliases beside them. */
   readonly channelKeys?: boolean;
+  /** Adds items through a guided dialog instead of a name field. */
+  readonly addDialog?: "mcpServer";
 };
 
 export type CollectionEntry<P extends string> = CollectionFields & {

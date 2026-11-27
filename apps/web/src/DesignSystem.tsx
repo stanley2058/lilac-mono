@@ -44,6 +44,7 @@ import {
   DeploymentSettingsDemo,
   NotificationSettingsDemo,
   ConfigFormDemo,
+  McpServerSetupDemo,
 } from "./design-system/SettingsDemos";
 const deferredSource = {
   target: { kind: "thread" as const, threadId: "design-system" },
@@ -178,6 +179,13 @@ export default function DesignSystem() {
                 description="Schema-backed fields from the Core settings pages. Edit a value to see the unsaved dot and reset control."
               >
                 <ConfigFormDemo />
+              </Section>
+              <Section
+                id="mcp-server-setup"
+                title="MCP server setup"
+                description="Hosts containing fail do not connect. OAuth sign-in completes three seconds after the sign-in page opens. Sign in to linear opens the flow for a saved server."
+              >
+                <McpServerSetupDemo />
               </Section>
               <ComposerSpecimen />
               <Section
