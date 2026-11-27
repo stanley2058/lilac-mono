@@ -167,13 +167,13 @@ export const coreManifest: Manifest<P> = {
           entries: [
             {
               path: "models.catalog.providers",
-              label: "Provider visibility",
-              help: "Controls which providers appear in model pickers. Auto shows a provider when its credentials are configured.",
+              label: "Available providers",
+              help: "Sets which providers' models chats and agents can choose from. Models already set in this config still work. Auto includes a provider when its credentials are configured.",
               widget: "map",
               options: {
                 '"auto"': "Auto",
-                '"enabled"': "Shown",
-                '"disabled"': "Hidden",
+                '"enabled"': "Enabled",
+                '"disabled"': "Disabled",
               },
               suggestions: CATALOG_PROVIDERS,
             },

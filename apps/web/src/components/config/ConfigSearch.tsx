@@ -13,13 +13,51 @@ type SearchItem = {
   readonly where: string;
   readonly label: string;
   readonly path: ConfigPath;
-  readonly haystack: string;
+  /** Lowercase text in rank order: label, section, YAML path, help. */
+  readonly text: readonly string[];
 };
+
+const RESULT_LIMIT = 12;
+
+/** Ranks by the weakest place any word matched, so label matches come before help-text matches. */
+function matchRank(item: SearchItem, words: readonly string[]): number | undefined {
+  let rank = 0;
+  for (const word of words) {
+    const tier = item.text.findIndex((text) => text.includes(word));
+    if (tier < 0) return undefined;
+    rank = Math.max(rank, tier);
+  }
+  return rank;
+}
+
+function searchResults(index: readonly SearchItem[], words: readonly string[]): SearchItem[] {
+  return index
+    .flatMap((item) => {
+      const rank = matchRank(item, words);
+      return rank === undefined ? [] : [{ item, rank }];
+    })
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, RESULT_LIMIT)
+    .map(({ item }) => item);
+}
+
+const searchText = (...parts: string[]) => parts.map((part) => part.toLowerCase());
 
 function searchIndex<P extends string>(manifest: Manifest<P>): SearchItem[] {
   const items: SearchItem[] = [];
   for (const page of manifest.pages)
-    for (const section of page.sections)
+    for (const section of page.sections) {
+      const first = section.entries[0];
+      // A section result opens at its first setting, which also expands an advanced section.
+      // A setting named like its section already stands for it.
+      if (first && !section.entries.some((entry) => entry.label === section.title))
+        items.push({
+          page: page.id,
+          where: page.title,
+          label: section.title,
+          path: splitPath(isCollection(first) ? first.collection : first.path),
+          text: searchText(section.title, page.title, "", section.help ?? ""),
+        });
       for (const entry of section.entries) {
         const where = `${page.title} › ${section.title}`;
         if (!isCollection(entry)) {
@@ -32,8 +70,12 @@ function searchIndex<P extends string>(manifest: Manifest<P>): SearchItem[] {
             where,
             label: entry.label,
             path,
-            haystack:
-              `${entry.label} ${section.title} ${entry.path} ${entry.help ?? description ?? ""}`.toLowerCase(),
+            text: searchText(
+              entry.label,
+              section.title,
+              entry.path,
+              entry.help ?? description ?? "",
+            ),
           });
           continue;
         }
@@ -43,8 +85,7 @@ function searchIndex<P extends string>(manifest: Manifest<P>): SearchItem[] {
           where,
           label: entry.label,
           path,
-          haystack:
-            `${entry.label} ${section.title} ${entry.collection} ${entry.help ?? ""}`.toLowerCase(),
+          text: searchText(entry.label, section.title, entry.collection, entry.help ?? ""),
         });
         for (const field of entry.fields)
           items.push({
@@ -52,14 +93,14 @@ function searchIndex<P extends string>(manifest: Manifest<P>): SearchItem[] {
             where: `${where} › ${entry.label}`,
             label: field.label,
             path,
-            haystack:
-              `${field.label} ${entry.label} ${entry.collection}.${field.path}`.toLowerCase(),
+            text: searchText(field.label, entry.label, `${entry.collection}.${field.path}`),
           });
       }
+    }
   return items;
 }
 
-/** Finds a setting by label, description, or YAML path and opens it. */
+/** Finds a section or setting by title, label, description, or YAML path and opens it. */
 export function ConfigSearch<P extends string>({ manifest }: { manifest: Manifest<P> }) {
   const store = useConfigDraftStore();
   const index = useMemo(() => searchIndex(manifest), [manifest]);
@@ -67,10 +108,7 @@ export function ConfigSearch<P extends string>({ manifest }: { manifest: Manifes
   const [active, setActive] = useState(0);
   const [open, setOpen] = useState(false);
   const words = query.toLowerCase().split(/\s+/u).filter(Boolean);
-  const results =
-    words.length === 0
-      ? []
-      : index.filter((item) => words.every((word) => item.haystack.includes(word))).slice(0, 12);
+  const results = words.length === 0 ? [] : searchResults(index, words);
   function choose(item: SearchItem) {
     store.getState().reveal(manifest.kind, item.page, item.path);
     setQuery("");
