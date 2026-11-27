@@ -6070,6 +6070,7 @@
             "fast": { "model": "openrouter/openai/gpt-4o-mini" },
             "capability": { "forceUnknownProviders": ["openai-compatible"], "overrides": {} },
             "catalog": { "providers": {} },
+            "providers": { "openaiCompatible": {} },
             "rules": []
           },
           "description": "Model slots, reusable aliases, capability overrides, catalog visibility, and ordered option rules. Local Claude subscription models use `claude-code/<model>`; see docs/claude-code.md for authentication, persistent storage, and continuation limits.",
@@ -6537,6 +6538,42 @@
               },
               "additionalProperties": false,
               "markdownDescription": "Model discovery visibility. Credentials are inferred by default; overrides affect catalog visibility only."
+            },
+            "providers": {
+              "default": { "openaiCompatible": {} },
+              "description": "Additional provider endpoints.",
+              "type": "object",
+              "properties": {
+                "openaiCompatible": {
+                  "default": {},
+                  "description": "Named OpenAI-compatible servers. Reference a server's models as `openai-compatible/<server>/<model>`. Refs whose first segment is not a server name use OPENAI_COMPATIBLE_BASE_URL. Example: `{vllm: {baseUrl: http://gpu-box:8000/v1}}`.",
+                  "type": "object",
+                  "propertyNames": { "type": "string", "pattern": "^[^/]+$" },
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "baseUrl": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "OpenAI-compatible API base URL, usually ending in /v1. Example: http://gpu-box:8000/v1.",
+                        "markdownDescription": "OpenAI-compatible API base URL, usually ending in /v1. Example: http://gpu-box:8000/v1."
+                      },
+                      "apiKeyEnv": {
+                        "description": "Environment variable holding the server's API key. Omit for servers without authentication. Supply the variable name, not the key.",
+                        "type": "string",
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                        "x-lilac": { "kind": "env" },
+                        "markdownDescription": "Environment variable holding the server's API key. Omit for servers without authentication. Supply the variable name, not the key."
+                      }
+                    },
+                    "required": ["baseUrl"],
+                    "additionalProperties": false
+                  },
+                  "markdownDescription": "Named OpenAI-compatible servers. Reference a server's models as `openai-compatible/<server>/<model>`. Refs whose first segment is not a server name use OPENAI_COMPATIBLE_BASE_URL. Example: `{vllm: {baseUrl: http://gpu-box:8000/v1}}`."
+                }
+              },
+              "additionalProperties": false,
+              "markdownDescription": "Additional provider endpoints."
             },
             "rules": {
               "default": [],

@@ -44,7 +44,7 @@ export const V2_CORE_CONFIG_VERSION = 2 satisfies CoreConfigVersion;
 
 const configVersionSchema = z.literal(V2_CORE_CONFIG_VERSION).default(V2_CORE_CONFIG_VERSION);
 
-const environmentVariableNameSchema = z
+export const environmentVariableNameSchema = z
   .string()
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/u, "expected an environment variable name")
   .meta(configUi({ kind: "env" }));

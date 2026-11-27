@@ -1,7 +1,12 @@
 import type { LanguageModel } from "ai";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
-import { providers, type Providers } from "./model-provider";
+import {
+  providers,
+  routeOpenAICompatibleModel,
+  type OpenAICompatibleServers,
+  type Providers,
+} from "./model-provider";
 import type {
   ConfiguredModelChainEntry,
   ConfiguredModelRef,
@@ -154,6 +159,7 @@ export function toDurableResolvedModelPlan(
 
 export function fromDurableResolvedModelRequestResult(
   request: DurableResolvedModelRequest,
+  openAICompatibleServers?: OpenAICompatibleServers,
 ): ResultType<ResolvedModelRef, ModelResolutionFailed> {
   const parsed = parseModelSpecifierResult(request.spec).match<
     { provider: string; model: string } | string
@@ -192,16 +198,14 @@ export function fromDurableResolvedModelRequestResult(
       }),
     );
   }
-  const provider = providers[request.provider as Providers];
-  if (typeof provider !== "function") {
-    return Result.err(
-      new ModelResolutionFailed({
-        issue: "provider-not-configured",
-        source: "durable model request",
-        message: `Provider '${request.provider}' is not configured for durable dispatch`,
-      }),
-    );
-  }
+  const model = createProviderModelResult(
+    request.provider,
+    request.modelId,
+    "durable model request",
+    `Provider '${request.provider}' is not configured for durable dispatch`,
+    openAICompatibleServers,
+  );
+  if (model.isErr()) return Result.err(model.error);
   const providerOptions =
     request.provider === "codex"
       ? withCodexRequestOptions(request.providerOptions)
@@ -211,7 +215,7 @@ export function fromDurableResolvedModelRequestResult(
     spec: request.spec,
     provider: request.provider,
     modelId: request.modelId,
-    model: provider(request.modelId),
+    model: model.value,
     ...(providerOptions ? { providerOptions } : {}),
     ...(request.reasoning ? { reasoning: request.reasoning } : {}),
     ...(request.responseCommentary ? { responseCommentary: true } : {}),
@@ -253,8 +257,9 @@ export function fromDurableResolvedModelPlan(
 
 export function fromDurableResolvedModelPlanResult(
   request: DurableResolvedModelRequest,
+  openAICompatibleServers?: OpenAICompatibleServers,
 ): ResultType<ResolvedModelPlan, ModelResolutionFailed> {
-  const head = fromDurableResolvedModelRequestResult(request);
+  const head = fromDurableResolvedModelRequestResult(request, openAICompatibleServers);
   const headValue = head.match<ResolvedModelRef | ModelResolutionFailed>({
     ok: (value) => value,
     err: (error) => error,
@@ -262,7 +267,7 @@ export function fromDurableResolvedModelPlanResult(
   if (ModelResolutionFailed.is(headValue)) return Result.err(headValue);
   const fallbacks: ResolvedModelRef[] = [];
   for (const fallback of request.fallbacks ?? []) {
-    const resolved = fromDurableResolvedModelRequestResult(fallback);
+    const resolved = fromDurableResolvedModelRequestResult(fallback, openAICompatibleServers);
     const fallbackValue = resolved.match<ResolvedModelRef | ModelResolutionFailed>({
       ok: (value) => value,
       err: (error) => error,
@@ -531,12 +536,50 @@ function resolveSlotSpecResult(
   });
 }
 
+export function openAICompatibleServersOf(cfg: CoreConfig): OpenAICompatibleServers {
+  return cfg.models.providers?.openaiCompatible ?? {};
+}
+
+function createProviderModelResult(
+  provider: string,
+  modelId: string,
+  source: string,
+  notConfiguredMessage: string,
+  openAICompatibleServers?: OpenAICompatibleServers,
+): ResultType<LanguageModel, ModelResolutionFailed> {
+  if (provider === "openai-compatible") {
+    return routeOpenAICompatibleModel(modelId, openAICompatibleServers)
+      .map((route) => route.provider(route.modelId))
+      .mapError((error) =>
+        error.reason === "no-model"
+          ? new ModelResolutionFailed({ issue: "invalid-spec", source, message: error.message })
+          : new ModelResolutionFailed({
+              issue: "provider-not-configured",
+              source,
+              message: `${notConfiguredMessage}: ${error.message}`,
+            }),
+      );
+  }
+  const p = providers[provider as Providers];
+  if (typeof p !== "function") {
+    return Result.err(
+      new ModelResolutionFailed({
+        issue: "provider-not-configured",
+        source,
+        message: notConfiguredMessage,
+      }),
+    );
+  }
+  return Result.ok(p(modelId));
+}
+
 function resolveModelResult(params: {
   source: string;
   spec: string;
   alias?: string;
   options?: JSONObject;
   reasoning?: ModelReasoningEffort;
+  openAICompatibleServers: OpenAICompatibleServers;
 }): ResultType<ResolvedModelRef, ModelResolutionFailed> {
   const parsed = parseModelSpecifierResult(params.spec);
   const parsedSpec = parsed.match<{ provider: string; model: string } | string>({
@@ -574,7 +617,6 @@ function resolveModelResult(params: {
   const { providerOptions, responseCommentary, openaiServerCompaction, anthropicPromptCache } =
     options;
 
-  const p = providers[provider as Providers];
   const hasProvider = Object.prototype.hasOwnProperty.call(providers, provider);
   if (!hasProvider) {
     return Result.err(
@@ -585,15 +627,14 @@ function resolveModelResult(params: {
       }),
     );
   }
-  if (typeof p !== "function") {
-    return Result.err(
-      new ModelResolutionFailed({
-        issue: "provider-not-configured",
-        source: params.source,
-        message: `Provider '${provider}' is not configured (${params.source}='${params.alias ?? params.spec}')`,
-      }),
-    );
-  }
+  const model = createProviderModelResult(
+    provider,
+    modelId,
+    params.source,
+    `Provider '${provider}' is not configured (${params.source}='${params.alias ?? params.spec}')`,
+    params.openAICompatibleServers,
+  );
+  if (model.isErr()) return Result.err(model.error);
 
   for (const warning of validateModelProviderOptions(providerOptions)) {
     const warningKey = `${params.source}:${warning.namespace}:${warning.option}`;
@@ -608,7 +649,7 @@ function resolveModelResult(params: {
     spec: params.spec,
     provider,
     modelId,
-    model: p(modelId),
+    model: model.value,
     providerOptions,
     reasoning: params.reasoning,
     responseCommentary,
@@ -644,6 +685,7 @@ export function resolveModelRefResult(
     alias: baseValue.alias,
     options: mergedOptions,
     reasoning,
+    openAICompatibleServers: openAICompatibleServersOf(cfg),
   });
 }
 
@@ -809,6 +851,7 @@ export function resolveModelSlotResult(
     alias,
     options: mergedOptions,
     reasoning,
+    openAICompatibleServers: openAICompatibleServersOf(cfg),
   });
   const resolvedValue = resolved.match<ResolvedModelRef | ModelResolutionFailed>({
     ok: (value) => value,

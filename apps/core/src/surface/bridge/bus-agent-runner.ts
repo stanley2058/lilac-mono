@@ -66,6 +66,7 @@ import {
   createLogger,
   resolveEditingToolMode,
   fromDurableResolvedModelPlanResult,
+  openAICompatibleServersOf,
   resolveModelChainResult,
   resolveModelPlanResult,
   resolveRouterSessionConfig,
@@ -1002,7 +1003,10 @@ export function resolveAgentRunModelResult(params: {
   resolvedModelRequest?: DurableResolvedModelRequest;
 }): ResultType<ResolvedModelPlan, AgentRunModelResolutionError> {
   if (params.resolvedModelRequest) {
-    const plan = fromDurableResolvedModelPlanResult(params.resolvedModelRequest);
+    const plan = fromDurableResolvedModelPlanResult(
+      params.resolvedModelRequest,
+      openAICompatibleServersOf(params.cfg),
+    );
     return plan.map((value) =>
       params.reasoningOverride ? withModelPlanReasoning(value, params.reasoningOverride) : value,
     );

@@ -111,6 +111,12 @@ delete the unused `DATA_DIR/cache/models.dev.json`.
 `models.catalog.providers.<provider>` accepts `auto` (default), `enabled`, or `disabled`.
 Enabling a catalog does not supply credentials or install a provider adapter.
 
+`models.providers.openaiCompatible` names additional OpenAI-compatible servers, each with a `baseUrl`
+and an optional `apiKeyEnv`. Refer to a server's models as `openai-compatible/<server>/<model>`. A ref
+whose first segment is not a configured server keeps using `OPENAI_COMPATIBLE_BASE_URL`, so existing
+`openai-compatible/<model>` refs are unchanged unless a server name matches their first segment.
+Server edits apply on config reload. A new value for a key variable needs a restart.
+
 `models.def` aliases, main/fast slots, and fallback chains keep their existing meaning. Add ordered
 `models.rules` entries with `match` globs, optional `options`, `reasoning`, `legacy`, and `unset`.
 `*` matches any characters, including slashes. Rules apply to the resolved provider/model in file order,

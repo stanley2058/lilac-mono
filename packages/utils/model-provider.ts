@@ -30,6 +30,7 @@ import { createOpenAIResponsesWebSocketFetch } from "./openai-responses-websocke
 import { withLlmWireDebugFetch } from "./llm-wire-debug";
 import { captureResultOutcome, isPanic, isRecord } from "./runtime-utils";
 import { withServerCompactionRequestFetch } from "./server-compaction-request";
+import type { OpenAICompatibleServerConfig } from "./core-config/types";
 
 export { claudeCodeExecutableSettings } from "./claude-code-executable";
 
@@ -372,19 +373,104 @@ export function createOpenAIResponsesSseModelProvider() {
   return createOpenAIProviderForTransport("sse");
 }
 
+export type OpenAICompatibleServers = Readonly<Record<string, OpenAICompatibleServerConfig>>;
+
+let activeOpenAICompatibleServers: OpenAICompatibleServers = {};
+// Keyed by config object so clients for replaced config snapshots can be collected.
+const openAICompatibleClients = new WeakMap<
+  OpenAICompatibleServerConfig,
+  OpenAICompatibleProvider
+>();
+
+/** Sets the servers used when a caller passes no config snapshot. */
+export function configureOpenAICompatibleServers(servers: OpenAICompatibleServers): void {
+  activeOpenAICompatibleServers = servers;
+}
+
+function openAICompatibleServerClient(
+  name: string,
+  server: OpenAICompatibleServerConfig,
+): OpenAICompatibleProvider {
+  const cached = openAICompatibleClients.get(server);
+  if (cached) return cached;
+  const client = createOpenAICompatibleServer(name, server);
+  openAICompatibleClients.set(server, client);
+  return client;
+}
+
+function createOpenAICompatibleServer(
+  name: string,
+  server: OpenAICompatibleServerConfig,
+): OpenAICompatibleProvider {
+  const apiKey = server.apiKeyEnv ? process.env[server.apiKeyEnv]?.trim() : undefined;
+  if (server.apiKeyEnv && !apiKey) {
+    createLogger({ module: "utils:model-provider" }).warn(
+      "openai-compatible server api key env var is not set",
+      { server: name, apiKeyEnv: server.apiKeyEnv },
+    );
+  }
+  return createOpenAICompatibleClient(server.baseUrl, apiKey || undefined);
+}
+
+function createOpenAICompatibleClient(baseURL: string, apiKey: string | undefined) {
+  // Every server shares the `openaiCompatible` options namespace that rules and aliases target.
+  return createOpenAICompatible({ name: "openaiCompatible", baseURL, apiKey, includeUsage: true });
+}
+
+export type OpenAICompatibleRoute = { provider: OpenAICompatibleProvider; modelId: string };
+
+export class OpenAICompatibleModelUnrouted extends TaggedError("OpenAICompatibleModelUnrouted")<{
+  readonly modelId: string;
+  readonly reason: "no-server" | "no-model";
+  readonly message: string;
+}> {}
+
+export function routeOpenAICompatibleModel(
+  modelId: string,
+  servers: OpenAICompatibleServers = activeOpenAICompatibleServers,
+): ResultType<OpenAICompatibleRoute, OpenAICompatibleModelUnrouted> {
+  const slash = modelId.indexOf("/");
+  const name = slash > 0 ? modelId.slice(0, slash) : "";
+  const server = Object.hasOwn(servers, name) ? servers[name] : undefined;
+  const serverModelId = modelId.slice(slash + 1);
+  if (server && !serverModelId) {
+    return Result.err(
+      new OpenAICompatibleModelUnrouted({
+        modelId,
+        reason: "no-model",
+        message: `'${modelId}' names OpenAI-compatible server '${name}' without a model`,
+      }),
+    );
+  }
+  if (server) {
+    return Result.ok({
+      provider: openAICompatibleServerClient(name, server),
+      modelId: serverModelId,
+    });
+  }
+  const legacy = providers["openai-compatible"];
+  if (legacy) return Result.ok({ provider: legacy, modelId });
+  return Result.err(
+    new OpenAICompatibleModelUnrouted({
+      modelId,
+      reason: "no-server",
+      message: `No OpenAI-compatible server for '${modelId}': name a server from models.providers.openaiCompatible or set OPENAI_COMPATIBLE_BASE_URL`,
+    }),
+  );
+}
+
 export function getModelProviders() {
   const providers = {
     openai: env.providers.openai
       ? createOpenAIProviderForTransport(env.providers.openai.responsesTransport)
       : null,
 
+    // Named servers live outside this table; resolve them with routeOpenAICompatibleModel.
     "openai-compatible": env.providers.openaiCompatible.baseUrl
-      ? createOpenAICompatible({
-          name: "openaiCompatible",
-          baseURL: env.providers.openaiCompatible.baseUrl,
-          apiKey: env.providers.openaiCompatible.apiKey,
-          includeUsage: true,
-        })
+      ? createOpenAICompatibleClient(
+          env.providers.openaiCompatible.baseUrl,
+          env.providers.openaiCompatible.apiKey,
+        )
       : null,
 
     cerebras: createCerebras({

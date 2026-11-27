@@ -25,13 +25,17 @@ dotted path from the owner below and trace its consumer.
 | `workflows` | Workflow admission policy | `apps/core/src/workflow`, `apps/core/src/plugins/builtin/server-tools.ts` |
 | `surface` | Routing, Discord behavior, and heartbeat | `apps/core/src/surface`, `apps/core/src/heartbeat` |
 | `agent` | Run display, retention, retry, idle, and subagent policy | `apps/core/src/surface/bridge/bus-agent-runner.ts`, `packages/agent` |
-| `models` | Aliases, slots, catalog visibility, option rules, fallbacks, and capabilities | `packages/utils/model-slot.ts`, `packages/utils/model-catalog.ts`, `packages/utils/model-rules.ts`, `packages/utils/model-capability.ts` |
+| `models` | Aliases, slots, catalog visibility, option rules, fallbacks, capabilities, and named OpenAI-compatible servers | `packages/utils/model-slot.ts`, `packages/utils/model-catalog.ts`, `packages/utils/model-rules.ts`, `packages/utils/model-capability.ts`, `packages/utils/model-provider.ts` |
 | `entity` | Discord user and session aliases | `apps/core/src/entity`, `apps/core/src/surface/discord` |
 | `basePrompt` | Base model instructions selected with the model plan | `packages/utils/model-slot.ts`, the Core agent runner |
 
 ## Settings that live elsewhere
 
 - MCP servers live in `mcp-config.yaml`. Load the `mcp-management` skill and use the `mcp.*` callables.
+- Provider credentials and the default OpenAI-compatible endpoint (`OPENAI_COMPATIBLE_BASE_URL`) live
+  in the deployment environment. A named server under `models.providers.openaiCompatible` stores only
+  its key's variable name in `apiKeyEnv`; ask the user to set the value, which takes effect after a
+  restart.
 - Native web deployment settings live in `native-surface.db`: title model, output streaming,
   cross-thread send behavior, DM context and timestamp gaps, and message selection and storage
   retention ages. Only the web Settings > Deployment page changes them. Config v3 rejects the old

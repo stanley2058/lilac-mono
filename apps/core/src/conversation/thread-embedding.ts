@@ -3,6 +3,9 @@ import {
   createLogger,
   formatTaggedErrorForLog,
   providers,
+  openAICompatibleServersOf,
+  routeOpenAICompatibleModel,
+  type OpenAICompatibleServers,
   type ResolvedModelRef,
   resolveModelRefResult,
   type ModelResolutionFailed,
@@ -60,8 +63,18 @@ type EmbeddingProvider = NonNullable<(typeof providers)[string]> & {
   embeddingModel(modelId: string): EmbeddingModel;
 };
 
-function getProvider(providerId: string): EmbeddingProvider | null {
-  return providers[providerId] ?? null;
+function getEmbeddingModel(
+  ref: ResolvedModelRef,
+  openAICompatibleServers: OpenAICompatibleServers,
+): EmbeddingModel | null {
+  if (ref.provider === "openai-compatible") {
+    return routeOpenAICompatibleModel(ref.modelId, openAICompatibleServers).match({
+      ok: (route) => route.provider.embeddingModel(route.modelId),
+      err: () => null,
+    });
+  }
+  const provider: EmbeddingProvider | null = providers[ref.provider] ?? null;
+  return provider?.embeddingModel(ref.modelId) ?? null;
 }
 
 type ResolvedEmbeddingModels = { document: ResolvedModelRef; query: ResolvedModelRef };
@@ -102,15 +115,13 @@ function embeddingAdapterCacheKey(resolved: ResolvedEmbeddingModels | null): str
 
 function createConversationThreadEmbeddingAdapterFromResolved(
   resolved: ResolvedEmbeddingModels | null,
+  openAICompatibleServers: OpenAICompatibleServers,
 ): ConversationThreadEmbeddingAdapter | null {
   if (!resolved) return null;
 
-  const documentProvider = getProvider(resolved.document.provider);
-  const queryProvider = getProvider(resolved.query.provider);
-  if (!documentProvider || !queryProvider) return null;
-
-  const documentModel = documentProvider.embeddingModel(resolved.document.modelId);
-  const queryModel = queryProvider.embeddingModel(resolved.query.modelId);
+  const documentModel = getEmbeddingModel(resolved.document, openAICompatibleServers);
+  const queryModel = getEmbeddingModel(resolved.query, openAICompatibleServers);
+  if (!documentModel || !queryModel) return null;
 
   return {
     modelId: resolved.document.spec,
@@ -142,8 +153,8 @@ function createConversationThreadEmbeddingAdapterFromResolved(
 export function createConversationThreadEmbeddingAdapter(
   cfg: CoreConfig,
 ): ResultType<ConversationThreadEmbeddingAdapter | null, ModelResolutionFailed> {
-  return resolveConversationThreadEmbeddingModel(cfg).map(
-    createConversationThreadEmbeddingAdapterFromResolved,
+  return resolveConversationThreadEmbeddingModel(cfg).map((resolved) =>
+    createConversationThreadEmbeddingAdapterFromResolved(resolved, openAICompatibleServersOf(cfg)),
   );
 }
 
@@ -164,10 +175,11 @@ export function createConversationThreadEmbeddingAdapterResolver(
         return null;
       },
       ok: (resolved) => () => {
-        const key = embeddingAdapterCacheKey(resolved);
+        const servers = openAICompatibleServersOf(config);
+        const key = JSON.stringify([embeddingAdapterCacheKey(resolved), servers]);
         if (cached?.key === key) return cached.adapter;
 
-        const adapter = createConversationThreadEmbeddingAdapterFromResolved(resolved);
+        const adapter = createConversationThreadEmbeddingAdapterFromResolved(resolved, servers);
         cached = { key, adapter };
         return adapter;
       },

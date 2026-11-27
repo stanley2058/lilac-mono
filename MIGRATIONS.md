@@ -48,6 +48,14 @@ file. The next sign-in after the callback URL changes registers a replacement cl
 with the new tokens; older builds ignore the field. `config.mcpStatus` gains `oauthCallbackUrl` and
 the owner-only `config.authorizeMcp` procedure is new, so deploy Core and web together.
 
+### Named OpenAI-compatible servers
+
+Config v3 adds `models.providers.openaiCompatible` for refs of the form
+`openai-compatible/<server>/<model>`. Existing `openai-compatible/<model>` refs keep using
+`OPENAI_COMPATIBLE_BASE_URL` unless a server name matches their first segment. Older builds ignore
+the new field with an unknown-key warning and send `<server>/<model>` to the env endpoint, so move
+models off named servers before downgrading. No stored data changes.
+
 ### Native transport selection
 
 Native deployment settings add `transport`, with `auto`, `websocket`, and `http-sse` values.

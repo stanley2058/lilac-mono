@@ -10,6 +10,7 @@ import {
   agentSchemaFieldsV2,
   coreConfigInputSchemaV2,
   coreConfigV2ShapeToUniversal,
+  environmentVariableNameSchema,
   normalizeProfileToolNames,
   profileLevel1Schema,
   profileLevel2Schema,
@@ -275,6 +276,46 @@ const reasoningFieldsV3 = {
       "Ordered fallback models, each a model reference/alias or `{model, reasoning, options}`. A model-slot chain takes precedence over the selected alias chain. Automatic fallback stays within the head model's provider family and is disabled for a `claude-code` head.",
     ),
 };
+const openAICompatibleServerSchemaV3 = z.object({
+  baseUrl: z
+    .url()
+    .superRefine((value, ctx) => {
+      if (!URL.canParse(value)) return;
+      const url = new URL(value);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        ctx.addIssue({ code: "custom", message: "baseUrl must use http or https" });
+      }
+      if (url.username || url.password) {
+        ctx.addIssue({ code: "custom", message: "baseUrl must not contain credentials" });
+      }
+      // The client appends operation paths to the raw string, after any query or fragment.
+      if (value.includes("?") || value.includes("#")) {
+        ctx.addIssue({ code: "custom", message: "baseUrl must not contain a query or fragment" });
+      }
+    })
+    .describe(
+      "OpenAI-compatible API base URL, usually ending in /v1. Example: http://gpu-box:8000/v1.",
+    ),
+  apiKeyEnv: environmentVariableNameSchema
+    .optional()
+    .describe(
+      "Environment variable holding the server's API key. Omit for servers without authentication. Supply the variable name, not the key.",
+    ),
+});
+const modelProvidersSchemaV3 = z
+  .object({
+    openaiCompatible: z
+      .record(
+        z.string().regex(/^[^/]+$/u, "server names cannot be empty or contain /"),
+        openAICompatibleServerSchemaV3,
+      )
+      .default({})
+      .describe(
+        "Named OpenAI-compatible servers. Reference a server's models as `openai-compatible/<server>/<model>`. Refs whose first segment is not a server name use OPENAI_COMPATIBLE_BASE_URL. Example: `{vllm: {baseUrl: http://gpu-box:8000/v1}}`.",
+      ),
+  })
+  .default({ openaiCompatible: {} })
+  .describe("Additional provider endpoints.");
 const modelsSchemaV3 = z
   .object({
     ...baseModels.shape,
@@ -332,6 +373,7 @@ const modelsSchemaV3 = z
       .describe(
         "Model discovery visibility. Credentials are inferred by default; overrides affect catalog visibility only.",
       ),
+    providers: modelProvidersSchemaV3,
     rules: modelRulesSchema.describe(
       'Ordered glob defaults applied before alias and per-run options. `*` includes slashes. Later matching rules can override earlier settings. Example: `{match: "codex/gpt-6-*", options: {serviceTier: priority}}`.',
     ),
@@ -342,6 +384,7 @@ const modelsSchemaV3 = z
     fast: { model: "openrouter/openai/gpt-4o-mini" },
     capability: { forceUnknownProviders: ["openai-compatible"], overrides: {} },
     catalog: { providers: {} },
+    providers: { openaiCompatible: {} },
     rules: [],
   });
 

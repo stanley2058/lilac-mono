@@ -43,3 +43,31 @@ test("a config edit during reload cannot be cached under the later fingerprint",
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("loading core config registers named OpenAI-compatible servers", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "config-reload-"));
+  try {
+    const script = String.raw`
+      import { getCoreConfig, resolveCoreConfigPath } from ${JSON.stringify(path.resolve(import.meta.dir, "../core-config.ts"))};
+      import { routeOpenAICompatibleModel } from ${JSON.stringify(path.resolve(import.meta.dir, "../model-provider.ts"))};
+      await getCoreConfig();
+      if (routeOpenAICompatibleModel("vllm/qwen").status === "ok") throw new Error("route before config");
+      await Bun.write(
+        resolveCoreConfigPath(),
+        "configVersion: 3\nmodels:\n  providers:\n    openaiCompatible:\n      vllm:\n        baseUrl: http://127.0.0.1:1/v1\n",
+      );
+      await getCoreConfig({ forceReload: true });
+      if (routeOpenAICompatibleModel("vllm/qwen").status !== "ok") throw new Error("server not registered");
+    `;
+    const { OPENAI_COMPATIBLE_BASE_URL: _unset, ...parentEnv } = process.env;
+    const child = Bun.spawn([process.execPath, "--eval", script], {
+      env: { ...parentEnv, DATA_DIR: dataDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stderr = await new Response(child.stderr).text();
+    expect(await child.exited, stderr).toBe(0);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

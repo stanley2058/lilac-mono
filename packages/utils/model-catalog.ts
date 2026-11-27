@@ -101,6 +101,8 @@ export function configuredCatalogProviders(config: CoreConfig): string[] {
     if (override === "disabled") return [];
     if (override === "enabled") return [provider];
     let configured = keys.some((key) => Boolean(process.env[key]?.trim()));
+    if (provider === "openai-compatible")
+      configured ||= Object.keys(config.models.providers?.openaiCompatible ?? {}).length > 0;
     if (provider === "codex")
       configured = existsSync(path.join(env.dataDir, "secret", "codex.json"));
     if (provider === "claude-code")

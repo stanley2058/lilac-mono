@@ -34,6 +34,12 @@ export type DecisionAutoInjectProbabilities = {
   relevanceMinProbability: number;
 };
 
+export type OpenAICompatibleServerConfig = {
+  baseUrl: string;
+  /** Environment variable holding the API key; omitted for unauthenticated servers. */
+  apiKeyEnv?: string;
+};
+
 export type DiscordUserAliasConfig = {
   discord: string;
   comment?: string;
@@ -370,6 +376,9 @@ export type UniversalCoreConfig = {
 
   models: {
     catalog?: { providers: Record<string, "auto" | "enabled" | "disabled"> };
+    providers?: {
+      openaiCompatible: Record<string, OpenAICompatibleServerConfig>;
+    };
     rules?: import("../model-rules").ModelRule[];
     def: Record<
       string,

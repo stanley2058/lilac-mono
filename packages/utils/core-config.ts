@@ -8,6 +8,7 @@ import { capturePromiseResult, captureResultOutcome, errorMessage, isPanic } fro
 import { findWorkspaceRoot } from "./find-root";
 import { createLogger } from "./logging";
 import { formatModelProviderOptionWarning } from "./model-provider-option-validation";
+import { configureOpenAICompatibleServers } from "./model-provider";
 import {
   buildAgentSystemPrompt,
   CORE_PROMPT_FILES,
@@ -419,6 +420,7 @@ export async function getCoreConfig(options?: {
     },
   };
 
+  configureOpenAICompatibleServers(nextCfg.models.providers?.openaiCompatible ?? {});
   cached = nextCfg;
   const stat = await capturePromiseResult(() => Bun.file(filePath).stat());
   const statOutcome = captureResultOutcome(stat);
