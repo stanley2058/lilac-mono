@@ -21,6 +21,7 @@ import {
   type Level2ContributionInfo,
   type ServerToolCapabilitySnapshot,
   type ServerToolFailure,
+  type ServerToolFailureKind,
   type ServerToolListResult,
   type ServerToolResult,
   type ToolPluginCleanupError,
@@ -87,6 +88,14 @@ type ToolServerCleanupFailure = {
 };
 
 type UnixSocketIdentity = { dev: number; ino: number };
+
+// The remaining kinds describe the caller's request (input, permissions, state, or cancellation),
+// so they log as warnings and stay out of error telemetry.
+const TOOL_SERVER_FAULT_KINDS: ReadonlySet<ServerToolFailureKind> = new Set([
+  "internal",
+  "timeout",
+  "unavailable",
+]);
 
 function inspectUnixSocket(socketPath: string) {
   return Result.try({
@@ -1558,6 +1567,8 @@ export function createToolServer(options: ToolServerOptions) {
         input: safeToolInputPreview(body.callableId, input),
       });
 
+      const contribution = contributionForTool(tool);
+      const builtinCallableId = contribution.source === "builtin" ? body.callableId : undefined;
       const toolFailureResponse = (failure: ServerToolFailure) => {
         const safeFailure =
           body.callableId === "mcp.add"
@@ -1585,9 +1596,14 @@ export function createToolServer(options: ToolServerOptions) {
           ok: false,
           errorKind: safeFailure.kind,
           errorCode: safeFailure.code,
+          builtinCallableId,
           cancelled: combinedSignal.aborted,
         };
-        logger.error("tool.call.result", errorLogDetails);
+        if (TOOL_SERVER_FAULT_KINDS.has(safeFailure.kind)) {
+          logger.error("tool.call.result", errorLogDetails);
+        } else {
+          logger.warn("tool.call.result", errorLogDetails);
+        }
         return {
           status: "error" as const,
           error: safeFailure,
@@ -1612,7 +1628,6 @@ export function createToolServer(options: ToolServerOptions) {
         });
       }
 
-      const contribution = contributionForTool(tool);
       let toolCallTimedOut = false;
       const invocationResult = Promise.resolve()
         .then(() =>
@@ -1700,6 +1715,12 @@ export function createToolServer(options: ToolServerOptions) {
           failed: true,
           cancelled: true,
         });
+        const timeoutFailure = serverToolFailure({
+          kind: "timeout",
+          code: "tool_timeout",
+          message: `Tool call timed out after ${timeoutMs}ms`,
+          retryable: true,
+        });
         logger.error("tool.call.result", {
           callableId: body.callableId,
           requestId: ctx.requestId,
@@ -1710,15 +1731,13 @@ export function createToolServer(options: ToolServerOptions) {
           ok: false,
           timeoutMs,
           timedOut: true,
+          errorKind: timeoutFailure.kind,
+          errorCode: timeoutFailure.code,
+          builtinCallableId,
         });
         return {
           status: "error" as const,
-          error: serverToolFailure({
-            kind: "timeout",
-            code: "tool_timeout",
-            message: `Tool call timed out after ${timeoutMs}ms`,
-            retryable: true,
-          }),
+          error: timeoutFailure,
         };
       }
 

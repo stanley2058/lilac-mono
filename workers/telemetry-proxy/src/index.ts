@@ -18,6 +18,11 @@ const SAFE_CALL_ID_ALIAS_RE = /^tc_\d{1,5}$/u;
 const SAFE_EXT_TOOL_RE = /^ext_[a-f0-9]{10}$/u;
 const SAFE_HASHED_KEY_RE = /^k_[a-f0-9]{8}$/u;
 const SAFE_HASHED_NS_RE = /^ns_[a-f0-9]{8}$/u;
+const SAFE_TOOL_ERROR_CODE_RE = /^[a-z][a-z0-9_]{0,47}$/u;
+const SAFE_BUILTIN_CALLABLE_ID_RE = /^[a-z][a-z0-9_-]{0,31}(?:\.[a-z][a-z0-9_-]{0,31}){1,3}$/u;
+const GENERIC_LOG_EVENTS = new Set(["log", "log_warn", "log_error", "log_fatal"]);
+// Clients before the $exception mapping truncated fingerprint events to 60 characters.
+const LEGACY_FINGERPRINT_EVENT_LENGTH = 60;
 
 const ROLE_TRACE_PART_RE =
   /^(?:s|s0|t|t0|r|img|file|reasoning-file|other|tc_\d{1,5}|tr_\d{1,5}|tool-approval-request|tool-approval-response|c:(?:anthropic\.message_start|anthropic\.fallback|anthropic\.tool-reference|openai\.compaction|custom_other))$/u;
@@ -104,6 +109,13 @@ const ALLOWED_STATIC_EVENTS = new Set([
   "heartbeat handoff transcript count mismatch",
   "agent activity publish failed",
   "subagent conversation ids unavailable",
+  "tool call",
+  "tool.call.result",
+  "tool-server error",
+  "tool plugin operation failed",
+  "tool call defect contained",
+  "tool server cleanup failed",
+  "tool-server watchdog detected unhealthy runtime",
 ]);
 
 const ALLOWED_ERROR_IDENTIFIERS = new Set([
@@ -245,6 +257,16 @@ const ALLOWED_FAILURE_CLASSES = new Set([
   "environment",
   "tool",
   "unknown",
+]);
+const ALLOWED_TOOL_FAILURE_KINDS = new Set([
+  "usage",
+  "denied",
+  "not_found",
+  "conflict",
+  "unavailable",
+  "timeout",
+  "cancelled",
+  "internal",
 ]);
 const ALLOWED_FINISH_REASONS = new Set([
   "stop",
@@ -554,7 +576,7 @@ export interface TelemetryProxyEnv {
 }
 
 interface SanitizedEvent {
-  event: "lilac_error" | "lilac_agent_run";
+  event: "$exception" | "lilac_agent_run";
   distinct_id: string;
   timestamp?: string;
   properties: Record<string, unknown>;
@@ -719,6 +741,15 @@ function sanitizeContextFields(
       case "aiErrorName":
         safeStr = asEnum(raw, ALLOWED_ERROR_IDENTIFIERS);
         break;
+      case "errorKind":
+        safeStr = asEnum(raw, ALLOWED_TOOL_FAILURE_KINDS);
+        break;
+      case "errorCode":
+        safeStr = asRegexString(raw, SAFE_TOOL_ERROR_CODE_RE);
+        break;
+      case "builtinCallableId":
+        safeStr = asRegexString(raw, SAFE_BUILTIN_CALLABLE_ID_RE);
+        break;
       default:
         break;
     }
@@ -726,6 +757,11 @@ function sanitizeContextFields(
       out[key] = safeStr;
       count += 1;
     }
+  }
+  // Only built-in tools define their failure codes in code; other sources can put arbitrary text there.
+  if (out["errorCode"] !== undefined && out["builtinCallableId"] === undefined) {
+    delete out["errorCode"];
+    count -= 1;
   }
   return count > 0 ? out : undefined;
 }
@@ -1045,21 +1081,62 @@ function sanitizeCommonProps(raw: Record<string, unknown>): Record<string, unkno
   return out;
 }
 
+function isValidToolFailureCode(value: string): boolean {
+  const separator = value.indexOf(":");
+  if (separator <= 0) return false;
+  return (
+    ALLOWED_TOOL_FAILURE_KINDS.has(value.slice(0, separator)) &&
+    SAFE_TOOL_ERROR_CODE_RE.test(value.slice(separator + 1))
+  );
+}
+
+// Expands a legacy truncated event so old and new clients share one PostHog grouping key.
+function canonicalFingerprintEvent(value: string): string | undefined {
+  if (ALLOWED_STATIC_EVENTS.has(value)) return value;
+  if (value.length !== LEGACY_FINGERPRINT_EVENT_LENGTH) return undefined;
+  const matches = [...ALLOWED_STATIC_EVENTS].filter(
+    (event) => event.slice(0, LEGACY_FINGERPRINT_EVENT_LENGTH) === value,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function canonicalFingerprintLocation(value: string): string | undefined {
+  if (isValidStackFrame(value)) return value;
+  return canonicalFingerprintEvent(value);
+}
+
+function isValidFingerprintDetail(value: string): boolean {
+  return (
+    asValidAnomaly(value) !== undefined ||
+    ALLOWED_ERROR_CATEGORIES.has(value) ||
+    SAFE_BUILTIN_CALLABLE_ID_RE.test(value)
+  );
+}
+
 function sanitizeFingerprint(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0 || value.length > 240) return undefined;
   const parts = value.split("|");
   if (parts.length !== 5) return undefined;
-  const [mod, errId, code, locOrEvent, anomaly] = parts;
+  const [mod, errId, code, locOrEvent, detail] = parts;
   if (!mod || !SAFE_MODULE_RE.test(mod)) return undefined;
   if (!errId || (errId !== "error" && !ALLOWED_ERROR_IDENTIFIERS.has(errId))) return undefined;
-  if (code && !ALLOWED_ERROR_CODES.has(code) && !/^\d{3}$/u.test(code)) return undefined;
-  if (locOrEvent && !ALLOWED_STATIC_EVENTS.has(locOrEvent) && !isValidStackFrame(locOrEvent)) {
+  const isAllowedBuiltinFailureCode =
+    code !== undefined &&
+    isValidToolFailureCode(code) &&
+    SAFE_BUILTIN_CALLABLE_ID_RE.test(detail ?? "");
+  if (
+    code &&
+    !ALLOWED_ERROR_CODES.has(code) &&
+    !/^\d{3}$/u.test(code) &&
+    !isAllowedBuiltinFailureCode
+  ) {
     return undefined;
   }
-  if (anomaly && !asValidAnomaly(anomaly) && !ALLOWED_ERROR_CATEGORIES.has(anomaly)) {
-    return undefined;
-  }
-  return value;
+  const location = locOrEvent ? canonicalFingerprintLocation(locOrEvent) : "";
+  if (location === undefined) return undefined;
+  if (detail && !isValidFingerprintDetail(detail)) return undefined;
+  const canonical = [mod, errId, code, location, detail].join("|");
+  return canonical.length <= 240 ? canonical : undefined;
 }
 
 function sanitizeErrorProperties(raw: Record<string, unknown>): Record<string, unknown> {
@@ -1109,7 +1186,79 @@ function sanitizeErrorProperties(raw: Record<string, unknown>): Record<string, u
   if (transcriptShape) out["transcript_shape"] = transcriptShape;
   const breadcrumbs = sanitizeBreadcrumbs(raw["breadcrumbs"]);
   if (breadcrumbs) out["breadcrumbs"] = breadcrumbs;
-  return out;
+  return { ...out, ...buildExceptionProperties(out) };
+}
+
+function exceptionType(props: Record<string, unknown>): string {
+  const errorId = asNonEmptyString(props["error_tag"]) ?? asNonEmptyString(props["error_name"]);
+  if (errorId) return errorId;
+  const eventMessage = asNonEmptyString(props["event_message"]);
+  if (eventMessage && !GENERIC_LOG_EVENTS.has(eventMessage)) return eventMessage;
+  return `${asNonEmptyString(props["module"]) ?? "lilac"} error`;
+}
+
+function exceptionCode(
+  props: Record<string, unknown>,
+  context: Record<string, unknown>,
+): string | undefined {
+  const kind = asNonEmptyString(context["errorKind"]);
+  const code = asNonEmptyString(context["errorCode"]);
+  if (kind && code) return `${kind}/${code}`;
+  return asNonEmptyString(props["error_code"]) ?? code ?? kind;
+}
+
+// Built only from values that already passed the allowlists above.
+function exceptionValue(props: Record<string, unknown>, type: string): string {
+  const context = isPlainObject(props["context"]) ? props["context"] : {};
+  const eventMessage = asNonEmptyString(props["event_message"]);
+  const callable = asNonEmptyString(context["builtinCallableId"]);
+  const statusCode = asNumber(context["statusCode"]);
+  const details = [
+    eventMessage && eventMessage !== type ? eventMessage : undefined,
+    exceptionCode(props, context),
+    callable ? `in ${callable}` : undefined,
+    statusCode !== undefined ? `HTTP ${statusCode}` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  const moduleName = asNonEmptyString(props["module"]) ?? "lilac";
+  return details.length > 0 ? `${moduleName}: ${details.join(" ")}` : moduleName;
+}
+
+// Lilac sends frames innermost first; PostHog expects the innermost frame last.
+function exceptionFrames(props: Record<string, unknown>): Array<Record<string, unknown>> {
+  if (!Array.isArray(props["stack_frames"])) return [];
+  const frames: Array<Record<string, unknown>> = [];
+  for (const frame of props["stack_frames"]) {
+    if (typeof frame !== "string") continue;
+    const [filename, lineno, colno] = frame.split(":");
+    if (!filename) continue;
+    frames.push({
+      platform: "node:javascript",
+      filename,
+      function: "?",
+      ...(lineno ? { lineno: Number(lineno) } : {}),
+      ...(colno ? { colno: Number(colno) } : {}),
+      in_app: !filename.startsWith("node_modules/"),
+    });
+  }
+  return frames.reverse();
+}
+
+function buildExceptionProperties(props: Record<string, unknown>): Record<string, unknown> {
+  const type = exceptionType(props);
+  const frames = exceptionFrames(props);
+  const fingerprint = asNonEmptyString(props["fingerprint"]);
+  return {
+    $exception_level: asEnum(props["level"], ALLOWED_ERROR_LEVELS) ?? "error",
+    ...(fingerprint ? { $exception_fingerprint: fingerprint } : {}),
+    $exception_list: [
+      {
+        type,
+        value: exceptionValue(props, type),
+        mechanism: { type: "generic", handled: true, synthetic: frames.length === 0 },
+        ...(frames.length > 0 ? { stacktrace: { type: "raw", frames } } : {}),
+      },
+    ],
+  };
 }
 
 function sanitizeAgentRunProperties(raw: Record<string, unknown>): Record<string, unknown> {
@@ -1192,7 +1341,7 @@ function sanitizeBatchItem(item: unknown): SanitizedEvent | null {
       : sanitizeAgentRunProperties(rawProps);
 
   return {
-    event,
+    event: event === "lilac_error" ? "$exception" : event,
     distinct_id: distinctId,
     ...(timestamp ? { timestamp } : {}),
     properties,

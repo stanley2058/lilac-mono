@@ -7,6 +7,7 @@ Thin Cloudflare Worker that receives opt-in Lilac telemetry batches on your own 
 - Only accepts `POST /batch` or `POST /batch/` (plus `GET /health`)
 - Streams request bodies with a hard 256 KiB cap (without buffering oversize payloads) and 50 events per batch
 - Drops any event outside the allowlist (`lilac_error`, `lilac_agent_run`), validates `distinct_id` and `timestamp`, and projects event properties through a closed per-event schema
+- Forwards `lilac_error` as PostHog's `$exception` event so errors appear in Error Tracking. It builds `$exception_list` from the sanitized fields and sets `$exception_fingerprint` from the client fingerprint
 - Injects `POSTHOG_API_KEY` server-side so Lilac clients do not need a PostHog key
 - Forces `$ip: null` and strips all inbound headers (`CF-Connecting-IP`, `X-Forwarded-For`, etc.) before forwarding to PostHog
 

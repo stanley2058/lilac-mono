@@ -3392,6 +3392,67 @@ describe("createToolServer", () => {
     }
   });
 
+  it("logs caller-caused tool failures as warnings and tool faults as errors", async () => {
+    const logged: Array<{ level: string; message: string; fields: Record<string, unknown> }> = [];
+    const logger = createLogger({ module: "tool-failure-level-test" });
+    for (const level of ["warn", "error"] as const) {
+      Object.defineProperty(logger, level, {
+        value(message: string, fields: Record<string, unknown>) {
+          logged.push({ level, message, fields });
+        },
+      });
+    }
+    const tool: ServerTool = {
+      id: "failing",
+      async init() {},
+      async destroy() {},
+      async list() {
+        return [
+          { callableId: "failing.usage", name: "Usage", description: "Usage", shortInput: [] },
+          {
+            callableId: "failing.internal",
+            name: "Internal",
+            description: "Internal",
+            shortInput: [],
+          },
+        ];
+      },
+      async call(callableId) {
+        const kind = callableId === "failing.usage" ? "usage" : "internal";
+        return Result.err(
+          serverToolFailure({ kind, code: `${kind}_failure`, message: kind, retryable: false }),
+        );
+      },
+    };
+    const server = createToolServer({ tools: [tool], logger });
+    await server.init();
+    try {
+      for (const callableId of ["failing.usage", "failing.internal"]) {
+        await server.app.handle(
+          new Request("http://localhost/call", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ callableId, input: {} }),
+          }),
+        );
+      }
+      expect(
+        logged
+          .filter((entry) => entry.message === "tool.call.result")
+          .map((entry) => [
+            entry.level,
+            entry.fields["errorKind"],
+            entry.fields["builtinCallableId"],
+          ]),
+      ).toEqual([
+        ["warn", "usage", "failing.usage"],
+        ["error", "internal", "failing.internal"],
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("refreshes routing when a committed reload then panics during cleanup", async () => {
     const toolFor = (id: string): ServerTool => ({
       id,

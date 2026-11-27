@@ -223,6 +223,13 @@ const ALLOWED_STATIC_EVENTS: ReadonlySet<string> = new Set([
   "heartbeat handoff transcript count mismatch",
   "agent activity publish failed",
   "subagent conversation ids unavailable",
+  "tool call",
+  "tool.call.result",
+  "tool-server error",
+  "tool plugin operation failed",
+  "tool call defect contained",
+  "tool server cleanup failed",
+  "tool-server watchdog detected unhealthy runtime",
 ]);
 
 // Closed allowlist of known JS, AI SDK, and Lilac error/TaggedError identifiers.
@@ -419,6 +426,23 @@ const ALLOWED_FAILURE_CLASSES: ReadonlySet<string> = new Set([
   "unknown",
 ]);
 
+const ALLOWED_TOOL_FAILURE_KINDS: ReadonlySet<string> = new Set([
+  "usage",
+  "denied",
+  "not_found",
+  "conflict",
+  "unavailable",
+  "timeout",
+  "cancelled",
+  "internal",
+]);
+
+// Built-in tools define their failure codes and callable IDs in code, so a strict shape check is
+// enough to keep free-form text out. Codes from plugins or providers can be arbitrary, so a code is
+// kept only when the same log names a built-in callable.
+const SAFE_TOOL_ERROR_CODE_RE = /^[a-z][a-z0-9_]{0,47}$/u;
+const SAFE_BUILTIN_CALLABLE_ID_RE = /^[a-z][a-z0-9_-]{0,31}(?:\.[a-z][a-z0-9_-]{0,31}){1,3}$/u;
+
 const ALLOWED_FINISH_REASONS: ReadonlySet<string> = new Set([
   "stop",
   "length",
@@ -613,6 +637,12 @@ function projectAllowedStringField(key: string, rawValue: string): string | unde
     case "errorTag":
     case "aiErrorName":
       return sanitizeErrorIdentifier(rawValue);
+    case "errorKind":
+      return ALLOWED_TOOL_FAILURE_KINDS.has(rawValue) ? rawValue : undefined;
+    case "errorCode":
+      return SAFE_TOOL_ERROR_CODE_RE.test(rawValue) ? rawValue : undefined;
+    case "builtinCallableId":
+      return SAFE_BUILTIN_CALLABLE_ID_RE.test(rawValue) ? rawValue : undefined;
     default:
       return undefined;
   }
@@ -827,6 +857,27 @@ export function isProviderShapeValidationError(
   );
 }
 
+// Debug logs without an allowlisted event ID carry no signal once their text is dropped.
+function isLowSignalBreadcrumb(breadcrumb: TelemetryBreadcrumb): boolean {
+  return breadcrumb.level === "debug" && breadcrumb.event === "log";
+}
+
+function toolFailureFingerprintCode(
+  fields: TelemetryBreadcrumb["fields"] | undefined,
+): string | undefined {
+  const kind = fields?.errorKind;
+  const code = fields?.errorCode;
+  if (typeof kind !== "string" || typeof code !== "string") return undefined;
+  return `${kind}:${code}`;
+}
+
+function builtinCallableIdOf(
+  fields: TelemetryBreadcrumb["fields"] | undefined,
+): string | undefined {
+  const callableId = fields?.builtinCallableId;
+  return typeof callableId === "string" ? callableId : undefined;
+}
+
 export type TelemetryClientOptions = {
   readonly fetchFn?: typeof globalThis.fetch;
   readonly now?: () => number;
@@ -947,7 +998,7 @@ export class TelemetryClient {
     if (!salt) return;
 
     const breadcrumb = this.projectLogToBreadcrumb(salt, observation);
-    this.appendBreadcrumb(breadcrumb);
+    if (!isLowSignalBreadcrumb(breadcrumb)) this.appendBreadcrumb(breadcrumb);
 
     if (observation.level !== "error" && observation.level !== "fatal") {
       return;
@@ -976,8 +1027,9 @@ export class TelemetryClient {
       event: breadcrumb.event,
       errorTag,
       errorName,
-      errorCode,
+      errorCode: errorCode ?? toolFailureFingerprintCode(breadcrumb.fields),
       topFrame: stackFrames?.[0],
+      detail: builtinCallableIdOf(breadcrumb.fields),
     });
 
     this.scheduleErrorCapture({
@@ -1082,7 +1134,7 @@ export class TelemetryClient {
         (input.aiError?.statusCode !== undefined ? String(input.aiError.statusCode) : undefined),
       topFrame: stackFrames?.[0],
       providerCode: fields.providerCode !== undefined ? String(fields.providerCode) : undefined,
-      firstAnomaly: transcriptShape?.anomalies[0] ?? transcriptShape?.errorCategory,
+      detail: transcriptShape?.anomalies[0] ?? transcriptShape?.errorCategory,
     });
 
     if (requestHash) {
@@ -1302,6 +1354,11 @@ export class TelemetryClient {
       }
     }
 
+    if (safeFields.errorCode !== undefined && safeFields.builtinCallableId === undefined) {
+      delete safeFields.errorCode;
+      hasFields = Object.keys(safeFields).length > 0;
+    }
+
     const safeModule = sanitizeModuleName(observation.module);
     return {
       ts: this.now(),
@@ -1359,14 +1416,14 @@ export class TelemetryClient {
     readonly errorCode?: string;
     readonly topFrame?: string;
     readonly providerCode?: string;
-    readonly firstAnomaly?: string;
+    readonly detail?: string;
   }): string {
     return [
       parts.module,
       parts.errorTag ?? parts.errorName ?? "error",
       parts.errorCode ?? parts.providerCode ?? "",
-      parts.topFrame ?? parts.event.slice(0, 60),
-      parts.firstAnomaly ?? "",
+      parts.topFrame ?? parts.event,
+      parts.detail ?? "",
     ].join("|");
   }
 

@@ -500,4 +500,96 @@ describe("TelemetryClient", () => {
     expect(usageEvent?.properties["model_id"]).toBe(longModelId);
     expect(usageEvent?.properties["model_spec"]).toBe(longModelSpec);
   });
+
+  it("fingerprints tool failures by kind, code, and built-in callable and drops unlabeled debug breadcrumbs", async () => {
+    const dataDir = makeTempDir();
+    const sentEvents: Array<{ event: string; properties: Record<string, unknown> }> = [];
+    const mockFetch = (async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body)) as CapturedBatchPayload;
+      for (const item of payload.batch) {
+        sentEvents.push({ event: item.event, properties: item.properties });
+      }
+      return new Response("ok", { status: 202 });
+    }) as unknown as typeof fetch;
+
+    const client = createTelemetryClient({ allowInTestEnv: true, fetchFn: mockFetch });
+    client.configure({ errors: true, usage: false, dataDir, postErrorWindowMs: 0 });
+
+    client.observeLog({
+      level: "debug",
+      module: "agent:responses",
+      message: "free-form debug text",
+      fields: { requestId: "req-tool", provider: "codex" },
+    });
+    client.observeLog({
+      level: "debug",
+      module: "tool-server",
+      message: "tool call",
+      fields: { requestId: "req-tool", requestClient: "native" },
+    });
+    client.observeLog({
+      level: "error",
+      module: "tool-server",
+      message: "tool.call.result",
+      fields: {
+        requestId: "req-tool",
+        ok: false,
+        errorKind: "internal",
+        errorCode: "plugin_call_failed",
+        builtinCallableId: "fs.read",
+      },
+    });
+    client.observeLog({
+      level: "error",
+      module: "tool-server",
+      message: "tool.call.result",
+      fields: {
+        requestId: "req-tool",
+        ok: false,
+        errorKind: "made_up",
+        errorCode: "Free form text from /home/alice",
+        builtinCallableId: "/home/alice/plugin",
+      },
+    });
+    // A separate module keeps this from deduping against the unlabeled failure above.
+    client.observeLog({
+      level: "error",
+      module: "tool-server-external",
+      message: "tool.call.result",
+      fields: { ok: false, errorKind: "internal", errorCode: "customer_acme" },
+    });
+    client.observeLog({
+      level: "error",
+      module: "surface:bus-agent-runner",
+      message: "could not send a missed automatic subagent steer as a follow-up",
+    });
+    await client.flush();
+
+    expect(sentEvents).toHaveLength(4);
+    const [toolFailure, unlabeled, externalFailure, longEvent] = sentEvents;
+    expect(toolFailure?.properties["fingerprint"]).toBe(
+      "tool-server|error|internal:plugin_call_failed|tool.call.result|fs.read",
+    );
+    expect(toolFailure?.properties["context"]).toEqual({
+      ok: false,
+      errorKind: "internal",
+      errorCode: "plugin_call_failed",
+      builtinCallableId: "fs.read",
+    });
+    const breadcrumbs = toolFailure?.properties["breadcrumbs"] as Array<Record<string, unknown>>;
+    expect(breadcrumbs.map((crumb) => crumb["event"])).toEqual(["tool call", "tool.call.result"]);
+
+    expect(unlabeled?.properties["fingerprint"]).toBe("tool-server|error||tool.call.result|");
+    expect(JSON.stringify(unlabeled)).not.toContain("alice");
+    expect(JSON.stringify(unlabeled)).not.toContain("made_up");
+
+    expect(JSON.stringify(externalFailure)).not.toContain("customer_acme");
+    expect(externalFailure?.properties["fingerprint"]).toBe(
+      "tool-server-external|error||tool.call.result|",
+    );
+    expect(externalFailure?.properties["context"]).toEqual({ ok: false, errorKind: "internal" });
+    expect(longEvent?.properties["fingerprint"]).toBe(
+      "surface:bus-agent-runner|error||could not send a missed automatic subagent steer as a follow-up|",
+    );
+  });
 });

@@ -129,11 +129,19 @@ describe("telemetry-proxy worker", () => {
     expect(serialized).not.toContain("400-not-a-number-drop");
 
     expect(sent?.body.batch?.[0]).toEqual({
-      event: "lilac_error",
+      event: "$exception",
       distinct_id: VALID_DISTINCT_ID,
       timestamp: "2026-11-25T06:00:00.000Z",
       properties: {
         $ip: null,
+        $exception_level: "error",
+        $exception_list: [
+          {
+            type: "core error",
+            value: "core",
+            mechanism: { type: "generic", handled: true, synthetic: true },
+          },
+        ],
         module: "core",
         context: {
           ok: false,
@@ -408,5 +416,117 @@ describe("telemetry-proxy worker", () => {
       | undefined;
     expect(shape?.roleTrace).toBe("a(reasoning-file,t),u(s)");
     expect(shape?.window?.[0]?.parts?.[0]?.type).toBe("reasoning-file");
+  });
+
+  it("maps tool failures to $exception issues with a fingerprint and innermost-last frames", async () => {
+    const forwarded: Array<{
+      batch: Array<{ event: string; properties: Record<string, unknown> }>;
+    }> = [];
+    const mockFetch = (async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      forwarded.push(JSON.parse(String(init?.body)) as (typeof forwarded)[number]);
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const toolError = (context: Record<string, unknown>, fingerprint: string) => ({
+      event: "lilac_error",
+      distinct_id: VALID_DISTINCT_ID,
+      properties: {
+        level: "error",
+        module: "tool-server",
+        event_message: "tool.call.result",
+        fingerprint,
+        stack_frames: ["apps/core/src/tool-server/a.ts:10:2", "node_modules/elysia/b.js:3:4"],
+        context,
+      },
+    });
+
+    const res = await handleTelemetryProxyRequest(
+      new Request("https://t.lilac.stw.tw/batch/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          batch: [
+            toolError(
+              {
+                errorKind: "internal",
+                errorCode: "plugin_call_failed",
+                builtinCallableId: "fs.read",
+              },
+              "tool-server|error|internal:plugin_call_failed|tool.call.result|fs.read",
+            ),
+            toolError(
+              {
+                errorKind: "made_up",
+                errorCode: "Free form /home/alice text",
+                builtinCallableId: "/home/alice/plugin",
+              },
+              "tool-server|error|internal:Free form|tool.call.result|/home/alice/plugin",
+            ),
+            toolError(
+              { errorKind: "internal", errorCode: "customer_acme" },
+              "tool-server|error|internal:customer_acme|tool.call.result|",
+            ),
+            {
+              event: "lilac_error",
+              distinct_id: VALID_DISTINCT_ID,
+              properties: {
+                module: "surface:bus-agent-runner",
+                fingerprint:
+                  "surface:bus-agent-runner|error||could not send a missed automatic subagent steer as a follow|",
+              },
+            },
+          ],
+        }),
+      }),
+      { POSTHOG_API_KEY: "phc_test" },
+      mockFetch,
+    );
+
+    expect(res.status).toBe(202);
+    const [mapped, rejected, externalCode, legacyLongEvent] = forwarded[0]?.batch ?? [];
+    expect(mapped?.event).toBe("$exception");
+    expect(mapped?.properties["$exception_fingerprint"]).toBe(
+      "tool-server|error|internal:plugin_call_failed|tool.call.result|fs.read",
+    );
+    expect(mapped?.properties["$exception_list"]).toEqual([
+      {
+        type: "tool.call.result",
+        value: "tool-server: internal/plugin_call_failed in fs.read",
+        mechanism: { type: "generic", handled: true, synthetic: false },
+        stacktrace: {
+          type: "raw",
+          frames: [
+            {
+              platform: "node:javascript",
+              filename: "node_modules/elysia/b.js",
+              function: "?",
+              lineno: 3,
+              colno: 4,
+              in_app: false,
+            },
+            {
+              platform: "node:javascript",
+              filename: "apps/core/src/tool-server/a.ts",
+              function: "?",
+              lineno: 10,
+              colno: 2,
+              in_app: true,
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(JSON.stringify(rejected)).not.toContain("alice");
+    expect(JSON.stringify(rejected)).not.toContain("made_up");
+    expect(rejected?.properties["$exception_fingerprint"]).toBeUndefined();
+    expect(rejected?.properties["context"]).toBeUndefined();
+
+    expect(JSON.stringify(externalCode)).not.toContain("customer_acme");
+    expect(externalCode?.properties["context"]).toEqual({ errorKind: "internal" });
+
+    expect(legacyLongEvent?.properties["$exception_fingerprint"]).toBe(
+      "surface:bus-agent-runner|error||could not send a missed automatic subagent steer as a follow-up|",
+    );
   });
 });
