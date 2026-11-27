@@ -13,6 +13,7 @@ import {
   ChoiceControl,
   DiscriminatorControl,
   ListControl,
+  LongTextControl,
   MapControl,
   McpAuthControl,
   MultilineControl,
@@ -27,6 +28,7 @@ import {
   type ControlProps,
 } from "./config-controls";
 import { ModelControl, ModelListControl } from "./ConfigModelPicker";
+import { ModelRulesControl } from "./ConfigModelRules";
 import { ConfigText } from "./ConfigText";
 import {
   useConfigField,
@@ -35,11 +37,16 @@ import {
   type ConfigField,
 } from "./use-config-field";
 
-type Control = { readonly component: ComponentType<ControlProps>; readonly wide: boolean };
+type Control = {
+  readonly component: ComponentType<ControlProps>;
+  readonly wide: boolean;
+};
 
 const OVERRIDES: Record<WidgetOverride, Control> = {
   yaml: { component: YamlControl, wide: true },
   modelList: { component: ModelListControl, wide: true },
+  modelRules: { component: ModelRulesControl, wide: true },
+  longText: { component: LongTextControl, wide: true },
   map: { component: MapControl, wide: true },
   discriminator: { component: DiscriminatorControl, wide: false },
   stats: { component: StatsControl, wide: false },

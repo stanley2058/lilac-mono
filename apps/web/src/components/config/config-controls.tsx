@@ -21,12 +21,19 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Button } from "../ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import { IconButton } from "../ui";
 import type { FieldEntry } from "../../config-ui/manifest";
 import { choiceKey, fieldInfo, formatConfigValue } from "../../config-ui/field-model";
 import { configSchema } from "../../config-ui/schemas";
 import { useConfigDrafts, useConfigValue } from "../../config-ui/draft-store";
 import { useConfigScope, useInheritedValue, type ConfigField } from "./use-config-field";
+import { TextEditorField } from "./ConfigTextEditor";
 
 export type ControlProps = {
   readonly id: string;
@@ -333,6 +340,22 @@ export function TextControl(props: ControlProps) {
 
 export function MultilineControl(props: ControlProps) {
   const { field, entry } = props;
+  return (
+    <TextEditorField
+      id={props.id}
+      label={props.label}
+      language="markdown"
+      value={typeof field.value === "string" ? field.value : ""}
+      placeholder={placeholderFor(field, entry)}
+      disabled={field.disabled}
+      onSave={(text) => field.commit(text.trim() === "" ? undefined : text)}
+    />
+  );
+}
+
+/** A one-line string in a textarea that wraps; Enter commits instead of adding a line break. */
+export function LongTextControl(props: ControlProps) {
+  const { field, entry } = props;
   const value = typeof field.value === "string" ? field.value : "";
   const [text, setText] = useState(value);
   const [synced, setSynced] = useState(value);
@@ -340,17 +363,31 @@ export function MultilineControl(props: ControlProps) {
     setSynced(value);
     setText(value);
   }
+  function commit() {
+    const next = text.trim();
+    if (next === value.trim()) return;
+    report(props, field.commit(next === "" ? undefined : next));
+  }
   return (
     <Textarea
       id={props.id}
-      className="max-h-80 min-h-20 resize-y"
+      rows={1}
+      className="min-h-8 resize-none py-1.5"
       placeholder={placeholderFor(field, entry)}
       value={text}
       disabled={field.disabled}
-      onChange={(event) => setText(event.target.value)}
-      onBlur={() => {
-        if (text === value) return;
-        report(props, field.commit(text.trim() === "" ? undefined : text));
+      spellCheck={false}
+      onChange={(event) => setText(event.target.value.replace(/\r?\n/gu, " "))}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+        }
+        if (event.key === "Escape" && text !== value) {
+          event.stopPropagation();
+          setText(value);
+        }
       }}
     />
   );
@@ -388,29 +425,57 @@ export function useYamlText(
   return { text, setText, problem, commit };
 }
 
+type ParsedYaml = { value: ConfigValue | undefined; problem?: undefined } | { problem: string };
+
+/** Parses YAML text for a value, treating blank text as unset. */
+function parseYamlValue(text: string): ParsedYaml {
+  if (text.trim() === "") return { value: undefined };
+  return parseConfigYaml(text).match<ParsedYaml>({
+    ok: ({ value }) => ({ value }),
+    err: (error) => ({ problem: error.message.split("\n")[0] ?? "Invalid YAML" }),
+  });
+}
+
+/** A YAML value previewed in place and edited in a code editor dialog. */
+export function YamlEditorField({
+  id,
+  label,
+  value,
+  disabled,
+  onCommit,
+}: {
+  id?: string;
+  label: string;
+  value: ConfigValue | undefined;
+  disabled: boolean;
+  onCommit: (value: ConfigValue | undefined) => string | undefined;
+}) {
+  return (
+    <TextEditorField
+      id={id}
+      label={label}
+      language="yaml"
+      value={value === undefined ? "" : formatConfigYamlValue(value)}
+      disabled={disabled}
+      onSave={(text) => {
+        const parsed = parseYamlValue(text);
+        if (parsed.problem !== undefined) return parsed.problem;
+        return onCommit(parsed.value);
+      }}
+    />
+  );
+}
+
 export function YamlControl(props: ControlProps) {
   const { field } = props;
-  const { text, setText, problem, commit } = useYamlText(field.value, (next) =>
-    report(props, field.commit(next)),
-  );
   return (
-    <div className="grid gap-1">
-      <Textarea
-        id={props.id}
-        className="max-h-96 min-h-16 resize-y font-mono text-xs"
-        spellCheck={false}
-        placeholder="Not set"
-        value={text}
-        disabled={field.disabled}
-        aria-invalid={problem ? true : undefined}
-        onChange={(event) => setText(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) commit();
-        }}
-      />
-      {problem ? <p className="text-xs text-danger">{problem}</p> : null}
-    </div>
+    <YamlEditorField
+      id={props.id}
+      label={props.label}
+      value={field.value}
+      disabled={field.disabled}
+      onCommit={(next) => field.commit(next)}
+    />
   );
 }
 
@@ -459,11 +524,61 @@ export function useAliasLabels(kind: string | undefined): (id: string) => string
   return (id: string) => labels[id];
 }
 
-/** Ordered chips for a string list with an input that adds entries. */
+/** An "Add" button that lists the values still available. Renders nothing when none are left. */
+export function AddMenu({
+  label,
+  options,
+  className,
+  disabled,
+  onPick,
+}: {
+  label: string;
+  options: readonly string[];
+  className?: string;
+  disabled: boolean;
+  onPick: (value: string) => void;
+}) {
+  if (options.length === 0) return null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="sm"
+            className={className}
+            disabled={disabled}
+            aria-label={label}
+          />
+        }
+      >
+        <Plus />
+        Add
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-auto min-w-40">
+        {options.map((option) => (
+          <DropdownMenuItem
+            key={option}
+            className="font-mono text-xs"
+            onClick={() => onPick(option)}
+          >
+            {option}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * Ordered chips for a string list. Entries come from an input, or from an Add menu when the
+ * list only accepts `choices`.
+ */
 export function StringChips({
   id,
   values,
   suggestions,
+  choices,
   placeholder,
   mono,
   label,
@@ -475,6 +590,8 @@ export function StringChips({
   id: string;
   values: readonly string[];
   suggestions?: readonly string[];
+  /** The only values the list accepts. */
+  choices?: readonly string[];
   placeholder?: string;
   mono?: boolean;
   label: string;
@@ -521,29 +638,39 @@ export function StringChips({
           </span>
         );
       })}
-      <input
-        id={id}
-        aria-label={`Add to ${label}`}
-        list={options.length > 0 ? listId : undefined}
-        className={cn(
-          "h-6 min-w-24 flex-1 bg-transparent px-1.5 text-sm outline-none placeholder:text-input-placeholder",
-          mono && "font-mono text-xs",
-        )}
-        placeholder={values.length === 0 ? (placeholder ?? "Add") : "Add"}
-        value={draft}
-        disabled={disabled}
-        spellCheck={false}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={add}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === ",") {
-            event.preventDefault();
-            add();
-          }
-          if (event.key === "Backspace" && draft === "" && values.length > 0)
-            onChange(values.slice(0, -1));
-        }}
-      />
+      {choices ? (
+        <AddMenu
+          label={`Add to ${label}`}
+          className="h-6 px-1.5 text-muted-foreground"
+          options={choices.filter((choice) => !values.includes(choice))}
+          disabled={disabled}
+          onPick={(choice) => onChange([...values, choice])}
+        />
+      ) : (
+        <input
+          id={id}
+          aria-label={`Add to ${label}`}
+          list={options.length > 0 ? listId : undefined}
+          className={cn(
+            "h-6 min-w-24 flex-1 bg-transparent px-1.5 text-sm outline-none placeholder:text-input-placeholder",
+            mono && "font-mono text-xs",
+          )}
+          placeholder={values.length === 0 ? (placeholder ?? "Add") : "Add"}
+          value={draft}
+          disabled={disabled}
+          spellCheck={false}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={add}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === ",") {
+              event.preventDefault();
+              add();
+            }
+            if (event.key === "Backspace" && draft === "" && values.length > 0)
+              onChange(values.slice(0, -1));
+          }}
+        />
+      )}
       {options.length > 0 ? (
         <datalist id={listId}>
           {options.map((option) => (
@@ -572,7 +699,8 @@ export function ListControl(props: ControlProps) {
       id={props.id}
       label={props.label}
       values={values}
-      suggestions={entry.suggestions ?? enumValues}
+      suggestions={entry.suggestions}
+      choices={enumValues}
       placeholder={entry.placeholder}
       mono={MONO_KINDS.has(itemKind ?? "")}
       disabled={field.disabled}
@@ -643,7 +771,10 @@ export function DiscriminatorControl(props: ControlProps) {
   const unsetValue = entry.unsetLabel ? UNSET : null;
   const items = [
     ...(entry.unsetLabel ? [{ value: UNSET, label: entry.unsetLabel }] : []),
-    ...choices.map((value) => ({ value: choiceKey(value), label: choiceLabel(entry, value) })),
+    ...choices.map((value) => ({
+      value: choiceKey(value),
+      label: choiceLabel(entry, value),
+    })),
   ];
   return (
     <Select
@@ -853,26 +984,32 @@ export function MapControl(props: ControlProps) {
       ),
     );
   }
-  function add() {
-    const key = adding.trim();
+  function add(name = adding) {
+    const key = name.trim();
     if (!key || Object.hasOwn(record, key)) return;
     setAdding("");
     const initial: ConfigValue =
       valueInfo?.kind === "valueSource" ? { env: "" } : (valueInfo?.choices[0] ?? "");
     commitRecord({ ...record, [key]: initial });
   }
+  // Suggested keys are the known names, so they are picked from a menu and not renamed.
+  const known = entry.suggestions;
   return (
     <div className="grid w-full gap-1.5">
       {keys.map((key) => (
         <div key={key} className="group/map flex min-w-0 flex-wrap items-center gap-1.5">
-          <CommitInput
-            label={`${props.label} name`}
-            className="w-40"
-            inputClassName="font-mono text-xs"
-            value={key}
-            disabled={field.disabled}
-            onCommit={(next) => rename(key, next)}
-          />
+          {known ? (
+            <span className="w-40 truncate px-2.5 font-mono text-xs">{key}</span>
+          ) : (
+            <CommitInput
+              label={`${props.label} name`}
+              className="w-40"
+              inputClassName="font-mono text-xs"
+              value={key}
+              disabled={field.disabled}
+              onCommit={(next) => rename(key, next)}
+            />
+          )}
           <MapValue
             label={`${props.label} ${key}`}
             entry={entry}
@@ -900,26 +1037,41 @@ export function MapControl(props: ControlProps) {
           </IconButton>
         </div>
       ))}
-      <div className="flex items-center gap-1.5">
-        <InputGroup className="w-40 flex-none">
-          <InputGroupInput
-            aria-label={`New ${props.label} name`}
-            className="font-mono text-xs"
-            placeholder={entry.placeholder ?? "Name"}
-            value={adding}
-            disabled={field.disabled}
-            spellCheck={false}
-            onChange={(event) => setAdding(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") add();
-            }}
-          />
-        </InputGroup>
-        <Button variant="ghost" size="sm" disabled={field.disabled || !adding.trim()} onClick={add}>
-          <Plus />
-          Add
-        </Button>
-      </div>
+      {known ? (
+        <AddMenu
+          label={`Add to ${props.label}`}
+          className="justify-self-start"
+          options={known.filter((name) => !Object.hasOwn(record, name))}
+          disabled={field.disabled}
+          onPick={add}
+        />
+      ) : (
+        <div className="flex items-center gap-1.5">
+          <InputGroup className="w-40 flex-none">
+            <InputGroupInput
+              aria-label={`New ${props.label} name`}
+              className="font-mono text-xs"
+              placeholder={entry.placeholder ?? "Name"}
+              value={adding}
+              disabled={field.disabled}
+              spellCheck={false}
+              onChange={(event) => setAdding(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") add();
+              }}
+            />
+          </InputGroup>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={field.disabled || !adding.trim()}
+            onClick={() => add()}
+          >
+            <Plus />
+            Add
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

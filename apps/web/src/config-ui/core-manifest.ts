@@ -1,4 +1,5 @@
 import type { CoreConfigFieldPattern as P } from "../../../core/src/generated/config-schemas/config-fields";
+import { CATALOG_PROVIDERS } from "@stanley2058/lilac-utils/catalog-providers";
 import { collection, type FieldEntry, type Manifest, type TypedCollection } from "./manifest";
 
 const items = <C extends P>(spec: TypedCollection<P, C>) => collection<P, C>(spec);
@@ -74,12 +75,27 @@ const KNOWN_CALLABLES = [
   "surface.messages.read",
 ];
 
-const IS_PREVIEW = { path: "surface.discord.outputMode", equals: "preview" } as const;
-const TABLES_ON = { path: "surface.discord.markdownTableRender.enabled", equals: true } as const;
-const MATH_ON = { path: "surface.discord.markdownMathRender.enabled", equals: true } as const;
-const CLERK = { path: "surface.native.auth.provider", equals: "clerk" } as const;
+const IS_PREVIEW = {
+  path: "surface.discord.outputMode",
+  equals: "preview",
+} as const;
+const TABLES_ON = {
+  path: "surface.discord.markdownTableRender.enabled",
+  equals: true,
+} as const;
+const MATH_ON = {
+  path: "surface.discord.markdownMathRender.enabled",
+  equals: true,
+} as const;
+const CLERK = {
+  path: "surface.native.auth.provider",
+  equals: "clerk",
+} as const;
 const S3 = { path: "blobStorage.kind", equals: "s3" } as const;
-const DECISION = { path: "conversation.thread.autoInjectMode", equals: "decision" } as const;
+const DECISION = {
+  path: "conversation.thread.autoInjectMode",
+  equals: "decision",
+} as const;
 
 export const coreManifest: Manifest<P> = {
   kind: "core",
@@ -154,8 +170,12 @@ export const coreManifest: Manifest<P> = {
               label: "Provider visibility",
               help: "Controls which providers appear in model pickers. Auto shows a provider when its credentials are configured.",
               widget: "map",
-              options: { '"auto"': "Auto", '"enabled"': "Shown", '"disabled"': "Hidden" },
-              placeholder: "Provider ID",
+              options: {
+                '"auto"': "Auto",
+                '"enabled"': "Shown",
+                '"disabled"': "Hidden",
+              },
+              suggestions: CATALOG_PROVIDERS,
             },
           ],
         },
@@ -166,8 +186,9 @@ export const coreManifest: Manifest<P> = {
             {
               path: "models.rules",
               label: "Rules",
-              help: "Ordered YAML rules that set default options by model glob before alias or per-run settings apply. `*` matches slashes, and later rules override earlier ones.",
-              widget: "yaml",
+              help: "Ordered rules that set default options by model glob before alias or per-run settings apply. `*` matches slashes, and later rules override earlier ones.",
+              widget: "modelRules",
+              options: REASONING,
             },
           ],
         },
@@ -255,6 +276,7 @@ export const coreManifest: Manifest<P> = {
               path: "surface.discord.statusMessage",
               label: "Status message",
               help: "Custom status text shown on the bot's Discord profile.",
+              widget: "longText",
             },
             {
               path: "surface.discord.memberPresence",
@@ -287,74 +309,6 @@ export const coreManifest: Manifest<P> = {
           ],
         },
         {
-          title: "Routing",
-          entries: [
-            {
-              path: "surface.router.defaultMode",
-              label: "Default mode",
-              help: "Controls which channel messages trigger the bot. When mentioned responds to mentions and replies; Every message considers every message like a DM.",
-              options: { '"mention"': "When mentioned", '"active"': "Every message" },
-            },
-            {
-              path: "surface.router.activeDebounceMs",
-              label: "Active batching delay",
-              help: "Wait time in milliseconds to group rapid opening messages in active mode before starting a run. Must be positive.",
-            },
-            {
-              path: "surface.router.activeGate.enabled",
-              label: "Active-mode gate",
-              help: "Checks whether each active-mode message needs a reply before running the main agent. Individual channel overrides can turn this on or off.",
-            },
-            {
-              path: "surface.router.activeGate.timeoutMs",
-              label: "Gate timeout",
-              help: "Maximum wait time in milliseconds for the active-mode gate to decide. Must be positive.",
-              visibleWhen: { path: "surface.router.activeGate.enabled", equals: true },
-            },
-            items({
-              collection: "surface.router.sessionModes",
-              label: "Channel overrides",
-              itemNoun: "override",
-              keyLabel: "Channel, thread, or server ID",
-              channelKeys: true,
-              keyPlaceholder: "123456789012345678",
-              newItem: {},
-              summary: ["mode", "model"],
-              fields: [
-                {
-                  path: "mode",
-                  label: "Mode",
-                  help: "Overrides channel routing for this server, channel, or thread. Leave unset to inherit the broader routing mode.",
-                  options: { '"mention"': "When mentioned", '"active"': "Every message" },
-                },
-                {
-                  path: "gate",
-                  label: "Active-mode gate",
-                  help: "Overrides the active-mode gate for this scope. Applies only when routing is set to active mode.",
-                },
-                {
-                  path: "model",
-                  label: "Model",
-                  help: "Overrides the model used in this scope. Enter a `provider/model` ID or a configured model alias.",
-                },
-                {
-                  path: "safetyMode",
-                  label: "Safety",
-                  hint: "Use Restricted for public or untrusted channels.",
-                  help: "Trusted runs host tools directly. Restricted runs Bash inside an overlay filesystem and discards writes outside `/tmp` after each request, keeping `/tmp` under `/tmp/lilac-restricted/<sessionId>`.",
-                  options: { '"trusted"': "Trusted", '"restricted"': "Restricted" },
-                },
-                {
-                  path: "additionalPrompts",
-                  label: "Extra prompts",
-                  help: "Extra instructions appended to the system prompt for this scope. Enter plain text or a `file://` URL; an empty list blocks inherited prompts from broader scopes.",
-                  placeholder: "Text or file:// URL",
-                },
-              ],
-            }),
-          ],
-        },
-        {
           title: "Replies",
           entries: [
             {
@@ -374,7 +328,10 @@ export const coreManifest: Manifest<P> = {
               path: "surface.discord.outputPreviewModeFinalText",
               label: "Long replies",
               help: "Splits long plain-text replies after preview streaming. Separate messages replies with the first chunk and posts the rest directly; Reply chain links commentary and chunks as replies.",
-              options: { '"flat"': "Separate messages", '"reply-chain"': "Reply chain" },
+              options: {
+                '"flat"': "Separate messages",
+                '"reply-chain"': "Reply chain",
+              },
               visibleWhen: IS_PREVIEW,
             },
             {
@@ -406,7 +363,11 @@ export const coreManifest: Manifest<P> = {
               path: "surface.discord.markdownTableRender.style",
               label: "Table style",
               help: "Unicode and ASCII draw text tables. Image posts top-level tables as PNG attachments in preview, plain, flat output, falling back to Unicode in other modes or on failure.",
-              options: { '"unicode"': "Unicode", '"ascii"': "ASCII", '"image"': "Image" },
+              options: {
+                '"unicode"': "Unicode",
+                '"ascii"': "ASCII",
+                '"image"': "Image",
+              },
               visibleWhen: TABLES_ON,
             },
             {
@@ -420,7 +381,10 @@ export const coreManifest: Manifest<P> = {
               path: "surface.discord.markdownTableRender.fallbackMode",
               label: "Too-wide tables",
               help: "Fallback when a table exceeds the width limit. List wraps rows as key-value text in a code block; Leave as Markdown keeps the original table.",
-              options: { '"list"': "List", '"passthrough"': "Leave as Markdown" },
+              options: {
+                '"list"': "List",
+                '"passthrough"': "Leave as Markdown",
+              },
               visibleWhen: TABLES_ON,
             },
             {
@@ -439,7 +403,10 @@ export const coreManifest: Manifest<P> = {
               path: "surface.discord.markdownMathRender.fallbackMode",
               label: "Too-wide math",
               help: "Fallback when math exceeds the width limit. Show source displays the raw expression as code; Leave as Markdown keeps the original text.",
-              options: { '"source"': "Show source", '"passthrough"': "Leave as Markdown" },
+              options: {
+                '"source"': "Show source",
+                '"passthrough"': "Leave as Markdown",
+              },
               visibleWhen: MATH_ON,
             },
           ],
@@ -488,6 +455,97 @@ export const coreManifest: Manifest<P> = {
                   path: "comment",
                   label: "Note for the agent",
                   help: "Context about this channel added to the system prompt alongside its alias and Discord ID.",
+                },
+              ],
+            }),
+          ],
+        },
+      ],
+    },
+    {
+      id: "routing",
+      title: "Routing",
+      sections: [
+        {
+          title: "Defaults",
+          entries: [
+            {
+              path: "surface.router.defaultMode",
+              label: "Default mode",
+              help: "Controls which channel messages trigger the bot. When mentioned responds to mentions and replies; Every message considers every message like a DM.",
+              options: {
+                '"mention"': "When mentioned",
+                '"active"': "Every message",
+              },
+            },
+            {
+              path: "surface.router.activeDebounceMs",
+              label: "Active batching delay",
+              help: "Wait time in milliseconds to group rapid opening messages in active mode before starting a run. Must be positive.",
+            },
+            {
+              path: "surface.router.activeGate.enabled",
+              label: "Active-mode gate",
+              help: "Checks whether each active-mode message needs a reply before running the main agent. Individual channel overrides can turn this on or off.",
+            },
+            {
+              path: "surface.router.activeGate.timeoutMs",
+              label: "Gate timeout",
+              help: "Maximum wait time in milliseconds for the active-mode gate to decide. Must be positive.",
+              visibleWhen: {
+                path: "surface.router.activeGate.enabled",
+                equals: true,
+              },
+            },
+          ],
+        },
+        {
+          title: "Overrides",
+          entries: [
+            items({
+              collection: "surface.router.sessionModes",
+              label: "Channel overrides",
+              itemNoun: "override",
+              keyLabel: "Channel, thread, or server ID",
+              channelKeys: true,
+              keyPlaceholder: "123456789012345678",
+              newItem: {},
+              summary: ["mode", "model"],
+              fields: [
+                {
+                  path: "mode",
+                  label: "Mode",
+                  help: "Overrides channel routing for this server, channel, or thread. Leave unset to inherit the broader routing mode.",
+                  options: {
+                    '"mention"': "When mentioned",
+                    '"active"': "Every message",
+                  },
+                },
+                {
+                  path: "gate",
+                  label: "Active-mode gate",
+                  help: "Overrides the active-mode gate for this scope. Applies only when routing is set to active mode.",
+                },
+                {
+                  path: "model",
+                  label: "Model",
+                  help: "Overrides the model used in this scope. Enter a `provider/model` ID or a configured model alias.",
+                },
+                {
+                  path: "safetyMode",
+                  label: "Safety",
+                  hint: "Use Restricted for public or untrusted channels.",
+                  help: "Trusted runs host tools directly. Restricted runs Bash inside an overlay filesystem and discards writes outside `/tmp` after each request, keeping `/tmp` under `/tmp/lilac-restricted/<sessionId>`.",
+                  options: {
+                    '"trusted"': "Trusted",
+                    '"restricted"': "Restricted",
+                  },
+                },
+                {
+                  path: "additionalPrompts",
+                  label: "Extra prompts",
+                  help: "Extra instructions appended to the system prompt for this scope. Enter plain text or a `file://` URL; an empty list blocks inherited prompts from broader scopes.",
+                  placeholder: "Text or file:// URL",
                 },
               ],
             }),
@@ -579,7 +637,11 @@ export const coreManifest: Manifest<P> = {
               path: "conversation.thread.autoInject.mode",
               label: "Search mode",
               help: "Retrieval method for matching past threads. Hybrid combines semantic and keyword search; Semantic or Keyword uses one method.",
-              options: { '"hybrid"': "Hybrid", '"semantic"': "Semantic", '"lexical"': "Keyword" },
+              options: {
+                '"hybrid"': "Hybrid",
+                '"semantic"': "Semantic",
+                '"lexical"': "Keyword",
+              },
             },
             {
               path: "conversation.thread.autoInject.limit",
@@ -621,7 +683,11 @@ export const coreManifest: Manifest<P> = {
               path: "conversation.thread.autoInject.gate.mode",
               label: "Mode",
               help: "Controls how the recall gate acts. Off disables it, Record only logs decisions while still searching, and Skip searches skips retrieval when confident.",
-              options: { '"off"': "Off", '"shadow"': "Record only", '"enforce"': "Skip searches" },
+              options: {
+                '"off"': "Off",
+                '"shadow"': "Record only",
+                '"enforce"': "Skip searches",
+              },
             },
             {
               path: "conversation.thread.autoInject.gate.model",
@@ -697,7 +763,10 @@ export const coreManifest: Manifest<P> = {
                   help: `Minimum ${name} relevance probability for keeping a candidate thread, from \`0\` to \`1\`. Leave blank for the classifier's default.`,
                 },
               ];
-              return fields.map((field) => ({ ...field, visibleWhen: DECISION }));
+              return fields.map((field) => ({
+                ...field,
+                visibleWhen: DECISION,
+              }));
             }),
           ],
         },
@@ -719,7 +788,11 @@ export const coreManifest: Manifest<P> = {
               path: "agent.reasoningDisplay",
               label: "Reasoning on Discord",
               help: "How model reasoning streams in Discord. Hidden hides it, Simple shows the status title and timer, and Detailed adds blockquoted reasoning up to 500 characters.",
-              options: { '"none"': "Hidden", '"simple"': "Simple", '"detailed"': "Detailed" },
+              options: {
+                '"none"': "Hidden",
+                '"simple"': "Simple",
+                '"detailed"': "Detailed",
+              },
             },
             {
               path: "agent.statsForNerds",
@@ -884,7 +957,11 @@ export const coreManifest: Manifest<P> = {
                   path: "execution",
                   label: "Shell",
                   help: "Controls shell access for this profile. Disabled turns off Bash, Restricted runs a virtual shell, and Host runs host Bash unless the channel is restricted.",
-                  options: { false: "Disabled", '"restricted"': "Restricted", '"native"': "Host" },
+                  options: {
+                    false: "Disabled",
+                    '"restricted"': "Restricted",
+                    '"native"': "Host",
+                  },
                 },
                 {
                   path: "workspaceWrites",
@@ -1032,13 +1109,19 @@ export const coreManifest: Manifest<P> = {
               path: "tools.historicalResultPruning.protectTokens",
               label: "Protected recent tokens",
               help: "Token budget of recent tool results kept untouched by pruning. Accepts `0`.",
-              visibleWhen: { path: "tools.historicalResultPruning.enabled", equals: true },
+              visibleWhen: {
+                path: "tools.historicalResultPruning.enabled",
+                equals: true,
+              },
             },
             {
               path: "tools.historicalResultPruning.minimumTokens",
               label: "Minimum to prune",
               help: "Minimum tokens of eligible old tool results required before pruning runs. Accepts `0`.",
-              visibleWhen: { path: "tools.historicalResultPruning.enabled", equals: true },
+              visibleWhen: {
+                path: "tools.historicalResultPruning.enabled",
+                equals: true,
+              },
             },
           ],
         },
@@ -1097,7 +1180,10 @@ export const coreManifest: Manifest<P> = {
               path: "surface.native.auth.ownerId",
               label: "Owner ID",
               help: "Local owner username for sign-in. `lilac` is reserved for the service user.",
-              visibleWhen: { path: "surface.native.auth.provider", equals: "local" },
+              visibleWhen: {
+                path: "surface.native.auth.provider",
+                equals: "local",
+              },
             },
             {
               path: "surface.native.auth.ownerProviderUserId",

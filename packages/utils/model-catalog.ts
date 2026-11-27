@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { CoreConfig, ModelReasoningEffort } from "./core-config/types";
 import { MODEL_REASONING_EFFORTS } from "./core-config/types";
+import { CATALOG_PROVIDERS, type CatalogProvider } from "./catalog-providers";
 import { env } from "./env";
 import { modelCatalogCache } from "./model-catalog-cache";
 import { claudeAliasTarget, modelFamily, newestModels } from "./model-catalog-family";
@@ -22,7 +23,7 @@ export type CatalogModel = {
   description?: string;
 };
 
-const providerCredentials: Record<string, readonly string[]> = {
+const providerCredentials: Record<CatalogProvider, readonly string[]> = {
   codex: [],
   openai: ["OPENAI_API_KEY"],
   "claude-code": ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
@@ -36,8 +37,8 @@ const providerCredentials: Record<string, readonly string[]> = {
   "openai-compatible": ["OPENAI_COMPATIBLE_BASE_URL"],
 };
 
-const providerOrder = new Map(
-  Object.keys(providerCredentials).map((provider, index) => [provider, index]),
+const providerOrder = new Map<string, number>(
+  CATALOG_PROVIDERS.map((provider, index) => [provider, index]),
 );
 
 export function compareCatalogProviders(a: string, b: string): number {
@@ -94,7 +95,8 @@ function previousGeneration(
 }
 
 export function configuredCatalogProviders(config: CoreConfig): string[] {
-  return Object.entries(providerCredentials).flatMap(([provider, keys]) => {
+  return CATALOG_PROVIDERS.flatMap((provider) => {
+    const keys = providerCredentials[provider];
     const override = config.models.catalog?.providers[provider];
     if (override === "disabled") return [];
     if (override === "enabled") return [provider];

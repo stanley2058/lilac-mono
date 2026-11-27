@@ -127,11 +127,19 @@ export function unhandledEditorFields<P extends string>(manifest: Manifest<P>): 
   };
   for (const { entry } of manifestEntries(manifest)) {
     const fields = isCollection(entry)
-      ? entry.fields.map((field) => ({ ...field, path: `${entry.collection}.*.${field.path}` }))
+      ? entry.fields.map((field) => ({
+          ...field,
+          path: `${entry.collection}.*.${field.path}`,
+        }))
       : [entry];
     for (const field of fields)
-      if (field.widget === "modelList" || field.widget === "stats" || field.widget === "mcpAuth")
-        check(field.path, field.widget);
+      switch (field.widget) {
+        case "modelList":
+        case "modelRules":
+        case "stats":
+        case "mcpAuth":
+          check(field.path, field.widget);
+      }
   }
   for (const [path, node] of nodes)
     if (configFieldUi(schema, node).kind === "valueSource") check(path, "valueSource");

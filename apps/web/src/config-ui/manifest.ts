@@ -10,6 +10,10 @@ export type WidgetOverride =
   | "yaml"
   /** Ordered model references. */
   | "modelList"
+  /** Ordered `models.rules` entries. */
+  | "modelRules"
+  /** A one-line string long enough to wrap while editing. */
+  | "longText"
   /** Key to scalar rows, editing values with the item schema's widget. */
   | "map"
   /** Picks a union member by its constant field and resets the other members' fields. */
@@ -23,6 +27,7 @@ export type WidgetOverride =
 export const SUBTREE_WIDGETS: ReadonlySet<WidgetOverride> = new Set([
   "yaml",
   "modelList",
+  "modelRules",
   "map",
   "stats",
   "mcpAuth",
@@ -33,10 +38,11 @@ export const SUBTREE_WIDGETS: ReadonlySet<WidgetOverride> = new Set([
  * for lists). The coverage test fails when the schema adds a child that is not listed here.
  * Value sources and provider options inside these values are checked on their own.
  */
-type FixedEditor = "modelList" | "stats" | "mcpAuth" | "valueSource";
+type FixedEditor = "modelList" | "modelRules" | "stats" | "mcpAuth" | "valueSource";
 
 export const FIXED_EDITOR_FIELDS: Record<FixedEditor, readonly string[]> = {
   modelList: ["model", "reasoning", "options"],
+  modelRules: ["match", "options", "reasoning", "unset", "legacy"],
   stats: ["verbose"],
   mcpAuth: [
     "type",
@@ -67,7 +73,7 @@ export type FieldEntry<P extends string> = {
   /** Label for the choice that removes the field. Discriminators only. */
   readonly unsetLabel?: string;
   readonly placeholder?: string;
-  /** Extra values offered by list and text fields. */
+  /** Extra values offered by list and text fields, or the keys a map offers. */
   readonly suggestions?: readonly string[];
   readonly visibleWhen?: Condition<P>;
   /** When unset, the field uses the first of these fields that has a value. */

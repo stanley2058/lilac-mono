@@ -1,6 +1,14 @@
-import { useDeferredValue, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, CornerDownLeft, Search, X } from "lucide-react";
+import { Check, ChevronDown, CornerDownLeft, Search, X } from "lucide-react";
 import { cn } from "cn";
 import {
   isConfigArray,
@@ -34,8 +42,16 @@ function useAliases(): Choice[] {
     const target = (value: ConfigValue | undefined) =>
       isConfigObject(value) && typeof value.model === "string" ? value.model : undefined;
     return [
-      { id: "main", title: "main", detail: target(record.main) ?? "Main model" },
-      { id: "fast", title: "fast", detail: target(record.fast) ?? "Fast model" },
+      {
+        id: "main",
+        title: "main",
+        detail: target(record.main) ?? "Main model",
+      },
+      {
+        id: "fast",
+        title: "fast",
+        detail: target(record.fast) ?? "Fast model",
+      },
       ...Object.entries(def).map(([name, value]) => ({
         id: name,
         title: name,
@@ -49,7 +65,9 @@ function useAliases(): Choice[] {
 export type AliasMode = "all" | "custom" | "none";
 
 /** How a model field at `path` may refer to other models. */
-export function modelReferenceRules(field: ControlProps["field"]): { aliases: AliasMode } {
+export function modelReferenceRules(field: ControlProps["field"]): {
+  aliases: AliasMode;
+} {
   if (field.node.pattern?.includes("/")) return { aliases: "none" };
   // `main` and `fast` resolve through the models section, so fields inside it cannot name them.
   return { aliases: field.path[0] === "models" ? "custom" : "all" };
@@ -82,7 +100,8 @@ export function ModelPicker({
   const online = useNativeOnline(client);
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [active, setActive] = useState(0);
+  // `null` follows the current value until the keyboard or pointer moves the highlight.
+  const [activeOverride, setActive] = useState<number | null>(null);
   const query = useDeferredValue(search.trim());
   const aliases = useAliases();
   const catalog = useQuery({
@@ -110,20 +129,45 @@ export function ModelPicker({
     })),
   ];
   const custom = query && !choices.some((choice) => choice.id === query) ? query : undefined;
-  const all = custom ? [{ id: custom, title: `Use “${custom}”` }, ...choices] : choices;
+  // A value that is neither an alias nor a catalog model still gets a row to mark as selected.
+  // Waiting for the catalog keeps a catalog model from showing here and then moving.
+  const listed = (catalog.isFetched || !online) && !query;
+  const current =
+    listed && value && !choices.some((choice) => choice.id === value) ? value : undefined;
+  let all = choices;
+  if (custom) all = [{ id: custom, title: `Use “${custom}”` }, ...choices];
+  if (current) all = [{ id: current, title: current }, ...choices];
+  // Clamped because the list can shrink or arrive after the highlight moved.
+  const wanted = activeOverride ?? all.findIndex((choice) => choice.id === value);
+  const active = wanted < 0 ? 0 : Math.min(wanted, all.length - 1);
+  const list = useRef<HTMLDivElement | null>(null);
+  const revealed = useRef(false);
+  // Scrolls the current value into view once per opening. The list mounts after the popover
+  // opens, and catalog models can arrive later, so this runs on mount and when choices change.
+  function reveal(node: HTMLDivElement | null) {
+    list.current = node;
+    if (!node || revealed.current) return;
+    const selected = node.querySelector('[aria-selected="true"]');
+    if (!selected) return;
+    selected.scrollIntoView({ block: "nearest" });
+    revealed.current = true;
+  }
+  useEffect(() => reveal(list.current), [all.length]);
   function pick(next: string) {
     onSelect(next);
     setOpen(false);
     setSearch("");
   }
   function onKeyDown(event: KeyboardEvent) {
+    // Moving on an empty list would pin the highlight before the current value arrives.
+    if (all.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActive((index) => Math.min(all.length - 1, index + 1));
+      setActive(Math.min(all.length - 1, active + 1));
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActive((index) => Math.max(0, index - 1));
+      setActive(Math.max(0, active - 1));
     }
     if (event.key === "Enter") {
       event.preventDefault();
@@ -137,7 +181,8 @@ export function ModelPicker({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        setActive(0);
+        setActive(null);
+        revealed.current = false;
         if (!next) setSearch("");
       }}
     >
@@ -177,17 +222,23 @@ export function ModelPicker({
             spellCheck={false}
             onChange={(event) => {
               setSearch(event.target.value);
-              setActive(0);
+              setActive(event.target.value.trim() ? 0 : null);
             }}
             onKeyDown={onKeyDown}
           />
         </div>
-        <div role="listbox" aria-label={label} className="max-h-72 overflow-y-auto p-1">
+        <div
+          ref={reveal}
+          role="listbox"
+          aria-label={label}
+          className="max-h-72 overflow-y-auto p-1"
+        >
           {all.map((choice, index) => {
-            const first = custom ? 1 : 0;
+            const first = custom || current ? 1 : 0;
             let heading: string | undefined;
             if (index === first && aliasCount > 0) heading = "Aliases";
             else if (index === first + aliasCount && choice.provider) heading = "Catalog";
+            const selected = choice.id === value;
             return (
               <div key={`${choice.id}-${index}`}>
                 {heading ? (
@@ -198,7 +249,7 @@ export function ModelPicker({
                 <button
                   type="button"
                   role="option"
-                  aria-selected={choice.id === value}
+                  aria-selected={selected}
                   className={cn(
                     "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
                     index === active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
@@ -222,6 +273,9 @@ export function ModelPicker({
                       </span>
                     ) : null}
                   </span>
+                  {selected ? (
+                    <Check aria-hidden className="size-4 flex-none text-primary" />
+                  ) : null}
                 </button>
               </div>
             );
@@ -264,7 +318,10 @@ function modelName(item: ConfigValue): string {
 }
 
 /** Ordered model references. Object entries keep their extra settings. */
-type EntrySettings = { readonly reasoning?: string; readonly options?: ConfigValue };
+type EntrySettings = {
+  readonly reasoning?: string;
+  readonly options?: ConfigValue;
+};
 
 function entrySettings(item: ConfigValue): EntrySettings {
   if (!isConfigObject(item)) return {};
@@ -310,7 +367,10 @@ function EntrySettingsEditor({
   );
   const items = [
     { value: UNSET, label: "Not set" },
-    ...reasoning.map((value) => ({ value, label: labels?.[JSON.stringify(value)] ?? value })),
+    ...reasoning.map((value) => ({
+      value,
+      label: labels?.[JSON.stringify(value)] ?? value,
+    })),
   ];
   return (
     <div className="grid gap-3 p-1.5">

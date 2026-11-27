@@ -78,6 +78,7 @@ export function WorkspaceEditorDemo() {
 }
 
 const CONFIG_DEMO_SECTIONS: Record<string, readonly string[]> = {
+  models: ["Catalog", "Rules"],
   discord: ["Replies", "Tables and math", "Aliases"],
   runs: ["Transcripts"],
   subagents: ["Permission profiles"],
@@ -85,6 +86,13 @@ const CONFIG_DEMO_SECTIONS: Record<string, readonly string[]> = {
 
 const CONFIG_DEMO_TEXT = [
   "configVersion: 3",
+  "models:",
+  "  catalog:",
+  "    providers: { openai: enabled }",
+  "  rules:",
+  '    - match: "openai/gpt-5*"',
+  "      reasoning: medium",
+  "      options: { response_commentary: true }",
   "surface:",
   "  discord:",
   "    outputMode: preview",
