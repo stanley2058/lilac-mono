@@ -1,28 +1,19 @@
 # Core configuration
 
-Explain and change Core configuration against the parser shipped with the target instance.
+Explain and change Core configuration through the Level 2 `config` callables, which read and write the
+target instance's `<DATA_DIR>/core-config.yaml` against the schema of its `configVersion`.
 
-## Find the contract
+## Inspect fields
 
-1. Resolve the active file as `<DATA_DIR>/core-config.yaml`. In the stock container, `DATA_DIR` is
-   `/data`.
-2. Read `configVersion` before interpreting any field. When it is absent, inspect
-   `DEFAULT_CORE_CONFIG_VERSION` in `packages/utils/core-config/v3.ts`; do not assume the version used by
-   the current example template.
-3. Use the matching `packages/utils/core-config/v1.ts`, `v2.ts`, or `v3.ts` input schema for accepted fields and
-   version-owned defaults.
-4. Use `packages/utils/core-config/types.ts` for the universal shape consumed by the application and
-   `packages/utils/core-config.ts` for YAML loading, version dispatch, cache behavior, and path resolution.
-5. Read field descriptions in the matching Zod input schema or
-   `<DATA_DIR>/.schemas/core-config.schema.json`. The example YAML is a minimal starter;
-   `docs/core-config.md` explains editor hover and completion.
-   Confirm exact shapes in the parser before proposing an edit.
+- `tools config.describe core` lists the top-level sections and whether the file sets each one.
+- `tools config.describe core --query=<text>` searches field paths and descriptions. Record keys appear
+  as `*`; substitute a concrete key in a path.
+- `tools config.describe core --path=<path>` returns one field's description, type, default, current
+  value, whether the file sets it, its `restart` flag, and its child keys. Paths look like
+  `agent.subagents.maxDepth` or `models.def["gpt-5"].model`.
 
-Wrongly typed values fail parsing. Unknown keys are currently reported and ignored. Confirm both behaviors
-in the shipped loader before relying on them, since an ignored misspelling can look like a successful
-change.
-
-## Ownership map
+The description covers what a field accepts. For side effects or behavior beyond it, search the exact
+dotted path from the owner below and trace its consumer.
 
 | Top-level key | What it controls | First owner to inspect |
 | --- | --- | --- |
@@ -38,41 +29,63 @@ change.
 | `entity` | Discord user and session aliases | `apps/core/src/entity`, `apps/core/src/surface/discord` |
 | `basePrompt` | Base model instructions selected with the model plan | `packages/utils/model-slot.ts`, the Core agent runner |
 
-The table is a navigation map, not a field catalog. Search the exact dotted path and trace its consumer
-before describing side effects or reload timing.
+## Settings that live elsewhere
 
-## Determine when a change takes effect
-
-Core watches `core-config.yaml`, validates changed content, refreshes adapter config, updates active
-transcript retention, and marks conversation-thread materialization dirty. Request paths also reload the
-cached config opportunistically. This does not make every field hot-reloadable.
-
-Classify the exact field from current code:
-
-- A consumer that calls `getCoreConfig` for each request or refreshes its stored config can observe a valid
-  change without process replacement.
-- A value captured while `createCoreRuntime` constructs a store, server, registry, or worker needs the
-  lifecycle action shown by that owner, often a restart.
-- A failed reload leaves the process on its last known good config, but the invalid file still blocks a
-  clean future startup.
-
-State the traced timing for the requested field. Avoid a global "hot reload" or "restart required" claim.
+- MCP servers live in `mcp-config.yaml`. Load the `mcp-management` skill and use the `mcp.*` callables.
+- Native web deployment settings live in `native-surface.db`: title model, output streaming,
+  cross-thread send behavior, DM context and timestamp gaps, and message selection and storage
+  retention ages. Only the web Settings > Deployment page changes them. Config v3 rejects the old
+  `surface.native.*` keys for these settings, so direct the user to that page.
 
 ## Make a requested edit
 
 Before changing `configVersion`, follow `docs/core-config-migrations.md`. Verify any one-time native
 deployment import and review the new default delegated authority before applying v3.
 
-1. Preserve the original file and prepare the smallest candidate change outside the live path.
-2. Parse the candidate with the shipped Bun runtime and matching Core loader. A temporary `DATA_DIR` may
-   be used so loader-created prompt files stay outside live state.
-3. Apply the validated delta to the live file without rewriting unrelated sections or adding a new option
-   the user did not request.
-4. Force a cache validation with `tools onboarding.reload_config --mode=cache` when that callable is
-   available. Otherwise use the automatic watcher and an available log or behavior check.
-5. Verify the requested behavior. If live validation fails, restore the preserved file before doing
-   anything else.
-6. Restart only when the traced owner requires it and the user authorized that lifecycle action.
+1. Confirm every path with `config.describe`. To return a field to its default, plan an `unset`
+   operation rather than writing the default value.
+2. Preview with `dryRun`. Record the returned `revision` and check that the diff changes only the
+   requested fields:
 
-The edit is complete when the live file parses under its declared version, the intended consumer observes
-the value or has an approved restart pending, and unrelated configuration is unchanged.
+   ```bash
+   tools config.patch --stdin <<'JSON'
+   {
+     "file": "core",
+     "dryRun": true,
+     "operations": [
+       { "op": "set", "path": "agent.subagents.maxDepth", "value": 3 },
+       { "op": "unset", "path": "agent.reasoningDisplay" }
+     ]
+   }
+   JSON
+   ```
+
+3. Apply the same operations without `dryRun` and with `"expectedRevision"` set to the recorded
+   revision. On a conflict, the file changed underneath you: describe the affected fields again and
+   return to step 2.
+4. Read `restartRequired` in the result. Core applies every other written field through its config
+   watcher. Restart with `tools onboarding.restart` only when the user authorized it; otherwise report
+   the pending restart.
+5. Verify the requested behavior through the consumer, a log source, or a live diagnostic.
+
+The edit is complete when the written file passed `config.patch` validation, the intended consumer
+observes the value or has an approved or reported restart pending, and the diff contains only the
+requested fields.
+
+## Edit without the config callables
+
+Use this route only when `config.describe` and `config.patch` are unavailable, such as in a subagent
+whose profile lacks them.
+
+1. Read `configVersion` from the live file. When it is absent, use `DEFAULT_CORE_CONFIG_VERSION` in
+   `packages/utils/core-config/v3.ts`. Confirm field shapes in the matching `v1.ts`, `v2.ts`, or `v3.ts`
+   input schema.
+2. Preserve the original file and prepare the smallest change outside the live path. Parse it with the
+   shipped Bun runtime and the loader in `packages/utils/core-config.ts`, using a temporary `DATA_DIR` so
+   loader-created prompt files stay outside live state. Unknown keys are reported and ignored, so a
+   misspelled key can parse cleanly and change nothing.
+3. Apply the validated change to the live file without rewriting unrelated sections, then run
+   `tools onboarding.reload_config --mode=cache` when that callable is available.
+4. Trace the field's consumer to decide whether it needs a restart, then finish with steps 4 and 5
+   above. If live validation fails, restore the preserved file before anything else. A failed reload
+   leaves Core on its last good config, but the invalid file still blocks the next clean startup.

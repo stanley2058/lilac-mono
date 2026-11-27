@@ -11,7 +11,8 @@ Ground the work in the target instance rather than remembered behavior.
 
 - For a running instance's build, behavior, state, or shipped implementation, read
   [references/self-debugging.md](references/self-debugging.md).
-- For `core-config.yaml` fields, ownership, edits, validation, or reload behavior, read
+- For `core-config.yaml` fields, ownership, edits, validation, or reload behavior, or for native
+  deployment settings, read
   [references/core-config.md](references/core-config.md).
 - For where Lilac keeps prompt files, memory, heartbeat watches, skills, workflows, databases, or other
   state under `DATA_DIR`, read [references/data-layout.md](references/data-layout.md).
