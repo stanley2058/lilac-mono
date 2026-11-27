@@ -2,7 +2,11 @@ import { memo, useId, useState, type ComponentType } from "react";
 import { cn } from "cn";
 import { Code2, RotateCcw, Undo2 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
-import { configValuesEqual, formatConfigPath } from "@stanley2058/lilac-utils/config-document";
+import {
+  configValuesEqual,
+  formatConfigPath,
+  type ConfigPath,
+} from "@stanley2058/lilac-utils/config-document";
 import type { ConfigFieldKind } from "@stanley2058/lilac-utils/config-schema";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { IconButton } from "../ui";
@@ -120,6 +124,25 @@ function defaultLabel(field: ConfigField, entry: FieldEntry<string>): string | u
   return formatConfigValue(value);
 }
 
+const PATH_TAIL_MAX = 32;
+
+/**
+ * The YAML path on one line. The parent path truncates first so the field's own key stays
+ * visible; a key longer than `PATH_TAIL_MAX` keeps only its end.
+ */
+function PathLine({ path }: { path: ConfigPath }) {
+  const head = formatConfigPath(path.slice(0, -1));
+  const full = formatConfigPath(path);
+  const tail = full.slice(head.length);
+  const shownTail = tail.length > PATH_TAIL_MAX ? `…${tail.slice(1 - PATH_TAIL_MAX)}` : tail;
+  return (
+    <div className="flex min-w-0 font-mono text-xs text-muted-foreground">
+      <span className="min-w-0 truncate">{head}</span>
+      <span className="flex-none whitespace-pre">{shownTail}</span>
+    </div>
+  );
+}
+
 /**
  * The field title. When help text exists, the title has a dotted underline and shows the help
  * on hover, or on a tap on touch screens. The tooltip also names the YAML path.
@@ -133,7 +156,7 @@ function FieldTitle({
   id: string;
   label: string;
   help?: string;
-  path: string;
+  path: ConfigPath;
 }) {
   return (
     <>
@@ -159,11 +182,11 @@ function FieldTitle({
           className="max-h-80 w-80 max-w-[calc(100vw-2rem)] gap-2 overflow-y-auto p-3"
         >
           {help ? (
-            <div className="text-sm leading-relaxed">
+            <div className="text-sm leading-relaxed break-words">
               <ConfigText text={help} />
             </div>
           ) : null}
-          <div className="font-mono text-xs text-muted-foreground">{path}</div>
+          <PathLine path={path} />
         </PopoverContent>
       </Popover>
     </>
@@ -221,7 +244,7 @@ function VisibleFieldRow({ entry, yamlPage }: { entry: FieldEntry<string>; yamlP
               field.dirty ? "opacity-100" : "opacity-0",
             )}
           />
-          <FieldTitle id={id} label={label} help={help} path={pathText} />
+          <FieldTitle id={id} label={label} help={help} path={field.path} />
           {field.dirty ? <span className="sr-only">(unsaved)</span> : null}
           {field.restart ? (
             <Tooltip>

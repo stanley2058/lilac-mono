@@ -67,6 +67,7 @@ export const mcpManifest: Manifest<P> = {
                   label: "URL",
                   help: "Streamable HTTP endpoint URL for this MCP server.",
                   placeholder: "https://example.com/mcp",
+                  widget: "longText",
                   visibleWhen: HTTP,
                 },
                 {

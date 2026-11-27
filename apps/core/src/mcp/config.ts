@@ -77,6 +77,7 @@ const serverDescriptionSchema = z
   .string()
   .trim()
   .min(1)
+  .meta(configUi({ kind: "multiline" }))
   .optional()
   .describe("Shown to the agent before the server's own description.");
 

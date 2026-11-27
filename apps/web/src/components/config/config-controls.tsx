@@ -58,7 +58,9 @@ export function CommitInput({
   type = "text",
   label,
   disabled,
+  lead,
   addon,
+  trim = true,
   onCommit,
 }: {
   id?: string;
@@ -71,7 +73,11 @@ export function CommitInput({
   type?: "text" | "password";
   label?: string;
   disabled?: boolean;
+  /** A label inside the field, before the text. */
+  lead?: ReactNode;
   addon?: ReactNode;
+  /** Whether surrounding spaces are dropped. Prefixes such as `Bearer ` keep them. */
+  trim?: boolean;
   onCommit: (text: string) => void;
 }) {
   const [text, setText] = useState(value);
@@ -80,13 +86,15 @@ export function CommitInput({
     setSynced(value);
     setText(value);
   }
-  const problem = text.trim() === "" ? undefined : validate?.(text.trim());
+  const clean = (raw: string) => (trim ? raw.trim() : raw);
+  const problem = text.trim() === "" ? undefined : validate?.(clean(text));
   function commit() {
-    if (problem || text.trim() === value.trim()) return;
-    onCommit(text.trim());
+    if (problem || clean(text) === clean(value)) return;
+    onCommit(clean(text));
   }
   return (
     <InputGroup className={cn("flex-none", className)}>
+      {lead ? <InputGroupAddon className="pr-0 pl-2.5 text-xs">{lead}</InputGroupAddon> : null}
       <InputGroupInput
         id={id}
         type={type}
@@ -840,7 +848,24 @@ function valueSourceMode(value: ConfigValue | undefined): ValueSourceMode {
   return value === undefined ? "env" : "text";
 }
 
-/** An MCP value: literal text, `{env, prefix}`, or `{file, pointer, prefix}`. */
+const VALUE_SOURCE_MODES = [
+  { value: "text", label: "Text" },
+  { value: "env", label: "Env variable" },
+  { value: "file", label: "File" },
+] as const;
+
+/** What the value becomes once read, such as `Bearer $GITHUB_TOKEN`. */
+function valueSourcePreview(mode: ValueSourceMode, text: (name: string) => string): string {
+  const pointer = text("pointer") ? `#${text("pointer")}` : "";
+  const source =
+    mode === "env" ? `$${text("env") || "VARIABLE"}` : `‹${text("file") || "file"}${pointer}›`;
+  return `${text("prefix")}${source}`;
+}
+
+/**
+ * An MCP value: literal text, `{env, prefix}`, or `{file, pointer, prefix}`. The first row picks
+ * the source and names it; the second holds the optional prefix and JSON pointer.
+ */
 export function ValueSourceEditor({
   id,
   label,
@@ -865,85 +890,99 @@ export function ValueSourceEditor({
     onChange(Object.keys(next).length === 0 ? undefined : next);
   };
   return (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-      <Select
-        items={[
-          { value: "env", label: "Variable" },
-          { value: "file", label: "File" },
-          { value: "text", label: "Text" },
-        ]}
-        value={mode}
-        disabled={disabled}
-        onValueChange={(next) => {
-          if (next === mode) return;
-          if (next === "text") onChange("");
-          else if (next === "file") onChange({ file: "" });
-          else onChange({ env: "" });
-        }}
-      >
-        <SelectTrigger aria-label={`${label} source`} className="w-28">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="env">Variable</SelectItem>
-          <SelectItem value="file">File</SelectItem>
-          <SelectItem value="text">Text</SelectItem>
-        </SelectContent>
-      </Select>
-      {mode === "text" ? (
-        <CommitInput
-          id={id}
-          label={label}
-          className="min-w-40 flex-1"
-          type={reveal ? "text" : "password"}
-          placeholder="Value"
-          value={typeof value === "string" ? value : ""}
+    <div className="grid min-w-0 flex-1 gap-1.5">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Select
+          items={VALUE_SOURCE_MODES}
+          value={mode}
           disabled={disabled}
-          addon={
-            <InputGroupAddon className="pr-1">
-              <IconButton
-                label={reveal ? "Hide value" : "Show value"}
-                className="size-6"
-                onClick={() => setReveal(!reveal)}
-              >
-                {reveal ? <EyeOff /> : <Eye />}
-              </IconButton>
-            </InputGroupAddon>
-          }
-          onCommit={(next) => onChange(next)}
-        />
-      ) : (
-        <CommitInput
-          id={id}
-          label={mode === "env" ? `${label} variable` : `${label} file`}
-          className="min-w-40 flex-1"
-          inputClassName="font-mono text-xs"
-          placeholder={mode === "env" ? "VARIABLE_NAME" : "/path/to/secret.json"}
-          value={text(mode)}
-          disabled={disabled}
-          onCommit={(next) => update({ [mode]: next })}
-        />
+          onValueChange={(next) => {
+            if (next === mode) return;
+            if (next === "text") onChange("");
+            else if (next === "file") onChange({ file: "" });
+            else onChange({ env: "" });
+          }}
+        >
+          <SelectTrigger aria-label={`${label} source`} className="w-32 flex-none">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {VALUE_SOURCE_MODES.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {mode === "text" ? (
+          <CommitInput
+            id={id}
+            label={label}
+            className="min-w-0 flex-1"
+            type={reveal ? "text" : "password"}
+            placeholder="Value"
+            value={typeof value === "string" ? value : ""}
+            disabled={disabled}
+            addon={
+              <InputGroupAddon className="pr-1">
+                <IconButton
+                  label={reveal ? "Hide value" : "Show value"}
+                  className="size-6"
+                  onClick={() => setReveal(!reveal)}
+                >
+                  {reveal ? <EyeOff /> : <Eye />}
+                </IconButton>
+              </InputGroupAddon>
+            }
+            onCommit={(next) => onChange(next)}
+          />
+        ) : (
+          <CommitInput
+            id={id}
+            label={mode === "env" ? `${label} variable` : `${label} file`}
+            className="min-w-0 flex-1"
+            inputClassName="font-mono text-xs"
+            placeholder={mode === "env" ? "VARIABLE_NAME" : "/path/to/secret.json"}
+            value={text(mode)}
+            disabled={disabled}
+            onCommit={(next) => update({ [mode]: next })}
+          />
+        )}
+      </div>
+      {mode === "text" ? null : (
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <CommitInput
+            label={`${label} prefix`}
+            className="min-w-36 flex-1"
+            inputClassName="font-mono text-xs"
+            lead="Prefix"
+            placeholder="Optional"
+            trim={false}
+            value={text("prefix")}
+            disabled={disabled}
+            onCommit={(next) => update({ prefix: next })}
+          />
+          {mode === "file" ? (
+            <CommitInput
+              label={`${label} JSON pointer`}
+              className="min-w-36 flex-1"
+              inputClassName="font-mono text-xs"
+              lead="JSON pointer"
+              placeholder="/token"
+              value={text("pointer")}
+              disabled={disabled}
+              onCommit={(next) => update({ pointer: next })}
+            />
+          ) : null}
+        </div>
       )}
-      {mode === "file" ? (
-        <CommitInput
-          label={`${label} JSON pointer`}
-          className="w-28"
-          inputClassName="font-mono text-xs"
-          placeholder="/token"
-          value={text("pointer")}
-          disabled={disabled}
-          onCommit={(next) => update({ pointer: next })}
-        />
-      ) : null}
-      {mode !== "text" ? (
-        <CommitInput
-          label={`${label} prefix`}
-          className="w-24"
-          placeholder="Prefix"
-          value={text("prefix")}
-          disabled={disabled}
-          onCommit={(next) => update({ prefix: next })}
-        />
+      {mode !== "text" && text("prefix") ? (
+        <p className="min-w-0 truncate text-xs text-muted-foreground">
+          Sends{" "}
+          <span className="font-mono whitespace-pre text-foreground">
+            {valueSourcePreview(mode, text)}
+          </span>
+        </p>
       ) : null}
     </div>
   );
@@ -994,16 +1033,26 @@ export function MapControl(props: ControlProps) {
   }
   // Suggested keys are the known names, so they are picked from a menu and not renamed.
   const known = entry.suggestions;
+  // Value sources take two rows, so the name and remove button align with the first.
+  const sourced = valueInfo?.kind === "valueSource";
   return (
-    <div className="grid w-full gap-1.5">
+    <div className={cn("grid w-full", sourced ? "gap-3" : "gap-1.5")}>
       {keys.map((key) => (
-        <div key={key} className="group/map flex min-w-0 flex-wrap items-center gap-1.5">
+        <div
+          key={key}
+          className={cn(
+            "group/map min-w-0 gap-1.5",
+            sourced
+              ? "grid grid-cols-[minmax(0,10rem)_minmax(0,1fr)_auto] items-start"
+              : "flex flex-wrap items-center",
+          )}
+        >
           {known ? (
             <span className="w-40 truncate px-2.5 font-mono text-xs">{key}</span>
           ) : (
             <CommitInput
               label={`${props.label} name`}
-              className="w-40"
+              className={sourced ? "w-full" : "w-40"}
               inputClassName="font-mono text-xs"
               value={key}
               disabled={field.disabled}

@@ -38,6 +38,7 @@
                 "description": "Shown to the agent before the server's own description.",
                 "type": "string",
                 "minLength": 1,
+                "x-lilac": { "kind": "multiline" },
                 "markdownDescription": "Shown to the agent before the server's own description."
               },
               "command": {
@@ -134,6 +135,7 @@
                 "description": "Shown to the agent before the server's own description.",
                 "type": "string",
                 "minLength": 1,
+                "x-lilac": { "kind": "multiline" },
                 "markdownDescription": "Shown to the agent before the server's own description."
               },
               "url": {
