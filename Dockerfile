@@ -248,9 +248,9 @@ COPY apps/web apps/web
 COPY packages/client packages/client
 COPY packages/client-protocol packages/client-protocol
 COPY apps/core/src/generated/config-schemas apps/core/src/generated/config-schemas
-# The settings forms parse and patch config YAML with these shared modules.
+# The settings forms parse and patch config YAML and list catalog providers with these modules.
 COPY packages/utils/config-document.ts packages/utils/config-schema.ts \
-     packages/utils/runtime-utils.ts packages/utils/
+     packages/utils/runtime-utils.ts packages/utils/catalog-providers.ts packages/utils/
 RUN bun run build:web \
   && find /app/apps/web/dist ! -type l -perm /022 -exec chmod go-w {} +
 
