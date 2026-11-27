@@ -2,7 +2,7 @@ import {
   displayPartSchema,
   identitySchema,
   revisionSchema,
-} from "@stanley2058/lilac-client-protocol";
+} from "@stanley2058/lilac-client-protocol/replay";
 import { z } from "zod";
 
 const partProvenanceSchema = z.discriminatedUnion("kind", [

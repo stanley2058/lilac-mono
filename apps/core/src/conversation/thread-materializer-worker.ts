@@ -1,4 +1,5 @@
-import { createLogger, formatTaggedErrorForLog } from "@stanley2058/lilac-utils";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
+import { formatTaggedErrorForLog } from "@stanley2058/lilac-utils/tagged-error-log";
 import { Panic, Result } from "better-result";
 
 import { adaptToolResultToHost } from "../tools/tool-result-adapters";
@@ -11,7 +12,13 @@ import {
 import {
   decodeThreadMaterializerWorkerResponse,
   type ThreadMaterializerWorkerRequest,
+  type ThreadMaterializerWorkerResponse,
 } from "./thread-materializer-worker-protocol";
+import {
+  createWorkerMemoryTracker,
+  DEFAULT_MATERIALIZER_WORKER_MAX_ISOLATE_BYTES,
+  type WorkerMemoryDiagnostics,
+} from "./worker-memory-watchdog";
 
 type PendingRequest =
   | {
@@ -27,6 +34,7 @@ type PendingRequest =
 
 export type ConversationThreadMaterializer = ThreadMaterializer & {
   invalidate(): void;
+  getMemoryDiagnostics(): WorkerMemoryDiagnostics;
 };
 
 export type ThreadMaterializerWorkerHost = {
@@ -64,11 +72,12 @@ export function startConversationThreadMaterializer(params: {
 }): ConversationThreadMaterializer {
   const logger = createLogger({ module: "conversation-thread-materializer-worker-client" });
   const createWorker = params.workerFactory ?? createThreadMaterializerWorkerHost;
-  let worker = createWorker();
+  let worker: ThreadMaterializerWorkerHost | null = createWorker();
   const pending = new Map<string, PendingRequest>();
   let stopped = false;
   const refreshedChannels = new Set<string>();
   let refreshGeneration = 0;
+  const memoryTracker = createWorkerMemoryTracker(DEFAULT_MATERIALIZER_WORKER_MAX_ISOLATE_BYTES);
   const invalidate = () => {
     refreshGeneration += 1;
     refreshedChannels.clear();
@@ -79,79 +88,140 @@ export function startConversationThreadMaterializer(params: {
     pending.clear();
   };
 
-  const restartWorker = (error: Error) => {
+  const spawnReplacementWorker = (): Result<
+    ThreadMaterializerWorkerHost,
+    ThreadMaterializerOperationFailed
+  > => {
+    const created = Result.try({
+      try: () => createWorker(),
+      catch: (cause) => ({ restoreCause: () => cause }),
+    });
+    if (created.isErr()) {
+      const cause = created.error.restoreCause();
+      if (Panic.is(cause)) return adaptToolResultToHost(Result.err(cause));
+      return Result.err(
+        new ThreadMaterializerOperationFailed({
+          operation: "worker-watchdog",
+          message:
+            cause instanceof Error
+              ? cause.message
+              : "conversation thread materializer worker restart failed",
+        }),
+      );
+    }
+    worker = created.value;
+    configureWorker(worker);
+    return Result.ok(worker);
+  };
+
+  const restartWorker = (error: Error, restartReason: string = error.message) => {
     rejectPending(error);
     if (stopped) return;
-    worker.terminate();
-    worker = createWorker();
-    configureWorker(worker);
+    const retired = worker;
+    worker = null;
+    retired?.terminate();
+    memoryTracker.recordRestart(restartReason);
     invalidate();
+
+    const replaced = spawnReplacementWorker();
+    if (replaced.isErr()) {
+      logger.error(
+        "conversation thread materializer worker replacement failed",
+        formatTaggedErrorForLog(replaced.error),
+      );
+    }
   };
+
+  function handleWorkerResponse(response: ThreadMaterializerWorkerResponse): void {
+    if ("type" in response && response.type === "worker-memory") {
+      memoryTracker.recordSample(response);
+      return;
+    }
+    if ("type" in response && response.type === "worker-watchdog-exceeded") {
+      memoryTracker.recordSample(response);
+      logger.warn(
+        "conversation thread materializer worker exceeded memory watchdog limit; restarting worker",
+        { reason: response.reason, memory: response.memory, limitBytes: response.limitBytes },
+      );
+      restartWorker(
+        new ThreadMaterializerOperationFailed({
+          operation: "worker-watchdog",
+          message: response.reason,
+        }),
+      );
+      return;
+    }
+    const request = pending.get(response.id);
+    if (!request) {
+      const error = new ThreadMaterializerOperationFailed({
+        operation: "worker-protocol",
+        message: "conversation thread materializer worker response had no pending request",
+      });
+      logger.warn("conversation thread materializer worker response had no pending request", {
+        requestId: response.id,
+      });
+      restartWorker(error);
+      return;
+    }
+    pending.delete(response.id);
+
+    if (!response.ok) {
+      request.reject(
+        new ThreadMaterializerOperationFailed({
+          operation: request.type === "list-channels" ? "list-channels" : "repair-channel",
+          message: response.error,
+        }),
+      );
+      return;
+    }
+    if (request.type === "list-channels" && response.type === "list-channels") {
+      request.resolve(response.channelIds);
+      return;
+    }
+    if (request.type === "repair-channel" && response.type === "repair-channel") {
+      request.resolve();
+      return;
+    }
+
+    const error = new ThreadMaterializerOperationFailed({
+      operation: "worker-protocol",
+      message: "conversation thread materializer worker response type mismatch",
+    });
+    request.reject(error);
+    restartWorker(error);
+  }
 
   function configureWorker(target: ThreadMaterializerWorkerHost): void {
     target.setMessageHandler((event) => {
       if (target !== worker) return;
       const decoded = decodeThreadMaterializerWorkerResponse(event.data);
-      decoded.match({
-        err: () => {
-          const error = new ThreadMaterializerOperationFailed({
-            operation: "worker-protocol",
-            message: "conversation thread materializer worker sent an invalid response",
-          });
-          logger.error(
-            "conversation thread materializer worker protocol error",
-            formatTaggedErrorForLog(error),
-          );
-          restartWorker(error);
-        },
-        ok: (response) => {
-          const request = pending.get(response.id);
-          if (!request) {
-            const error = new ThreadMaterializerOperationFailed({
-              operation: "worker-protocol",
-              message: "conversation thread materializer worker response had no pending request",
-            });
-            logger.warn("conversation thread materializer worker response had no pending request", {
-              requestId: response.id,
-            });
-            restartWorker(error);
-            return;
-          }
-          pending.delete(response.id);
-
-          if (!response.ok) {
-            request.reject(
-              new ThreadMaterializerOperationFailed({
-                operation: request.type === "list-channels" ? "list-channels" : "repair-channel",
-                message: response.error,
-              }),
-            );
-            return;
-          }
-          if (request.type === "list-channels" && response.type === "list-channels") {
-            request.resolve(response.channelIds);
-            return;
-          }
-          if (request.type === "repair-channel" && response.type === "repair-channel") {
-            request.resolve();
-            return;
-          }
-
-          const error = new ThreadMaterializerOperationFailed({
-            operation: "worker-protocol",
-            message: "conversation thread materializer worker response type mismatch",
-          });
-          request.reject(error);
-          restartWorker(error);
-        },
+      const outcome = decoded.match<
+        | { readonly ok: true; readonly response: ThreadMaterializerWorkerResponse }
+        | { readonly ok: false }
+      >({
+        ok: (response) => ({ ok: true, response }),
+        err: () => ({ ok: false }),
       });
+      if (!outcome.ok) {
+        const error = new ThreadMaterializerOperationFailed({
+          operation: "worker-protocol",
+          message: "conversation thread materializer worker sent an invalid response",
+        });
+        logger.error(
+          "conversation thread materializer worker protocol error",
+          formatTaggedErrorForLog(error),
+        );
+        restartWorker(error);
+        return;
+      }
+      handleWorkerResponse(outcome.response);
     });
 
     target.setErrorHandler((event) => {
       if (target !== worker) return;
       const error = new Error(event.message || "conversation thread materializer worker failed");
       logger.error("conversation thread materializer worker error", error);
-      restartWorker(error);
+      restartWorker(error, "conversation thread materializer worker error");
     });
   }
   configureWorker(worker);
@@ -169,32 +239,36 @@ export function startConversationThreadMaterializer(params: {
       );
       return;
     }
+    let activeWorker = worker;
+    if (!activeWorker) {
+      const respawned = spawnReplacementWorker();
+      if (respawned.isErr()) {
+        pendingRequest.reject(respawned.error);
+        return;
+      }
+      activeWorker = respawned.value;
+    }
     pending.set(request.id, pendingRequest);
     const posted = Result.try({
-      try: () => worker.postMessage(request),
+      try: () => activeWorker.postMessage(request),
       catch: (cause) => ({ restoreCause: () => cause }),
     });
-    posted.match({
-      ok: () => () => undefined,
-      err:
-        ({ restoreCause }) =>
-        () => {
-          const error = restoreCause();
-          pending.delete(request.id);
-          if (Panic.is(error)) return adaptToolResultToHost(Result.err(error));
-          if (!(error instanceof Error)) {
-            return adaptToolResultToHost(
-              Result.err(
-                new Panic({
-                  message: "Conversation thread materializer worker postMessage defect",
-                  cause: error,
-                }),
-              ),
-            );
-          }
-          pendingRequest.reject(error);
-        },
-    })();
+    if (posted.isErr()) {
+      const error = posted.error.restoreCause();
+      pending.delete(request.id);
+      if (Panic.is(error)) return adaptToolResultToHost(Result.err(error));
+      if (!(error instanceof Error)) {
+        return adaptToolResultToHost(
+          Result.err(
+            new Panic({
+              message: "Conversation thread materializer worker postMessage defect",
+              cause: error,
+            }),
+          ),
+        );
+      }
+      pendingRequest.reject(error);
+    }
   };
 
   const listChannelIds = () =>
@@ -263,14 +337,20 @@ export function startConversationThreadMaterializer(params: {
   let stopPromise: Promise<void> | null = null;
   return {
     invalidate,
+    getMemoryDiagnostics() {
+      return memoryTracker.snapshot(stopped || !worker ? "stopped" : "running");
+    },
     markDirty: (input) => startedCoalescer.markDirty(input),
     markAllDirty: () => startedCoalescer.markAllDirty(),
     flush: () => startedCoalescer.flush(),
+    hasIncompleteWork: () => startedCoalescer.hasIncompleteWork(),
     stop() {
       if (stopPromise) return stopPromise;
       stopPromise = startedCoalescer.stop().finally(() => {
         stopped = true;
-        worker.terminate();
+        const retired = worker;
+        worker = null;
+        retired?.terminate();
         rejectPending(
           new ThreadMaterializerOperationFailed({
             operation: "worker-stopped",

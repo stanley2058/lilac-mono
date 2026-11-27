@@ -1,5 +1,9 @@
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
+import {
+  workerMemorySampleMessageSchema,
+  workerMemoryWatchdogExceededMessageSchema,
+} from "./worker-memory-watchdog";
 
 const filters = z.strictObject({
   surface: z.enum(["discord", "native"]).optional(),
@@ -115,6 +119,8 @@ const responseSchema = z.discriminatedUnion("type", [
   z.strictObject({ id: z.string(), type: z.literal("strings"), strings: z.array(z.string()) }),
   z.strictObject({ id: z.string(), type: z.literal("persisted-error"), error: persistedError }),
   z.strictObject({ id: z.string(), type: z.literal("failed"), message: z.string() }),
+  workerMemorySampleMessageSchema,
+  workerMemoryWatchdogExceededMessageSchema,
 ]);
 export type ThreadSearchOperation = z.infer<typeof operation>;
 export type ThreadSearchRequest = z.infer<typeof requestSchema>;

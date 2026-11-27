@@ -13,6 +13,14 @@ import { z } from "zod";
 
 import type { MsgRefFor } from "../../runtime-descriptor";
 import { formatGenericRequestId, formatQueuedRequestId } from "../../bridge/request-ids";
+import {
+  LEADING_CONTINUE_DIRECTIVE_RE,
+  parseLeadingContinueDirective,
+  sanitizeUserToken,
+  stripLeadingBotMentionPrefix,
+} from "./directives";
+
+export { parseLeadingContinueDirective };
 
 export type SessionMode = "mention" | "active";
 
@@ -20,14 +28,6 @@ export function previewText(text: string, max = 200): string {
   const trimmed = text.trim();
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max)}...`;
-}
-
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function sanitizeUserToken(name: string): string {
-  return name.replace(/\s+/gu, "_").replace(/^@+/u, "");
 }
 
 const USER_MENTION_TOKEN_RE = /(^|[^A-Za-z0-9_])@([A-Za-z0-9_][A-Za-z0-9_.-]*)/gu;
@@ -93,35 +93,8 @@ export function normalizeGateText(text: string | undefined, max = 280): string |
   return `${normalized.slice(0, max)}...`;
 }
 
-function stripLeadingBotMentionPrefix(
-  text: string,
-  botNames: readonly string[],
-): {
-  hadLeadingMention: boolean;
-  mentionPrefix: string;
-  text: string;
-} {
-  const sanitizedBotNames = botNames
-    .map((name) => sanitizeUserToken(name))
-    .filter((name) => name.length > 0);
-  const nameAlternation =
-    sanitizedBotNames.length > 0
-      ? `|@(?:${sanitizedBotNames.map((name) => escapeRegExp(name)).join("|")})`
-      : "";
-  const mentionRe = new RegExp(`^\\s*(?:<@!?[^>]+>${nameAlternation})(?:[,:]\\s*|\\s+)`, "iu");
-  const m = text.match(mentionRe);
-  if (!m) return { hadLeadingMention: false, mentionPrefix: "", text };
-  return {
-    hadLeadingMention: true,
-    mentionPrefix: m[0],
-    text: text.slice(m[0].length),
-  };
-}
-
 const LEADING_INTERRUPT_COMMAND_RE = /^\s*(?:[:,]\s*)?!(?:interrupt|int)\b(?:\s+|$)/iu;
 const LEADING_MODEL_OVERRIDE_RE = /^\s*(?:[:,]\s*)?!(?:m|model):([^\s]+)(?:\s+|$)/iu;
-const DEFAULT_CONTINUE_DIRECTIVE_COUNT = 8;
-const LEADING_CONTINUE_DIRECTIVE_RE = /^\s*(?:[:,]\s*)?!(?:continue|cont)(?:=(\d+))?(?:\s+|$)/iu;
 
 export function parseLeadingModelOverride(input: {
   text: string;
@@ -134,22 +107,6 @@ export function parseLeadingModelOverride(input: {
 
   const model = String(m[1] ?? "").trim();
   return model.length > 0 ? model : undefined;
-}
-
-export function parseLeadingContinueDirective(input: {
-  text: string;
-  botNames: readonly string[];
-}): number | undefined {
-  const stripped = stripLeadingBotMentionPrefix(input.text, input.botNames);
-  const target = stripped.hadLeadingMention ? stripped.text : input.text;
-  const m = target.match(LEADING_CONTINUE_DIRECTIVE_RE);
-  if (!m) return undefined;
-
-  if (m[1] === undefined) return DEFAULT_CONTINUE_DIRECTIVE_COUNT;
-
-  const rawCount = Number.parseInt(String(m[1]).trim(), 10);
-  if (!Number.isFinite(rawCount) || rawCount < 1) return undefined;
-  return Math.min(200, rawCount);
 }
 
 export function stripLeadingModelOverrideDirective(input: {

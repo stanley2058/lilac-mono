@@ -1,7 +1,12 @@
-import { APICallError, RetryError } from "ai";
+import type { APICallError, RetryError } from "ai";
 import { Result } from "better-result";
 
 import { isRecord } from "./runtime-utils";
+
+function loadAiErrorClasses(): Pick<typeof import("ai"), "APICallError" | "RetryError"> {
+  const mod: typeof import("ai") = require("ai");
+  return mod;
+}
 
 const MAX_ERROR_DEPTH = 8;
 const MAX_PROVIDER_MESSAGE_LENGTH = 1_000;
@@ -159,6 +164,7 @@ function locateAiErrors(
   if ((typeof value === "object" || typeof value === "function") && seen.has(value)) return;
   if (typeof value === "object" || typeof value === "function") seen.add(value);
 
+  const { APICallError, RetryError } = loadAiErrorClasses();
   if (RetryError.isInstance(value)) {
     located.retryError ??= value;
     locateAiErrors(value.lastError, located, seen, depth + 1);

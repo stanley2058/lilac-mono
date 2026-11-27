@@ -73,7 +73,7 @@ describe("tool server health state", () => {
     const health = createToolServerHealthState({
       logger: createLogger({ module: "health-state-test" }),
       watchdogFailureThreshold: 2,
-      maxRssBytes: Number.MAX_SAFE_INTEGER,
+      maxMainIsolateBytes: Number.MAX_SAFE_INTEGER,
       externalHealthProvider: () => ({
         checks: [{ name: failedCheck, ok: false, impact: "live" }],
       }),
@@ -98,7 +98,7 @@ describe("tool server health state", () => {
     let providerCalls = 0;
     const health = createToolServerHealthState({
       logger: createLogger({ module: "health-state-test" }),
-      maxRssBytes: Number.MAX_SAFE_INTEGER,
+      maxMainIsolateBytes: Number.MAX_SAFE_INTEGER,
       externalHealthProvider: () => {
         providerCalls += 1;
         return provider.promise;
@@ -123,7 +123,7 @@ describe("tool server health state", () => {
     const health = createToolServerHealthState({
       logger: createLogger({ module: "health-state-test" }),
       watchdogFailureThreshold: 1,
-      maxRssBytes: Number.MAX_SAFE_INTEGER,
+      maxMainIsolateBytes: Number.MAX_SAFE_INTEGER,
       externalHealthProvider: () => {
         providerCalls += 1;
         if (providerCalls === 1) return provider.promise;
@@ -150,7 +150,7 @@ describe("tool server health state", () => {
     const health = createToolServerHealthState({
       logger: createLogger({ module: "health-state-test" }),
       watchdogFailureThreshold: 2,
-      maxRssBytes: 0,
+      maxMainIsolateBytes: 0,
       runtimeDiagnosticSampler: () => RUNTIME_SAMPLE,
       externalHealthProvider: () => ({
         memoryDiagnostics: { discord: { members: 12 }, openObserve: { retainedBytes: 34 } },
@@ -185,7 +185,7 @@ describe("tool server health state", () => {
     const health = createToolServerHealthState({
       logger: createLogger({ module: "health-state-test" }),
       watchdogFailureThreshold: 1,
-      maxRssBytes: 0,
+      maxMainIsolateBytes: 0,
       runtimeDiagnosticSampler: () => RUNTIME_SAMPLE,
       onUnhealthy: (snapshot) => {
         unhealthySnapshot = snapshot;
@@ -271,8 +271,11 @@ describe("tool server health state", () => {
 
     it("restarts when the main isolate exceeds its limit with low rss", async () => {
       const { health, onUnhealthy, warnings } = createWatchedHealth();
-      setMemory({ rss: 1000, heapUsed: 700, external: 68 });
+      // heapUsed already includes external in Bun/JSC, so 700 MiB heapUsed + 200 MiB external stays healthy.
+      setMemory({ rss: 1000, heapUsed: 700, external: 200 });
+      expect((await memoryCheck(health))?.ok).toBe(true);
 
+      setMemory({ rss: 1000, heapUsed: 768, external: 68 });
       expect(await memoryCheck(health)).toMatchObject({
         ok: false,
         reason: `main isolate memory ${768 * MiB} exceeded limit ${768 * MiB}`,
@@ -284,17 +287,16 @@ describe("tool server health state", () => {
       expect(warnings()).toEqual(["process memory exceeded watchdog limit"]);
     });
 
-    it("restarts at the rss ceiling even when the main isolate is small", async () => {
-      const { health, onUnhealthy } = createWatchedHealth();
-      setMemory({ rss: 4096, heapUsed: 170, external: 40 });
+    it("does not restart on high process rss when the main isolate is under its limit", async () => {
+      const { health, onUnhealthy, warnings } = createWatchedHealth();
+      setMemory({ rss: 8192, heapUsed: 322, external: 40 });
 
-      expect(await memoryCheck(health)).toMatchObject({
-        ok: false,
-        reason: `rss ${4096 * MiB} exceeded limit ${4096 * MiB}`,
-      });
+      expect((await memoryCheck(health))?.ok).toBe(true);
       await health.runWatchdog();
       await health.runWatchdog();
-      expect(onUnhealthy).toHaveBeenCalledTimes(1);
+      await health.runWatchdog();
+      expect(onUnhealthy).not.toHaveBeenCalled();
+      expect(warnings()).toEqual(["process rss exceeded warning level"]);
     });
 
     it("logs the limit when an rss warning escalates into a failure", async () => {
@@ -326,7 +328,7 @@ describe("tool server health state", () => {
         eventLoopLagFailStreak: 1,
         watchdogIntervalMs: 2,
         watchdogFailureThreshold: 1,
-        maxRssBytes: Number.MAX_SAFE_INTEGER,
+        maxMainIsolateBytes: Number.MAX_SAFE_INTEGER,
       },
     });
 
@@ -383,7 +385,7 @@ describe("tool server health state", () => {
       }),
       eventLoopLagFailMs: 100,
       eventLoopLagFailStreak: 3,
-      maxRssBytes: Number.MAX_SAFE_INTEGER,
+      maxMainIsolateBytes: Number.MAX_SAFE_INTEGER,
       activeLevel1WorkProvider: () => [unsafeWork],
       runtimeDiagnosticSampler: () => RUNTIME_SAMPLE,
     });
@@ -443,7 +445,7 @@ describe("tool server health state", () => {
       logger: createLogger({ module: "health-state-test" }),
       eventLoopLagFailMs: 100,
       eventLoopLagFailStreak: 1,
-      maxRssBytes: Number.MAX_SAFE_INTEGER,
+      maxMainIsolateBytes: Number.MAX_SAFE_INTEGER,
       activeLevel1WorkProvider: () => {
         throw new Error("active work unavailable");
       },

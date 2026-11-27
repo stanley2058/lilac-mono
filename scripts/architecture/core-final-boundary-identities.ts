@@ -224,7 +224,7 @@ export const CORE_FINAL_BOUNDARY_IDENTITIES = [
   ["src/conversation/thread-summarization-worker.ts", "addEventListener.<callback@2>"],
   [
     "src/conversation/thread-worker.ts",
-    "startConversationThreadSummarizationWorker.onMessage.<callback@1>",
+    "startConversationThreadSummarizationWorker.configureWorker.onMessage.<callback@1>",
   ],
   ["src/github/webhook/github-webhook-server.ts", "decodeGithubWebhookEvent"],
   ["src/surface/bridge/request-composition/normalization.ts", "extractAssistantTextFromContent"],

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { blobRefV1Schema, type BlobRefV1 } from "@stanley2058/lilac-blob-storage";
-import { isPermissionProfileName, MODEL_REASONING_EFFORTS } from "@stanley2058/lilac-utils";
+import { MODEL_REASONING_EFFORTS } from "@stanley2058/lilac-utils/core-config/types";
+import { isPermissionProfileName } from "@stanley2058/lilac-utils/subagent-profile";
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 
 /** Run ids of delegated subagents; other workflow runs use a bare `wfrun:` id. */

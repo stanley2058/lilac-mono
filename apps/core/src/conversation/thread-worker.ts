@@ -15,7 +15,9 @@ import {
   type ThreadSummarizationResult,
   type ThreadSummarizationHydrationRequest,
   type ThreadSummarizationHydrationResponse,
+  type ThreadSummarizationWorkerMessage,
   type ThreadSummarizationWorkerRequest,
+  type ThreadSummarizationWorkerResponse,
 } from "./thread-summarization-worker-protocol";
 import {
   ConversationThreadOperationFailed,
@@ -24,9 +26,16 @@ import {
 } from "./thread-service";
 import type { SurfaceAdapter } from "../surface/adapter";
 import { toReplyChainMessage } from "../surface/bridge/request-composition/reply-chain";
+import {
+  createWorkerMemoryTracker,
+  DEFAULT_SUMMARIZATION_WORKER_MAX_ISOLATE_BYTES,
+  type WorkerMemoryDiagnostics,
+  type WorkerMemoryUsage,
+} from "./worker-memory-watchdog";
 
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;
 const INITIAL_CHECK_DELAY_MS = 10_000;
+const DEFAULT_SUMMARIZATION_WORKER_IDLE_TIMEOUT_MS = 60_000;
 
 export type ConversationThreadWorkerScheduler = (
   task: () => void | Promise<void>,
@@ -72,7 +81,10 @@ export class ConversationThreadSummarizationRemoteError extends TaggedError(
   readonly message: string;
 }> {}
 
-export type ConversationThreadSummarizationTransportOperation = "post-message" | "stopped";
+export type ConversationThreadSummarizationTransportOperation =
+  | "post-message"
+  | "stopped"
+  | "memory-watchdog";
 
 export class ConversationThreadSummarizationTransportError extends TaggedError(
   "ConversationThreadSummarizationTransportError",
@@ -175,11 +187,20 @@ export function startConversationThreadSummarizationWorker(params: {
   attachmentHydrator?: ConversationThreadAttachmentHydrator;
   createWorker?: () => ConversationThreadSummarizationWorkerTransport;
   reportFatalPanic?: ConversationThreadWorkerFatalReporter;
-}): ConversationThreadSummarizationRunner & { stop(): Promise<void> } {
+  idleTimeoutMs?: number;
+  scheduleIdle?: ConversationThreadWorkerScheduler;
+}): ConversationThreadSummarizationRunner & {
+  stop(): Promise<void>;
+  getMemoryDiagnostics(): WorkerMemoryDiagnostics;
+} {
   const logger = createLogger({ module: "conversation-thread-worker-client" });
-  const worker = params.createWorker?.() ?? createSummarizationWorkerTransport();
+  const createWorker = params.createWorker ?? createSummarizationWorkerTransport;
   const reportFatalPanic = params.reportFatalPanic ?? signalConversationThreadWorkerPanicToProcess;
-  logger.debug("conversation thread summarization worker client started");
+  const idleTimeoutMs = params.idleTimeoutMs ?? DEFAULT_SUMMARIZATION_WORKER_IDLE_TIMEOUT_MS;
+  const scheduleIdle = params.scheduleIdle ?? defaultScheduler;
+  logger.debug("conversation thread summarization worker client started", {
+    idleTimeoutMs,
+  });
   const pending = new Map<
     string,
     {
@@ -199,15 +220,37 @@ export function startConversationThreadSummarizationWorker(params: {
       threadId?: string;
     }
   >();
+  let activeWorker: ConversationThreadSummarizationWorkerTransport | null = null;
+  let cancelIdleTimer: (() => void) | null = null;
   let stopped = false;
-  let terminated = false;
   let terminalFailure: ThreadSummarizationWorkerMessageDecodeError | null = null;
   let terminalPanic: Panic | null = null;
+  const memoryTracker = createWorkerMemoryTracker(DEFAULT_SUMMARIZATION_WORKER_MAX_ISOLATE_BYTES);
+
+  const clearIdleTimer = () => {
+    cancelIdleTimer?.();
+    cancelIdleTimer = null;
+  };
 
   const terminateWorker = () => {
-    if (terminated) return;
-    terminated = true;
-    worker.terminate();
+    clearIdleTimer();
+    const current = activeWorker;
+    if (!current) return;
+    activeWorker = null;
+    memoryTracker.clearSample();
+    current.terminate();
+  };
+
+  const scheduleIdleTeardown = () => {
+    clearIdleTimer();
+    if (stopped || terminalFailure || terminalPanic || !activeWorker) return;
+    if (idleTimeoutMs <= 0 || pending.size > 0 || jobs.size > 0) return;
+    cancelIdleTimer = scheduleIdle(() => {
+      cancelIdleTimer = null;
+      if (stopped || pending.size > 0 || jobs.size > 0 || !activeWorker) return;
+      logger.debug("conversation thread summarization worker idle teardown");
+      terminateWorker();
+    }, idleTimeoutMs);
   };
 
   const settlePending = (error: ConversationThreadSummarizationWorkerError) => {
@@ -224,32 +267,75 @@ export function startConversationThreadSummarizationWorker(params: {
     for (const waiter of waiters) waiter.reject(panic);
   };
 
+  const handleWorkerPanic = (panic: Panic) => {
+    if (stopped || terminalFailure || terminalPanic) return;
+    terminalPanic = panic;
+    rejectPending(terminalPanic);
+    terminateWorker();
+    reportConversationThreadWorkerPanicOnce(terminalPanic, reportFatalPanic);
+    logger.error("conversation thread worker defect", formatTaggedErrorForLog(terminalPanic));
+  };
+
+  const ensureWorker = (): ConversationThreadSummarizationWorkerTransport => {
+    clearIdleTimer();
+    if (activeWorker) return activeWorker;
+    const created = createWorker();
+    activeWorker = created;
+    configureWorker(created);
+    return created;
+  };
+
   const postRequest = (
     request: ThreadSummarizationParentMessage,
   ): ResultType<void, ConversationThreadSummarizationTransportError> => {
-    {
-      const captured = Result.try({
-        try: () => {
-          worker.postMessage(request);
-          return Result.ok(undefined);
-        },
-        catch: captureError,
-      });
-      if (captured.isErr()) {
-        const cause = captured.error.cause;
-        pending.delete(request.id);
-        jobs.delete(request.id);
-        if (Panic.is(cause)) rethrowConversationThreadWorkerPanic(cause);
-        return Result.err(
-          new ConversationThreadSummarizationTransportError({
-            operation: "post-message",
-            cause,
-            message: "Could not post conversation thread summarization worker request",
-          }),
-        );
-      }
-      return captured.value;
+    const captured = Result.try({
+      try: () => {
+        const targetWorker = ensureWorker();
+        targetWorker.postMessage(request);
+        return Result.ok(undefined);
+      },
+      catch: captureError,
+    });
+    if (captured.isErr()) {
+      const cause = captured.error.cause;
+      pending.delete(request.id);
+      jobs.delete(request.id);
+      scheduleIdleTeardown();
+      if (Panic.is(cause)) rethrowConversationThreadWorkerPanic(cause);
+      return Result.err(
+        new ConversationThreadSummarizationTransportError({
+          operation: "post-message",
+          cause,
+          message: "Could not post conversation thread summarization worker request",
+        }),
+      );
     }
+    return captured.value;
+  };
+
+  const postHydrationReply = (
+    targetWorker: ConversationThreadSummarizationWorkerTransport,
+    response: ThreadSummarizationHydrationResponse,
+  ): ResultType<void, ConversationThreadSummarizationTransportError> => {
+    const captured = Result.try({
+      try: () => {
+        targetWorker.postMessage(response);
+        return Result.ok(undefined);
+      },
+      catch: captureError,
+    });
+    if (captured.isErr()) {
+      const cause = captured.error.cause;
+      if (Panic.is(cause)) rethrowConversationThreadWorkerPanic(cause);
+      return Result.err(
+        new ConversationThreadSummarizationTransportError({
+          operation: "post-message",
+          cause,
+          message: "Could not post conversation thread hydration response",
+        }),
+      );
+    }
+    return captured.value;
   };
 
   const hydrateRequest: ConversationThreadAttachmentHydrator = async (input) => {
@@ -300,16 +386,23 @@ export function startConversationThreadSummarizationWorker(params: {
       return Result.ok(results);
     });
   };
-  const handleHydrationRequest = async (request: ThreadSummarizationHydrationRequest) => {
+
+  const handleHydrationRequest = async (
+    targetWorker: ConversationThreadSummarizationWorkerTransport,
+    request: ThreadSummarizationHydrationRequest,
+  ) => {
     const [settled] = await Promise.allSettled([hydrateRequest({ refs: request.refs })]);
+    if (settled.status === "rejected" && Panic.is(settled.reason)) {
+      handleWorkerPanic(settled.reason);
+      return;
+    }
+    if (stopped || terminalFailure || terminalPanic || activeWorker !== targetWorker) return;
     if (settled.status === "rejected") {
       handleWorkerPanic(
-        Panic.is(settled.reason)
-          ? settled.reason
-          : new Panic({
-              message: "Conversation thread attachment hydration defect",
-              cause: settled.reason,
-            }),
+        new Panic({
+          message: "Conversation thread attachment hydration defect",
+          cause: settled.reason,
+        }),
       );
       return;
     }
@@ -329,15 +422,16 @@ export function startConversationThreadSummarizationWorker(params: {
         })),
       err: (error) => request.refs.map((ref) => ({ ref, ok: false, error: error.message })),
     });
-    if (stopped || terminalFailure || terminalPanic) return;
-    const response: ThreadSummarizationParentMessage = {
+    if (stopped || terminalFailure || terminalPanic || activeWorker !== targetWorker) return;
+    const response: ThreadSummarizationHydrationResponse = {
       type: "hydrate-discord-attachments-result",
       id: request.id,
       results,
     };
     const [posted] = await Promise.allSettled([
-      Promise.resolve().then(() => postRequest(response)),
+      Promise.resolve().then(() => postHydrationReply(targetWorker, response)),
     ]);
+    if (stopped || terminalFailure || terminalPanic || activeWorker !== targetWorker) return;
     if (posted.status === "rejected") {
       handleWorkerPanic(
         Panic.is(posted.reason)
@@ -361,84 +455,128 @@ export function startConversationThreadSummarizationWorker(params: {
     });
   };
 
-  worker.onMessage((event) => {
-    if (stopped || terminalFailure || terminalPanic) return;
-    const decoded = decodeThreadSummarizationWorkerMessage(event.data);
-    decoded.match({
-      err: (error) => {
-        terminalFailure = error;
-        settlePending(terminalFailure);
-        logger.warn(
-          "conversation thread worker sent invalid response",
-          formatTaggedErrorForLog(terminalFailure),
-        );
-        terminateWorker();
-      },
-      ok: (response) => {
-        if ("type" in response) {
-          void handleHydrationRequest(response);
-          return;
-        }
-        const waiter = pending.get(response.id);
-        const job = jobs.get(response.id);
-        if (!waiter && !job) {
-          logger.warn("conversation thread worker response had no pending job", {
-            jobId: response.id,
-          });
-          return;
-        }
+  const handleWatchdogExceeded = (
+    targetWorker: ConversationThreadSummarizationWorkerTransport,
+    reason: string,
+    memory: WorkerMemoryUsage,
+    limit: number,
+  ) => {
+    if (stopped || terminalFailure || terminalPanic || activeWorker !== targetWorker) return;
+    logger.warn(
+      "conversation thread summarization worker exceeded memory watchdog limit; restarting worker",
+      { reason, memory, limitBytes: limit },
+    );
+    terminateWorker();
+    memoryTracker.recordRestart(reason);
+    settlePending(
+      new ConversationThreadSummarizationTransportError({
+        operation: "memory-watchdog",
+        message: `Conversation thread summarization worker restarted: ${reason}`,
+      }),
+    );
+  };
 
-        pending.delete(response.id);
-        jobs.delete(response.id);
-        const durationMs = job ? Date.now() - job.startedAt : undefined;
+  const handleJobResponse = (response: ThreadSummarizationWorkerResponse) => {
+    const waiter = pending.get(response.id);
+    const job = jobs.get(response.id);
+    if (!waiter && !job) {
+      logger.warn("conversation thread worker response had no pending job", {
+        jobId: response.id,
+      });
+      return;
+    }
 
-        if (response.ok) {
-          if (response.result.eligible > 0) {
-            logger.debug("conversation thread summarization job completed", {
-              jobId: response.id,
-              wait: job?.wait,
-              dryRun: job?.dryRun,
-              threadId: job?.threadId,
-              durationMs,
-              eligible: response.result.eligible,
-              summarized: response.result.summarized,
-              failed: response.result.failed,
-            });
-          }
-          waiter?.resolve(
-            Result.ok({ ...response.result, jobId: response.id, status: "completed" as const }),
-          );
-          return;
-        }
+    pending.delete(response.id);
+    jobs.delete(response.id);
+    const durationMs = job ? Date.now() - job.startedAt : undefined;
 
-        const error = new ConversationThreadSummarizationRemoteError({
-          jobId: response.id,
-          remoteMessage: response.error,
-          message: response.error,
-        });
-        logger.error("conversation thread summarization job failed", {
+    if (response.ok) {
+      if (response.result.eligible > 0) {
+        logger.debug("conversation thread summarization job completed", {
           jobId: response.id,
           wait: job?.wait,
           dryRun: job?.dryRun,
           threadId: job?.threadId,
           durationMs,
+          eligible: response.result.eligible,
+          summarized: response.result.summarized,
+          failed: response.result.failed,
         });
-        waiter?.resolve(Result.err(error));
-      },
-    });
-  });
+      }
+      waiter?.resolve(
+        Result.ok({ ...response.result, jobId: response.id, status: "completed" as const }),
+      );
+      scheduleIdleTeardown();
+      return;
+    }
 
-  const handleWorkerPanic = (panic: Panic) => {
-    if (stopped || terminalFailure || terminalPanic) return;
-    terminalPanic = panic;
-    rejectPending(terminalPanic);
-    terminateWorker();
-    reportConversationThreadWorkerPanicOnce(terminalPanic, reportFatalPanic);
-    logger.error("conversation thread worker defect", formatTaggedErrorForLog(terminalPanic));
+    const error = new ConversationThreadSummarizationRemoteError({
+      jobId: response.id,
+      remoteMessage: response.error,
+      message: response.error,
+    });
+    logger.error("conversation thread summarization job failed", {
+      jobId: response.id,
+      wait: job?.wait,
+      dryRun: job?.dryRun,
+      threadId: job?.threadId,
+      durationMs,
+    });
+    waiter?.resolve(Result.err(error));
+    scheduleIdleTeardown();
   };
-  worker.onError(handleWorkerPanic);
+
+  const handleWorkerMessage = (
+    targetWorker: ConversationThreadSummarizationWorkerTransport,
+    response: ThreadSummarizationWorkerMessage,
+  ) => {
+    if (!("type" in response)) {
+      handleJobResponse(response);
+      return;
+    }
+    if (response.type === "worker-memory") {
+      memoryTracker.recordSample(response);
+      return;
+    }
+    if (response.type === "worker-watchdog-exceeded") {
+      memoryTracker.recordSample(response);
+      handleWatchdogExceeded(targetWorker, response.reason, response.memory, response.limitBytes);
+      return;
+    }
+    void handleHydrationRequest(targetWorker, response);
+  };
+
+  function configureWorker(targetWorker: ConversationThreadSummarizationWorkerTransport): void {
+    targetWorker.onMessage((event) => {
+      if (stopped || terminalFailure || terminalPanic || activeWorker !== targetWorker) return;
+      const decoded = decodeThreadSummarizationWorkerMessage(event.data);
+      decoded.match({
+        err: (error) => {
+          terminalFailure = error;
+          settlePending(terminalFailure);
+          logger.warn(
+            "conversation thread worker sent invalid response",
+            formatTaggedErrorForLog(terminalFailure),
+          );
+          terminateWorker();
+        },
+        ok: (response) => handleWorkerMessage(targetWorker, response),
+      });
+    });
+
+    targetWorker.onError((panic) => {
+      if (activeWorker !== targetWorker) return;
+      handleWorkerPanic(panic);
+    });
+  }
 
   return {
+    getMemoryDiagnostics() {
+      let status: WorkerMemoryDiagnostics["status"] = "idle";
+      if (stopped || terminalFailure || terminalPanic) status = "stopped";
+      else if (activeWorker) status = "running";
+      return memoryTracker.snapshot(status);
+    },
     async runSummarization(input = {}) {
       rethrowConversationThreadWorkerPanic(terminalPanic);
       if (terminalFailure) return Result.err(terminalFailure);

@@ -1,4 +1,4 @@
-import { isPanic } from "@stanley2058/lilac-utils";
+import { isPanic } from "@stanley2058/lilac-utils/runtime-utils";
 import { Result, type Panic, type Result as ResultType } from "better-result";
 
 export function preserveToolPanic(cause: Panic): never;

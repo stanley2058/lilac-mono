@@ -8,7 +8,7 @@ import { capturePromiseResult, captureResultOutcome, errorMessage, isPanic } fro
 import { findWorkspaceRoot } from "./find-root";
 import { createLogger } from "./logging";
 import { formatModelProviderOptionWarning } from "./model-provider-option-validation";
-import { configureOpenAICompatibleServers } from "./model-provider";
+import { configureOpenAICompatibleServers } from "./openai-compatible-servers";
 import {
   buildAgentSystemPrompt,
   CORE_PROMPT_FILES,
@@ -58,8 +58,6 @@ import type {
   CoreConfigVersion,
   DiscordSessionAliasConfig,
   DiscordUserAliasConfig,
-  RouterSessionConfig,
-  RouterSessionConfigScope,
 } from "./core-config/types";
 
 export {
@@ -114,22 +112,7 @@ export type {
 
 const logger = createLogger({ module: "core-config" });
 
-/** Resolve per-property session overrides from broadest to most specific scope. */
-export function resolveRouterSessionConfig(
-  cfg: CoreConfig,
-  scope: RouterSessionConfigScope,
-): RouterSessionConfig {
-  const resolved: RouterSessionConfig = {};
-
-  for (const candidate of [scope.guildId, scope.parentChannelId, scope.sessionId]) {
-    const configId = candidate?.trim();
-    if (!configId) continue;
-
-    Object.assign(resolved, cfg.surface.router.sessionModes[configId]);
-  }
-
-  return resolved;
-}
+export { resolveRouterSessionConfig } from "./router-session-config";
 
 export function getDiscordUserAliasValue(alias: DiscordUserAliasConfig | undefined): {
   discordId: string;

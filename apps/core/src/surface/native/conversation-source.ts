@@ -1,8 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { Result } from "better-result";
 import { z } from "zod";
-import { CorruptPersistedFields, type PersistedDataError } from "@stanley2058/lilac-utils";
-import { DEFAULT_DM_CONTEXT_GAP_MS } from "@stanley2058/lilac-client-protocol";
+import {
+  CorruptPersistedFields,
+  type PersistedDataError,
+} from "@stanley2058/lilac-utils/persistence";
+import { DEFAULT_DM_CONTEXT_GAP_MS } from "@stanley2058/lilac-client-protocol/domain";
 import { decodeNativeRecord, type NativePersistedRow } from "./codec";
 import { TURN_CREATED_AT, turnCompletedAtSql } from "./turn-timing";
 

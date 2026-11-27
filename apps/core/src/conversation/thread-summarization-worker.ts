@@ -21,6 +21,10 @@ import {
   type ConversationThreadAttachmentHydrator,
 } from "./thread-service";
 import { ConversationThreadStore } from "./thread-store";
+import {
+  DEFAULT_SUMMARIZATION_WORKER_MAX_ISOLATE_BYTES,
+  startWorkerMemoryWatchdog,
+} from "./worker-memory-watchdog";
 import { createDiscordEntityMapper } from "../entity/entity-mapper";
 import { DiscordSurfaceStore } from "../surface/store/discord-surface-store";
 
@@ -230,6 +234,12 @@ async function runJob(request: ThreadSummarizationWorkerRequest): Promise<void> 
     },
   })();
 }
+
+startWorkerMemoryWatchdog({
+  workerName: "thread-summarization-worker",
+  maxIsolateBytes: DEFAULT_SUMMARIZATION_WORKER_MAX_ISOLATE_BYTES,
+  emit: (event) => respond(event),
+});
 
 const jobQueue = createSerialJobQueue<ThreadSummarizationWorkerRequest>({ run: runJob });
 

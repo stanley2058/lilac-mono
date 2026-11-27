@@ -156,7 +156,6 @@ export type ToolServerHealthConfig = {
   eventLoopLagFailMs?: number;
   eventLoopLagFailStreak?: number;
   toolCallOverdueGraceMs?: number;
-  maxRssBytes?: number;
   warnRssBytes?: number;
   maxMainIsolateBytes?: number;
 };
@@ -180,11 +179,10 @@ const DEFAULT_EVENT_LOOP_FAIL_STREAK = 3;
 const DEFAULT_WATCHDOG_INTERVAL_MS = 5_000;
 const DEFAULT_WATCHDOG_FAILURE_THRESHOLD = 3;
 const DEFAULT_TOOL_CALL_OVERDUE_GRACE_MS = 15_000;
-// Worker isolates share this process, so RSS includes bursts that a restart cannot usefully bound.
-// heapUsed and external exclude worker heaps, which makes them the restart signal for Core itself.
-// The RSS ceiling still catches native leaks and runaway workers, which those counters cannot see.
+// Worker isolates and native allocations share this process, so RSS cannot isolate Core itself.
+// Owned workers run independent isolate watchdogs; Core only restarts on its own main-isolate
+// memory. In Bun/JSC, heapUsed (jsc.heapSize) already includes external (extraMemorySize).
 const DEFAULT_MAX_MAIN_ISOLATE_BYTES = 768 * 1024 * 1024;
-const DEFAULT_MAX_RSS_BYTES = 4_096 * 1024 * 1024;
 const DEFAULT_WARN_RSS_BYTES = 1_500 * 1024 * 1024;
 const MEMORY_HISTORY_SIZE = 60;
 
@@ -221,7 +219,6 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
   const eventLoopLagFailStreak = options.eventLoopLagFailStreak ?? DEFAULT_EVENT_LOOP_FAIL_STREAK;
   const toolCallOverdueGraceMs =
     options.toolCallOverdueGraceMs ?? DEFAULT_TOOL_CALL_OVERDUE_GRACE_MS;
-  const maxRssBytes = options.maxRssBytes ?? DEFAULT_MAX_RSS_BYTES;
   const warnRssBytes = options.warnRssBytes ?? DEFAULT_WARN_RSS_BYTES;
   const maxMainIsolateBytes = options.maxMainIsolateBytes ?? DEFAULT_MAX_MAIN_ISOLATE_BYTES;
 
@@ -502,8 +499,7 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
   }
 
   function describeMemoryFailure(memory: ToolServerMemoryUsage): string | undefined {
-    if (memory.rss >= maxRssBytes) return `rss ${memory.rss} exceeded limit ${maxRssBytes}`;
-    const mainIsolateBytes = memory.heapUsed + memory.external;
+    const mainIsolateBytes = memory.heapUsed;
     if (mainIsolateBytes < maxMainIsolateBytes) return undefined;
     return `main isolate memory ${mainIsolateBytes} exceeded limit ${maxMainIsolateBytes}`;
   }
@@ -522,7 +518,7 @@ export function createToolServerHealthState(options: ToolServerHealthStateOption
     memoryHistory.push({ at: now, ...memoryUsage });
     if (memoryHistory.length > MEMORY_HISTORY_SIZE) memoryHistory.shift();
     const memoryFailureReason = describeMemoryFailure(memory);
-    const memoryLimits = { maxRssBytes, warnRssBytes, maxMainIsolateBytes };
+    const memoryLimits = { warnRssBytes, maxMainIsolateBytes };
     const memoryCheck: ToolServerHealthCheck = {
       name: "process.memory",
       ok: memoryFailureReason === undefined,

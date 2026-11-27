@@ -1,5 +1,9 @@
-import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
+
+function loadOpenAI(): typeof import("@ai-sdk/openai") {
+  const mod: typeof import("@ai-sdk/openai") = require("@ai-sdk/openai");
+  return mod;
+}
 
 type FetchInput = Parameters<typeof globalThis.fetch>[0];
 type FetchInit = Parameters<typeof globalThis.fetch>[1];
@@ -35,7 +39,7 @@ export function createOpenAIDecisionModel(input: {
   const fetch = Object.assign(fetchWithImages, {
     preconnect: fetchFn.preconnect?.bind(fetchFn) ?? (() => {}),
   });
-  return createOpenAI({ apiKey: input.apiKey, baseURL: input.baseUrl, fetch }).decisionModel(
-    input.model,
-  );
+  return loadOpenAI()
+    .createOpenAI({ apiKey: input.apiKey, baseURL: input.baseUrl, fetch })
+    .decisionModel(input.model);
 }

@@ -7,21 +7,21 @@ import {
   readNativeConversationTurnTimings,
   readNativeDmContextGapMs,
 } from "../surface/native/conversation-source";
-import { startsContextWindow } from "@stanley2058/lilac-client-protocol";
+import { startsContextWindow } from "@stanley2058/lilac-client-protocol/outline";
 import { SUMMARY_QUIET_MS } from "./thread-summary-policy";
 import { CONVERSATION_FACET_WEIGHTS as FACET_WEIGHTS } from "./thread-search-weights";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import * as sqliteVec from "sqlite-vec";
+import type { CoreConfig } from "@stanley2058/lilac-utils/core-config/types";
+import { createLogger } from "@stanley2058/lilac-utils/logging";
 import {
   classifyBunSqliteError,
-  createLogger,
-  resolveRouterSessionConfig,
   runBunSqliteTransaction,
-  type CoreConfig,
   type PersistedDataError,
   type PersistedDataIssueCode,
-} from "@stanley2058/lilac-utils";
+} from "@stanley2058/lilac-utils/persistence";
+import { resolveRouterSessionConfig } from "@stanley2058/lilac-utils/router-session-config";
 import { Panic, Result, TaggedError, type Result as ResultType } from "better-result";
 
 import type {
@@ -38,7 +38,7 @@ import {
 } from "./thread-summary-persistence-codec";
 import { isDiscordSessionDividerText } from "../surface/discord/discord-session-divider";
 import { splitByDiscordWindowOldestToNewest } from "../surface/discord/merge-window";
-import { parseLeadingContinueDirective } from "../surface/discord/discord-request-router/common";
+import { parseLeadingContinueDirective } from "../surface/discord/discord-request-router/directives";
 import { configureSqliteConnection } from "../shared/sqlite";
 import type { DiscordSearchIndexedMessage } from "../surface/store/discord-search-store";
 import type { DiscordIndexedAttachmentMeta } from "../surface/discord/discord-attachment";

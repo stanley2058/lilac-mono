@@ -5,7 +5,7 @@ import {
   type DecodedPersistedValue,
   type PersistedDataError,
   type PersistedDataIssueCode,
-} from "@stanley2058/lilac-utils";
+} from "@stanley2058/lilac-utils/persistence";
 import { Result, type Result as ResultType } from "better-result";
 import { z } from "zod";
 

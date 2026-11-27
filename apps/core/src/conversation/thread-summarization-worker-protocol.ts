@@ -1,5 +1,10 @@
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
+import {
+  workerMemorySampleMessageSchema,
+  workerMemoryWatchdogExceededMessageSchema,
+  type WorkerMemoryWatchdogEvent,
+} from "./worker-memory-watchdog";
 
 const nonemptyStringSchema = z.string().min(1);
 const countSchema = z.number().int().nonnegative();
@@ -134,7 +139,8 @@ export type ThreadSummarizationParentMessage =
   | ThreadSummarizationHydrationResponse;
 export type ThreadSummarizationWorkerMessage =
   | ThreadSummarizationWorkerResponse
-  | ThreadSummarizationHydrationRequest;
+  | ThreadSummarizationHydrationRequest
+  | WorkerMemoryWatchdogEvent;
 
 export class ThreadSummarizationWorkerRequestDecodeError extends TaggedError(
   "ThreadSummarizationWorkerRequestDecodeError",
@@ -210,7 +216,12 @@ export function decodeThreadSummarizationWorkerMessage(
   input: unknown,
 ): ResultType<ThreadSummarizationWorkerMessage, ThreadSummarizationWorkerMessageDecodeError> {
   const parsed = z
-    .union([threadSummarizationWorkerResponseSchema, threadSummarizationHydrationRequestSchema])
+    .union([
+      threadSummarizationWorkerResponseSchema,
+      threadSummarizationHydrationRequestSchema,
+      workerMemorySampleMessageSchema,
+      workerMemoryWatchdogExceededMessageSchema,
+    ])
     .safeParse(input);
   if (parsed.success) return Result.ok(parsed.data);
   return Result.err(

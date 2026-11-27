@@ -18,7 +18,12 @@ export type ThreadMaterializerErrorContext =
 export class ThreadMaterializerOperationFailed extends TaggedError(
   "ThreadMaterializerOperationFailed",
 )<{
-  readonly operation: "list-channels" | "repair-channel" | "worker-protocol" | "worker-stopped";
+  readonly operation:
+    | "list-channels"
+    | "repair-channel"
+    | "worker-protocol"
+    | "worker-stopped"
+    | "worker-watchdog";
   readonly message: string;
 }> {}
 
@@ -30,6 +35,7 @@ export type ThreadMaterializer = {
   ): void;
   markAllDirty(): void;
   flush(): Promise<void>;
+  hasIncompleteWork(): boolean;
   stop(): Promise<void>;
 };
 
@@ -75,6 +81,7 @@ export function createThreadMaterializer(params: {
   const retries = new Map<string, { repair: DirtyChannel; attempts: number; cancel: () => void }>();
   const listingTasks = new Set<Promise<void>>();
   let accepting = true;
+  let listingFailed = false;
   let cancelScheduledDrain: (() => void) | null = null;
   let drainPromise: Promise<void> | null = null;
   let stopPromise: Promise<void> | null = null;
@@ -207,8 +214,12 @@ export function createThreadMaterializer(params: {
       listingTask = (async () => {
         const listed = await captureMaterializerOperation(params.listChannelIds);
         const finishListing = listed.match<() => void>({
-          err: (error) => () => reportError(error, { operation: "list-channels" }),
+          err: (error) => () => {
+            listingFailed = true;
+            reportError(error, { operation: "list-channels" });
+          },
           ok: (channelIds) => () => {
+            listingFailed = false;
             for (const channelId of channelIds) {
               enqueueDirty({ channelId, kind: "topology" });
             }
@@ -221,6 +232,16 @@ export function createThreadMaterializer(params: {
       listingTasks.add(listingTask);
     },
     flush,
+    hasIncompleteWork() {
+      return (
+        !accepting ||
+        drainPromise !== null ||
+        listingFailed ||
+        listingTasks.size > 0 ||
+        dirtyChannels.size > 0 ||
+        retries.size > 0
+      );
+    },
     stop() {
       if (stopPromise) return stopPromise;
       accepting = false;

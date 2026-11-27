@@ -1,5 +1,9 @@
 import { Result, TaggedError, type Result as ResultType } from "better-result";
 import { z } from "zod";
+import {
+  workerMemorySampleMessageSchema,
+  workerMemoryWatchdogExceededMessageSchema,
+} from "./worker-memory-watchdog";
 
 export const threadMaterializerRepairKindSchema = z.enum(["content", "topology"]);
 
@@ -51,6 +55,8 @@ export const threadMaterializerWorkerResponseSchema = z.union([
       error: z.string().min(1),
     })
     .strict(),
+  workerMemorySampleMessageSchema,
+  workerMemoryWatchdogExceededMessageSchema,
 ]);
 
 export type ThreadMaterializerWorkerResponse = z.infer<

@@ -1,17 +1,19 @@
 import {
   modelReasoningSchema,
   nativeDeploymentSettingsSchema,
+} from "@stanley2058/lilac-client-protocol/domain";
+import {
   displayMessageSchema,
   displayPartSchema,
-  readyTurnSlotSchema,
   liveUpdateSchema,
-} from "@stanley2058/lilac-client-protocol";
+  readyTurnSlotSchema,
+} from "@stanley2058/lilac-client-protocol/replay";
 import {
   CorruptPersistedFields,
   MalformedSerialization,
   UnsupportedVersion,
   type PersistedDataError,
-} from "@stanley2058/lilac-utils";
+} from "@stanley2058/lilac-utils/persistence";
 import { Result, type Result as ResultType } from "better-result";
 import { z } from "zod";
 import { blobRefV1Schema } from "@stanley2058/lilac-blob-storage";
