@@ -12,16 +12,17 @@ These rules apply to all tasks. Use the linked documents for detailed rules and 
 - Follow product decisions and non-goals. Do not follow conflicting reviewer suggestions.
 - Fix review findings that the current change causes. Also fix a finding if it proves that the change
   violates an acceptance criterion or fails a required check.
-- Ask the user before you add a new contract, dependency, configuration option, or subsystem. Also ask
-  before you add stored data, a queue, a journal, a worker, or a recovery process.
+- Ask the user before you add a new filesystem tool contract, plugin contract, dependency, configuration
+  option, or subsystem. Also ask before you add a queue, a journal, a worker, or a recovery process.
 - An explicit request or approved plan authorizes the changes it specifies. Ask only for decisions beyond
   that authorization.
 - Stop and ask if a fix needs a new product decision or increases the approved scope.
 
 ## Compatibility And Safety
 
-- You can change private APIs. Do not change an existing wire contract, stored data contract,
-  filesystem tool contract, or plugin contract without approval.
+- You can change private APIs. You can add a wire contract or stored data contract, or change an
+  existing one, but tell the user before you do, and report any such addition or change you already made.
+- Get approval before you change an existing filesystem tool contract or plugin contract.
 - Do not revert, overwrite, or include unrelated worktree changes.
 - Use `ref/` only as a read-only upstream reference.
 - Do not put credentials, tokens, private transcripts, or sensitive command data in outputs or files.
