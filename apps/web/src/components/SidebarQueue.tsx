@@ -22,8 +22,8 @@ import { useNativeOnline } from "../queries";
 import { moveInQueues, sidebarSections, type ThreadMove, sidebarSnapshot } from "../sidebar-order";
 import { SidebarThread } from "./SidebarThread";
 import { ThreadQueue } from "./ThreadQueue";
-import { Button } from "./ui/button";
-import { ErrorNotice } from "./ui";
+import { toast } from "./ui/toast";
+import { isConnectionFailure } from "../connection-lifecycle";
 import type { NativeThread } from "@stanley2058/lilac-client-protocol";
 
 type Page = NativeRpcOutputs["sidebar"]["list"];
@@ -134,7 +134,41 @@ export const SidebarQueue = memo(function SidebarQueue({
       sections[section].hasNextPage &&
       !sections[section].isError,
   );
-  const error = move.error ?? pinned.error ?? active.error ?? settledCount.error ?? settled.error;
+  // A collapsed Settled query is disabled, so refreshes skip it and its last error would linger.
+  const errors = [
+    move.error,
+    pinned.error,
+    active.error,
+    settledCount.error,
+    settledOpen ? settled.error : null,
+  ].filter((error) => !!error);
+  const transient = errors.some((error) => isConnectionFailure(error.message));
+  const errorMessage = errors.find((error) => !isConnectionFailure(error.message))?.message;
+  const retry = useEventCallback(() => {
+    move.reset();
+    void refreshSidebar(queries);
+  });
+  // A reconnect refreshes the sidebar itself. A connection that passes the probe never reconnects,
+  // so the sidebar refreshes here instead.
+  const recover = useEventCallback(async () => {
+    if (move.error && isConnectionFailure(move.error.message)) move.reset();
+    await client.checkConnection();
+    if (client.connectionState === "online") void refreshSidebar(queries);
+  });
+  useEffect(() => {
+    if (transient) void recover();
+  }, [transient, recover]);
+  useEffect(() => {
+    if (!errorMessage) return;
+    const id = toast.add({
+      id: "sidebar-error",
+      title: errorMessage,
+      type: "error",
+      timeout: 0,
+      actionProps: { children: "Retry", onClick: retry },
+    });
+    return () => toast.close(id);
+  }, [errorMessage, retry]);
   const select = useEventCallback((id: string) => onSelect(id));
   useThreadTargets(
     [...visible.pinned, ...visible.active, ...(settledOpen ? visible.settled : [])].map(
@@ -159,64 +193,48 @@ export const SidebarQueue = memo(function SidebarQueue({
     }),
   );
   return (
-    <>
-      <ThreadQueue
-        emptyState={
-          !error &&
-          !pinned.isFetching &&
-          !active.isFetching &&
-          visible.pinned.length === 0 &&
-          visible.active.length === 0 ? (
-            <SidebarEmptyState view="default" />
-          ) : null
-        }
-        queues={visible}
-        totals={visibleTotals}
-        disabled={!online || move.isPending}
-        loading={sidebarSections.some((section) => sections[section].isFetching)}
-        // The first pages replace the fallback list in place instead of shuffling its rows.
-        animateChanges={loaded}
-        hasMore={!!next}
-        onEndReached={() => {
-          if (next) void sections[next].fetchNextPage({ cancelRefetch: false });
-        }}
-        settledOpen={settledOpen}
-        onSettledOpen={setSettledOpen}
-        onMove={(input) => move.mutate(input)}
-        renderThread={(entry, section) => (
-          <SidebarThread
-            id={entry.id}
-            thread={entry.source}
-            viewer={viewer}
-            external={external}
-            modelLabel={models?.find((model) => model.id === entry.source?.modelId)?.label}
-            section={section}
-            onSettle={settle}
-            onPin={pin}
-            settleDisabled={!online || move.isPending}
-            onSelect={select}
-            onRename={rename}
-            onRegenerateTitle={onRegenerateTitle}
-            onArchive={archive}
-            onDelete={onDelete}
-            onDiscardDraft={onDiscardDraft}
-          />
-        )}
-      />
-      {error ? (
-        <div className="queue-error">
-          <ErrorNotice message={error.message} />
-          <Button
-            variant="ghost"
-            onClick={() => {
-              move.reset();
-              void refreshSidebar(queries);
-            }}
-          >
-            Retry
-          </Button>
-        </div>
-      ) : null}
-    </>
+    <ThreadQueue
+      emptyState={
+        errors.length === 0 &&
+        !pinned.isFetching &&
+        !active.isFetching &&
+        visible.pinned.length === 0 &&
+        visible.active.length === 0 ? (
+          <SidebarEmptyState view="default" />
+        ) : null
+      }
+      queues={visible}
+      totals={visibleTotals}
+      disabled={!online || move.isPending}
+      loading={sidebarSections.some((section) => sections[section].isFetching)}
+      // The first pages replace the fallback list in place instead of shuffling its rows.
+      animateChanges={loaded}
+      hasMore={!!next}
+      onEndReached={() => {
+        if (next) void sections[next].fetchNextPage({ cancelRefetch: false });
+      }}
+      settledOpen={settledOpen}
+      onSettledOpen={setSettledOpen}
+      onMove={(input) => move.mutate(input)}
+      renderThread={(entry, section) => (
+        <SidebarThread
+          id={entry.id}
+          thread={entry.source}
+          viewer={viewer}
+          external={external}
+          modelLabel={models?.find((model) => model.id === entry.source?.modelId)?.label}
+          section={section}
+          onSettle={settle}
+          onPin={pin}
+          settleDisabled={!online || move.isPending}
+          onSelect={select}
+          onRename={rename}
+          onRegenerateTitle={onRegenerateTitle}
+          onArchive={archive}
+          onDelete={onDelete}
+          onDiscardDraft={onDiscardDraft}
+        />
+      )}
+    />
   );
 });
