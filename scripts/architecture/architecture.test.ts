@@ -2744,6 +2744,7 @@ describe("permanent architecture governance", () => {
       "packages/plugin-runtime:hooks.ts#invokeLevel2Call",
       "apps/core:src/tool-server/tools/attachment.ts#Attachment.call",
       "apps/core:src/tool-server/tools/codex.ts#Codex.call",
+      "apps/core:src/tool-server/tools/config.ts#ConfigManagement.call",
       "apps/core:src/tool-server/tools/conversation-thread.ts#ConversationThread.call",
       "apps/core:src/tool-server/tools/discovery.ts#Discovery.call",
       "apps/core:src/tool-server/tools/generate.ts#Generate.call",

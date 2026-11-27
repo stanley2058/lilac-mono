@@ -1846,6 +1846,23 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
   [
     "packages/utils",
     [
+      // Operator-edited YAML and the generated editor schema for the settings form.
+      {
+        identity: { module: "config-document.ts", exportName: "documentValue" },
+        category: "request",
+      },
+      {
+        identity: { module: "config-document.ts", exportName: "indentLayout" },
+        category: "request",
+      },
+      {
+        identity: { module: "config-document.ts", exportName: "existingKeys" },
+        category: "request",
+      },
+      {
+        identity: { module: "config-schema.ts", exportName: "decodeConfigSchema" },
+        category: "request",
+      },
       {
         identity: {
           module: "custom-commands.ts",
@@ -3718,6 +3735,13 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
               identity: { module: "src/components/ui.tsx", exportName: "uiError" },
               category: "wire" as const,
             },
+            {
+              identity: {
+                module: "src/config-ui/save-failure.ts",
+                exportName: "decodeSaveFailure",
+              },
+              category: "wire" as const,
+            },
           ]
         : []),
       ...(root === "apps/web"
@@ -4709,12 +4733,22 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             ...[
               "NativeConfigService.read",
               "NativeConfigService.save",
-              "NativeConfigService.saveSerialized",
               "NativeConfigService.reloadMcp",
-              "validateDocument",
-              "writeAtomic",
+              "NativeConfigService.mcpStatus",
             ].map((exportName) => ({
               module: "src/surface/native/config-service.ts",
+              exportName,
+            })),
+            ...[
+              "validateConfigDocument",
+              "configFileSchema",
+              "restartConfigPaths",
+              "ConfigFiles.read",
+              "ConfigFiles.save",
+              "ConfigFiles.patch",
+              "writeAtomic",
+            ].map((exportName) => ({
+              module: "src/runtime/config-files.ts",
               exportName,
             })),
             ...[
@@ -4944,6 +4978,7 @@ const ARCHITECTURE_WORKSPACES = ACTIVE_WORKSPACES.map(([root, packageName]) => {
             ...[
               ["src/tool-server/tools/attachment.ts", "Attachment.call"],
               ["src/tool-server/tools/codex.ts", "Codex.call"],
+              ["src/tool-server/tools/config.ts", "ConfigManagement.call"],
               ["src/tool-server/tools/conversation-thread.ts", "ConversationThread.call"],
               ["src/tool-server/tools/discovery.ts", "Discovery.call"],
               ["src/tool-server/tools/generate.ts", "Generate.call"],

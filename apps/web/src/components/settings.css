@@ -147,3 +147,16 @@
     calc((var(--swatch-distance) - 2) * var(--ui-swatch-lift))
   );
 }
+
+/* A field that search or "Show in YAML" revealed fades from a tint so the reader can find it. */
+@keyframes config-reveal {
+  from {
+    background: color-mix(in srgb, var(--ui-primary) 16%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+[data-config-path][data-flash] {
+  animation: config-reveal calc(var(--ui-motion-duration) * 8) ease-out;
+}

@@ -105,7 +105,7 @@ export type NativeRuntimeOptions = {
   denyPaths: readonly string[];
   subscriptionPrefix: string;
   customCommands: CustomCommandManager;
-  mcpRegistry: Pick<McpRegistryApi, "reload" | "getCatalogServers" | "getTools">;
+  mcpRegistry: Pick<McpRegistryApi, "reload" | "list" | "getCatalogServers" | "getTools">;
   adapters: SurfaceAdapterResolver;
   conversationThreads: () => ConversationThreadToolService | undefined;
   runner: () => (NativeRunnerControl & SubagentReader) | undefined;

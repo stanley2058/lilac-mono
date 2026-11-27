@@ -36,4 +36,36 @@ describe("subagent Level 2 profile authority", () => {
     }
     expect(allowed("scheduler", "workflow.run.list")).toBe(true);
   });
+
+  it("requires workspace writes for config.patch but not config.describe", () => {
+    const profiles = parseCoreConfigV3ToUniversal({
+      configVersion: 3,
+      agent: {
+        subagents: {
+          permissions: {
+            reader: {
+              level2: { plugins: ["config"], callables: ["config.describe", "config.patch"] },
+            },
+            editor: {
+              level2: { plugins: ["config"], callables: ["config.describe", "config.patch"] },
+              workspaceWrites: true,
+            },
+          },
+        },
+      },
+    });
+    const configAllowed = (profileName: string, callableId: string) =>
+      isLevel2ContributionAllowedForNativeProfile({
+        config: profiles,
+        profileName,
+        pluginId: "config",
+        callableId,
+      });
+    expect(configAllowed("full", "config.patch")).toBe(true);
+    expect(configAllowed("editor", "config.patch")).toBe(true);
+    expect(configAllowed("reader", "config.describe")).toBe(true);
+    expect(configAllowed("reader", "config.patch")).toBe(false);
+    expect(configAllowed("restricted", "config.describe")).toBe(false);
+    expect(configAllowed("restricted", "config.patch")).toBe(false);
+  });
 });

@@ -18,6 +18,7 @@ export const sections = [
   ["notifications", "Notifications"],
   ["keybindings", "Keybindings"],
   ["deployment", "Deployment settings"],
+  ["config-form", "Configuration form"],
   ["composer", "Composer"],
   ["citations", "Citations"],
   ["reconnection", "Reconnection"],

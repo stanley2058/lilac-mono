@@ -55,7 +55,7 @@ export type NativeRpcServiceOptions = {
   workingIndicators?: () => readonly string[];
   catalogs: Pick<NativeCatalogService, "get" | "subscribe"> &
     Partial<Pick<NativeCatalogService, "selection" | "models">>;
-  config: Pick<NativeConfigService, "read" | "save" | "reloadMcp">;
+  config: Pick<NativeConfigService, "read" | "save" | "reloadMcp" | "mcpStatus">;
   titles?: Pick<NativeTitleGeneration, "regenerate">;
   execution: Pick<
     NativeExecution,
@@ -1120,6 +1120,25 @@ export function createNativeRpcServices(options: NativeRpcServiceOptions): Nativ
             reconciliation: outcome.reconciliation,
             ...(outcome.error ? { error: outcome.error } : {}),
           })),
+        }));
+      },
+      mcpStatus(principal) {
+        return config.mcpStatus(principal.userId).map((statuses) => ({
+          servers: statuses.map((status) =>
+            status.status === "available"
+              ? {
+                  name: status.serverId,
+                  transport: status.transport,
+                  state: status.status,
+                  toolCount: status.toolCount,
+                }
+              : {
+                  name: status.serverId,
+                  transport: status.transport,
+                  state: status.status,
+                  error: status.error.slice(0, 4096),
+                },
+          ),
         }));
       },
     },

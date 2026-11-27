@@ -121,7 +121,7 @@ function fixture(
     config: new NativeConfigService({
       dataDir: "/unused",
       ownerId: "owner",
-      registry: { reload: async () => Result.ok([]) },
+      registry: { reload: async () => Result.ok([]), list: () => [] },
     }),
     execution: {
       context: () =>

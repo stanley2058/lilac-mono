@@ -43,6 +43,7 @@ import {
   KeybindingsDemo,
   DeploymentSettingsDemo,
   NotificationSettingsDemo,
+  ConfigFormDemo,
 } from "./design-system/SettingsDemos";
 const deferredSource = {
   target: { kind: "thread" as const, threadId: "design-system" },
@@ -170,6 +171,13 @@ export default function DesignSystem() {
               </Section>
               <Section id="deployment" title="Deployment settings">
                 <DeploymentSettingsDemo />
+              </Section>
+              <Section
+                id="config-form"
+                title="Configuration form"
+                description="Schema-backed fields from the Core settings pages. Edit a value to see the unsaved dot and reset control."
+              >
+                <ConfigFormDemo />
               </Section>
               <ComposerSpecimen />
               <Section

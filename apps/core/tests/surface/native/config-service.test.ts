@@ -26,6 +26,16 @@ async function fixture() {
         reloads++;
         return Result.ok([]);
       },
+      list: () => [
+        { serverId: "docs", transport: "http", status: "available", toolCount: 3 },
+        {
+          serverId: "local",
+          transport: "stdio",
+          status: "unavailable",
+          phase: "connection",
+          error: "spawn failed",
+        },
+      ],
     },
   });
   return { dataDir, service, reloads: () => reloads };
@@ -45,6 +55,7 @@ describe("native owner configuration", () => {
       ).isErr(),
     ).toBe(true);
     expect((await service.reloadMcp("participant")).isErr()).toBe(true);
+    expect(service.mcpStatus("participant").isErr()).toBe(true);
   });
   it("validates without mutation, saves atomically and rejects stale concurrent saves", async () => {
     const { service, dataDir } = await fixture();

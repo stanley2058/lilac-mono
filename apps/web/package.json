@@ -20,6 +20,7 @@
     "@shikijs/monaco": "4.4.3",
     "@stanley2058/lilac-client": "workspace:*",
     "@stanley2058/lilac-client-protocol": "workspace:*",
+    "@stanley2058/lilac-utils": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-query": "^5.103.1",
     "@tanstack/react-router": "^1.170.38",

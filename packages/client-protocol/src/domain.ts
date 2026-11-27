@@ -278,6 +278,20 @@ export const mcpReloadReplySchema = z.strictObject({
     .max(256),
 });
 export type McpReloadReply = z.infer<typeof mcpReloadReplySchema>;
+export const mcpStatusReplySchema = z.strictObject({
+  servers: z
+    .array(
+      z.strictObject({
+        name: z.string().max(256),
+        transport: z.enum(["stdio", "http"]),
+        state: z.enum(["available", "unavailable", "authentication_required"]),
+        toolCount: z.number().int().nonnegative().optional(),
+        error: z.string().max(4096).optional(),
+      }),
+    )
+    .max(256),
+});
+export type McpStatusReply = z.infer<typeof mcpStatusReplySchema>;
 export type ConfigDocument = z.infer<typeof configDocumentSchema>;
 
 export const resourcePreviewSchema = z.strictObject({

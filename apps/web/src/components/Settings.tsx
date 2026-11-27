@@ -3,32 +3,28 @@ import { NotificationSettings } from "./NotificationSettings";
 import type { SettingsTab } from "../router";
 import { useWorkspace } from "../workspace-context";
 import { useStore } from "zustand";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { configOptions, userOptions, useNativeOnline } from "../queries";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { userOptions, useNativeOnline } from "../queries";
 import { DeploymentSettings } from "./DeploymentSettings";
 import { SidebarPreferences } from "./SidebarPreferences";
 import { AccountProfile } from "./AccountProfile";
 import { AgentIdentity } from "./AgentIdentity";
 import { AppearanceSettings } from "./AppearanceSettings";
 import type { ActorIdentity } from "./ActorAvatar";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { RefreshCw, Save, UserPlus } from "lucide-react";
-import type { NativeRpcOutputs, NativeUser } from "@stanley2058/lilac-client-protocol";
-import { attempt, ErrorNotice, IconButton, VirtualList } from "./ui";
-import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
+import { lazy, Suspense, useRef, useState, useSyncExternalStore } from "react";
+import { UserPlus } from "lucide-react";
+import type { NativeUser } from "@stanley2058/lilac-client-protocol";
+import { ErrorNotice, IconButton, VirtualList } from "./ui";
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from "./ui/dialog";
 import "./settings.css";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { CodeEditor } from "./CodeEditor";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { createConfigStoreHolder } from "../config-ui/store-holder";
+import { SkeletonLines } from "./ui/skeleton";
 
-import {
-  completeConfigSave,
-  editConfig,
-  type ConfigEditors,
-  type ConfigKind,
-} from "../config-editor";
+const ConfigEditorPanel = lazy(() => import("./config/ConfigEditorPanel"));
 function subscribeToSettingsWidth(onChange: () => void) {
   const media = window.matchMedia("(max-width: 40rem)");
   media.addEventListener("change", onChange);
@@ -57,307 +53,225 @@ export function Settings({
   const narrow = useSyncExternalStore(subscribeToSettingsWidth, isNarrowSettings);
   const { client, preferences, keybindings, notifications, accountProfile } = useWorkspace();
   const animation = useStore(preferences, (state) => state.animation);
-  const [editors, setEditors] = useState<ConfigEditors>({});
+  const [drafts] = useState(createConfigStoreHolder);
+  const [confirmClose, setConfirmClose] = useState(false);
   const [error, setError] = useState<string>();
-  const [reloads, setReloads] = useState<NativeRpcOutputs["config"]["reloadMcp"]>();
-  const [saving, setSaving] = useState<Partial<Record<ConfigKind, boolean>>>({});
-  const tabRef = useRef(tab);
-  tabRef.current = tab;
   const popup = useRef<HTMLDivElement>(null);
   // Tabs activate on focus, so opening on the first section would replace a `?settings=` deep link.
   const focusSelectedSection = () =>
     popup.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? true;
-  const saveRequests = useRef({ core: 0, mcp: 0 });
-  const savingKinds = useRef(new Set<ConfigKind>());
-  const editor = tab === "core" || tab === "mcp" ? editors[tab] : undefined;
-  const document = editor?.document;
-  const text = editor?.text ?? "";
-  const status = editor?.status ?? "";
-  const online = useNativeOnline(client);
-  const queries = useQueryClient();
-  const loadConfig = open && online && viewer.role === "owner";
-  const coreConfig = useQuery({
-    ...configOptions(client, "core"),
-    enabled: loadConfig && !editors.core,
-  });
-  const mcpConfig = useQuery({
-    ...configOptions(client, "mcp"),
-    enabled: loadConfig && !editors.mcp,
-  });
-  const config = tab === "mcp" ? mcpConfig : coreConfig;
-  useEffect(() => {
-    for (const value of [coreConfig.data, mcpConfig.data]) {
-      if (!value) continue;
-      setEditors((current) =>
-        current[value.kind]
-          ? current
-          : {
-              ...current,
-              [value.kind]: {
-                document: value,
-                text: value.text,
-                editRevision: 0,
-              },
-            },
-      );
-    }
-  }, [coreConfig.data, mcpConfig.data]);
-  async function save() {
-    const rpc = client.rpc;
-    if (!rpc || !document || !editor || savingKinds.current.has(document.kind)) return;
-    savingKinds.current.add(document.kind);
-    const request = { kind: document.kind, editRevision: editor.editRevision };
-    const sequence = ++saveRequests.current[request.kind];
-    setSaving((current) => ({ ...current, [request.kind]: true }));
-    setError(undefined);
-    const saved = await attempt(
-      () =>
-        rpc.config.save({
-          kind: request.kind,
-          expectedRevision: document.revision,
-          text,
-        }),
-      (message) => {
-        if (tabRef.current === request.kind) setError(message);
-      },
+  const hasUnsavedConfig = () =>
+    Object.values(drafts.current?.getState().drafts ?? {}).some(
+      (draft) => draft && draft.text !== draft.saved.text,
     );
-    if (saveRequests.current[request.kind] !== sequence) return;
-    savingKinds.current.delete(request.kind);
-    setSaving((current) => ({ ...current, [request.kind]: false }));
-    if (!saved) return;
-    void queries.invalidateQueries({ queryKey: ["config", request.kind] });
-    setEditors((current) => completeConfigSave(current, request, saved));
-  }
-  async function reload() {
-    if (!client.rpc) return;
-    const result = await attempt(() => client.rpc!.config.reloadMcp({}), setError);
-    if (result) setReloads(result);
-  }
   return (
-    <Dialog
-      open={open}
-      onOpenChange={setOpen}
-      onOpenChangeComplete={(open) => {
-        if (!open) onClose();
-      }}
-    >
-      <DialogContent
-        ref={popup}
-        initialFocus={focusSelectedSection}
-        className="settings-dialog flex w-[min(64rem,_calc(100vw_-_calc(var(--ui-space-unit)*8)))] max-w-none sm:max-w-none h-[min(48rem,_calc(100dvh_-_calc(var(--ui-space-unit)*8)))] p-6 overflow-hidden"
+    <>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!next && hasUnsavedConfig()) return setConfirmClose(true);
+          setOpen(next);
+        }}
+        onOpenChangeComplete={(open) => {
+          if (!open) onClose();
+        }}
       >
-        <DialogTitle className="sr-only absolute w-px h-px overflow-hidden [clip:rect(0,_0,_0,_0)] whitespace-nowrap">
-          Settings
-        </DialogTitle>
-        <Tabs
-          className="settings-layout flex-1 min-w-0 min-h-0 gap-6"
-          orientation={narrow ? "horizontal" : "vertical"}
-          value={tab}
-          onValueChange={(value) => {
-            if (
-              value === "account" ||
-              value === "options" ||
-              value === "keybindings" ||
-              value === "deployment" ||
-              value === "core" ||
-              value === "mcp" ||
-              value === "agent" ||
-              value === "users"
-            ) {
-              onTabChange(value);
-              setError(undefined);
-            }
-          }}
+        <DialogContent
+          ref={popup}
+          initialFocus={focusSelectedSection}
+          className="settings-dialog flex w-[min(64rem,_calc(100vw_-_calc(var(--ui-space-unit)*8)))] max-w-none sm:max-w-none h-[min(48rem,_calc(100dvh_-_calc(var(--ui-space-unit)*8)))] p-6 overflow-hidden"
         >
-          <TabsList
-            activateOnFocus
-            variant="navigation"
-            className="settings-navigation w-40 flex-none items-stretch justify-start self-stretch h-auto overflow-y-auto overflow-x-hidden min-w-0 py-4 px-0 gap-6 bg-transparent"
-            aria-label="Settings sections"
+          <DialogTitle className="sr-only absolute w-px h-px overflow-hidden [clip:rect(0,_0,_0,_0)] whitespace-nowrap">
+            Settings
+          </DialogTitle>
+          <Tabs
+            className="settings-layout flex-1 min-w-0 min-h-0 gap-6"
+            orientation={narrow ? "horizontal" : "vertical"}
+            value={tab}
+            onValueChange={(value) => {
+              if (
+                value === "account" ||
+                value === "options" ||
+                value === "keybindings" ||
+                value === "deployment" ||
+                value === "core" ||
+                value === "mcp" ||
+                value === "agent" ||
+                value === "users"
+              ) {
+                onTabChange(value);
+                setError(undefined);
+              }
+            }}
           >
-            <div className="settings-navigation-group flex flex-col gap-1">
-              <span
-                className="settings-navigation-label mt-0 mx-0 mb-2 px-3 text-sm font-semibold text-foreground"
-                aria-hidden="true"
-              >
-                Preferences
-              </span>
-              <TabsTrigger tabIndex={0} value="account">
-                Account
-              </TabsTrigger>
-              <TabsTrigger tabIndex={0} value="options">
-                Settings
-              </TabsTrigger>
-              <TabsTrigger tabIndex={0} value="keybindings">
-                Keybindings
-              </TabsTrigger>
-            </div>
-            {viewer.role === "owner" ? (
+            <TabsList
+              activateOnFocus
+              variant="navigation"
+              className="settings-navigation w-40 flex-none items-stretch justify-start self-stretch h-auto overflow-y-auto overflow-x-hidden min-w-0 py-4 px-0 gap-6 bg-transparent"
+              aria-label="Settings sections"
+            >
               <div className="settings-navigation-group flex flex-col gap-1">
                 <span
                   className="settings-navigation-label mt-0 mx-0 mb-2 px-3 text-sm font-semibold text-foreground"
                   aria-hidden="true"
                 >
-                  Runtime
+                  Preferences
                 </span>
-                <TabsTrigger tabIndex={0} value="deployment">
-                  Deployment
+                <TabsTrigger tabIndex={0} value="account">
+                  Account
                 </TabsTrigger>
-                <TabsTrigger tabIndex={0} value="core">
-                  Core
+                <TabsTrigger tabIndex={0} value="options">
+                  Settings
                 </TabsTrigger>
-                <TabsTrigger tabIndex={0} value="mcp">
-                  MCP
-                </TabsTrigger>
-                <TabsTrigger tabIndex={0} value="agent">
-                  Agent
-                </TabsTrigger>
-                <TabsTrigger tabIndex={0} value="users">
-                  User
+                <TabsTrigger tabIndex={0} value="keybindings">
+                  Keybindings
                 </TabsTrigger>
               </div>
-            ) : null}
-          </TabsList>
-          <div className="settings-options flex-1 min-w-0 min-h-0 my-4 p-6 overflow-y-auto wrap-anywhere rounded-lg bg-background text-foreground">
-            <ErrorNotice
-              message={
-                error ?? (tab === "core" || tab === "mcp" ? config.error?.message : undefined)
-              }
-              onDismiss={error ? () => setError(undefined) : undefined}
-            />
-            <TabsContent value="account" className="settings-section">
-              {accountProfile ?? (
-                <>
-                  <h2>Account</h2>
-                  <AccountProfile viewer={viewer} />
-                </>
-              )}
-            </TabsContent>
-            <TabsContent value="keybindings" className="settings-section">
-              <KeybindingsSettings store={keybindings} />
-            </TabsContent>
-            <TabsContent value="options" className="settings-section">
-              <h2>Appearance</h2>
-              <AppearanceSettings theme={theme} onTheme={onTheme} />
-              <div className="settings-row flex items-start justify-between gap-6 mb-8">
-                <div className="settings-row-description min-w-0">
-                  <span>Animation speed</span>
-                  <p className="muted text-muted-foreground">
-                    Animation speed is saved for your account on this device. Reduced motion follows
-                    your system preference.
-                  </p>
-                </div>
-                <Select
-                  items={[
-                    { value: "off", label: "Off" },
-                    { value: "fast", label: "Fast" },
-                    { value: "slow", label: "Slow" },
-                  ]}
-                  value={animation}
-                  onValueChange={(value) => {
-                    if (value === "off" || value === "fast" || value === "slow")
-                      preferences.getState().setAnimation(value);
-                  }}
-                >
-                  <SelectTrigger aria-label="Animation speed">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="off">Off</SelectItem>
-                    <SelectItem value="fast">Fast</SelectItem>
-                    <SelectItem value="slow">Slow</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <h2>Thread</h2>
-              <SidebarPreferences />
-              <NotificationSettings preferences={notifications} />
-              <h2>Access</h2>
-              <dl className="settings-account grid gap-4 mb-6">
-                <div>
-                  <dt>Role</dt>
-                  <dd>{viewer.role}</dd>
-                </div>
-                <div>
-                  <dt>Tool access</dt>
-                  <dd>{viewer.toolMode === "full" ? "Full access" : "Restricted"}</dd>
-                </div>
-              </dl>
-            </TabsContent>
-            {viewer.role === "owner" ? (
-              <TabsContent value="deployment" className="settings-section">
-                <h2>Deployment</h2>
-                <DeploymentSettings />
-              </TabsContent>
-            ) : null}
-            <TabsContent value="agent" className="settings-section">
-              <h2>Agent</h2>
-              <AgentIdentity client={client} identity={agent} />
-            </TabsContent>
-            <TabsContent value="users" className="settings-section">
-              <h2>User</h2>
-              <People />
-            </TabsContent>
-            {tab === "core" || tab === "mcp" ? (
-              <TabsContent
-                value={tab}
-                className="settings-section settings-config flex h-full min-h-0 flex-col gap-3"
-              >
-                <header className="config-header flex flex-wrap items-center gap-2">
-                  <h2 className="flex-1 m-0 text-lg font-semibold">
-                    {tab === "core" ? "Core" : "MCP"}
-                  </h2>
-                  <span role="status" className="text-sm text-muted-foreground">
-                    {status}
-                    {tab === "mcp" && status === "Saved" ? ". Reload to apply changes." : ""}
-                  </span>
-                  {tab === "mcp" ? (
-                    <Button variant="secondary" size="sm" onClick={() => void reload()}>
-                      <RefreshCw />
-                      Reload MCP
-                    </Button>
-                  ) : null}
-                  <Button
-                    size="sm"
-                    disabled={!document || !!saving[document.kind] || text === document.text}
-                    onClick={() => void save()}
+              {viewer.role === "owner" ? (
+                <div className="settings-navigation-group flex flex-col gap-1">
+                  <span
+                    className="settings-navigation-label mt-0 mx-0 mb-2 px-3 text-sm font-semibold text-foreground"
+                    aria-hidden="true"
                   >
-                    <Save />
-                    Save
-                  </Button>
-                </header>
-                <div className="config-editor flex flex-1 min-h-0 overflow-hidden rounded-md border border-border">
-                  <CodeEditor
-                    key={tab}
-                    language="yaml"
-                    configKind={tab}
-                    uri={`file:///lilac-settings/${tab}-config.yaml`}
-                    label={`${tab === "core" ? "Core" : "MCP"} configuration YAML`}
-                    value={document ? text : ""}
-                    readOnly={!document}
-                    onChange={(value) => setEditors((current) => editConfig(current, tab, value))}
-                    onSave={() => void save()}
-                  />
+                    Runtime
+                  </span>
+                  <TabsTrigger tabIndex={0} value="deployment">
+                    Deployment
+                  </TabsTrigger>
+                  <TabsTrigger tabIndex={0} value="core">
+                    Core
+                  </TabsTrigger>
+                  <TabsTrigger tabIndex={0} value="mcp">
+                    MCP
+                  </TabsTrigger>
+                  <TabsTrigger tabIndex={0} value="agent">
+                    Agent
+                  </TabsTrigger>
+                  <TabsTrigger tabIndex={0} value="users">
+                    User
+                  </TabsTrigger>
                 </div>
-                {tab === "mcp" && reloads ? (
-                  <div className="reload-results flex-none max-h-40 overflow-auto text-sm">
-                    {reloads.servers.map((server) => (
-                      <div key={server.name}>
-                        <strong>{server.name}</strong>
-                        <span>{server.state}</span>
-                        {server.error ? (
-                          <p className="error-text text-danger text-sm">{server.error}</p>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
+              ) : null}
+            </TabsList>
+            <div className="settings-options flex-1 min-w-0 min-h-0 my-4 p-6 overflow-y-auto wrap-anywhere rounded-lg bg-background text-foreground">
+              <ErrorNotice
+                message={error}
+                onDismiss={error ? () => setError(undefined) : undefined}
+              />
+              <TabsContent value="account" className="settings-section">
+                {accountProfile ?? (
+                  <>
+                    <h2>Account</h2>
+                    <AccountProfile viewer={viewer} />
+                  </>
+                )}
               </TabsContent>
-            ) : null}
-          </div>
-        </Tabs>
-      </DialogContent>
-    </Dialog>
+              <TabsContent value="keybindings" className="settings-section">
+                <KeybindingsSettings store={keybindings} />
+              </TabsContent>
+              <TabsContent value="options" className="settings-section">
+                <h2>Appearance</h2>
+                <AppearanceSettings theme={theme} onTheme={onTheme} />
+                <div className="settings-row flex items-start justify-between gap-6 mb-8">
+                  <div className="settings-row-description min-w-0">
+                    <span>Animation speed</span>
+                    <p className="muted text-muted-foreground">
+                      Animation speed is saved for your account on this device. Reduced motion
+                      follows your system preference.
+                    </p>
+                  </div>
+                  <Select
+                    items={[
+                      { value: "off", label: "Off" },
+                      { value: "fast", label: "Fast" },
+                      { value: "slow", label: "Slow" },
+                    ]}
+                    value={animation}
+                    onValueChange={(value) => {
+                      if (value === "off" || value === "fast" || value === "slow")
+                        preferences.getState().setAnimation(value);
+                    }}
+                  >
+                    <SelectTrigger aria-label="Animation speed">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off">Off</SelectItem>
+                      <SelectItem value="fast">Fast</SelectItem>
+                      <SelectItem value="slow">Slow</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <h2>Thread</h2>
+                <SidebarPreferences />
+                <NotificationSettings preferences={notifications} />
+                <h2>Access</h2>
+                <dl className="settings-account grid gap-4 mb-6">
+                  <div>
+                    <dt>Role</dt>
+                    <dd>{viewer.role}</dd>
+                  </div>
+                  <div>
+                    <dt>Tool access</dt>
+                    <dd>{viewer.toolMode === "full" ? "Full access" : "Restricted"}</dd>
+                  </div>
+                </dl>
+              </TabsContent>
+              {viewer.role === "owner" ? (
+                <TabsContent value="deployment" className="settings-section">
+                  <h2>Deployment</h2>
+                  <DeploymentSettings />
+                </TabsContent>
+              ) : null}
+              <TabsContent value="agent" className="settings-section">
+                <h2>Agent</h2>
+                <AgentIdentity client={client} identity={agent} />
+              </TabsContent>
+              <TabsContent value="users" className="settings-section">
+                <h2>User</h2>
+                <People />
+              </TabsContent>
+              {viewer.role === "owner" ? (
+                <>
+                  <TabsContent value="core" className="settings-section h-full min-h-0">
+                    <Suspense fallback={<SkeletonLines label="Loading Core settings" lines={8} />}>
+                      <ConfigEditorPanel kind="core" holder={drafts} />
+                    </Suspense>
+                  </TabsContent>
+                  <TabsContent value="mcp" className="settings-section h-full min-h-0">
+                    <Suspense fallback={<SkeletonLines label="Loading MCP settings" lines={8} />}>
+                      <ConfigEditorPanel kind="mcp" holder={drafts} />
+                    </Suspense>
+                  </TabsContent>
+                </>
+              ) : null}
+            </div>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={confirmClose} onOpenChange={setConfirmClose}>
+        <DialogContent className="max-w-sm gap-4">
+          <DialogTitle>Discard unsaved changes?</DialogTitle>
+          <p className="text-sm text-muted-foreground">
+            Your configuration edits have not been saved.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmClose(false)}>
+              Keep editing
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setConfirmClose(false);
+                setOpen(false);
+              }}
+            >
+              Discard
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

@@ -14,6 +14,9 @@ const WORKFLOW_LAUNCH_CALLABLES = new Set([
   "workflow.trigger.create",
 ]);
 
+// Config edits change the deployment, so they need the same grant as workspace-writing tools.
+const DEPLOYMENT_WRITE_CALLABLES = new Set(["config.patch"]);
+
 function profileHoldsEveryConfiguredProfile(
   config: CoreConfig,
   profile: ReturnType<typeof resolveSubagentPermissionProfile>,
@@ -42,6 +45,7 @@ export function isLevel2ContributionAllowedForNativeProfile(params: {
 }): boolean {
   const profile = resolveSubagentPermissionProfile(params.config, params.profileName);
   if (!profileAllowsLevel2Contribution(profile, params)) return false;
+  if (DEPLOYMENT_WRITE_CALLABLES.has(params.callableId) && !profile.workspaceWrites) return false;
   if (!WORKFLOW_LAUNCH_CALLABLES.has(params.callableId)) return true;
   return profileHoldsEveryConfiguredProfile(params.config, profile);
 }

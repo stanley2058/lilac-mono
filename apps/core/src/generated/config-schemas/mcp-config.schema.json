@@ -2,8 +2,14 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "configVersion": { "type": "number", "const": 1 },
+    "configVersion": {
+      "type": "number",
+      "const": 1,
+      "description": "Configuration format version.",
+      "markdownDescription": "Configuration format version."
+    },
     "servers": {
+      "description": "MCP servers keyed by server ID. Reload MCP after saving to apply changes.",
       "type": "object",
       "propertyNames": {
         "type": "string",
@@ -16,13 +22,44 @@
           {
             "type": "object",
             "properties": {
-              "transport": { "type": "string", "const": "stdio" },
-              "allowSubagents": { "default": false, "type": "boolean" },
-              "description": { "type": "string", "minLength": 1 },
-              "command": { "type": "string", "minLength": 1 },
-              "args": { "type": "array", "items": { "type": "string" } },
-              "cwd": { "type": "string", "minLength": 1 },
+              "transport": {
+                "type": "string",
+                "const": "stdio",
+                "description": "`stdio` starts a local process; `http` connects to a URL.",
+                "markdownDescription": "`stdio` starts a local process; `http` connects to a URL."
+              },
+              "allowSubagents": {
+                "default": false,
+                "description": "Expose this server's tools to subagents whose profile allows the plugin.",
+                "type": "boolean",
+                "markdownDescription": "Expose this server's tools to subagents whose profile allows the plugin."
+              },
+              "description": {
+                "description": "Shown to the agent before the server's own description.",
+                "type": "string",
+                "minLength": 1,
+                "markdownDescription": "Shown to the agent before the server's own description."
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Executable to start, such as `npx` or `uvx`.",
+                "markdownDescription": "Executable to start, such as `npx` or `uvx`."
+              },
+              "args": {
+                "description": "Command arguments.",
+                "type": "array",
+                "items": { "type": "string" },
+                "markdownDescription": "Command arguments."
+              },
+              "cwd": {
+                "description": "Working directory for the process.",
+                "type": "string",
+                "minLength": 1,
+                "markdownDescription": "Working directory for the process."
+              },
               "env": {
+                "description": "Environment variables for the process.",
                 "type": "object",
                 "propertyNames": { "type": "string", "minLength": 1 },
                 "additionalProperties": {
@@ -31,8 +68,17 @@
                     {
                       "type": "object",
                       "properties": {
-                        "env": { "type": "string", "minLength": 1 },
-                        "prefix": { "type": "string" }
+                        "env": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Environment variable that holds the value.",
+                          "markdownDescription": "Environment variable that holds the value."
+                        },
+                        "prefix": {
+                          "description": "Text prepended to the value, such as `Bearer `.",
+                          "type": "string",
+                          "markdownDescription": "Text prepended to the value, such as `Bearer `."
+                        }
                       },
                       "required": ["env"],
                       "additionalProperties": false
@@ -40,15 +86,30 @@
                     {
                       "type": "object",
                       "properties": {
-                        "file": { "type": "string", "minLength": 1 },
-                        "pointer": { "type": "string" },
-                        "prefix": { "type": "string" }
+                        "file": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Path of a file that holds the value.",
+                          "markdownDescription": "Path of a file that holds the value."
+                        },
+                        "pointer": {
+                          "description": "JSON Pointer into the file when it is JSON, such as `/token`.",
+                          "type": "string",
+                          "markdownDescription": "JSON Pointer into the file when it is JSON, such as `/token`."
+                        },
+                        "prefix": {
+                          "description": "Text prepended to the value, such as `Bearer `.",
+                          "type": "string",
+                          "markdownDescription": "Text prepended to the value, such as `Bearer `."
+                        }
                       },
                       "required": ["file"],
                       "additionalProperties": false
                     }
-                  ]
-                }
+                  ],
+                  "x-lilac": { "kind": "valueSource" }
+                },
+                "markdownDescription": "Environment variables for the process."
               }
             },
             "required": ["transport", "command"],
@@ -57,11 +118,32 @@
           {
             "type": "object",
             "properties": {
-              "transport": { "type": "string", "const": "http" },
-              "allowSubagents": { "default": false, "type": "boolean" },
-              "description": { "type": "string", "minLength": 1 },
-              "url": { "type": "string", "minLength": 1 },
+              "transport": {
+                "type": "string",
+                "const": "http",
+                "description": "`stdio` starts a local process; `http` connects to a URL.",
+                "markdownDescription": "`stdio` starts a local process; `http` connects to a URL."
+              },
+              "allowSubagents": {
+                "default": false,
+                "description": "Expose this server's tools to subagents whose profile allows the plugin.",
+                "type": "boolean",
+                "markdownDescription": "Expose this server's tools to subagents whose profile allows the plugin."
+              },
+              "description": {
+                "description": "Shown to the agent before the server's own description.",
+                "type": "string",
+                "minLength": 1,
+                "markdownDescription": "Shown to the agent before the server's own description."
+              },
+              "url": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Streamable HTTP endpoint, such as `https://example.com/mcp`.",
+                "markdownDescription": "Streamable HTTP endpoint, such as `https://example.com/mcp`."
+              },
               "headers": {
+                "description": "HTTP headers sent with every request.",
                 "type": "object",
                 "propertyNames": { "type": "string", "minLength": 1 },
                 "additionalProperties": {
@@ -70,8 +152,17 @@
                     {
                       "type": "object",
                       "properties": {
-                        "env": { "type": "string", "minLength": 1 },
-                        "prefix": { "type": "string" }
+                        "env": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Environment variable that holds the value.",
+                          "markdownDescription": "Environment variable that holds the value."
+                        },
+                        "prefix": {
+                          "description": "Text prepended to the value, such as `Bearer `.",
+                          "type": "string",
+                          "markdownDescription": "Text prepended to the value, such as `Bearer `."
+                        }
                       },
                       "required": ["env"],
                       "additionalProperties": false
@@ -79,22 +170,43 @@
                     {
                       "type": "object",
                       "properties": {
-                        "file": { "type": "string", "minLength": 1 },
-                        "pointer": { "type": "string" },
-                        "prefix": { "type": "string" }
+                        "file": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Path of a file that holds the value.",
+                          "markdownDescription": "Path of a file that holds the value."
+                        },
+                        "pointer": {
+                          "description": "JSON Pointer into the file when it is JSON, such as `/token`.",
+                          "type": "string",
+                          "markdownDescription": "JSON Pointer into the file when it is JSON, such as `/token`."
+                        },
+                        "prefix": {
+                          "description": "Text prepended to the value, such as `Bearer `.",
+                          "type": "string",
+                          "markdownDescription": "Text prepended to the value, such as `Bearer `."
+                        }
                       },
                       "required": ["file"],
                       "additionalProperties": false
                     }
-                  ]
-                }
+                  ],
+                  "x-lilac": { "kind": "valueSource" }
+                },
+                "markdownDescription": "HTTP headers sent with every request."
               },
               "auth": {
+                "description": "OAuth authorization for the server.",
                 "type": "object",
                 "properties": {
                   "type": { "type": "string", "const": "oauth" },
                   "grant": { "type": "string", "const": "authorization_code" },
-                  "scopes": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+                  "scopes": {
+                    "description": "OAuth scopes to request.",
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 },
+                    "markdownDescription": "OAuth scopes to request."
+                  },
                   "client": {
                     "anyOf": [
                       {
@@ -107,8 +219,17 @@
                               {
                                 "type": "object",
                                 "properties": {
-                                  "env": { "type": "string", "minLength": 1 },
-                                  "prefix": { "type": "string" }
+                                  "env": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Environment variable that holds the value.",
+                                    "markdownDescription": "Environment variable that holds the value."
+                                  },
+                                  "prefix": {
+                                    "description": "Text prepended to the value, such as `Bearer `.",
+                                    "type": "string",
+                                    "markdownDescription": "Text prepended to the value, such as `Bearer `."
+                                  }
                                 },
                                 "required": ["env"],
                                 "additionalProperties": false
@@ -116,23 +237,49 @@
                               {
                                 "type": "object",
                                 "properties": {
-                                  "file": { "type": "string", "minLength": 1 },
-                                  "pointer": { "type": "string" },
-                                  "prefix": { "type": "string" }
+                                  "file": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Path of a file that holds the value.",
+                                    "markdownDescription": "Path of a file that holds the value."
+                                  },
+                                  "pointer": {
+                                    "description": "JSON Pointer into the file when it is JSON, such as `/token`.",
+                                    "type": "string",
+                                    "markdownDescription": "JSON Pointer into the file when it is JSON, such as `/token`."
+                                  },
+                                  "prefix": {
+                                    "description": "Text prepended to the value, such as `Bearer `.",
+                                    "type": "string",
+                                    "markdownDescription": "Text prepended to the value, such as `Bearer `."
+                                  }
                                 },
                                 "required": ["file"],
                                 "additionalProperties": false
                               }
-                            ]
+                            ],
+                            "x-lilac": { "kind": "valueSource" },
+                            "description": "OAuth client ID.",
+                            "markdownDescription": "OAuth client ID."
                           },
                           "clientSecret": {
+                            "description": "OAuth client secret.",
                             "anyOf": [
                               { "type": "string" },
                               {
                                 "type": "object",
                                 "properties": {
-                                  "env": { "type": "string", "minLength": 1 },
-                                  "prefix": { "type": "string" }
+                                  "env": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Environment variable that holds the value.",
+                                    "markdownDescription": "Environment variable that holds the value."
+                                  },
+                                  "prefix": {
+                                    "description": "Text prepended to the value, such as `Bearer `.",
+                                    "type": "string",
+                                    "markdownDescription": "Text prepended to the value, such as `Bearer `."
+                                  }
                                 },
                                 "required": ["env"],
                                 "additionalProperties": false
@@ -140,14 +287,29 @@
                               {
                                 "type": "object",
                                 "properties": {
-                                  "file": { "type": "string", "minLength": 1 },
-                                  "pointer": { "type": "string" },
-                                  "prefix": { "type": "string" }
+                                  "file": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Path of a file that holds the value.",
+                                    "markdownDescription": "Path of a file that holds the value."
+                                  },
+                                  "pointer": {
+                                    "description": "JSON Pointer into the file when it is JSON, such as `/token`.",
+                                    "type": "string",
+                                    "markdownDescription": "JSON Pointer into the file when it is JSON, such as `/token`."
+                                  },
+                                  "prefix": {
+                                    "description": "Text prepended to the value, such as `Bearer `.",
+                                    "type": "string",
+                                    "markdownDescription": "Text prepended to the value, such as `Bearer `."
+                                  }
                                 },
                                 "required": ["file"],
                                 "additionalProperties": false
                               }
-                            ]
+                            ],
+                            "x-lilac": { "kind": "valueSource" },
+                            "markdownDescription": "OAuth client secret."
                           }
                         },
                         "required": ["type", "clientId"],
@@ -159,18 +321,22 @@
                         "required": ["type"],
                         "additionalProperties": false
                       }
-                    ]
+                    ],
+                    "description": "`dynamic` registers a client with the server. `static` uses a client ID and optional secret.",
+                    "markdownDescription": "`dynamic` registers a client with the server. `static` uses a client ID and optional secret."
                   }
                 },
                 "required": ["type", "grant", "client"],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "markdownDescription": "OAuth authorization for the server."
               }
             },
             "required": ["transport", "url"],
             "additionalProperties": false
           }
         ]
-      }
+      },
+      "markdownDescription": "MCP servers keyed by server ID. Reload MCP after saving to apply changes."
     }
   },
   "required": ["configVersion"],

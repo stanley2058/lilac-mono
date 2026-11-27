@@ -8,6 +8,7 @@ import { createBuiltinQuestionPlugin } from "./question";
 import {
   createBuiltinAttachmentPlugin,
   createBuiltinCodexPlugin,
+  createBuiltinConfigPlugin,
   createBuiltinConversationThreadPlugin,
   createBuiltinDiscoveryPlugin,
   createBuiltinGeneratePlugin,
@@ -46,6 +47,7 @@ export function createBuiltinCoreToolPlugins(
     createBuiltinWebPlugin(),
     createBuiltinSkillsPlugin(),
     createBuiltinMcpPlugin(),
+    createBuiltinConfigPlugin(),
     createBuiltinDiscoveryPlugin(),
     createBuiltinConversationThreadPlugin(),
     createBuiltinWorkflowPlugin(),

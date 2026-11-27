@@ -4,6 +4,7 @@ import { z } from "zod";
 import { defaultNativeSurfaceConfig, MODEL_REASONING_EFFORTS } from "./types";
 import { isPermissionProfileName } from "../subagent-profile";
 import { jsonValueSchema, telemetryConfigSchema } from "./v1";
+import { configUi } from "./ui-meta";
 import {
   AGENT_DEFAULT_V2,
   agentSchemaFieldsV2,
@@ -73,6 +74,7 @@ function permissionProfileSchemaV3(defaults: SubagentPermissionProfileConfig) {
       .string()
       .trim()
       .min(1)
+      .meta(configUi({ kind: "multiline" }))
       .optional()
       .describe(
         'Additional instructions appended to the worker prompt for children using this permission profile. For example, "Cite file paths and avoid edits."',
@@ -156,6 +158,7 @@ const subagentsSchemaV3 = z.object({
     .string()
     .trim()
     .min(1)
+    .meta(configUi({ kind: "multiline" }))
     .optional()
     .describe(
       "Free-form guidance appended to the parent-visible subagent_delegate tool description. Use for model selection, escalation, cost, or workflow preferences.",
@@ -194,6 +197,7 @@ const modelOptionsSchemaV3 = z
     codex_instructions: removedV3Field("codex_instructions", "use basePrompt or prompt files"),
   })
   .catchall(jsonValueSchema)
+  .meta(configUi({ kind: "providerOptions" }))
   .optional()
   .describe(baseModels.shape.main.unwrap().shape.options.description ?? "");
 const modelRulesSchema = z
@@ -244,11 +248,15 @@ const reasoningFieldsV3 = {
   fallback: z
     .array(
       z.union([
-        z.string().min(1),
+        z
+          .string()
+          .min(1)
+          .meta(configUi({ kind: "model" })),
         z.object({
           model: z
             .string()
             .min(1)
+            .meta(configUi({ kind: "model" }))
             .describe(
               "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
             ),
@@ -287,6 +295,7 @@ const modelsSchemaV3 = z
           model: z
             .string()
             .regex(/^[^/]+\/.+/u)
+            .meta(configUi({ kind: "model" }))
             .describe(
               "Canonical provider/model reference. An alias cannot point to another alias. Example: openai/gpt-4o.",
             ),
@@ -324,7 +333,7 @@ const modelsSchemaV3 = z
         "Model discovery visibility. Credentials are inferred by default; overrides affect catalog visibility only.",
       ),
     rules: modelRulesSchema.describe(
-      'Ordered glob defaults applied before alias and per-run options. `*` includes slashes. Later matching rules can override earlier settings. Example: `{match: "codex/gpt-6-*", options: {serviceTier: priority}}.',
+      'Ordered glob defaults applied before alias and per-run options. `*` includes slashes. Later matching rules can override earlier settings. Example: `{match: "codex/gpt-6-*", options: {serviceTier: priority}}`.',
     ),
   })
   .default({

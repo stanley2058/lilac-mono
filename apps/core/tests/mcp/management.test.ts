@@ -169,10 +169,16 @@ describe("MCP management metadata", () => {
     }
 
     const add = entries.find((entry) => entry.callableId === "mcp.add");
-    expect(add?.shortInput).toContain('--transport=<"stdio" | "http">');
+    expect(add?.shortInput).toContain(
+      '--transport=<"stdio" | "http"> | `stdio` starts a local process; `http` connects to a URL.',
+    );
     expect(add?.input).toContain("--server-id=<string> | Configured MCP server ID.");
-    expect(add?.input).toContain('--url=<string> (Required when transport="http")');
-    expect(add?.input).toContain('--command=<string> (Required when transport="stdio")');
+    expect(add?.input).toContain(
+      '--url=<string> (Required when transport="http") | Streamable HTTP endpoint, such as `https://example.com/mcp`.',
+    );
+    expect(add?.input).toContain(
+      '--command=<string> (Required when transport="stdio") | Executable to start, such as `npx` or `uvx`.',
+    );
   });
 
   it("registers one builtin Level-2 tool only when all MCP runtime services exist", async () => {

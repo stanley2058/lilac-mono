@@ -5,7 +5,11 @@ import { createKeybindings } from "../keybindings";
 import { NotificationSettings } from "../components/NotificationSettings";
 import { createNotificationPreferences, sendTestNotification } from "../notifications";
 import { useLocation } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { ConfigDraftContext, createConfigDraftStore } from "../config-ui/draft-store";
+import { coreManifest } from "../config-ui/core-manifest";
+import { ConfigPage } from "../components/config/ConfigPage";
+import { ConfigScopeContext } from "../components/config/use-config-field";
 import { Bell } from "lucide-react";
 import type { NativeDeploymentSettings } from "@stanley2058/lilac-client-protocol";
 import { toast } from "../components/ui/toast";
@@ -72,3 +76,56 @@ export function WorkspaceEditorDemo() {
     </div>
   );
 }
+
+const CONFIG_DEMO_SECTIONS: Record<string, readonly string[]> = {
+  discord: ["Replies", "Tables and math", "Aliases"],
+  runs: ["Transcripts"],
+  subagents: ["Permission profiles"],
+};
+
+const CONFIG_DEMO_TEXT = [
+  "configVersion: 3",
+  "surface:",
+  "  discord:",
+  "    outputMode: preview",
+  "    markdownTableRender: { style: image }",
+  "entity:",
+  "  users:",
+  '    alice: { discord: "123456789012345678", comment: Maintainer }',
+  "agent:",
+  "  transcriptRetention:",
+  "    maxAge: 90d",
+  "",
+].join("\n");
+
+/** The Core settings form on demo values, without a Core connection to save to. */
+export function ConfigFormDemo() {
+  const [store] = useState(() => {
+    const drafts = createConfigDraftStore();
+    drafts.getState().load({ kind: "core", revision: "demo", text: CONFIG_DEMO_TEXT });
+    return drafts;
+  });
+  const page = useMemo(
+    () => ({
+      id: "demo",
+      title: "Demo",
+      sections: coreManifest.pages.flatMap((candidate) =>
+        candidate.sections.filter((section) =>
+          CONFIG_DEMO_SECTIONS[candidate.id]?.includes(section.title),
+        ),
+      ),
+    }),
+    [],
+  );
+  return (
+    <ConfigDraftContext value={store}>
+      <ConfigScopeContext value={CONFIG_DEMO_SCOPE}>
+        <div className="max-w-3xl">
+          <ConfigPage page={page} yamlPage="yaml" />
+        </div>
+      </ConfigScopeContext>
+    </ConfigDraftContext>
+  );
+}
+
+const CONFIG_DEMO_SCOPE = { kind: "core", base: [], disabled: false } as const;

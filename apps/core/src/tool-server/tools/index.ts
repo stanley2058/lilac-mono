@@ -11,3 +11,4 @@ export * from "./generate";
 export * from "./onboarding";
 export * from "./ssh";
 export * from "./mcp";
+export * from "./config";

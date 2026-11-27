@@ -3,6 +3,7 @@ import { ToolPluginSkipError, type ServerTool } from "@stanley2058/lilac-plugin-
 import {
   Attachment,
   Codex,
+  ConfigManagement,
   ConversationThread,
   Discovery,
   Generate,
@@ -15,6 +16,7 @@ import {
   Surface,
   Web,
 } from "../../tool-server/tools";
+import { ConfigFiles } from "../../runtime/config-files";
 import type { CoreToolPlugin } from "../types";
 
 function signalBuiltinPluginSkip(reason: string): never {
@@ -60,6 +62,24 @@ export function createBuiltinMcpPlugin(): CoreToolPlugin {
             providers: runtime.mcpOAuthProviders,
             callback: runtime.mcpOAuthCallback,
             configPath: runtime.mcpConfigPath,
+          }),
+        ],
+      };
+    },
+  };
+}
+
+export function createBuiltinConfigPlugin(): CoreToolPlugin {
+  return {
+    meta: {
+      id: "config",
+    },
+    create({ runtime, dataDir }) {
+      return {
+        level2: [
+          new ConfigManagement({
+            files: new ConfigFiles({ dataDir }),
+            ...(runtime.mcpRegistry ? { registry: runtime.mcpRegistry } : {}),
           }),
         ],
       };

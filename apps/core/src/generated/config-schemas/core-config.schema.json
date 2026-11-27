@@ -164,6 +164,7 @@
                         "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`. Overrides the request model for this session.",
                         "type": "string",
                         "minLength": 1,
+                        "x-lilac": { "kind": "model" },
                         "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`. Overrides the request model for this session."
                       },
                       "safetyMode": {
@@ -576,6 +577,7 @@
                   "default": "*/30 * * * *",
                   "description": "Five-field, minute-precision cron schedule. Defaults to `*/30 * * * *` (every 30 minutes).",
                   "type": "string",
+                  "x-lilac": { "kind": "cron" },
                   "markdownDescription": "Five-field, minute-precision cron schedule. Defaults to `*/30 * * * *` (every 30 minutes)."
                 },
                 "every": { "not": {} },
@@ -608,12 +610,14 @@
                     "start": {
                       "type": "string",
                       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+                      "x-lilac": { "kind": "clockTime" },
                       "description": "Start of quiet hours in 24-hour HH:MM format, for example 23:00.",
                       "markdownDescription": "Start of quiet hours in 24-hour HH:MM format, for example 23:00."
                     },
                     "end": {
                       "type": "string",
                       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+                      "x-lilac": { "kind": "clockTime" },
                       "description": "End of quiet hours in 24-hour HH:MM format, for example 08:00.",
                       "markdownDescription": "End of quiet hours in 24-hour HH:MM format, for example 08:00."
                     },
@@ -878,11 +882,11 @@
                     "markdownDescription": "Canonical provider/model reference. An alias cannot point to another alias. Example: openai/gpt-4o."
                   },
                   "options": {
-                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                     "type": "object",
                     "propertyNames": { "type": "string" },
                     "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                   }
                 },
                 "required": ["model"],
@@ -903,11 +907,11 @@
                   "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o\"`."
                 },
                 "options": {
-                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                   "type": "object",
                   "propertyNames": { "type": "string" },
                   "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                 }
               },
               "additionalProperties": false,
@@ -926,11 +930,11 @@
                   "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o-mini\"`."
                 },
                 "options": {
-                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                   "type": "object",
                   "propertyNames": { "type": "string" },
                   "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                 }
               },
               "additionalProperties": false,
@@ -1116,6 +1120,7 @@
                   "discord": {
                     "type": "string",
                     "minLength": 1,
+                    "x-lilac": { "kind": "discordUser" },
                     "description": "Quoted Discord user ID. Keep snowflake IDs as strings to avoid numeric precision loss.",
                     "markdownDescription": "Quoted Discord user ID. Keep snowflake IDs as strings to avoid numeric precision loss."
                   },
@@ -1150,6 +1155,7 @@
                           "discord": {
                             "type": "string",
                             "minLength": 1,
+                            "x-lilac": { "kind": "discordChannel" },
                             "description": "Quoted Discord channel ID. Keep snowflake IDs as strings to avoid numeric precision loss.",
                             "markdownDescription": "Quoted Discord channel ID. Keep snowflake IDs as strings to avoid numeric precision loss."
                           },
@@ -1272,12 +1278,14 @@
                 "accessKeyIdEnv": {
                   "type": "string",
                   "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "x-lilac": { "kind": "env" },
                   "description": "Environment variable holding the S3 access key ID, for example LILAC_S3_ACCESS_KEY_ID. Supply the variable name, not the credential.",
                   "markdownDescription": "Environment variable holding the S3 access key ID, for example LILAC_S3_ACCESS_KEY_ID. Supply the variable name, not the credential."
                 },
                 "secretAccessKeyEnv": {
                   "type": "string",
                   "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "x-lilac": { "kind": "env" },
                   "description": "Environment variable holding the S3 secret access key, for example LILAC_S3_SECRET_ACCESS_KEY. Supply the variable name, not the credential.",
                   "markdownDescription": "Environment variable holding the S3 secret access key, for example LILAC_S3_SECRET_ACCESS_KEY. Supply the variable name, not the credential."
                 },
@@ -1285,6 +1293,7 @@
                   "description": "Optional environment variable holding the S3 session token for temporary credentials.",
                   "type": "string",
                   "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "x-lilac": { "kind": "env" },
                   "markdownDescription": "Optional environment variable holding the S3 session token for temporary credentials."
                 },
                 "forcePathStyle": {
@@ -1306,6 +1315,7 @@
               "additionalProperties": false
             }
           ],
+          "x-lilac": { "restart": true },
           "markdownDescription": "Storage for managed opaque bytes. Omit to use local storage below DATA_DIR. For a custom local location use `{kind: local, root: /var/lib/lilac/blobs}`. For S3 use an existing private bucket and environment-variable names for credentials."
         },
         "telemetry": {
@@ -1401,6 +1411,7 @@
                           "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                         }
                       ],
+                      "x-lilac": { "kind": "duration" },
                       "markdownDescription": "Maximum time a Firecrawl request can wait in the local queue. Default: 3s. Accepts positive milliseconds or a duration such as `7d`. Units: ms, s, m, h, d, w, mo; mo is 30 days."
                     }
                   },
@@ -1475,6 +1486,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(B|KB|MB|GB|KiB|MiB|GiB)$"
                     }
                   ],
+                  "x-lilac": { "kind": "bytes" },
                   "markdownDescription": "Maximum inline tool-result preview size. Default: 40KiB. Accepts a positive byte count or a unit string such as `40KiB`. Units: B, KB, MB, GB, KiB, MiB, GiB."
                 },
                 "artifactTtl": {
@@ -1486,6 +1498,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                     }
                   ],
+                  "x-lilac": { "kind": "duration" },
                   "markdownDescription": "Retention time for tool-result artifacts. Default: 7d. Accepts positive milliseconds or a duration such as `7d`. Units: ms, s, m, h, d, w, mo; mo is 30 days."
                 },
                 "artifactMaxBytesPerSession": {
@@ -1497,6 +1510,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(B|KB|MB|GB|KiB|MiB|GiB)$"
                     }
                   ],
+                  "x-lilac": { "kind": "bytes" },
                   "markdownDescription": "Per-session retained tool-artifact byte budget. Default: 50MiB. Accepts a positive byte count or a unit string such as `40KiB`. Units: B, KB, MB, GB, KiB, MiB, GiB."
                 }
               },
@@ -1564,6 +1578,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(B|KB|MB|GB|KiB|MiB|GiB)$"
                     }
                   ],
+                  "x-lilac": { "kind": "bytes" },
                   "markdownDescription": "Maximum bytes in one inline media part. Default: 10MiB. Accepts a positive byte count or a unit string such as `40KiB`. Units: B, KB, MB, GB, KiB, MiB, GiB."
                 },
                 "maxInlineBytesTotal": {
@@ -1575,6 +1590,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(B|KB|MB|GB|KiB|MiB|GiB)$"
                     }
                   ],
+                  "x-lilac": { "kind": "bytes" },
                   "markdownDescription": "Maximum total inline media bytes. Default: 20MiB. Accepts a positive byte count or a unit string such as `40KiB`. Units: B, KB, MB, GB, KiB, MiB, GiB."
                 }
               },
@@ -1595,6 +1611,7 @@
               "description": "Plugin IDs to disable globally. Empty by default. Disabled contributions are also unavailable to subagent allowlists.",
               "type": "array",
               "items": { "type": "string", "minLength": 1 },
+              "x-lilac": { "kind": "pluginId" },
               "markdownDescription": "Plugin IDs to disable globally. Empty by default. Disabled contributions are also unavailable to subagent allowlists."
             },
             "config": {
@@ -1639,6 +1656,7 @@
                       "description": "Summary model: main, fast, a models.def alias, or provider/model. Defaults to fast.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "model" },
                       "markdownDescription": "Summary model: main, fast, a models.def alias, or provider/model. Defaults to fast."
                     },
                     "concurrency": {
@@ -1683,12 +1701,14 @@
                       "description": "AI SDK embedding model in provider/model format or a models.def alias. Defaults to openai/text-embedding-3-small.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "embeddingModel" },
                       "markdownDescription": "AI SDK embedding model in provider/model format or a models.def alias. Defaults to openai/text-embedding-3-small."
                     },
                     "queryModel": {
                       "description": "Optional query encoder. Must share the document embedding model's vector space and dimensions. Omit to use the document model.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "embeddingModel" },
                       "markdownDescription": "Optional query encoder. Must share the document embedding model's vector space and dimensions. Omit to use the document model."
                     }
                   },
@@ -1709,12 +1729,14 @@
                       "description": "Search-planning model: main, fast, a models.def alias, or provider/model. Omit to inherit conversation.thread.summarization.model.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "model" },
                       "markdownDescription": "Search-planning model: main, fast, a models.def alias, or provider/model. Omit to inherit conversation.thread.summarization.model."
                     },
                     "textPlannerModel": {
                       "description": "Optional planner override for composed input containing only text. Accepts the same values as plannerModel; omit to use plannerModel.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "model" },
                       "markdownDescription": "Optional planner override for composed input containing only text. Accepts the same values as plannerModel; omit to use plannerModel."
                     },
                     "gate": {
@@ -1738,6 +1760,7 @@
                               "items": { "type": "string", "minLength": 1 }
                             }
                           ],
+                          "x-lilac": { "kind": "model" },
                           "markdownDescription": "Decision model or non-empty model list. Text uses the first model; images use the first OpenAI entry when present. This is not a retry chain. TypeSafe uses TYPESAFE_AI_API_KEY / TYPESAFE_AI_BASE_URL; OpenAI uses OPENAI_API_KEY / OPENAI_BASE_URL."
                         },
                         "skipMinProbability": {
@@ -1857,6 +1880,7 @@
                           "items": { "type": "string", "minLength": 1 }
                         }
                       ],
+                      "x-lilac": { "kind": "model" },
                       "markdownDescription": "Decision model or non-empty model list. Text uses the first model; images use the first OpenAI entry when present. This is not a retry chain. TypeSafe uses TYPESAFE_AI_API_KEY / TYPESAFE_AI_BASE_URL; OpenAI uses OPENAI_API_KEY / OPENAI_BASE_URL."
                     },
                     "limit": {
@@ -1999,6 +2023,7 @@
                           "items": { "type": "string", "minLength": 1 }
                         }
                       ],
+                      "x-lilac": { "kind": "model" },
                       "markdownDescription": "Decision model or non-empty model list. Text uses the first model; images use the first OpenAI entry when present. This is not a retry chain. TypeSafe uses TYPESAFE_AI_API_KEY / TYPESAFE_AI_BASE_URL; OpenAI uses OPENAI_API_KEY / OPENAI_BASE_URL."
                     },
                     "limit": {
@@ -2239,10 +2264,12 @@
                   "default": false,
                   "description": "Enable the native web/TUI gateway. Defaults to false. Requires a unique installationId; Clerk auth also requires ownerProviderUserId and clerkIssuer.",
                   "type": "boolean",
+                  "x-lilac": { "restart": true },
                   "markdownDescription": "Enable the native web/TUI gateway. Defaults to false. Requires a unique installationId; Clerk auth also requires ownerProviderUserId and clerkIssuer."
                 },
                 "host": {
                   "default": "127.0.0.1",
+                  "x-lilac": { "restart": true },
                   "description": "Gateway bind address. Defaults to 127.0.0.1; choose an externally reachable address only when appropriate for the deployment.",
                   "type": "string",
                   "minLength": 1,
@@ -2250,6 +2277,7 @@
                 },
                 "port": {
                   "default": 8789,
+                  "x-lilac": { "restart": true },
                   "description": "Gateway TCP port, from 1 to 65535. Defaults to 8789.",
                   "type": "integer",
                   "minimum": 1,
@@ -2258,12 +2286,14 @@
                 },
                 "publicUrl": {
                   "default": "http://localhost:8789",
+                  "x-lilac": { "restart": true },
                   "description": "Public HTTP(S) URL for the native gateway. Defaults to http://localhost:8789.",
                   "type": "string",
                   "format": "uri",
                   "markdownDescription": "Public HTTP(S) URL for the native gateway. Defaults to http://localhost:8789."
                 },
                 "installationId": {
+                  "x-lilac": { "restart": true },
                   "description": "Unique, stable identifier for this Lilac installation. Required when enabled; maximum 256 characters.",
                   "type": "string",
                   "minLength": 1,
@@ -2272,6 +2302,7 @@
                 },
                 "allowedOrigins": {
                   "default": ["http://localhost:8789"],
+                  "x-lilac": { "restart": true },
                   "description": "Non-empty list of browser origins allowed to connect. Origins must have no path or trailing slash. Default: [http://localhost:8789].",
                   "minItems": 1,
                   "type": "array",
@@ -2317,6 +2348,7 @@
                       "markdownDescription": "Optional Clerk OAuth client ID enabling TUI login."
                     }
                   },
+                  "x-lilac": { "restart": true },
                   "additionalProperties": false,
                   "markdownDescription": "Native authentication. Local credentials use LILAC_NATIVE_LOCAL_USERNAME and LILAC_NATIVE_LOCAL_PASSWORD_HASH; session signing uses LILAC_NATIVE_SESSION_SECRET (at least 32 bytes)."
                 },
@@ -2344,7 +2376,8 @@
                           "type": "string",
                           "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                         }
-                      ]
+                      ],
+                      "x-lilac": { "kind": "duration" }
                     },
                     { "type": "null" }
                   ],
@@ -2360,7 +2393,8 @@
                           "type": "string",
                           "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                         }
-                      ]
+                      ],
+                      "x-lilac": { "kind": "duration" }
                     },
                     { "type": "null" }
                   ],
@@ -2425,6 +2459,7 @@
                         "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`. Overrides the request model for this session.",
                         "type": "string",
                         "minLength": 1,
+                        "x-lilac": { "kind": "model" },
                         "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`. Overrides the request model for this session."
                       },
                       "safetyMode": {
@@ -2485,6 +2520,7 @@
               "properties": {
                 "tokenEnv": {
                   "default": "DISCORD_TOKEN",
+                  "x-lilac": { "kind": "env", "restart": true },
                   "description": "Name of the environment variable containing the Discord bot token. Defaults to DISCORD_TOKEN. Do not put the token itself here.",
                   "type": "string",
                   "minLength": 1,
@@ -2495,6 +2531,7 @@
                   "description": "Quoted Discord channel IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored.",
                   "type": "array",
                   "items": { "type": "string", "minLength": 1 },
+                  "x-lilac": { "kind": "discordChannel" },
                   "markdownDescription": "Quoted Discord channel IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored."
                 },
                 "allowedGuildIds": {
@@ -2502,16 +2539,19 @@
                   "description": "Quoted Discord guild/server IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored.",
                   "type": "array",
                   "items": { "type": "string", "minLength": 1 },
+                  "x-lilac": { "kind": "discordGuild" },
                   "markdownDescription": "Quoted Discord guild/server IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored."
                 },
                 "dbPath": {
                   "description": "Optional Discord surface database path. Defaults to DATA_DIR/discord-surface.db.",
                   "type": "string",
                   "minLength": 1,
+                  "x-lilac": { "restart": true },
                   "markdownDescription": "Optional Discord surface database path. Defaults to DATA_DIR/discord-surface.db."
                 },
                 "botName": {
                   "default": "lilac",
+                  "x-lilac": { "restart": true },
                   "description": "Bot display name used for attribution and mention stripping. Must not contain whitespace.\n\nDefault: `\"lilac\"`.",
                   "type": "string",
                   "minLength": 1,
@@ -2525,6 +2565,7 @@
                 "memberPresence": {
                   "description": "Enable the Discord member-presence intent. Requires the matching privileged intent in the Discord application settings.",
                   "type": "boolean",
+                  "x-lilac": { "restart": true },
                   "markdownDescription": "Enable the Discord member-presence intent. Requires the matching privileged intent in the Discord application settings."
                 },
                 "outputMode": {
@@ -2573,7 +2614,8 @@
                               "type": "string",
                               "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                             }
-                          ]
+                          ],
+                          "x-lilac": { "kind": "duration" }
                         }
                       ],
                       "markdownDescription": "Lifetime for newly cached Discord attachments. Default: 30d. Set `unlimited` to create cache objects without expiry. Accepts positive milliseconds or a duration such as `7d`. Units: ms, s, m, h, d, w, mo; mo is 30 days."
@@ -2679,6 +2721,7 @@
                   "default": "*/30 * * * *",
                   "description": "Five-field, minute-precision cron schedule. Defaults to `*/30 * * * *` (every 30 minutes).",
                   "type": "string",
+                  "x-lilac": { "kind": "cron" },
                   "markdownDescription": "Five-field, minute-precision cron schedule. Defaults to `*/30 * * * *` (every 30 minutes)."
                 },
                 "every": { "not": {} },
@@ -2711,12 +2754,14 @@
                     "start": {
                       "type": "string",
                       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+                      "x-lilac": { "kind": "clockTime" },
                       "description": "Start of quiet hours in 24-hour HH:MM format, for example 23:00.",
                       "markdownDescription": "Start of quiet hours in 24-hour HH:MM format, for example 23:00."
                     },
                     "end": {
                       "type": "string",
                       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+                      "x-lilac": { "kind": "clockTime" },
                       "description": "End of quiet hours in 24-hour HH:MM format, for example 08:00.",
                       "markdownDescription": "End of quiet hours in 24-hour HH:MM format, for example 08:00."
                     },
@@ -2837,7 +2882,8 @@
                           "type": "string",
                           "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                         }
-                      ]
+                      ],
+                      "x-lilac": { "kind": "duration" }
                     }
                   ],
                   "markdownDescription": "Maximum age of completed request transcripts. Default: 180d. Set `unlimited` to disable the age limit independently of maxRequests. Accepts positive milliseconds or a duration such as `7d`. Units: ms, s, m, h, d, w, mo; mo is 30 days."
@@ -3060,13 +3106,14 @@
                           "type": "array",
                           "items": {
                             "anyOf": [
-                              { "type": "string", "minLength": 1 },
+                              { "type": "string", "minLength": 1, "x-lilac": { "kind": "model" } },
                               {
                                 "type": "object",
                                 "properties": {
                                   "model": {
                                     "type": "string",
                                     "minLength": 1,
+                                    "x-lilac": { "kind": "model" },
                                     "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
                                     "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`."
                                   },
@@ -3085,11 +3132,11 @@
                                     "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                                   },
                                   "options": {
-                                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                                     "type": "object",
                                     "propertyNames": { "type": "string" },
                                     "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                                   }
                                 },
                                 "required": ["model"],
@@ -3115,6 +3162,7 @@
                           "properties": {
                             "tools": {
                               "default": [],
+                              "x-lilac": { "kind": "toolName" },
                               "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3122,6 +3170,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "toolPlugin" },
                               "description": "Allowed direct-tool plugin IDs. `*` includes every globally enabled plugin; MCP servers also require allowSubagents: true.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3160,6 +3209,7 @@
                           "properties": {
                             "callables": {
                               "default": [],
+                              "x-lilac": { "kind": "callableName" },
                               "description": "Allowed Core tool-server callable names, such as fetch, search, or skills.read. `*` includes every globally enabled callable.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3167,6 +3217,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "callablePlugin" },
                               "description": "Allowed Core tool-server plugin IDs. `*` includes every globally enabled plugin.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3259,13 +3310,14 @@
                           "type": "array",
                           "items": {
                             "anyOf": [
-                              { "type": "string", "minLength": 1 },
+                              { "type": "string", "minLength": 1, "x-lilac": { "kind": "model" } },
                               {
                                 "type": "object",
                                 "properties": {
                                   "model": {
                                     "type": "string",
                                     "minLength": 1,
+                                    "x-lilac": { "kind": "model" },
                                     "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
                                     "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`."
                                   },
@@ -3284,11 +3336,11 @@
                                     "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                                   },
                                   "options": {
-                                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                                     "type": "object",
                                     "propertyNames": { "type": "string" },
                                     "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                                   }
                                 },
                                 "required": ["model"],
@@ -3311,6 +3363,7 @@
                           "properties": {
                             "tools": {
                               "default": [],
+                              "x-lilac": { "kind": "toolName" },
                               "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3318,6 +3371,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "toolPlugin" },
                               "description": "Allowed direct-tool plugin IDs. `*` includes every globally enabled plugin; MCP servers also require allowSubagents: true.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3334,6 +3388,7 @@
                           "properties": {
                             "callables": {
                               "default": [],
+                              "x-lilac": { "kind": "callableName" },
                               "description": "Allowed Core tool-server callable names, such as fetch, search, or skills.read. `*` includes every globally enabled callable.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3341,6 +3396,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "callablePlugin" },
                               "description": "Allowed Core tool-server plugin IDs. `*` includes every globally enabled plugin.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3433,13 +3489,14 @@
                           "type": "array",
                           "items": {
                             "anyOf": [
-                              { "type": "string", "minLength": 1 },
+                              { "type": "string", "minLength": 1, "x-lilac": { "kind": "model" } },
                               {
                                 "type": "object",
                                 "properties": {
                                   "model": {
                                     "type": "string",
                                     "minLength": 1,
+                                    "x-lilac": { "kind": "model" },
                                     "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
                                     "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`."
                                   },
@@ -3458,11 +3515,11 @@
                                     "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                                   },
                                   "options": {
-                                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                                     "type": "object",
                                     "propertyNames": { "type": "string" },
                                     "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                                   }
                                 },
                                 "required": ["model"],
@@ -3485,6 +3542,7 @@
                           "properties": {
                             "tools": {
                               "default": [],
+                              "x-lilac": { "kind": "toolName" },
                               "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3492,6 +3550,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "toolPlugin" },
                               "description": "Allowed direct-tool plugin IDs. `*` includes every globally enabled plugin; MCP servers also require allowSubagents: true.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3508,6 +3567,7 @@
                           "properties": {
                             "callables": {
                               "default": [],
+                              "x-lilac": { "kind": "callableName" },
                               "description": "Allowed Core tool-server callable names, such as fetch, search, or skills.read. `*` includes every globally enabled callable.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3515,6 +3575,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "callablePlugin" },
                               "description": "Allowed Core tool-server plugin IDs. `*` includes every globally enabled plugin.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -3606,24 +3667,25 @@
                     "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                   },
                   "options": {
-                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                     "type": "object",
                     "propertyNames": { "type": "string" },
                     "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                   },
                   "fallback": {
                     "description": "Ordered fallback models, each a model reference/alias or `{model, reasoning, options}`. A model-slot chain takes precedence over the selected alias chain. Automatic fallback stays within the head model's provider family and is disabled for a `claude-code` head.",
                     "type": "array",
                     "items": {
                       "anyOf": [
-                        { "type": "string", "minLength": 1 },
+                        { "type": "string", "minLength": 1, "x-lilac": { "kind": "model" } },
                         {
                           "type": "object",
                           "properties": {
                             "model": {
                               "type": "string",
                               "minLength": 1,
+                              "x-lilac": { "kind": "model" },
                               "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
                               "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`."
                             },
@@ -3642,11 +3704,11 @@
                               "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                             },
                             "options": {
-                              "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                              "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                               "type": "object",
                               "propertyNames": { "type": "string" },
                               "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                              "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                              "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                             }
                           },
                           "required": ["model"],
@@ -3660,6 +3722,7 @@
                     "description": "Guidance shown to agents choosing this model alias. Describe the tasks it suits or relevant cost/latency tradeoffs.",
                     "type": "string",
                     "minLength": 1,
+                    "x-lilac": { "kind": "multiline" },
                     "markdownDescription": "Guidance shown to agents choosing this model alias. Describe the tasks it suits or relevant cost/latency tradeoffs."
                   },
                   "agentCanSelect": {
@@ -3684,6 +3747,7 @@
                   "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o\"`.",
                   "type": "string",
                   "minLength": 1,
+                  "x-lilac": { "kind": "model" },
                   "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o\"`."
                 },
                 "reasoning": {
@@ -3693,24 +3757,25 @@
                   "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                 },
                 "options": {
-                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                   "type": "object",
                   "propertyNames": { "type": "string" },
                   "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                 },
                 "fallback": {
                   "description": "Ordered fallback models, each a model reference/alias or `{model, reasoning, options}`. A model-slot chain takes precedence over the selected alias chain. Automatic fallback stays within the head model's provider family and is disabled for a `claude-code` head.",
                   "type": "array",
                   "items": {
                     "anyOf": [
-                      { "type": "string", "minLength": 1 },
+                      { "type": "string", "minLength": 1, "x-lilac": { "kind": "model" } },
                       {
                         "type": "object",
                         "properties": {
                           "model": {
                             "type": "string",
                             "minLength": 1,
+                            "x-lilac": { "kind": "model" },
                             "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
                             "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`."
                           },
@@ -3729,11 +3794,11 @@
                             "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                           },
                           "options": {
-                            "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                            "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                             "type": "object",
                             "propertyNames": { "type": "string" },
                             "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                            "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                            "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                           }
                         },
                         "required": ["model"],
@@ -3757,6 +3822,7 @@
                   "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o-mini\"`.",
                   "type": "string",
                   "minLength": 1,
+                  "x-lilac": { "kind": "model" },
                   "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o-mini\"`."
                 },
                 "reasoning": {
@@ -3766,24 +3832,25 @@
                   "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                 },
                 "options": {
-                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                   "type": "object",
                   "propertyNames": { "type": "string" },
                   "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                 },
                 "fallback": {
                   "description": "Ordered fallback models, each a model reference/alias or `{model, reasoning, options}`. A model-slot chain takes precedence over the selected alias chain. Automatic fallback stays within the head model's provider family and is disabled for a `claude-code` head.",
                   "type": "array",
                   "items": {
                     "anyOf": [
-                      { "type": "string", "minLength": 1 },
+                      { "type": "string", "minLength": 1, "x-lilac": { "kind": "model" } },
                       {
                         "type": "object",
                         "properties": {
                           "model": {
                             "type": "string",
                             "minLength": 1,
+                            "x-lilac": { "kind": "model" },
                             "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
                             "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`."
                           },
@@ -3802,11 +3869,11 @@
                             "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                           },
                           "options": {
-                            "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                            "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                             "type": "object",
                             "propertyNames": { "type": "string" },
                             "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                            "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                            "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                           }
                         },
                         "required": ["model"],
@@ -3844,6 +3911,7 @@
                         "description": "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions.",
                         "type": "string",
                         "minLength": 1,
+                        "x-lilac": { "kind": "model" },
                         "markdownDescription": "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions."
                       },
                       "cost": {
@@ -3990,6 +4058,7 @@
         },
         "entity": {
           "description": "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt.",
+          "x-lilac": { "restart": true },
           "default": { "users": {}, "sessions": { "discord": {} } },
           "type": "object",
           "properties": {
@@ -4004,6 +4073,7 @@
                   "discord": {
                     "type": "string",
                     "minLength": 1,
+                    "x-lilac": { "kind": "discordUser" },
                     "description": "Quoted Discord user ID. Keep snowflake IDs as strings to avoid numeric precision loss.",
                     "markdownDescription": "Quoted Discord user ID. Keep snowflake IDs as strings to avoid numeric precision loss."
                   },
@@ -4038,6 +4108,7 @@
                           "discord": {
                             "type": "string",
                             "minLength": 1,
+                            "x-lilac": { "kind": "discordChannel" },
                             "description": "Quoted Discord channel ID. Keep snowflake IDs as strings to avoid numeric precision loss.",
                             "markdownDescription": "Quoted Discord channel ID. Keep snowflake IDs as strings to avoid numeric precision loss."
                           },
@@ -4066,6 +4137,7 @@
         "basePrompt": {
           "description": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts.",
           "type": "string",
+          "x-lilac": { "kind": "multiline" },
           "markdownDescription": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts."
         }
       },
@@ -4140,12 +4212,14 @@
                 "accessKeyIdEnv": {
                   "type": "string",
                   "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "x-lilac": { "kind": "env" },
                   "description": "Environment variable holding the S3 access key ID, for example LILAC_S3_ACCESS_KEY_ID. Supply the variable name, not the credential.",
                   "markdownDescription": "Environment variable holding the S3 access key ID, for example LILAC_S3_ACCESS_KEY_ID. Supply the variable name, not the credential."
                 },
                 "secretAccessKeyEnv": {
                   "type": "string",
                   "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "x-lilac": { "kind": "env" },
                   "description": "Environment variable holding the S3 secret access key, for example LILAC_S3_SECRET_ACCESS_KEY. Supply the variable name, not the credential.",
                   "markdownDescription": "Environment variable holding the S3 secret access key, for example LILAC_S3_SECRET_ACCESS_KEY. Supply the variable name, not the credential."
                 },
@@ -4153,6 +4227,7 @@
                   "description": "Optional environment variable holding the S3 session token for temporary credentials.",
                   "type": "string",
                   "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "x-lilac": { "kind": "env" },
                   "markdownDescription": "Optional environment variable holding the S3 session token for temporary credentials."
                 },
                 "forcePathStyle": {
@@ -4174,6 +4249,7 @@
               "additionalProperties": false
             }
           ],
+          "x-lilac": { "restart": true },
           "markdownDescription": "Storage for managed opaque bytes. Omit to use local storage below DATA_DIR. For a custom local location use `{kind: local, root: /var/lib/lilac/blobs}`. For S3 use an existing private bucket and environment-variable names for credentials."
         },
         "telemetry": {
@@ -4267,6 +4343,7 @@
                           "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                         }
                       ],
+                      "x-lilac": { "kind": "duration" },
                       "markdownDescription": "Maximum time a Firecrawl request can wait in the local queue. Default: 3s. Accepts positive milliseconds or a duration such as `7d`. Units: ms, s, m, h, d, w, mo; mo is 30 days."
                     }
                   },
@@ -4307,6 +4384,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(B|KB|MB|GB|KiB|MiB|GiB)$"
                     }
                   ],
+                  "x-lilac": { "kind": "bytes" },
                   "markdownDescription": "Maximum inline tool-result preview size. Default: 40KiB. Accepts a positive byte count or a unit string such as `40KiB`. Units: B, KB, MB, GB, KiB, MiB, GiB."
                 },
                 "artifactTtl": {
@@ -4318,6 +4396,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                     }
                   ],
+                  "x-lilac": { "kind": "duration" },
                   "markdownDescription": "Retention time for tool-result artifacts. Default: 7d. Accepts positive milliseconds or a duration such as `7d`. Units: ms, s, m, h, d, w, mo; mo is 30 days."
                 },
                 "artifactMaxBytesPerSession": {
@@ -4329,6 +4408,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(B|KB|MB|GB|KiB|MiB|GiB)$"
                     }
                   ],
+                  "x-lilac": { "kind": "bytes" },
                   "markdownDescription": "Per-session retained tool-artifact byte budget. Default: 50MiB. Accepts a positive byte count or a unit string such as `40KiB`. Units: B, KB, MB, GB, KiB, MiB, GiB."
                 }
               },
@@ -4396,6 +4476,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(B|KB|MB|GB|KiB|MiB|GiB)$"
                     }
                   ],
+                  "x-lilac": { "kind": "bytes" },
                   "markdownDescription": "Maximum bytes in one inline media part. Default: 10MiB. Accepts a positive byte count or a unit string such as `40KiB`. Units: B, KB, MB, GB, KiB, MiB, GiB."
                 },
                 "maxInlineBytesTotal": {
@@ -4407,6 +4488,7 @@
                       "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(B|KB|MB|GB|KiB|MiB|GiB)$"
                     }
                   ],
+                  "x-lilac": { "kind": "bytes" },
                   "markdownDescription": "Maximum total inline media bytes. Default: 20MiB. Accepts a positive byte count or a unit string such as `40KiB`. Units: B, KB, MB, GB, KiB, MiB, GiB."
                 }
               },
@@ -4427,6 +4509,7 @@
               "description": "Plugin IDs to disable globally. Empty by default. Disabled contributions are also unavailable to subagent allowlists.",
               "type": "array",
               "items": { "type": "string", "minLength": 1 },
+              "x-lilac": { "kind": "pluginId" },
               "markdownDescription": "Plugin IDs to disable globally. Empty by default. Disabled contributions are also unavailable to subagent allowlists."
             },
             "config": {
@@ -4473,6 +4556,7 @@
                       "description": "Summary model: main, fast, a models.def alias, or provider/model. Defaults to fast.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "model" },
                       "markdownDescription": "Summary model: main, fast, a models.def alias, or provider/model. Defaults to fast."
                     },
                     "concurrency": {
@@ -4517,12 +4601,14 @@
                       "description": "AI SDK embedding model in provider/model format or a models.def alias. Defaults to openai/text-embedding-3-small.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "embeddingModel" },
                       "markdownDescription": "AI SDK embedding model in provider/model format or a models.def alias. Defaults to openai/text-embedding-3-small."
                     },
                     "queryModel": {
                       "description": "Optional query encoder. Must share the document embedding model's vector space and dimensions. Omit to use the document model.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "embeddingModel" },
                       "markdownDescription": "Optional query encoder. Must share the document embedding model's vector space and dimensions. Omit to use the document model."
                     }
                   },
@@ -4543,12 +4629,14 @@
                       "description": "Search-planning model: main, fast, a models.def alias, or provider/model. Omit to inherit conversation.thread.summarization.model.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "model" },
                       "markdownDescription": "Search-planning model: main, fast, a models.def alias, or provider/model. Omit to inherit conversation.thread.summarization.model."
                     },
                     "textPlannerModel": {
                       "description": "Optional planner override for composed input containing only text. Accepts the same values as plannerModel; omit to use plannerModel.",
                       "type": "string",
                       "minLength": 1,
+                      "x-lilac": { "kind": "model" },
                       "markdownDescription": "Optional planner override for composed input containing only text. Accepts the same values as plannerModel; omit to use plannerModel."
                     },
                     "gate": {
@@ -4572,6 +4660,7 @@
                               "items": { "type": "string", "minLength": 1 }
                             }
                           ],
+                          "x-lilac": { "kind": "model" },
                           "markdownDescription": "Decision model or non-empty model list. Text uses the first model; images use the first OpenAI entry when present. This is not a retry chain. TypeSafe uses TYPESAFE_AI_API_KEY / TYPESAFE_AI_BASE_URL; OpenAI uses OPENAI_API_KEY / OPENAI_BASE_URL."
                         },
                         "skipMinProbability": {
@@ -4667,6 +4756,7 @@
                           "items": { "type": "string", "minLength": 1 }
                         }
                       ],
+                      "x-lilac": { "kind": "model" },
                       "markdownDescription": "Decision model or non-empty model list. Text uses the first model; images use the first OpenAI entry when present. This is not a retry chain. TypeSafe uses TYPESAFE_AI_API_KEY / TYPESAFE_AI_BASE_URL; OpenAI uses OPENAI_API_KEY / OPENAI_BASE_URL."
                     },
                     "limit": {
@@ -4910,10 +5000,12 @@
                   "default": false,
                   "description": "Enable the native web/TUI gateway. Defaults to false. Requires a unique installationId; Clerk auth also requires ownerProviderUserId and clerkIssuer.",
                   "type": "boolean",
+                  "x-lilac": { "restart": true },
                   "markdownDescription": "Enable the native web/TUI gateway. Defaults to false. Requires a unique installationId; Clerk auth also requires ownerProviderUserId and clerkIssuer."
                 },
                 "host": {
                   "default": "127.0.0.1",
+                  "x-lilac": { "restart": true },
                   "description": "Gateway bind address. Defaults to 127.0.0.1; choose an externally reachable address only when appropriate for the deployment.",
                   "type": "string",
                   "minLength": 1,
@@ -4921,6 +5013,7 @@
                 },
                 "port": {
                   "default": 8789,
+                  "x-lilac": { "restart": true },
                   "description": "Gateway TCP port, from 1 to 65535. Defaults to 8789.",
                   "type": "integer",
                   "minimum": 1,
@@ -4929,12 +5022,14 @@
                 },
                 "publicUrl": {
                   "default": "http://localhost:8789",
+                  "x-lilac": { "restart": true },
                   "description": "Public HTTP(S) URL for the native gateway. Defaults to http://localhost:8789.",
                   "type": "string",
                   "format": "uri",
                   "markdownDescription": "Public HTTP(S) URL for the native gateway. Defaults to http://localhost:8789."
                 },
                 "installationId": {
+                  "x-lilac": { "restart": true },
                   "description": "Unique, stable identifier for this Lilac installation. Required when enabled; maximum 256 characters.",
                   "type": "string",
                   "minLength": 1,
@@ -4943,6 +5038,7 @@
                 },
                 "allowedOrigins": {
                   "default": ["http://localhost:8789"],
+                  "x-lilac": { "restart": true },
                   "description": "Non-empty list of browser origins allowed to connect. Origins must have no path or trailing slash. Default: [http://localhost:8789].",
                   "minItems": 1,
                   "type": "array",
@@ -4988,6 +5084,7 @@
                       "markdownDescription": "Optional Clerk OAuth client ID enabling TUI login."
                     }
                   },
+                  "x-lilac": { "restart": true },
                   "additionalProperties": false,
                   "markdownDescription": "Native authentication. Local credentials use LILAC_NATIVE_LOCAL_USERNAME and LILAC_NATIVE_LOCAL_PASSWORD_HASH; session signing uses LILAC_NATIVE_SESSION_SECRET (at least 32 bytes)."
                 },
@@ -5040,6 +5137,7 @@
                         "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`. Overrides the request model for this session.",
                         "type": "string",
                         "minLength": 1,
+                        "x-lilac": { "kind": "model" },
                         "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`. Overrides the request model for this session."
                       },
                       "safetyMode": {
@@ -5100,6 +5198,7 @@
               "properties": {
                 "tokenEnv": {
                   "default": "DISCORD_TOKEN",
+                  "x-lilac": { "kind": "env", "restart": true },
                   "description": "Name of the environment variable containing the Discord bot token. Defaults to DISCORD_TOKEN. Do not put the token itself here.",
                   "type": "string",
                   "minLength": 1,
@@ -5110,6 +5209,7 @@
                   "description": "Quoted Discord channel IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored.",
                   "type": "array",
                   "items": { "type": "string", "minLength": 1 },
+                  "x-lilac": { "kind": "discordChannel" },
                   "markdownDescription": "Quoted Discord channel IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored."
                 },
                 "allowedGuildIds": {
@@ -5117,16 +5217,19 @@
                   "description": "Quoted Discord guild/server IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored.",
                   "type": "array",
                   "items": { "type": "string", "minLength": 1 },
+                  "x-lilac": { "kind": "discordGuild" },
                   "markdownDescription": "Quoted Discord guild/server IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored."
                 },
                 "dbPath": {
                   "description": "Optional Discord surface database path. Defaults to DATA_DIR/discord-surface.db.",
                   "type": "string",
                   "minLength": 1,
+                  "x-lilac": { "restart": true },
                   "markdownDescription": "Optional Discord surface database path. Defaults to DATA_DIR/discord-surface.db."
                 },
                 "botName": {
                   "default": "lilac",
+                  "x-lilac": { "restart": true },
                   "description": "Bot display name used for attribution and mention stripping. Must not contain whitespace.\n\nDefault: `\"lilac\"`.",
                   "type": "string",
                   "minLength": 1,
@@ -5140,6 +5243,7 @@
                 "memberPresence": {
                   "description": "Enable the Discord member-presence intent. Requires the matching privileged intent in the Discord application settings.",
                   "type": "boolean",
+                  "x-lilac": { "restart": true },
                   "markdownDescription": "Enable the Discord member-presence intent. Requires the matching privileged intent in the Discord application settings."
                 },
                 "outputMode": {
@@ -5188,7 +5292,8 @@
                               "type": "string",
                               "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                             }
-                          ]
+                          ],
+                          "x-lilac": { "kind": "duration" }
                         }
                       ],
                       "markdownDescription": "Lifetime for newly cached Discord attachments. Default: 30d. Set `unlimited` to create cache objects without expiry. Accepts positive milliseconds or a duration such as `7d`. Units: ms, s, m, h, d, w, mo; mo is 30 days."
@@ -5294,6 +5399,7 @@
                   "default": "*/30 * * * *",
                   "description": "Five-field, minute-precision cron schedule. Defaults to `*/30 * * * *` (every 30 minutes).",
                   "type": "string",
+                  "x-lilac": { "kind": "cron" },
                   "markdownDescription": "Five-field, minute-precision cron schedule. Defaults to `*/30 * * * *` (every 30 minutes)."
                 },
                 "every": { "not": {} },
@@ -5326,12 +5432,14 @@
                     "start": {
                       "type": "string",
                       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+                      "x-lilac": { "kind": "clockTime" },
                       "description": "Start of quiet hours in 24-hour HH:MM format, for example 23:00.",
                       "markdownDescription": "Start of quiet hours in 24-hour HH:MM format, for example 23:00."
                     },
                     "end": {
                       "type": "string",
                       "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+                      "x-lilac": { "kind": "clockTime" },
                       "description": "End of quiet hours in 24-hour HH:MM format, for example 08:00.",
                       "markdownDescription": "End of quiet hours in 24-hour HH:MM format, for example 08:00."
                     },
@@ -5452,7 +5560,8 @@
                           "type": "string",
                           "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(ms|s|m|h|d|w|mo)$"
                         }
-                      ]
+                      ],
+                      "x-lilac": { "kind": "duration" }
                     }
                   ],
                   "markdownDescription": "Maximum age of completed request transcripts. Default: 180d. Set `unlimited` to disable the age limit independently of maxRequests. Accepts positive milliseconds or a duration such as `7d`. Units: ms, s, m, h, d, w, mo; mo is 30 days."
@@ -5533,6 +5642,7 @@
                   "description": "Free-form guidance appended to the parent-visible subagent_delegate tool description. Use for model selection, escalation, cost, or workflow preferences.",
                   "type": "string",
                   "minLength": 1,
+                  "x-lilac": { "kind": "multiline" },
                   "markdownDescription": "Free-form guidance appended to the parent-visible subagent_delegate tool description. Use for model selection, escalation, cost, or workflow preferences."
                 },
                 "permissions": {
@@ -5592,6 +5702,7 @@
                           "description": "Additional instructions appended to the worker prompt for children using this permission profile. For example, \"Cite file paths and avoid edits.\"",
                           "type": "string",
                           "minLength": 1,
+                          "x-lilac": { "kind": "multiline" },
                           "markdownDescription": "Additional instructions appended to the worker prompt for children using this permission profile. For example, \"Cite file paths and avoid edits.\""
                         },
                         "level1": {
@@ -5601,6 +5712,7 @@
                           "properties": {
                             "tools": {
                               "default": [],
+                              "x-lilac": { "kind": "toolName" },
                               "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -5608,6 +5720,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "toolPlugin" },
                               "description": "Allowed direct-tool plugin IDs. `*` includes every globally enabled plugin; MCP servers also require allowSubagents: true.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -5624,6 +5737,7 @@
                           "properties": {
                             "callables": {
                               "default": [],
+                              "x-lilac": { "kind": "callableName" },
                               "description": "Allowed Core tool-server callable names, such as fetch, search, or skills.read. `*` includes every globally enabled callable.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -5631,6 +5745,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "callablePlugin" },
                               "description": "Allowed Core tool-server plugin IDs. `*` includes every globally enabled plugin.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -5712,6 +5827,7 @@
                           "description": "Additional instructions appended to the worker prompt for children using this permission profile. For example, \"Cite file paths and avoid edits.\"",
                           "type": "string",
                           "minLength": 1,
+                          "x-lilac": { "kind": "multiline" },
                           "markdownDescription": "Additional instructions appended to the worker prompt for children using this permission profile. For example, \"Cite file paths and avoid edits.\""
                         },
                         "level1": {
@@ -5724,6 +5840,7 @@
                           "properties": {
                             "tools": {
                               "default": [],
+                              "x-lilac": { "kind": "toolName" },
                               "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -5731,6 +5848,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "toolPlugin" },
                               "description": "Allowed direct-tool plugin IDs. `*` includes every globally enabled plugin; MCP servers also require allowSubagents: true.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -5769,6 +5887,7 @@
                           "properties": {
                             "callables": {
                               "default": [],
+                              "x-lilac": { "kind": "callableName" },
                               "description": "Allowed Core tool-server callable names, such as fetch, search, or skills.read. `*` includes every globally enabled callable.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -5776,6 +5895,7 @@
                             },
                             "plugins": {
                               "default": [],
+                              "x-lilac": { "kind": "callablePlugin" },
                               "description": "Allowed Core tool-server plugin IDs. `*` includes every globally enabled plugin.",
                               "type": "array",
                               "items": { "type": "string", "minLength": 1 },
@@ -5824,6 +5944,7 @@
                         "description": "Additional instructions appended to the worker prompt for children using this permission profile. For example, \"Cite file paths and avoid edits.\"",
                         "type": "string",
                         "minLength": 1,
+                        "x-lilac": { "kind": "multiline" },
                         "markdownDescription": "Additional instructions appended to the worker prompt for children using this permission profile. For example, \"Cite file paths and avoid edits.\""
                       },
                       "level1": {
@@ -5836,6 +5957,7 @@
                         "properties": {
                           "tools": {
                             "default": [],
+                            "x-lilac": { "kind": "toolName" },
                             "description": "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
                             "type": "array",
                             "items": { "type": "string", "minLength": 1 },
@@ -5843,6 +5965,7 @@
                           },
                           "plugins": {
                             "default": [],
+                            "x-lilac": { "kind": "toolPlugin" },
                             "description": "Allowed direct-tool plugin IDs. `*` includes every globally enabled plugin; MCP servers also require allowSubagents: true.",
                             "type": "array",
                             "items": { "type": "string", "minLength": 1 },
@@ -5881,6 +6004,7 @@
                         "properties": {
                           "callables": {
                             "default": [],
+                            "x-lilac": { "kind": "callableName" },
                             "description": "Allowed Core tool-server callable names, such as fetch, search, or skills.read. `*` includes every globally enabled callable.",
                             "type": "array",
                             "items": { "type": "string", "minLength": 1 },
@@ -5888,6 +6012,7 @@
                           },
                           "plugins": {
                             "default": [],
+                            "x-lilac": { "kind": "callablePlugin" },
                             "description": "Allowed Core tool-server plugin IDs. `*` includes every globally enabled plugin.",
                             "type": "array",
                             "items": { "type": "string", "minLength": 1 },
@@ -5961,6 +6086,7 @@
                   "model": {
                     "type": "string",
                     "pattern": "^[^/]+\\/.+",
+                    "x-lilac": { "kind": "model" },
                     "description": "Canonical provider/model reference. An alias cannot point to another alias. Example: openai/gpt-4o.",
                     "markdownDescription": "Canonical provider/model reference. An alias cannot point to another alias. Example: openai/gpt-4o."
                   },
@@ -5980,24 +6106,26 @@
                     "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                   },
                   "options": {
-                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                     "type": "object",
                     "properties": { "codex_instructions": { "not": {} } },
                     "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                    "x-lilac": { "kind": "providerOptions" },
+                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                   },
                   "fallback": {
                     "description": "Ordered fallback models, each a model reference/alias or `{model, reasoning, options}`. A model-slot chain takes precedence over the selected alias chain. Automatic fallback stays within the head model's provider family and is disabled for a `claude-code` head.",
                     "type": "array",
                     "items": {
                       "anyOf": [
-                        { "type": "string", "minLength": 1 },
+                        { "type": "string", "minLength": 1, "x-lilac": { "kind": "model" } },
                         {
                           "type": "object",
                           "properties": {
                             "model": {
                               "type": "string",
                               "minLength": 1,
+                              "x-lilac": { "kind": "model" },
                               "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
                               "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`."
                             },
@@ -6017,11 +6145,12 @@
                               "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                             },
                             "options": {
-                              "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                              "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                               "type": "object",
                               "properties": { "codex_instructions": { "not": {} } },
                               "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                              "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                              "x-lilac": { "kind": "providerOptions" },
+                              "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                             }
                           },
                           "required": ["model"],
@@ -6035,6 +6164,7 @@
                     "description": "Guidance shown to agents choosing this model alias. Describe the tasks it suits or relevant cost/latency tradeoffs.",
                     "type": "string",
                     "minLength": 1,
+                    "x-lilac": { "kind": "multiline" },
                     "markdownDescription": "Guidance shown to agents choosing this model alias. Describe the tasks it suits or relevant cost/latency tradeoffs."
                   },
                   "agentCanSelect": {
@@ -6059,6 +6189,7 @@
                   "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o\"`.",
                   "type": "string",
                   "minLength": 1,
+                  "x-lilac": { "kind": "model" },
                   "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o\"`."
                 },
                 "reasoning": {
@@ -6077,24 +6208,26 @@
                   "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                 },
                 "options": {
-                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                   "type": "object",
                   "properties": { "codex_instructions": { "not": {} } },
                   "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                  "x-lilac": { "kind": "providerOptions" },
+                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                 },
                 "fallback": {
                   "description": "Ordered fallback models, each a model reference/alias or `{model, reasoning, options}`. A model-slot chain takes precedence over the selected alias chain. Automatic fallback stays within the head model's provider family and is disabled for a `claude-code` head.",
                   "type": "array",
                   "items": {
                     "anyOf": [
-                      { "type": "string", "minLength": 1 },
+                      { "type": "string", "minLength": 1, "x-lilac": { "kind": "model" } },
                       {
                         "type": "object",
                         "properties": {
                           "model": {
                             "type": "string",
                             "minLength": 1,
+                            "x-lilac": { "kind": "model" },
                             "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
                             "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`."
                           },
@@ -6114,11 +6247,12 @@
                             "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                           },
                           "options": {
-                            "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                            "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                             "type": "object",
                             "properties": { "codex_instructions": { "not": {} } },
                             "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                            "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                            "x-lilac": { "kind": "providerOptions" },
+                            "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                           }
                         },
                         "required": ["model"],
@@ -6142,6 +6276,7 @@
                   "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o-mini\"`.",
                   "type": "string",
                   "minLength": 1,
+                  "x-lilac": { "kind": "model" },
                   "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.\n\nDefault: `\"openrouter/openai/gpt-4o-mini\"`."
                 },
                 "reasoning": {
@@ -6160,24 +6295,26 @@
                   "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                 },
                 "options": {
-                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                  "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                   "type": "object",
                   "properties": { "codex_instructions": { "not": {} } },
                   "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                  "x-lilac": { "kind": "providerOptions" },
+                  "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                 },
                 "fallback": {
                   "description": "Ordered fallback models, each a model reference/alias or `{model, reasoning, options}`. A model-slot chain takes precedence over the selected alias chain. Automatic fallback stays within the head model's provider family and is disabled for a `claude-code` head.",
                   "type": "array",
                   "items": {
                     "anyOf": [
-                      { "type": "string", "minLength": 1 },
+                      { "type": "string", "minLength": 1, "x-lilac": { "kind": "model" } },
                       {
                         "type": "object",
                         "properties": {
                           "model": {
                             "type": "string",
                             "minLength": 1,
+                            "x-lilac": { "kind": "model" },
                             "description": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
                             "markdownDescription": "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`."
                           },
@@ -6197,11 +6334,12 @@
                             "markdownDescription": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model."
                           },
                           "options": {
-                            "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                            "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                             "type": "object",
                             "properties": { "codex_instructions": { "not": {} } },
                             "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                            "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                            "x-lilac": { "kind": "providerOptions" },
+                            "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                           }
                         },
                         "required": ["model"],
@@ -6239,6 +6377,7 @@
                         "description": "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions.",
                         "type": "string",
                         "minLength": 1,
+                        "x-lilac": { "kind": "model" },
                         "markdownDescription": "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions."
                       },
                       "cost": {
@@ -6401,7 +6540,7 @@
             },
             "rules": {
               "default": [],
-              "description": "Ordered glob defaults applied before alias and per-run options. `*` includes slashes. Later matching rules can override earlier settings. Example: `{match: \"codex/gpt-6-*\", options: {serviceTier: priority}}.",
+              "description": "Ordered glob defaults applied before alias and per-run options. `*` includes slashes. Later matching rules can override earlier settings. Example: `{match: \"codex/gpt-6-*\", options: {serviceTier: priority}}`.",
               "type": "array",
               "items": {
                 "type": "object",
@@ -6414,11 +6553,12 @@
                     "markdownDescription": "Glob matched against the canonical provider/model reference. `*` also matches slashes. Rules apply in declaration order."
                   },
                   "options": {
-                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+                    "description": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
                     "type": "object",
                     "properties": { "codex_instructions": { "not": {} } },
                     "additionalProperties": { "$ref": "#/definitions/__schema0" },
-                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
+                    "x-lilac": { "kind": "providerOptions" },
+                    "markdownDescription": "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning."
                   },
                   "reasoning": {
                     "description": "Portable reasoning effort. `provider-default` leaves the choice to the provider. Supported effort levels depend on the selected model.",
@@ -6453,7 +6593,7 @@
                 "required": ["match"],
                 "additionalProperties": false
               },
-              "markdownDescription": "Ordered glob defaults applied before alias and per-run options. `*` includes slashes. Later matching rules can override earlier settings. Example: `{match: \"codex/gpt-6-*\", options: {serviceTier: priority}}."
+              "markdownDescription": "Ordered glob defaults applied before alias and per-run options. `*` includes slashes. Later matching rules can override earlier settings. Example: `{match: \"codex/gpt-6-*\", options: {serviceTier: priority}}`."
             }
           },
           "additionalProperties": false,
@@ -6461,6 +6601,7 @@
         },
         "entity": {
           "description": "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt.",
+          "x-lilac": { "restart": true },
           "default": { "users": {}, "sessions": { "discord": {} } },
           "type": "object",
           "properties": {
@@ -6475,6 +6616,7 @@
                   "discord": {
                     "type": "string",
                     "minLength": 1,
+                    "x-lilac": { "kind": "discordUser" },
                     "description": "Quoted Discord user ID. Keep snowflake IDs as strings to avoid numeric precision loss.",
                     "markdownDescription": "Quoted Discord user ID. Keep snowflake IDs as strings to avoid numeric precision loss."
                   },
@@ -6509,6 +6651,7 @@
                           "discord": {
                             "type": "string",
                             "minLength": 1,
+                            "x-lilac": { "kind": "discordChannel" },
                             "description": "Quoted Discord channel ID. Keep snowflake IDs as strings to avoid numeric precision loss.",
                             "markdownDescription": "Quoted Discord channel ID. Keep snowflake IDs as strings to avoid numeric precision loss."
                           },
@@ -6537,6 +6680,7 @@
         "basePrompt": {
           "description": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts.",
           "type": "string",
+          "x-lilac": { "kind": "multiline" },
           "markdownDescription": "Optional base prompt prepended to the prompt files under DATA_DIR/prompts."
         }
       },

@@ -9,6 +9,7 @@ import {
   type UniversalMcpConfig,
 } from "./config-types";
 import { opaqueErrorMessage } from "./error-format";
+import { configUi } from "@stanley2058/lilac-utils/core-config/ui-meta";
 
 export const mcpServerIdSchema = z
   .string()
@@ -30,20 +31,27 @@ const jsonPointerSchema = z.string().refine(
   "pointer must be an RFC 6901 JSON Pointer",
 );
 
-export const mcpValueSourceSchema = z.union([
-  z.string(),
-  z.strictObject({ env: z.string().min(1), prefix: z.string().optional() }),
-  z.strictObject({
-    file: z.string().min(1),
-    pointer: jsonPointerSchema.optional(),
-    prefix: z.string().optional(),
-  }),
-]);
+export const mcpValueSourceSchema = z
+  .union([
+    z.string(),
+    z.strictObject({
+      env: z.string().min(1).describe("Environment variable that holds the value."),
+      prefix: z.string().optional().describe("Text prepended to the value, such as `Bearer `."),
+    }),
+    z.strictObject({
+      file: z.string().min(1).describe("Path of a file that holds the value."),
+      pointer: jsonPointerSchema
+        .optional()
+        .describe("JSON Pointer into the file when it is JSON, such as `/token`."),
+      prefix: z.string().optional().describe("Text prepended to the value, such as `Bearer `."),
+    }),
+  ])
+  .meta(configUi({ kind: "valueSource" }));
 
 const staticOAuthClientSchema = z.strictObject({
   type: z.literal("static"),
-  clientId: mcpValueSourceSchema,
-  clientSecret: mcpValueSourceSchema.optional(),
+  clientId: mcpValueSourceSchema.describe("OAuth client ID."),
+  clientSecret: mcpValueSourceSchema.optional().describe("OAuth client secret."),
 });
 
 const dynamicOAuthClientSchema = z.strictObject({ type: z.literal("dynamic") });
@@ -51,29 +59,54 @@ const dynamicOAuthClientSchema = z.strictObject({ type: z.literal("dynamic") });
 const authorizationCodeAuthSchema = z.strictObject({
   type: z.literal("oauth"),
   grant: z.literal("authorization_code"),
-  scopes: z.array(z.string().min(1)).optional(),
-  client: z.union([staticOAuthClientSchema, dynamicOAuthClientSchema]),
+  scopes: z.array(z.string().min(1)).optional().describe("OAuth scopes to request."),
+  client: z
+    .union([staticOAuthClientSchema, dynamicOAuthClientSchema])
+    .describe(
+      "`dynamic` registers a client with the server. `static` uses a client ID and optional secret.",
+    ),
 });
 
 export const mcpAuthConfigSchema = authorizationCodeAuthSchema;
 
+const allowSubagentsSchema = z
+  .boolean()
+  .default(false)
+  .describe("Expose this server's tools to subagents whose profile allows the plugin.");
+const serverDescriptionSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .describe("Shown to the agent before the server's own description.");
+
 const stdioServerInputSchemaV1 = z.strictObject({
-  transport: z.literal("stdio"),
-  allowSubagents: z.boolean().default(false),
-  description: z.string().trim().min(1).optional(),
-  command: z.string().min(1),
-  args: z.array(z.string()).optional(),
-  cwd: z.string().min(1).optional(),
-  env: z.record(z.string().min(1), mcpValueSourceSchema).optional(),
+  transport: z
+    .literal("stdio")
+    .describe("`stdio` starts a local process; `http` connects to a URL."),
+  allowSubagents: allowSubagentsSchema,
+  description: serverDescriptionSchema,
+  command: z.string().min(1).describe("Executable to start, such as `npx` or `uvx`."),
+  args: z.array(z.string()).optional().describe("Command arguments."),
+  cwd: z.string().min(1).optional().describe("Working directory for the process."),
+  env: z
+    .record(z.string().min(1), mcpValueSourceSchema)
+    .optional()
+    .describe("Environment variables for the process."),
 });
 
 const httpServerInputObjectSchemaV1 = z.strictObject({
-  transport: z.literal("http"),
-  allowSubagents: z.boolean().default(false),
-  description: z.string().trim().min(1).optional(),
-  url: z.string().min(1),
-  headers: z.record(z.string().min(1), mcpValueSourceSchema).optional(),
-  auth: mcpAuthConfigSchema.optional(),
+  transport: z
+    .literal("http")
+    .describe("`stdio` starts a local process; `http` connects to a URL."),
+  allowSubagents: allowSubagentsSchema,
+  description: serverDescriptionSchema,
+  url: z.string().min(1).describe("Streamable HTTP endpoint, such as `https://example.com/mcp`."),
+  headers: z
+    .record(z.string().min(1), mcpValueSourceSchema)
+    .optional()
+    .describe("HTTP headers sent with every request."),
+  auth: mcpAuthConfigSchema.optional().describe("OAuth authorization for the server."),
 });
 
 function validateHttpServerInputV1(
@@ -114,8 +147,11 @@ export const mcpServerInputSchemaV1 = z.discriminatedUnion("transport", [
 ]);
 
 export const mcpConfigInputSchemaV1 = z.strictObject({
-  configVersion: z.literal(MCP_CONFIG_VERSION),
-  servers: z.record(mcpServerIdSchema, mcpServerInputSchemaV1).optional(),
+  configVersion: z.literal(MCP_CONFIG_VERSION).describe("Configuration format version."),
+  servers: z
+    .record(mcpServerIdSchema, mcpServerInputSchemaV1)
+    .optional()
+    .describe("MCP servers keyed by server ID. Reload MCP after saving to apply changes."),
 });
 
 export type McpConfigInputV1 = z.infer<typeof mcpConfigInputSchemaV1>;

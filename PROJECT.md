@@ -543,6 +543,8 @@ These invariants matter more than a fragile numbered list. Update this section o
 - Workflow definition, runtime, persistence, scheduling, waits, or progress: the corresponding owner in `apps/core/src/workflow`; Level 2 adaptation is `apps/core/src/tool-server/tools/programmatic-workflow.ts`.
 - Core config/model/provider/prompt behavior: `packages/utils`; config version changes also require
   `docs/core-config-migrations.md`.
+- Reading, validating, patching, and writing `DATA_DIR/{core,mcp}-config.yaml` for native settings
+  and the `config.*` callables: `apps/core/src/runtime/config-files.ts`.
 - Core managed opaque bytes, adapter behavior, handle/reference codecs, integrity, or expiry:
   `packages/blob-storage`; domain retention and ownership stay with the consuming Core module.
 - Architecture boundary registration or a new workspace: `scripts/architecture/manifest.ts` and its focused tests; read `scripts/architecture/README.md` first.

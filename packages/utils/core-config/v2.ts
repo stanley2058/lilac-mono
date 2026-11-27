@@ -22,6 +22,7 @@ import {
 } from "./v1";
 import { collectUnknownConfigKeyPaths } from "./unknown-keys";
 import { defaultNativeSurfaceConfig } from "./types";
+import { configUi } from "./ui-meta";
 
 import type {
   ConfigParser,
@@ -45,7 +46,8 @@ const configVersionSchema = z.literal(V2_CORE_CONFIG_VERSION).default(V2_CORE_CO
 
 const environmentVariableNameSchema = z
   .string()
-  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/u, "expected an environment variable name");
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/u, "expected an environment variable name")
+  .meta(configUi({ kind: "env" }));
 
 const blobStorageSchemaV2 = z.discriminatedUnion("kind", [
   z
@@ -114,6 +116,7 @@ const pluginsSchemaV2 = z
   .object({
     disabled: z
       .array(z.string().min(1))
+      .meta(configUi({ kind: "pluginId" }))
       .default([])
       .describe(
         "Plugin IDs to disable globally. Empty by default. Disabled contributions are also unavailable to subagent allowlists.",
@@ -140,11 +143,15 @@ const modelReasoningEffortSchema = z.enum([
 ]);
 
 const configuredModelChainEntrySchemaV2 = z.union([
-  z.string().min(1),
+  z
+    .string()
+    .min(1)
+    .meta(configUi({ kind: "model" })),
   z.object({
     model: z
       .string()
       .min(1)
+      .meta(configUi({ kind: "model" }))
       .describe(
         "Model reference in `provider/model` format or an alias from `models.def`. For example, `openai/gpt-4o`.",
       ),
@@ -156,7 +163,7 @@ const configuredModelChainEntrySchemaV2 = z.union([
     options: jsonObjectSchema
       .optional()
       .describe(
-        "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+        "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
       ),
   }),
 ]);
@@ -174,21 +181,27 @@ type SubagentProfileConfigV2 = SubagentPermissionProfileConfig & {
 const profileNamesSchema = z.array(z.string().trim().min(1)).default([]);
 
 export const profileLevel1Schema = z.object({
-  tools: profileNamesSchema.describe(
-    "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
-  ),
-  plugins: profileNamesSchema.describe(
-    "Allowed direct-tool plugin IDs. `*` includes every globally enabled plugin; MCP servers also require allowSubagents: true.",
-  ),
+  tools: profileNamesSchema
+    .meta(configUi({ kind: "toolName" }))
+    .describe(
+      "Allowed direct tool names. `*` includes every globally enabled tool contribution. Examples: bash, read, glob, grep, fuzzy_search.",
+    ),
+  plugins: profileNamesSchema
+    .meta(configUi({ kind: "toolPlugin" }))
+    .describe(
+      "Allowed direct-tool plugin IDs. `*` includes every globally enabled plugin; MCP servers also require allowSubagents: true.",
+    ),
 });
 
 export const profileLevel2Schema = z.object({
-  callables: profileNamesSchema.describe(
-    "Allowed Core tool-server callable names, such as fetch, search, or skills.read. `*` includes every globally enabled callable.",
-  ),
-  plugins: profileNamesSchema.describe(
-    "Allowed Core tool-server plugin IDs. `*` includes every globally enabled plugin.",
-  ),
+  callables: profileNamesSchema
+    .meta(configUi({ kind: "callableName" }))
+    .describe(
+      "Allowed Core tool-server callable names, such as fetch, search, or skills.read. `*` includes every globally enabled callable.",
+    ),
+  plugins: profileNamesSchema
+    .meta(configUi({ kind: "callablePlugin" }))
+    .describe("Allowed Core tool-server plugin IDs. `*` includes every globally enabled plugin."),
 });
 
 const EXPLORE_PROFILE_DEFAULT: SubagentProfileConfigV2 = {
@@ -351,6 +364,7 @@ const modelCapabilityOverrideSchemaV2 = z
       .string()
       .trim()
       .min(1)
+      .meta(configUi({ kind: "model" }))
       .optional()
       .describe(
         "Base capability reference in provider/model format. Omit to merge onto upstream metadata for this model. When no base is available, the override must supply limit.context and complete any cost or modality definitions.",
@@ -572,17 +586,20 @@ const discordSurfaceSchema = z
       .string()
       .min(1)
       .default("DISCORD_TOKEN")
+      .meta(configUi({ kind: "env", restart: true }))
       .describe(
         "Name of the environment variable containing the Discord bot token. Defaults to DISCORD_TOKEN. Do not put the token itself here.",
       ),
     allowedChannelIds: z
       .array(z.string().min(1))
+      .meta(configUi({ kind: "discordChannel" }))
       .default([])
       .describe(
         "Quoted Discord channel IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored.",
       ),
     allowedGuildIds: z
       .array(z.string().min(1))
+      .meta(configUi({ kind: "discordGuild" }))
       .default([])
       .describe(
         "Quoted Discord guild/server IDs allowed to reach the bot. If both channel and guild allowlists are empty, all Discord traffic is ignored.",
@@ -590,6 +607,7 @@ const discordSurfaceSchema = z
     dbPath: z
       .string()
       .min(1)
+      .meta(configUi({ restart: true }))
       .optional()
       .describe("Optional Discord surface database path. Defaults to DATA_DIR/discord-surface.db."),
     botName: z
@@ -597,12 +615,14 @@ const discordSurfaceSchema = z
       .min(1)
       .refine((s) => !/\s/u.test(s), "botName must not contain spaces")
       .default("lilac")
+      .meta(configUi({ restart: true }))
       .describe(
         'Bot display name used for attribution and mention stripping. Must not contain whitespace.\n\nDefault: `"lilac"`.',
       ),
     statusMessage: z.string().optional().describe("Optional custom Discord presence/status text."),
     memberPresence: z
       .boolean()
+      .meta(configUi({ restart: true }))
       .optional()
       .describe(
         "Enable the Discord member-presence intent. Requires the matching privileged intent in the Discord application settings.",
@@ -944,6 +964,7 @@ const decisionAutoInjectSchemaV2 = decisionProbabilityOverridesSchemaV2
   .extend({
     model: z
       .union([z.string().trim().min(1), z.array(z.string().trim().min(1)).min(1)])
+      .meta(configUi({ kind: "model" }))
       .transform((model) => (typeof model === "string" ? [model] : model))
       .default(decisionAutoInjectDefaultsV2.model)
       .describe(
@@ -1022,6 +1043,7 @@ const conversationSchemaV2 = z
               .string()
               .trim()
               .min(1)
+              .meta(configUi({ kind: "model" }))
               .default("fast")
               .describe(
                 "Summary model: main, fast, a models.def alias, or provider/model. Defaults to fast.",
@@ -1071,6 +1093,7 @@ const conversationSchemaV2 = z
               .string()
               .trim()
               .min(1)
+              .meta(configUi({ kind: "embeddingModel" }))
               .default("openai/text-embedding-3-small")
               .describe(
                 "AI SDK embedding model in provider/model format or a models.def alias. Defaults to openai/text-embedding-3-small.",
@@ -1079,6 +1102,7 @@ const conversationSchemaV2 = z
               .string()
               .trim()
               .min(1)
+              .meta(configUi({ kind: "embeddingModel" }))
               .optional()
               .describe(
                 "Optional query encoder. Must share the document embedding model's vector space and dimensions. Omit to use the document model.",
@@ -1100,6 +1124,7 @@ const conversationSchemaV2 = z
               .string()
               .trim()
               .min(1)
+              .meta(configUi({ kind: "model" }))
               .optional()
               .describe(
                 "Search-planning model: main, fast, a models.def alias, or provider/model. Omit to inherit conversation.thread.summarization.model.",
@@ -1108,6 +1133,7 @@ const conversationSchemaV2 = z
               .string()
               .trim()
               .min(1)
+              .meta(configUi({ kind: "model" }))
               .optional()
               .describe(
                 "Optional planner override for composed input containing only text. Accepts the same values as plannerModel; omit to use plannerModel.",
@@ -1122,6 +1148,7 @@ const conversationSchemaV2 = z
                   ),
                 model: z
                   .union([z.string().trim().min(1), z.array(z.string().trim().min(1)).min(1)])
+                  .meta(configUi({ kind: "model" }))
                   .transform((model) => (typeof model === "string" ? [model] : model))
                   .default(["typesafe/jev-1.13.0"])
                   .describe(
@@ -1326,7 +1353,7 @@ const modelsSchemaV2 = z
           options: jsonObjectSchema
             .optional()
             .describe(
-              "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+              "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
             ),
           /** Optional ordered model fallback chain. */
           fallback: modelFallbackSchemaV2.describe(
@@ -1337,6 +1364,7 @@ const modelsSchemaV2 = z
             .string()
             .trim()
             .min(1)
+            .meta(configUi({ kind: "multiline" }))
             .optional()
             .describe(
               "Guidance shown to agents choosing this model alias. Describe the tasks it suits or relevant cost/latency tradeoffs.",
@@ -1360,6 +1388,7 @@ const modelsSchemaV2 = z
         /** Model spec in provider/model format OR an alias from models.def. */
         model: z
           .string()
+          .meta(configUi({ kind: "model" }))
           .min(1)
           .default("openrouter/openai/gpt-4o")
           .describe(
@@ -1375,7 +1404,7 @@ const modelsSchemaV2 = z
         options: jsonObjectSchema
           .optional()
           .describe(
-            "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+            "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
           ),
         /** Optional ordered model fallback chain. */
         fallback: modelFallbackSchemaV2.describe(
@@ -1394,6 +1423,7 @@ const modelsSchemaV2 = z
       .object({
         model: z
           .string()
+          .meta(configUi({ kind: "model" }))
           .min(1)
           .default("openrouter/openai/gpt-4o-mini")
           .describe(
@@ -1407,7 +1437,7 @@ const modelsSchemaV2 = z
         options: jsonObjectSchema
           .optional()
           .describe(
-            "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
+            "Provider-specific options merged onto inherited model settings. Accepts shorthand such as `{temperature: 0.2}` or nested provider namespaces such as `{openai: {parallelToolCalls: false}}`. OpenAI-compatible options use `openaiCompatible`.\n\nLilac options include `response_commentary` for direct OpenAI/Codex channel guidance, `openai_server_compaction` to opt into server compaction, and `anthropic_prompt_cache` to control Claude prompt caching. Core agent calls to the first-party Anthropic API default to automatic 5-minute caching. Set `anthropic_prompt_cache` to `auto` or `true` to select the route default, `false` to opt out of Lilac's cache injection, or `legacy` to use explicit system/latest-user breakpoints. If you previously set `true` for explicit breakpoints, change it to `legacy`. An explicit `anthropic.cacheControl` provider option configures request-level caching directly. Cache writes can increase cost and interact poorly with tool-result pruning.",
           ),
         fallback: modelFallbackSchemaV2.describe(
           "Ordered fallback models, each a model reference/alias or `{model, reasoning, options}`. A model-slot chain takes precedence over the selected alias chain. Automatic fallback stays within the head model's provider family and is disabled for a `claude-code` head.",
@@ -1487,6 +1517,7 @@ const nativeSurfaceSchema = z
   .object({
     enabled: z
       .boolean()
+      .meta(configUi({ restart: true }))
       .default(false)
       .describe(
         "Enable the native web/TUI gateway. Defaults to false. Requires a unique installationId; Clerk auth also requires ownerProviderUserId and clerkIssuer.",
@@ -1496,6 +1527,7 @@ const nativeSurfaceSchema = z
       .trim()
       .min(1)
       .default("127.0.0.1")
+      .meta(configUi({ restart: true }))
       .describe(
         "Gateway bind address. Defaults to 127.0.0.1; choose an externally reachable address only when appropriate for the deployment.",
       ),
@@ -1505,9 +1537,11 @@ const nativeSurfaceSchema = z
       .min(1)
       .max(65535)
       .default(8789)
+      .meta(configUi({ restart: true }))
       .describe("Gateway TCP port, from 1 to 65535. Defaults to 8789."),
     publicUrl: nativeHttpUrlSchema
       .default("http://localhost:8789")
+      .meta(configUi({ restart: true }))
       .describe("Public HTTP(S) URL for the native gateway. Defaults to http://localhost:8789."),
     installationId: z
       .string()
@@ -1515,6 +1549,7 @@ const nativeSurfaceSchema = z
       .min(1)
       .max(256)
       .optional()
+      .meta(configUi({ restart: true }))
       .describe(
         "Unique, stable identifier for this Lilac installation. Required when enabled; maximum 256 characters.",
       ),
@@ -1522,6 +1557,7 @@ const nativeSurfaceSchema = z
       .array(nativeOriginSchema)
       .min(1)
       .default(["http://localhost:8789"])
+      .meta(configUi({ restart: true }))
       .describe(
         "Non-empty list of browser origins allowed to connect. Origins must have no path or trailing slash. Default: [http://localhost:8789].",
       ),
@@ -1567,6 +1603,7 @@ const nativeSurfaceSchema = z
           .optional()
           .describe("Optional Clerk OAuth client ID enabling TUI login."),
       })
+      .meta(configUi({ restart: true }))
       .default({ provider: "local", ownerId: "owner" })
       .describe(
         "Native authentication. Local credentials use LILAC_NATIVE_LOCAL_USERNAME and LILAC_NATIVE_LOCAL_PASSWORD_HASH; session signing uses LILAC_NATIVE_SESSION_SECRET (at least 32 bytes).",
@@ -1682,6 +1719,7 @@ export const coreConfigInputSchemaV2 = z.object({
   ),
 
   blobStorage: blobStorageSchemaV2
+    .meta(configUi({ restart: true }))
     .optional()
     .describe(
       "Storage for managed opaque bytes. Omit to use local storage below DATA_DIR. For a custom local location use `{kind: local, root: /var/lib/lilac/blobs}`. For S3 use an existing private bucket and environment-variable names for credentials.",
@@ -1772,11 +1810,14 @@ export const coreConfigInputSchemaV2 = z.object({
   models: modelsSchemaV2.describe(
     "Model slots, reusable aliases, capability overrides, catalog visibility, and ordered option rules. Local Claude subscription models use `claude-code/<model>`; see docs/claude-code.md for authentication, persistent storage, and continuation limits.",
   ),
-  entity: coreConfigInputSchemaV1.shape.entity.describe(
-    "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt.",
-  ),
+  entity: coreConfigInputSchemaV1.shape.entity
+    .meta(configUi({ restart: true }))
+    .describe(
+      "Discord aliases for users and channels. Rewrites outbound @name/#name to Discord mentions and inbound mentions to aliases. Matching is case-insensitive; configured casing is preserved. Whitespace becomes underscores and leading @/# is stripped. Optional comments accompany aliases in the system prompt.",
+    ),
   basePrompt: z
     .string()
+    .meta(configUi({ kind: "multiline" }))
     .optional()
     .describe("Optional base prompt prepended to the prompt files under DATA_DIR/prompts."),
 });
