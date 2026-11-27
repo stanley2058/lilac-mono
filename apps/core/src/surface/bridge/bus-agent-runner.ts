@@ -1,5 +1,6 @@
 import { projectAssistantTextHistory } from "./request-composition/normalization";
 import { recoverAnthropicThinking } from "../../agent/anthropic-thinking-recovery";
+import { stripRejectedInputMedia } from "../../agent/rejected-input-media-recovery";
 import { findCatalogModel } from "@stanley2058/lilac-utils";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import { planJobEventBoundary } from "../../jobs/job-events";
@@ -5071,6 +5072,40 @@ export async function startBusAgentRunner(params: {
             });
             return true;
           };
+          const retryWithoutRejectedMedia = <ErrorCause>(
+            error: ErrorCause,
+            projectedError: ReturnType<typeof projectBusAgentRunnerError>,
+            errorContext: Parameters<
+              NonNullable<Parameters<typeof attachAutoCompaction>[1]["baseTurnErrorHandler"]>
+            >[1],
+          ): boolean => {
+            if (
+              !agent ||
+              !errorContext.retrySafety.canRetry ||
+              errorContext.phase !== "model-call" ||
+              errorContext.abortSignal?.aborted
+            )
+              return false;
+            const stripped = stripRejectedInputMedia({
+              error,
+              details: projectedError.details,
+              messages: agent.state.messages,
+            });
+            if (!stripped) return false;
+            const replacement = agent.replaceMessages(stripped, {
+              preserveRecoveryCheckpoint: true,
+            });
+            if (replacement.isErr()) return false;
+            logger.warn(
+              "provider rejected input attachments; retrying without them",
+              formatBridgeLogContext({
+                requestId: headers.request_id,
+                sessionId: headers.session_id,
+                modelSpec: activeBinding.resolved.spec,
+              }),
+            );
+            return true;
+          };
           const turnErrorHandler = async <ErrorCause>(
             error: ErrorCause,
             errorContext: Parameters<
@@ -5087,6 +5122,8 @@ export async function startBusAgentRunner(params: {
                 errorContext,
               )
             )
+              return "retry" as const;
+            if (retryWithoutRejectedMedia(error, projectedError, errorContext))
               return "retry" as const;
             return "fail" as const;
           };

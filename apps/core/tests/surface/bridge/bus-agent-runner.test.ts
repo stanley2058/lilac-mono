@@ -573,6 +573,16 @@ describe("subagent model selection", () => {
         },
       }),
     ).toMatchObject({ supportsAudio: true, supportsVideo: true });
+    const pdfCapability = {
+      ...capability,
+      modalities: { input: ["text" as const, "image" as const, "pdf" as const] },
+    };
+    expect(
+      resolveStoredResourceProviderTarget({ provider: "openai", capability: pdfCapability }),
+    ).toMatchObject({ supportsImage: true, supportsPdf: true });
+    expect(
+      resolveStoredResourceProviderTarget({ provider: "codex", capability: pdfCapability }),
+    ).toMatchObject({ supportsImage: true, supportsPdf: false });
     expect(
       resolveStoredResourceProviderTarget({
         provider: "claude-code",
@@ -2068,6 +2078,81 @@ describe("startBusAgentRunner production path", () => {
       await lifecycle.stop();
       await runner.stop();
       await requestMessageCache.stop();
+      await pluginManager.destroy();
+      await bus.close();
+    }
+  });
+
+  it("retries without attachments the provider rejects instead of failing the run", async () => {
+    const config = parseCoreConfigV2ToUniversal({});
+    config.models.main = { model: "openai/rejects-pdf" };
+    config.agent.retry = { enabled: false, maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0 };
+    const bus = createLilacBus(createInMemoryRawBus());
+    const pluginManager = corePrimaryTestPluginManager(() => undefined);
+    const prompts: string[] = [];
+    const runner = await startBusAgentRunner({
+      bus,
+      subscriptionId: "rejected-input-media",
+      reportFatalPanic: () => undefined,
+      issueControlCapability: () => ({ capability: "test-capability", principal: null }),
+      config,
+      pluginManager,
+      createAgent: (options) =>
+        new AiSdkPiAgent({
+          ...options,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "earlier upload" },
+                {
+                  type: "file",
+                  mediaType: "application/pdf",
+                  filename: "bulletin.pdf",
+                  data: { type: "data", data: "JVBERi0=" },
+                },
+              ],
+            },
+            { role: "assistant", content: "noted" },
+            ...(options.messages ?? []),
+          ],
+          model: new MockLanguageModelV4({
+            modelId: "rejects-pdf",
+            doStream: async (call) => {
+              const prompt = JSON.stringify(call.prompt);
+              prompts.push(prompt);
+              if (prompt.includes('"type":"file"'))
+                throw new APICallError({
+                  message: "This file format is not supported for this request.",
+                  url: "https://api.openai.com/v1/responses",
+                  requestBodyValues: {},
+                  statusCode: 400,
+                  isRetryable: false,
+                });
+              return level1TextStep("read without the pdf");
+            },
+          }),
+        }),
+    });
+    const requestId = "discord:rejected-input-media:message";
+    const lifecycle = await observeRequestLifecycle(bus, requestId);
+    try {
+      await publishRunnerRequest({
+        bus,
+        requestId,
+        sessionId: "rejected-input-media",
+        requestClient: "discord",
+        text: "summarize the bulletin",
+      });
+      await expect(lifecycle.terminal).resolves.toBe("resolved");
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]).toContain(
+        "Attachment 'bulletin.pdf' (application/pdf) was removed because the model provider rejected it",
+      );
+      await runner.waitForIdle();
+    } finally {
+      await lifecycle.stop();
+      await runner.stop();
       await pluginManager.destroy();
       await bus.close();
     }

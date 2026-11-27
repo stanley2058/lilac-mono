@@ -479,7 +479,9 @@ export function resolveStoredResourceProviderTarget(input: {
   return {
     family: "ai-sdk",
     supportsImage: supportsAttachments && inputModalities.includes("image"),
-    supportsPdf: supportsAttachments && inputModalities.includes("pdf"),
+    // The Codex backend rejects PDF input files even when the model catalog lists PDF input.
+    supportsPdf:
+      input.provider !== "codex" && supportsAttachments && inputModalities.includes("pdf"),
     supportsAudio: supportsAttachments && inputModalities.includes("audio"),
     supportsVideo: supportsAttachments && inputModalities.includes("video"),
   };
