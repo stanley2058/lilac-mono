@@ -469,7 +469,7 @@ export function supportsCoreModelFallback(
 
 export function resolveStoredResourceProviderTarget(input: {
   readonly provider: ResolvedModelRef["provider"];
-  readonly capability: ModelCapabilityInfo | null;
+  readonly capability: Pick<ModelCapabilityInfo, "attachment" | "modalities"> | null;
 }): StoredResourceProviderTarget {
   if (input.provider === "claude-code") {
     return { family: "claude-code", supportsImage: true, supportsPdf: false };
@@ -485,6 +485,25 @@ export function resolveStoredResourceProviderTarget(input: {
     supportsAudio: supportsAttachments && inputModalities.includes("audio"),
     supportsVideo: supportsAttachments && inputModalities.includes("video"),
   };
+}
+
+const UNKNOWN_MEDIA_CAPABILITY = {
+  attachment: true,
+  modalities: { input: ["text", "image", "pdf", "audio", "video"] },
+} satisfies Pick<ModelCapabilityInfo, "attachment" | "modalities">;
+
+/**
+ * Without catalog capabilities, the model view keeps media and leaves rejections to the retry
+ * path, but still applies limits a provider always has, such as Codex rejecting PDFs.
+ */
+export function resolveModelViewMediaTarget(input: {
+  readonly provider: ResolvedModelRef["provider"];
+  readonly capability: ModelCapabilityInfo | null;
+}): StoredResourceProviderTarget {
+  return resolveStoredResourceProviderTarget({
+    provider: input.provider,
+    capability: input.capability ?? UNKNOWN_MEDIA_CAPABILITY,
+  });
 }
 
 export function selectNextNativeModelFallback(params: {

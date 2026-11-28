@@ -19,6 +19,7 @@ import {
 } from "../../mcp/image-checkpoint";
 import {
   createCoreAgentComposition,
+  resolveModelViewMediaTarget,
   resolveStoredResourceProviderTarget,
   selectNextNativeModelFallback,
   prepareCoreProviderBinding,
@@ -448,7 +449,10 @@ export function resolveCoreStableNamedContinuation(input: {
 
 export { shouldUsePersistentCoreClaudeRuntime } from "../../agent/claude-composition";
 
-export { resolveStoredResourceProviderTarget } from "../../agent/agent-composition";
+export {
+  resolveModelViewMediaTarget,
+  resolveStoredResourceProviderTarget,
+} from "../../agent/agent-composition";
 
 export function toIdleRetryDecision(
   backoff: ResultType<RetryBackoffAttempt | null, RetryBackoffAborted | RetryBackoffDelayFailed>,
@@ -5284,7 +5288,7 @@ export async function startBusAgentRunner(params: {
             );
             const mediaFiltered = modelMediaFilter.apply(
               historyPrepared,
-              resolveStoredResourceProviderTarget({
+              resolveModelViewMediaTarget({
                 provider: activeBinding.resolved.provider,
                 capability: activeBinding.capabilityInfo,
               }),

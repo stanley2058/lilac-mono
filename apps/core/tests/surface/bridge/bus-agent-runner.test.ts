@@ -77,6 +77,7 @@ import {
   resolveCompactionCheckpointMeta,
   resolveCorePrimaryTranscriptProviderState,
   resolveCoreStableNamedContinuation,
+  resolveModelViewMediaTarget,
   resolveStoredResourceProviderTarget,
   projectTranscriptMessagesForPersistence,
   toIdleRetryDecision,
@@ -593,6 +594,31 @@ describe("subagent model selection", () => {
       supportsImage: true,
       supportsPdf: false,
     });
+  });
+
+  it("keeps media for models without catalog capabilities, except Codex PDFs", () => {
+    expect(
+      resolveModelViewMediaTarget({ provider: "openai-compatible", capability: null }),
+    ).toEqual({
+      family: "ai-sdk",
+      supportsImage: true,
+      supportsPdf: true,
+      supportsAudio: true,
+      supportsVideo: true,
+    });
+    expect(resolveModelViewMediaTarget({ provider: "codex", capability: null })).toMatchObject({
+      supportsImage: true,
+      supportsPdf: false,
+    });
+    const textOnly = {
+      provider: "test",
+      model: "text",
+      limit: { context: 100_000, output: 4_000 },
+      modalities: { input: ["text" as const] },
+    };
+    expect(resolveModelViewMediaTarget({ provider: "openai", capability: textOnly })).toMatchObject(
+      { supportsImage: false, supportsPdf: false },
+    );
   });
 
   it("runtime-validates primary lineage, rejects stale proof, and omits it outside Discord", () => {
