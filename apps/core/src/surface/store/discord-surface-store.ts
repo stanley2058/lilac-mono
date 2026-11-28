@@ -54,6 +54,31 @@ export type DbDiscordMessageRelation = {
   updated_ts: number;
 };
 
+export type DbDiscordRelayMessage = {
+  nonce: string;
+  channel_id: string;
+  message_id: string | null;
+  source_platform: string;
+  source_thread_id: string;
+  source_user_id: string;
+  discord_user_id: string;
+  mode: string;
+  created_ts: number;
+};
+
+export type DbDiscordRelayResult = {
+  nonce: string;
+  disposition: string;
+  message_id: string;
+  run_id: string | null;
+};
+
+export type DbDiscordRelaySource = {
+  source_platform: string;
+  source_thread_id: string;
+  source_user_id: string;
+};
+
 export type DiscordSessionRaw = {
   channel: {
     id: string;
@@ -172,6 +197,167 @@ export class DiscordSurfaceStore {
       CREATE INDEX IF NOT EXISTS idx_discord_message_relations_cross_reply_target
       ON discord_message_relations(reply_to_channel_id, reply_to_message_id);
     `);
+
+    // A relay row is written before its message is sent, keyed by the Discord nonce, because the
+    // gateway can deliver the message before the send returns its id.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS discord_relay_messages (
+        nonce TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        message_id TEXT,
+        source_platform TEXT NOT NULL,
+        source_thread_id TEXT NOT NULL,
+        source_user_id TEXT NOT NULL,
+        discord_user_id TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        created_ts INTEGER NOT NULL
+      );
+    `);
+
+    this.db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_discord_relay_messages_message
+      ON discord_relay_messages(channel_id, message_id)
+      WHERE message_id IS NOT NULL;
+    `);
+
+    // What a keyed send reported, so its retry returns the same result.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS discord_relay_results (
+        nonce TEXT PRIMARY KEY,
+        disposition TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        run_id TEXT
+      );
+    `);
+
+    // Every Discord message that carries a relay's turn: the relay message itself and the output
+    // its request posted afterwards.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS discord_relay_refs (
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        relay_nonce TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_ts INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, message_id, relay_nonce)
+      );
+    `);
+  }
+
+  /** Records a relay before it is sent. A retry with the same nonce keeps the first row. */
+  insertRelayMessage(input: {
+    nonce: string;
+    channelId: string;
+    sourcePlatform: string;
+    sourceThreadId: string;
+    sourceUserId: string;
+    discordUserId: string;
+    mode: string;
+    createdTs: number;
+  }): DbDiscordRelayMessage | null {
+    this.db.run(
+      `
+      INSERT INTO discord_relay_messages (
+        nonce, channel_id, message_id, source_platform, source_thread_id, source_user_id,
+        discord_user_id, mode, created_ts
+      ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(nonce) DO NOTHING;
+      `,
+      [
+        input.nonce,
+        input.channelId,
+        input.sourcePlatform,
+        input.sourceThreadId,
+        input.sourceUserId,
+        input.discordUserId,
+        input.mode,
+        input.createdTs,
+      ],
+    );
+    return this.getRelayMessageByNonce(input.nonce);
+  }
+
+  getRelayMessageByNonce(nonce: string): DbDiscordRelayMessage | null {
+    return this.db
+      .query<DbDiscordRelayMessage, [string]>(
+        "SELECT * FROM discord_relay_messages WHERE nonce = ?",
+      )
+      .get(nonce);
+  }
+
+  getRelayMessageByMessageId(channelId: string, messageId: string): DbDiscordRelayMessage | null {
+    return this.db
+      .query<DbDiscordRelayMessage, [string, string]>(
+        "SELECT * FROM discord_relay_messages WHERE channel_id = ? AND message_id = ?",
+      )
+      .get(channelId, messageId);
+  }
+
+  /** Binds a relay to its posted message, once, and records the message as a relay ref. */
+  bindRelayMessage(input: { nonce: string; channelId: string; messageId: string; ts: number }) {
+    this.db.run(
+      `
+      UPDATE discord_relay_messages
+      SET message_id = ?
+      WHERE nonce = ? AND channel_id = ? AND message_id IS NULL
+      `,
+      [input.messageId, input.nonce, input.channelId],
+    );
+    this.insertRelayRef({ ...input, kind: "relay" });
+  }
+
+  insertRelayRef(input: {
+    channelId: string;
+    messageId: string;
+    nonce: string;
+    kind: "relay" | "output";
+    ts: number;
+  }) {
+    this.db.run(
+      `
+      INSERT INTO discord_relay_refs (channel_id, message_id, relay_nonce, kind, created_ts)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(channel_id, message_id, relay_nonce) DO NOTHING;
+      `,
+      [input.channelId, input.messageId, input.nonce, input.kind, input.ts],
+    );
+  }
+
+  insertRelayResult(input: {
+    nonce: string;
+    disposition: string;
+    messageId: string;
+    runId?: string;
+  }) {
+    this.db.run(
+      `
+      INSERT INTO discord_relay_results (nonce, disposition, message_id, run_id)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(nonce) DO NOTHING;
+      `,
+      [input.nonce, input.disposition, input.messageId, input.runId ?? null],
+    );
+  }
+
+  getRelayResult(nonce: string): DbDiscordRelayResult | null {
+    return this.db
+      .query<DbDiscordRelayResult, [string]>("SELECT * FROM discord_relay_results WHERE nonce = ?")
+      .get(nonce);
+  }
+
+  /** The distinct sources of relays whose messages are in this channel. */
+  listRelaySourcesForChannel(channelId: string): DbDiscordRelaySource[] {
+    return this.db
+      .query<DbDiscordRelaySource, [string]>(
+        `
+        SELECT DISTINCT m.source_platform, m.source_thread_id, m.source_user_id
+        FROM discord_relay_refs r
+        JOIN discord_relay_messages m ON m.nonce = r.relay_nonce
+        WHERE r.channel_id = ?
+        ORDER BY m.source_thread_id, m.source_user_id
+        `,
+      )
+      .all(channelId);
   }
 
   upsertSession(input: {

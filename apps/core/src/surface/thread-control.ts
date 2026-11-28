@@ -5,8 +5,18 @@ import type { SurfaceOperationError } from "./adapter";
 
 /** The authenticated user an agent run acts for, and the thread that run belongs to. */
 export type ThreadControlCaller = {
+  /** The user on the target surface, which may be an account linked to the run's own user. */
   readonly userId: string;
   readonly sourceThreadId: string;
+  /** Set when the run is on another surface: its own user, who owns `sourceThreadId`. */
+  readonly source?: { readonly platform: "native"; readonly userId: string };
+};
+
+/** A thread on another surface whose run posted into this surface's thread. */
+export type ThreadRelaySource = {
+  readonly platform: "native";
+  readonly threadId: string;
+  readonly userId: string;
 };
 
 export type ThreadTimelineView = "messages" | "activity";
@@ -60,9 +70,11 @@ export type ThreadReadResult = {
 
 export type ThreadSendMode = "auto" | "queue" | "steer";
 
+export const THREAD_SEND_DISPOSITIONS = ["posted", "started", "queued", "steered"] as const;
+
 export type ThreadSendResult = {
   /** `posted` means the message was delivered without running the thread's agent. */
-  readonly disposition: "posted" | "started" | "queued" | "steered";
+  readonly disposition: (typeof THREAD_SEND_DISPOSITIONS)[number];
   readonly messageId: string;
   readonly runId?: string;
 };
@@ -94,6 +106,8 @@ export type SurfaceThreadControlPort = {
     threadId: string,
     input: { readonly runId?: string },
   ): Promise<Result<ThreadInterruptResult, SurfaceOperationError>>;
+  /** Threads on other surfaces that relayed into this thread, which its runs may read. */
+  relaySources?(threadId: string): readonly ThreadRelaySource[];
 };
 
 export function boundTimelineText(

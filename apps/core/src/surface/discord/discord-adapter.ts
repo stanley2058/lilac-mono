@@ -233,6 +233,7 @@ import { buildDiscordSessionDividerText } from "./discord-session-divider";
 import { formatDiscordMessageRequestId, formatDiscordSlashRequestId } from "../bridge/request-ids";
 import { beginDiscordMessageLatencyTrace } from "../bridge/request-latency-trace";
 import {
+  hasExplicitDiscordUserMentionInContent,
   isExplicitDiscordUserMention,
   isRoutableDiscordUserMessage,
   resolveTextSendableChannel,
@@ -271,6 +272,16 @@ import {
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import { getSessionMode, resolveSessionConfigId } from "./discord-request-router/common";
 import type { DiscordContextReportProvider } from "./discord-context-report";
+import { THREAD_SEND_DISPOSITIONS, type ThreadSendResult } from "../thread-control";
+import {
+  discordRelayBody,
+  discordRelayFromRow,
+  type DiscordRelayOrigin,
+  type DiscordRelayPort,
+  type DiscordRelayOutputRecorder,
+  type DiscordRelayRaw,
+  type DiscordRelaySource,
+} from "./discord-relay";
 
 export {
   hasExplicitDiscordUserMentionInContent,
@@ -733,7 +744,9 @@ function resolveDiscordSessionKind(
   return parentChannelId ? "thread" : "channel";
 }
 
-export class DiscordAdapter implements SurfaceAdapter {
+export class DiscordAdapter
+  implements SurfaceAdapter, DiscordRelayPort, DiscordRelayOutputRecorder
+{
   private readonly tableImageRenderer = new DiscordTableImageRenderer();
   private client: Client | null = null;
   private store: DiscordSurfaceStore | null = null;
@@ -1644,6 +1657,153 @@ export class DiscordAdapter implements SurfaceAdapter {
         silent: opts?.silent,
       }),
     });
+  }
+
+  /**
+   * Posts a relay message as plain content with a Discord nonce. The relay row is written first
+   * under that nonce, so the gateway event can be recognized even before the send returns.
+   */
+  async sendRelayMessage(input: {
+    readonly channelId: string;
+    readonly text: string;
+    readonly origin: DiscordRelayOrigin;
+    readonly replyToMessageId?: string;
+  }): Promise<SurfaceOperationResult<MsgRef>> {
+    const unavailable = (message: string) =>
+      Result.err(
+        new SurfaceUnavailable({ platform: "discord", operation: "send-message", message }),
+      );
+    const store = this.store;
+    const client = this.client;
+    const botUserId = client?.user?.id;
+    if (!store || !client || !botUserId) return unavailable("DiscordAdapter not connected");
+
+    const row = store.insertRelayMessage({
+      nonce: input.origin.nonce,
+      channelId: input.channelId,
+      sourcePlatform: input.origin.platform,
+      sourceThreadId: input.origin.threadId,
+      sourceUserId: input.origin.userId,
+      discordUserId: input.origin.discordUserId,
+      mode: input.origin.mode,
+      createdTs: Date.now(),
+    });
+    const sameOrigin =
+      row?.channel_id === input.channelId &&
+      row.source_thread_id === input.origin.threadId &&
+      row.source_user_id === input.origin.userId;
+    if (!sameOrigin) {
+      return Result.err(
+        new SurfaceInvalidInput({
+          platform: "discord",
+          operation: "send-message",
+          field: "commandId",
+          message: "This commandId already sent a different Discord relay",
+        }),
+      );
+    }
+    if (row.message_id) return Result.ok(asDiscordMsgRef(input.channelId, row.message_id));
+
+    const channel = await resolveTextSendableChannel(client, input.channelId);
+    if (!channel) {
+      return Result.err(
+        new SurfaceMessageNotFound({
+          platform: "discord",
+          operation: "send-message",
+          message: `Discord channel not found: ${input.channelId}`,
+        }),
+      );
+    }
+    const content = this.entityMapper?.rewriteOutgoingText(input.text) ?? input.text;
+    const sent = await captureDiscordOperation("send-message", async () => {
+      const message = await channel.send({
+        content,
+        nonce: input.origin.nonce,
+        enforceNonce: true,
+        allowedMentions: { parse: [], users: [botUserId], repliedUser: false },
+        ...(input.replyToMessageId
+          ? { reply: { messageReference: input.replyToMessageId, failIfNotExists: false } }
+          : {}),
+      });
+      return message.id;
+    });
+    return sent.map((messageId) => {
+      store.bindRelayMessage({
+        nonce: input.origin.nonce,
+        channelId: input.channelId,
+        messageId,
+        ts: Date.now(),
+      });
+      return asDiscordMsgRef(input.channelId, messageId);
+    });
+  }
+
+  relaySourcesForChannel(channelId: string): readonly DiscordRelaySource[] {
+    const rows = this.store?.listRelaySourcesForChannel(channelId) ?? [];
+    return rows.flatMap((row) =>
+      row.source_platform === "native"
+        ? [
+            {
+              platform: "native" as const,
+              threadId: row.source_thread_id,
+              userId: row.source_user_id,
+            },
+          ]
+        : [],
+    );
+  }
+
+  findRelayResult(nonce: string): ThreadSendResult | null {
+    const row = this.store?.getRelayResult(nonce);
+    if (!row) return null;
+    const disposition = THREAD_SEND_DISPOSITIONS.find((value) => value === row.disposition);
+    if (!disposition) return null;
+    return { disposition, messageId: row.message_id, ...(row.run_id ? { runId: row.run_id } : {}) };
+  }
+
+  recordRelayResult(nonce: string, result: ThreadSendResult): ThreadSendResult {
+    this.store?.insertRelayResult({
+      nonce,
+      disposition: result.disposition,
+      messageId: result.messageId,
+      ...(result.runId ? { runId: result.runId } : {}),
+    });
+    return this.findRelayResult(nonce) ?? result;
+  }
+
+  async cancelRequest(input: {
+    readonly channelId: string;
+    readonly requestId: string;
+    readonly discordUserId: string;
+  }): Promise<void> {
+    await this.emitAndWait({
+      type: "adapter.request.cancel",
+      platform: "discord",
+      ts: Date.now(),
+      requestId: input.requestId,
+      sessionId: input.channelId,
+      cancelScope: "active_only",
+      source: "orchestrate",
+      userId: input.discordUserId,
+    });
+  }
+
+  recordRelayOutput(input: {
+    readonly channelId: string;
+    readonly messageId: string;
+    readonly nonces: readonly string[];
+  }): void {
+    const store = this.store;
+    if (!store) return;
+    for (const nonce of input.nonces) {
+      store.insertRelayRef({
+        channelId: input.channelId,
+        messageId: input.messageId,
+        nonce,
+        kind: "output",
+        ts: Date.now(),
+      });
+    }
   }
 
   async readMsg(msgRef: MsgRef): Promise<SurfaceOperationResult<SurfaceMessage | null>> {
@@ -2785,18 +2945,59 @@ export class DiscordAdapter implements SurfaceAdapter {
     };
   }
 
+  /**
+   * The relay record of a message this bot posted, if Core wrote one. A gateway event may arrive
+   * before the send returned the message id, so an unbound row is matched by its nonce here.
+   */
+  private relayFor(msg: Message): DiscordRelayRaw | undefined {
+    const store = this.store;
+    const botUserId = this.client?.user?.id;
+    if (!store || !botUserId || msg.author.id !== botUserId) return undefined;
+    const bot = {
+      userId: botUserId,
+      name: this.cfg?.surface.discord.botName ?? getDisplayName(msg),
+    };
+    const bound = store.getRelayMessageByMessageId(msg.channelId, msg.id);
+    if (bound) return discordRelayFromRow(bound, bot);
+    if (typeof msg.nonce !== "string") return undefined;
+    const pending = store.getRelayMessageByNonce(msg.nonce);
+    if (pending?.channel_id !== msg.channelId || pending.message_id !== null) return undefined;
+    store.bindRelayMessage({
+      nonce: pending.nonce,
+      channelId: msg.channelId,
+      messageId: msg.id,
+      ts: Date.now(),
+    });
+    return discordRelayFromRow(pending, bot);
+  }
+
+  /** A relay message is admitted as the linked Discord user; every other message as its author. */
+  private surfaceAuthor(msg: Message, relay: DiscordRelayRaw | undefined) {
+    if (!relay) return { userId: msg.author.id, userName: getDisplayName(msg) };
+    const known = this.store?.getUserName(relay.discordUserId);
+    return {
+      userId: relay.discordUserId,
+      userName:
+        known?.display_name ??
+        known?.global_name ??
+        known?.username ??
+        `user_${relay.discordUserId}`,
+    };
+  }
+
   private upsertMessageRelationFromDiscordMessage(msg: Message, input?: { deleted?: boolean }) {
     const store = this.store;
     if (!store) return;
 
     const replyRef = getReplyReference(msg);
+    const author = this.surfaceAuthor(msg, this.relayFor(msg));
 
     store.upsertMessageRelation({
       channelId: msg.channelId,
       messageId: msg.id,
       guildId: msg.guildId ?? undefined,
-      authorId: msg.author.id,
-      authorName: getDisplayName(msg),
+      authorId: author.userId,
+      authorName: author.userName,
       ts: getMessageTs(msg),
       isChat: isDiscordChatLikeMessage(msg),
       replyToChannelId: replyRef?.channelId,
@@ -4141,13 +4342,15 @@ export class DiscordAdapter implements SurfaceAdapter {
       sessionId: channelId,
       parentChannelId,
     });
+    const relay = this.relayFor(msg);
+    const author = this.surfaceAuthor(msg, relay);
 
     return Result.ok({
       ref: asDiscordMsgRef(channelId, msg.id),
       session: sessionRef,
-      userId: msg.author.id,
-      userName: authorName,
-      text: normalizedText,
+      userId: author.userId,
+      userName: author.userName,
+      text: relay ? discordRelayBody(normalizedText) : normalizedText,
       ts,
       editedTs,
       deleted: false,
@@ -4155,7 +4358,7 @@ export class DiscordAdapter implements SurfaceAdapter {
         id: msg.id,
         channelId,
         guildId,
-        authorId: msg.author.id,
+        authorId: author.userId,
         content: msg.content,
         embeds,
         reference: reference ?? undefined,
@@ -4170,6 +4373,7 @@ export class DiscordAdapter implements SurfaceAdapter {
           referenceType: reference?.type,
           messageSnapshots,
           sessionModelOverride,
+          ...(relay ? { relay } : {}),
         },
       },
     });
@@ -4196,9 +4400,12 @@ export class DiscordAdapter implements SurfaceAdapter {
     const client = this.client;
     if (!cfg || !store || !client) return;
 
-    // Only route real user chat messages to the request router.
-    // We still want to record lightweight metadata (names/sessions) for context.
-    const shouldEmitAdapterEvent = isRoutableDiscordUserMessage(msg);
+    // Only route real user chat messages, and relays Core posted for another surface, to the
+    // request router. We still want to record lightweight metadata (names/sessions) for context.
+    const relay = msg.author.bot ? this.relayFor(msg) : undefined;
+    const shouldEmitAdapterEvent = relay
+      ? isDiscordChatLikeMessage(msg)
+      : isRoutableDiscordUserMessage(msg);
 
     const guildId = msg.guildId;
     const channelId = msg.channelId;
@@ -4214,7 +4421,7 @@ export class DiscordAdapter implements SurfaceAdapter {
     }
 
     // Updates feed search indexing without admitting bot output to the request router.
-    if (msg.author.bot && isDiscordChatLikeMessage(msg)) {
+    if (msg.author.bot && !relay && isDiscordChatLikeMessage(msg)) {
       await this.onMessageUpdate(msg);
       return;
     }
@@ -4349,19 +4556,23 @@ export class DiscordAdapter implements SurfaceAdapter {
     const botId = client.user?.id;
     if (!botId) return;
 
-    const isMention = isExplicitDiscordUserMention({
-      content: msg.content ?? "",
-      userId: botId,
-      hasParsedMention: msg.mentions.users.has(botId),
-    });
+    // A relay's own bot mention may not be parsed, since the bot wrote it.
+    const isMention = relay
+      ? hasExplicitDiscordUserMentionInContent({ content: msg.content ?? "", userId: botId })
+      : isExplicitDiscordUserMention({
+          content: msg.content ?? "",
+          userId: botId,
+          hasParsedMention: msg.mentions.users.has(botId),
+        });
     const isReplyToBot = await this.isReplyToBot(msg, botId);
+    const author = this.surfaceAuthor(msg, relay);
 
     const surfaceMsg: SurfaceMessage = {
       ref: asDiscordMsgRef(channelId, msg.id),
       session: sessionRef,
-      userId: msg.author.id,
-      userName: authorName,
-      text: normalizedText,
+      userId: author.userId,
+      userName: author.userName,
+      text: relay ? discordRelayBody(normalizedText) : normalizedText,
       ts,
       editedTs,
       raw: {
@@ -4388,6 +4599,7 @@ export class DiscordAdapter implements SurfaceAdapter {
           sessionModelOverride,
           attachments,
           messageSnapshots,
+          ...(relay ? { relay } : {}),
         },
       },
     };
@@ -4408,6 +4620,14 @@ export class DiscordAdapter implements SurfaceAdapter {
     const replyRef = getReplyReference(msg);
     if (!replyRef) return false;
 
+    // A relay is admitted as its linked user, so a reply to it is not a reply to the bot.
+    if (
+      this.store?.getRelayMessageByMessageId(
+        replyRef.channelId ?? msg.channelId,
+        replyRef.messageId,
+      )
+    )
+      return false;
     const channel = msg.channel;
     if (!channel?.messages?.fetch) return false;
     const cached = channel.messages.cache.get(replyRef.messageId);
@@ -4505,13 +4725,15 @@ export class DiscordAdapter implements SurfaceAdapter {
       displayName: authorName,
       updatedTs: Date.now(),
     });
+    const relay = this.relayFor(msg);
+    const author = this.surfaceAuthor(msg, relay);
 
     const surfaceMsg: SurfaceMessage = {
       ref: asDiscordMsgRef(channelId, msg.id),
       session: sessionRef,
-      userId: msg.author.id,
-      userName: authorName,
-      text: normalizedText,
+      userId: author.userId,
+      userName: author.userName,
+      text: relay ? discordRelayBody(normalizedText) : normalizedText,
       ts,
       editedTs,
       raw: {
@@ -4537,6 +4759,7 @@ export class DiscordAdapter implements SurfaceAdapter {
           parentChannelId: parentChannelId ?? undefined,
           attachments,
           messageSnapshots,
+          ...(relay ? { relay } : {}),
         },
       },
     };

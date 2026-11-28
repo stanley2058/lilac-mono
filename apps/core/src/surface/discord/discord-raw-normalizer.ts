@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { DiscordAttachmentMeta } from "./discord-attachment";
+import type { DiscordRelayRaw } from "./discord-relay";
 
 import { normalizeDiscordEmbeds, type DiscordEmbedTextMeta } from "./discord-embed-text";
 
@@ -34,6 +35,8 @@ export type NormalizedDiscordRaw = {
     guildId?: string;
   };
   forwardSnapshot?: NormalizedDiscordForwardSnapshot;
+  /** Set by the adapter only for a bot message that has a Core relay record. */
+  relay?: DiscordRelayRaw;
 };
 
 const recordSchema = z.record(z.string(), z.unknown());
@@ -69,8 +72,19 @@ const discordEnvelopeSchema = z
     replyToChannelId: maybeStringSchema,
     guildId: maybeStringSchema,
     messageSnapshots: z.unknown().optional(),
+    relay: z.unknown().optional(),
   })
   .loose();
+const discordRelaySchema = z.object({
+  nonce: z.string().min(1),
+  platform: z.literal("native"),
+  threadId: z.string().min(1),
+  userId: z.string().min(1),
+  discordUserId: z.string().min(1),
+  mode: z.enum(["steer", "auto"]),
+  botUserId: z.string().min(1),
+  botName: z.string(),
+});
 const discordRawSchema = z
   .object({
     content: maybeStringSchema,
@@ -154,6 +168,8 @@ export function normalizeDiscordRaw(raw: unknown): NormalizedDiscordRaw | null {
   const topEmbeds = normalizeDiscordEmbeds(top.embeds);
   const discordEmbeds = normalizeDiscordEmbeds(discord?.embeds);
   const content = top.content ?? discord?.content;
+  const parsedRelay = discordRelaySchema.safeParse(discord?.relay);
+  const relay = parsedRelay.success ? parsedRelay.data : undefined;
 
   const snapshotRaw =
     referenceType === DISCORD_REFERENCE_TYPE_FORWARD
@@ -194,5 +210,6 @@ export function normalizeDiscordRaw(raw: unknown): NormalizedDiscordRaw | null {
         }
       : {}),
     ...(snapshot ? { forwardSnapshot: snapshot } : {}),
+    ...(relay ? { relay } : {}),
   };
 }

@@ -27,6 +27,7 @@ import {
   type ThreadTimelineItem,
   type ThreadTimelineView,
 } from "../surface/thread-control";
+import { nativeThreadId } from "../surface/native/native-protocol";
 import { subagentMessages, type SubagentReader } from "../surface/native/subagents";
 import type { TranscriptStore } from "../transcript/transcript-store";
 import type { DurableWorkflowStore } from "../workflow/durable-workflow-store";
@@ -117,7 +118,7 @@ function createOrchestrateInputSchema(
       .enum(DIRECTORY_CLIENTS)
       .optional()
       .describe(
-        "read of a thread id, list with scope user: the surface, by default the one that started this run. search: only this surface; by default every surface this run can reach.",
+        "read, send, or interrupt of a thread id, list with scope user: the surface, by default the one that started this run. search: only this surface; by default every surface this run can reach.",
       ),
     scope: z
       .enum(["conversation", "user"])
@@ -412,8 +413,27 @@ export function createOrchestrateTool(options: OrchestrateToolOptions) {
       caller: {
         userId,
         sourceThreadId: requestContext.requestInitiatorSessionId ?? requestContext.sessionId,
+        ...(surface !== known.platform && known.platform === "native"
+          ? { source: { platform: "native" as const, userId: known.userId } }
+          : {}),
       },
     };
+  }
+
+  /**
+   * A Discord run may read a native thread that relayed into its own channel, as that thread's
+   * user. Discord runs have no verified initiator, so the relay record is the only authority.
+   */
+  function relayedThreadAccess(input: TargetInput): ThreadAccess | null {
+    if (requestContext.requestClient !== "discord" || input.client === "discord") return null;
+    const resolver = options.threadControl;
+    const channelId = requestContext.requestInitiatorSessionId ?? requestContext.sessionId;
+    const sources = resolver?.resolve("discord")?.relaySources?.(channelId) ?? [];
+    const threadId = nativeThreadId(input.id);
+    const source = sources.find((candidate) => candidate.threadId === threadId);
+    const port = source ? resolver?.resolve(source.platform) : null;
+    if (!source || !port) return null;
+    return { port, caller: { userId: source.userId, sourceThreadId: source.threadId } };
   }
 
   async function requireThreadAccess(
@@ -717,7 +737,8 @@ export function createOrchestrateTool(options: OrchestrateToolOptions) {
   async function readThread(input: TargetInput) {
     return Result.gen(async function* () {
       const read = yield* readInput(input);
-      const access = yield* Result.await(requireThreadAccess(input.client));
+      const access =
+        relayedThreadAccess(input) ?? (yield* Result.await(requireThreadAccess(input.client)));
       const result = yield* Result.await(
         access.port
           .read(access.caller, input.id, read)
@@ -1005,7 +1026,7 @@ export function createOrchestrateTool(options: OrchestrateToolOptions) {
       // Subagents control only their own children; other threads belong to primary runs.
       if (!options.canControl || options.runProfile !== "primary")
         return denied("Only a primary run can message or stop another thread");
-      const access = yield* Result.await(requireThreadAccess());
+      const access = yield* Result.await(requireThreadAccess(input.client));
       const sent = yield* Result.await(
         access.port
           .send(access.caller, input.id, {
@@ -1067,7 +1088,7 @@ export function createOrchestrateTool(options: OrchestrateToolOptions) {
       // Subagents control only their own children; other threads belong to primary runs.
       if (!options.canControl || options.runProfile !== "primary")
         return denied("Only a primary run can message or stop another thread");
-      const access = yield* Result.await(requireThreadAccess());
+      const access = yield* Result.await(requireThreadAccess(input.client));
       const interrupted = yield* Result.await(
         access.port
           .interrupt(access.caller, input.id, input.runId ? { runId: input.runId } : {})
@@ -1315,8 +1336,8 @@ export function createOrchestrateTool(options: OrchestrateToolOptions) {
         return invalid("model, reasoning, and options apply only to send to a subagent");
       case input.itemId !== undefined && input.action !== "read":
         return invalid("itemId and textOffset apply only to read");
-      case input.client !== undefined && (isRun || input.action !== "read"):
-        return invalid("client applies to reading a thread id, list, and search");
+      case input.client !== undefined && isRun:
+        return invalid("client applies to a thread id, list, and search");
       case input.action === "send" && isRun && !input.id.startsWith(SUBAGENT_RUN_ID_PREFIX):
         return invalid("Workflow runs do not accept messages; read or interrupt them instead");
       case !isRun && input.action === "read":
@@ -1353,6 +1374,9 @@ export function createOrchestrateTool(options: OrchestrateToolOptions) {
       "- read: progress and history. Use view activity to see tool calls and their output. Results never change the target. Pass a search result's client with its thread id. A truncated item has nextTextOffset; read the rest with itemId and textOffset.",
       "- send: deliver a message. A running target receives it as steering. A subagent that is not running gets a follow-up run in the same conversation, which reports back as a subagent_result like a deferred delegation. send returns once the message is accepted; it does not wait for a reply.",
       "- send with model, reasoning, or options: the subagent's next run uses them. The message waits for any current run instead of steering it.",
+      "- Discord (client discord): a channel id is the channel. discord:<channelId>:<messageId>, built from a channel read's threadId and an item id, is the Lilac thread that a reply to that message continues; read on it shows that thread as its agent sees it, and item ids start with the Discord message they came from.",
+      "- send to Discord (from a native run with a linked Discord account) posts a message that mentions the bot. To a channel id, it starts a new thread; in active-mode channels and DMs it continues the channel conversation. To a message, it continues that thread. mode steer while the channel runs a request steers that request, whichever id you name. mode queue is not available there. interrupt stops the channel's running request, as its Cancel button does.",
+      "- A Discord message whose LILAC_META has relay.source was sent by a native run; read that thread with its relay.source.thread_id and client native.",
       "- interrupt: stop the target's current run.",
       "Workflow runs accept read and interrupt only. To start a new subagent, use subagent_delegate.",
       ...(options.canControl

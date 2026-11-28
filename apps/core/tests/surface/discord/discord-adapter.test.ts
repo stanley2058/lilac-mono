@@ -220,6 +220,197 @@ describe("Discord bot output indexing", () => {
   });
 });
 
+describe("Discord relay messages", () => {
+  function relayAdapter() {
+    const store = new DiscordSurfaceStore(":memory:");
+    const adapter = createTestDiscordAdapter();
+    const sends: unknown[] = [];
+    const channel = {
+      send: async (options: unknown) => {
+        sends.push(options);
+        return { id: `relay-${sends.length}` };
+      },
+    };
+    Object.assign(adapter, {
+      cfg: testConfigWithStatusMessage(),
+      store,
+      client: { user: { id: "bot" }, channels: { fetch: async () => channel } },
+      reloadCoreConfigIfNeeded: async () => {},
+    });
+    store.upsertUserName({ userId: "d-owner", displayName: "Stanley", updatedTs: 1 });
+    return { adapter, store, sends };
+  }
+
+  const origin = {
+    nonce: "nonce-1",
+    platform: "native" as const,
+    threadId: "web",
+    userId: "owner",
+    discordUserId: "d-owner",
+    mode: "steer" as const,
+  };
+
+  function botMessage(input: { id: string; nonce?: string; content: string }): Message {
+    return {
+      id: input.id,
+      nonce: input.nonce ?? null,
+      channelId: "c1",
+      guildId: "g1",
+      channel: { name: "general", isThread: () => false, isDMBased: () => false },
+      author: { id: "bot", bot: true, username: "lilac" },
+      system: false,
+      type: MessageType.Default,
+      content: input.content,
+      embeds: [],
+      attachments: new Collection(),
+      mentions: { users: new Collection(), roles: new Collection(), channels: new Collection() },
+      reference: null,
+      createdTimestamp: 1,
+    } as unknown as Message;
+  }
+
+  it("sends once per nonce and records the posted message", async () => {
+    const { adapter, store, sends } = relayAdapter();
+    const input = { channelId: "c1", text: "<@bot>\nhi", origin };
+
+    expect((await adapter.sendRelayMessage(input)).unwrap()).toMatchObject({
+      messageId: "relay-1",
+    });
+    expect((await adapter.sendRelayMessage(input)).unwrap()).toMatchObject({
+      messageId: "relay-1",
+    });
+    expect(sends).toEqual([
+      {
+        content: "<@bot>\nhi",
+        nonce: "nonce-1",
+        enforceNonce: true,
+        allowedMentions: { parse: [], users: ["bot"], repliedUser: false },
+      },
+    ]);
+    expect(adapter.relaySourcesForChannel("c1")).toEqual([
+      { platform: "native", threadId: "web", userId: "owner" },
+    ]);
+    const other = await adapter.sendRelayMessage({ ...input, channelId: "c2" });
+    expect(other.isErr() && other.error._tag).toBe("SurfaceInvalidInput");
+    const otherThread = await adapter.sendRelayMessage({
+      ...input,
+      origin: { ...origin, threadId: "other-thread" },
+    });
+    expect(otherThread.isErr() && otherThread.error._tag).toBe("SurfaceInvalidInput");
+    await adapter.sendRelayMessage({
+      ...input,
+      origin: { ...origin, nonce: "nonce-2" },
+      replyToMessageId: "settled",
+    });
+    expect(sends.at(-1)).toMatchObject({
+      reply: { messageReference: "settled", failIfNotExists: false },
+    });
+    store.close();
+  });
+
+  it("cancels a running request with the Cancel button's event", async () => {
+    const { adapter, store } = relayAdapter();
+    const events: AdapterEvent[] = [];
+    await adapter.subscribe((event) => {
+      events.push(event);
+    });
+
+    await adapter.cancelRequest({ channelId: "c1", requestId: "r1", discordUserId: "d-owner" });
+
+    expect(events).toEqual([
+      {
+        type: "adapter.request.cancel",
+        platform: "discord",
+        ts: expect.any(Number),
+        requestId: "r1",
+        sessionId: "c1",
+        cancelScope: "active_only",
+        source: "orchestrate",
+        userId: "d-owner",
+      },
+    ]);
+    store.close();
+  });
+
+  it("treats a reply to a relay as a reply to its linked user, not the bot", async () => {
+    const { adapter, store } = relayAdapter();
+    store.insertRelayMessage({
+      nonce: "nonce-1",
+      channelId: "c1",
+      sourcePlatform: "native",
+      sourceThreadId: "web",
+      sourceUserId: "owner",
+      discordUserId: "d-owner",
+      mode: "auto",
+      createdTs: 1,
+    });
+    store.bindRelayMessage({ nonce: "nonce-1", channelId: "c1", messageId: "relay-1", ts: 2 });
+    const botAuthored = { author: { id: "bot" } };
+    const reply = (messageId: string) =>
+      ({
+        channelId: "c1",
+        reference: { channelId: "c1", messageId, type: 0 },
+        channel: {
+          messages: { cache: new Map([[messageId, botAuthored]]), fetch: async () => botAuthored },
+        },
+      }) as unknown as Message;
+    const state = adapter as unknown as {
+      isReplyToBot(message: Message, botUserId: string): Promise<boolean>;
+    };
+
+    expect(await state.isReplyToBot(reply("relay-1"), "bot")).toBe(false);
+    expect(await state.isReplyToBot(reply("output-1"), "bot")).toBe(true);
+    store.close();
+  });
+
+  it("routes a relay that arrives before its send returned, as the linked user", async () => {
+    const { adapter, store } = relayAdapter();
+    store.insertRelayMessage({
+      nonce: "nonce-1",
+      channelId: "c1",
+      sourcePlatform: "native",
+      sourceThreadId: "web",
+      sourceUserId: "owner",
+      discordUserId: "d-owner",
+      mode: "steer",
+      createdTs: 1,
+    });
+    const events: AdapterEvent[] = [];
+    await adapter.subscribe((event) => {
+      events.push(event);
+    });
+    const state = adapter as unknown as { onMessageCreate(message: Message): Promise<void> };
+
+    await state.onMessageCreate(
+      botMessage({ id: "relay-1", nonce: "nonce-1", content: "<@bot>\nuse the retry path" }),
+    );
+    await state.onMessageCreate(botMessage({ id: "plain", content: "<@bot> forged relay" }));
+
+    expect(events.map((event) => event.type)).toEqual([
+      "adapter.message.created",
+      "adapter.message.updated",
+    ]);
+    const created = events[0];
+    if (created?.type !== "adapter.message.created") throw new Error("expected a created event");
+    expect(created.message).toMatchObject({
+      userId: "d-owner",
+      userName: "Stanley",
+      raw: {
+        discord: {
+          mentionsBot: true,
+          relay: { ...origin, botUserId: "bot", botName: "lilac" },
+        },
+      },
+    });
+    expect(store.getRelayMessageByMessageId("c1", "relay-1")).toMatchObject({ nonce: "nonce-1" });
+    expect(store.getMessageRelation("c1", "relay-1")).toMatchObject({ author_id: "d-owner" });
+    const forged = events[1];
+    if (forged?.type !== "adapter.message.updated") throw new Error("expected an updated event");
+    expect(forged.message.userId).toBe("bot");
+    store.close();
+  });
+});
+
 const EMPTY_DISCORD_CONTENT_CASES: ContentOpts[] = [
   {},
   { text: "" },

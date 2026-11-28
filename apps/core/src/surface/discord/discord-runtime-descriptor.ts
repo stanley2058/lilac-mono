@@ -19,6 +19,8 @@ import {
   type DiscordQuestionAnswerSource,
 } from "./discord-question-port";
 import { createDiscordThreadControl } from "./discord-thread-control";
+import type { DiscordRelayPort, DiscordRouterView } from "./discord-relay";
+import type { TranscriptStore } from "../../transcript/transcript-store";
 
 type DiscordWorkflowProgressOperation = "check-message" | "send" | "edit";
 type DiscordCheckMessageResult = Awaited<
@@ -155,6 +157,10 @@ export function createDiscordSurfaceRuntimeDescriptor(input: {
   readonly health?: SurfaceRuntimeHealthPort;
   readonly createRelay: (guardedAdapter: SurfaceAdapter) => SurfaceRelayDescriptor<"discord">;
   readonly getConfig: () => Promise<CoreConfig>;
+  /** Posts messages for native runs; without it, agents can only read Discord threads. */
+  readonly messageRelay?: DiscordRelayPort;
+  readonly router?: DiscordRouterView;
+  readonly transcriptStore?: () => TranscriptStore | undefined;
 }): SurfaceRuntimeDescriptor<"discord"> {
   const questionAnswers = input.questionAnswers;
   return {
@@ -165,7 +171,13 @@ export function createDiscordSurfaceRuntimeDescriptor(input: {
     createRelay: input.createRelay,
     createWorkflowProgress: createDiscordWorkflowProgressPort,
     createThreadControl: (guardedAdapter: SurfaceAdapter) =>
-      createDiscordThreadControl({ adapter: guardedAdapter, getConfig: input.getConfig }),
+      createDiscordThreadControl({
+        adapter: guardedAdapter,
+        getConfig: input.getConfig,
+        ...(input.messageRelay ? { relay: input.messageRelay } : {}),
+        ...(input.router ? { router: input.router } : {}),
+        ...(input.transcriptStore ? { transcriptStore: input.transcriptStore } : {}),
+      }),
     ...(questionAnswers
       ? {
           createQuestion: (guardedAdapter: SurfaceAdapter) =>

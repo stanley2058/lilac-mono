@@ -538,10 +538,13 @@ async function renderSurfaceProjectionCandidate(input: {
     const header = formatDiscordAttributionHeader({
       authorId: input.message.authorId,
       authorName: input.message.authorName,
-      userAlias: input.discordUserAliasById?.get(input.message.authorId),
+      userAlias: input.message.relay
+        ? undefined
+        : input.discordUserAliasById?.get(input.message.authorId),
       messageId: input.message.messageId,
       messageTs: input.message.ts,
       reactions: input.reactions,
+      ...(input.message.relay ? { relay: input.message.relay } : {}),
     });
     const mainText = `${header}\n${escapeSurfaceMetadataTags(normalized)}`.trimEnd();
     return {
@@ -2247,4 +2250,160 @@ export async function composeSingleMessageWithLineage(
     mergedGroups: value.mergedGroups,
     corePrimaryLineage: value.corePrimaryLineage,
   }));
+}
+
+/** One part of a Discord thread as its agent sees it, anchored at the Discord message it came from. */
+export type DiscordThreadSegment = {
+  readonly anchorMessageId: string;
+  readonly messages: readonly StoredMessageV1[];
+};
+
+/**
+ * Expands a Discord message into the context a reply to it would give the agent, without
+ * admitting projections or registering resources. It walks the same reply chain as a request,
+ * starts at the newest reachable compaction checkpoint, replaces bot messages with their request
+ * transcripts, and renders user messages as their stored projection or, if none was admitted
+ * yet, as the attributed text a request would admit.
+ */
+export async function composeDiscordThreadSegments(
+  adapter: SurfaceAdapter,
+  opts: {
+    readonly target: MsgRef;
+    readonly botUserId: string;
+    readonly botName: string;
+    readonly transcriptStore?: TranscriptStore;
+    readonly discordUserAliasById?: ReadonlyMap<string, string>;
+  },
+  requestReadScope?: typeof ACTIVE_REQUEST_READ_SCOPE,
+): Promise<ResultType<DiscordThreadSegment[], SurfaceOperationError>> {
+  if (requestReadScope !== ACTIVE_REQUEST_READ_SCOPE) {
+    return withSurfaceRequestReadScope(adapter, () =>
+      composeDiscordThreadSegments(adapter, opts, ACTIVE_REQUEST_READ_SCOPE),
+    );
+  }
+  const sessionId = opts.target.channelId;
+  const layered = createLayeredDiscordMessageResolver({
+    adapter,
+    sessionId,
+    botUserId: opts.botUserId,
+    botName: opts.botName,
+    transcriptStore: opts.transcriptStore,
+  });
+  const resolved = await layered.resolveMessagesByRefs([opts.target]);
+  if (resolved.isErr()) return Result.err(resolved.error);
+  const target = resolved.value[0];
+  if (!target) return Result.ok([]);
+
+  // A bot message or a reply continues its reply chain; a standalone message is a mention.
+  const isReply =
+    target.userId === opts.botUserId ||
+    typeof toReplyChainMessage(target).replyReference.messageId === "string";
+  const chainResult = isReply
+    ? await fetchReplyChainFrom(adapter, {
+        platform: "discord",
+        botUserId: opts.botUserId,
+        botName: opts.botName,
+        trigger: { type: "reply", msgRef: opts.target },
+        startMsgRef: opts.target,
+        resolveMessagesByRefs: layered.resolveMessagesByRefs,
+      })
+    : await fetchMentionThreadContext(adapter, {
+        platform: "discord",
+        botUserId: opts.botUserId,
+        botName: opts.botName,
+        triggerMsg: target,
+        resolveMessagesByRefs: layered.resolveMessagesByRefs,
+      });
+  if (chainResult.isErr()) return Result.err(chainResult.error);
+  const chain = chainResult.value.filter(
+    (message) => (message.isChat ?? true) && !isDiscordSessionDividerText(message.text),
+  );
+
+  const selection = selectNewestReachableCheckpoint({
+    chainOldestToNewest: chain,
+    botUserId: opts.botUserId,
+    platform: "discord",
+    channelId: sessionId,
+    transcriptStore: opts.transcriptStore,
+    getAuthorId: (message) => message.authorId,
+    getMessageId: (message) => message.messageId,
+  });
+  const segments: DiscordThreadSegment[] = [];
+  const checkpointAnchor = chain[selection.discardedSurfaceCount - 1]?.messageId;
+  if (selection.checkpoint && checkpointAnchor) {
+    segments.push({ anchorMessageId: checkpointAnchor, messages: selection.checkpointMessages });
+  }
+  const seenRequestIds = new Set(selection.checkpoint ? [selection.checkpoint.requestId] : []);
+  for (const message of selection.descendants) {
+    const segment = threadSegmentFor({
+      message,
+      sessionId,
+      botUserId: opts.botUserId,
+      transcriptStore: opts.transcriptStore,
+      resolvedSnapshots: selection.resolvedSnapshotsBySurfaceMessageId,
+      projection: layered.projections.get(message.messageId) ?? null,
+      discordUserAliasById: opts.discordUserAliasById,
+      seenRequestIds,
+    });
+    if (segment) segments.push(segment);
+  }
+  return Result.ok(segments);
+}
+
+function threadSegmentFor(input: {
+  readonly message: ReplyChainMessage;
+  readonly sessionId: string;
+  readonly botUserId: string;
+  readonly transcriptStore?: TranscriptStore;
+  readonly resolvedSnapshots: ReadonlyMap<string, TranscriptSnapshot | null>;
+  readonly projection: CoreSurfaceProjection | null;
+  readonly discordUserAliasById?: ReadonlyMap<string, string>;
+  readonly seenRequestIds: Set<string>;
+}): DiscordThreadSegment | null {
+  const { message } = input;
+  const anchorMessageId = message.messageId;
+  if (input.projection) return { anchorMessageId, messages: input.projection.canonicalMessages };
+  if (message.authorId !== input.botUserId)
+    return userThreadSegment(message, input.discordUserAliasById);
+  const snapshot = input.transcriptStore
+    ? resolveTranscriptSnapshot({
+        messageId: message.messageId,
+        platform: "discord",
+        channelId: input.sessionId,
+        transcriptStore: input.transcriptStore,
+        resolvedSnapshotsBySurfaceMessageId: input.resolvedSnapshots,
+      })
+    : null;
+  const linked =
+    snapshot?.requestClient === "discord" && snapshot.sessionId === input.sessionId
+      ? snapshot
+      : null;
+  if (!linked || linked.messages.length === 0) {
+    const text = normalizeAssistantContextText(message.text);
+    return text ? { anchorMessageId, messages: [{ role: "assistant", content: text }] } : null;
+  }
+  // A request's output spans several Discord messages; its transcript appears once.
+  if (input.seenRequestIds.has(linked.requestId)) return null;
+  input.seenRequestIds.add(linked.requestId);
+  return { anchorMessageId, messages: linked.messages };
+}
+
+/** A user message no request has projected yet, rendered as a request would admit its text. */
+function userThreadSegment(
+  message: ReplyChainMessage,
+  discordUserAliasById: ReadonlyMap<string, string> | undefined,
+): DiscordThreadSegment {
+  const header = formatDiscordAttributionHeader({
+    authorId: message.authorId,
+    authorName: message.authorName,
+    userAlias: message.relay ? undefined : discordUserAliasById?.get(message.authorId),
+    messageId: message.messageId,
+    messageTs: message.ts,
+    ...(message.relay ? { relay: message.relay } : {}),
+  });
+  const text = `${header}\n${escapeSurfaceMetadataTags(normalizeText(message.text, {}))}`;
+  return {
+    anchorMessageId: message.messageId,
+    messages: [{ role: "user", content: text.trimEnd() }],
+  };
 }

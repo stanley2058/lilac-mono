@@ -55,8 +55,8 @@ export type AdapterRequestCancelEvent = AdapterEventBase & {
   sessionId: string;
   /** Whether cancellation may target queued requests, not only active runs. */
   cancelScope?: "active_only" | "active_or_queued";
-  /** Surface control source. */
-  source?: "button" | "context_menu";
+  /** Surface control source; `orchestrate` is an agent on another surface. */
+  source?: "button" | "context_menu" | "orchestrate";
   /** Optional user who clicked the control. */
   userId?: string;
   /** Optional surface message containing the control. */

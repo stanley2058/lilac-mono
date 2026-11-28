@@ -11,6 +11,7 @@ import {
   createDiscordSurfaceRuntimeDescriptor,
 } from "../surface/discord/discord-runtime-descriptor";
 import type { DiscordQuestionAnswerSource } from "../surface/discord/discord-question-port";
+import type { DiscordRelayPort, DiscordRouterView } from "../surface/discord/discord-relay";
 import {
   createConfiguredGithubSurfaceRuntimeDescriptor,
   createGithubRelayPolicy,
@@ -36,6 +37,8 @@ export type ComposeBuiltinSurfaceRuntimesInput = {
   readonly discordEnabled?: boolean;
   readonly nativeDescriptor?: SurfaceRuntimeDescriptor<"native">;
   readonly discordQuestionAnswers?: DiscordQuestionAnswerSource;
+  readonly discordMessageRelay?: DiscordRelayPort;
+  readonly discordRouter?: DiscordRouterView;
   readonly githubAdapter: SurfaceAdapter;
   readonly descriptorBoundDiscordEventSource: SurfaceAdapterEventSource;
   readonly discordHealth?: SurfaceRuntimeHealthPort;
@@ -65,6 +68,9 @@ export function composeBuiltinSurfaceRuntimes(input: ComposeBuiltinSurfaceRuntim
               ? { questionAnswers: input.discordQuestionAnswers }
               : {}),
             ...(input.discordHealth ? { health: input.discordHealth } : {}),
+            ...(input.discordMessageRelay ? { messageRelay: input.discordMessageRelay } : {}),
+            ...(input.discordRouter ? { router: input.discordRouter } : {}),
+            transcriptStore: input.getTranscriptStore,
             adapterIngress: {
               start: async () => {
                 const id = subscriptionId("adapter-to-bus");

@@ -62,6 +62,7 @@ export function toReplyChainMessage(
     text,
     attachments: projection.attachments,
     ...(isChat === undefined ? {} : { isChat }),
+    ...(projection.relay ? { relay: projection.relay } : {}),
     replyReference: projection.replyReference ?? {},
   };
 }
@@ -198,11 +199,14 @@ export async function resolveMergeBlockEndingAt(
   if (triggerIndex < 0) return Result.ok([triggerMsg]);
 
   const authorId = triggerMsg.userId;
+  // A relay is its own turn even when its linked user wrote the messages around it.
+  const isRelay = (message: SurfaceMessage) => projectDiscordMessage(message).relay !== undefined;
+  if (isRelay(triggerMsg)) return Result.ok([triggerMsg]);
 
   let runStart = triggerIndex;
   for (let i = triggerIndex - 1; i >= 0; i--) {
     const prev = list[i]!;
-    if (prev.userId !== authorId) break;
+    if (prev.userId !== authorId || isRelay(prev)) break;
     runStart = i;
   }
 
@@ -442,13 +446,15 @@ export function mergeChainByDiscordWindow(
   if (chainOldestToNewest.length === 0) return [];
 
   const groups = splitByDiscordWindowOldestToNewest(
-    chainOldestToNewest.map((m) => ({
+    chainOldestToNewest.map((m, index) => ({
       message: m,
       authorId: m.authorId,
       ts: m.ts,
       hardBreakBefore:
         typeof m.replyReference.messageId === "string" ||
-        hardBreakBeforeMessageIds.has(m.messageId),
+        hardBreakBeforeMessageIds.has(m.messageId) ||
+        m.relay !== undefined ||
+        chainOldestToNewest[index - 1]?.relay !== undefined,
     })),
   );
 

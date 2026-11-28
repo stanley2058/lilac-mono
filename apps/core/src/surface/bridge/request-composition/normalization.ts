@@ -3,6 +3,7 @@ import type { ModelMessage } from "ai";
 import type { StoredMessageV1 } from "@stanley2058/lilac-event-bus";
 
 import type { TranscriptSnapshot } from "../../../transcript/transcript-store";
+import { discordRelayMetadata, type DiscordRelayRaw } from "../../discord/discord-relay";
 import { formatSurfaceMetadataLine, stripSurfaceMetadataLines } from "../surface-metadata";
 
 export function normalizeText(text: string, _ctx: {}): string {
@@ -140,14 +141,20 @@ export function formatDiscordAttributionHeader(params: {
   messageId: string;
   messageTs?: number;
   reactions?: readonly string[];
+  /** A relay is attributed to the agent that posted it, with the run that triggered it. */
+  relay?: DiscordRelayRaw;
 }): string {
   const reactions = normalizeReactionSet(params.reactions);
   const messageTime = formatMessageTime(params.messageTs);
 
   return formatSurfaceMetadataLine({
     platform: "discord",
-    user_id: params.authorId,
-    user_name: params.authorName || `user_${params.authorId}`,
+    ...(params.relay
+      ? discordRelayMetadata(params.relay)
+      : {
+          user_id: params.authorId,
+          user_name: params.authorName || `user_${params.authorId}`,
+        }),
     ...(params.userAlias ? { user_alias: params.userAlias } : {}),
     message_id: params.messageId,
     ...(messageTime ? { message_time: messageTime } : {}),

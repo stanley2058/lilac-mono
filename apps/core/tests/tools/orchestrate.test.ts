@@ -1304,7 +1304,14 @@ describe("orchestrate tool", () => {
       threadId: "111",
     });
     expect(calls).toEqual([
-      { caller: { userId: "d-owner", sourceThreadId: PARENT_SESSION }, threadId: "111" },
+      {
+        caller: {
+          userId: "d-owner",
+          sourceThreadId: PARENT_SESSION,
+          source: { platform: "native", userId: "owner" },
+        },
+        threadId: "111",
+      },
     ]);
 
     const unlinked = build({
@@ -1318,6 +1325,120 @@ describe("orchestrate tool", () => {
       call(linked, { action: "read", id: "wfrun:anything", client: "discord" }),
     ).rejects.toThrow(/client applies/u);
   });
+  it("sends to and interrupts a Discord thread from native as the linked account", async () => {
+    const sends: unknown[] = [];
+    const interrupts: unknown[] = [];
+    const discordPort: SurfaceThreadControlPort = {
+      read: async (_caller, threadId) =>
+        Result.ok({ threadId, title: "#dev", activeRunId: null, items: [], hasMore: false }),
+      send: async (caller, threadId, input) => {
+        sends.push({ caller, threadId, input });
+        return Result.ok({ disposition: "steered", messageId: "m1", runId: "discord:111:9" });
+      },
+      interrupt: async (caller, threadId) => {
+        interrupts.push({ caller, threadId });
+        return Result.ok({ status: "cancelled", runId: "discord:111:9" });
+      },
+    };
+    const linked = build({
+      threadControl: { resolve: (platform) => (platform === "discord" ? discordPort : null) },
+      directory: { native: { linkedDiscordIds: async () => ["d-owner"] } as never },
+    });
+
+    expect(
+      await call(linked, {
+        action: "send",
+        id: "111",
+        client: "discord",
+        message: "use the retry path",
+        mode: "steer",
+        commandId: "cmd-1",
+      }),
+    ).toEqual({ kind: "thread", disposition: "steered", messageId: "m1", runId: "discord:111:9" });
+    expect(sends).toEqual([
+      {
+        caller: {
+          userId: "d-owner",
+          sourceThreadId: PARENT_SESSION,
+          source: { platform: "native", userId: "owner" },
+        },
+        threadId: "111",
+        input: { text: "use the retry path", mode: "steer", commandId: "cmd-1" },
+      },
+    ]);
+    expect(await call(linked, { action: "interrupt", id: "111", client: "discord" })).toEqual({
+      kind: "thread",
+      status: "cancelled",
+      runId: "discord:111:9",
+    });
+    expect(interrupts).toEqual([
+      {
+        caller: {
+          userId: "d-owner",
+          sourceThreadId: PARENT_SESSION,
+          source: { platform: "native", userId: "owner" },
+        },
+        threadId: "111",
+      },
+    ]);
+  });
+
+  it("lets a Discord run read only the native threads that relayed into its channel", async () => {
+    const reads: unknown[] = [];
+    const nativePort: SurfaceThreadControlPort = {
+      read: async (caller, threadId) => {
+        reads.push({ caller, threadId });
+        return Result.ok({ threadId, title: "Web", activeRunId: null, items: [], hasMore: false });
+      },
+      send: async () => Result.ok({ disposition: "posted", messageId: "m" }),
+      interrupt: async () => Result.ok({ status: "idle" }),
+    };
+    const discordPort: SurfaceThreadControlPort = {
+      read: async (_caller, threadId) =>
+        Result.ok({ threadId, title: "#dev", activeRunId: null, items: [], hasMore: false }),
+      send: async () => Result.ok({ disposition: "posted", messageId: "m" }),
+      interrupt: async () => Result.ok({ status: "idle" }),
+      relaySources: (channelId) =>
+        channelId === "111"
+          ? [{ platform: "native", threadId: "web-thread", userId: "owner" }]
+          : [],
+    };
+    const threadControl = {
+      resolve: (platform: string) => {
+        if (platform === "native") return nativePort;
+        return platform === "discord" ? discordPort : null;
+      },
+    };
+    const discordRun = build({
+      threadControl,
+      requestContext: primaryContext({
+        requestId: "discord:111:5",
+        sessionId: "111",
+        requestClient: "discord",
+        serverOwnedRequest: undefined,
+        requestInitiator: undefined,
+        requestInitiatorSessionId: undefined,
+      }),
+    });
+
+    expect(
+      await call(discordRun, { action: "read", id: "native:web-thread", client: "native" }),
+    ).toMatchObject({ kind: "thread", threadId: "native:web-thread" });
+    expect(await call(discordRun, { action: "read", id: "web-thread" })).toMatchObject({
+      kind: "thread",
+    });
+    expect(reads).toEqual([
+      {
+        caller: { userId: "owner", sourceThreadId: "web-thread" },
+        threadId: "native:web-thread",
+      },
+      { caller: { userId: "owner", sourceThreadId: "web-thread" }, threadId: "web-thread" },
+    ]);
+    await expect(
+      call(discordRun, { action: "read", id: "other-thread", client: "native" }),
+    ).rejects.toThrow(/Thread control is unavailable|cannot reach native/u);
+  });
+
   it("lists subagents that a scripted workflow's agent step delegated from this conversation", async () => {
     const workflow = seedRun({ id: "flow", createdAt: 1_000 });
     const stepChild = seedRun({

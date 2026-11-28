@@ -1996,6 +1996,12 @@ export async function createCoreRuntime(
             discordEnabled,
             ...(nativeRuntime ? { nativeDescriptor: nativeRuntime.descriptor } : {}),
             discordQuestionAnswers: adapter,
+            discordMessageRelay: adapter,
+            discordRouter: {
+              activeRequest: (sessionId) => stopRouter?.activeRequest(sessionId),
+              relayAdmission: (relay) =>
+                stopRouter?.relayAdmission(relay) ?? { kind: "starts", queued: false },
+            },
             githubAdapter,
             descriptorBoundDiscordEventSource: discordEventSource,
             discordHealth: createDiscordRuntimeHealthPort(adapter),
@@ -2458,6 +2464,7 @@ export async function createCoreRuntime(
                     event: evt,
                   }),
                 transcriptStore: transcriptStore ?? undefined,
+                relayOutputs: adapter,
               }),
               (retainedRouter) => {
                 retainCoreResidualDiscordRequestRouter({

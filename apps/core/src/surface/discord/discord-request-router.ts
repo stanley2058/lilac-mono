@@ -123,6 +123,12 @@ import {
 } from "../../custom-commands/manager";
 import { formatBridgeLogContext, formatBridgeTaggedErrorForLog } from "../bridge/bridge-log";
 import {
+  relayJoinsActiveRequest,
+  type DiscordRelayAdmission,
+  type DiscordRelayOutputRecorder,
+  type DiscordRelayRaw,
+} from "./discord-relay";
+import {
   isDiscordContextTextCommand,
   type DiscordContextReportProvider,
 } from "./discord-context-report";
@@ -371,6 +377,17 @@ export type DiscordRequestRouter = {
   readonly done: Promise<ResultType<void, EventDeliveryDoneError>>;
   stop(): Promise<void>;
   publishJobWake(input: DiscordJobWakeInput): Promise<ResultType<JobWakeDelivery, Error>>;
+  /** The request running in a channel and its current output messages, oldest first. */
+  activeRequest(
+    sessionId: string,
+  ): { readonly requestId: string; readonly outputMessageIds: readonly string[] } | undefined;
+  /** How a relay replying to a message, or to nothing, would be admitted now. */
+  relayAdmission(input: {
+    readonly sessionId: string;
+    readonly replyToMessageId?: string;
+    readonly replyToBot: boolean;
+    readonly steer?: boolean;
+  }): DiscordRelayAdmission;
 };
 
 export type ResidualDiscordRequestRouter = {
@@ -808,6 +825,7 @@ function surfaceMessageFromIngress(input: {
 }): SurfaceMessage {
   const normalizedRaw = input.raw;
   const reference = normalizedRaw?.reference ?? normalizedRaw?.replyReference;
+  const relay = normalizedRaw?.relay;
   return {
     ref: parseDiscordMsgRefFromAdapterEvent(input.event),
     session: {
@@ -829,7 +847,10 @@ function surfaceMessageFromIngress(input: {
           ...(normalizedRaw.forwardSnapshot
             ? { messageSnapshots: [{ message: normalizedRaw.forwardSnapshot.raw }] }
             : {}),
-          discord: normalizedRaw.isChat === undefined ? {} : { isChat: normalizedRaw.isChat },
+          discord: {
+            ...(normalizedRaw.isChat === undefined ? {} : { isChat: normalizedRaw.isChat }),
+            ...(relay ? { relay } : {}),
+          },
         }
       : {},
   };
@@ -883,6 +904,8 @@ export type StartDiscordRequestRouterInput = {
   routerGate?: (input: RouterGateInput) => Promise<RouterGateDecision>;
   /** Optional structured logger injection for embedding and tests. */
   logger?: Logger;
+  /** Records the output messages of requests that consumed a relay message. */
+  relayOutputs?: DiscordRelayOutputRecorder;
 };
 
 export function signalDiscordRequestRouterPlatformMismatch(
@@ -958,6 +981,57 @@ export async function startDiscordRequestRouter(
   }
 
   const activeBySession = new Map<string, ActiveSessionState>();
+  // Relay nonces by the request that consumed them, so that request's output links back to them.
+  const relayNoncesByRequestId = new Map<string, Set<string>>();
+  // The mode each session was last routed under, so relay admission matches the router.
+  const sessionModeBySession = new Map<string, SessionMode>();
+  function relayAdmission(input: {
+    readonly sessionId: string;
+    readonly replyToMessageId?: string;
+    readonly replyToBot: boolean;
+    readonly steer?: boolean;
+  }): DiscordRelayAdmission {
+    const active = activeBySession.get(input.sessionId);
+    if (!active) return { kind: "starts", queued: false };
+    if (input.steer) return { kind: "joins", requestId: active.requestId };
+    const joins = relayJoinsActiveRequest({
+      mode: sessionModeBySession.get(input.sessionId) ?? getSessionMode(cfg, input.sessionId),
+      activeOutputMessageIds: active.activeOutputMessageIds,
+      replyToMessageId: input.replyToMessageId,
+      replyToBot: input.replyToBot,
+    });
+    return joins
+      ? { kind: "joins", requestId: active.requestId }
+      : { kind: "starts", queued: true };
+  }
+  /** Notes which request a relay message joined or started, so its output links back to it. */
+  function rememberRelayRequest(input: {
+    sessionId: string;
+    messageId: string;
+    replyToMessageId: string | undefined;
+    replyToBot: boolean;
+    relay: DiscordRelayRaw | undefined;
+  }) {
+    const { sessionId, relay } = input;
+    if (!relay) return;
+    const admission = relayAdmission({ ...input, steer: relay.mode === "steer" });
+    const requestId =
+      admission.kind === "joins"
+        ? admission.requestId
+        : formatDiscordMessageRequestId({ channelId: sessionId, messageId: input.messageId });
+    const nonces = relayNoncesByRequestId.get(requestId) ?? new Set<string>();
+    nonces.add(relay.nonce);
+    relayNoncesByRequestId.set(requestId, nonces);
+    // Output the joined request already posted, such as the preview this relay replies to.
+    const existing = admission.kind === "joins" ? activeBySession.get(sessionId) : undefined;
+    for (const messageId of existing?.activeOutputMessageIds ?? []) {
+      params.relayOutputs?.recordRelayOutput({
+        channelId: sessionId,
+        messageId,
+        nonces: [relay.nonce],
+      });
+    }
+  }
   const activeSessionForRequest = (requestId: string): string | undefined => {
     for (const [sessionId, active] of activeBySession) {
       if (active.requestId === requestId) return sessionId;
@@ -1295,6 +1369,7 @@ export async function startDiscordRequestRouter(
             msg.data.state === "failed" ||
             msg.data.state === "cancelled"
           ) {
+            relayNoncesByRequestId.delete(requestId);
             const cur = activeBySession.get(sessionId);
             if (cur?.requestId === requestId) {
               const flushed = await flushPendingMentionReplyBatchAsPrompt({
@@ -1354,6 +1429,16 @@ export async function startDiscordRequestRouter(
                 "evt.surface.output.message.created missing required headers.request_id/session_id",
             }),
           );
+        }
+
+        const relayNonces = relayNoncesByRequestId.get(requestId);
+        const createdRef = msg.data.msgRef;
+        if (relayNonces && createdRef?.platform === "discord" && createdRef.messageId) {
+          params.relayOutputs?.recordRelayOutput({
+            channelId: sessionId,
+            messageId: createdRef.messageId,
+            nonces: [...relayNonces],
+          });
         }
 
         const cur = activeBySession.get(sessionId);
@@ -1451,13 +1536,14 @@ export async function startDiscordRequestRouter(
 
           const sessionId = msg.data.channelId;
           const msgRef = parseDiscordMsgRefFromAdapterEvent(msg.data);
+          const normalizedRaw = normalizeDiscordRaw(msg.data.raw);
 
           const flags = getDiscordFlags(msg.data.raw);
           const isDm = flags.isDMBased === true;
           const parentChannelId = flags.parentChannelId;
           const ingressMessage = surfaceMessageFromIngress({
             event: msg.data,
-            raw: normalizeDiscordRaw(msg.data.raw),
+            raw: normalizedRaw,
             parentChannelId,
             guildId: flags.guildId,
           });
@@ -1493,6 +1579,14 @@ export async function startDiscordRequestRouter(
           const mode: SessionMode = isDm
             ? "active"
             : getSessionMode(cfg, sessionId, parentChannelId, flags.guildId);
+          sessionModeBySession.set(sessionId, mode);
+          rememberRelayRequest({
+            sessionId,
+            messageId: msgRef.messageId,
+            replyToMessageId: flags.replyToMessageId,
+            replyToBot: flags.replyToBot === true,
+            relay: normalizedRaw?.relay,
+          });
           const gateEnabled = resolveSessionGateEnabled(
             cfg,
             sessionId,
@@ -1546,6 +1640,22 @@ export async function startDiscordRequestRouter(
                 ? previewText(msg.data.text)
                 : undefined,
           });
+
+          // A relay sent with mode steer always steers the session's running request, even
+          // before it posts output or right after a steer cleared its output ids.
+          if (active && normalizedRaw?.relay?.mode === "steer") {
+            logRouteDecision({ decision: "steer", reason: "relay_steer" });
+            return steerRelayIntoActiveRequest({
+              active,
+              sessionId,
+              sessionConfigId,
+              parentChannelId,
+              msgRef,
+              ingressMessage,
+              sessionMode: mode,
+              modelOverride,
+            });
+          }
 
           if (isDiscordContextTextCommand(msg.data.text)) {
             if (active) {
@@ -3333,6 +3443,42 @@ export async function startDiscordRequestRouter(
     await publishSurfaceOutputReanchorImpl(input);
   }
 
+  /** Steers a relay into the running request and moves its output under the relay. */
+  async function steerRelayIntoActiveRequest(input: {
+    active: ActiveSessionState;
+    sessionId: string;
+    sessionConfigId: string;
+    parentChannelId?: string;
+    msgRef: MsgRef;
+    ingressMessage: SurfaceMessage;
+    sessionMode: SessionMode;
+    modelOverride?: string;
+  }) {
+    await publishSurfaceOutputReanchor({
+      bus,
+      requestId: input.active.requestId,
+      sessionId: input.sessionId,
+      inheritReplyTo: false,
+      replyTo: input.msgRef,
+      mode: "steer",
+    });
+    input.active.activeOutputMessageIds.clear();
+    return publishSingleMessageToActiveRequest({
+      adapter,
+      bus,
+      cfg,
+      requestId: input.active.requestId,
+      sessionId: input.sessionId,
+      sessionConfigId: input.sessionConfigId,
+      parentChannelId: input.parentChannelId,
+      queue: "steer",
+      msgRef: input.msgRef,
+      ingressMessage: input.ingressMessage,
+      sessionMode: input.sessionMode,
+      modelOverride: input.modelOverride,
+    });
+  }
+
   const subscriptions = startedSubscriptions;
   const done = Promise.race([
     superviseRouterSubscriptionsDone(subscriptions),
@@ -3345,6 +3491,13 @@ export async function startDiscordRequestRouter(
     result: Result.ok({
       done,
       publishJobWake,
+      activeRequest: (sessionId) => {
+        const active = activeBySession.get(sessionId);
+        return active
+          ? { requestId: active.requestId, outputMessageIds: [...active.activeOutputMessageIds] }
+          : undefined;
+      },
+      relayAdmission,
       stop: async () => {
         await adaptRouterSubscriptionsStop(subscriptions).finally(() => {
           for (const b of buffers.values()) {

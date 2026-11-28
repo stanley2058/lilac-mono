@@ -710,6 +710,16 @@ metadata and reads. Other native threads keep `native:<threadId>`. Changing the 
 re-splits the DM on the next refresh. Downgrading requires rebuilding the derived index for the older
 runtime.
 
+### Discord relay records
+
+The Discord surface store creates `discord_relay_messages`, `discord_relay_refs`, and `discord_relay_results` on first start. No
+existing data changes. A native `orchestrate send` with `client: discord` writes a relay row before it
+posts, and the Discord router links the consuming request's output messages to it. Relay messages carry
+`raw.discord.relay` on adapter events and a `relay` object in their `LILAC_META` line. A rollback leaves
+the tables unused: the older build treats a relay as ordinary bot output, so it no longer routes it, and
+an admitted relay's stored surface projection keeps its relay metadata. Discord runs on the older build
+cannot read the relaying native thread.
+
 ### Background jobs
 
 Core creates `background-jobs.db` and the `background-jobs/` log directory on first start. No existing

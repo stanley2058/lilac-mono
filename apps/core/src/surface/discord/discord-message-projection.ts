@@ -71,6 +71,7 @@ export function projectDiscordMessage(message: Pick<SurfaceMessage, "raw" | "tex
     reference:
       reference && normalized ? { ...reference, type: normalized.referenceType } : undefined,
     isChat: normalized?.isChat,
+    relay: normalized?.relay,
     typeMeta: getDiscordMessageTypeMetaFromRaw(message.raw),
     forwardSnapshotText: snapshotText.length > 0 ? snapshotText : undefined,
     displayText:

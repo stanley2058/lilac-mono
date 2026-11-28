@@ -26,6 +26,7 @@ import {
   SurfaceRateLimited,
   SurfaceUnavailable,
 } from "../../../src/surface/adapter";
+import { parseSurfaceMetadataLine } from "../../../src/surface/bridge/surface-metadata";
 import type {
   AdmitCoreSurfaceProjection,
   TranscriptSnapshot,
@@ -417,6 +418,56 @@ describe("request-composition attachments", () => {
     expect(out?.role).toBe("user");
     expect(typeof out?.content).toBe("string");
     expect(out!.content as string).toContain('"user_alias":"Stanley"');
+  });
+
+  it("attributes a relay to the agent and names the native thread that sent it", async () => {
+    const msg: SurfaceMessage = {
+      ref: { platform: "discord", channelId: "c", messageId: "m" },
+      session: { platform: "discord", channelId: "c" },
+      userId: "u",
+      userName: "discord-user",
+      text: "@lilac\n-# ↪ Sent from Lilac web for @discord-user\nuse the retry path",
+      ts: 0,
+      raw: {
+        discord: {
+          relay: {
+            nonce: "n",
+            platform: "native",
+            threadId: "web",
+            userId: "owner",
+            discordUserId: "u",
+            mode: "steer",
+            botUserId: "bot",
+            botName: "lilac",
+          },
+        },
+      },
+    };
+
+    const out = await composeSingleMessage(new FakeAdapter(msg, []), {
+      platform: "discord",
+      botUserId: "bot",
+      botName: "lilac",
+      msgRef: msg.ref,
+      discordUserAliasById: new Map([["u", "Stanley"]]),
+    });
+
+    expect(out?.role).toBe("user");
+    const header = parseSurfaceMetadataLine(out!.content as string);
+    expect(header?.meta).toEqual({
+      platform: "discord",
+      user_id: "bot",
+      user_name: "lilac",
+      author: "lilac",
+      relay: {
+        trigger: "orchestrate",
+        mode: "steer",
+        on_behalf_of_discord_user_id: "u",
+        source: { client: "native", thread_id: "web", user_id: "owner" },
+      },
+      message_id: "m",
+      message_time: new Date(0).toISOString(),
+    });
   });
 
   it("escapes metadata tags anywhere in user-authored text", async () => {

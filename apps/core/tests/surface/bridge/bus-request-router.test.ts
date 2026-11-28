@@ -1510,6 +1510,172 @@ describe("startBusRequestRouter", () => {
     await router.stop();
   });
 
+  it("links a relay to the output of the request it steered or started", async () => {
+    const sessionId = "relay-session";
+    const relay = {
+      nonce: "nonce-1",
+      platform: "native",
+      threadId: "web",
+      userId: "owner",
+      discordUserId: "user",
+      mode: "steer",
+      botUserId: "bot",
+      botName: "lilac",
+    };
+    const relayMessage = (messageId: string, nonce: string): SurfaceMessage => ({
+      ref: { platform: "discord", channelId: sessionId, messageId },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "user",
+      text: "<@bot> hi",
+      ts: 1,
+      raw: { reference: {}, discord: { relay: { ...relay, nonce } } },
+    });
+    const messages: Record<string, SurfaceMessage> = {
+      [`${sessionId}:steer`]: relayMessage("steer", "nonce-1"),
+      [`${sessionId}:start`]: relayMessage("start", "nonce-2"),
+    };
+    const recorded: unknown[] = [];
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const router = await startBusRequestRouter({
+      adapter: new FakeAdapter(messages),
+      bus,
+      subscriptionId: "router-relay-output",
+      config: parseCoreConfigV1ToUniversal({}),
+      relayOutputs: { recordRelayOutput: (input) => recorded.push(input) },
+    });
+    const adapterEvent = (messageId: string, nonce: string) => ({
+      platform: "discord" as const,
+      channelId: sessionId,
+      messageId,
+      userId: "user",
+      text: "<@bot> hi",
+      ts: Date.now(),
+      raw: {
+        discord: {
+          isDMBased: true,
+          mentionsBot: true,
+          replyToBot: false,
+          botUserId: "bot",
+          relay: { ...relay, nonce },
+        },
+      },
+    });
+    const output = (requestId: string, messageId: string) =>
+      bus.publish(
+        lilacEventTypes.EvtSurfaceOutputMessageCreated,
+        { msgRef: { platform: "discord", channelId: sessionId, messageId } },
+        { headers: { request_id: requestId, session_id: sessionId } },
+      );
+
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "running" },
+      { headers: { request_id: "active", session_id: sessionId, request_client: "discord" } },
+    );
+    expect(router.activeRequest(sessionId)).toEqual({ requestId: "active", outputMessageIds: [] });
+    await output("active", "before-steer");
+    expect(router.activeRequest(sessionId)).toEqual({
+      requestId: "active",
+      outputMessageIds: ["before-steer"],
+    });
+    expect(
+      router.relayAdmission({ sessionId, replyToMessageId: "before-steer", replyToBot: true }),
+    ).toEqual({ kind: "joins", requestId: "active" });
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, adapterEvent("steer", "nonce-1"));
+    await output("active", "preview");
+    await output("active", "final");
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "resolved" },
+      { headers: { request_id: "active", session_id: sessionId, request_client: "discord" } },
+    );
+    await output("active", "after-end");
+    expect(router.activeRequest(sessionId)).toBeUndefined();
+    expect(router.relayAdmission({ sessionId, replyToBot: false })).toEqual({
+      kind: "starts",
+      queued: false,
+    });
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, adapterEvent("start", "nonce-2"));
+    await output(`discord:${sessionId}:start`, "started-output");
+
+    expect(recorded).toEqual([
+      { channelId: sessionId, messageId: "before-steer", nonces: ["nonce-1"] },
+      { channelId: sessionId, messageId: "preview", nonces: ["nonce-1"] },
+      { channelId: sessionId, messageId: "final", nonces: ["nonce-1"] },
+      { channelId: sessionId, messageId: "started-output", nonces: ["nonce-2"] },
+    ]);
+    await router.stop();
+  });
+
+  it("steers a mention-mode run with a steer relay before the run posts output", async () => {
+    const sessionId = "relay-mention-session";
+    const relayMessage: SurfaceMessage = {
+      ref: { platform: "discord", channelId: sessionId, messageId: "relay" },
+      session: { platform: "discord", channelId: sessionId },
+      userId: "user",
+      text: "change course",
+      ts: 1,
+      raw: { reference: {} },
+    };
+    const raw = createInMemoryRawBus();
+    const bus = createLilacBus(raw);
+    const router = await startBusRequestRouter({
+      adapter: new FakeAdapter({ [`${sessionId}:relay`]: relayMessage }),
+      bus,
+      subscriptionId: "router-relay-steer",
+      config: parseCoreConfigV1ToUniversal({ surface: { router: { defaultMode: "mention" } } }),
+    });
+    const received: any[] = [];
+    const sub = await subscribeTopicForTest(
+      bus,
+      "cmd.request",
+      { mode: "fanout", subscriptionId: "relay-steer-test", consumerId: "c1" },
+      async (m) => {
+        if (m.type === lilacEventTypes.CmdRequestMessage) received.push(m);
+        return Result.ok(undefined);
+      },
+    );
+    await bus.publish(
+      lilacEventTypes.EvtRequestLifecycleChanged,
+      { state: "running" },
+      { headers: { request_id: "active", session_id: sessionId, request_client: "discord" } },
+    );
+
+    await bus.publish(lilacEventTypes.EvtAdapterMessageCreated, {
+      platform: "discord",
+      channelId: sessionId,
+      messageId: "relay",
+      userId: "user",
+      text: "change course",
+      ts: Date.now(),
+      raw: {
+        discord: {
+          isDMBased: false,
+          mentionsBot: true,
+          replyToBot: false,
+          botUserId: "bot",
+          relay: {
+            nonce: "nonce-1",
+            platform: "native",
+            threadId: "web",
+            userId: "owner",
+            discordUserId: "user",
+            mode: "steer",
+            botUserId: "bot",
+            botName: "lilac",
+          },
+        },
+      },
+    });
+
+    expect(received.map((m) => [m.headers?.request_id, m.data.queue])).toEqual([
+      ["active", "steer"],
+    ]);
+    await sub.stop();
+    await router.stop();
+  });
+
   it.each([
     ["evt.surface", ["evt.request"]],
     ["evt.adapter", ["evt.surface", "evt.request"]],

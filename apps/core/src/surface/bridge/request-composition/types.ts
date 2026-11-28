@@ -8,6 +8,7 @@ import type {
   DiscordAttachmentMeta,
 } from "../../discord/discord-attachment";
 import type { DiscordMessageCacheAccess } from "../../store/discord-search-store";
+import type { DiscordRelayRaw } from "../../discord/discord-relay";
 
 import type { TranscriptStore } from "../../../transcript/transcript-store";
 import type { ResourceRegistry } from "../../../resource";
@@ -87,6 +88,8 @@ export type ReplyChainMessage = {
   text: string;
   attachments: DiscordAttachmentMeta[];
   isChat?: boolean;
+  /** Set when Lilac posted this message for a run on another surface. */
+  relay?: DiscordRelayRaw;
   replyReference: {
     messageId?: string;
     channelId?: string;
