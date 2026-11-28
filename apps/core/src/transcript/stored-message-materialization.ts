@@ -749,6 +749,15 @@ function providerSupportsResourceKind(
   }
 }
 
+/** Returns false only for image, PDF, audio, or video media the target cannot read. */
+export function providerTargetSupportsMediaType(
+  target: StoredResourceProviderTarget,
+  mediaType: string | undefined,
+): boolean {
+  const kind = resourceKindFromMediaType(mediaType);
+  return kind === null || providerSupportsResourceKind(target, kind);
+}
+
 function verifiedResourceKind(classification: ResourceClassification): ResourceKind | null {
   if (classification.kind === "image" || classification.kind === "pdf") return classification.kind;
   if (classification.kind === "binary") return resourceKindFromMediaType(classification.mediaType);

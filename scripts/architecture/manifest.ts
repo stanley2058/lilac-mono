@@ -1359,6 +1359,10 @@ const INTEGRATED_BOUNDARY_DECODERS = new Map<string, readonly BoundaryDecoder[]>
         identity: { module: "src/tools/skip-reply.ts", exportName: "decodeSkipReplyReason" },
         category: "projection",
       },
+      {
+        identity: { module: "src/agent/model-media-filter.ts", exportName: "readCallPaths" },
+        category: "projection",
+      },
       ...["formatQuestionToolArgs", "createQuestionTool.execute"].map((exportName) => ({
         identity: { module: "src/tools/question.ts", exportName },
         category: "request" as const,

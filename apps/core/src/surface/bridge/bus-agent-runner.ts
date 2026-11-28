@@ -1,6 +1,6 @@
 import { projectAssistantTextHistory } from "./request-composition/normalization";
 import { recoverAnthropicThinking } from "../../agent/anthropic-thinking-recovery";
-import { stripRejectedInputMedia } from "../../agent/rejected-input-media-recovery";
+import { createModelMediaFilter } from "../../agent/model-media-filter";
 import { findCatalogModel } from "@stanley2058/lilac-utils";
 import { adaptToolResultToHost } from "../../tools/tool-result-adapters";
 import { planJobEventBoundary } from "../../jobs/job-events";
@@ -5072,6 +5072,7 @@ export async function startBusAgentRunner(params: {
             });
             return true;
           };
+          const modelMediaFilter = createModelMediaFilter();
           const retryWithoutRejectedMedia = <ErrorCause>(
             error: ErrorCause,
             projectedError: ReturnType<typeof projectBusAgentRunnerError>,
@@ -5086,16 +5087,12 @@ export async function startBusAgentRunner(params: {
               errorContext.abortSignal?.aborted
             )
               return false;
-            const stripped = stripRejectedInputMedia({
+            const recorded = modelMediaFilter.recordRejection({
               error,
               details: projectedError.details,
               messages: agent.state.messages,
             });
-            if (!stripped) return false;
-            const replacement = agent.replaceMessages(stripped, {
-              preserveRecoveryCheckpoint: true,
-            });
-            if (replacement.isErr()) return false;
+            if (!recorded) return false;
             logger.warn(
               "provider rejected input attachments; retrying without them",
               formatBridgeLogContext({
@@ -5285,8 +5282,15 @@ export async function startBusAgentRunner(params: {
               transformContext,
               fullBudget,
             );
+            const mediaFiltered = modelMediaFilter.apply(
+              historyPrepared,
+              resolveStoredResourceProviderTarget({
+                provider: activeBinding.resolved.provider,
+                capability: activeBinding.capabilityInfo,
+              }),
+            );
             // First, remove pathological binary blobs from the *model-facing* view.
-            const scrubbed = scrubLargeBinaryForModelView(historyPrepared, {
+            const scrubbed = scrubLargeBinaryForModelView(mediaFiltered, {
               maxBytesPerPart: cfg.tools.media.maxInlineBytesPerPart,
               maxBytesTotal: cfg.tools.media.maxInlineBytesTotal,
             });
